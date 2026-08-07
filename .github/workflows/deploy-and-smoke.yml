@@ -1,0 +1,117 @@
+name: Deploy and smoke test
+
+on:
+  push:
+    branches:
+      - main
+      - feat/whop-youtube-clipping-pipeline
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: clipper-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  container-canary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tags
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          image="ghcr.io/${owner}/clipper"
+          tag="sha-${GITHUB_SHA::12}"
+          alias="canary"
+          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            alias="latest"
+          fi
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "alias=${alias}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build deployment image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${{ steps.image.outputs.image }}"
+          tag="${{ steps.image.outputs.tag }}"
+          docker build \
+            --pull \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --tag "${image}:${tag}" \
+            .
+
+      - name: Run end-to-end smoke test inside image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${{ steps.image.outputs.image }}"
+          tag="${{ steps.image.outputs.tag }}"
+          mkdir -p smoke-artifacts
+          docker run --rm \
+            --env "CLIPPER_IMAGE_REF=${image}:${tag}" \
+            --env "GITHUB_SHA=${GITHUB_SHA}" \
+            --volume "${PWD}/smoke-artifacts:/artifacts" \
+            --entrypoint python \
+            "${image}:${tag}" \
+            /app/scripts/smoke_e2e.py --output-root /artifacts
+
+      - name: Publish tested image to GHCR
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          image="${{ steps.image.outputs.image }}"
+          tag="${{ steps.image.outputs.tag }}"
+          alias="${{ steps.image.outputs.alias }}"
+          echo "${GHCR_TOKEN}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+          docker push "${image}:${tag}"
+          docker tag "${image}:${tag}" "${image}:${alias}"
+          docker push "${image}:${alias}"
+
+      - name: Verify registry round trip
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${{ steps.image.outputs.image }}"
+          tag="${{ steps.image.outputs.tag }}"
+          image_ref="${image}:${tag}"
+          docker image rm "${image_ref}"
+          docker pull "${image_ref}"
+          docker run --rm "${image_ref}" --help
+          digest="$(docker image inspect "${image_ref}" --format '{{index .RepoDigests 0}}')"
+          python - "${image_ref}" "${digest}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path("smoke-artifacts/deployment.json")
+          path.write_text(
+              json.dumps(
+                  {"status": "deployed", "image_ref": sys.argv[1], "digest": sys.argv[2]},
+                  indent=2,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload deployment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipper-deployment-${{ github.sha }}
+          path: smoke-artifacts
+          if-no-files-found: warn
+          retention-days: 14

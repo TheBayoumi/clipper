@@ -11,6 +11,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY scripts ./scripts
 RUN pip install --upgrade pip \
     && pip install ".[asr]"
 
