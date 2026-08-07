@@ -91,7 +91,7 @@ def build_ffmpeg_command(
             + "[captioned][wm]overlay=W-w-48:48:format=auto,format=yuv420p[v]"
         )
     else:
-        filter_complex = base_filter + ",format=yuv420p[v]"
+        filter_complex = base_filter + ";[captioned]format=yuv420p[v]"
     return [
         *inputs,
         "-t",

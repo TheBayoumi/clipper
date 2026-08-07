@@ -28,6 +28,7 @@ def test_build_ffmpeg_command_contains_vertical_and_audio_filters(tmp_path: Path
     joined = " ".join(command)
     assert "scale=1080:1920" in joined
     assert "loudnorm=I=-14" in joined
+    assert ";[captioned]format=yuv420p[v]" in joined
     assert "libx264" in command
     assert "1.250" in command
     assert "30.250" in command
