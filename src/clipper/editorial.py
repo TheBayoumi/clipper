@@ -669,6 +669,19 @@ def _source_excerpt(text: str, *, max_words: int = 8) -> str:
     return (" ".join(words[:max_words]) + " …").upper()
 
 
+def _trim_question_preamble(sentence: str) -> str:
+    """Return the first real interrogative phrase without host/filler preamble."""
+    match = re.search(
+        r"\b(?:why|how|what(?:'s)?|when|where|who|did|do|can|would)\b",
+        sentence,
+        flags=re.I,
+    )
+    if match is None or match.start() == 0:
+        return sentence.strip()
+    trimmed = sentence[match.start() :].strip()
+    return trimmed if len(_tokens(trimmed)) >= 4 else sentence.strip()
+
+
 def _find_hook_sentence(text: str, mode: HookMode) -> str | None:
     candidates: list[tuple[float, str]] = []
     for sentence in _sentences(text):

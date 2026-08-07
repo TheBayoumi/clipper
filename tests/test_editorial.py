@@ -267,6 +267,11 @@ def test_hook_variants_are_legitimate_and_not_filename_duplicates() -> None:
     assert _find_hook_sentence(c.text, "conflict") is not None
     assert _find_hook_sentence(c.text, "strong_opinion") is not None
     assert _find_hook_sentence("plain text.", "number") is None
+    trimmed = _find_hook_sentence(
+        "Dude, before we head out, what's one message for esports fans?", "question"
+    )
+    assert trimmed is not None
+    assert trimmed.lower().startswith("what's one message")
 
 
 def test_edit_plan_has_limited_meaningful_punch_ins_and_tail() -> None:
