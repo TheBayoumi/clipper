@@ -9,6 +9,9 @@ from .models import ClipCandidate
 
 cv2: Any = importlib.import_module("cv2")
 
+DEFAULT_TARGET_ASPECT = 9 / 16
+FACE_VERTICAL_POSITION = 0.38
+
 
 @dataclass(frozen=True, slots=True)
 class FaceAnchor:
@@ -27,12 +30,22 @@ class TrackingPlan:
     source_height: int
     anchors: tuple[FaceAnchor, ...] = ()
     face_detected: bool = False
+    crop_width: int = 0
+    crop_height: int = 0
+    target_aspect: float = DEFAULT_TARGET_ASPECT
+    framing_mode: str = "portrait_smart_crop"
+    background_fill: str = "none"
 
     def to_dict(self) -> dict[str, object]:
         return {
             "zoom_factor": self.zoom_factor,
             "source_width": self.source_width,
             "source_height": self.source_height,
+            "crop_width": self.crop_width,
+            "crop_height": self.crop_height,
+            "target_aspect": self.target_aspect,
+            "framing_mode": self.framing_mode,
+            "background_fill": self.background_fill,
             "face_detected": self.face_detected,
             "anchors": [anchor.to_dict() for anchor in self.anchors],
         }
@@ -40,6 +53,41 @@ class TrackingPlan:
 
 def _clamp(value: float, low: float, high: float) -> float:
     return min(max(value, low), high)
+
+
+def _even_floor(value: float) -> int:
+    rounded = max(2, int(value))
+    return rounded if rounded % 2 == 0 else rounded - 1
+
+
+def portrait_crop_dimensions(
+    source_width: int,
+    source_height: int,
+    *,
+    target_aspect: float = DEFAULT_TARGET_ASPECT,
+    zoom_factor: float = 1.12,
+) -> tuple[int, int]:
+    """Return an even-sized source crop that fills the target portrait aspect ratio."""
+    if source_width <= 0 or source_height <= 0:
+        return 0, 0
+    if target_aspect <= 0:
+        raise ValueError("target_aspect must be positive")
+    if zoom_factor < 1.0:
+        raise ValueError("zoom_factor must be at least 1.0")
+
+    source_aspect = source_width / source_height
+    if source_aspect >= target_aspect:
+        max_height = source_height / zoom_factor
+        crop_width = _even_floor(max_height * target_aspect)
+        crop_height = _even_floor(crop_width / target_aspect)
+    else:
+        max_width = source_width / zoom_factor
+        crop_height = _even_floor(max_width / target_aspect)
+        crop_width = _even_floor(crop_height * target_aspect)
+
+    crop_width = min(crop_width, source_width - source_width % 2)
+    crop_height = min(crop_height, source_height - source_height % 2)
+    return max(2, crop_width), max(2, crop_height)
 
 
 def _choose_face(
@@ -95,30 +143,42 @@ def track_face_crop(
     zoom_factor: float = 1.12,
     sample_fps: float = 4.0,
     smoothing: float = 0.24,
+    target_aspect: float = DEFAULT_TARGET_ASPECT,
 ) -> TrackingPlan:
     capture = cv2.VideoCapture(str(source_path))
     if not capture.isOpened():
-        return TrackingPlan(zoom_factor, 0, 0)
+        return TrackingPlan(zoom_factor, 0, 0, target_aspect=target_aspect)
 
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = float(capture.get(cv2.CAP_PROP_FPS) or 30.0)
     if width <= 0 or height <= 0:
         capture.release()
-        return TrackingPlan(zoom_factor, 0, 0)
+        return TrackingPlan(zoom_factor, 0, 0, target_aspect=target_aspect)
 
+    crop_width, crop_height = portrait_crop_dimensions(
+        width,
+        height,
+        target_aspect=target_aspect,
+        zoom_factor=zoom_factor,
+    )
     cascade_path = (
         Path(str(cv2.__file__)).resolve().parent / "data" / "haarcascade_frontalface_default.xml"
     )
     detector = cv2.CascadeClassifier(str(cascade_path))
     if detector.empty():
         capture.release()
-        return TrackingPlan(zoom_factor, width, height)
+        return TrackingPlan(
+            zoom_factor,
+            width,
+            height,
+            crop_width=crop_width,
+            crop_height=crop_height,
+            target_aspect=target_aspect,
+        )
 
     capture.set(cv2.CAP_PROP_POS_MSEC, max(0.0, clip.start) * 1000)
     sample_every = max(1, round(fps / max(1.0, sample_fps)))
-    crop_width = width / zoom_factor
-    crop_height = height / zoom_factor
     max_x = max(0.0, width - crop_width)
     max_y = max(0.0, height - crop_height)
     previous_face: tuple[float, float] | None = None
@@ -188,7 +248,7 @@ def track_face_crop(
 
             if relative_time - emitted_at >= 0.5 or not anchors:
                 x = _clamp(smoothed[0] - crop_width / 2, 0.0, max_x)
-                y = _clamp(smoothed[1] - crop_height / 2, 0.0, max_y)
+                y = _clamp(smoothed[1] - crop_height * FACE_VERTICAL_POSITION, 0.0, max_y)
                 anchors.append(FaceAnchor(relative_time, x, y))
                 emitted_at = relative_time
             frame_index += 1
@@ -203,4 +263,7 @@ def track_face_crop(
         height,
         tuple(anchors) if face_detected else (),
         face_detected,
+        crop_width=crop_width,
+        crop_height=crop_height,
+        target_aspect=target_aspect,
     )

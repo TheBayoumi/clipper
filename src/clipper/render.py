@@ -8,7 +8,13 @@ from pathlib import Path
 
 from .captions import create_word_reveal_ass
 from .models import ClipCandidate, TranscriptSegment
-from .tracking import TrackingPlan, track_face_crop, tracking_expressions
+from .tracking import (
+    DEFAULT_TARGET_ASPECT,
+    TrackingPlan,
+    portrait_crop_dimensions,
+    track_face_crop,
+    tracking_expressions,
+)
 
 
 class RenderError(RuntimeError):
@@ -32,25 +38,33 @@ def build_ffmpeg_command(
     height: int = 1920,
 ) -> list[str]:
     escaped_subtitles = _escape_filter_path(Path(subtitle_path))
-    blur_width = max(180, width // 3)
-    blur_height = max(320, height // 3)
+    target_aspect = width / height
     zoom = tracking_plan.zoom_factor if tracking_plan is not None else zoom_factor
-    if zoom > 1.0:
-        crop_x, crop_y = tracking_expressions(tracking_plan)
-        foreground = (
-            f"[fg]crop=iw/{zoom:.6f}:ih/{zoom:.6f}:x='{crop_x}':y='{crop_y}',"
-            f"scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
-        )
+    crop_x, crop_y = tracking_expressions(tracking_plan)
+
+    if (
+        tracking_plan is not None
+        and tracking_plan.source_width > 0
+        and tracking_plan.source_height > 0
+    ):
+        crop_width = tracking_plan.crop_width
+        crop_height = tracking_plan.crop_height
+        if crop_width <= 0 or crop_height <= 0:
+            crop_width, crop_height = portrait_crop_dimensions(
+                tracking_plan.source_width,
+                tracking_plan.source_height,
+                target_aspect=target_aspect,
+                zoom_factor=zoom,
+            )
+        crop_filter = f"crop={crop_width}:{crop_height}:x='{crop_x}':y='{crop_y}'"
     else:
-        foreground = f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
+        crop_w = f"trunc(min(iw,ih*{target_aspect:.8f})/{zoom:.6f}/2)*2"
+        crop_h = f"trunc(min(ih,iw/{target_aspect:.8f})/{zoom:.6f}/2)*2"
+        crop_filter = f"crop=w='{crop_w}':h='{crop_h}':x='{crop_x}':y='{crop_y}'"
 
     base_filter = (
-        f"[0:v]split=2[bg][fg];"
-        f"[bg]scale={blur_width}:{blur_height}:force_original_aspect_ratio=increase,"
-        f"crop={blur_width}:{blur_height},gblur=sigma=18,scale={width}:{height}[bg2];"
-        + foreground
-        + f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,subtitles='{escaped_subtitles}',"
-        "fps=30[captioned]"
+        f"[0:v]{crop_filter},scale={width}:{height}:flags=lanczos,"
+        f"subtitles='{escaped_subtitles}',fps=30[captioned]"
     )
     inputs = [
         "ffmpeg",
@@ -139,7 +153,12 @@ class FFmpegRenderer:
                 sample_fps=self.face_sample_fps,
             )
             if self.face_tracking
-            else TrackingPlan(self.zoom_factor, 0, 0)
+            else TrackingPlan(
+                self.zoom_factor,
+                0,
+                0,
+                target_aspect=DEFAULT_TARGET_ASPECT,
+            )
         )
         output_path.with_suffix(".tracking.json").write_text(
             json.dumps(tracking_plan.to_dict(), indent=2) + "\n",

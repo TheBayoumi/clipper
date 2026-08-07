@@ -235,6 +235,16 @@ def main() -> int:
     tracking = json.loads(tracking_path.read_text(encoding="utf-8"))
     if float(tracking.get("zoom_factor", 0)) <= 1.0:
         raise RuntimeError("tracking plan did not apply a zoom")
+    if tracking.get("framing_mode") != "portrait_smart_crop":
+        raise RuntimeError("tracking plan did not use portrait smart crop")
+    if tracking.get("background_fill") != "none":
+        raise RuntimeError("portrait render unexpectedly uses background fill")
+    crop_width = int(tracking.get("crop_width", 0))
+    crop_height = int(tracking.get("crop_height", 0))
+    if crop_width <= 0 or crop_height <= 0:
+        raise RuntimeError("tracking plan did not record portrait crop dimensions")
+    if abs(crop_width / crop_height - 9 / 16) > 0.01:
+        raise RuntimeError("tracking crop is not approximately 9:16")
 
     _run(["ffmpeg", "-v", "error", "-i", str(rendered_path), "-f", "null", "-"])
     probe = _probe(rendered_path)

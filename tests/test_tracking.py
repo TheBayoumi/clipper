@@ -8,6 +8,7 @@ from clipper.tracking import (
     FaceAnchor,
     TrackingPlan,
     _choose_face,
+    portrait_crop_dimensions,
     track_face_crop,
     tracking_expressions,
 )
@@ -19,6 +20,13 @@ def test_choose_face_prefers_largest_then_temporally_nearest() -> None:
     chosen = _choose_face(faces, (50.0, 50.0), 640, 360)
     assert chosen == (50.0, 50.0)
     assert _choose_face([], None, 640, 360) is None
+
+
+def test_portrait_crop_dimensions_fill_vertical_frame() -> None:
+    assert portrait_crop_dimensions(1280, 720) == (360, 640)
+    assert portrait_crop_dimensions(640, 360) == (180, 320)
+    width, height = portrait_crop_dimensions(1080, 1920)
+    assert abs(width / height - 9 / 16) < 0.01
 
 
 def test_tracking_expressions_are_continuous_piecewise_linear() -> None:
@@ -83,10 +91,15 @@ def test_track_face_crop_detects_and_smooths_face_path(tmp_path: Path) -> None:
     assert plan.face_detected is True
     assert plan.zoom_factor == 1.12
     assert len(plan.anchors) >= 2
-    assert plan.anchors[0].x == 0.0
+    assert plan.crop_width == 180
+    assert plan.crop_height == 320
+    assert abs(plan.crop_width / plan.crop_height - 9 / 16) < 0.01
+    assert abs(plan.anchors[0].x - 83.33333333333334) < 1e-9
     assert capture.released is True
     payload = plan.to_dict()
     assert payload["face_detected"] is True
+    assert payload["framing_mode"] == "portrait_smart_crop"
+    assert payload["background_fill"] == "none"
 
 
 def test_track_face_crop_falls_back_when_video_cannot_open(tmp_path: Path) -> None:

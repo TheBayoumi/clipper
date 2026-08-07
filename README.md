@@ -9,7 +9,7 @@ A production-oriented, rights-gated pipeline that turns a Whop Content Rewards b
 3. Retrieve timestamped captions when available; otherwise run local Faster-Whisper ASR.
 4. Score sentence-aligned windows against campaign keywords, required phrases, hook strength, duration, and negative terms.
 5. Select diverse clips across source videos.
-6. Render 1080x1920 H.264 clips with blurred background fill, word-synced reveal captions, smoothed face-tracked zoom, and EBU-style loudness normalization.
+6. Render true full-frame 1080x1920 H.264 clips using a face-tracked 9:16 smart crop with no blurred background, word-synced reveal captions, and EBU-style loudness normalization.
 7. Save a manifest containing source URLs, timestamps, scores, errors, and output paths.
 
 ## Non-negotiable source policy
@@ -106,7 +106,7 @@ artifacts/<campaign-id>-<UTC timestamp>/
 | `CLIPPER_WHISPER_DEVICE` | `auto` | `cpu`, `cuda`, or `auto` |
 | `CLIPPER_WHISPER_COMPUTE_TYPE` | `int8` | ASR precision/performance trade-off |
 | `CLIPPER_FACE_TRACKING` | `true` | Enable sampled face tracking with center fallback |
-| `CLIPPER_FACE_ZOOM` | `1.12` | Subtle tracked crop zoom; renderer accepts 1.0–1.35 |
+| `CLIPPER_FACE_ZOOM` | `1.12` | Extra zoom applied after fitting a real 9:16 smart crop; renderer accepts 1.0–1.35 |
 | `CLIPPER_FACE_SAMPLE_FPS` | `4.0` | Face-detection sampling rate; crop motion is interpolated |
 
 ### Resource implications

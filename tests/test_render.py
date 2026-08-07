@@ -28,9 +28,10 @@ def test_build_ffmpeg_command_contains_tracking_vertical_and_audio_filters(tmp_p
     )
     joined = " ".join(command)
     assert "scale=1080:1920" in joined
-    assert "scale=360:640" in joined
-    assert "gblur=sigma=18" in joined
-    assert "crop=iw/1.120000:ih/1.120000" in joined
+    assert "crop=360:640" in joined
+    assert "gblur=" not in joined
+    assert "split=2" not in joined
+    assert "[bg]" not in joined
     assert "if(lt(t,1.000)" in joined
     assert "subtitles=" in joined
     assert "loudnorm=I=-14" in joined
@@ -145,4 +146,6 @@ def test_renderer_failures(tmp_path: Path) -> None:
         tmp_path / "captions.ass",
         tracking_plan=plan,
     )
-    assert "crop=iw/1.120000" in " ".join(command)
+    joined = " ".join(command)
+    assert "crop=180:320" in joined
+    assert "gblur=" not in joined
