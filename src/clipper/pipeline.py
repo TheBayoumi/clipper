@@ -11,6 +11,8 @@ from typing import Protocol
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+import gdown  # type: ignore[import-untyped]
+
 from .brief import load_brief
 from .models import (
     CampaignBrief,
@@ -96,6 +98,27 @@ def _normalize_asset_url(url: str) -> str:
     return url
 
 
+def _download_google_drive_media(
+    url: str, output_path: Path, *, max_bytes: int
+) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_suffix(output_path.suffix + ".part")
+    try:
+        downloaded = gdown.download(url=url, output=str(temporary), quiet=True)
+        if not downloaded or not temporary.is_file():
+            raise RuntimeError("Google Drive media download did not create a file")
+        size = temporary.stat().st_size
+        if size == 0:
+            raise RuntimeError("media asset is empty")
+        if size > max_bytes:
+            raise RuntimeError("media asset exceeds size limit")
+        temporary.replace(output_path)
+        return output_path
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def _download_asset(
     url: str,
     output_path: Path,
@@ -103,6 +126,8 @@ def _download_asset(
     max_bytes: int = 10_000_000,
     expected_kind: str = "image",
 ) -> Path:
+    if expected_kind == "media" and urlparse(url).netloc == "drive.google.com":
+        return _download_google_drive_media(url, output_path, max_bytes=max_bytes)
     normalized = _normalize_asset_url(url)
     request = Request(  # noqa: S310 -- _normalize_asset_url enforces HTTPS.
         normalized, headers={"User-Agent": "whop-clipper/0.1"}

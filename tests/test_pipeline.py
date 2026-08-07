@@ -374,3 +374,41 @@ def test_download_asset_accepts_binary_media(tmp_path: Path) -> None:
             tmp_path / "bad-media.mp4",
             expected_kind="media",
         )
+
+
+def test_download_asset_uses_gdown_for_google_drive_media(tmp_path: Path) -> None:
+    output = tmp_path / "drive-source.mp4"
+
+    def fake_download(*, url: str, output: str, quiet: bool) -> str:
+        assert url.startswith("https://drive.google.com/file/d/")
+        assert quiet is True
+        Path(output).write_bytes(b"drive-media")
+        return output
+
+    with patch("clipper.pipeline.gdown.download", side_effect=fake_download) as download:
+        assert (
+            _download_asset(
+                "https://drive.google.com/file/d/source-id/view",
+                output,
+                expected_kind="media",
+            )
+            == output
+        )
+    assert download.call_count == 1
+    assert output.read_bytes() == b"drive-media"
+
+    def oversized_download(*, url: str, output: str, quiet: bool) -> str:
+        del url, quiet
+        Path(output).write_bytes(b"123")
+        return output
+
+    with (
+        patch("clipper.pipeline.gdown.download", side_effect=oversized_download),
+        pytest.raises(RuntimeError, match="exceeds"),
+    ):
+        _download_asset(
+            "https://drive.google.com/file/d/source-id/view",
+            tmp_path / "too-large.mp4",
+            max_bytes=2,
+            expected_kind="media",
+        )
