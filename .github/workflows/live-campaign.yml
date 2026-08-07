@@ -21,7 +21,7 @@ jobs:
       - name: Build exact candidate image
         run: docker build -t clipper-live:${GITHUB_SHA} .
 
-      - name: Run Reach campaign through Clipper
+      - name: Run Reach campaign through Clipper using campaign-supplied media
         run: |
           mkdir -p live-artifacts
           docker run --rm \
