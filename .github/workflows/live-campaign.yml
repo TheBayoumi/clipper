@@ -14,7 +14,7 @@ permissions:
 jobs:
   live-campaign:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -25,10 +25,13 @@ jobs:
         run: |
           mkdir -p live-artifacts
           docker run --rm \
+            --env CLIPPER_WHISPER_MODEL=base.en \
+            --env CLIPPER_WHISPER_DEVICE=cpu \
+            --env CLIPPER_WHISPER_COMPUTE_TYPE=int8 \
             -v "$PWD/campaigns:/campaigns:ro" \
             -v "$PWD/live-artifacts:/artifacts" \
             clipper-live:${GITHUB_SHA} \
-            run --brief /campaigns/reach-double-coverage-dedicated.yaml --artifact-root /artifacts
+            run --brief /campaigns/reach-double-coverage-clix.yaml --artifact-root /artifacts
 
       - name: Validate rendered campaign output
         run: |

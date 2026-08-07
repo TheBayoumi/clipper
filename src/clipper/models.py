@@ -18,6 +18,22 @@ def _string_list(data: dict[str, Any], key: str) -> list[str]:
     return [item.strip() for item in value if item.strip()]
 
 
+def _string_map(data: dict[str, Any], key: str) -> dict[str, str]:
+    value = data.get(key, {})
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(
+        isinstance(item_key, str) and isinstance(item_value, str)
+        for item_key, item_value in value.items()
+    ):
+        raise BriefValidationError(f"{key} must be an object mapping strings to strings")
+    return {
+        item_key.strip(): item_value.strip()
+        for item_key, item_value in value.items()
+        if item_key.strip() and item_value.strip()
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class CampaignBrief:
     campaign_id: str
@@ -26,6 +42,7 @@ class CampaignBrief:
     keywords: list[str]
     source_channel_ids: list[str] = field(default_factory=list)
     allowed_video_ids: list[str] = field(default_factory=list)
+    source_media_urls: dict[str, str] = field(default_factory=dict)
     negative_keywords: list[str] = field(default_factory=list)
     required_phrases: list[str] = field(default_factory=list)
     language: str = "en"
@@ -59,6 +76,7 @@ class CampaignBrief:
             keywords=_string_list(data, "keywords"),
             source_channel_ids=_string_list(data, "source_channel_ids"),
             allowed_video_ids=_string_list(data, "allowed_video_ids"),
+            source_media_urls=_string_map(data, "source_media_urls"),
             negative_keywords=_string_list(data, "negative_keywords"),
             required_phrases=_string_list(data, "required_phrases"),
             language=str(data.get("language", "en")).strip() or "en",
@@ -104,6 +122,13 @@ class CampaignBrief:
             raise BriefValidationError("min_clip_seconds must be less than max_clip_seconds")
         if self.watermark_url and not self.watermark_url.startswith("https://"):
             raise BriefValidationError("watermark_url must use https")
+        for video_id, media_url in self.source_media_urls.items():
+            if video_id not in self.allowed_video_ids:
+                raise BriefValidationError(
+                    "source_media_urls keys must also be listed in allowed_video_ids"
+                )
+            if not media_url.startswith("https://"):
+                raise BriefValidationError("source_media_urls values must use https")
         if not self.source_channel_ids and not self.allowed_video_ids:
             raise BriefValidationError(
                 "provide source_channel_ids or allowed_video_ids; unrestricted scraping is disabled"

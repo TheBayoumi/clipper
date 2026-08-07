@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from .brief import load_brief
@@ -60,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps([video.to_dict() for video in videos], indent=2))
             return 0
         if args.command == "run":
-            settings = PipelineSettings(artifact_root=args.artifact_root)
+            settings = replace(PipelineSettings.from_env(), artifact_root=args.artifact_root)
             run_dir = run_pipeline(args.brief, settings=settings, render=not args.no_render)
             print(run_dir)
             return 0

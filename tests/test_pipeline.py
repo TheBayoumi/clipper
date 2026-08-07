@@ -7,6 +7,7 @@ import pytest
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment, VideoCandidate
 from clipper.pipeline import (
     PipelineSettings,
+    _campaign_media_candidates,
     _download_asset,
     _normalize_asset_url,
     run_pipeline,
@@ -283,4 +284,93 @@ def test_download_asset_accepts_images_and_rejects_bad_payloads(tmp_path: Path) 
             "https://example.com/large.png",
             tmp_path / "large.png",
             max_bytes=2,
+        )
+
+
+def test_campaign_media_candidates_and_direct_media_bypass_youtube(tmp_path: Path) -> None:
+    brief_path = _write_pipeline_brief(tmp_path)
+    payload = json.loads(brief_path.read_text(encoding="utf-8"))
+    payload["allowed_video_ids"] = ["allowed"]
+    payload["source_media_urls"] = {
+        "allowed": "https://drive.google.com/file/d/campaign-media/view"
+    }
+    brief_path.write_text(json.dumps(payload), encoding="utf-8")
+    brief = CampaignBrief.from_dict(payload)
+    candidates = _campaign_media_candidates(brief)
+    assert [item.video_id for item in candidates] == ["allowed"]
+    assert candidates[0].channel_id == "UC1"
+
+    class DirectSource(FakeSource):
+        def discover(self, _brief: CampaignBrief) -> list[VideoCandidate]:
+            raise AssertionError("direct campaign media must bypass YouTube discovery")
+
+        def download_subtitles(self, *_args, **_kwargs):
+            raise AssertionError("direct campaign media must bypass YouTube subtitles")
+
+        def download_media(self, *_args, **_kwargs):
+            raise AssertionError("direct campaign media must bypass YouTube media download")
+
+    subtitle = tmp_path / "unused-direct.vtt"
+    media = tmp_path / "unused-direct.mp4"
+    downloaded = tmp_path / "downloaded.mp4"
+    downloaded.write_bytes(b"campaign-media")
+
+    def fake_download(_url: str, output_path: Path, **kwargs) -> Path:
+        assert kwargs["expected_kind"] == "media"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(downloaded.read_bytes())
+        return output_path
+
+    with (
+        patch("clipper.pipeline._download_asset", side_effect=fake_download),
+        patch(
+            "clipper.pipeline.transcribe_with_faster_whisper",
+            return_value=[TranscriptSegment(0, 9, "automation saves time.")],
+        ) as transcribe,
+    ):
+        run_dir = run_pipeline(
+            brief_path,
+            settings=PipelineSettings(artifact_root=tmp_path / "direct-run"),
+            source_client=DirectSource(subtitle, media),
+            renderer=FakeRenderer(),
+        )
+    assert transcribe.call_args.args[0] == run_dir / "work" / "allowed" / "source.mp4"
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["errors"] == []
+    assert len(manifest["rendered_clips"]) == 1
+
+
+def test_download_asset_accepts_binary_media(tmp_path: Path) -> None:
+    body = Mock()
+    body.headers.get_content_type.return_value = "application/octet-stream"
+    body.read.side_effect = [b"media", b""]
+    context = Mock()
+    context.__enter__ = Mock(return_value=body)
+    context.__exit__ = Mock(return_value=False)
+    output = tmp_path / "source.mp4"
+    with patch("clipper.pipeline.urlopen", return_value=context):
+        assert (
+            _download_asset(
+                "https://example.com/source.mp4",
+                output,
+                expected_kind="media",
+            )
+            == output
+        )
+    assert output.read_bytes() == b"media"
+
+    html_body = Mock()
+    html_body.headers.get_content_type.return_value = "text/html"
+    html_body.read.side_effect = [b"login", b""]
+    html_context = Mock()
+    html_context.__enter__ = Mock(return_value=html_body)
+    html_context.__exit__ = Mock(return_value=False)
+    with (
+        patch("clipper.pipeline.urlopen", return_value=html_context),
+        pytest.raises(RuntimeError, match="not binary media"),
+    ):
+        _download_asset(
+            "https://example.com/source.mp4",
+            tmp_path / "bad-media.mp4",
+            expected_kind="media",
         )

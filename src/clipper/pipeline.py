@@ -96,7 +96,13 @@ def _normalize_asset_url(url: str) -> str:
     return url
 
 
-def _download_asset(url: str, output_path: Path, *, max_bytes: int = 10_000_000) -> Path:
+def _download_asset(
+    url: str,
+    output_path: Path,
+    *,
+    max_bytes: int = 10_000_000,
+    expected_kind: str = "image",
+) -> Path:
     normalized = _normalize_asset_url(url)
     request = Request(  # noqa: S310 -- _normalize_asset_url enforces HTTPS.
         normalized, headers={"User-Agent": "whop-clipper/0.1"}
@@ -105,22 +111,39 @@ def _download_asset(url: str, output_path: Path, *, max_bytes: int = 10_000_000)
     temporary = output_path.with_suffix(output_path.suffix + ".part")
     size = 0
     try:
-        with urlopen(request, timeout=30) as response, temporary.open("wb") as handle:  # noqa: S310
+        with urlopen(request, timeout=120) as response, temporary.open("wb") as handle:  # noqa: S310
             content_type = response.headers.get_content_type()
-            if not content_type.startswith("image/"):
+            if expected_kind == "image" and not content_type.startswith("image/"):
                 raise RuntimeError(f"watermark response is not an image: {content_type}")
+            if expected_kind == "media" and content_type.startswith("text/"):
+                raise RuntimeError(f"media response is not binary media: {content_type}")
             while chunk := response.read(64 * 1024):
                 size += len(chunk)
                 if size > max_bytes:
-                    raise RuntimeError("watermark asset exceeds 10 MB limit")
+                    raise RuntimeError(f"{expected_kind} asset exceeds size limit")
                 handle.write(chunk)
         if size == 0:
-            raise RuntimeError("watermark asset is empty")
+            raise RuntimeError(f"{expected_kind} asset is empty")
         temporary.replace(output_path)
         return output_path
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _campaign_media_candidates(brief: CampaignBrief) -> list[VideoCandidate]:
+    channel_id = brief.source_channel_ids[0] if brief.source_channel_ids else ""
+    return [
+        VideoCandidate(
+            video_id=video_id,
+            title=f"{brief.title} campaign source",
+            channel_id=channel_id,
+            channel_title="Campaign-provided source",
+            url=f"https://www.youtube.com/watch?v={video_id}",
+        )
+        for video_id in brief.allowed_video_ids
+        if video_id in brief.source_media_urls
+    ]
 
 
 def run_pipeline(
@@ -147,7 +170,14 @@ def run_pipeline(
     if brief.watermark_url:
         watermark_path = _download_asset(brief.watermark_url, run_dir / "assets" / "watermark.png")
 
-    discovered = source.discover(brief)
+    direct_candidates = _campaign_media_candidates(brief)
+    direct_ids = {video.video_id for video in direct_candidates}
+    if brief.allowed_video_ids and set(brief.allowed_video_ids).issubset(direct_ids):
+        discovered = direct_candidates
+    else:
+        discovered = source.discover(brief)
+        discovered_ids = {video.video_id for video in discovered}
+        discovered.extend(video for video in direct_candidates if video.video_id not in discovered_ids)
     allowed: list[VideoCandidate] = []
     for video in discovered:
         try:
@@ -167,11 +197,14 @@ def run_pipeline(
     for video in allowed:
         video_work = work_dir / video.video_id
         try:
-            subtitle_path = source.download_subtitles(video, video_work, brief.language)
-            if subtitle_path:
-                segments = load_vtt(subtitle_path)
-            else:
-                media_path = source.download_media(video, video_work)
+            direct_media_url = brief.source_media_urls.get(video.video_id)
+            if direct_media_url:
+                media_path = _download_asset(
+                    direct_media_url,
+                    video_work / "source.mp4",
+                    max_bytes=4_000_000_000,
+                    expected_kind="media",
+                )
                 media_paths[video.video_id] = media_path
                 segments = transcribe_with_faster_whisper(
                     media_path,
@@ -180,6 +213,20 @@ def run_pipeline(
                     compute_type=cfg.whisper_compute_type,
                     language=brief.language,
                 )
+            else:
+                subtitle_path = source.download_subtitles(video, video_work, brief.language)
+                if subtitle_path:
+                    segments = load_vtt(subtitle_path)
+                else:
+                    media_path = source.download_media(video, video_work)
+                    media_paths[video.video_id] = media_path
+                    segments = transcribe_with_faster_whisper(
+                        media_path,
+                        model_name=cfg.whisper_model,
+                        device=cfg.whisper_device,
+                        compute_type=cfg.whisper_compute_type,
+                        language=brief.language,
+                    )
             if not segments:
                 raise RuntimeError("transcription produced no timestamped segments")
             transcripts[video.video_id] = segments
