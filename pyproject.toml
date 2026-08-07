@@ -50,3 +50,6 @@ ignore = ["S603", "S607"]
 python_version = "3.11"
 strict = true
 packages = ["clipper"]
+
+[tool.setuptools.package-data]
+clipper = ["py.typed"]
