@@ -68,9 +68,11 @@ class PipelineSettings:
     whisper_model: str = "small"
     whisper_device: str = "auto"
     whisper_compute_type: str = "int8"
-    face_tracking: bool = True
-    face_zoom: float = 1.12
-    face_sample_fps: float = 4.0
+    speaker_focus: bool = True
+    speaker_zoom: float = 1.12
+    speaker_sample_fps: float = 4.0
+    speaker_switch_margin: float = 1.35
+    speaker_transition_seconds: float = 0.22
 
     @classmethod
     def from_env(cls) -> PipelineSettings:
@@ -79,9 +81,19 @@ class PipelineSettings:
             whisper_model=os.getenv("CLIPPER_WHISPER_MODEL", "small"),
             whisper_device=os.getenv("CLIPPER_WHISPER_DEVICE", "auto"),
             whisper_compute_type=os.getenv("CLIPPER_WHISPER_COMPUTE_TYPE", "int8"),
-            face_tracking=_env_bool("CLIPPER_FACE_TRACKING", True),
-            face_zoom=float(os.getenv("CLIPPER_FACE_ZOOM", "1.12")),
-            face_sample_fps=float(os.getenv("CLIPPER_FACE_SAMPLE_FPS", "4.0")),
+            speaker_focus=_env_bool(
+                "CLIPPER_SPEAKER_FOCUS", _env_bool("CLIPPER_FACE_TRACKING", True)
+            ),
+            speaker_zoom=float(
+                os.getenv("CLIPPER_SPEAKER_ZOOM", os.getenv("CLIPPER_FACE_ZOOM", "1.12"))
+            ),
+            speaker_sample_fps=float(
+                os.getenv("CLIPPER_SPEAKER_SAMPLE_FPS", os.getenv("CLIPPER_FACE_SAMPLE_FPS", "4.0"))
+            ),
+            speaker_switch_margin=float(os.getenv("CLIPPER_SPEAKER_SWITCH_MARGIN", "1.35")),
+            speaker_transition_seconds=float(
+                os.getenv("CLIPPER_SPEAKER_TRANSITION_SECONDS", "0.22")
+            ),
         )
 
 
@@ -198,9 +210,11 @@ def run_pipeline(
     source = source_client or YouTubeClient()
     active_renderer = renderer or (
         FFmpegRenderer(
-            face_tracking=cfg.face_tracking,
-            zoom_factor=cfg.face_zoom,
-            face_sample_fps=cfg.face_sample_fps,
+            speaker_focus=cfg.speaker_focus,
+            zoom_factor=cfg.speaker_zoom,
+            speaker_sample_fps=cfg.speaker_sample_fps,
+            speaker_switch_margin=cfg.speaker_switch_margin,
+            speaker_transition_seconds=cfg.speaker_transition_seconds,
         )
         if render
         else None

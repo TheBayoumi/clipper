@@ -134,15 +134,19 @@ def test_pipeline_asr_no_render_and_environment(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("CLIPPER_WHISPER_MODEL", "tiny")
     monkeypatch.setenv("CLIPPER_WHISPER_DEVICE", "cpu")
     monkeypatch.setenv("CLIPPER_WHISPER_COMPUTE_TYPE", "int8")
-    monkeypatch.setenv("CLIPPER_FACE_TRACKING", "false")
-    monkeypatch.setenv("CLIPPER_FACE_ZOOM", "1.18")
-    monkeypatch.setenv("CLIPPER_FACE_SAMPLE_FPS", "6")
+    monkeypatch.setenv("CLIPPER_SPEAKER_FOCUS", "false")
+    monkeypatch.setenv("CLIPPER_SPEAKER_ZOOM", "1.18")
+    monkeypatch.setenv("CLIPPER_SPEAKER_SAMPLE_FPS", "6")
+    monkeypatch.setenv("CLIPPER_SPEAKER_SWITCH_MARGIN", "1.5")
+    monkeypatch.setenv("CLIPPER_SPEAKER_TRANSITION_SECONDS", "0.3")
 
     settings = PipelineSettings.from_env()
     assert settings.whisper_model == "tiny"
-    assert settings.face_tracking is False
-    assert settings.face_zoom == 1.18
-    assert settings.face_sample_fps == 6.0
+    assert settings.speaker_focus is False
+    assert settings.speaker_zoom == 1.18
+    assert settings.speaker_sample_fps == 6.0
+    assert settings.speaker_switch_margin == 1.5
+    assert settings.speaker_transition_seconds == 0.3
     with patch(
         "clipper.pipeline.transcribe_with_faster_whisper",
         return_value=[TranscriptSegment(0, 9, "automation saves time.")],

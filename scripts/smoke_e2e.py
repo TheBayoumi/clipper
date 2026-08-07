@@ -231,14 +231,19 @@ def main() -> int:
         raise RuntimeError("word-reveal ASS captions were not generated")
     tracking_path = rendered_path.with_suffix(".tracking.json")
     if not tracking_path.is_file():
-        raise RuntimeError("face-tracking evidence was not generated")
+        raise RuntimeError("speaker-framing evidence was not generated")
     tracking = json.loads(tracking_path.read_text(encoding="utf-8"))
     if float(tracking.get("zoom_factor", 0)) <= 1.0:
-        raise RuntimeError("tracking plan did not apply a zoom")
-    if tracking.get("framing_mode") != "portrait_smart_crop":
-        raise RuntimeError("tracking plan did not use portrait smart crop")
+        raise RuntimeError("speaker framing plan did not apply a zoom")
+    if tracking.get("framing_mode") != "speaker_locked_portrait":
+        raise RuntimeError("render did not use speaker-locked portrait framing")
     if tracking.get("background_fill") != "none":
-        raise RuntimeError("portrait render unexpectedly uses background fill")
+        raise RuntimeError("render reintroduced background filler")
+    if tracking.get("speaker_focus") is not True:
+        raise RuntimeError("speaker focus evidence was not enabled")
+    anchors = tracking.get("anchors") or []
+    if len(anchors) < 2:
+        raise RuntimeError("speaker framing plan did not persist a stable crop trajectory")
     crop_width = int(tracking.get("crop_width", 0))
     crop_height = int(tracking.get("crop_height", 0))
     if crop_width <= 0 or crop_height <= 0:

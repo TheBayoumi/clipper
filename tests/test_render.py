@@ -10,13 +10,15 @@ from clipper.render import FFmpegRenderer, RenderError, build_ffmpeg_command
 from clipper.tracking import FaceAnchor, TrackingPlan
 
 
-def test_build_ffmpeg_command_contains_tracking_vertical_and_audio_filters(tmp_path: Path) -> None:
+def test_build_ffmpeg_command_contains_speaker_locked_vertical_and_audio_filters(
+    tmp_path: Path,
+) -> None:
     clip = ClipCandidate("v", 1.25, 31.5, "text", 1)
     plan = TrackingPlan(
         1.12,
         1280,
         720,
-        (FaceAnchor(0.0, 20.0, 10.0), FaceAnchor(1.0, 40.0, 20.0)),
+        (FaceAnchor(0.0, 20.0, 10.0), FaceAnchor(1.0, 20.0, 10.0)),
         True,
     )
     command = build_ffmpeg_command(
@@ -67,17 +69,21 @@ def test_build_ffmpeg_command_overlays_campaign_watermark(tmp_path: Path) -> Non
     assert "overlay=W-w-48:48" in joined
 
 
-def test_renderer_requires_ffmpeg_and_valid_tracking_settings() -> None:
+def test_renderer_requires_ffmpeg_and_valid_speaker_settings() -> None:
     with patch("clipper.render.shutil.which", return_value=None), pytest.raises(RenderError):
         FFmpegRenderer()
     with patch("clipper.render.shutil.which", return_value="/usr/bin/ffmpeg"):
         with pytest.raises(RenderError, match="zoom_factor"):
             FFmpegRenderer(zoom_factor=1.5)
-        with pytest.raises(RenderError, match="face_sample_fps"):
-            FFmpegRenderer(face_sample_fps=20)
+        with pytest.raises(RenderError, match="speaker_sample_fps"):
+            FFmpegRenderer(speaker_sample_fps=20)
+        with pytest.raises(RenderError, match="speaker_switch_margin"):
+            FFmpegRenderer(speaker_switch_margin=4)
+        with pytest.raises(RenderError, match="speaker_transition_seconds"):
+            FFmpegRenderer(speaker_transition_seconds=2)
 
 
-def test_renderer_success_writes_ass_and_tracking_evidence(tmp_path: Path) -> None:
+def test_renderer_success_writes_ass_and_speaker_evidence(tmp_path: Path) -> None:
     clip = ClipCandidate("v", 0, 10, "text", 1)
     segments = [
         TranscriptSegment(
@@ -92,14 +98,22 @@ def test_renderer_success_writes_ass_and_tracking_evidence(tmp_path: Path) -> No
     with patch("clipper.render.shutil.which", return_value="/usr/bin/ffmpeg"):
         renderer = FFmpegRenderer()
     output = tmp_path / "ok.mp4"
-    plan = TrackingPlan(1.12, 640, 360, (FaceAnchor(0, 10, 5),), True)
+    plan = TrackingPlan(
+        1.12,
+        640,
+        360,
+        (FaceAnchor(0, 10, 5), FaceAnchor(10, 10, 5)),
+        True,
+        speaker_tracks=1,
+        speaker_switches=0,
+    )
 
     def success(*_args, **_kwargs):
         output.write_bytes(b"video")
         return Mock()
 
     with (
-        patch("clipper.render.track_face_crop", return_value=plan),
+        patch("clipper.render.plan_speaker_crop", return_value=plan),
         patch("clipper.render.subprocess.run", side_effect=success),
     ):
         assert renderer.render(source, output, clip, segments) == output
@@ -107,6 +121,9 @@ def test_renderer_success_writes_ass_and_tracking_evidence(tmp_path: Path) -> No
     tracking = json.loads(output.with_suffix(".tracking.json").read_text(encoding="utf-8"))
     assert tracking["face_detected"] is True
     assert tracking["zoom_factor"] == 1.12
+    assert tracking["speaker_focus"] is True
+    assert tracking["framing_mode"] == "speaker_locked_portrait"
+    assert tracking["speaker_switches"] == 0
 
 
 def test_renderer_failures(tmp_path: Path) -> None:
@@ -116,7 +133,7 @@ def test_renderer_failures(tmp_path: Path) -> None:
     source.write_bytes(b"source")
     plan = TrackingPlan(1.12, 640, 360)
     with patch("clipper.render.shutil.which", return_value="/usr/bin/ffmpeg"):
-        renderer = FFmpegRenderer(face_tracking=False)
+        renderer = FFmpegRenderer(speaker_focus=False)
 
     with (
         patch(

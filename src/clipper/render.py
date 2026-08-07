@@ -11,8 +11,8 @@ from .models import ClipCandidate, TranscriptSegment
 from .tracking import (
     DEFAULT_TARGET_ASPECT,
     TrackingPlan,
+    plan_speaker_crop,
     portrait_crop_dimensions,
-    track_face_crop,
     tracking_expressions,
 )
 
@@ -120,19 +120,27 @@ class FFmpegRenderer:
     def __init__(
         self,
         *,
-        face_tracking: bool = True,
+        speaker_focus: bool = True,
         zoom_factor: float = 1.12,
-        face_sample_fps: float = 4.0,
+        speaker_sample_fps: float = 4.0,
+        speaker_switch_margin: float = 1.35,
+        speaker_transition_seconds: float = 0.22,
     ) -> None:
         if not shutil.which("ffmpeg"):
             raise RenderError("ffmpeg is not installed or not on PATH")
         if not 1.0 <= zoom_factor <= 1.35:
             raise RenderError("zoom_factor must be between 1.0 and 1.35")
-        if not 1.0 <= face_sample_fps <= 12.0:
-            raise RenderError("face_sample_fps must be between 1 and 12")
-        self.face_tracking = face_tracking
+        if not 1.0 <= speaker_sample_fps <= 12.0:
+            raise RenderError("speaker_sample_fps must be between 1 and 12")
+        if not 1.0 <= speaker_switch_margin <= 3.0:
+            raise RenderError("speaker_switch_margin must be between 1.0 and 3.0")
+        if not 0.0 <= speaker_transition_seconds <= 1.0:
+            raise RenderError("speaker_transition_seconds must be between 0.0 and 1.0")
+        self.speaker_focus = speaker_focus
         self.zoom_factor = zoom_factor
-        self.face_sample_fps = face_sample_fps
+        self.speaker_sample_fps = speaker_sample_fps
+        self.speaker_switch_margin = speaker_switch_margin
+        self.speaker_transition_seconds = speaker_transition_seconds
 
     def render(
         self,
@@ -146,18 +154,22 @@ class FFmpegRenderer:
         subtitle_path = output_path.with_suffix(".ass")
         create_word_reveal_ass(clip, segments, subtitle_path)
         tracking_plan = (
-            track_face_crop(
+            plan_speaker_crop(
                 source_path,
                 clip,
+                list(segments),
                 zoom_factor=self.zoom_factor,
-                sample_fps=self.face_sample_fps,
+                sample_fps=self.speaker_sample_fps,
+                switch_margin=self.speaker_switch_margin,
+                transition_seconds=self.speaker_transition_seconds,
             )
-            if self.face_tracking
+            if self.speaker_focus
             else TrackingPlan(
                 self.zoom_factor,
                 0,
                 0,
                 target_aspect=DEFAULT_TARGET_ASPECT,
+                speaker_focus=False,
             )
         )
         output_path.with_suffix(".tracking.json").write_text(
