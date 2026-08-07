@@ -76,7 +76,9 @@ def parse_vtt(text: str) -> list[TranscriptSegment]:
                 and start <= segments[-1].end + 0.05
             ):
                 previous = segments.pop()
-                segments.append(TranscriptSegment(previous.start, max(previous.end, end), previous.text))
+                segments.append(
+                    TranscriptSegment(previous.start, max(previous.end, end), previous.text)
+                )
             last_display_line = display_last_line
             continue
 
