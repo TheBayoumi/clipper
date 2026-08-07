@@ -280,6 +280,45 @@ def test_hook_variants_are_legitimate_and_not_filename_duplicates() -> None:
         question = _find_hook_sentence(source, "question")
         assert question is not None
         assert not question.lower().startswith(("uh", "um", "you know", "dude", "before"))
+    assert (
+        _find_hook_sentence("When I was young is I couldn't really buy stuff.", "question") is None
+    )
+    assert _find_hook_sentence("I did it because buying the car motivated me.", "question") is None
+
+
+def test_edit_plan_expands_unanswered_setup_to_first_real_payoff_and_caps_tail() -> None:
+    b = brief()
+    c = replace(
+        concept(
+            "origin",
+            "How did you start? I needed a computer. My brother had one to play.",
+            start=0,
+            end=20,
+        ),
+        setup="How did you start?",
+        payoff="My brother had one to play.",
+        scores=replace(scores(6.5), payoff_strength=6.5),
+    )
+    variant = HookVariant("h", "origin", "direct", (SourceSpan(5, 20),), None, 8, "direct", "fp")
+    segs = [
+        TranscriptSegment(18, 20, "My brother had one to play."),
+        TranscriptSegment(20.01, 22, "And he got me a computer, but he said,"),
+        TranscriptSegment(22.01, 24, "you have to pay me back this summer"),
+        TranscriptSegment(24.01, 26, "or work for me for the whole year."),
+        TranscriptSegment(26.01, 28, "I paid him back in two weeks."),
+        TranscriptSegment(28.01, 30, "Then I qualified for another event."),
+    ]
+    plan = build_edit_plan(b, c, variant, segs)
+    assert plan.source_spans[0].end == pytest.approx(28.01)
+
+    complete = replace(c, setup="First car at 16.", payoff="You know what I'm saying?")
+    direct = HookVariant("h2", "origin", "direct", (SourceSpan(5, 20),), None, 8, "direct", "fp2")
+    adjacent = [
+        TranscriptSegment(5, 20, "You know what I'm saying?"),
+        TranscriptSegment(20.01, 22, "What's next?"),
+    ]
+    plan2 = build_edit_plan(b, complete, direct, adjacent)
+    assert plan2.source_spans[0].end == pytest.approx(20.01)
 
 
 def test_edit_plan_has_limited_meaningful_punch_ins_and_tail() -> None:

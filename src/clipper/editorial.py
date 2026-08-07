@@ -229,6 +229,20 @@ _RESOLUTION_WORDS = {
     "now",
     "today",
 }
+_PAYOFF_SIGNALS = {
+    "paid",
+    "won",
+    "earned",
+    "made",
+    "got",
+    "learned",
+    "realized",
+    "changed",
+    "fixed",
+    "saved",
+    "worked",
+    "finally",
+}
 _QUESTION_OPENERS = (
     "why ",
     "how ",
@@ -687,12 +701,9 @@ def _find_hook_sentence(text: str, mode: HookMode) -> str | None:
     for sentence in _sentences(text):
         lowered = sentence.lower().strip()
         candidate = _trim_question_preamble(sentence) if mode == "question" else sentence.strip()
-        candidate_lowered = candidate.lower()
         tokens = _tokens(candidate)
         base = start_boundary_score(candidate)
-        if mode == "question" and (
-            candidate.endswith("?") or candidate_lowered.startswith(_QUESTION_OPENERS)
-        ):
+        if mode == "question" and candidate.endswith("?"):
             quality = base + (1.0 if len(tokens) >= 5 else 0.0)
         elif mode == "number" and _HOOK_NUMBER_RE.search(sentence):
             number_count = len(_HOOK_NUMBER_RE.findall(sentence))
@@ -834,6 +845,53 @@ def _signal_times(
             yield relative, min(concept.duration, relative + min(1.25, segment.duration))
 
 
+def _next_speech_start(segments: Sequence[TranscriptSegment], after: float) -> float | None:
+    starts = [segment.start for segment in segments if segment.start >= after - 1e-6]
+    return min(starts) if starts else None
+
+
+def _semantic_end(
+    concept: ClipConcept,
+    span: SourceSpan,
+    segments: Sequence[TranscriptSegment],
+    *,
+    max_end: float,
+) -> float:
+    end = min(span.end, max_end)
+    unanswered_setup = concept.setup.rstrip().endswith(
+        "?"
+    ) and not concept.payoff.rstrip().endswith("?")
+    if not unanswered_setup or concept.scores.payoff_strength >= 7.0:
+        return end
+    future = [
+        segment
+        for segment in segments
+        if segment.start >= concept.source_end - 1e-6 and segment.end <= max_end + 1e-6
+    ]
+    for index, segment in enumerate(future):
+        next_start = future[index + 1].start if index + 1 < len(future) else segment.end
+        next_gap = max(0.0, next_start - segment.end)
+        tokens = set(_tokens(segment.text))
+        payoff_signal = bool(tokens & _PAYOFF_SIGNALS) or bool(_NUMBER_RE.search(segment.text))
+        if payoff_signal and end_boundary_score(segment.text, next_gap=next_gap) >= 6.0:
+            return segment.end
+    return end
+
+
+def _speech_aware_tail(
+    end: float,
+    segments: Sequence[TranscriptSegment],
+    *,
+    tail: float,
+    max_end: float,
+) -> float:
+    desired = min(max_end, end + tail)
+    next_start = _next_speech_start(segments, end + 1e-4)
+    if next_start is not None and next_start < desired:
+        return max(end, next_start)
+    return desired
+
+
 def build_edit_plan(
     brief: CampaignBrief,
     concept: ClipConcept,
@@ -845,7 +903,9 @@ def build_edit_plan(
     span = variant.source_spans[0]
     tail = brief.editorial.post_speech_tail_seconds
     max_end = span.start + brief.max_clip_seconds
-    span = SourceSpan(span.start, round(min(max_end, span.end + tail), 3))
+    semantic_end = _semantic_end(concept, span, segments, max_end=max_end)
+    final_end = _speech_aware_tail(semantic_end, segments, tail=tail, max_end=max_end)
+    span = SourceSpan(span.start, round(final_end, 3))
     beats: list[EditorialBeat] = []
     if brief.editorial.punch_ins_enabled:
         for start, end in _signal_times(concept, segments):
