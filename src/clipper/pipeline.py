@@ -98,9 +98,7 @@ def _normalize_asset_url(url: str) -> str:
     return url
 
 
-def _download_google_drive_media(
-    url: str, output_path: Path, *, max_bytes: int
-) -> Path:
+def _download_google_drive_media(url: str, output_path: Path, *, max_bytes: int) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(output_path.suffix + ".part")
     try:
