@@ -171,8 +171,7 @@ class YouTubeClient:
             ]
             payload = _json_object(_run(command, timeout=180).stdout)
             results.extend(
-                self._candidate_from_ytdlp(entry)
-                for entry in _object_list(payload.get("entries"))
+                self._candidate_from_ytdlp(entry) for entry in _object_list(payload.get("entries"))
             )
         return list({item.video_id: item for item in results}.values())[: brief.source_limit]
 

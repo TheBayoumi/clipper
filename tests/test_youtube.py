@@ -56,8 +56,9 @@ def test_ytdlp_discovery_and_downloads(tmp_path: Path) -> None:
         ]
     }
     client = YouTubeClient(None)
-    with patch("clipper.youtube.shutil.which", return_value="/bin/yt-dlp"), patch(
-        "clipper.youtube._run", return_value=Mock(stdout=json.dumps(payload))
+    with (
+        patch("clipper.youtube.shutil.which", return_value="/bin/yt-dlp"),
+        patch("clipper.youtube._run", return_value=Mock(stdout=json.dumps(payload))),
     ):
         assert client._discover_ytdlp(brief())[0].duration_seconds == 30
 
@@ -86,8 +87,9 @@ def test_ytdlp_missing_and_run_errors() -> None:
     client = YouTubeClient(None)
     with patch("clipper.youtube.shutil.which", return_value=None), pytest.raises(YouTubeError):
         client._discover_ytdlp(brief())
-    with patch("clipper.youtube.subprocess.run", side_effect=FileNotFoundError), pytest.raises(
-        YouTubeError, match="not found"
+    with (
+        patch("clipper.youtube.subprocess.run", side_effect=FileNotFoundError),
+        pytest.raises(YouTubeError, match="not found"),
     ):
         _run(["missing"])
 
@@ -107,10 +109,13 @@ def test_api_get_success_and_error() -> None:
 
     with patch("clipper.youtube.urllib.request.urlopen", return_value=Response()):
         assert client._api_get("search", {"q": "x"}) == {"items": []}
-    with patch(
-        "clipper.youtube.urllib.request.urlopen",
-        side_effect=urllib.error.URLError("offline"),
-    ), pytest.raises(YouTubeError, match="request failed"):
+    with (
+        patch(
+            "clipper.youtube.urllib.request.urlopen",
+            side_effect=urllib.error.URLError("offline"),
+        ),
+        pytest.raises(YouTubeError, match="request failed"),
+    ):
         client._api_get("search", {"q": "x"})
 
 
@@ -126,14 +131,18 @@ def test_api_discovery_empty_and_optional_fields() -> None:
 
 
 def test_run_command_failures() -> None:
-    with patch(
-        "clipper.youtube.subprocess.run",
-        side_effect=subprocess.CalledProcessError(1, ["x"], stderr="failure"),
-    ), pytest.raises(YouTubeError, match="failure"):
+    with (
+        patch(
+            "clipper.youtube.subprocess.run",
+            side_effect=subprocess.CalledProcessError(1, ["x"], stderr="failure"),
+        ),
+        pytest.raises(YouTubeError, match="failure"),
+    ):
         _run(["x"])
-    with patch(
-        "clipper.youtube.subprocess.run", side_effect=subprocess.TimeoutExpired(["x"], 1)
-    ), pytest.raises(YouTubeError, match="timed out"):
+    with (
+        patch("clipper.youtube.subprocess.run", side_effect=subprocess.TimeoutExpired(["x"], 1)),
+        pytest.raises(YouTubeError, match="timed out"),
+    ):
         _run(["x"], timeout=1)
 
 
@@ -144,7 +153,8 @@ def test_download_subtitle_and_media_failure_paths(tmp_path: Path) -> None:
         assert client.download_subtitles(video, tmp_path, "en") is None
     with patch("clipper.youtube._run", return_value=Mock(stdout="")):
         assert client.download_subtitles(video, tmp_path, "en") is None
-    with patch("clipper.youtube._run", return_value=Mock(stdout="")), pytest.raises(
-        YouTubeError, match="without creating"
+    with (
+        patch("clipper.youtube._run", return_value=Mock(stdout="")),
+        pytest.raises(YouTubeError, match="without creating"),
     ):
         client.download_media(video, tmp_path)

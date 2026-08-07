@@ -56,18 +56,23 @@ def test_renderer_success_and_failures(tmp_path: Path) -> None:
     with patch("clipper.render.subprocess.run", side_effect=success):
         assert renderer.render(source, output, clip, segments) == output
 
-    with patch(
-        "clipper.render.subprocess.run",
-        side_effect=CalledProcessError(1, ["ffmpeg"], stderr="bad render"),
-    ), pytest.raises(RenderError, match="bad render"):
+    with (
+        patch(
+            "clipper.render.subprocess.run",
+            side_effect=CalledProcessError(1, ["ffmpeg"], stderr="bad render"),
+        ),
+        pytest.raises(RenderError, match="bad render"),
+    ):
         renderer.render(source, tmp_path / "failed.mp4", clip, segments)
 
-    with patch(
-        "clipper.render.subprocess.run", side_effect=TimeoutExpired(["ffmpeg"], 900)
-    ), pytest.raises(RenderError, match="timed out"):
+    with (
+        patch("clipper.render.subprocess.run", side_effect=TimeoutExpired(["ffmpeg"], 900)),
+        pytest.raises(RenderError, match="timed out"),
+    ):
         renderer.render(source, tmp_path / "timeout.mp4", clip, segments)
 
-    with patch("clipper.render.subprocess.run", return_value=Mock()), pytest.raises(
-        RenderError, match="did not create"
+    with (
+        patch("clipper.render.subprocess.run", return_value=Mock()),
+        pytest.raises(RenderError, match="did not create"),
     ):
         renderer.render(source, tmp_path / "missing.mp4", clip, segments)

@@ -42,16 +42,19 @@ def test_cli_discover(tmp_path: Path, capsys) -> None:
 def test_cli_run_and_error(tmp_path: Path, capsys) -> None:
     path = make_brief(tmp_path)
     with patch("clipper.cli.run_pipeline", return_value=tmp_path / "run") as run:
-        assert main(
-            [
-                "run",
-                "--brief",
-                str(path),
-                "--artifact-root",
-                str(tmp_path / "artifacts"),
-                "--no-render",
-            ]
-        ) == 0
+        assert (
+            main(
+                [
+                    "run",
+                    "--brief",
+                    str(path),
+                    "--artifact-root",
+                    str(tmp_path / "artifacts"),
+                    "--no-render",
+                ]
+            )
+            == 0
+        )
         assert run.call_args.kwargs["render"] is False
     assert str(tmp_path / "run") in capsys.readouterr().out
 
