@@ -41,13 +41,15 @@ def parse_vtt(text: str) -> list[TranscriptSegment]:
         next_timestamp = (
             timestamp_indexes[position + 1] if position + 1 < len(timestamp_indexes) else len(lines)
         )
-        body_lines = lines[timestamp_index + 1 : next_timestamp]
-        while body_lines and not body_lines[0].strip():
-            body_lines.pop(0)
-        while body_lines and not body_lines[-1].strip():
-            body_lines.pop()
-        if body_lines and re.fullmatch(r"\d+", body_lines[-1].strip()):
-            body_lines.pop()
+        body_lines: list[str] = []
+        for line in lines[timestamp_index + 1 : next_timestamp]:
+            if not line.strip():
+                if body_lines:
+                    break
+                continue
+            if "-->" in line:
+                break
+            body_lines.append(line)
 
         cleaned_lines = [cleaned for line in body_lines if (cleaned := _clean_caption_line(line))]
         start = _seconds(match["h1"], match["m1"], match["s1"])
