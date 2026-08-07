@@ -24,11 +24,7 @@ def _clean_caption_line(line: str) -> str:
 
 
 def _clean_caption(lines: Iterable[str]) -> str:
-    return " ".join(
-        cleaned
-        for line in lines
-        if (cleaned := _clean_caption_line(line))
-    ).strip()
+    return " ".join(cleaned for line in lines if (cleaned := _clean_caption_line(line))).strip()
 
 
 def parse_vtt(text: str) -> list[TranscriptSegment]:
@@ -53,9 +49,7 @@ def parse_vtt(text: str) -> list[TranscriptSegment]:
         if body_lines and re.fullmatch(r"\d+", body_lines[-1].strip()):
             body_lines.pop()
 
-        cleaned_lines = [
-            cleaned for line in body_lines if (cleaned := _clean_caption_line(line))
-        ]
+        cleaned_lines = [cleaned for line in body_lines if (cleaned := _clean_caption_line(line))]
         start = _seconds(match["h1"], match["m1"], match["s1"])
         end = _seconds(match["h2"], match["m2"], match["s2"])
         if end <= start:
