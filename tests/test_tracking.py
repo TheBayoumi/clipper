@@ -10,11 +10,13 @@ from clipper.tracking import (
     TrackingPlan,
     _box_iou,
     _choose_active_speaker,
+    _detect_face_boxes,
+    _face_box_plausible,
     _match_track,
     _mouth_motion,
     _segment_windows,
-    _speaker_home_crop,
     _speaker_locked_anchors,
+    _speaker_window_crop,
     _SpeakerWindow,
     _TrackState,
     plan_speaker_crop,
@@ -69,6 +71,33 @@ def test_box_matching_preserves_face_identity_instead_of_chasing_largest_detecti
     assert _box_iou((0, 0, 10, 10), (50, 50, 10, 10)) == 0
 
 
+def test_face_box_plausibility_rejects_small_top_edge_logo_false_positive() -> None:
+    assert _face_box_plausible((424, 11, 34, 34), 480, 270) is False
+    assert _face_box_plausible((205, 55, 69, 69), 480, 270) is True
+    assert _face_box_plausible((190, 50, 77, 77), 480, 270) is True
+    assert _face_box_plausible((80, 60, 100, 100), 640, 360) is True
+
+
+def test_profile_detection_finds_both_wide_shot_sides_and_dedupes() -> None:
+    gray = np.zeros((270, 480), dtype=np.uint8)
+
+    class Empty:
+        def empty(self) -> bool:
+            return True
+
+    class Profile:
+        def empty(self) -> bool:
+            return False
+
+        def detectMultiScale(self, *_args, **_kwargs):
+            return np.array([[353, 81, 47, 47]])
+
+    boxes = _detect_face_boxes(gray, Empty(), Profile())
+    assert len(boxes) == 2
+    assert boxes[0][0] < 120
+    assert boxes[1][0] > 340
+
+
 def test_mouth_motion_uses_only_face_mouth_patch_signal() -> None:
     previous = np.zeros((16, 32), dtype=np.uint8)
     same = previous.copy()
@@ -92,6 +121,18 @@ def test_active_speaker_prefers_mouth_motion_and_hysteresis() -> None:
     assert _choose_active_speaker([], window, 0) == 0
 
 
+def test_sparse_high_motion_detection_cannot_override_persistent_speaker() -> None:
+    window = _SpeakerWindow(0.0, 0.8)
+    persistent = _track(
+        0,
+        _obs(0, 0.1, 300, 0.07),
+        _obs(0, 0.35, 302, 0.065),
+        _obs(0, 0.6, 304, 0.07),
+    )
+    cut_artifact = _track(1, _obs(1, 0.2, 100, 0.4))
+    assert _choose_active_speaker([persistent, cut_artifact], window, 0) == 0
+
+
 def test_segment_windows_clip_absolute_transcript_times() -> None:
     clip = ClipCandidate("v", 10.0, 15.0, "text", 1)
     segments = [
@@ -101,28 +142,39 @@ def test_segment_windows_clip_absolute_transcript_times() -> None:
     ]
     windows = _segment_windows(clip, segments)
     assert windows[0] == _SpeakerWindow(0.0, 0.5)
+    assert windows[1].start == 0.5
+    assert abs(windows[1].end - 1.3) < 1e-9
+    assert abs(windows[2].start - 1.3) < 1e-9
+    assert windows[2].end == 2.0
     assert abs(windows[-1].start - 4.8) < 1e-9
     assert windows[-1].end == 5.0
     assert _segment_windows(clip, []) == (_SpeakerWindow(0.0, 5.0),)
 
 
-def test_speaker_home_crop_is_stable_across_face_movement() -> None:
+def test_speaker_window_crop_uses_local_camera_composition_not_global_track_home() -> None:
     track = _track(
         0,
-        _obs(0, 0.0, 100, 0.1),
-        _obs(0, 0.5, 140, 0.1),
-        _obs(0, 1.0, 90, 0.1),
+        _obs(0, 0.2, 100, 0.1),
+        _obs(0, 0.7, 110, 0.1),
+        _obs(0, 5.2, 360, 0.1),
+        _obs(0, 5.7, 370, 0.1),
     )
-    home = _speaker_home_crop(track, 180, 320, 640, 360)
-    assert home[0] == 60.0
-    assert home[1] == 0
+    early = _speaker_window_crop(track, _SpeakerWindow(0.0, 1.0), 180, 320, 640, 360)
+    late = _speaker_window_crop(track, _SpeakerWindow(5.0, 6.0), 180, 320, 640, 360)
+    assert early is not None and late is not None
+    assert early[0] < 100
+    assert late[0] > 300
+    assert _speaker_window_crop(track, _SpeakerWindow(9.0, 10.0), 180, 320, 640, 360) is None
 
 
-def test_speaker_locked_anchors_hold_crop_and_move_only_on_speaker_change() -> None:
+def test_speaker_locked_anchors_hold_crop_inside_dead_zone_and_reframe_on_layout_change() -> None:
     windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 4), _SpeakerWindow(4, 6))
-    assignments = (0, 0, 1)
-    homes = {0: (100.0, 0.0), 1: (300.0, 0.0)}
-    anchors = _speaker_locked_anchors(6.0, windows, assignments, homes, (230.0, 0.0))
+    assignments = (0, 0, 0)
+    targets = ((100.0, 0.0), (120.0, 10.0), (300.0, 0.0))
+    anchors, reframes = _speaker_locked_anchors(
+        6.0, windows, assignments, targets, (0.0, 2.0, 4.0), (230.0, 0.0)
+    )
+    assert reframes == 1
     assert anchors == (
         FaceAnchor(0.0, 100.0, 0.0),
         FaceAnchor(4.0, 100.0, 0.0),
@@ -133,6 +185,38 @@ def test_speaker_locked_anchors_hold_crop_and_move_only_on_speaker_change() -> N
     assert "if(lt(t,4.000)" in x
     assert "if(lt(t,4.220)" in x
     assert tracking_expressions(None) == ("(iw-ow)/2", "(ih-oh)/2")
+
+
+def test_reframe_waits_until_target_face_is_actually_observed() -> None:
+    windows = (_SpeakerWindow(0, 1), _SpeakerWindow(1, 2))
+    anchors, reframes = _speaker_locked_anchors(
+        2.0,
+        windows,
+        (0, 1),
+        ((100.0, 0.0), (300.0, 0.0)),
+        (0.0, 1.4),
+        (230.0, 0.0),
+    )
+    assert reframes == 1
+    assert anchors[0] == FaceAnchor(0.0, 100.0, 0.0)
+    assert anchors[1] == FaceAnchor(1.4, 100.0, 0.0)
+    assert abs(anchors[2].time - 1.62) < 1e-9
+    assert (anchors[2].x, anchors[2].y) == (300.0, 0.0)
+    assert anchors[3] == FaceAnchor(2.0, 300.0, 0.0)
+
+
+def test_speaker_locked_anchors_reframe_when_speaker_changes() -> None:
+    windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 4))
+    anchors, reframes = _speaker_locked_anchors(
+        4.0,
+        windows,
+        (0, 1),
+        ((100.0, 0.0), (130.0, 10.0)),
+        (0.0, 2.0),
+        (230.0, 0.0),
+    )
+    assert reframes == 1
+    assert anchors[-2] == FaceAnchor(2.22, 130.0, 10.0)
 
 
 class FakeCapture:
@@ -190,7 +274,10 @@ def test_plan_speaker_crop_locks_single_speaker_without_per_frame_drift(tmp_path
     capture = FakeCapture()
     with (
         patch("clipper.tracking.cv2.VideoCapture", return_value=capture),
-        patch("clipper.tracking.cv2.CascadeClassifier", return_value=FakeDetector()),
+        patch(
+            "clipper.tracking.cv2.CascadeClassifier",
+            side_effect=[FakeDetector(), NoFaceDetector()],
+        ),
     ):
         plan = plan_speaker_crop(tmp_path / "video.mp4", clip, segments, sample_fps=4)
     assert plan.face_detected is True

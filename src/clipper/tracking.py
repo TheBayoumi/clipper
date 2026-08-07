@@ -69,6 +69,7 @@ class TrackingPlan:
     speaker_focus: bool = True
     speaker_tracks: int = 0
     speaker_switches: int = 0
+    reframe_events: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -83,6 +84,7 @@ class TrackingPlan:
             "speaker_focus": self.speaker_focus,
             "speaker_tracks": self.speaker_tracks,
             "speaker_switches": self.speaker_switches,
+            "reframe_events": self.reframe_events,
             "face_detected": self.face_detected,
             "anchors": [anchor.to_dict() for anchor in self.anchors],
         }
@@ -146,6 +148,65 @@ def _box_iou(
     return intersection / union if union > 0 else 0.0
 
 
+def _face_box_plausible(
+    box: tuple[int, int, int, int], frame_width: int, frame_height: int
+) -> bool:
+    """Reject small edge graphics that Haar can mistake for faces."""
+    x, y, width, height = box
+    if frame_width <= 0 or frame_height <= 0:
+        return False
+    center_x = (x + width / 2) / frame_width
+    center_y = (y + height / 2) / frame_height
+    size_fraction = max(width / frame_width, height / frame_height)
+    return size_fraction >= 0.15 and 0.05 <= center_x <= 0.95 and 0.12 <= center_y <= 0.72
+
+
+def _dedupe_face_boxes(
+    boxes: list[tuple[int, int, int, int]], *, iou_threshold: float = 0.35
+) -> list[tuple[int, int, int, int]]:
+    selected: list[tuple[int, int, int, int]] = []
+    for box in sorted(boxes, key=lambda item: item[2] * item[3], reverse=True):
+        candidate = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
+        if any(
+            _box_iou(
+                candidate,
+                (float(current[0]), float(current[1]), float(current[2]), float(current[3])),
+            )
+            >= iou_threshold
+            for current in selected
+        ):
+            continue
+        selected.append(box)
+    return sorted(selected, key=lambda item: item[0])
+
+
+def _detect_face_boxes(
+    gray: Any, frontal_detector: Any, profile_detector: Any
+) -> list[tuple[int, int, int, int]]:
+    boxes: list[tuple[int, int, int, int]] = []
+    if not frontal_detector.empty():
+        detected = frontal_detector.detectMultiScale(
+            gray, scaleFactor=1.1, minNeighbors=5, minSize=(24, 24)
+        )
+        boxes.extend((int(x), int(y), int(width), int(height)) for x, y, width, height in detected)
+    if not profile_detector.empty():
+        detected = profile_detector.detectMultiScale(
+            gray, scaleFactor=1.08, minNeighbors=4, minSize=(24, 24)
+        )
+        boxes.extend((int(x), int(y), int(width), int(height)) for x, y, width, height in detected)
+        flipped = cv2.flip(gray, 1)
+        mirrored = profile_detector.detectMultiScale(
+            flipped, scaleFactor=1.08, minNeighbors=4, minSize=(24, 24)
+        )
+        frame_width = gray.shape[1]
+        boxes.extend(
+            (frame_width - int(x) - int(width), int(y), int(width), int(height))
+            for x, y, width, height in mirrored
+        )
+    plausible = [box for box in boxes if _face_box_plausible(box, gray.shape[1], gray.shape[0])]
+    return _dedupe_face_boxes(plausible)
+
+
 def _match_track(
     box: tuple[float, float, float, float],
     tracks: list[_TrackState],
@@ -191,28 +252,50 @@ def _mouth_motion(previous: Any | None, current: Any | None) -> float:
 
 
 def _segment_windows(
-    clip: ClipCandidate, segments: list[TranscriptSegment] | tuple[TranscriptSegment, ...]
+    clip: ClipCandidate,
+    segments: list[TranscriptSegment] | tuple[TranscriptSegment, ...],
+    *,
+    max_window_seconds: float = 0.8,
 ) -> tuple[_SpeakerWindow, ...]:
+    if max_window_seconds <= 0:
+        raise ValueError("max_window_seconds must be positive")
     windows: list[_SpeakerWindow] = []
     for segment in segments:
         start = max(clip.start, segment.start)
         end = min(clip.end, segment.end)
-        if end - start >= 0.08:
-            windows.append(_SpeakerWindow(start - clip.start, end - clip.start))
+        if end - start < 0.08:
+            continue
+        cursor = start
+        while cursor < end - 1e-9:
+            window_end = min(end, cursor + max_window_seconds)
+            if window_end - cursor >= 0.08:
+                windows.append(_SpeakerWindow(cursor - clip.start, window_end - clip.start))
+            cursor = window_end
     if not windows:
         return (_SpeakerWindow(0.0, clip.duration),)
     return tuple(sorted(windows, key=lambda item: item.start))
 
 
-def _speaker_score(track: _TrackState, window: _SpeakerWindow) -> tuple[float, int]:
+def _speaker_score(
+    track: _TrackState,
+    window: _SpeakerWindow,
+    *,
+    sample_fps: float = 4.0,
+    min_detection_coverage: float = 0.35,
+) -> tuple[float, int]:
     observations = [item for item in track.observations if window.start <= item.time <= window.end]
     if not observations:
         return -1.0, 0
+    expected_samples = max(1.0, (window.end - window.start) * max(1.0, sample_fps))
+    coverage = min(1.0, len(observations) / expected_samples)
+    if coverage < min_detection_coverage:
+        return -1.0, len(observations)
     motions = sorted((item.mouth_motion for item in observations), reverse=True)
     active_count = max(1, (len(motions) + 1) // 2)
     active_motion = sum(motions[:active_count]) / active_count
-    visibility_bonus = min(0.004, len(observations) * 0.0005)
-    return active_motion + visibility_bonus, len(observations)
+    coverage_weight = 0.55 + 0.45 * coverage
+    visibility_bonus = min(0.002, len(observations) * 0.00025)
+    return active_motion * coverage_weight + visibility_bonus, len(observations)
 
 
 def _choose_active_speaker(
@@ -221,9 +304,22 @@ def _choose_active_speaker(
     previous_track_id: int | None,
     *,
     switch_margin: float = 1.35,
+    sample_fps: float = 4.0,
+    min_detection_coverage: float = 0.35,
 ) -> int | None:
-    scored = [(track.track_id, *_speaker_score(track, window)) for track in tracks]
-    visible = [item for item in scored if item[2] > 0]
+    scored = [
+        (
+            track.track_id,
+            *_speaker_score(
+                track,
+                window,
+                sample_fps=sample_fps,
+                min_detection_coverage=min_detection_coverage,
+            ),
+        )
+        for track in tracks
+    ]
+    visible = [item for item in scored if item[1] >= 0 and item[2] > 0]
     if not visible:
         return previous_track_id
     if len(visible) == 1:
@@ -242,14 +338,20 @@ def _choose_active_speaker(
     return best_id if best_score >= required else previous_track_id
 
 
-def _speaker_home_crop(
-    track: _TrackState, crop_width: int, crop_height: int, source_width: int, source_height: int
-) -> tuple[float, float]:
-    centers = [item.center for item in track.observations]
-    if not centers:
-        return (source_width - crop_width) / 2, (source_height - crop_height) / 2
-    center_x = float(median(item[0] for item in centers))
-    center_y = float(median(item[1] for item in centers))
+def _speaker_window_crop(
+    track: _TrackState,
+    window: _SpeakerWindow,
+    crop_width: int,
+    crop_height: int,
+    source_width: int,
+    source_height: int,
+) -> tuple[float, float] | None:
+    """Return one stable crop using only observations inside this decision window."""
+    observations = [item for item in track.observations if window.start <= item.time <= window.end]
+    if not observations:
+        return None
+    center_x = float(median(item.center[0] for item in observations))
+    center_y = float(median(item.center[1] for item in observations))
     max_x = max(0.0, source_width - crop_width)
     max_y = max(0.0, source_height - crop_height)
     return (
@@ -258,33 +360,57 @@ def _speaker_home_crop(
     )
 
 
+def _speaker_window_ready_time(track: _TrackState, window: _SpeakerWindow) -> float:
+    """Delay a reframe until the selected face is actually visible in the source shot."""
+    times = [item.time for item in track.observations if window.start <= item.time <= window.end]
+    return min(times) if times else window.start
+
+
 def _speaker_locked_anchors(
     clip_duration: float,
     windows: tuple[_SpeakerWindow, ...],
     assignments: tuple[int | None, ...],
-    homes: dict[int, tuple[float, float]],
+    targets: tuple[tuple[float, float] | None, ...],
+    ready_times: tuple[float, ...],
     fallback: tuple[float, float],
     *,
     transition_seconds: float = 0.22,
-) -> tuple[FaceAnchor, ...]:
-    first_id = next((track_id for track_id in assignments if track_id in homes), None)
-    current = homes[first_id] if first_id is not None else fallback
+    dead_zone_x: float = 48.0,
+    dead_zone_y: float = 32.0,
+) -> tuple[tuple[FaceAnchor, ...], int]:
+    current = next((target for target in targets if target is not None), fallback)
+    current_id = next(
+        (
+            track_id
+            for track_id, target in zip(assignments, targets, strict=True)
+            if target is not None
+        ),
+        None,
+    )
     anchors = [FaceAnchor(0.0, *current)]
-    current_id = first_id
-    for window, track_id in zip(windows, assignments, strict=True):
-        if track_id is None or track_id == current_id or track_id not in homes:
+    reframe_events = 0
+    for window, track_id, target, ready_time in zip(
+        windows, assignments, targets, ready_times, strict=True
+    ):
+        if target is None:
             continue
-        new_home = homes[track_id]
-        switch_at = _clamp(window.start, 0.0, clip_duration)
+        speaker_changed = track_id is not None and current_id is not None and track_id != current_id
+        dx = abs(target[0] - current[0])
+        dy = abs(target[1] - current[1])
+        composition_changed = dx > dead_zone_x or dy > dead_zone_y
+        if not speaker_changed and not composition_changed:
+            continue
+        switch_at = _clamp(max(window.start, ready_time), 0.0, clip_duration)
         if anchors[-1].time < switch_at:
             anchors.append(FaceAnchor(switch_at, *current))
         transition_end = min(clip_duration, switch_at + transition_seconds)
-        anchors.append(FaceAnchor(transition_end, *new_home))
-        current = new_home
-        current_id = track_id
+        anchors.append(FaceAnchor(transition_end, *target))
+        current = target
+        current_id = track_id if track_id is not None else current_id
+        reframe_events += 1
     if anchors[-1].time < clip_duration:
         anchors.append(FaceAnchor(clip_duration, *current))
-    return tuple(anchors)
+    return tuple(anchors), reframe_events
 
 
 def _piecewise_expression(anchors: tuple[FaceAnchor, ...], axis: str) -> str:
@@ -319,6 +445,8 @@ def plan_speaker_crop(
     sample_fps: float = 4.0,
     switch_margin: float = 1.35,
     transition_seconds: float = 0.22,
+    decision_window_seconds: float = 0.8,
+    min_detection_coverage: float = 0.35,
     target_aspect: float = DEFAULT_TARGET_ASPECT,
 ) -> TrackingPlan:
     capture = cv2.VideoCapture(str(source_path))
@@ -336,11 +464,12 @@ def plan_speaker_crop(
         width, height, target_aspect=target_aspect, zoom_factor=zoom_factor
     )
     fallback = ((width - crop_width) / 2, (height - crop_height) / 2)
-    cascade_path = (
-        Path(str(cv2.__file__)).resolve().parent / "data" / "haarcascade_frontalface_default.xml"
+    cascade_dir = Path(str(cv2.__file__)).resolve().parent / "data"
+    frontal_detector = cv2.CascadeClassifier(
+        str(cascade_dir / "haarcascade_frontalface_default.xml")
     )
-    detector = cv2.CascadeClassifier(str(cascade_path))
-    if detector.empty():
+    profile_detector = cv2.CascadeClassifier(str(cascade_dir / "haarcascade_profileface.xml"))
+    if frontal_detector.empty() and profile_detector.empty():
         capture.release()
         return TrackingPlan(
             zoom_factor,
@@ -376,10 +505,7 @@ def plan_speaker_crop(
                 else frame
             )
             gray = cv2.cvtColor(analysis, cv2.COLOR_BGR2GRAY)
-            detected = detector.detectMultiScale(
-                gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
-            )
-            boxes = [(int(face[0]), int(face[1]), int(face[2]), int(face[3])) for face in detected]
+            boxes = _detect_face_boxes(gray, frontal_detector, profile_detector)
             used: set[int] = set()
             for analysis_box in sorted(boxes, key=lambda item: item[0]):
                 ax, ay, aw, ah = analysis_box
@@ -416,25 +542,43 @@ def plan_speaker_crop(
             speaker_focus=True,
         )
 
-    homes = {
-        track.track_id: _speaker_home_crop(track, crop_width, crop_height, width, height)
-        for track in stable_tracks
-    }
-    windows = _segment_windows(clip, segments)
+    windows = _segment_windows(clip, segments, max_window_seconds=decision_window_seconds)
     assignments: list[int | None] = []
+    targets: list[tuple[float, float] | None] = []
+    ready_times: list[float] = []
     previous_track_id: int | None = None
+    tracks_by_id = {track.track_id: track for track in stable_tracks}
     for window in windows:
         active = _choose_active_speaker(
-            stable_tracks, window, previous_track_id, switch_margin=switch_margin
+            stable_tracks,
+            window,
+            previous_track_id,
+            switch_margin=switch_margin,
+            sample_fps=sample_fps,
+            min_detection_coverage=min_detection_coverage,
         )
         assignments.append(active)
+        target = (
+            _speaker_window_crop(
+                tracks_by_id[active], window, crop_width, crop_height, width, height
+            )
+            if active is not None and active in tracks_by_id
+            else None
+        )
+        targets.append(target)
+        ready_times.append(
+            _speaker_window_ready_time(tracks_by_id[active], window)
+            if active is not None and active in tracks_by_id
+            else window.start
+        )
         if active is not None:
             previous_track_id = active
-    anchors = _speaker_locked_anchors(
+    anchors, reframe_events = _speaker_locked_anchors(
         clip.duration,
         windows,
         tuple(assignments),
-        homes,
+        tuple(targets),
+        tuple(ready_times),
         fallback,
         transition_seconds=transition_seconds,
     )
@@ -455,4 +599,5 @@ def plan_speaker_crop(
         speaker_focus=True,
         speaker_tracks=len(stable_tracks),
         speaker_switches=switches,
+        reframe_events=reframe_events,
     )

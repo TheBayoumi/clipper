@@ -125,6 +125,8 @@ class FFmpegRenderer:
         speaker_sample_fps: float = 4.0,
         speaker_switch_margin: float = 1.35,
         speaker_transition_seconds: float = 0.22,
+        speaker_window_seconds: float = 0.8,
+        speaker_min_detection_coverage: float = 0.35,
     ) -> None:
         if not shutil.which("ffmpeg"):
             raise RenderError("ffmpeg is not installed or not on PATH")
@@ -136,11 +138,17 @@ class FFmpegRenderer:
             raise RenderError("speaker_switch_margin must be between 1.0 and 3.0")
         if not 0.0 <= speaker_transition_seconds <= 1.0:
             raise RenderError("speaker_transition_seconds must be between 0.0 and 1.0")
+        if not 0.4 <= speaker_window_seconds <= 2.0:
+            raise RenderError("speaker_window_seconds must be between 0.4 and 2.0")
+        if not 0.1 <= speaker_min_detection_coverage <= 1.0:
+            raise RenderError("speaker_min_detection_coverage must be between 0.1 and 1.0")
         self.speaker_focus = speaker_focus
         self.zoom_factor = zoom_factor
         self.speaker_sample_fps = speaker_sample_fps
         self.speaker_switch_margin = speaker_switch_margin
         self.speaker_transition_seconds = speaker_transition_seconds
+        self.speaker_window_seconds = speaker_window_seconds
+        self.speaker_min_detection_coverage = speaker_min_detection_coverage
 
     def render(
         self,
@@ -162,6 +170,8 @@ class FFmpegRenderer:
                 sample_fps=self.speaker_sample_fps,
                 switch_margin=self.speaker_switch_margin,
                 transition_seconds=self.speaker_transition_seconds,
+                decision_window_seconds=self.speaker_window_seconds,
+                min_detection_coverage=self.speaker_min_detection_coverage,
             )
             if self.speaker_focus
             else TrackingPlan(

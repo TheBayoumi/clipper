@@ -81,6 +81,10 @@ def test_renderer_requires_ffmpeg_and_valid_speaker_settings() -> None:
             FFmpegRenderer(speaker_switch_margin=4)
         with pytest.raises(RenderError, match="speaker_transition_seconds"):
             FFmpegRenderer(speaker_transition_seconds=2)
+        with pytest.raises(RenderError, match="speaker_window_seconds"):
+            FFmpegRenderer(speaker_window_seconds=0.1)
+        with pytest.raises(RenderError, match="speaker_min_detection_coverage"):
+            FFmpegRenderer(speaker_min_detection_coverage=0.01)
 
 
 def test_renderer_success_writes_ass_and_speaker_evidence(tmp_path: Path) -> None:

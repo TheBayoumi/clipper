@@ -110,6 +110,8 @@ artifacts/<campaign-id>-<UTC timestamp>/
 | `CLIPPER_SPEAKER_SAMPLE_FPS` | `4.0` | Face/mouth analysis sampling rate used for active-speaker decisions |
 | `CLIPPER_SPEAKER_SWITCH_MARGIN` | `1.35` | Hysteresis required before switching away from the current speaker |
 | `CLIPPER_SPEAKER_TRANSITION_SECONDS` | `0.22` | Short deliberate camera transition when the active speaker changes |
+| `CLIPPER_SPEAKER_WINDOW_SECONDS` | `0.8` | Active-speaker decision window; crop remains locked between meaningful changes |
+| `CLIPPER_SPEAKER_MIN_DETECTION_COVERAGE` | `0.35` | Reject sparse cut/graphic detections before they can steal speaker focus |
 
 ### Resource implications
 

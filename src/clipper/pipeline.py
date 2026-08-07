@@ -73,6 +73,8 @@ class PipelineSettings:
     speaker_sample_fps: float = 4.0
     speaker_switch_margin: float = 1.35
     speaker_transition_seconds: float = 0.22
+    speaker_window_seconds: float = 0.8
+    speaker_min_detection_coverage: float = 0.35
 
     @classmethod
     def from_env(cls) -> PipelineSettings:
@@ -93,6 +95,10 @@ class PipelineSettings:
             speaker_switch_margin=float(os.getenv("CLIPPER_SPEAKER_SWITCH_MARGIN", "1.35")),
             speaker_transition_seconds=float(
                 os.getenv("CLIPPER_SPEAKER_TRANSITION_SECONDS", "0.22")
+            ),
+            speaker_window_seconds=float(os.getenv("CLIPPER_SPEAKER_WINDOW_SECONDS", "0.8")),
+            speaker_min_detection_coverage=float(
+                os.getenv("CLIPPER_SPEAKER_MIN_DETECTION_COVERAGE", "0.35")
             ),
         )
 
@@ -215,6 +221,8 @@ def run_pipeline(
             speaker_sample_fps=cfg.speaker_sample_fps,
             speaker_switch_margin=cfg.speaker_switch_margin,
             speaker_transition_seconds=cfg.speaker_transition_seconds,
+            speaker_window_seconds=cfg.speaker_window_seconds,
+            speaker_min_detection_coverage=cfg.speaker_min_detection_coverage,
         )
         if render
         else None
