@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.request import Request, urlopen
 
 from .brief import load_brief
 from .models import (
@@ -47,6 +49,7 @@ class Renderer(Protocol):
         output_path: Path,
         clip: ClipCandidate,
         segments: Sequence[TranscriptSegment],
+        watermark_path: Path | None = None,
     ) -> Path: ...
 
 
@@ -77,6 +80,47 @@ def _run_id(campaign_id: str) -> str:
     return f"{campaign_id}-{timestamp}"
 
 
+def _normalize_asset_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError("campaign assets must use https")
+    if parsed.netloc == "drive.google.com":
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 3 and parts[0] == "file" and parts[1] == "d":
+            query = urlencode({"id": parts[2], "export": "download", "confirm": "t"})
+            return f"https://drive.usercontent.google.com/download?{query}"
+        file_id = parse_qs(parsed.query).get("id", [None])[0]
+        if file_id:
+            query = urlencode({"id": file_id, "export": "download", "confirm": "t"})
+            return f"https://drive.usercontent.google.com/download?{query}"
+    return url
+
+
+def _download_asset(url: str, output_path: Path, *, max_bytes: int = 10_000_000) -> Path:
+    normalized = _normalize_asset_url(url)
+    request = Request(normalized, headers={"User-Agent": "whop-clipper/0.1"})
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_suffix(output_path.suffix + ".part")
+    size = 0
+    try:
+        with urlopen(request, timeout=30) as response, temporary.open("wb") as handle:  # noqa: S310
+            content_type = response.headers.get_content_type()
+            if not content_type.startswith("image/"):
+                raise RuntimeError(f"watermark response is not an image: {content_type}")
+            while chunk := response.read(64 * 1024):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise RuntimeError("watermark asset exceeds 10 MB limit")
+                handle.write(chunk)
+        if size == 0:
+            raise RuntimeError("watermark asset is empty")
+        temporary.replace(output_path)
+        return output_path
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def run_pipeline(
     brief_path: str | Path,
     *,
@@ -97,6 +141,9 @@ def run_pipeline(
     run_dir.mkdir(parents=True, exist_ok=False)
     manifest = PipelineManifest(campaign_id=brief.campaign_id)
     _write_json(run_dir / "brief.normalized.json", brief.to_dict())
+    watermark_path: Path | None = None
+    if brief.watermark_url:
+        watermark_path = _download_asset(brief.watermark_url, run_dir / "assets" / "watermark.png")
 
     discovered = source.discover(brief)
     allowed: list[VideoCandidate] = []
@@ -165,6 +212,7 @@ def run_pipeline(
                     output_path,
                     candidate,
                     transcripts[video.video_id],
+                    watermark_path,
                 )
                 rendered = RenderedClip(
                     video_id=video.video_id,

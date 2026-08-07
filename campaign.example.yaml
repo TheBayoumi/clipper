@@ -26,3 +26,6 @@ allowed_video_ids: []
 rights_confirmed: false
 attribution_required: true
 watermark_text: null
+watermark_url: null
+required_hashtags: []
+posting_requirements: []

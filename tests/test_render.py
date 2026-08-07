@@ -33,6 +33,22 @@ def test_build_ffmpeg_command_contains_vertical_and_audio_filters(tmp_path: Path
     assert "30.250" in command
 
 
+def test_build_ffmpeg_command_overlays_campaign_watermark(tmp_path: Path) -> None:
+    clip = ClipCandidate("v", 0, 20, "text", 1)
+    watermark = tmp_path / "watermark.png"
+    command = build_ffmpeg_command(
+        "source.mp4",
+        "out.mp4",
+        clip,
+        tmp_path / "captions.srt",
+        watermark_path=watermark,
+    )
+    joined = " ".join(command)
+    assert str(watermark) in command
+    assert "[1:v]scale=180:-1" in joined
+    assert "overlay=W-w-48:48" in joined
+
+
 def test_renderer_requires_ffmpeg() -> None:
     with patch("clipper.render.shutil.which", return_value=None), pytest.raises(RenderError):
         FFmpegRenderer()

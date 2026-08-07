@@ -39,6 +39,9 @@ class CampaignBrief:
     rights_confirmed: bool = False
     attribution_required: bool = True
     watermark_text: str | None = None
+    watermark_url: str | None = None
+    required_hashtags: list[str] = field(default_factory=list)
+    posting_requirements: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CampaignBrief:
@@ -73,6 +76,11 @@ class CampaignBrief:
             watermark_text=(
                 str(data["watermark_text"]).strip() if data.get("watermark_text") else None
             ),
+            watermark_url=(
+                str(data["watermark_url"]).strip() if data.get("watermark_url") else None
+            ),
+            required_hashtags=_string_list(data, "required_hashtags"),
+            posting_requirements=_string_list(data, "posting_requirements"),
         )
         brief.validate()
         return brief
@@ -94,6 +102,8 @@ class CampaignBrief:
             raise BriefValidationError("max_clip_seconds must be at most 180")
         if self.min_clip_seconds >= self.max_clip_seconds:
             raise BriefValidationError("min_clip_seconds must be less than max_clip_seconds")
+        if self.watermark_url and not self.watermark_url.startswith("https://"):
+            raise BriefValidationError("watermark_url must use https")
         if not self.source_channel_ids and not self.allowed_video_ids:
             raise BriefValidationError(
                 "provide source_channel_ids or allowed_video_ids; unrestricted scraping is disabled"

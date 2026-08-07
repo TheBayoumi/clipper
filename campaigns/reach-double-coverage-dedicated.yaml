@@ -1,0 +1,39 @@
+campaign_id: reach-double-coverage-dedicated-1f1adbf3
+title: Double Coverage Podcast Dedicated Account
+objective: Find self-contained, high-retention moments from the Double Coverage podcast that can perform as short-form clips while preserving the speaker context and avoiding negative portrayal.
+keywords:
+  - Clix
+  - Fortnite
+  - creator
+  - streaming
+  - esports
+  - money
+  - business
+  - Ferrari
+negative_keywords: []
+required_phrases: []
+language: en
+region_code: US
+clip_count: 3
+min_clip_seconds: 20
+max_clip_seconds: 45
+source_limit: 1
+max_clips_per_source: 3
+published_after: "2026-07-30T00:00:00Z"
+source_channel_ids:
+  - UCf1q6dhccWr6eQEcFFnJSbA
+allowed_video_ids:
+  - 2Y4LP85PTak
+rights_confirmed: true
+attribution_required: true
+watermark_text: null
+watermark_url: "https://drive.google.com/file/d/1wn3gL5h7cUZn-8jzTfwkAvLhbleXgbL6/view?usp=sharing"
+required_hashtags:
+  - "#DoubleCoverage"
+posting_requirements:
+  - Use a dedicated Double Coverage themed account.
+  - Publish only to YouTube Shorts, TikTok, or Instagram Reels.
+  - The audience must be at least 50% English-speaking.
+  - Minimum 15,000 views are required for campaign payout.
+  - Do not use botted views or AI-generated source content.
+  - Do not portray Double Coverage negatively.
