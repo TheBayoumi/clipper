@@ -55,7 +55,8 @@ hooks:
     - strong_opinion
 editorial:
   platform: tiktok
-  max_punch_ins_per_clip: 2
+  punch_ins_enabled: false
+  max_punch_ins_per_clip: 0
   semantic_endings: true
   post_speech_tail_seconds: 0.25
   caption_max_lines: 2

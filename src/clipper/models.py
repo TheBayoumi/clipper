@@ -181,7 +181,8 @@ class EditorialScoreWeights:
 @dataclass(frozen=True, slots=True)
 class EditorialConfig:
     platform: str = "tiktok"
-    max_punch_ins_per_clip: int = 2
+    punch_ins_enabled: bool = False
+    max_punch_ins_per_clip: int = 0
     semantic_endings: bool = True
     post_speech_tail_seconds: float = 0.25
     caption_max_lines: int = 2
@@ -195,7 +196,8 @@ class EditorialConfig:
             raise BriefValidationError("editorial must be an object")
         config = cls(
             platform=str(value.get("platform", "tiktok")).strip().lower(),
-            max_punch_ins_per_clip=int(value.get("max_punch_ins_per_clip", 2)),
+            punch_ins_enabled=bool(value.get("punch_ins_enabled", False)),
+            max_punch_ins_per_clip=int(value.get("max_punch_ins_per_clip", 0)),
             semantic_endings=bool(value.get("semantic_endings", True)),
             post_speech_tail_seconds=float(value.get("post_speech_tail_seconds", 0.25)),
             caption_max_lines=int(value.get("caption_max_lines", 2)),

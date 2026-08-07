@@ -13,7 +13,7 @@ from .models import (
     TranscriptWord,
 )
 
-CACHE_SCHEMA_VERSION = "clipper-v8-analysis-1"
+CACHE_SCHEMA_VERSION = "clipper-v9-analysis-1"
 
 
 def stable_hash(payload: object) -> str:

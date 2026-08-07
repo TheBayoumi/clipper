@@ -3,7 +3,15 @@ from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
-from clipper.qc import _caption_margin, _float, _fps, _tracking_evidence, run_technical_qc
+from clipper.qc import (
+    _caption_margin,
+    _float,
+    _fps,
+    _render_evidence,
+    _tracking_evidence,
+    _transition_issues,
+    run_technical_qc,
+)
 
 
 def completed(returncode: int = 0, *, stdout: str = "", stderr: str = "") -> CompletedProcess[str]:
@@ -26,11 +34,26 @@ def fixtures(tmp_path: Path) -> tuple[Path, Path, Path]:
             {
                 "framing_mode": "speaker_locked_portrait",
                 "background_fill": "none",
-                "crop_width": 360,
-                "crop_height": 640,
+                "crop_width": 1214,
+                "crop_height": 2158,
                 "speaker_tracks": 2,
                 "speaker_switches": 1,
                 "reframe_events": 2,
+                "zoom_factor": 1.0,
+                "source_width": 3840,
+                "source_height": 2160,
+                "transitions": [],
+                "source_cuts": [],
+                "image_quality": {
+                    "source_width": 3840,
+                    "source_height": 2160,
+                    "crop_width": 1214,
+                    "crop_height": 2158,
+                    "max_portrait_crop_width": 1214,
+                    "max_portrait_crop_height": 2158,
+                    "effective_upscale_factor": 0.89,
+                    "digital_zoom_used": False,
+                },
             }
         ),
         encoding="utf-8",
@@ -48,6 +71,7 @@ def probe_payload(*, audio: bool = True, width: int = 1080, height: int = 1920) 
             "height": height,
             "r_frame_rate": "30/1",
             "duration": "20.0",
+            "bit_rate": "8000000",
         }
     ]
     if audio:
@@ -60,12 +84,26 @@ def probe_payload(*, audio: bool = True, width: int = 1080, height: int = 1920) 
                 "duration": "20.0",
             }
         )
-    return json.dumps({"streams": streams, "format": {"duration": "20.0", "size": "123"}})
+    return json.dumps(
+        {"streams": streams, "format": {"duration": "20.0", "size": "123", "bit_rate": "8200000"}}
+    )
 
 
 def test_qc_passes_complete_vertical_render(tmp_path: Path) -> None:
     video, ass, tracking = fixtures(tmp_path)
     loud = '{"input_i":"-14.4","input_tp":"-1.2","input_lra":"2.3"}'
+    video.with_suffix(".render.json").write_text(
+        json.dumps(
+            {
+                "profile": "production",
+                "preset": "slow",
+                "crf": 17,
+                "resampling_stages": 1,
+                "digital_zoom_used": False,
+                "post_upscale_punch_in": False,
+            }
+        )
+    )
     calls = iter(
         [completed(stdout=probe_payload()), completed(), completed(stderr=loud), completed()]
     )
@@ -216,3 +254,36 @@ def test_qc_helpers_handle_invalid_values_and_missing_evidence(tmp_path: Path) -
     bad_number.write_text("Style: Default," + ",".join(["x"] * 21) + ",oops,1\n")
     assert _caption_margin(bad_number) is None
     assert _tracking_evidence(tmp_path / "missing.json") == {}
+
+
+def test_transition_and_render_quality_gates_reject_v8_failure_modes(tmp_path: Path) -> None:
+    bad = [
+        {
+            "reason": "source_cut",
+            "mode": "eased_reframe",
+            "start": 2.0,
+            "end": 2.2,
+            "normalized_distance": 0.8,
+            "target_visible_at": 2.0,
+            "from_x": 0.0,
+            "to_x": 300.0,
+        },
+        {
+            "reason": "speaker_change",
+            "mode": "eased_reframe",
+            "start": 2.4,
+            "end": 2.6,
+            "normalized_distance": 0.8,
+            "target_visible_at": 2.5,
+            "from_x": 300.0,
+            "to_x": 0.0,
+        },
+    ]
+    issues = " | ".join(_transition_issues(bad))
+    assert "source camera cut" in issues
+    assert "velocity" in issues
+    assert "before the target face" in issues
+    assert "back-and-forth" in issues
+    render = tmp_path / "x.render.json"
+    render.write_text(json.dumps({"resampling_stages": 2, "digital_zoom_used": True}))
+    assert _render_evidence(render)["digital_zoom_used"] is True

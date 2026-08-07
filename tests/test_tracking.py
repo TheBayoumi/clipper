@@ -5,6 +5,7 @@ import numpy as np
 
 from clipper.models import ClipCandidate, TranscriptSegment
 from clipper.tracking import (
+    CameraTransition,
     FaceAnchor,
     FaceObservation,
     TrackingPlan,
@@ -14,6 +15,7 @@ from clipper.tracking import (
     _face_box_plausible,
     _match_track,
     _mouth_motion,
+    _scene_change_score,
     _segment_windows,
     _speaker_locked_anchors,
     _speaker_window_crop,
@@ -39,8 +41,8 @@ def _obs(track_id: int, time: float, x: float, motion: float) -> FaceObservation
 
 
 def test_portrait_crop_dimensions_fill_vertical_frame() -> None:
-    assert portrait_crop_dimensions(1280, 720) == (360, 640)
-    assert portrait_crop_dimensions(640, 360) == (180, 320)
+    assert portrait_crop_dimensions(1280, 720) == (404, 718)
+    assert portrait_crop_dimensions(640, 360) == (202, 358)
     width, height = portrait_crop_dimensions(1080, 1920)
     assert abs(width / height - 9 / 16) < 0.01
     assert portrait_crop_dimensions(0, 720) == (0, 0)
@@ -167,56 +169,131 @@ def test_speaker_window_crop_uses_local_camera_composition_not_global_track_home
     assert _speaker_window_crop(track, _SpeakerWindow(9.0, 10.0), 180, 320, 640, 360) is None
 
 
-def test_speaker_locked_anchors_hold_crop_inside_dead_zone_and_reframe_on_layout_change() -> None:
+def test_speaker_locked_anchors_hold_crop_inside_dead_zone_and_ease_subject_motion() -> None:
     windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 4), _SpeakerWindow(4, 6))
-    assignments = (0, 0, 0)
-    targets = ((100.0, 0.0), (120.0, 10.0), (300.0, 0.0))
-    anchors, reframes = _speaker_locked_anchors(
-        6.0, windows, assignments, targets, (0.0, 2.0, 4.0), (230.0, 0.0)
+    anchors, transitions, reframes = _speaker_locked_anchors(
+        6.0,
+        windows,
+        (0, 0, 0),
+        ((100.0, 0.0), (120.0, 10.0), (300.0, 0.0)),
+        (0.0, 2.0, 4.0),
+        (230.0, 0.0),
+        crop_width=202,
+        crop_height=358,
     )
     assert reframes == 1
-    assert anchors == (
-        FaceAnchor(0.0, 100.0, 0.0),
-        FaceAnchor(4.0, 100.0, 0.0),
-        FaceAnchor(4.22, 300.0, 0.0),
-        FaceAnchor(6.0, 300.0, 0.0),
-    )
-    x, _ = tracking_expressions(TrackingPlan(1.12, 640, 360, anchors, True))
+    assert transitions[0].mode == "hold"
+    assert transitions[-1].reason == "subject_motion"
+    assert transitions[-1].mode == "eased_reframe"
+    assert 4.35 <= transitions[-1].end <= 4.9
+    plan = TrackingPlan(1.0, 640, 360, anchors, True, transitions=transitions)
+    x, _ = tracking_expressions(plan)
+    assert "3-2*" in x
     assert "if(lt(t,4.000)" in x
-    assert "if(lt(t,4.220)" in x
     assert tracking_expressions(None) == ("(iw-ow)/2", "(ih-oh)/2")
 
 
-def test_reframe_waits_until_target_face_is_actually_observed() -> None:
+def test_reframe_waits_until_target_face_is_observed_and_uses_hard_speaker_cut() -> None:
     windows = (_SpeakerWindow(0, 1), _SpeakerWindow(1, 2))
-    anchors, reframes = _speaker_locked_anchors(
+    anchors, transitions, reframes = _speaker_locked_anchors(
         2.0,
         windows,
         (0, 1),
         ((100.0, 0.0), (300.0, 0.0)),
         (0.0, 1.4),
         (230.0, 0.0),
+        crop_width=202,
+        crop_height=358,
     )
     assert reframes == 1
-    assert anchors[0] == FaceAnchor(0.0, 100.0, 0.0)
-    assert anchors[1] == FaceAnchor(1.4, 100.0, 0.0)
-    assert abs(anchors[2].time - 1.62) < 1e-9
-    assert (anchors[2].x, anchors[2].y) == (300.0, 0.0)
-    assert anchors[3] == FaceAnchor(2.0, 300.0, 0.0)
+    transition = transitions[-1]
+    assert transition.reason == "speaker_change"
+    assert transition.mode == "hard_cut"
+    assert transition.start == transition.end == 1.4
+    assert transition.start >= transition.target_visible_at
+    assert anchors[-1] == FaceAnchor(2.0, 300.0, 0.0)
 
 
-def test_speaker_locked_anchors_reframe_when_speaker_changes() -> None:
+def test_same_shot_small_speaker_change_holds_instead_of_panning() -> None:
     windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 4))
-    anchors, reframes = _speaker_locked_anchors(
+    anchors, transitions, reframes = _speaker_locked_anchors(
         4.0,
         windows,
         (0, 1),
         ((100.0, 0.0), (130.0, 10.0)),
         (0.0, 2.0),
         (230.0, 0.0),
+        crop_width=202,
+        crop_height=358,
+    )
+    assert reframes == 0
+    assert transitions[-1].reason == "speaker_change"
+    assert transitions[-1].mode == "hold"
+    assert anchors[0].x == anchors[-1].x == 100.0
+
+
+def test_source_camera_cut_changes_crop_as_hard_cut_without_slide() -> None:
+    windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 4))
+    anchors, transitions, reframes = _speaker_locked_anchors(
+        4.0,
+        windows,
+        (0, 1),
+        ((80.0, 0.0), (300.0, 0.0)),
+        (0.0, 2.0),
+        (230.0, 0.0),
+        crop_width=202,
+        crop_height=358,
+        source_cuts=(2.04,),
     )
     assert reframes == 1
-    assert anchors[-2] == FaceAnchor(2.22, 130.0, 10.0)
+    transition = transitions[-1]
+    assert transition.reason == "source_cut"
+    assert transition.mode == "hard_cut"
+    assert transition.start == transition.end == 2.04
+    x, _ = tracking_expressions(TrackingPlan(1.0, 640, 360, anchors, True, transitions=transitions))
+    assert "if(lt(t,2.040),80.000" in x
+    assert "3-2*" not in x
+
+
+def test_scene_change_score_distinguishes_cut_from_static_frame() -> None:
+    black = np.zeros((54, 96), dtype=np.uint8)
+    white = np.full((54, 96), 255, dtype=np.uint8)
+    assert _scene_change_score(black, black) == 0.0
+    assert _scene_change_score(black, white) == 1.0
+    assert _scene_change_score(None, white) == 0.0
+
+
+def test_tracking_plan_records_source_pixel_quality_evidence() -> None:
+    transition = CameraTransition(
+        "speaker_change",
+        2.0,
+        2.0,
+        240.0,
+        1214,
+        0.198,
+        "hard_cut",
+        100.0,
+        0.0,
+        340.0,
+        0.0,
+        2.0,
+    )
+    payload = TrackingPlan(
+        1.0,
+        3840,
+        2160,
+        (FaceAnchor(0, 100, 0), FaceAnchor(4, 340, 0)),
+        True,
+        crop_width=1214,
+        crop_height=2158,
+        transitions=(transition,),
+        source_cuts=(2.0,),
+    ).to_dict()
+    quality = payload["image_quality"]
+    assert isinstance(quality, dict)
+    assert quality["digital_zoom_used"] is False
+    assert quality["effective_upscale_factor"] < 1.0
+    assert payload["transitions"][0]["mode"] == "hard_cut"
 
 
 class FakeCapture:
@@ -286,8 +363,8 @@ def test_plan_speaker_crop_locks_single_speaker_without_per_frame_drift(tmp_path
     assert plan.speaker_switches == 0
     assert plan.framing_mode == "speaker_locked_portrait"
     assert plan.background_fill == "none"
-    assert plan.crop_width == 180
-    assert plan.crop_height == 320
+    assert plan.crop_width == 202
+    assert plan.crop_height == 358
     assert len(plan.anchors) == 2
     assert plan.anchors[0].x == plan.anchors[-1].x
     assert capture.released is True

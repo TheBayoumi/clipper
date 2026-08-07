@@ -38,9 +38,11 @@ The pipeline refuses unrestricted acquisition. Every brief must contain `source_
 
 For public campaign-authorized YouTube sources, Clipper requests available captions/media with `yt-dlp`; a YouTube Data API key is preferred for discovery. The user remains responsible for campaign terms, attribution, copyright permissions, and platform rules.
 
-## V8 editorial model
+Before production media download, Clipper inventories the authorized video's available streams and selects the highest practical MP4 video at or below `CLIPPER_SOURCE_MAX_HEIGHT` (default `2160`). The selected format ID, resolution, codec, bitrate, FPS and available alternatives are persisted beside the source media.
 
-The V8 pipeline separates a source timestamp from the finished edit:
+## V9 editorial model
+
+The V9 pipeline preserves the V8 full-podcast editorial funnel while separating a source timestamp from the finished edit:
 
 - `StoryMoment` — a conversational/story unit discovered from the full transcript.
 - `ClipConcept` — a self-contained source story with setup, payoff, topic, duration, fingerprint, and editorial scores.
@@ -57,17 +59,18 @@ Weights live under `editorial.score_weights` in the campaign brief. Start and en
 
 ### Semantic diversity
 
-When no embedding service is configured, V8 uses a deterministic lexical-semantic fallback combining token-frequency cosine similarity and Jaccard overlap. The selected concept library enforces both semantic-cluster diversity and a configurable per-topic cap. This fallback is deterministic and intentionally does not pretend to be a learned embedding model.
+When no embedding service is configured, V9 uses a deterministic lexical-semantic fallback combining token-frequency cosine similarity and Jaccard overlap. The selected concept library enforces both semantic-cluster diversity and a configurable per-topic cap. This fallback is deterministic and intentionally does not pretend to be a learned embedding model.
 
 ## Rendering and editorial behavior
 
 - True full-frame `1080x1920` output; no blurred duplicate background.
-- Speaker-locked portrait framing with persistent face tracks, profile-face detection, mouth-motion speaker selection, dead zones, camera-local crops, hysteresis, and source-cut-aware reframes.
-- Source editorial language is preserved rather than fighting every camera cut.
+- Speaker-aware portrait framing starts from the maximum-resolution `9:16` source crop (`zoom_factor=1.0`) rather than globally enlarging faces.
+- Camera changes are classified before rendering: source-camera cuts and large same-shot speaker switches are hard cuts, acceptable two-person/small-displacement compositions hold, and only genuine same-speaker subject movement may use an eased displacement-aware reframe.
+- Source camera cuts are detected from the original footage and never receive a sliding crop transition. Transition evidence records reason, mode, distance, duration and source-cut timing for QC.
 - Word-synchronized ASS captions preserve source word timestamps when available. If exact words are unavailable, the ASS evidence is explicitly marked `TimingMode: cue_interpolated`; QC never labels that mode word-exact.
 - Platform-safe caption presets for TikTok, Instagram Reels, YouTube Shorts, and generic vertical output. Presets are conservative margins rather than claims about permanent app UI coordinates.
 - Source-derived hook text can appear briefly above the dialogue.
-- Punch-ins are scheduled only on explicit semantic beats such as strong claims/numbers and are capped per clip. There is no periodic zoom spam.
+- Digital punch-ins are disabled by default. The renderer rejects legacy post-upscale punch beats because they resample already-upscaled pixels and visibly soften podcast footage.
 - Dialogue is normalized with FFmpeg loudness processing.
 - Required campaign watermark assets are applied when configured.
 
@@ -97,7 +100,8 @@ hooks:
 
 editorial:
   platform: tiktok
-  max_punch_ins_per_clip: 2
+  punch_ins_enabled: false
+  max_punch_ins_per_clip: 0
   semantic_endings: true
   post_speech_tail_seconds: 0.25
   caption_max_lines: 2
@@ -109,6 +113,16 @@ editorial:
 ```
 
 Generic defaults remain intentionally cheap for CI/smoke runs. Real campaign YAML can opt into a larger internal production budget without changing the campaign's final submission target.
+
+## Render profiles and image quality
+
+Clipper separates encode speed from release quality:
+
+- `smoke`: `libx264`, `ultrafast`, CRF 23 — CI/container smoke only.
+- `review`: `libx264`, `medium`, CRF 18 — editorial review artifacts.
+- `production`: `libx264`, `slow`, CRF 17 — default production master.
+
+Production composition performs one source crop followed by one Lanczos scale to `1080x1920`; there is no scale-then-zoom-then-crop path. Render/tracking sidecars record source resolution, crop resolution, effective scale, resampling-stage count, digital-zoom usage, profile, preset and CRF.
 
 ## Caching and reproducibility
 
@@ -164,6 +178,9 @@ Each production render is checked for:
 - objective loudness / true peak / long silence
 - caption safe-region margin and timing provenance
 - tracking evidence confirming no filler and a valid 9:16 source crop
+- transition QC rejecting source-cut sliding, excessive eased velocity, premature target reframes and short-window oscillation
+- source/crop resolution, effective upscale factor, resampling-stage count and digital-zoom evidence
+- render profile, encoder preset, CRF and output bitrate
 - required watermark asset presence
 
 Technical PASS does not imply editorial PASS. Actual final MP4 review remains a separate production gate.
@@ -178,11 +195,16 @@ Technical PASS does not imply editorial PASS. Actual final MP4 review remains a 
 | `CLIPPER_WHISPER_MODEL` | `small` | Faster-Whisper fallback model |
 | `CLIPPER_WHISPER_DEVICE` | `auto` | `cpu`, `cuda`, or `auto` |
 | `CLIPPER_WHISPER_COMPUTE_TYPE` | `int8` | ASR precision/performance |
+| `CLIPPER_SOURCE_MAX_HEIGHT` | `2160` | Maximum authorized YouTube source height considered for production |
+| `CLIPPER_RENDER_PROFILE` | `production` | `smoke`, `review`, or `production` encoder profile |
 | `CLIPPER_SPEAKER_FOCUS` | `true` | Enable speaker-aware portrait framing |
-| `CLIPPER_SPEAKER_ZOOM` | `1.12` | Base portrait zoom (1.0–1.35) |
+| `CLIPPER_SPEAKER_ZOOM` | `1.0` | Base portrait zoom; production default preserves maximum source pixels |
 | `CLIPPER_SPEAKER_SAMPLE_FPS` | `4.0` | Face/mouth analysis rate |
 | `CLIPPER_SPEAKER_SWITCH_MARGIN` | `1.35` | Speaker-switch hysteresis |
-| `CLIPPER_SPEAKER_TRANSITION_SECONDS` | `0.22` | Deliberate reframe transition |
+| `CLIPPER_SPEAKER_MIN_REFRAME_SECONDS` | `0.35` | Minimum eased same-speaker subject reframe duration |
+| `CLIPPER_SPEAKER_MAX_REFRAME_SECONDS` | `0.9` | Maximum eased same-speaker subject reframe duration |
+| `CLIPPER_SPEAKER_SECONDS_PER_CROP` | `0.75` | Additional ease duration per crop-width of movement |
+| `CLIPPER_SPEAKER_HOLD_THRESHOLD` | `0.28` | Small same-shot speaker displacement that should hold instead of moving |
 | `CLIPPER_SPEAKER_WINDOW_SECONDS` | `0.8` | Active-speaker decision window |
 | `CLIPPER_SPEAKER_MIN_DETECTION_COVERAGE` | `0.35` | Reject sparse cut/graphic detections |
 

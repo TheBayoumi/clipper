@@ -22,7 +22,7 @@ def test_build_ffmpeg_command_contains_speaker_locked_vertical_and_audio_filters
 ) -> None:
     clip = ClipCandidate("v", 1.25, 31.5, "text", 1)
     plan = TrackingPlan(
-        1.12,
+        1.0,
         1280,
         720,
         (FaceAnchor(0.0, 20.0, 10.0), FaceAnchor(1.0, 20.0, 10.0)),
@@ -37,7 +37,7 @@ def test_build_ffmpeg_command_contains_speaker_locked_vertical_and_audio_filters
     )
     joined = " ".join(command)
     assert "scale=1080:1920" in joined
-    assert "crop=360:640" in joined
+    assert "crop=404:718" in joined
     assert "gblur=" not in joined
     assert "split=2" not in joined
     assert "[bg]" not in joined
@@ -46,7 +46,8 @@ def test_build_ffmpeg_command_contains_speaker_locked_vertical_and_audio_filters
     assert "loudnorm=I=-14" in joined
     assert ";[captioned]format=yuv420p[v]" in joined
     assert "libx264" in command
-    assert "ultrafast" in command
+    assert "slow" in command
+    assert command[command.index("-crf") + 1] == "17"
     assert command[command.index("-threads") + 1] == "1"
     assert "1.250" in command
     assert "30.250" in command
@@ -86,8 +87,16 @@ def test_renderer_requires_ffmpeg_and_valid_speaker_settings() -> None:
             FFmpegRenderer(speaker_sample_fps=20)
         with pytest.raises(RenderError, match="speaker_switch_margin"):
             FFmpegRenderer(speaker_switch_margin=4)
-        with pytest.raises(RenderError, match="speaker_transition_seconds"):
-            FFmpegRenderer(speaker_transition_seconds=2)
+        with pytest.raises(RenderError, match="speaker_min_reframe_seconds"):
+            FFmpegRenderer(speaker_min_reframe_seconds=0.1)
+        with pytest.raises(RenderError, match="speaker_max_reframe_seconds"):
+            FFmpegRenderer(speaker_max_reframe_seconds=2)
+        with pytest.raises(RenderError, match="speaker_seconds_per_crop"):
+            FFmpegRenderer(speaker_seconds_per_crop=3)
+        with pytest.raises(RenderError, match="speaker_hold_threshold"):
+            FFmpegRenderer(speaker_hold_threshold=0.01)
+        with pytest.raises(RenderError, match="render profile"):
+            FFmpegRenderer(profile="bad")
         with pytest.raises(RenderError, match="speaker_window_seconds"):
             FFmpegRenderer(speaker_window_seconds=0.1)
         with pytest.raises(RenderError, match="speaker_min_detection_coverage"):
@@ -110,7 +119,7 @@ def test_renderer_success_writes_ass_and_speaker_evidence(tmp_path: Path) -> Non
         renderer = FFmpegRenderer()
     output = tmp_path / "ok.mp4"
     plan = TrackingPlan(
-        1.12,
+        1.0,
         640,
         360,
         (FaceAnchor(0, 10, 5), FaceAnchor(10, 10, 5)),
@@ -131,7 +140,7 @@ def test_renderer_success_writes_ass_and_speaker_evidence(tmp_path: Path) -> Non
     assert r"{\ko" in output.with_suffix(".ass").read_text(encoding="utf-8")
     tracking = json.loads(output.with_suffix(".tracking.json").read_text(encoding="utf-8"))
     assert tracking["face_detected"] is True
-    assert tracking["zoom_factor"] == 1.12
+    assert tracking["zoom_factor"] == 1.0
     assert tracking["speaker_focus"] is True
     assert tracking["framing_mode"] == "speaker_locked_portrait"
     assert tracking["speaker_switches"] == 0
@@ -142,7 +151,7 @@ def test_renderer_failures(tmp_path: Path) -> None:
     segments = [TranscriptSegment(0, 10, "caption")]
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
-    plan = TrackingPlan(1.12, 640, 360)
+    plan = TrackingPlan(1.0, 640, 360)
     with patch("clipper.render.shutil.which", return_value="/usr/bin/ffmpeg"):
         renderer = FFmpegRenderer(speaker_focus=False)
 
@@ -175,11 +184,11 @@ def test_renderer_failures(tmp_path: Path) -> None:
         tracking_plan=plan,
     )
     joined = " ".join(command)
-    assert "crop=180:320" in joined
+    assert "crop=202:358" in joined
     assert "gblur=" not in joined
 
 
-def test_build_ffmpeg_command_applies_only_scheduled_editorial_punch_ins(tmp_path: Path) -> None:
+def test_build_ffmpeg_command_rejects_post_upscale_punch_ins(tmp_path: Path) -> None:
     clip = ClipCandidate("v", 0, 20, "text", 8)
     edit_plan = EditPlan(
         "p",
@@ -189,23 +198,29 @@ def test_build_ffmpeg_command_applies_only_scheduled_editorial_punch_ins(tmp_pat
         "direct",
         (SourceSpan(0, 20),),
         None,
-        (
-            EditorialBeat(5, 6, "punch_in", 0.07),
-            EditorialBeat(12, 13, "punch_in", 0.05),
-            EditorialBeat(18, 20, "payoff_hold", 0),
-        ),
+        (EditorialBeat(5, 6, "punch_in", 0.07),),
         "tiktok",
         8,
         "fp",
     )
-    command = build_ffmpeg_command(
-        "source.mp4",
-        "out.mp4",
-        clip,
-        tmp_path / "captions.ass",
-        edit_plan=edit_plan,
-    )
-    joined = " ".join(command)
-    assert "split=2[base][zoomsrc]" in joined
-    assert "between(t,5.000,6.000)+between(t,12.000,13.000)" in joined
-    assert "gblur=" not in joined
+    with pytest.raises(RenderError, match="source-pixel crop space"):
+        build_ffmpeg_command(
+            "source.mp4", "out.mp4", clip, tmp_path / "captions.ass", edit_plan=edit_plan
+        )
+
+
+def test_render_profiles_separate_smoke_review_and_production(tmp_path: Path) -> None:
+    clip = ClipCandidate("v", 0, 5, "text", 1)
+    for profile, preset, crf in (
+        ("smoke", "ultrafast", "23"),
+        ("review", "medium", "18"),
+        ("production", "slow", "17"),
+    ):
+        command = build_ffmpeg_command(
+            "source.mp4", "out.mp4", clip, tmp_path / "captions.ass", profile=profile
+        )
+        assert command[command.index("-preset") + 1] == preset
+        assert command[command.index("-crf") + 1] == crf
+        joined = " ".join(command)
+        assert "split=2[base][zoomsrc]" not in joined
+        assert joined.count("scale=1080:1920") == 1

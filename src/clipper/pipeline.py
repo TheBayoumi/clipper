@@ -94,11 +94,16 @@ class PipelineSettings:
     whisper_model: str = "small"
     whisper_device: str = "auto"
     whisper_compute_type: str = "int8"
+    source_max_height: int = 2160
+    render_profile: str = "production"
     speaker_focus: bool = True
-    speaker_zoom: float = 1.12
+    speaker_zoom: float = 1.0
     speaker_sample_fps: float = 4.0
     speaker_switch_margin: float = 1.35
-    speaker_transition_seconds: float = 0.22
+    speaker_min_reframe_seconds: float = 0.35
+    speaker_max_reframe_seconds: float = 0.9
+    speaker_seconds_per_crop: float = 0.75
+    speaker_hold_threshold: float = 0.28
     speaker_window_seconds: float = 0.8
     speaker_min_detection_coverage: float = 0.35
     cache_root: Path | None = None
@@ -110,19 +115,26 @@ class PipelineSettings:
             whisper_model=os.getenv("CLIPPER_WHISPER_MODEL", "small"),
             whisper_device=os.getenv("CLIPPER_WHISPER_DEVICE", "auto"),
             whisper_compute_type=os.getenv("CLIPPER_WHISPER_COMPUTE_TYPE", "int8"),
+            source_max_height=int(os.getenv("CLIPPER_SOURCE_MAX_HEIGHT", "2160")),
+            render_profile=os.getenv("CLIPPER_RENDER_PROFILE", "production").strip().lower(),
             speaker_focus=_env_bool(
                 "CLIPPER_SPEAKER_FOCUS", _env_bool("CLIPPER_FACE_TRACKING", True)
             ),
             speaker_zoom=float(
-                os.getenv("CLIPPER_SPEAKER_ZOOM", os.getenv("CLIPPER_FACE_ZOOM", "1.12"))
+                os.getenv("CLIPPER_SPEAKER_ZOOM", os.getenv("CLIPPER_FACE_ZOOM", "1.0"))
             ),
             speaker_sample_fps=float(
                 os.getenv("CLIPPER_SPEAKER_SAMPLE_FPS", os.getenv("CLIPPER_FACE_SAMPLE_FPS", "4.0"))
             ),
             speaker_switch_margin=float(os.getenv("CLIPPER_SPEAKER_SWITCH_MARGIN", "1.35")),
-            speaker_transition_seconds=float(
-                os.getenv("CLIPPER_SPEAKER_TRANSITION_SECONDS", "0.22")
+            speaker_min_reframe_seconds=float(
+                os.getenv("CLIPPER_SPEAKER_MIN_REFRAME_SECONDS", "0.35")
             ),
+            speaker_max_reframe_seconds=float(
+                os.getenv("CLIPPER_SPEAKER_MAX_REFRAME_SECONDS", "0.9")
+            ),
+            speaker_seconds_per_crop=float(os.getenv("CLIPPER_SPEAKER_SECONDS_PER_CROP", "0.75")),
+            speaker_hold_threshold=float(os.getenv("CLIPPER_SPEAKER_HOLD_THRESHOLD", "0.28")),
             speaker_window_seconds=float(os.getenv("CLIPPER_SPEAKER_WINDOW_SECONDS", "0.8")),
             speaker_min_detection_coverage=float(
                 os.getenv("CLIPPER_SPEAKER_MIN_DETECTION_COVERAGE", "0.35")
@@ -140,6 +152,19 @@ def _write_json(path: Path, payload: object) -> None:
 
 def _sha256_file(path: Path) -> str:
     return file_sha256(path)
+
+
+def _record_source_media_metadata(
+    manifest: PipelineManifest, video_id: str, media_path: Path
+) -> None:
+    metadata_path = media_path.with_suffix(".source.json")
+    if not metadata_path.is_file():
+        return
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    manifest.run_metadata.setdefault("source_media", {})[video_id] = payload
 
 
 def _git_sha() -> str | None:
@@ -370,16 +395,20 @@ def run_pipeline(
     cfg = settings or PipelineSettings.from_env()
     telemetry = RunTelemetry()
     cache = FileCache(cfg.cache_root or (cfg.artifact_root / "_cache"))
-    source = source_client or YouTubeClient()
+    source = source_client or YouTubeClient(max_height=cfg.source_max_height)
     active_renderer = renderer or (
         FFmpegRenderer(
             speaker_focus=cfg.speaker_focus,
             zoom_factor=cfg.speaker_zoom,
             speaker_sample_fps=cfg.speaker_sample_fps,
             speaker_switch_margin=cfg.speaker_switch_margin,
-            speaker_transition_seconds=cfg.speaker_transition_seconds,
+            speaker_min_reframe_seconds=cfg.speaker_min_reframe_seconds,
+            speaker_max_reframe_seconds=cfg.speaker_max_reframe_seconds,
+            speaker_seconds_per_crop=cfg.speaker_seconds_per_crop,
+            speaker_hold_threshold=cfg.speaker_hold_threshold,
             speaker_window_seconds=cfg.speaker_window_seconds,
             speaker_min_detection_coverage=cfg.speaker_min_detection_coverage,
+            profile=cfg.render_profile,
         )
         if render
         else None
@@ -400,8 +429,14 @@ def run_pipeline(
             "compute_type": cfg.whisper_compute_type,
         },
         "source_hashes": {},
+        "source_media": {},
         "transcript_hashes": {},
         "transcript_sources": {},
+        "render": {
+            "profile": cfg.render_profile,
+            "source_max_height": cfg.source_max_height,
+            "speaker_zoom": cfg.speaker_zoom,
+        },
     }
     manifest.cache = {"root": str(cache.root), "hits": 0, "misses": 0, "events": []}
     _write_json(run_dir / "brief.normalized.json", brief.to_dict())
@@ -483,6 +518,7 @@ def run_pipeline(
                     media_path = source.download_media(video, video_work)
                     telemetry.stop(f"source_acquisition:{video.video_id}")
                     media_paths[video.video_id] = media_path
+                    _record_source_media_metadata(manifest, video.video_id, media_path)
                     telemetry.start(f"transcription:{video.video_id}")
                     segments, source_hash = _cached_asr_transcript(
                         cache, manifest, video.video_id, media_path, brief, cfg
@@ -553,6 +589,7 @@ def run_pipeline(
                     render_media_path = source.download_media(video, work_dir / video.video_id)
                     telemetry.stop(f"source_acquisition:{video.video_id}")
                     media_paths[video.video_id] = render_media_path
+                    _record_source_media_metadata(manifest, video.video_id, render_media_path)
                     manifest.run_metadata["source_hashes"][video.video_id] = file_sha256(
                         render_media_path
                     )

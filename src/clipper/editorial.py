@@ -686,9 +686,13 @@ def _find_hook_sentence(text: str, mode: HookMode) -> str | None:
     candidates: list[tuple[float, str]] = []
     for sentence in _sentences(text):
         lowered = sentence.lower().strip()
-        tokens = _tokens(sentence)
-        base = start_boundary_score(sentence)
-        if mode == "question" and (sentence.endswith("?") or lowered.startswith(_QUESTION_OPENERS)):
+        candidate = _trim_question_preamble(sentence) if mode == "question" else sentence.strip()
+        candidate_lowered = candidate.lower()
+        tokens = _tokens(candidate)
+        base = start_boundary_score(candidate)
+        if mode == "question" and (
+            candidate.endswith("?") or candidate_lowered.startswith(_QUESTION_OPENERS)
+        ):
             quality = base + (1.0 if len(tokens) >= 5 else 0.0)
         elif mode == "number" and _HOOK_NUMBER_RE.search(sentence):
             number_count = len(_HOOK_NUMBER_RE.findall(sentence))
@@ -711,7 +715,7 @@ def _find_hook_sentence(text: str, mode: HookMode) -> str | None:
             quality = base + 1.0
         else:
             continue
-        candidates.append((quality, sentence))
+        candidates.append((quality, candidate))
     if not candidates:
         return None
     return max(candidates, key=lambda item: (item[0], len(item[1])))[1]
@@ -843,14 +847,18 @@ def build_edit_plan(
     max_end = span.start + brief.max_clip_seconds
     span = SourceSpan(span.start, round(min(max_end, span.end + tail), 3))
     beats: list[EditorialBeat] = []
-    for start, end in _signal_times(concept, segments):
-        adjusted_start = max(0.0, start - (span.start - concept.source_start))
-        adjusted_end = min(span.duration, end - (span.start - concept.source_start))
-        if adjusted_end - adjusted_start < 0.25:
-            continue
-        beats.append(EditorialBeat(adjusted_start, adjusted_end, "punch_in", 0.07))
-        if len(beats) >= brief.editorial.max_punch_ins_per_clip:
-            break
+    if brief.editorial.punch_ins_enabled:
+        for start, end in _signal_times(concept, segments):
+            adjusted_start = max(0.0, start - (span.start - concept.source_start))
+            adjusted_end = min(span.duration, end - (span.start - concept.source_start))
+            if adjusted_end - adjusted_start < 0.25:
+                continue
+            beats.append(EditorialBeat(adjusted_start, adjusted_end, "punch_in", 0.07))
+            if (
+                len([beat for beat in beats if beat.beat_type == "punch_in"])
+                >= brief.editorial.max_punch_ins_per_clip
+            ):
+                break
     if span.duration >= 1.4:
         beats.append(EditorialBeat(span.duration - 1.25, span.duration, "payoff_hold", 0.0))
     return EditPlan(

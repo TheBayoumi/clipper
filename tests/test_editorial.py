@@ -272,6 +272,14 @@ def test_hook_variants_are_legitimate_and_not_filename_duplicates() -> None:
     )
     assert trimmed is not None
     assert trimmed.lower().startswith("what's one message")
+    for source in (
+        "Uh, before we head out, what's one message for esports fans?",
+        "Um, so anyway, what is the biggest lesson you learned?",
+        "You know, dude, how did you actually make it work?",
+    ):
+        question = _find_hook_sentence(source, "question")
+        assert question is not None
+        assert not question.lower().startswith(("uh", "um", "you know", "dude", "before"))
 
 
 def test_edit_plan_has_limited_meaningful_punch_ins_and_tail() -> None:
@@ -290,7 +298,8 @@ def test_edit_plan_has_limited_meaningful_punch_ins_and_tail() -> None:
     ]
     plan = build_edit_plan(b, c, variant, segs)
     punch = [beat for beat in plan.beats if beat.beat_type == "punch_in"]
-    assert len(punch) <= b.editorial.max_punch_ins_per_clip
+    assert b.editorial.punch_ins_enabled is False
+    assert punch == []
     assert plan.source_spans[0].end == pytest.approx(24.2)
     assert any(beat.beat_type == "payoff_hold" for beat in plan.beats)
     assert plan.to_clip_candidate(c.text).end == pytest.approx(24.2)

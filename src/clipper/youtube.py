@@ -61,8 +61,11 @@ def _run(command: Sequence[str], *, timeout: int = 900) -> subprocess.CompletedP
 
 
 class YouTubeClient:
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(self, api_key: str | None = None, *, max_height: int = 2160) -> None:
         self.api_key = api_key or os.getenv("YOUTUBE_API_KEY")
+        if max_height < 360 or max_height > 4320:
+            raise YouTubeError("max_height must be between 360 and 4320")
+        self.max_height = max_height
 
     def discover(self, brief: CampaignBrief) -> list[VideoCandidate]:
         if self.api_key:
@@ -204,24 +207,93 @@ class YouTubeClient:
         candidates = sorted(work_dir.glob(f"{video.video_id}*.vtt"))
         return candidates[0] if candidates else None
 
+    @staticmethod
+    def _select_video_format(
+        payload: dict[str, Any], max_height: int
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        available: list[dict[str, Any]] = []
+        for item in _object_list(payload.get("formats")):
+            height = int(item.get("height") or 0)
+            width = int(item.get("width") or 0)
+            codec = str(item.get("vcodec") or "none")
+            if height <= 0 or codec == "none":
+                continue
+            available.append(
+                {
+                    "format_id": str(item.get("format_id") or ""),
+                    "width": width,
+                    "height": height,
+                    "fps": float(item.get("fps") or 0.0),
+                    "codec": codec,
+                    "audio_codec": str(item.get("acodec") or "none"),
+                    "container": str(item.get("ext") or ""),
+                    "bitrate_kbps": float(item.get("tbr") or 0.0),
+                }
+            )
+        eligible = [item for item in available if item["height"] <= max_height]
+        if not eligible:
+            raise YouTubeError(f"no video format is available at or below {max_height}p")
+        mp4 = [item for item in eligible if item["container"] == "mp4"]
+        pool = mp4 or eligible
+        selected = max(
+            pool,
+            key=lambda item: (
+                int(item["height"]),
+                int(item["width"]),
+                float(item["bitrate_kbps"]),
+                float(item["fps"]),
+            ),
+        )
+        available.sort(
+            key=lambda item: (int(item["height"]), float(item["bitrate_kbps"])), reverse=True
+        )
+        return selected, available
+
     def download_media(self, video: VideoCandidate, work_dir: Path) -> Path:
         work_dir.mkdir(parents=True, exist_ok=True)
         output = work_dir / f"{video.video_id}.mp4"
+        metadata_path = output.with_suffix(".source.json")
         if output.is_file() and output.stat().st_size > 0:
             return output
+        info = _json_object(
+            _run(
+                [
+                    "yt-dlp",
+                    "--dump-single-json",
+                    "--skip-download",
+                    "--no-warnings",
+                    video.url,
+                ],
+                timeout=180,
+            ).stdout
+        )
+        selected, available = self._select_video_format(info, self.max_height)
+        format_id = str(selected["format_id"])
         command = [
             "yt-dlp",
             "--no-playlist",
             "--no-warnings",
             "-f",
-            "bv*[height<=1080]+ba/b[height<=1080]",
+            f"{format_id}+ba[ext=m4a]/{format_id}+ba/{format_id}",
             "--merge-output-format",
             "mp4",
             "-o",
             str(output),
             video.url,
         ]
-        _run(command)
+        _run(command, timeout=1800)
         if not output.is_file() or output.stat().st_size == 0:
             raise YouTubeError(f"yt-dlp completed without creating {output}")
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "max_height": self.max_height,
+                    "selected": selected,
+                    "available_formats": available,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         return output

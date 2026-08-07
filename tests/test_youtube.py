@@ -73,14 +73,46 @@ def test_ytdlp_discovery_and_downloads(tmp_path: Path) -> None:
         assert client.download_subtitles(video, tmp_path, "en") == subtitle
 
     media = tmp_path / "v1.mp4"
+    format_payload = {
+        "formats": [
+            {
+                "format_id": "401",
+                "height": 2160,
+                "width": 3840,
+                "fps": 24,
+                "vcodec": "av01",
+                "acodec": "none",
+                "ext": "mp4",
+                "tbr": 4500,
+            },
+            {
+                "format_id": "137",
+                "height": 1080,
+                "width": 1920,
+                "fps": 24,
+                "vcodec": "avc1",
+                "acodec": "none",
+                "ext": "mp4",
+                "tbr": 1900,
+            },
+        ]
+    }
+    calls: list[list[str]] = []
 
-    def fake_media(*_args, **_kwargs):
+    def fake_media(command, **_kwargs):
+        calls.append(command)
+        if "--dump-single-json" in command:
+            return Mock(stdout=json.dumps(format_payload))
         media.write_bytes(b"video")
         return Mock(stdout="")
 
     with patch("clipper.youtube._run", side_effect=fake_media):
         assert client.download_media(video, tmp_path) == media
         assert client.download_media(video, tmp_path) == media
+    assert any("401+ba[ext=m4a]" in item for item in calls[-1])
+    evidence = json.loads(media.with_suffix(".source.json").read_text())
+    assert evidence["selected"]["height"] == 2160
+    assert evidence["selected"]["format_id"] == "401"
 
 
 def test_ytdlp_missing_and_run_errors() -> None:
@@ -153,8 +185,68 @@ def test_download_subtitle_and_media_failure_paths(tmp_path: Path) -> None:
         assert client.download_subtitles(video, tmp_path, "en") is None
     with patch("clipper.youtube._run", return_value=Mock(stdout="")):
         assert client.download_subtitles(video, tmp_path, "en") is None
+    format_payload = {
+        "formats": [
+            {
+                "format_id": "137",
+                "height": 1080,
+                "width": 1920,
+                "fps": 24,
+                "vcodec": "avc1",
+                "acodec": "none",
+                "ext": "mp4",
+                "tbr": 1900,
+            }
+        ]
+    }
     with (
-        patch("clipper.youtube._run", return_value=Mock(stdout="")),
+        patch(
+            "clipper.youtube._run",
+            side_effect=[Mock(stdout=json.dumps(format_payload)), Mock(stdout="")],
+        ),
         pytest.raises(YouTubeError, match="without creating"),
     ):
         client.download_media(video, tmp_path)
+
+
+def test_format_selection_honors_configured_height_and_prefers_mp4() -> None:
+    payload = {
+        "formats": [
+            {
+                "format_id": "313",
+                "height": 2160,
+                "width": 3840,
+                "vcodec": "vp9",
+                "acodec": "none",
+                "ext": "webm",
+                "tbr": 10000,
+            },
+            {
+                "format_id": "401",
+                "height": 2160,
+                "width": 3840,
+                "vcodec": "av01",
+                "acodec": "none",
+                "ext": "mp4",
+                "tbr": 4500,
+            },
+            {
+                "format_id": "400",
+                "height": 1440,
+                "width": 2560,
+                "vcodec": "av01",
+                "acodec": "none",
+                "ext": "mp4",
+                "tbr": 2100,
+            },
+        ]
+    }
+    selected, available = YouTubeClient._select_video_format(payload, 2160)
+    assert selected["format_id"] == "401"
+    selected_1440, _ = YouTubeClient._select_video_format(payload, 1440)
+    assert selected_1440["format_id"] == "400"
+    assert available[0]["height"] == 2160
+    with pytest.raises(YouTubeError, match="no video format"):
+        YouTubeClient._select_video_format(payload, 360)
+    with pytest.raises(YouTubeError, match="max_height"):
+        YouTubeClient(None, max_height=200)

@@ -209,7 +209,7 @@ def main() -> int:
 
     run_dir = run_pipeline(
         brief_path,
-        settings=PipelineSettings(artifact_root=output_root / "pipeline"),
+        settings=PipelineSettings(artifact_root=output_root / "pipeline", render_profile="smoke"),
         source_client=SmokeSource(source_path, subtitle_path),
         render=True,
     )
@@ -233,8 +233,11 @@ def main() -> int:
     if not tracking_path.is_file():
         raise RuntimeError("speaker-framing evidence was not generated")
     tracking = json.loads(tracking_path.read_text(encoding="utf-8"))
-    if float(tracking.get("zoom_factor", 0)) <= 1.0:
-        raise RuntimeError("speaker framing plan did not apply a zoom")
+    if abs(float(tracking.get("zoom_factor", 0)) - 1.0) > 1e-6:
+        raise RuntimeError("speaker framing plan discarded source pixels with a base digital zoom")
+    image_quality = tracking.get("image_quality") or {}
+    if image_quality.get("digital_zoom_used") is not False:
+        raise RuntimeError("tracking evidence reports digital zoom")
     if tracking.get("framing_mode") != "speaker_locked_portrait":
         raise RuntimeError("render did not use speaker-locked portrait framing")
     if tracking.get("background_fill") != "none":
@@ -250,6 +253,16 @@ def main() -> int:
         raise RuntimeError("tracking plan did not record portrait crop dimensions")
     if abs(crop_width / crop_height - 9 / 16) > 0.01:
         raise RuntimeError("tracking crop is not approximately 9:16")
+    render_path = rendered_path.with_suffix(".render.json")
+    if not render_path.is_file():
+        raise RuntimeError("render profile evidence was not generated")
+    render_evidence = json.loads(render_path.read_text(encoding="utf-8"))
+    if render_evidence.get("profile") != "smoke":
+        raise RuntimeError("container smoke did not use the smoke render profile")
+    if render_evidence.get("resampling_stages") != 1:
+        raise RuntimeError("container smoke introduced redundant image resampling")
+    if render_evidence.get("post_upscale_punch_in") is not False:
+        raise RuntimeError("container smoke reintroduced post-upscale punch-in")
 
     _run(["ffmpeg", "-v", "error", "-i", str(rendered_path), "-f", "null", "-"])
     probe = _probe(rendered_path)

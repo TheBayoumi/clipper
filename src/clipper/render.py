@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .captions import create_word_reveal_ass
@@ -21,6 +22,27 @@ class RenderError(RuntimeError):
     """Raised when FFmpeg cannot produce a clip."""
 
 
+@dataclass(frozen=True, slots=True)
+class RenderProfile:
+    name: str
+    preset: str
+    crf: int
+
+
+RENDER_PROFILES: dict[str, RenderProfile] = {
+    "smoke": RenderProfile("smoke", "ultrafast", 23),
+    "review": RenderProfile("review", "medium", 18),
+    "production": RenderProfile("production", "slow", 17),
+}
+
+
+def render_profile(name: str) -> RenderProfile:
+    try:
+        return RENDER_PROFILES[name]
+    except KeyError as exc:
+        raise RenderError(f"unsupported render profile: {name}") from exc
+
+
 def _escape_filter_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
 
@@ -33,11 +55,22 @@ def build_ffmpeg_command(
     *,
     watermark_path: str | Path | None = None,
     tracking_plan: TrackingPlan | None = None,
-    zoom_factor: float = 1.12,
+    zoom_factor: float = 1.0,
     width: int = 1080,
     height: int = 1920,
     edit_plan: EditPlan | None = None,
+    profile: str = "production",
 ) -> list[str]:
+    active_profile = render_profile(profile)
+    if edit_plan is not None and any(
+        beat.beat_type in {"punch_in", "punch_out"} and beat.strength > 0
+        for beat in edit_plan.beats
+    ):
+        raise RenderError(
+            "digital punch-ins are disabled until they can be planned directly "
+            "in source-pixel crop space"
+        )
+
     escaped_subtitles = _escape_filter_path(Path(subtitle_path))
     target_aspect = width / height
     zoom = tracking_plan.zoom_factor if tracking_plan is not None else zoom_factor
@@ -63,27 +96,10 @@ def build_ffmpeg_command(
         crop_h = f"trunc(min(ih,iw/{target_aspect:.8f})/{zoom:.6f}/2)*2"
         crop_filter = f"crop=w='{crop_w}':h='{crop_h}':x='{crop_x}':y='{crop_y}'"
 
-    framed = f"[0:v]{crop_filter},scale={width}:{height}:flags=lanczos[framed]"
-    punch_beats = (
-        [beat for beat in edit_plan.beats if beat.beat_type == "punch_in" and beat.strength > 0]
-        if edit_plan is not None
-        else []
+    base_filter = (
+        f"[0:v]{crop_filter},scale={width}:{height}:flags=lanczos,"
+        f"subtitles='{escaped_subtitles}',fps=30[captioned]"
     )
-    if punch_beats:
-        strength = max(beat.strength for beat in punch_beats)
-        zoom_width = round(width * (1.0 + strength) / 2) * 2
-        zoom_height = round(height * (1.0 + strength) / 2) * 2
-        enable = "+".join(f"between(t,{beat.start:.3f},{beat.end:.3f})" for beat in punch_beats)
-        base_filter = (
-            framed
-            + ";[framed]split=2[base][zoomsrc]"
-            + f";[zoomsrc]scale={zoom_width}:{zoom_height}:flags=lanczos,"
-            + f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2[zoomed]"
-            + f";[base][zoomed]overlay=0:0:enable='{enable}'[edited]"
-            + f";[edited]subtitles='{escaped_subtitles}',fps=30[captioned]"
-        )
-    else:
-        base_filter = framed + f";[framed]subtitles='{escaped_subtitles}',fps=30[captioned]"
     inputs = [
         "ffmpeg",
         "-hide_banner",
@@ -119,9 +135,9 @@ def build_ffmpeg_command(
         "-c:v",
         "libx264",
         "-preset",
-        "ultrafast",
+        active_profile.preset,
         "-crf",
-        "20",
+        str(active_profile.crf),
         "-threads",
         "1",
         "-c:a",
@@ -139,12 +155,16 @@ class FFmpegRenderer:
         self,
         *,
         speaker_focus: bool = True,
-        zoom_factor: float = 1.12,
+        zoom_factor: float = 1.0,
         speaker_sample_fps: float = 4.0,
         speaker_switch_margin: float = 1.35,
-        speaker_transition_seconds: float = 0.22,
+        speaker_min_reframe_seconds: float = 0.35,
+        speaker_max_reframe_seconds: float = 0.9,
+        speaker_seconds_per_crop: float = 0.75,
+        speaker_hold_threshold: float = 0.28,
         speaker_window_seconds: float = 0.8,
         speaker_min_detection_coverage: float = 0.35,
+        profile: str = "production",
     ) -> None:
         if not shutil.which("ffmpeg"):
             raise RenderError("ffmpeg is not installed or not on PATH")
@@ -154,17 +174,27 @@ class FFmpegRenderer:
             raise RenderError("speaker_sample_fps must be between 1 and 12")
         if not 1.0 <= speaker_switch_margin <= 3.0:
             raise RenderError("speaker_switch_margin must be between 1.0 and 3.0")
-        if not 0.0 <= speaker_transition_seconds <= 1.0:
-            raise RenderError("speaker_transition_seconds must be between 0.0 and 1.0")
+        if not 0.2 <= speaker_min_reframe_seconds <= 1.0:
+            raise RenderError("speaker_min_reframe_seconds must be between 0.2 and 1.0")
+        if not speaker_min_reframe_seconds <= speaker_max_reframe_seconds <= 1.5:
+            raise RenderError("speaker_max_reframe_seconds is invalid")
+        if not 0.1 <= speaker_seconds_per_crop <= 2.0:
+            raise RenderError("speaker_seconds_per_crop must be between 0.1 and 2.0")
+        if not 0.05 <= speaker_hold_threshold <= 0.75:
+            raise RenderError("speaker_hold_threshold must be between 0.05 and 0.75")
         if not 0.4 <= speaker_window_seconds <= 2.0:
             raise RenderError("speaker_window_seconds must be between 0.4 and 2.0")
         if not 0.1 <= speaker_min_detection_coverage <= 1.0:
             raise RenderError("speaker_min_detection_coverage must be between 0.1 and 1.0")
+        self.profile = render_profile(profile)
         self.speaker_focus = speaker_focus
         self.zoom_factor = zoom_factor
         self.speaker_sample_fps = speaker_sample_fps
         self.speaker_switch_margin = speaker_switch_margin
-        self.speaker_transition_seconds = speaker_transition_seconds
+        self.speaker_min_reframe_seconds = speaker_min_reframe_seconds
+        self.speaker_max_reframe_seconds = speaker_max_reframe_seconds
+        self.speaker_seconds_per_crop = speaker_seconds_per_crop
+        self.speaker_hold_threshold = speaker_hold_threshold
         self.speaker_window_seconds = speaker_window_seconds
         self.speaker_min_detection_coverage = speaker_min_detection_coverage
 
@@ -194,7 +224,10 @@ class FFmpegRenderer:
                 zoom_factor=self.zoom_factor,
                 sample_fps=self.speaker_sample_fps,
                 switch_margin=self.speaker_switch_margin,
-                transition_seconds=self.speaker_transition_seconds,
+                min_reframe_seconds=self.speaker_min_reframe_seconds,
+                max_reframe_seconds=self.speaker_max_reframe_seconds,
+                seconds_per_crop=self.speaker_seconds_per_crop,
+                speaker_hold_threshold=self.speaker_hold_threshold,
                 decision_window_seconds=self.speaker_window_seconds,
                 min_detection_coverage=self.speaker_min_detection_coverage,
             )
@@ -220,13 +253,33 @@ class FFmpegRenderer:
             tracking_plan=tracking_plan,
             zoom_factor=self.zoom_factor,
             edit_plan=edit_plan,
+            profile=self.profile.name,
         )
         try:
-            subprocess.run(command, check=True, capture_output=True, text=True, timeout=900)
+            subprocess.run(command, check=True, capture_output=True, text=True, timeout=1800)
         except subprocess.CalledProcessError as exc:
             raise RenderError((exc.stderr or exc.stdout or str(exc))[-2000:]) from exc
         except subprocess.TimeoutExpired as exc:
-            raise RenderError("ffmpeg render timed out after 900 seconds") from exc
+            raise RenderError("ffmpeg render timed out after 1800 seconds") from exc
         if not output_path.is_file() or output_path.stat().st_size == 0:
             raise RenderError(f"ffmpeg did not create a valid output: {output_path}")
+        output_path.with_suffix(".render.json").write_text(
+            json.dumps(
+                {
+                    "profile": self.profile.name,
+                    "encoder": "libx264",
+                    "preset": self.profile.preset,
+                    "crf": self.profile.crf,
+                    "output_width": 1080,
+                    "output_height": 1920,
+                    "resampling_stages": 1,
+                    "digital_zoom_used": tracking_plan.zoom_factor > 1.0001,
+                    "post_upscale_punch_in": False,
+                    "source_to_output_generation_count": 1,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         return output_path

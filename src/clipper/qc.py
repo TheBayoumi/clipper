@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import subprocess
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -63,12 +64,70 @@ def _tracking_evidence(path: Path) -> dict[str, Any]:
     return {
         "framing_mode": payload.get("framing_mode"),
         "background_fill": payload.get("background_fill"),
+        "zoom_factor": payload.get("zoom_factor"),
+        "source_width": payload.get("source_width"),
+        "source_height": payload.get("source_height"),
         "crop_width": payload.get("crop_width"),
         "crop_height": payload.get("crop_height"),
         "speaker_tracks": payload.get("speaker_tracks"),
         "speaker_switches": payload.get("speaker_switches"),
         "reframe_events": payload.get("reframe_events"),
+        "transitions": payload.get("transitions") or [],
+        "source_cuts": payload.get("source_cuts") or [],
+        "image_quality": payload.get("image_quality") or {},
     }
+
+
+def _render_evidence(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _transition_issues(transitions: object) -> list[str]:
+    if not isinstance(transitions, list):
+        return ["tracking transition evidence is malformed"]
+    issues: list[str] = []
+    moving: list[dict[str, Any]] = []
+    for raw in transitions:
+        if not isinstance(raw, dict):
+            issues.append("tracking transition evidence is malformed")
+            continue
+        mode = str(raw.get("mode") or "")
+        reason = str(raw.get("reason") or "")
+        start = _float(raw.get("start"))
+        end = _float(raw.get("end"))
+        normalized = _float(raw.get("normalized_distance"))
+        target_visible_at = _float(raw.get("target_visible_at"), start)
+        if mode == "hold":
+            continue
+        moving.append(raw)
+        if reason == "source_cut" and mode != "hard_cut":
+            issues.append("source camera cut is incorrectly rendered as sliding crop motion")
+        if mode == "hard_cut" and end - start > 0.05:
+            issues.append("hard crop cut has a non-zero transition duration")
+        if mode == "eased_reframe":
+            duration = end - start
+            if duration <= 0:
+                issues.append("eased crop reframe has invalid duration")
+            elif normalized / duration > 1.0:
+                issues.append("crop reframe velocity exceeds one crop width per second")
+        if reason != "source_cut" and start + 0.05 < target_visible_at:
+            issues.append("crop starts reframing before the target face is visible")
+    for previous, current in pairwise(moving):
+        gap = _float(current.get("start")) - _float(previous.get("end"))
+        previous_dx = _float(previous.get("to_x")) - _float(previous.get("from_x"))
+        current_dx = _float(current.get("to_x")) - _float(current.get("from_x"))
+        if (
+            0 <= gap < 1.5
+            and previous_dx * current_dx < 0
+            and _float(previous.get("normalized_distance")) > 0.15
+            and _float(current.get("normalized_distance")) > 0.15
+        ):
+            issues.append("back-and-forth crop oscillation detected")
+            break
+    return issues
 
 
 def run_technical_qc(
@@ -83,10 +142,16 @@ def run_technical_qc(
     expected_width: int = 1080,
     expected_height: int = 1920,
     expected_fps: float = 30.0,
+    render_metadata_path: str | Path | None = None,
 ) -> dict[str, Any]:
     video = Path(video_path)
     caption = Path(caption_path)
     tracking = Path(tracking_path)
+    render_metadata = (
+        Path(render_metadata_path)
+        if render_metadata_path is not None
+        else video.with_suffix(".render.json")
+    )
     issues: list[str] = []
     if not video.is_file() or video.stat().st_size == 0:
         return {"status": "FAIL", "issues": ["rendered video is missing or empty"]}
@@ -98,7 +163,7 @@ def run_technical_qc(
             "-v",
             "error",
             "-show_entries",
-            "stream=index,codec_name,codec_type,width,height,r_frame_rate,duration:format=duration,size",
+            "stream=index,codec_name,codec_type,width,height,r_frame_rate,duration,bit_rate:format=duration,size,bit_rate",
             "-of",
             "json",
             str(video),
@@ -204,6 +269,21 @@ def run_technical_qc(
     )
     if not valid_crop:
         issues.append("tracking crop is not a valid portrait crop")
+    transition_issues = _transition_issues(tracking_info.get("transitions", []))
+    issues.extend(transition_issues)
+    image_quality = tracking_info.get("image_quality")
+    image_quality = image_quality if isinstance(image_quality, dict) else {}
+    max_crop_height = int(image_quality.get("max_portrait_crop_height") or 0)
+    if max_crop_height and crop_height < max_crop_height * 0.92:
+        issues.append("crop resolution is materially below the maximum portrait crop")
+    render_info = _render_evidence(render_metadata)
+    if render_info:
+        if int(render_info.get("resampling_stages") or 0) > 1:
+            issues.append("render uses more than one image resampling stage")
+        if bool(render_info.get("post_upscale_punch_in")):
+            issues.append("render uses prohibited post-upscale digital punch-in")
+        if bool(render_info.get("digital_zoom_used")):
+            issues.append("render uses digital zoom that discards source pixels")
     if watermark_required and not watermark_present:
         issues.append("required campaign watermark was not supplied to renderer")
     return {
@@ -220,6 +300,9 @@ def run_technical_qc(
             "video_codec": video_stream.get("codec_name") if video_stream else None,
             "audio_codec": audio_stream.get("codec_name") if audio_stream else None,
             "decode_pass": decode_pass,
+            "bit_rate_bps": _float(
+                (video_stream or {}).get("bit_rate") or payload.get("format", {}).get("bit_rate")
+            ),
         },
         "audio": {**loudness, "silence_events_seconds": silence_events},
         "captions": {
@@ -230,6 +313,22 @@ def run_technical_qc(
             "timing_mode": timing_mode,
             "word_exact": timing_mode == "word_exact",
         },
-        "framing": {**tracking_info, "no_filler_pass": no_filler, "valid_crop_pass": valid_crop},
+        "framing": {
+            **tracking_info,
+            "no_filler_pass": no_filler,
+            "valid_crop_pass": valid_crop,
+            "transition_qc_pass": not transition_issues,
+        },
+        "image_quality": {
+            **image_quality,
+            "resampling_stages": render_info.get("resampling_stages") if render_info else None,
+            "digital_zoom_used": render_info.get("digital_zoom_used") if render_info else None,
+            "render_profile": render_info.get("profile") if render_info else None,
+            "encoder_preset": render_info.get("preset") if render_info else None,
+            "crf": render_info.get("crf") if render_info else None,
+            "output_bit_rate_bps": _float(
+                (video_stream or {}).get("bit_rate") or payload.get("format", {}).get("bit_rate")
+            ),
+        },
         "watermark": {"required": watermark_required, "renderer_asset_present": watermark_present},
     }

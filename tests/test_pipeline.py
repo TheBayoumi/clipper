@@ -4,12 +4,19 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment, VideoCandidate
+from clipper.models import (
+    CampaignBrief,
+    ClipCandidate,
+    PipelineManifest,
+    TranscriptSegment,
+    VideoCandidate,
+)
 from clipper.pipeline import (
     PipelineSettings,
     _campaign_media_candidates,
     _download_asset,
     _normalize_asset_url,
+    _record_source_media_metadata,
     run_pipeline,
 )
 
@@ -139,7 +146,12 @@ def test_pipeline_asr_no_render_and_environment(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("CLIPPER_SPEAKER_ZOOM", "1.18")
     monkeypatch.setenv("CLIPPER_SPEAKER_SAMPLE_FPS", "6")
     monkeypatch.setenv("CLIPPER_SPEAKER_SWITCH_MARGIN", "1.5")
-    monkeypatch.setenv("CLIPPER_SPEAKER_TRANSITION_SECONDS", "0.3")
+    monkeypatch.setenv("CLIPPER_SOURCE_MAX_HEIGHT", "1440")
+    monkeypatch.setenv("CLIPPER_RENDER_PROFILE", "review")
+    monkeypatch.setenv("CLIPPER_SPEAKER_MIN_REFRAME_SECONDS", "0.3")
+    monkeypatch.setenv("CLIPPER_SPEAKER_MAX_REFRAME_SECONDS", "0.8")
+    monkeypatch.setenv("CLIPPER_SPEAKER_SECONDS_PER_CROP", "0.7")
+    monkeypatch.setenv("CLIPPER_SPEAKER_HOLD_THRESHOLD", "0.25")
     monkeypatch.setenv("CLIPPER_SPEAKER_WINDOW_SECONDS", "0.9")
     monkeypatch.setenv("CLIPPER_SPEAKER_MIN_DETECTION_COVERAGE", "0.4")
 
@@ -149,7 +161,12 @@ def test_pipeline_asr_no_render_and_environment(tmp_path: Path, monkeypatch) -> 
     assert settings.speaker_zoom == 1.18
     assert settings.speaker_sample_fps == 6.0
     assert settings.speaker_switch_margin == 1.5
-    assert settings.speaker_transition_seconds == 0.3
+    assert settings.source_max_height == 1440
+    assert settings.render_profile == "review"
+    assert settings.speaker_min_reframe_seconds == 0.3
+    assert settings.speaker_max_reframe_seconds == 0.8
+    assert settings.speaker_seconds_per_crop == 0.7
+    assert settings.speaker_hold_threshold == 0.25
     assert settings.speaker_window_seconds == 0.9
     assert settings.speaker_min_detection_coverage == 0.4
     with patch(
@@ -453,3 +470,21 @@ def test_pipeline_reuses_transcript_and_editorial_cache(tmp_path: Path) -> None:
     assert manifest["performance"]["wall_seconds"] >= 0
     assert manifest["run_metadata"]["git_commit_sha"]
     assert manifest["run_metadata"]["transcript_hashes"]["allowed"]
+
+
+def test_pipeline_records_selected_source_format_metadata(tmp_path: Path) -> None:
+    media = tmp_path / "source.mp4"
+    media.write_bytes(b"video")
+    metadata = media.with_suffix(".source.json")
+    metadata.write_text(
+        json.dumps({"selected": {"format_id": "401", "height": 2160}, "max_height": 2160}),
+        encoding="utf-8",
+    )
+    manifest = PipelineManifest("campaign")
+    _record_source_media_metadata(manifest, "video", media)
+    assert manifest.run_metadata["source_media"]["video"]["selected"]["height"] == 2160
+
+    metadata.write_text("not-json", encoding="utf-8")
+    before = dict(manifest.run_metadata["source_media"])
+    _record_source_media_metadata(manifest, "broken", media)
+    assert manifest.run_metadata["source_media"] == before
