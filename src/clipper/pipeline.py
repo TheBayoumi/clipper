@@ -104,6 +104,7 @@ class PipelineSettings:
     speaker_max_reframe_seconds: float = 0.9
     speaker_seconds_per_crop: float = 0.75
     speaker_hold_threshold: float = 0.28
+    speaker_reversal_guard_seconds: float = 1.25
     speaker_window_seconds: float = 0.8
     speaker_min_detection_coverage: float = 0.35
     cache_root: Path | None = None
@@ -135,6 +136,9 @@ class PipelineSettings:
             ),
             speaker_seconds_per_crop=float(os.getenv("CLIPPER_SPEAKER_SECONDS_PER_CROP", "0.75")),
             speaker_hold_threshold=float(os.getenv("CLIPPER_SPEAKER_HOLD_THRESHOLD", "0.28")),
+            speaker_reversal_guard_seconds=float(
+                os.getenv("CLIPPER_SPEAKER_REVERSAL_GUARD_SECONDS", "1.25")
+            ),
             speaker_window_seconds=float(os.getenv("CLIPPER_SPEAKER_WINDOW_SECONDS", "0.8")),
             speaker_min_detection_coverage=float(
                 os.getenv("CLIPPER_SPEAKER_MIN_DETECTION_COVERAGE", "0.35")
@@ -406,6 +410,7 @@ def run_pipeline(
             speaker_max_reframe_seconds=cfg.speaker_max_reframe_seconds,
             speaker_seconds_per_crop=cfg.speaker_seconds_per_crop,
             speaker_hold_threshold=cfg.speaker_hold_threshold,
+            speaker_reversal_guard_seconds=cfg.speaker_reversal_guard_seconds,
             speaker_window_seconds=cfg.speaker_window_seconds,
             speaker_min_detection_coverage=cfg.speaker_min_detection_coverage,
             profile=cfg.render_profile,

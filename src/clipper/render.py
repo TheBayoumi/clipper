@@ -162,6 +162,7 @@ class FFmpegRenderer:
         speaker_max_reframe_seconds: float = 0.9,
         speaker_seconds_per_crop: float = 0.75,
         speaker_hold_threshold: float = 0.28,
+        speaker_reversal_guard_seconds: float = 1.25,
         speaker_window_seconds: float = 0.8,
         speaker_min_detection_coverage: float = 0.35,
         profile: str = "production",
@@ -182,6 +183,8 @@ class FFmpegRenderer:
             raise RenderError("speaker_seconds_per_crop must be between 0.1 and 2.0")
         if not 0.05 <= speaker_hold_threshold <= 0.75:
             raise RenderError("speaker_hold_threshold must be between 0.05 and 0.75")
+        if not 0.25 <= speaker_reversal_guard_seconds <= 3.0:
+            raise RenderError("speaker_reversal_guard_seconds must be between 0.25 and 3.0")
         if not 0.4 <= speaker_window_seconds <= 2.0:
             raise RenderError("speaker_window_seconds must be between 0.4 and 2.0")
         if not 0.1 <= speaker_min_detection_coverage <= 1.0:
@@ -195,6 +198,7 @@ class FFmpegRenderer:
         self.speaker_max_reframe_seconds = speaker_max_reframe_seconds
         self.speaker_seconds_per_crop = speaker_seconds_per_crop
         self.speaker_hold_threshold = speaker_hold_threshold
+        self.speaker_reversal_guard_seconds = speaker_reversal_guard_seconds
         self.speaker_window_seconds = speaker_window_seconds
         self.speaker_min_detection_coverage = speaker_min_detection_coverage
 
@@ -228,6 +232,7 @@ class FFmpegRenderer:
                 max_reframe_seconds=self.speaker_max_reframe_seconds,
                 seconds_per_crop=self.speaker_seconds_per_crop,
                 speaker_hold_threshold=self.speaker_hold_threshold,
+                speaker_reversal_guard_seconds=self.speaker_reversal_guard_seconds,
                 decision_window_seconds=self.speaker_window_seconds,
                 min_detection_coverage=self.speaker_min_detection_coverage,
             )

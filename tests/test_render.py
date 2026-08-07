@@ -97,6 +97,8 @@ def test_renderer_requires_ffmpeg_and_valid_speaker_settings() -> None:
             FFmpegRenderer(speaker_hold_threshold=0.01)
         with pytest.raises(RenderError, match="render profile"):
             FFmpegRenderer(profile="bad")
+        with pytest.raises(RenderError, match="speaker_reversal_guard_seconds"):
+            FFmpegRenderer(speaker_reversal_guard_seconds=0.1)
         with pytest.raises(RenderError, match="speaker_window_seconds"):
             FFmpegRenderer(speaker_window_seconds=0.1)
         with pytest.raises(RenderError, match="speaker_min_detection_coverage"):

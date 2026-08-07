@@ -152,6 +152,7 @@ def test_pipeline_asr_no_render_and_environment(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("CLIPPER_SPEAKER_MAX_REFRAME_SECONDS", "0.8")
     monkeypatch.setenv("CLIPPER_SPEAKER_SECONDS_PER_CROP", "0.7")
     monkeypatch.setenv("CLIPPER_SPEAKER_HOLD_THRESHOLD", "0.25")
+    monkeypatch.setenv("CLIPPER_SPEAKER_REVERSAL_GUARD_SECONDS", "1.4")
     monkeypatch.setenv("CLIPPER_SPEAKER_WINDOW_SECONDS", "0.9")
     monkeypatch.setenv("CLIPPER_SPEAKER_MIN_DETECTION_COVERAGE", "0.4")
 
@@ -167,6 +168,7 @@ def test_pipeline_asr_no_render_and_environment(tmp_path: Path, monkeypatch) -> 
     assert settings.speaker_max_reframe_seconds == 0.8
     assert settings.speaker_seconds_per_crop == 0.7
     assert settings.speaker_hold_threshold == 0.25
+    assert settings.speaker_reversal_guard_seconds == 1.4
     assert settings.speaker_window_seconds == 0.9
     assert settings.speaker_min_detection_coverage == 0.4
     with patch(

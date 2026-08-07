@@ -205,6 +205,7 @@ Technical PASS does not imply editorial PASS. Actual final MP4 review remains a 
 | `CLIPPER_SPEAKER_MAX_REFRAME_SECONDS` | `0.9` | Maximum eased same-speaker subject reframe duration |
 | `CLIPPER_SPEAKER_SECONDS_PER_CROP` | `0.75` | Additional ease duration per crop-width of movement |
 | `CLIPPER_SPEAKER_HOLD_THRESHOLD` | `0.28` | Small same-shot speaker displacement that should hold instead of moving |
+| `CLIPPER_SPEAKER_REVERSAL_GUARD_SECONDS` | `1.25` | Suppress short-lived speaker switches that would immediately reverse |
 | `CLIPPER_SPEAKER_WINDOW_SECONDS` | `0.8` | Active-speaker decision window |
 | `CLIPPER_SPEAKER_MIN_DETECTION_COVERAGE` | `0.35` | Reject sparse cut/graphic detections |
 

@@ -232,6 +232,45 @@ def test_same_shot_small_speaker_change_holds_instead_of_panning() -> None:
     assert anchors[0].x == anchors[-1].x == 100.0
 
 
+def test_transient_speaker_reversal_is_held_to_prevent_camera_whiplash() -> None:
+    windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 2.25), _SpeakerWindow(2.25, 4))
+    anchors, transitions, reframes = _speaker_locked_anchors(
+        4.0,
+        windows,
+        (0, 1, 0),
+        ((100.0, 0.0), (400.0, 0.0), (110.0, 0.0)),
+        (0.0, 2.0, 2.25),
+        (230.0, 0.0),
+        crop_width=202,
+        crop_height=358,
+        speaker_reversal_guard_seconds=1.25,
+    )
+    assert reframes == 0
+    assert all(item.mode == "hold" for item in transitions)
+    assert anchors[0].x == anchors[-1].x == 100.0
+
+
+def test_persistent_large_speaker_change_is_a_single_hard_cut() -> None:
+    windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 3), _SpeakerWindow(3, 4))
+    anchors, transitions, reframes = _speaker_locked_anchors(
+        4.0,
+        windows,
+        (0, 1, 1),
+        ((100.0, 0.0), (400.0, 0.0), (405.0, 0.0)),
+        (0.0, 2.0, 3.0),
+        (230.0, 0.0),
+        crop_width=202,
+        crop_height=358,
+        speaker_reversal_guard_seconds=1.25,
+    )
+    moving = [item for item in transitions if item.mode != "hold"]
+    assert reframes == 1
+    assert len(moving) == 1
+    assert moving[0].reason == "speaker_change"
+    assert moving[0].mode == "hard_cut"
+    assert anchors[-1].x == 400.0
+
+
 def test_source_camera_cut_changes_crop_as_hard_cut_without_slide() -> None:
     windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 4))
     anchors, transitions, reframes = _speaker_locked_anchors(

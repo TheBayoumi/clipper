@@ -443,6 +443,31 @@ def _speaker_window_ready_time(track: _TrackState, window: _SpeakerWindow) -> fl
     return min(times) if times else window.start
 
 
+def _speaker_change_reverses_soon(
+    index: int,
+    current_id: int | None,
+    windows: tuple[_SpeakerWindow, ...],
+    assignments: tuple[int | None, ...],
+    source_cuts: tuple[float, ...],
+    guard_seconds: float,
+) -> bool:
+    candidate_id = assignments[index]
+    if current_id is None or candidate_id is None or candidate_id == current_id:
+        return False
+    switch_time = windows[index].start
+    for future_index in range(index + 1, len(windows)):
+        future_time = windows[future_index].start
+        if future_time - switch_time > guard_seconds:
+            break
+        future_id = assignments[future_index]
+        if future_id is None or future_id == candidate_id:
+            continue
+        if any(switch_time < cut <= future_time for cut in source_cuts):
+            return False
+        return future_id == current_id
+    return False
+
+
 def _speaker_locked_anchors(
     clip_duration: float,
     windows: tuple[_SpeakerWindow, ...],
@@ -458,6 +483,7 @@ def _speaker_locked_anchors(
     max_reframe_seconds: float = 0.9,
     seconds_per_crop: float = 0.75,
     speaker_hold_threshold: float = 0.28,
+    speaker_reversal_guard_seconds: float = 1.25,
 ) -> tuple[tuple[FaceAnchor, ...], tuple[CameraTransition, ...], int]:
     current = next((target for target in targets if target is not None), fallback)
     current_id = next(
@@ -473,8 +499,8 @@ def _speaker_locked_anchors(
     reframe_events = 0
     dead_zone_x = max(24.0, crop_width * 0.18)
     dead_zone_y = max(18.0, crop_height * 0.08)
-    for window, track_id, target, ready_time in zip(
-        windows, assignments, targets, ready_times, strict=True
+    for index, (window, track_id, target, ready_time) in enumerate(
+        zip(windows, assignments, targets, ready_times, strict=True)
     ):
         if target is None:
             continue
@@ -488,6 +514,33 @@ def _speaker_locked_anchors(
         composition_changed = dx > dead_zone_x or dy > dead_zone_y
         switch_at = _clamp(max(window.start, ready_time), 0.0, clip_duration)
         nearby_cut = _nearest_source_cut(source_cuts, switch_at)
+        reverses_soon = speaker_changed and _speaker_change_reverses_soon(
+            index,
+            current_id,
+            windows,
+            assignments,
+            source_cuts,
+            speaker_reversal_guard_seconds,
+        )
+
+        if reverses_soon:
+            transitions.append(
+                CameraTransition(
+                    "speaker_change",
+                    switch_at,
+                    switch_at,
+                    distance,
+                    crop_width,
+                    normalized,
+                    "hold",
+                    current[0],
+                    current[1],
+                    target[0],
+                    target[1],
+                    ready_time,
+                )
+            )
+            continue
 
         if speaker_changed and nearby_cut is None and normalized <= speaker_hold_threshold:
             transitions.append(
@@ -644,6 +697,7 @@ def plan_speaker_crop(
     max_reframe_seconds: float = 0.9,
     seconds_per_crop: float = 0.75,
     speaker_hold_threshold: float = 0.28,
+    speaker_reversal_guard_seconds: float = 1.25,
     decision_window_seconds: float = 0.8,
     min_detection_coverage: float = 0.35,
     target_aspect: float = DEFAULT_TARGET_ASPECT,
@@ -796,6 +850,7 @@ def plan_speaker_crop(
         max_reframe_seconds=max_reframe_seconds,
         seconds_per_crop=seconds_per_crop,
         speaker_hold_threshold=speaker_hold_threshold,
+        speaker_reversal_guard_seconds=speaker_reversal_guard_seconds,
     )
     switches = sum(
         1
