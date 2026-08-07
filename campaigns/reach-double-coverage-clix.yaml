@@ -1,0 +1,41 @@
+campaign_id: reach-double-coverage-clix-04640c98
+title: Double Coverage x Clix Podcast Clipping Campaign
+objective: Create high-retention short-form clips from the authorized Clix episode of Double Coverage while preserving context and portraying Double Coverage positively.
+keywords:
+  - Clix
+  - Fortnite
+  - earnings
+  - money
+  - Ferrari
+  - school
+  - streaming
+  - esports
+  - business
+negative_keywords: []
+required_phrases: []
+language: en
+region_code: US
+clip_count: 3
+min_clip_seconds: 20
+max_clip_seconds: 45
+source_limit: 1
+max_clips_per_source: 3
+published_after: "2026-07-30T00:00:00Z"
+source_channel_ids:
+  - UCf1q6dhccWr6eQEcFFnJSbA
+allowed_video_ids:
+  - 2Y4LP85PTak
+source_media_urls:
+  2Y4LP85PTak: "https://drive.google.com/file/d/1lg6dyurhMaIvOtX7NFDHkmN1TE7BnJ0E/view"
+rights_confirmed: true
+attribution_required: true
+watermark_text: null
+watermark_url: "https://drive.google.com/file/d/1bVsR2jUqmP5i61TuFWo0NzN7_0dSLAou/view?usp=sharing"
+required_hashtags:
+  - "#DoubleCoverage"
+posting_requirements:
+  - Publish only to campaign-supported short-form platforms.
+  - Audience must be at least 50% from native English-speaking target countries.
+  - Minimum 15,000 views are required for campaign payout.
+  - Do not use botted views or AI-generated source content.
+  - Do not portray Double Coverage negatively.

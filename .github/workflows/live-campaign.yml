@@ -1,0 +1,68 @@
+name: Live campaign acceptance
+
+on:
+  push:
+    branches:
+      - feat/whop-youtube-clipping-pipeline
+    paths:
+      - ".github/workflows/live-campaign.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-campaign:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build exact candidate image
+        run: docker build -t clipper-live:${GITHUB_SHA} .
+
+      - name: Run Reach campaign through Clipper using campaign-supplied media
+        run: |
+          mkdir -p live-artifacts
+          docker run --rm \
+            --env CLIPPER_WHISPER_MODEL=base.en \
+            --env CLIPPER_WHISPER_DEVICE=cpu \
+            --env CLIPPER_WHISPER_COMPUTE_TYPE=int8 \
+            -v "$PWD/campaigns:/campaigns:ro" \
+            -v "$PWD/live-artifacts:/artifacts" \
+            clipper-live:${GITHUB_SHA} \
+            run --brief /campaigns/reach-double-coverage-clix.yaml --artifact-root /artifacts
+
+      - name: Validate rendered campaign output
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifests = list(Path("live-artifacts").glob("*/manifest.json"))
+          if len(manifests) != 1:
+              raise SystemExit(f"expected one manifest, found {len(manifests)}")
+          manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+          if manifest["errors"]:
+              raise SystemExit(f"pipeline errors: {manifest['errors']}")
+          if not manifest["planned_clips"]:
+              raise SystemExit("no clips were planned")
+          if not manifest["rendered_clips"]:
+              raise SystemExit("no clips were rendered")
+          print(json.dumps(manifest, indent=2))
+          PY
+
+          clip="$(find live-artifacts -path '*/clips/*.mp4' -type f | sort | head -n 1)"
+          test -n "$clip"
+          ffmpeg -v error -i "$clip" -f null -
+          ffprobe -v error -show_streams -show_format -of json "$clip" > live-artifacts/ffprobe.json
+          ffmpeg -v error -ss 2 -i "$clip" -frames:v 1 -y live-artifacts/preview.png
+
+      - name: Upload live acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reach-live-${{ github.sha }}
+          path: live-artifacts/
+          retention-days: 14
+          if-no-files-found: error
