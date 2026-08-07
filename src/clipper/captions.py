@@ -190,8 +190,8 @@ def create_word_reveal_ass(
         f"1,0,0,0,100,100,0,0,1,4,0,8,90,90,{hook_margin},1"
     )
     header = (
-        f"; TimingMode: {timing_mode}\n"
         "[Script Info]\n"
+        f"; TimingMode: {timing_mode}\n"
         "ScriptType: v4.00+\n"
         f"PlayResX: {width}\n"
         f"PlayResY: {height}\n"
