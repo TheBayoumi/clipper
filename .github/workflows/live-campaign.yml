@@ -1,6 +1,11 @@
 name: Live campaign acceptance
 
 on:
+  push:
+    branches:
+      - feat/whop-youtube-clipping-pipeline
+    paths:
+      - ".github/workflows/live-campaign.yml"
   workflow_dispatch:
 
 permissions:
