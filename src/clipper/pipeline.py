@@ -177,7 +177,9 @@ def run_pipeline(
     else:
         discovered = source.discover(brief)
         discovered_ids = {video.video_id for video in discovered}
-        discovered.extend(video for video in direct_candidates if video.video_id not in discovered_ids)
+        discovered.extend(
+            video for video in direct_candidates if video.video_id not in discovered_ids
+        )
     allowed: list[VideoCandidate] = []
     for video in discovered:
         try:
