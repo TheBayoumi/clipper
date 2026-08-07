@@ -98,7 +98,9 @@ def _normalize_asset_url(url: str) -> str:
 
 def _download_asset(url: str, output_path: Path, *, max_bytes: int = 10_000_000) -> Path:
     normalized = _normalize_asset_url(url)
-    request = Request(normalized, headers={"User-Agent": "whop-clipper/0.1"})
+    request = Request(  # noqa: S310 -- _normalize_asset_url enforces HTTPS.
+        normalized, headers={"User-Agent": "whop-clipper/0.1"}
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(output_path.suffix + ".part")
     size = 0
