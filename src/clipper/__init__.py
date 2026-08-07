@@ -1,6 +1,6 @@
 """Automated, rights-gated campaign clipping pipeline."""
 
-from .models import CampaignBrief, ClipCandidate, TranscriptSegment, VideoCandidate
+from .models import CampaignBrief, ClipCandidate, TranscriptSegment, TranscriptWord, VideoCandidate
 from .pipeline import PipelineSettings, run_pipeline
 
 __all__ = [
@@ -8,6 +8,7 @@ __all__ = [
     "ClipCandidate",
     "PipelineSettings",
     "TranscriptSegment",
+    "TranscriptWord",
     "VideoCandidate",
     "run_pipeline",
 ]

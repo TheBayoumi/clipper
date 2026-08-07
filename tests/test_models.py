@@ -1,6 +1,6 @@
 import pytest
 
-from clipper.models import BriefValidationError, CampaignBrief, TranscriptSegment
+from clipper.models import BriefValidationError, CampaignBrief, TranscriptSegment, TranscriptWord
 
 
 def valid_data() -> dict:
@@ -50,13 +50,20 @@ def test_brief_rejects_bad_root_and_missing_fields() -> None:
 
 
 def test_transcript_segment_validation() -> None:
-    segment = TranscriptSegment(1, 2.5, "hello")
+    word = TranscriptWord(1.1, 1.5, "hello")
+    assert word.duration == pytest.approx(0.4)
+    assert word.to_dict()["text"] == "hello"
+    segment = TranscriptSegment(1, 2.5, "hello", (word,))
     assert segment.duration == 1.5
     assert segment.to_dict()["text"] == "hello"
     with pytest.raises(ValueError, match="timestamps"):
         TranscriptSegment(2, 1, "bad")
     with pytest.raises(ValueError, match="empty"):
         TranscriptSegment(0, 1, " ")
+    with pytest.raises(ValueError, match="word timestamps"):
+        TranscriptWord(2, 1, "bad")
+    with pytest.raises(ValueError, match="word text"):
+        TranscriptWord(0, 1, " ")
 
 
 def test_optional_list_none_becomes_empty_but_requires_other_allowlist() -> None:

@@ -12,6 +12,7 @@ license = {text = "MIT"}
 authors = [{name = "Mahmoud Bayoumi"}]
 dependencies = [
   "gdown>=6.1.0,<7",
+  "opencv-python-headless>=4.10,<5",
   "PyYAML>=6.0.3,<7",
   "yt-dlp>=2026.7.4,<2027",
 ]

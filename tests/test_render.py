@@ -1,36 +1,38 @@
+import json
 from pathlib import Path
 from subprocess import CalledProcessError, TimeoutExpired
 from unittest.mock import Mock, patch
 
 import pytest
 
-from clipper.models import ClipCandidate, TranscriptSegment
-from clipper.render import FFmpegRenderer, RenderError, build_ffmpeg_command, create_srt
+from clipper.models import ClipCandidate, TranscriptSegment, TranscriptWord
+from clipper.render import FFmpegRenderer, RenderError, build_ffmpeg_command
+from clipper.tracking import FaceAnchor, TrackingPlan
 
 
-def test_create_srt_rebases_and_clamps_segments(tmp_path: Path) -> None:
-    clip = ClipCandidate("v", 10, 20, "text", 1)
-    segments = [
-        TranscriptSegment(8, 12, "first"),
-        TranscriptSegment(15, 22, "second"),
-        TranscriptSegment(30, 31, "outside"),
-    ]
-    path = create_srt(clip, segments, tmp_path / "captions.srt")
-    text = path.read_text(encoding="utf-8")
-    assert "00:00:00,000 --> 00:00:02,000" in text
-    assert "00:00:05,000 --> 00:00:10,000" in text
-    assert "outside" not in text
-
-
-def test_build_ffmpeg_command_contains_vertical_and_audio_filters(tmp_path: Path) -> None:
+def test_build_ffmpeg_command_contains_tracking_vertical_and_audio_filters(tmp_path: Path) -> None:
     clip = ClipCandidate("v", 1.25, 31.5, "text", 1)
-    command = build_ffmpeg_command("source.mp4", "out.mp4", clip, tmp_path / "x:y.srt")
+    plan = TrackingPlan(
+        1.12,
+        1280,
+        720,
+        (FaceAnchor(0.0, 20.0, 10.0), FaceAnchor(1.0, 40.0, 20.0)),
+        True,
+    )
+    command = build_ffmpeg_command(
+        "source.mp4",
+        "out.mp4",
+        clip,
+        tmp_path / "x:y.ass",
+        tracking_plan=plan,
+    )
     joined = " ".join(command)
     assert "scale=1080:1920" in joined
     assert "scale=360:640" in joined
     assert "gblur=sigma=18" in joined
-    assert "FontSize=10" in joined
-    assert "MarginV=28" in joined
+    assert "crop=iw/1.120000:ih/1.120000" in joined
+    assert "if(lt(t,1.000)" in joined
+    assert "subtitles=" in joined
     assert "loudnorm=I=-14" in joined
     assert ";[captioned]format=yuv420p[v]" in joined
     assert "libx264" in command
@@ -40,6 +42,14 @@ def test_build_ffmpeg_command_contains_vertical_and_audio_filters(tmp_path: Path
     assert "30.250" in command
 
 
+def test_build_ffmpeg_command_uses_static_center_zoom_without_tracking(tmp_path: Path) -> None:
+    clip = ClipCandidate("v", 0, 20, "text", 1)
+    command = build_ffmpeg_command("source.mp4", "out.mp4", clip, tmp_path / "captions.ass")
+    joined = " ".join(command)
+    assert "x='(iw-ow)/2'" in joined
+    assert "y='(ih-oh)/2'" in joined
+
+
 def test_build_ffmpeg_command_overlays_campaign_watermark(tmp_path: Path) -> None:
     clip = ClipCandidate("v", 0, 20, "text", 1)
     watermark = tmp_path / "watermark.png"
@@ -47,7 +57,7 @@ def test_build_ffmpeg_command_overlays_campaign_watermark(tmp_path: Path) -> Non
         "source.mp4",
         "out.mp4",
         clip,
-        tmp_path / "captions.srt",
+        tmp_path / "captions.ass",
         watermark_path=watermark,
     )
     joined = " ".join(command)
@@ -56,28 +66,56 @@ def test_build_ffmpeg_command_overlays_campaign_watermark(tmp_path: Path) -> Non
     assert "overlay=W-w-48:48" in joined
 
 
-def test_renderer_requires_ffmpeg() -> None:
+def test_renderer_requires_ffmpeg_and_valid_tracking_settings() -> None:
     with patch("clipper.render.shutil.which", return_value=None), pytest.raises(RenderError):
         FFmpegRenderer()
+    with patch("clipper.render.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with pytest.raises(RenderError, match="zoom_factor"):
+            FFmpegRenderer(zoom_factor=1.5)
+        with pytest.raises(RenderError, match="face_sample_fps"):
+            FFmpegRenderer(face_sample_fps=20)
 
 
-def test_renderer_success_and_failures(tmp_path: Path) -> None:
+def test_renderer_success_writes_ass_and_tracking_evidence(tmp_path: Path) -> None:
     clip = ClipCandidate("v", 0, 10, "text", 1)
-    segments = [TranscriptSegment(0, 10, "caption")]
+    segments = [
+        TranscriptSegment(
+            0,
+            2,
+            "caption now",
+            (TranscriptWord(0, 0.8, "caption"), TranscriptWord(1.0, 1.8, "now")),
+        )
+    ]
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
-
     with patch("clipper.render.shutil.which", return_value="/usr/bin/ffmpeg"):
         renderer = FFmpegRenderer()
-
     output = tmp_path / "ok.mp4"
+    plan = TrackingPlan(1.12, 640, 360, (FaceAnchor(0, 10, 5),), True)
 
     def success(*_args, **_kwargs):
         output.write_bytes(b"video")
         return Mock()
 
-    with patch("clipper.render.subprocess.run", side_effect=success):
+    with (
+        patch("clipper.render.track_face_crop", return_value=plan),
+        patch("clipper.render.subprocess.run", side_effect=success),
+    ):
         assert renderer.render(source, output, clip, segments) == output
+    assert r"{\ko" in output.with_suffix(".ass").read_text(encoding="utf-8")
+    tracking = json.loads(output.with_suffix(".tracking.json").read_text(encoding="utf-8"))
+    assert tracking["face_detected"] is True
+    assert tracking["zoom_factor"] == 1.12
+
+
+def test_renderer_failures(tmp_path: Path) -> None:
+    clip = ClipCandidate("v", 0, 10, "text", 1)
+    segments = [TranscriptSegment(0, 10, "caption")]
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    plan = TrackingPlan(1.12, 640, 360)
+    with patch("clipper.render.shutil.which", return_value="/usr/bin/ffmpeg"):
+        renderer = FFmpegRenderer(face_tracking=False)
 
     with (
         patch(
@@ -100,14 +138,11 @@ def test_renderer_success_and_failures(tmp_path: Path) -> None:
     ):
         renderer.render(source, tmp_path / "missing.mp4", clip, segments)
 
-
-def test_create_srt_strips_youtube_speaker_marker(tmp_path: Path) -> None:
-    clip = ClipCandidate("v", 0, 8, "text", 1)
-    path = create_srt(
+    command = build_ffmpeg_command(
+        source,
+        tmp_path / "unused.mp4",
         clip,
-        [TranscriptSegment(0, 4, ">> Speaker turn starts here.")],
-        tmp_path / "speaker.srt",
+        tmp_path / "captions.ass",
+        tracking_plan=plan,
     )
-    content = path.read_text(encoding="utf-8")
-    assert ">>" not in content
-    assert "Speaker turn starts here." in content
+    assert "crop=iw/1.120000" in " ".join(command)

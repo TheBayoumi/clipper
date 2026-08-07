@@ -159,10 +159,31 @@ class VideoCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class TranscriptWord:
+    start: float
+    end: float
+    text: str
+
+    def __post_init__(self) -> None:
+        if self.start < 0 or self.end <= self.start:
+            raise ValueError("transcript word timestamps are invalid")
+        if not self.text.strip():
+            raise ValueError("transcript word text cannot be empty")
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class TranscriptSegment:
     start: float
     end: float
     text: str
+    words: tuple[TranscriptWord, ...] = ()
 
     def __post_init__(self) -> None:
         if self.start < 0 or self.end <= self.start:

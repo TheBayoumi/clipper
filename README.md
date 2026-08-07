@@ -9,7 +9,7 @@ A production-oriented, rights-gated pipeline that turns a Whop Content Rewards b
 3. Retrieve timestamped captions when available; otherwise run local Faster-Whisper ASR.
 4. Score sentence-aligned windows against campaign keywords, required phrases, hook strength, duration, and negative terms.
 5. Select diverse clips across source videos.
-6. Render 1080x1920 H.264 clips with blurred background fill, burned captions, and EBU-style loudness normalization.
+6. Render 1080x1920 H.264 clips with blurred background fill, word-synced reveal captions, smoothed face-tracked zoom, and EBU-style loudness normalization.
 7. Save a manifest containing source URLs, timestamps, scores, errors, and output paths.
 
 ## Non-negotiable source policy
@@ -40,10 +40,13 @@ Timed subtitles ---- unavailable ----> Faster-Whisper ASR
                 diversity selector
                          |
                          v
+      face tracker + word-timed ASS captions
+                         |
+                         v
               FFmpeg vertical renderer
                          |
                          v
-          clips/*.mp4 + manifest.json
+ clips/*.mp4 + *.ass + *.tracking.json + manifest.json
 ```
 
 ## Requirements
@@ -85,7 +88,8 @@ artifacts/<campaign-id>-<UTC timestamp>/
 ├── manifest.json
 ├── clips/
 │   ├── 01-<youtube-id>.mp4
-│   └── 01-<youtube-id>.srt
+│   ├── 01-<youtube-id>.ass
+│   └── 01-<youtube-id>.tracking.json
 └── work/<youtube-id>/
     ├── transcript.json
     ├── clip-candidates.json
@@ -101,10 +105,14 @@ artifacts/<campaign-id>-<UTC timestamp>/
 | `CLIPPER_WHISPER_MODEL` | `small` | Faster-Whisper model |
 | `CLIPPER_WHISPER_DEVICE` | `auto` | `cpu`, `cuda`, or `auto` |
 | `CLIPPER_WHISPER_COMPUTE_TYPE` | `int8` | ASR precision/performance trade-off |
+| `CLIPPER_FACE_TRACKING` | `true` | Enable sampled face tracking with center fallback |
+| `CLIPPER_FACE_ZOOM` | `1.12` | Subtle tracked crop zoom; renderer accepts 1.0–1.35 |
+| `CLIPPER_FACE_SAMPLE_FPS` | `4.0` | Face-detection sampling rate; crop motion is interpolated |
 
 ### Resource implications
 
-- Caption-backed runs avoid ASR and are cheap.
+- YouTube auto-caption word timestamps are preserved when available; otherwise caption words are time-distributed within each cue.
+- Face detection runs on downscaled sampled frames and produces a smoothed crop path; missing faces fall back to a stable center crop.
 - `small` Faster-Whisper is suitable for CPU fallback; `medium`/`large-v3` require substantially more RAM/VRAM and increase latency.
 - Source media dominates storage. Each run is isolated under `artifacts/`; delete old `work/` directories after final QC.
 - FFmpeg rendering is CPU-heavy. Parallel rendering is deliberately not enabled yet to avoid uncontrolled RAM and I/O spikes.

@@ -226,6 +226,15 @@ def main() -> int:
     rendered_path = Path(rendered[0]["output_path"])
     if not rendered_path.is_file() or rendered_path.stat().st_size < 100_000:
         raise RuntimeError("rendered MP4 is absent or unexpectedly small")
+    caption_path = rendered_path.with_suffix(".ass")
+    if not caption_path.is_file() or r"{\ko" not in caption_path.read_text(encoding="utf-8"):
+        raise RuntimeError("word-reveal ASS captions were not generated")
+    tracking_path = rendered_path.with_suffix(".tracking.json")
+    if not tracking_path.is_file():
+        raise RuntimeError("face-tracking evidence was not generated")
+    tracking = json.loads(tracking_path.read_text(encoding="utf-8"))
+    if float(tracking.get("zoom_factor", 0)) <= 1.0:
+        raise RuntimeError("tracking plan did not apply a zoom")
 
     _run(["ffmpeg", "-v", "error", "-i", str(rendered_path), "-f", "null", "-"])
     probe = _probe(rendered_path)
@@ -260,6 +269,9 @@ def main() -> int:
         "clip_sha256": _sha256(clip_path),
         "clip_size_bytes": clip_path.stat().st_size,
         "preview": str(preview_path),
+        "caption_path": str(caption_path),
+        "tracking_path": str(tracking_path),
+        "tracking": tracking,
         "probe": probe,
         "manifest": manifest,
     }

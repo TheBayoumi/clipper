@@ -134,9 +134,15 @@ def test_pipeline_asr_no_render_and_environment(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("CLIPPER_WHISPER_MODEL", "tiny")
     monkeypatch.setenv("CLIPPER_WHISPER_DEVICE", "cpu")
     monkeypatch.setenv("CLIPPER_WHISPER_COMPUTE_TYPE", "int8")
+    monkeypatch.setenv("CLIPPER_FACE_TRACKING", "false")
+    monkeypatch.setenv("CLIPPER_FACE_ZOOM", "1.18")
+    monkeypatch.setenv("CLIPPER_FACE_SAMPLE_FPS", "6")
 
     settings = PipelineSettings.from_env()
     assert settings.whisper_model == "tiny"
+    assert settings.face_tracking is False
+    assert settings.face_zoom == 1.18
+    assert settings.face_sample_fps == 6.0
     with patch(
         "clipper.pipeline.transcribe_with_faster_whisper",
         return_value=[TranscriptSegment(0, 9, "automation saves time.")],

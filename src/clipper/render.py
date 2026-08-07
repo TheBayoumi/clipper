@@ -1,50 +1,18 @@
 from __future__ import annotations
 
-import re
+import json
 import shutil
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
+from .captions import create_word_reveal_ass
 from .models import ClipCandidate, TranscriptSegment
+from .tracking import TrackingPlan, track_face_crop, tracking_expressions
 
 
 class RenderError(RuntimeError):
     """Raised when FFmpeg cannot produce a clip."""
-
-
-def _srt_timestamp(seconds: float) -> str:
-    milliseconds = round(max(0.0, seconds) * 1000)
-    hours, remainder = divmod(milliseconds, 3_600_000)
-    minutes, remainder = divmod(remainder, 60_000)
-    secs, millis = divmod(remainder, 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
-
-
-def create_srt(
-    clip: ClipCandidate,
-    segments: Sequence[TranscriptSegment],
-    output_path: str | Path,
-) -> Path:
-    output = Path(output_path)
-    lines: list[str] = []
-    index = 1
-    for segment in segments:
-        start = max(segment.start, clip.start)
-        end = min(segment.end, clip.end)
-        if end <= start:
-            continue
-        lines.extend(
-            [
-                str(index),
-                f"{_srt_timestamp(start - clip.start)} --> {_srt_timestamp(end - clip.start)}",
-                re.sub(r"^>>\s*", "", segment.text.strip()),
-                "",
-            ]
-        )
-        index += 1
-    output.write_text("\n".join(lines), encoding="utf-8")
-    return output
 
 
 def _escape_filter_path(path: Path) -> str:
@@ -58,22 +26,31 @@ def build_ffmpeg_command(
     subtitle_path: str | Path,
     *,
     watermark_path: str | Path | None = None,
+    tracking_plan: TrackingPlan | None = None,
+    zoom_factor: float = 1.12,
     width: int = 1080,
     height: int = 1920,
 ) -> list[str]:
     escaped_subtitles = _escape_filter_path(Path(subtitle_path))
     blur_width = max(180, width // 3)
     blur_height = max(320, height // 3)
+    zoom = tracking_plan.zoom_factor if tracking_plan is not None else zoom_factor
+    if zoom > 1.0:
+        crop_x, crop_y = tracking_expressions(tracking_plan)
+        foreground = (
+            f"[fg]crop=iw/{zoom:.6f}:ih/{zoom:.6f}:x='{crop_x}':y='{crop_y}',"
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
+        )
+    else:
+        foreground = f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
+
     base_filter = (
         f"[0:v]split=2[bg][fg];"
         f"[bg]scale={blur_width}:{blur_height}:force_original_aspect_ratio=increase,"
         f"crop={blur_width}:{blur_height},gblur=sigma=18,scale={width}:{height}[bg2];"
-        f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
-        f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,"
-        f"subtitles='{escaped_subtitles}':"
-        "force_style='FontName=DejaVu Sans,FontSize=10,Alignment=2,"
-        "MarginV=28,MarginL=24,MarginR=24,Outline=2,Shadow=0,"
-        "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000',fps=30[captioned]"
+        + foreground
+        + f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,subtitles='{escaped_subtitles}',"
+        "fps=30[captioned]"
     )
     inputs = [
         "ffmpeg",
@@ -126,9 +103,22 @@ def build_ffmpeg_command(
 
 
 class FFmpegRenderer:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        face_tracking: bool = True,
+        zoom_factor: float = 1.12,
+        face_sample_fps: float = 4.0,
+    ) -> None:
         if not shutil.which("ffmpeg"):
             raise RenderError("ffmpeg is not installed or not on PATH")
+        if not 1.0 <= zoom_factor <= 1.35:
+            raise RenderError("zoom_factor must be between 1.0 and 1.35")
+        if not 1.0 <= face_sample_fps <= 12.0:
+            raise RenderError("face_sample_fps must be between 1 and 12")
+        self.face_tracking = face_tracking
+        self.zoom_factor = zoom_factor
+        self.face_sample_fps = face_sample_fps
 
     def render(
         self,
@@ -139,14 +129,30 @@ class FFmpegRenderer:
         watermark_path: Path | None = None,
     ) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        subtitle_path = output_path.with_suffix(".srt")
-        create_srt(clip, segments, subtitle_path)
+        subtitle_path = output_path.with_suffix(".ass")
+        create_word_reveal_ass(clip, segments, subtitle_path)
+        tracking_plan = (
+            track_face_crop(
+                source_path,
+                clip,
+                zoom_factor=self.zoom_factor,
+                sample_fps=self.face_sample_fps,
+            )
+            if self.face_tracking
+            else TrackingPlan(self.zoom_factor, 0, 0)
+        )
+        output_path.with_suffix(".tracking.json").write_text(
+            json.dumps(tracking_plan.to_dict(), indent=2) + "\n",
+            encoding="utf-8",
+        )
         command = build_ffmpeg_command(
             source_path,
             output_path,
             clip,
             subtitle_path,
             watermark_path=watermark_path,
+            tracking_plan=tracking_plan,
+            zoom_factor=self.zoom_factor,
         )
         try:
             subprocess.run(command, check=True, capture_output=True, text=True, timeout=900)

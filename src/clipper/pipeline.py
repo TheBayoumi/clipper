@@ -55,12 +55,22 @@ class Renderer(Protocol):
     ) -> Path: ...
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 @dataclass(frozen=True, slots=True)
 class PipelineSettings:
     artifact_root: Path = Path("artifacts")
     whisper_model: str = "small"
     whisper_device: str = "auto"
     whisper_compute_type: str = "int8"
+    face_tracking: bool = True
+    face_zoom: float = 1.12
+    face_sample_fps: float = 4.0
 
     @classmethod
     def from_env(cls) -> PipelineSettings:
@@ -69,6 +79,9 @@ class PipelineSettings:
             whisper_model=os.getenv("CLIPPER_WHISPER_MODEL", "small"),
             whisper_device=os.getenv("CLIPPER_WHISPER_DEVICE", "auto"),
             whisper_compute_type=os.getenv("CLIPPER_WHISPER_COMPUTE_TYPE", "int8"),
+            face_tracking=_env_bool("CLIPPER_FACE_TRACKING", True),
+            face_zoom=float(os.getenv("CLIPPER_FACE_ZOOM", "1.12")),
+            face_sample_fps=float(os.getenv("CLIPPER_FACE_SAMPLE_FPS", "4.0")),
         )
 
 
@@ -183,7 +196,15 @@ def run_pipeline(
     assert_campaign_authorized(brief)
     cfg = settings or PipelineSettings.from_env()
     source = source_client or YouTubeClient()
-    active_renderer = renderer or (FFmpegRenderer() if render else None)
+    active_renderer = renderer or (
+        FFmpegRenderer(
+            face_tracking=cfg.face_tracking,
+            zoom_factor=cfg.face_zoom,
+            face_sample_fps=cfg.face_sample_fps,
+        )
+        if render
+        else None
+    )
 
     run_dir = cfg.artifact_root / _run_id(brief.campaign_id)
     work_dir = run_dir / "work"
