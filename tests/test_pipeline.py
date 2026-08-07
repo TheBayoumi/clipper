@@ -232,9 +232,7 @@ def test_pipeline_downloads_required_watermark(tmp_path: Path) -> None:
 
 
 def test_campaign_asset_url_normalization_and_validation() -> None:
-    normalized = _normalize_asset_url(
-        "https://drive.google.com/file/d/abc123/view?usp=sharing"
-    )
+    normalized = _normalize_asset_url("https://drive.google.com/file/d/abc123/view?usp=sharing")
     assert normalized.startswith("https://drive.usercontent.google.com/download?")
     assert "id=abc123" in normalized
     assert "export=download" in normalized
