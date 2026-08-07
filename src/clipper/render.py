@@ -62,16 +62,18 @@ def build_ffmpeg_command(
     height: int = 1920,
 ) -> list[str]:
     escaped_subtitles = _escape_filter_path(Path(subtitle_path))
+    blur_width = max(180, width // 3)
+    blur_height = max(320, height // 3)
     base_filter = (
         f"[0:v]split=2[bg][fg];"
-        f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
-        f"crop={width}:{height},gblur=sigma=28[bg2];"
+        f"[bg]scale={blur_width}:{blur_height}:force_original_aspect_ratio=increase,"
+        f"crop={blur_width}:{blur_height},gblur=sigma=18,scale={width}:{height}[bg2];"
         f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
         f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,"
         f"subtitles='{escaped_subtitles}':"
-        "force_style='FontName=DejaVu Sans,FontSize=18,Alignment=2,"
-        "MarginV=150,Outline=3,Shadow=0,PrimaryColour=&H00FFFFFF,"
-        "OutlineColour=&H00000000',fps=30[captioned]"
+        "force_style='FontName=DejaVu Sans,FontSize=10,Alignment=2,"
+        "MarginV=28,MarginL=24,MarginR=24,Outline=2,Shadow=0,"
+        "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000',fps=30[captioned]"
     )
     inputs = [
         "ffmpeg",
@@ -108,9 +110,11 @@ def build_ffmpeg_command(
         "-c:v",
         "libx264",
         "-preset",
-        "medium",
+        "ultrafast",
         "-crf",
         "20",
+        "-threads",
+        "1",
         "-c:a",
         "aac",
         "-b:a",

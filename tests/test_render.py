@@ -27,9 +27,15 @@ def test_build_ffmpeg_command_contains_vertical_and_audio_filters(tmp_path: Path
     command = build_ffmpeg_command("source.mp4", "out.mp4", clip, tmp_path / "x:y.srt")
     joined = " ".join(command)
     assert "scale=1080:1920" in joined
+    assert "scale=360:640" in joined
+    assert "gblur=sigma=18" in joined
+    assert "FontSize=10" in joined
+    assert "MarginV=28" in joined
     assert "loudnorm=I=-14" in joined
     assert ";[captioned]format=yuv420p[v]" in joined
     assert "libx264" in command
+    assert "ultrafast" in command
+    assert command[command.index("-threads") + 1] == "1"
     assert "1.250" in command
     assert "30.250" in command
 
