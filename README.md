@@ -120,7 +120,7 @@ Clipper separates encode speed from release quality:
 
 - `smoke`: `libx264`, `ultrafast`, CRF 23 — CI/container smoke only.
 - `review`: `libx264`, `medium`, CRF 18 — editorial review artifacts.
-- `production`: `libx264`, `slow`, CRF 17 — default production master.
+- `production`: `libx264`, `veryfast`, CRF 17 — default production master; selected from full-length 1080 acceptance tests to stay within the release runner memory envelope while preserving source pixels and one-generation rendering.
 
 Production composition performs one source crop followed by one Lanczos scale to `1080x1920`; there is no scale-then-zoom-then-crop path. Render/tracking sidecars record source resolution, crop resolution, effective scale, resampling-stage count, digital-zoom usage, profile, preset and CRF.
 

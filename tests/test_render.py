@@ -46,7 +46,7 @@ def test_build_ffmpeg_command_contains_speaker_locked_vertical_and_audio_filters
     assert "loudnorm=I=-14" in joined
     assert ";[captioned]format=yuv420p[v]" in joined
     assert "libx264" in command
-    assert "slow" in command
+    assert "veryfast" in command
     assert command[command.index("-crf") + 1] == "17"
     assert command[command.index("-threads") + 1] == "1"
     assert "1.250" in command
@@ -216,7 +216,7 @@ def test_render_profiles_separate_smoke_review_and_production(tmp_path: Path) ->
     for profile, preset, crf in (
         ("smoke", "ultrafast", "23"),
         ("review", "medium", "18"),
-        ("production", "slow", "17"),
+        ("production", "veryfast", "17"),
     ):
         command = build_ffmpeg_command(
             "source.mp4", "out.mp4", clip, tmp_path / "captions.ass", profile=profile

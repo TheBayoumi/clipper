@@ -32,7 +32,7 @@ class RenderProfile:
 RENDER_PROFILES: dict[str, RenderProfile] = {
     "smoke": RenderProfile("smoke", "ultrafast", 23),
     "review": RenderProfile("review", "medium", 18),
-    "production": RenderProfile("production", "slow", 17),
+    "production": RenderProfile("production", "veryfast", 17),
 }
 
 
