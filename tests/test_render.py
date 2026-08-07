@@ -93,3 +93,15 @@ def test_renderer_success_and_failures(tmp_path: Path) -> None:
         pytest.raises(RenderError, match="did not create"),
     ):
         renderer.render(source, tmp_path / "missing.mp4", clip, segments)
+
+
+def test_create_srt_strips_youtube_speaker_marker(tmp_path: Path) -> None:
+    clip = ClipCandidate("v", 0, 8, "text", 1)
+    path = create_srt(
+        clip,
+        [TranscriptSegment(0, 4, ">> Speaker turn starts here.")],
+        tmp_path / "speaker.srt",
+    )
+    content = path.read_text(encoding="utf-8")
+    assert ">>" not in content
+    assert "Speaker turn starts here." in content

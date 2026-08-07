@@ -74,3 +74,35 @@ def test_faster_whisper_adapter_filters_invalid_segments(tmp_path: Path) -> None
             language="en",
         )
     assert [(s.start, s.end, s.text) for s in segments] == [(0.0, 2.0, "hello")]
+
+
+def test_parse_youtube_rolling_vtt_drops_snapshots_and_repeated_leading_line() -> None:
+    text = """WEBVTT
+Kind: captions
+Language: en
+
+00:00:00.160 --> 00:00:02.310 align:start position:0%
+
+Like<00:00:00.400><c> you</c><00:00:00.480><c> ever</c>
+
+00:00:02.310 --> 00:00:02.320 align:start position:0%
+Like you ever
+
+00:00:02.320 --> 00:00:04.150 align:start position:0%
+Like you ever
+alive<00:00:02.720><c> surge</c><00:00:03.040><c> ticking</c>
+
+00:00:04.150 --> 00:00:04.160 align:start position:0%
+alive surge ticking
+
+00:00:04.160 --> 00:00:05.750 align:start position:0%
+alive surge ticking
+damage<00:00:04.480><c> or</c><00:00:04.720><c> you're</c><00:00:04.960><c> gone.</c>
+"""
+    segments = parse_vtt(text)
+    assert [segment.text for segment in segments] == [
+        "Like you ever",
+        "alive surge ticking",
+        "damage or you're gone.",
+    ]
+    assert all(segment.duration > 0.05 for segment in segments)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from collections.abc import Sequence
@@ -37,7 +38,7 @@ def create_srt(
             [
                 str(index),
                 f"{_srt_timestamp(start - clip.start)} --> {_srt_timestamp(end - clip.start)}",
-                segment.text.strip(),
+                re.sub(r"^>>\s*", "", segment.text.strip()),
                 "",
             ]
         )
