@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
 from pathlib import Path
-
-import cv2
+from typing import Any
 
 from .models import ClipCandidate
+
+cv2: Any = importlib.import_module("cv2")
 
 
 @dataclass(frozen=True, slots=True)
