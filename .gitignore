@@ -1,9 +1,11 @@
-# Bootstrap commit; implementation is developed through pull requests.
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 .venv/
 .env
 artifacts/

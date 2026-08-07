@@ -1,0 +1,28 @@
+campaign_id: example-whop-campaign
+title: AI automation founder clips
+objective: Find self-contained moments that explain a painful business problem and a practical fix.
+keywords:
+  - automation
+  - AI agent
+  - business
+negative_keywords:
+  - giveaway
+required_phrases: []
+language: en
+region_code: US
+clip_count: 3
+min_clip_seconds: 20
+max_clip_seconds: 45
+source_limit: 8
+max_clips_per_source: 1
+published_after: "2026-01-01T00:00:00Z"
+
+# Copy the exact source channel IDs or video IDs allowed by the Whop campaign brief.
+source_channel_ids:
+  - UC_REPLACE_WITH_AUTHORIZED_CHANNEL_ID
+allowed_video_ids: []
+
+# This must only be changed to true after checking the campaign permits clipping these sources.
+rights_confirmed: false
+attribution_required: true
+watermark_text: null
