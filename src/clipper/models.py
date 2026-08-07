@@ -41,7 +41,7 @@ class CampaignBrief:
     watermark_text: str | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "CampaignBrief":
+    def from_dict(cls, data: dict[str, Any]) -> CampaignBrief:
         if not isinstance(data, dict):
             raise BriefValidationError("brief root must be an object")
         required = ("campaign_id", "title", "objective", "keywords")

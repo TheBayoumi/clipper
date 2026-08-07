@@ -6,7 +6,6 @@ import pytest
 from clipper.brief import load_brief
 from clipper.models import BriefValidationError
 
-
 DATA = {
     "campaign_id": "c1",
     "title": "Title",

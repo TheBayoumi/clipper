@@ -58,7 +58,7 @@ class PipelineSettings:
     whisper_compute_type: str = "int8"
 
     @classmethod
-    def from_env(cls) -> "PipelineSettings":
+    def from_env(cls) -> PipelineSettings:
         return cls(
             artifact_root=Path(os.getenv("CLIPPER_ARTIFACT_ROOT", "artifacts")),
             whisper_model=os.getenv("CLIPPER_WHISPER_MODEL", "small"),

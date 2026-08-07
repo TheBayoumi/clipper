@@ -5,7 +5,6 @@ from unittest.mock import patch
 
 from clipper.transcript import load_vtt, parse_vtt, transcribe_with_faster_whisper
 
-
 VTT = """WEBVTT
 
 00:00:01.000 --> 00:00:03.500

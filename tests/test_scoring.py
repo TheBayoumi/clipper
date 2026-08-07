@@ -1,3 +1,5 @@
+from itertools import pairwise
+
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
 from clipper.scoring import score_transcript, select_diverse_clips
 
@@ -51,7 +53,7 @@ def test_overlapping_windows_are_deduplicated() -> None:
         TranscriptSegment(16, 24, "Another business result."),
     ]
     candidates = score_transcript(brief(), "v", segments, limit=10)
-    for left, right in zip(candidates, candidates[1:], strict=False):
+    for left, right in pairwise(candidates):
         intersection = max(0.0, min(left.end, right.end) - max(left.start, right.start))
         union = max(left.end, right.end) - min(left.start, right.start)
         assert intersection / union < 0.55
