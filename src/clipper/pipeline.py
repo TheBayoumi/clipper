@@ -94,7 +94,7 @@ class PipelineSettings:
     whisper_model: str = "small"
     whisper_device: str = "auto"
     whisper_compute_type: str = "int8"
-    source_max_height: int = 2160
+    source_max_height: int = 1080
     render_profile: str = "production"
     speaker_focus: bool = True
     speaker_zoom: float = 1.0
@@ -116,7 +116,7 @@ class PipelineSettings:
             whisper_model=os.getenv("CLIPPER_WHISPER_MODEL", "small"),
             whisper_device=os.getenv("CLIPPER_WHISPER_DEVICE", "auto"),
             whisper_compute_type=os.getenv("CLIPPER_WHISPER_COMPUTE_TYPE", "int8"),
-            source_max_height=int(os.getenv("CLIPPER_SOURCE_MAX_HEIGHT", "2160")),
+            source_max_height=int(os.getenv("CLIPPER_SOURCE_MAX_HEIGHT", "1080")),
             render_profile=os.getenv("CLIPPER_RENDER_PROFILE", "production").strip().lower(),
             speaker_focus=_env_bool(
                 "CLIPPER_SPEAKER_FOCUS", _env_bool("CLIPPER_FACE_TRACKING", True)

@@ -109,10 +109,10 @@ def test_ytdlp_discovery_and_downloads(tmp_path: Path) -> None:
     with patch("clipper.youtube._run", side_effect=fake_media):
         assert client.download_media(video, tmp_path) == media
         assert client.download_media(video, tmp_path) == media
-    assert any("401+ba[ext=m4a]" in item for item in calls[-1])
+    assert any("137+ba[ext=m4a]" in item for item in calls[-1])
     evidence = json.loads(media.with_suffix(".source.json").read_text())
-    assert evidence["selected"]["height"] == 2160
-    assert evidence["selected"]["format_id"] == "401"
+    assert evidence["selected"]["height"] == 1080
+    assert evidence["selected"]["format_id"] == "137"
 
 
 def test_ytdlp_missing_and_run_errors() -> None:

@@ -61,7 +61,7 @@ def _run(command: Sequence[str], *, timeout: int = 900) -> subprocess.CompletedP
 
 
 class YouTubeClient:
-    def __init__(self, api_key: str | None = None, *, max_height: int = 2160) -> None:
+    def __init__(self, api_key: str | None = None, *, max_height: int = 1080) -> None:
         self.api_key = api_key or os.getenv("YOUTUBE_API_KEY")
         if max_height < 360 or max_height > 4320:
             raise YouTubeError("max_height must be between 360 and 4320")

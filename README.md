@@ -38,7 +38,7 @@ The pipeline refuses unrestricted acquisition. Every brief must contain `source_
 
 For public campaign-authorized YouTube sources, Clipper requests available captions/media with `yt-dlp`; a YouTube Data API key is preferred for discovery. The user remains responsible for campaign terms, attribution, copyright permissions, and platform rules.
 
-Before production media download, Clipper inventories the authorized video's available streams and selects the highest practical MP4 video at or below `CLIPPER_SOURCE_MAX_HEIGHT` (default `2160`). The selected format ID, resolution, codec, bitrate, FPS and available alternatives are persisted beside the source media.
+Before production media download, Clipper inventories the authorized video's available streams and selects the highest practical MP4 video at or below `CLIPPER_SOURCE_MAX_HEIGHT` (default `1080`). The selected format ID, resolution, codec, bitrate, FPS and available alternatives are persisted beside the source media.
 
 ## V9 editorial model
 
@@ -195,7 +195,7 @@ Technical PASS does not imply editorial PASS. Actual final MP4 review remains a 
 | `CLIPPER_WHISPER_MODEL` | `small` | Faster-Whisper fallback model |
 | `CLIPPER_WHISPER_DEVICE` | `auto` | `cpu`, `cuda`, or `auto` |
 | `CLIPPER_WHISPER_COMPUTE_TYPE` | `int8` | ASR precision/performance |
-| `CLIPPER_SOURCE_MAX_HEIGHT` | `2160` | Maximum authorized YouTube source height considered for production |
+| `CLIPPER_SOURCE_MAX_HEIGHT` | `1080` | Practical default source height; raise explicitly on higher-memory production runners |
 | `CLIPPER_RENDER_PROFILE` | `production` | `smoke`, `review`, or `production` encoder profile |
 | `CLIPPER_SPEAKER_FOCUS` | `true` | Enable speaker-aware portrait framing |
 | `CLIPPER_SPEAKER_ZOOM` | `1.0` | Base portrait zoom; production default preserves maximum source pixels |
