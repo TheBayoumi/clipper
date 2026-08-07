@@ -1,0 +1,218 @@
+import json
+from pathlib import Path
+from subprocess import CompletedProcess
+from unittest.mock import patch
+
+from clipper.qc import _caption_margin, _float, _fps, _tracking_evidence, run_technical_qc
+
+
+def completed(returncode: int = 0, *, stdout: str = "", stderr: str = "") -> CompletedProcess[str]:
+    return CompletedProcess(["tool"], returncode, stdout, stderr)
+
+
+def fixtures(tmp_path: Path) -> tuple[Path, Path, Path]:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    ass = tmp_path / "clip.ass"
+    ass.write_text(
+        "; TimingMode: word_exact\n"
+        "Style: Default,DejaVu Sans,58,&H00FFFFFF,&HFFFFFFFF,&H00000000,&H80000000,"
+        "1,0,0,0,100,100,0,0,1,4,0,2,80,80,461,1\n",
+        encoding="utf-8",
+    )
+    tracking = tmp_path / "clip.tracking.json"
+    tracking.write_text(
+        json.dumps(
+            {
+                "framing_mode": "speaker_locked_portrait",
+                "background_fill": "none",
+                "crop_width": 360,
+                "crop_height": 640,
+                "speaker_tracks": 2,
+                "speaker_switches": 1,
+                "reframe_events": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return video, ass, tracking
+
+
+def probe_payload(*, audio: bool = True, width: int = 1080, height: int = 1920) -> str:
+    streams = [
+        {
+            "index": 0,
+            "codec_name": "h264",
+            "codec_type": "video",
+            "width": width,
+            "height": height,
+            "r_frame_rate": "30/1",
+            "duration": "20.0",
+        }
+    ]
+    if audio:
+        streams.append(
+            {
+                "index": 1,
+                "codec_name": "aac",
+                "codec_type": "audio",
+                "r_frame_rate": "0/0",
+                "duration": "20.0",
+            }
+        )
+    return json.dumps({"streams": streams, "format": {"duration": "20.0", "size": "123"}})
+
+
+def test_qc_passes_complete_vertical_render(tmp_path: Path) -> None:
+    video, ass, tracking = fixtures(tmp_path)
+    loud = '{"input_i":"-14.4","input_tp":"-1.2","input_lra":"2.3"}'
+    calls = iter(
+        [completed(stdout=probe_payload()), completed(), completed(stderr=loud), completed()]
+    )
+    with (
+        patch("clipper.qc.shutil.which", return_value="/usr/bin/tool"),
+        patch("clipper.qc._run", side_effect=lambda *_a, **_k: next(calls)),
+    ):
+        report = run_technical_qc(
+            video,
+            expected_duration=20,
+            caption_path=ass,
+            tracking_path=tracking,
+            caption_platform="tiktok",
+            watermark_required=True,
+            watermark_present=True,
+        )
+    assert report["status"] == "PASS" and report["issues"] == []
+    assert report["video"]["decode_pass"] is True
+    assert report["audio"]["integrated_lufs"] == -14.4
+    assert report["captions"]["bottom_margin_px"] == 461
+    assert report["captions"]["timing_mode"] == "word_exact"
+    assert report["captions"]["word_exact"] is True
+    assert report["framing"]["no_filler_pass"] is True
+
+
+def test_qc_rejects_missing_media_and_missing_tools(tmp_path: Path) -> None:
+    missing = run_technical_qc(
+        tmp_path / "none.mp4",
+        expected_duration=20,
+        caption_path=tmp_path / "none.ass",
+        tracking_path=tmp_path / "none.json",
+    )
+    assert missing["status"] == "FAIL"
+    video, ass, tracking = fixtures(tmp_path)
+    with patch("clipper.qc.shutil.which", return_value=None):
+        report = run_technical_qc(
+            video, expected_duration=20, caption_path=ass, tracking_path=tracking
+        )
+    assert "ffprobe/ffmpeg" in report["issues"][0]
+
+
+def test_qc_rejects_unreadable_probe(tmp_path: Path) -> None:
+    video, ass, tracking = fixtures(tmp_path)
+    with (
+        patch("clipper.qc.shutil.which", return_value="tool"),
+        patch("clipper.qc._run", return_value=completed(1, stderr="bad")),
+    ):
+        report = run_technical_qc(
+            video, expected_duration=20, caption_path=ass, tracking_path=tracking
+        )
+    assert report == {"status": "FAIL", "issues": ["ffprobe could not read rendered video"]}
+
+
+def test_qc_reports_geometry_audio_caption_tracking_and_watermark_failures(tmp_path: Path) -> None:
+    video, ass, tracking = fixtures(tmp_path)
+    ass.write_text("Style: Default,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,80,100,1\n")
+    tracking.write_text(
+        json.dumps({"background_fill": "blur", "crop_width": 100, "crop_height": 100})
+    )
+    bad_probe = json.dumps(
+        {
+            "streams": [
+                {
+                    "codec_name": "vp9",
+                    "codec_type": "video",
+                    "width": 720,
+                    "height": 1280,
+                    "r_frame_rate": "24/1",
+                },
+                {"codec_name": "mp3", "codec_type": "audio"},
+            ],
+            "format": {"duration": "17.5", "size": "1"},
+        }
+    )
+    loud = '{"input_i":"-25.0","input_tp":"0.1","input_lra":"9.0"}'
+    calls = iter(
+        [
+            completed(stdout=bad_probe),
+            completed(1, stderr="decode error"),
+            completed(stderr=loud),
+            completed(stderr="silence_duration: 2.50\nsilence_duration: 1.20"),
+        ]
+    )
+    with (
+        patch("clipper.qc.shutil.which", return_value="tool"),
+        patch("clipper.qc._run", side_effect=lambda *_a, **_k: next(calls)),
+    ):
+        report = run_technical_qc(
+            video,
+            expected_duration=20,
+            caption_path=ass,
+            tracking_path=tracking,
+            watermark_required=True,
+            watermark_present=False,
+        )
+    issues = " | ".join(report["issues"])
+    assert report["status"] == "FAIL"
+    for expected in (
+        "width",
+        "height",
+        "fps",
+        "codec",
+        "duration",
+        "decode",
+        "loudness",
+        "true peak",
+        "silence",
+        "caption",
+        "no-filler",
+        "portrait crop",
+        "watermark",
+    ):
+        assert expected in issues
+
+
+def test_qc_handles_no_audio_and_failed_loudness_parse(tmp_path: Path) -> None:
+    video, ass, tracking = fixtures(tmp_path)
+    no_audio_calls = iter([completed(stdout=probe_payload(audio=False)), completed()])
+    with (
+        patch("clipper.qc.shutil.which", return_value="tool"),
+        patch("clipper.qc._run", side_effect=lambda *_a, **_k: next(no_audio_calls)),
+    ):
+        no_audio = run_technical_qc(
+            video, expected_duration=20, caption_path=ass, tracking_path=tracking
+        )
+    assert "audio stream is missing" in no_audio["issues"]
+    bad_loud_calls = iter(
+        [completed(stdout=probe_payload()), completed(), completed(stderr="not json"), completed()]
+    )
+    with (
+        patch("clipper.qc.shutil.which", return_value="tool"),
+        patch("clipper.qc._run", side_effect=lambda *_a, **_k: next(bad_loud_calls)),
+    ):
+        bad_loud = run_technical_qc(
+            video, expected_duration=20, caption_path=ass, tracking_path=tracking
+        )
+    assert "objective loudness analysis failed" in bad_loud["issues"]
+
+
+def test_qc_helpers_handle_invalid_values_and_missing_evidence(tmp_path: Path) -> None:
+    assert _float("2.5") == 2.5 and _float(None, 3.0) == 3.0
+    assert _fps(None) == 0 and _fps("0/0") == 0 and _fps("25") == 25 and _fps("30000/1001") > 29
+    assert _caption_margin(tmp_path / "missing.ass") is None
+    malformed = tmp_path / "bad.ass"
+    malformed.write_text("Style: Default,short\n")
+    assert _caption_margin(malformed) is None
+    bad_number = tmp_path / "bad-number.ass"
+    bad_number.write_text("Style: Default," + ",".join(["x"] * 21) + ",oops,1\n")
+    assert _caption_margin(bad_number) is None
+    assert _tracking_evidence(tmp_path / "missing.json") == {}

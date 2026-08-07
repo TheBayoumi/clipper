@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .captions import create_word_reveal_ass
-from .models import ClipCandidate, TranscriptSegment
+from .models import ClipCandidate, EditPlan, TranscriptSegment
 from .tracking import (
     DEFAULT_TARGET_ASPECT,
     TrackingPlan,
@@ -36,6 +36,7 @@ def build_ffmpeg_command(
     zoom_factor: float = 1.12,
     width: int = 1080,
     height: int = 1920,
+    edit_plan: EditPlan | None = None,
 ) -> list[str]:
     escaped_subtitles = _escape_filter_path(Path(subtitle_path))
     target_aspect = width / height
@@ -62,10 +63,27 @@ def build_ffmpeg_command(
         crop_h = f"trunc(min(ih,iw/{target_aspect:.8f})/{zoom:.6f}/2)*2"
         crop_filter = f"crop=w='{crop_w}':h='{crop_h}':x='{crop_x}':y='{crop_y}'"
 
-    base_filter = (
-        f"[0:v]{crop_filter},scale={width}:{height}:flags=lanczos,"
-        f"subtitles='{escaped_subtitles}',fps=30[captioned]"
+    framed = f"[0:v]{crop_filter},scale={width}:{height}:flags=lanczos[framed]"
+    punch_beats = (
+        [beat for beat in edit_plan.beats if beat.beat_type == "punch_in" and beat.strength > 0]
+        if edit_plan is not None
+        else []
     )
+    if punch_beats:
+        strength = max(beat.strength for beat in punch_beats)
+        zoom_width = round(width * (1.0 + strength) / 2) * 2
+        zoom_height = round(height * (1.0 + strength) / 2) * 2
+        enable = "+".join(f"between(t,{beat.start:.3f},{beat.end:.3f})" for beat in punch_beats)
+        base_filter = (
+            framed
+            + ";[framed]split=2[base][zoomsrc]"
+            + f";[zoomsrc]scale={zoom_width}:{zoom_height}:flags=lanczos,"
+            + f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2[zoomed]"
+            + f";[base][zoomed]overlay=0:0:enable='{enable}'[edited]"
+            + f";[edited]subtitles='{escaped_subtitles}',fps=30[captioned]"
+        )
+    else:
+        base_filter = framed + f";[framed]subtitles='{escaped_subtitles}',fps=30[captioned]"
     inputs = [
         "ffmpeg",
         "-hide_banner",
@@ -157,10 +175,17 @@ class FFmpegRenderer:
         clip: ClipCandidate,
         segments: Sequence[TranscriptSegment],
         watermark_path: Path | None = None,
+        edit_plan: EditPlan | None = None,
     ) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         subtitle_path = output_path.with_suffix(".ass")
-        create_word_reveal_ass(clip, segments, subtitle_path)
+        create_word_reveal_ass(
+            clip,
+            segments,
+            subtitle_path,
+            platform=edit_plan.caption_platform if edit_plan is not None else "tiktok",
+            hook_text=edit_plan.hook_text if edit_plan is not None else None,
+        )
         tracking_plan = (
             plan_speaker_crop(
                 source_path,
@@ -194,6 +219,7 @@ class FFmpegRenderer:
             watermark_path=watermark_path,
             tracking_plan=tracking_plan,
             zoom_factor=self.zoom_factor,
+            edit_plan=edit_plan,
         )
         try:
             subprocess.run(command, check=True, capture_output=True, text=True, timeout=900)

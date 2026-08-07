@@ -43,6 +43,7 @@ class FakeRenderer:
         _clip: ClipCandidate,
         _segments: list[TranscriptSegment],
         watermark_path: Path | None = None,
+        edit_plan: object | None = None,
     ) -> Path:
         self.watermark_path = watermark_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -426,3 +427,29 @@ def test_download_asset_uses_gdown_for_google_drive_media(tmp_path: Path) -> Non
             max_bytes=2,
             expected_kind="media",
         )
+
+
+def test_pipeline_reuses_transcript_and_editorial_cache(tmp_path: Path) -> None:
+    brief_path = _write_pipeline_brief(tmp_path)
+    subtitle = tmp_path / "cache.vtt"
+    subtitle.write_text(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\nautomation saves creator time.\n",
+        encoding="utf-8",
+    )
+    media = tmp_path / "cache.mp4"
+    media.write_bytes(b"source")
+    settings = PipelineSettings(
+        artifact_root=tmp_path / "runs", cache_root=tmp_path / "persistent-cache"
+    )
+    with patch("clipper.pipeline._run_id", side_effect=["first", "second"]):
+        run_pipeline(
+            brief_path, settings=settings, source_client=FakeSource(subtitle, media), render=False
+        )
+        second = run_pipeline(
+            brief_path, settings=settings, source_client=FakeSource(subtitle, media), render=False
+        )
+    manifest = json.loads((second / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["cache"]["hits"] >= 2
+    assert manifest["performance"]["wall_seconds"] >= 0
+    assert manifest["run_metadata"]["git_commit_sha"]
+    assert manifest["run_metadata"]["transcript_hashes"]["allowed"]

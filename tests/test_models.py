@@ -70,3 +70,53 @@ def test_optional_list_none_becomes_empty_but_requires_other_allowlist() -> None
     data = valid_data() | {"source_channel_ids": None, "allowed_video_ids": ["v"]}
     brief = CampaignBrief.from_dict(data)
     assert brief.source_channel_ids == []
+
+
+def test_v8_nested_production_config_parses_and_serializes() -> None:
+    brief = CampaignBrief.from_dict(
+        valid_data()
+        | {
+            "production": {
+                "candidate_pool_size": 40,
+                "concept_count": 9,
+                "variants_per_concept": 3,
+                "final_render_budget": 7,
+            },
+            "diversity": {"semantic_similarity_threshold": 0.8, "max_concepts_per_topic": 1},
+            "hooks": {"enabled": ["direct", "number"]},
+            "editorial": {
+                "platform": "instagram_reels",
+                "max_punch_ins_per_clip": 1,
+                "semantic_endings": True,
+                "post_speech_tail_seconds": 0.3,
+                "caption_max_lines": 2,
+            },
+        }
+    )
+    assert brief.production.candidate_pool_size == 40
+    assert brief.production.final_render_budget == 7
+    assert brief.diversity.semantic_similarity_threshold == 0.8
+    assert brief.hooks.enabled == ("direct", "number")
+    assert brief.editorial.platform == "instagram_reels"
+    assert brief.to_dict()["production"]["concept_count"] == 9
+
+
+@pytest.mark.parametrize(
+    ("patch", "message"),
+    [
+        ({"production": {"candidate_pool_size": 2}}, "candidate_pool_size"),
+        ({"production": {"concept_count": 0}}, "concept_count"),
+        ({"production": {"variants_per_concept": 7}}, "variants_per_concept"),
+        ({"production": {"final_render_budget": 25}}, "final_render_budget"),
+        ({"diversity": {"semantic_similarity_threshold": 0.1}}, "semantic_similarity_threshold"),
+        ({"diversity": {"max_concepts_per_topic": 0}}, "max_concepts_per_topic"),
+        ({"hooks": {"enabled": ["fake"]}}, "unsupported hook"),
+        ({"editorial": {"platform": "snapchat"}}, "platform"),
+        ({"editorial": {"max_punch_ins_per_clip": 4}}, "max_punch"),
+        ({"editorial": {"post_speech_tail_seconds": 2}}, "post_speech"),
+        ({"editorial": {"caption_max_lines": 3}}, "caption_max_lines"),
+    ],
+)
+def test_v8_nested_config_rejects_invalid_values(patch: dict, message: str) -> None:
+    with pytest.raises(BriefValidationError, match=message):
+        CampaignBrief.from_dict(valid_data() | patch)

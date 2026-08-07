@@ -5,7 +5,14 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from clipper.models import ClipCandidate, TranscriptSegment, TranscriptWord
+from clipper.models import (
+    ClipCandidate,
+    EditorialBeat,
+    EditPlan,
+    SourceSpan,
+    TranscriptSegment,
+    TranscriptWord,
+)
 from clipper.render import FFmpegRenderer, RenderError, build_ffmpeg_command
 from clipper.tracking import FaceAnchor, TrackingPlan
 
@@ -169,4 +176,36 @@ def test_renderer_failures(tmp_path: Path) -> None:
     )
     joined = " ".join(command)
     assert "crop=180:320" in joined
+    assert "gblur=" not in joined
+
+
+def test_build_ffmpeg_command_applies_only_scheduled_editorial_punch_ins(tmp_path: Path) -> None:
+    clip = ClipCandidate("v", 0, 20, "text", 8)
+    edit_plan = EditPlan(
+        "p",
+        "v",
+        "c",
+        "h",
+        "direct",
+        (SourceSpan(0, 20),),
+        None,
+        (
+            EditorialBeat(5, 6, "punch_in", 0.07),
+            EditorialBeat(12, 13, "punch_in", 0.05),
+            EditorialBeat(18, 20, "payoff_hold", 0),
+        ),
+        "tiktok",
+        8,
+        "fp",
+    )
+    command = build_ffmpeg_command(
+        "source.mp4",
+        "out.mp4",
+        clip,
+        tmp_path / "captions.ass",
+        edit_plan=edit_plan,
+    )
+    joined = " ".join(command)
+    assert "split=2[base][zoomsrc]" in joined
+    assert "between(t,5.000,6.000)+between(t,12.000,13.000)" in joined
     assert "gblur=" not in joined

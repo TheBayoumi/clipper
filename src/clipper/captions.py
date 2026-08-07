@@ -2,11 +2,59 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .models import ClipCandidate, TranscriptSegment, TranscriptWord
 
 _SPEAKER_RE = re.compile(r"^>>\s*")
+
+
+@dataclass(frozen=True, slots=True)
+class CaptionLayout:
+    platform: str
+    top_fraction: float
+    bottom_fraction: float
+    hook_top_fraction: float
+    max_lines: int = 2
+
+    def validate(self) -> None:
+        if not 0.0 < self.top_fraction < self.bottom_fraction < 1.0:
+            raise ValueError("caption safe-zone fractions are invalid")
+        if not 0.0 < self.hook_top_fraction < 0.4:
+            raise ValueError("hook top fraction is invalid")
+        if self.max_lines not in {1, 2}:
+            raise ValueError("caption max_lines must be 1 or 2")
+
+    def bottom_margin_px(self, height: int) -> int:
+        self.validate()
+        return round(height * (1.0 - self.bottom_fraction))
+
+    def top_limit_px(self, height: int) -> int:
+        self.validate()
+        return round(height * self.top_fraction)
+
+    def hook_margin_px(self, height: int) -> int:
+        self.validate()
+        return round(height * self.hook_top_fraction)
+
+
+_PLATFORM_LAYOUTS = {
+    "tiktok": CaptionLayout("tiktok", 0.50, 0.76, 0.12),
+    "instagram_reels": CaptionLayout("instagram_reels", 0.50, 0.79, 0.12),
+    "youtube_shorts": CaptionLayout("youtube_shorts", 0.52, 0.81, 0.11),
+    "generic_vertical": CaptionLayout("generic_vertical", 0.52, 0.82, 0.11),
+}
+
+
+def platform_caption_layout(platform: str, *, max_lines: int = 2) -> CaptionLayout:
+    key = platform.strip().lower()
+    if key not in _PLATFORM_LAYOUTS:
+        raise ValueError(f"unsupported caption platform: {platform}")
+    base = _PLATFORM_LAYOUTS[key]
+    return CaptionLayout(
+        base.platform, base.top_fraction, base.bottom_fraction, base.hook_top_fraction, max_lines
+    )
 
 
 def _ass_timestamp(seconds: float) -> str:
@@ -85,8 +133,22 @@ def create_word_reveal_ass(
     *,
     width: int = 1080,
     height: int = 1920,
+    platform: str = "tiktok",
+    max_lines: int = 2,
+    hook_text: str | None = None,
 ) -> Path:
     output = Path(output_path)
+    layout = platform_caption_layout(platform, max_lines=max_lines)
+    bottom_margin = layout.bottom_margin_px(height)
+    hook_margin = layout.hook_margin_px(height)
+    relevant_segments = [
+        segment for segment in segments if segment.end > clip.start and segment.start < clip.end
+    ]
+    timing_mode = (
+        "word_exact"
+        if relevant_segments and all(segment.words for segment in relevant_segments)
+        else "cue_interpolated"
+    )
     events: list[str] = []
     for segment in segments:
         if segment.end <= clip.start or segment.start >= clip.end:
@@ -104,6 +166,16 @@ def create_word_reveal_ass(
                 f"{_karaoke_text(group)}"
             )
 
+    if hook_text and hook_text.strip():
+        clean_hook = _clean_word(hook_text)[:90]
+        hook_end = min(1.8, clip.duration)
+        if clean_hook and hook_end > 0.2:
+            events.insert(
+                0,
+                "Dialogue: 1,"
+                f"{_ass_timestamp(0.0)},{_ass_timestamp(hook_end)},Hook,,0,0,0,,{clean_hook}",
+            )
+
     style_format = (
         "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,"
         "BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,"
@@ -111,9 +183,14 @@ def create_word_reveal_ass(
     )
     style = (
         "Style: Default,DejaVu Sans,58,&H00FFFFFF,&HFFFFFFFF,&H00000000,&H80000000,"
-        "1,0,0,0,100,100,0,0,1,4,0,2,80,80,230,1"
+        f"1,0,0,0,100,100,0,0,1,4,0,2,80,80,{bottom_margin},1"
+    )
+    hook_style = (
+        "Style: Hook,DejaVu Sans,54,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,"
+        f"1,0,0,0,100,100,0,0,1,4,0,8,90,90,{hook_margin},1"
     )
     header = (
+        f"; TimingMode: {timing_mode}\n"
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
         f"PlayResX: {width}\n"
@@ -122,7 +199,8 @@ def create_word_reveal_ass(
         "ScaledBorderAndShadow: yes\n\n"
         "[V4+ Styles]\n"
         f"{style_format}\n"
-        f"{style}\n\n"
+        f"{style}\n"
+        f"{hook_style}\n\n"
         "[Events]\n"
         "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
     )
