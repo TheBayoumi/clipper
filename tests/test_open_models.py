@@ -15,16 +15,31 @@ from clipper.ai_editorial import (
     GroundedStoryMoment,
     source_spans_from_word_ids,
 )
+from clipper.autonomous_editor import AutonomousEditorialPlanner, OpenVideoAnalysis, _cosine
+from clipper.cache import FileCache
 from clipper.canonical import CanonicalTimeline, CanonicalWord, canonical_timeline_from_segments
-from clipper.models import TranscriptSegment, TranscriptWord
-from clipper.providers.base import ModelIdentity, compute_profile
+from clipper.models import (
+    CampaignBrief,
+    ClipConcept,
+    EditorialScores,
+    ProductionConfig,
+    StoryMoment,
+    TranscriptSegment,
+    TranscriptWord,
+)
+from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult, compute_profile
+from clipper.providers.factory import editorial_and_embedding_providers, vision_provider
 from clipper.providers.local import (
     LocalEditorialProvider,
     LocalEmbeddingProvider,
     LocalVisionProvider,
     ProviderUnavailable,
 )
-from clipper.providers.modal import ModalEditorialProvider, ModalVisionProvider
+from clipper.providers.modal import (
+    ModalEditorialProvider,
+    ModalEmbeddingProvider,
+    ModalVisionProvider,
+)
 from clipper.visual import VisualEvent, VisualTimeline
 
 
@@ -608,3 +623,380 @@ def test_modal_function_lookup_and_empty_usage_defaults() -> None:
         result = provider.complete_json(task="x", payload={})
     assert result.usage.started_at == "unknown"
     assert result.usage.duration_seconds == 0.0
+
+
+class _PlannerEditorial:
+    identity = ModelIdentity("planner-editor", "rev", "none", "test", "p", "s")
+
+    def __init__(self, response: dict[str, object] | None = None) -> None:
+        self.response = response or {"ok": True}
+        self.calls = 0
+
+    def complete_json(
+        self, *, task: str, payload: dict[str, object]
+    ) -> ProviderResult[dict[str, object]]:
+        del task, payload
+        self.calls += 1
+        return ProviderResult(
+            self.response,
+            self.identity,
+            InferenceUsage("test", "now", 0.01),
+        )
+
+
+class _PlannerEmbeddings:
+    identity = ModelIdentity("planner-embed", "rev", "none", "test", "none", "s")
+
+    def __init__(self, vectors: list[list[float]] | None = None) -> None:
+        self.vectors = vectors
+        self.calls = 0
+
+    def embed(self, texts: list[str]) -> ProviderResult[list[list[float]]]:
+        self.calls += 1
+        vectors = (
+            self.vectors
+            if self.vectors is not None
+            else [[1.0, float(i)] for i, _ in enumerate(texts)]
+        )
+        return ProviderResult(
+            vectors,
+            self.identity,
+            InferenceUsage("test", "now", 0.01, input_units=len(texts)),
+        )
+
+
+def _open_brief() -> CampaignBrief:
+    return CampaignBrief(
+        campaign_id="c",
+        title="Any conversation",
+        objective="Find source-grounded clips",
+        keywords=["schema-placeholder"],
+        source_channel_ids=["UC1"],
+        allowed_video_ids=["video"],
+        rights_confirmed=True,
+        min_clip_seconds=8,
+        max_clip_seconds=45,
+        clip_count=1,
+        production=ProductionConfig(
+            candidate_pool_size=10,
+            concept_count=2,
+            variants_per_concept=2,
+            final_render_budget=2,
+            minimum_distinct_finalist_concepts=1,
+        ),
+    )
+
+
+def _grounded_concept(
+    concept_id: str, summary: str, confidence: float = 0.9
+) -> GroundedClipConcept:
+    return GroundedClipConcept(
+        concept_id=concept_id,
+        story_moment_ids=("m",),
+        supporting_word_ids=("w1", "w2", "w3", "w4"),
+        semantic_summary=summary,
+        standalone_context="",
+        narrative_structure="explanation",
+        recommended_duration=20,
+        visual_dependencies=(),
+        confidence=confidence,
+    )
+
+
+def test_autonomous_planner_validation_cosine_and_array_guards(tmp_path: Path) -> None:
+    editor = _PlannerEditorial()
+    embedder = _PlannerEmbeddings()
+    cache = FileCache(tmp_path / "cache")
+    with pytest.raises(ValueError, match="at least 200"):
+        AutonomousEditorialPlanner(editor, embedder, cache, max_words_per_chunk=199)
+    with pytest.raises(ValueError, match="smaller than chunk"):
+        AutonomousEditorialPlanner(
+            editor, embedder, cache, max_words_per_chunk=200, chunk_overlap_words=200
+        )
+    with pytest.raises(ValueError, match="threshold"):
+        AutonomousEditorialPlanner(editor, embedder, cache, semantic_duplicate_threshold=0.2)
+    with pytest.raises(ValueError, match="equal dimensions"):
+        _cosine([1.0], [1.0, 2.0])
+    assert _cosine([0.0, 0.0], [1.0, 0.0]) == 0.0
+    assert _cosine([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
+    with pytest.raises(EditorialGroundingError, match="must be a list"):
+        AutonomousEditorialPlanner._array({"x": {}}, "x")
+    with pytest.raises(EditorialGroundingError, match="contain objects"):
+        AutonomousEditorialPlanner._array({"x": ["bad"]}, "x")
+
+
+def test_autonomous_planner_model_and_embedding_cache_hits(tmp_path: Path) -> None:
+    editor = _PlannerEditorial({"profile": "cached"})
+    embedder = _PlannerEmbeddings([[0.1, 0.2]])
+    planner = AutonomousEditorialPlanner(editor, embedder, FileCache(tmp_path / "cache"))
+    timeline = _timeline()
+    brief = _open_brief()
+    payload = {"a": 1}
+    first = planner._complete("stage", timeline, brief, payload)
+    second = planner._complete("stage", timeline, brief, payload)
+    assert first == second == {"profile": "cached"}
+    assert editor.calls == 1
+    vectors1 = planner._embed("embed", timeline, brief, ["text"])
+    vectors2 = planner._embed("embed", timeline, brief, ["text"])
+    assert vectors1 == vectors2 == [[0.1, 0.2]]
+    assert embedder.calls == 1
+    assert [item["cache_hit"] for item in planner.invocations] == [False, True, False, True]
+
+
+def test_autonomous_planner_chunking_empty_and_long_profile_sampling(tmp_path: Path) -> None:
+    planner = AutonomousEditorialPlanner(
+        _PlannerEditorial(),
+        _PlannerEmbeddings(),
+        FileCache(tmp_path / "cache"),
+        max_words_per_chunk=200,
+        chunk_overlap_words=20,
+    )
+    assert planner._chunks(CanonicalTimeline("v", "h", ())) == []
+    words = tuple(
+        CanonicalWord(f"w{i}", "token", i * 0.1, i * 0.1 + 0.05, None, None, "aligned", "x")
+        for i in range(1901)
+    )
+    timeline = CanonicalTimeline("v", "h", words)
+    chunks = planner._chunks(timeline)
+    assert len(chunks) > 9
+    assert len(chunks[0]) == 200
+    evidence = planner._profile_evidence(timeline)
+    assert len(evidence) == 12 * 120
+    assert evidence[0]["word_id"] == "w0"
+    assert evidence[-1]["word_id"] == "w1900"
+
+
+def test_learned_semantic_dedupe_keeps_best_and_rejects_duplicate(tmp_path: Path) -> None:
+    planner = AutonomousEditorialPlanner(
+        _PlannerEditorial(),
+        _PlannerEmbeddings([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+        FileCache(tmp_path / "cache"),
+        semantic_duplicate_threshold=0.9,
+    )
+    kept, clusters, rejections = planner._semantic_dedupe(
+        _open_brief(),
+        _timeline(),
+        [
+            _grounded_concept("a", "same", 0.95),
+            _grounded_concept("b", "duplicate", 0.9),
+            _grounded_concept("c", "different", 0.8),
+        ],
+    )
+    assert [item.concept_id for item in kept] == ["a", "c"]
+    assert clusters["a"] == clusters["b"]
+    assert rejections[0]["reasons"] == ["learned_embedding_duplicate"]
+    broken = AutonomousEditorialPlanner(
+        _PlannerEditorial(), _PlannerEmbeddings([[1.0]]), FileCache(tmp_path / "broken")
+    )
+    with pytest.raises(ValueError, match="wrong number"):
+        broken._semantic_dedupe(
+            _open_brief(), _timeline(), [_grounded_concept("a", "a"), _grounded_concept("b", "b")]
+        )
+
+
+def test_hook_embedding_dedupe_and_vector_count_validation(tmp_path: Path) -> None:
+    hooks = [
+        GroundedHookVariant("h1", "direct", ("w1", "w2"), None, "r1", 0.9),
+        GroundedHookVariant("h2", "near duplicate", ("w1", "w2"), None, "r2", 0.8),
+        GroundedHookVariant("h3", "different", ("w3", "w4"), "CONTEXT", "r3", 0.7),
+    ]
+    planner = AutonomousEditorialPlanner(
+        _PlannerEditorial(),
+        _PlannerEmbeddings([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+        FileCache(tmp_path / "cache"),
+    )
+    rejections: list[dict[str, object]] = []
+    kept = planner._dedupe_hooks(_open_brief(), _timeline(), hooks, "c", rejections)
+    assert [item.variant_id for item in kept] == ["h1", "h3"]
+    assert rejections[0]["reasons"] == ["learned_embedding_hook_duplicate"]
+    broken = AutonomousEditorialPlanner(
+        _PlannerEditorial(), _PlannerEmbeddings([[1.0]]), FileCache(tmp_path / "broken")
+    )
+    with pytest.raises(ValueError, match="wrong number"):
+        broken._dedupe_hooks(_open_brief(), _timeline(), hooks, "c", [])
+
+
+def test_open_analysis_rejects_empty_and_unknown_model_references(tmp_path: Path) -> None:
+    brief = _open_brief()
+    timeline = _timeline()
+
+    class Scripted(_PlannerEditorial):
+        def complete_json(
+            self, *, task: str, payload: dict[str, object]
+        ) -> ProviderResult[dict[str, object]]:
+            del payload
+            if task == "episode_editorial_profile":
+                value: dict[str, object] = {
+                    "summary": "x",
+                    "valuable_moment_characteristics": ["x"],
+                    "avoid_characteristics": [],
+                    "confidence": 0.9,
+                }
+            elif task.startswith("story_moments:"):
+                value = {"moments": []}
+            else:
+                raise AssertionError(task)
+            return ProviderResult(value, self.identity, InferenceUsage("test", "now", 0.01))
+
+    with pytest.raises(EditorialGroundingError, match="no grounded StoryMoments"):
+        AutonomousEditorialPlanner(
+            Scripted(), _PlannerEmbeddings(), FileCache(tmp_path / "empty")
+        ).analyze_video(brief, timeline)
+
+    class UnknownMoment(Scripted):
+        def complete_json(
+            self, *, task: str, payload: dict[str, object]
+        ) -> ProviderResult[dict[str, object]]:
+            if task.startswith("story_moments:"):
+                value: dict[str, object] = {
+                    "moments": [
+                        {
+                            "moment_id": "m",
+                            "supporting_word_ids": ["w1", "w2", "w3", "w4"],
+                            "semantic_summary": "x",
+                            "narrative_structure": "x",
+                            "editorial_reason": "x",
+                            "confidence": 0.9,
+                        }
+                    ]
+                }
+            elif task == "clip_concepts":
+                value = {
+                    "concepts": [
+                        {
+                            "concept_id": "c",
+                            "story_moment_ids": ["missing"],
+                            "supporting_word_ids": ["w1", "w2", "w3", "w4"],
+                            "semantic_summary": "x",
+                            "narrative_structure": "x",
+                            "recommended_duration": 20,
+                            "confidence": 0.9,
+                        }
+                    ]
+                }
+            else:
+                return super().complete_json(task=task, payload=payload)
+            return ProviderResult(value, self.identity, InferenceUsage("test", "now", 0.01))
+
+    with pytest.raises(EditorialGroundingError, match="unknown StoryMoments"):
+        AutonomousEditorialPlanner(
+            UnknownMoment(), _PlannerEmbeddings([[1.0, 0.0]]), FileCache(tmp_path / "unknown")
+        ).analyze_video(brief, timeline)
+
+
+def test_plan_batch_global_selection_and_plan_validation_errors(tmp_path: Path) -> None:
+    timeline = _timeline()
+    concept = ClipConcept(
+        "c",
+        "video",
+        10.0,
+        11.1,
+        "what's one message today",
+        "summary",
+        "",
+        "",
+        "question",
+        20.0,
+        EditorialScores(*(8.0 for _ in range(12))),
+        8.0,
+        "sem",
+        "fp",
+    )
+    moment = StoryMoment(
+        "m",
+        "video",
+        10.0,
+        11.1,
+        concept.text,
+        "question",
+        "summary",
+        "",
+        "",
+        EditorialScores(*(8.0 for _ in range(12))),
+        8.0,
+        "fp",
+    )
+    grounded = _grounded_concept("c", "summary")
+    analysis = OpenVideoAnalysis(
+        EpisodeEditorialProfile("x", ("x",), (), 0.9),
+        [moment],
+        [concept],
+        {
+            "m": GroundedStoryMoment(
+                "m", ("w1", "w2", "w3", "w4"), "x", "question", "", "", "x", 0.9
+            )
+        },
+        {"c": grounded},
+        [],
+    )
+
+    class Global(_PlannerEditorial):
+        def __init__(self, selection: object) -> None:
+            super().__init__()
+            self.selection = selection
+
+        def complete_json(
+            self, *, task: str, payload: dict[str, object]
+        ) -> ProviderResult[dict[str, object]]:
+            del payload
+            if task == "global_concept_comparison":
+                return ProviderResult(
+                    {"concept_ids": self.selection},
+                    self.identity,
+                    InferenceUsage("test", "now", 0.01),
+                )
+            raise AssertionError(task)
+
+    for selection, match in [
+        ("bad", "concept_ids"),
+        (["missing"], "unknown concept"),
+        ([], "selected no concepts"),
+    ]:
+        with pytest.raises(EditorialGroundingError, match=match):
+            AutonomousEditorialPlanner(
+                Global(selection),
+                _PlannerEmbeddings(),
+                FileCache(tmp_path / str(match).replace(" ", "-")),
+            ).plan_batch(_open_brief(), {"video": timeline}, [analysis])
+    with pytest.raises(EditorialGroundingError, match="produced no concepts"):
+        AutonomousEditorialPlanner(
+            Global([]), _PlannerEmbeddings(), FileCache(tmp_path / "none")
+        ).plan_batch(_open_brief(), {"video": timeline}, [])
+
+
+def test_provider_factory_profiles_and_modal_embedding_validation(monkeypatch) -> None:
+    local_editor, local_embed = editorial_and_embedding_providers("local-lite")
+    assert isinstance(local_editor, LocalEditorialProvider)
+    assert isinstance(local_embed, LocalEmbeddingProvider)
+    modal_editor, modal_embed = editorial_and_embedding_providers("balanced")
+    assert isinstance(modal_editor, ModalEditorialProvider)
+    assert isinstance(modal_embed, ModalEmbeddingProvider)
+    assert isinstance(vision_provider("local-lite"), LocalVisionProvider)
+    assert isinstance(vision_provider("balanced"), ModalVisionProvider)
+    assert isinstance(vision_provider("quality", large=True), ModalVisionProvider)
+    with pytest.raises(ValueError, match="disabled"):
+        vision_provider("balanced", large=True)
+
+    identity = ModelIdentity("m", "r", "none", "modal")
+    provider = ModalEmbeddingProvider(app_name="a", function_name="f", identity=identity)
+    function = Mock()
+    function.remote.return_value = {
+        "vectors": [[1, 2], [3.5, 4]],
+        "usage": {"gpu_type": "L4", "gpu_seconds": 1.2, "estimated_cost_usd": 0.01},
+    }
+    with patch.object(provider, "_function", return_value=function):
+        result = provider.embed(["a", "b"])
+    assert result.value == [[1.0, 2.0], [3.5, 4.0]]
+    assert result.usage.gpu_type == "L4"
+    function.remote.return_value = {"bad": []}
+    with (
+        patch.object(provider, "_function", return_value=function),
+        pytest.raises(ValueError, match="invalid response"),
+    ):
+        provider.embed(["a"])
+    function.remote.return_value = {"vectors": ["bad"]}
+    with (
+        patch.object(provider, "_function", return_value=function),
+        pytest.raises(ValueError, match="vector must be a list"),
+    ):
+        provider.embed(["a"])

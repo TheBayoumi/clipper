@@ -21,6 +21,7 @@ from clipper.pipeline import (
     _record_source_media_metadata,
     run_pipeline,
 )
+from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
 
 
 @pytest.fixture(autouse=True)
@@ -714,3 +715,192 @@ def test_pipeline_records_tracking_preflight_repair(tmp_path: Path) -> None:
     canonical = json.loads(canonical_files[0].read_text())
     assert canonical["schema_version"] == "canonical-timeline-v1"
     assert manifest["run_metadata"]["canonical_timelines"]
+
+
+class FakeOpenEditorialProvider:
+    identity = ModelIdentity("fake-editor", "rev1", "none", "test", "prompt1", "schema1")
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def complete_json(
+        self, *, task: str, payload: dict[str, object]
+    ) -> ProviderResult[dict[str, object]]:
+        self.calls.append(task)
+        usage = InferenceUsage("test", "2026-08-08T00:00:00Z", 0.01)
+        if task == "episode_editorial_profile":
+            value: dict[str, object] = {
+                "summary": "A short explanatory conversation",
+                "valuable_moment_characteristics": ["self-contained explanation"],
+                "avoid_characteristics": ["unsupported context"],
+                "confidence": 0.95,
+            }
+        elif task.startswith("story_moments:"):
+            words = payload["words"]
+            assert isinstance(words, list)
+            word_ids = [item["word_id"] for item in words if isinstance(item, dict)]
+            value = {
+                "moments": [
+                    {
+                        "moment_id": "moment-1",
+                        "supporting_word_ids": word_ids,
+                        "semantic_summary": "An explanation of saving time",
+                        "narrative_structure": "explanation",
+                        "required_prior_context": "",
+                        "required_followup_context": "",
+                        "editorial_reason": "It stands alone as a complete explanation",
+                        "confidence": 0.92,
+                    }
+                ]
+            }
+        elif task == "clip_concepts":
+            moments = payload["moments"]
+            assert isinstance(moments, list) and isinstance(moments[0], dict)
+            word_ids = moments[0]["supporting_word_ids"]
+            value = {
+                "concepts": [
+                    {
+                        "concept_id": "concept-1",
+                        "story_moment_ids": ["moment-1"],
+                        "supporting_word_ids": word_ids,
+                        "semantic_summary": "Complete source-grounded explanation",
+                        "standalone_context": "",
+                        "narrative_structure": "explanation",
+                        "recommended_duration": 9.0,
+                        "visual_dependencies": [],
+                        "confidence": 0.91,
+                    }
+                ]
+            }
+        elif task == "global_concept_comparison":
+            value = {"concept_ids": ["concept-1"]}
+        elif task.startswith("hook_variants:"):
+            concept = payload["concept"]
+            assert isinstance(concept, dict)
+            word_ids = list(concept["supporting_word_ids"])
+            value = {
+                "variants": [
+                    {
+                        "variant_id": "hook-1",
+                        "strategy_label": "start on the source explanation",
+                        "source_word_ids": word_ids,
+                        "overlay_text": None,
+                        "rationale": "The source opening is already clear",
+                        "confidence": 0.9,
+                    }
+                ]
+            }
+        elif task.startswith("edit_plans:"):
+            concept = payload["concept"]
+            assert isinstance(concept, dict)
+            word_ids = list(concept["supporting_word_ids"])
+            value = {
+                "plans": [
+                    {
+                        "plan_id": "plan-1",
+                        "video_id": "allowed",
+                        "concept_id": "concept-1",
+                        "variant_id": "hook-1",
+                        "source_word_ids": word_ids,
+                        "hook_source_word_ids": word_ids,
+                        "overlay_text": None,
+                        "strategy_label": "source explanation",
+                        "caption_platform": "tiktok",
+                        "confidence": 0.9,
+                    }
+                ]
+            }
+        else:
+            raise AssertionError(f"unexpected task {task}")
+        return ProviderResult(value, self.identity, usage)
+
+
+class FakeOpenEmbeddingProvider:
+    identity = ModelIdentity("fake-embedding", "rev1", "none", "test", "none", "embedding1")
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def embed(self, texts: list[str]) -> ProviderResult[list[list[float]]]:
+        self.calls += 1
+        vectors = [[1.0, float(index + 1)] for index, _ in enumerate(texts)]
+        return ProviderResult(
+            vectors,
+            self.identity,
+            InferenceUsage("test", "2026-08-08T00:00:00Z", 0.01, input_units=len(texts)),
+        )
+
+
+def test_open_editorial_pipeline_bypasses_all_heuristic_entry_points(tmp_path: Path) -> None:
+    brief = tmp_path / "open-brief.json"
+    brief.write_text(
+        json.dumps(
+            {
+                "campaign_id": "open-campaign",
+                "title": "Any domain",
+                "objective": "Find useful standalone moments",
+                "keywords": ["required-by-current-brief-schema"],
+                "source_channel_ids": ["UC1"],
+                "rights_confirmed": True,
+                "min_clip_seconds": 8,
+                "max_clip_seconds": 20,
+                "clip_count": 1,
+                "production": {
+                    "candidate_pool_size": 10,
+                    "concept_count": 1,
+                    "variants_per_concept": 1,
+                    "final_render_budget": 1,
+                    "minimum_distinct_finalist_concepts": 1,
+                },
+            }
+        )
+    )
+    subtitle = tmp_path / "open.vtt"
+    subtitle.write_text(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\n"
+        "This explanation stands alone and clearly saves people time today.\n"
+    )
+    media = tmp_path / "source.mp4"
+    media.write_bytes(b"source")
+    editorial = FakeOpenEditorialProvider()
+    embedding = FakeOpenEmbeddingProvider()
+    forbidden = RuntimeError("heuristic path must not run")
+    with (
+        patch("clipper.pipeline._cached_editorial_analysis", side_effect=forbidden),
+        patch("clipper.pipeline.select_distinct_concepts", side_effect=forbidden),
+        patch("clipper.pipeline.generate_hook_variants", side_effect=forbidden),
+        patch("clipper.pipeline.build_edit_plan", side_effect=forbidden),
+    ):
+        run_dir = run_pipeline(
+            brief,
+            settings=PipelineSettings(
+                artifact_root=tmp_path / "open-artifacts",
+                cache_root=tmp_path / "open-cache",
+                editorial_engine="open",
+                compute_profile="local-lite",
+                editorial_chunk_words=200,
+                editorial_chunk_overlap_words=20,
+            ),
+            source_client=FakeSource(subtitle, media),
+            editorial_provider=editorial,
+            embedding_provider=embedding,
+            render=False,
+        )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["run_metadata"]["editorial_inference"]["engine"] == "open"
+    assert manifest["run_metadata"]["editorial_inference"]["degraded"] is False
+    assert manifest["funnel"]["story_moments"] == 1
+    assert manifest["funnel"]["raw_concepts"] == 1
+    assert manifest["funnel"]["hook_variants"] == 1
+    assert manifest["funnel"]["edit_plans"] == 1
+    assert manifest["edit_plans"][0]["caption_start_word"] == "This"
+    assert (run_dir / "open-model" / "model-invocations.json").is_file()
+    assert editorial.calls == [
+        "episode_editorial_profile",
+        "story_moments:0",
+        "clip_concepts",
+        "global_concept_comparison",
+        "hook_variants:concept-1",
+        "edit_plans:concept-1",
+    ]
+    assert embedding.calls == 1

@@ -60,3 +60,34 @@ class ModalVisionProvider(ModalJSONProvider):
         return self.invoke(
             {"task": task, "frame_paths": [str(frame) for frame in frames], "context": context}
         )
+
+
+class ModalEmbeddingProvider(ModalJSONProvider):
+    def embed(self, texts: list[str]) -> ProviderResult[list[list[float]]]:
+        response = self._function().remote({"texts": texts})
+        if not isinstance(response, dict) or not isinstance(response.get("vectors"), list):
+            raise ValueError("Modal embedding provider returned an invalid response")
+        vectors: list[list[float]] = []
+        for row in response["vectors"]:
+            if not isinstance(row, list):
+                raise ValueError("Modal embedding vector must be a list")
+            vectors.append([float(value) for value in row])
+        raw_usage = response.get("usage")
+        usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
+        return ProviderResult(
+            vectors,
+            self.identity,
+            InferenceUsage(
+                provider="modal",
+                started_at=str(usage.get("started_at") or "unknown"),
+                duration_seconds=float(usage.get("duration_seconds") or 0.0),
+                gpu_type=str(usage["gpu_type"]) if usage.get("gpu_type") else None,
+                gpu_seconds=float(usage.get("gpu_seconds") or 0.0),
+                peak_vram_mb=(
+                    float(usage["peak_vram_mb"]) if usage.get("peak_vram_mb") is not None else None
+                ),
+                input_units=int(usage.get("input_units") or len(texts)),
+                output_units=int(usage.get("output_units") or len(vectors)),
+                estimated_cost_usd=float(usage.get("estimated_cost_usd") or 0.0),
+            ),
+        )

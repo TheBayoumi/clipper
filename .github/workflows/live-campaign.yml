@@ -209,13 +209,19 @@ jobs:
         run: |
           run_dir="$(dirname "$(find live-artifacts -name manifest.json -type f -print -quit)")"
           count=0
+          inspection_dir="$RUNNER_TEMP/clipper-live-inspection"
+          rm -rf "$inspection_dir"
+          mkdir -p "$inspection_dir"
           for clip in "$run_dir"/clips/*.mp4; do
             test -f "$clip"
             count=$((count + 1))
-            ffprobe -v error -show_streams -show_format -of json "$clip" > "$clip.ffprobe.json"
+            stem="$(basename "$clip" .mp4)"
+            ffprobe -v error -show_streams -show_format -of json "$clip" \
+              > "$inspection_dir/$stem.ffprobe.json"
             ffmpeg -v error -i "$clip" -f null -
             ffmpeg -v error -t 3 -i "$clip" -f null -
-            ffmpeg -v error -ss 0.25 -i "$clip" -frames:v 1 -y "$clip.first-025.png"
+            ffmpeg -v error -ss 0.25 -i "$clip" -frames:v 1 -y \
+              "$inspection_dir/$stem.first-025.png"
           done
           test "$count" -eq 6
 

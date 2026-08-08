@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 
 import gdown
 
+from .autonomous_editor import AutonomousEditorialPlanner, OpenVideoAnalysis
 from .brief import load_brief
 from .cache import (
     CACHE_SCHEMA_VERSION,
@@ -28,7 +29,7 @@ from .cache import (
     transcript_cache_key,
     transcript_segments_from_payload,
 )
-from .canonical import canonical_timeline_from_segments
+from .canonical import CanonicalTimeline, canonical_timeline_from_segments
 from .editorial import (
     build_edit_plan,
     discover_story_moments,
@@ -53,6 +54,8 @@ from .models import (
     VideoCandidate,
 )
 from .performance import RunTelemetry
+from .providers.base import EditorialProvider, EmbeddingProvider
+from .providers.factory import editorial_and_embedding_providers
 from .qc import run_technical_qc
 from .render import FFmpegRenderer
 from .rights import RightsError, assert_campaign_authorized, assert_video_allowed
@@ -184,6 +187,11 @@ class PipelineSettings:
     speaker_reversal_guard_seconds: float = 1.25
     speaker_window_seconds: float = 0.8
     speaker_min_detection_coverage: float = 0.35
+    editorial_engine: str = "heuristic"
+    compute_profile: str = "balanced"
+    editorial_chunk_words: int = 900
+    editorial_chunk_overlap_words: int = 120
+    semantic_duplicate_threshold: float = 0.9
     cache_root: Path | None = None
 
     @classmethod
@@ -219,6 +227,15 @@ class PipelineSettings:
             speaker_window_seconds=float(os.getenv("CLIPPER_SPEAKER_WINDOW_SECONDS", "0.8")),
             speaker_min_detection_coverage=float(
                 os.getenv("CLIPPER_SPEAKER_MIN_DETECTION_COVERAGE", "0.35")
+            ),
+            editorial_engine=os.getenv("CLIPPER_EDITORIAL_ENGINE", "heuristic").strip().lower(),
+            compute_profile=os.getenv("CLIPPER_COMPUTE_PROFILE", "balanced").strip().lower(),
+            editorial_chunk_words=int(os.getenv("CLIPPER_EDITORIAL_CHUNK_WORDS", "900")),
+            editorial_chunk_overlap_words=int(
+                os.getenv("CLIPPER_EDITORIAL_CHUNK_OVERLAP_WORDS", "120")
+            ),
+            semantic_duplicate_threshold=float(
+                os.getenv("CLIPPER_SEMANTIC_DUPLICATE_THRESHOLD", "0.9")
             ),
             cache_root=(
                 Path(os.environ["CLIPPER_CACHE_ROOT"]) if os.getenv("CLIPPER_CACHE_ROOT") else None
@@ -487,6 +504,8 @@ def run_pipeline(
     settings: PipelineSettings | None = None,
     source_client: SourceClient | None = None,
     renderer: Renderer | None = None,
+    editorial_provider: EditorialProvider | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
     render: bool = True,
 ) -> Path:
     brief = load_brief(brief_path)
@@ -494,6 +513,24 @@ def run_pipeline(
     cfg = settings or PipelineSettings.from_env()
     telemetry = RunTelemetry()
     cache = FileCache(cfg.cache_root or (cfg.artifact_root / "_cache"))
+    if cfg.editorial_engine not in {"heuristic", "open"}:
+        raise ValueError("CLIPPER_EDITORIAL_ENGINE must be heuristic or open")
+    open_planner: AutonomousEditorialPlanner | None = None
+    if cfg.editorial_engine == "open":
+        if (editorial_provider is None) != (embedding_provider is None):
+            raise ValueError("open editorial mode requires both editorial and embedding providers")
+        if editorial_provider is None or embedding_provider is None:
+            editorial_provider, embedding_provider = editorial_and_embedding_providers(
+                cfg.compute_profile
+            )
+        open_planner = AutonomousEditorialPlanner(
+            editorial_provider,
+            embedding_provider,
+            cache,
+            max_words_per_chunk=cfg.editorial_chunk_words,
+            chunk_overlap_words=cfg.editorial_chunk_overlap_words,
+            semantic_duplicate_threshold=cfg.semantic_duplicate_threshold,
+        )
     if source_client is not None:
         source: SourceClient = source_client
     elif os.getenv("CLIPPER_SOURCE_FIXTURE_DIR"):
@@ -540,6 +577,11 @@ def run_pipeline(
         "transcript_hashes": {},
         "transcript_sources": {},
         "canonical_timelines": {},
+        "editorial_inference": {
+            "engine": cfg.editorial_engine,
+            "compute_profile": cfg.compute_profile,
+            "degraded": cfg.editorial_engine == "heuristic",
+        },
         "render": {
             "profile": cfg.render_profile,
             "source_max_height": cfg.source_max_height,
@@ -584,6 +626,8 @@ def run_pipeline(
     manifest.discovered_videos = [video.to_dict() for video in allowed]
 
     transcripts: dict[str, list[TranscriptSegment]] = {}
+    canonical_timelines: dict[str, CanonicalTimeline] = {}
+    open_analyses: list[OpenVideoAnalysis] = []
     media_paths: dict[str, Path] = {}
     all_moments: list[StoryMoment] = []
     all_concepts: list[ClipConcept] = []
@@ -671,10 +715,25 @@ def run_pipeline(
                 "word_count": len(canonical.words),
                 "timing_modes": sorted({word.timing_mode for word in canonical.words}),
             }
+            canonical_timelines[video.video_id] = canonical
             telemetry.start(f"editorial_analysis:{video.video_id}")
-            moments, concepts, source_rejections, source_stats = _cached_editorial_analysis(
-                cache, manifest, brief, video.video_id, segments
-            )
+            if open_planner is not None:
+                analysis = open_planner.analyze_video(brief, canonical)
+                open_analyses.append(analysis)
+                moments = analysis.moments
+                concepts = analysis.concepts
+                source_rejections = analysis.rejections
+                source_stats = {
+                    "candidate_starts": 0,
+                    "eligible_endpoints": 0,
+                    "concepts_after_quality": len(concepts),
+                    "concepts_after_moment_dedup": len(moments),
+                    "semantic_representatives": len(concepts),
+                }
+            else:
+                moments, concepts, source_rejections, source_stats = _cached_editorial_analysis(
+                    cache, manifest, brief, video.video_id, segments
+                )
             telemetry.stop(f"editorial_analysis:{video.video_id}")
             all_moments.extend(moments)
             all_concepts.extend(concepts)
@@ -694,31 +753,49 @@ def run_pipeline(
             for video_id, segments in transcripts.items()
         },
     )
-    selected_concepts = select_distinct_concepts(
-        brief, all_concepts, rejections=manifest.rejections
-    )
-    concept_index = {concept.concept_id: concept for concept in selected_concepts}
-    variants = []
-    plans: list[EditPlan] = []
-    for concept in selected_concepts:
-        concept_variants = generate_hook_variants(brief, concept, transcripts[concept.video_id])
-        if not concept_variants:
-            manifest.rejections.append(
-                {
-                    "concept_id": concept.concept_id,
-                    "video_id": concept.video_id,
-                    "stage": "hook_generation",
-                    "decision": "REJECT",
-                    "reasons": ["no_legitimate_hook_variants"],
-                    "scores": concept.scores.to_dict(),
-                }
-            )
-            continue
-        variants.extend(concept_variants)
-        plans.extend(
-            build_edit_plan(brief, concept, variant, transcripts[concept.video_id])
-            for variant in concept_variants
+    plans: list[EditPlan]
+    if open_planner is not None:
+        open_batch = open_planner.plan_batch(brief, canonical_timelines, open_analyses)
+        all_moments = open_batch.discovered_moments
+        all_concepts = open_batch.discovered_concepts
+        selected_concepts = open_batch.selected_concepts
+        variants = open_batch.variants
+        plans = open_batch.plans
+        manifest.rejections.extend(open_batch.rejections)
+        manifest.run_metadata["editorial_inference"]["model_invocations"] = (
+            open_batch.model_invocations
         )
+        _write_json(run_dir / "open-model" / "model-invocations.json", open_batch.model_invocations)
+        _write_json(
+            run_dir / "open-model" / "discovered-concepts.json",
+            [item.to_dict() for item in all_concepts],
+        )
+    else:
+        selected_concepts = select_distinct_concepts(
+            brief, all_concepts, rejections=manifest.rejections
+        )
+        variants = []
+        plans = []
+        for concept in selected_concepts:
+            concept_variants = generate_hook_variants(brief, concept, transcripts[concept.video_id])
+            if not concept_variants:
+                manifest.rejections.append(
+                    {
+                        "concept_id": concept.concept_id,
+                        "video_id": concept.video_id,
+                        "stage": "hook_generation",
+                        "decision": "REJECT",
+                        "reasons": ["no_legitimate_hook_variants"],
+                        "scores": concept.scores.to_dict(),
+                    }
+                )
+                continue
+            variants.extend(concept_variants)
+            plans.extend(
+                build_edit_plan(brief, concept, variant, transcripts[concept.video_id])
+                for variant in concept_variants
+            )
+    concept_index = {concept.concept_id: concept for concept in selected_concepts}
     target_finalists = brief.production.final_render_budget
     primary_plans, reserve_plans = select_render_plan_queue(plans, budget=target_finalists)
 

@@ -12,6 +12,7 @@ from .models import (
     TranscriptSegment,
     TranscriptWord,
 )
+from .providers.base import ModelIdentity
 
 CACHE_SCHEMA_VERSION = "clipper-v10-analysis-1"
 
@@ -70,6 +71,30 @@ def analysis_cache_key(
                 "hooks": campaign["hooks"],
                 "editorial": campaign["editorial"],
             },
+        }
+    )
+
+
+def model_stage_cache_key(
+    stage: str,
+    *,
+    source_hash: str,
+    campaign: dict[str, object],
+    model: ModelIdentity,
+    payload: object,
+    sampling: dict[str, object] | None = None,
+) -> str:
+    """Cache expensive model output by exact source/model/prompt/schema/config inputs."""
+    return stable_hash(
+        {
+            "schema": CACHE_SCHEMA_VERSION,
+            "stage": stage,
+            "source_hash": source_hash,
+            "model": model.to_dict(),
+            "model_fingerprint": model.cache_fingerprint(sampling=sampling),
+            "campaign": campaign,
+            "payload": payload,
+            "sampling": sampling or {},
         }
     )
 
