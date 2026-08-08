@@ -1333,6 +1333,53 @@ def test_whisperx_alignment_preserves_word_ids_and_updates_only_matched_words() 
         )
 
 
+def test_whisperx_alignment_rejects_nonmonotonic_points_without_clamping() -> None:
+    timeline = CanonicalTimeline(
+        "v",
+        "h",
+        (
+            CanonicalWord("w1", "alpha", 1.0, 1.1, None, 0.8, "word_exact", "whisper"),
+            CanonicalWord("w2", "beta", 1.2, 1.3, None, 0.8, "word_exact", "whisper"),
+            CanonicalWord("w3", "gamma", 1.4, 1.5, None, 0.8, "word_exact", "whisper"),
+        ),
+    )
+    aligned = apply_whisperx_alignment(
+        timeline,
+        [
+            {
+                "words": [
+                    {"word": "alpha", "start": 1.25, "end": 1.35, "score": 0.20},
+                    {"word": "beta", "start": 1.10, "end": 1.22, "score": 0.95},
+                    {"word": "gamma", "start": 1.42, "end": 1.52, "score": 0.90},
+                ]
+            }
+        ],
+    )
+    assert [word.word_id for word in aligned.words] == ["w1", "w2", "w3"]
+    assert [word.source_start for word in aligned.words] == pytest.approx([1.0, 1.10, 1.42])
+    assert aligned.words[0].timing_mode == "word_exact"
+    assert aligned.words[1].timing_mode == "aligned"
+    assert aligned.words[2].timing_mode == "aligned"
+
+
+def test_whisperx_alignment_rejects_invalid_raw_timings() -> None:
+    timeline = _timeline()
+    aligned = apply_whisperx_alignment(
+        timeline,
+        [
+            {
+                "words": [
+                    {"word": "what's", "start": 10.3, "end": 10.2, "score": 0.9},
+                    {"word": "one", "start": 10.22, "end": 10.39, "score": 2.0},
+                ]
+            }
+        ],
+    )
+    assert aligned.words[0].source_start == pytest.approx(10.0)
+    assert aligned.words[1].source_start == pytest.approx(10.22)
+    assert aligned.words[1].confidence == pytest.approx(0.99)
+
+
 def test_alignment_segments_split_on_gap_and_duration() -> None:
     words = (
         CanonicalWord("a", "a", 0, 0.2, None, None, "word_exact", "x"),

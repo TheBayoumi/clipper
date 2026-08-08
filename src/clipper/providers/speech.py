@@ -4,6 +4,7 @@ import importlib
 import os
 import time
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +97,62 @@ def _alignment_segments(
     ]
 
 
+def _alignment_confidence(update: dict[str, object]) -> float:
+    value = update.get("confidence")
+    if isinstance(value, int | float) and 0.0 <= float(value) <= 1.0:
+        return float(value)
+    return -1.0
+
+
+def _alignment_deviation(word: CanonicalWord, update: dict[str, object]) -> float:
+    value = update.get("source_start")
+    return abs(float(value) - word.source_start) if isinstance(value, int | float) else float("inf")
+
+
+def _drop_nonmonotonic_alignment_updates(
+    timeline: CanonicalTimeline,
+    replacements: dict[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    """Keep raw WhisperX timings only when they preserve immutable source word order."""
+    accepted = dict(replacements)
+    by_id = {word.word_id: word for word in timeline.words}
+    while True:
+        starts = [
+            _float_value(accepted.get(word.word_id, {}).get("source_start"), word.source_start)
+            for word in timeline.words
+        ]
+        violation = next(
+            (index for index, (left, right) in enumerate(pairwise(starts)) if left > right),
+            None,
+        )
+        if violation is None:
+            return accepted
+        left_word = timeline.words[violation]
+        right_word = timeline.words[violation + 1]
+        left = accepted.get(left_word.word_id)
+        right = accepted.get(right_word.word_id)
+        if (
+            left is None and right is None
+        ):  # pragma: no cover - the input timeline is already ordered
+            raise ValueError("canonical source order is invalid before alignment")
+        if left is None:
+            accepted.pop(right_word.word_id, None)
+            continue
+        if right is None:
+            accepted.pop(left_word.word_id, None)
+            continue
+        left_rank = (
+            _alignment_confidence(left),
+            -_alignment_deviation(by_id[left_word.word_id], left),
+        )
+        right_rank = (
+            _alignment_confidence(right),
+            -_alignment_deviation(by_id[right_word.word_id], right),
+        )
+        rejected_id = left_word.word_id if left_rank <= right_rank else right_word.word_id
+        accepted.pop(rejected_id, None)
+
+
 def apply_whisperx_alignment(
     timeline: CanonicalTimeline,
     aligned_segments: list[dict[str, object]],
@@ -124,17 +181,30 @@ def apply_whisperx_alignment(
             if match is None:
                 continue
             word = canonical[match]
+            aligned_start = float(start)
+            aligned_end = float(end)
+            if aligned_start < 0 or aligned_end <= aligned_start:
+                continue
+            score = raw.get("score")
+            confidence = (
+                float(score)
+                if isinstance(score, int | float) and 0.0 <= float(score) <= 1.0
+                else None
+            )
             replacements[word.word_id] = {
-                "source_start": float(start),
-                "source_end": float(end),
-                "confidence": raw.get("score"),
+                "source_start": aligned_start,
+                "source_end": aligned_end,
+                "confidence": confidence,
                 "timing_mode": "aligned",
                 "transcript_source": f"{word.transcript_source}+whisperx",
             }
             cursor = match + 1
     if not replacements:
         raise ValueError("WhisperX alignment produced no canonical word matches")
-    return _replace_words(timeline, replacements)
+    stable = _drop_nonmonotonic_alignment_updates(timeline, replacements)
+    if not stable:
+        raise ValueError("WhisperX alignment produced no source-ordered canonical word matches")
+    return _replace_words(timeline, stable)
 
 
 def apply_speaker_turns(
