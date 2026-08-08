@@ -1040,32 +1040,45 @@ def run_pipeline(
                     media_for_visual = None
             if cfg.visual_scout_enabled and visual_scout_provider is not None and media_for_visual:
                 telemetry.start(f"visual_scout:{video.video_id}")
-                visual_timeline, visual_result = scout_visual_timeline(
-                    media_for_visual,
-                    visual_scout_provider,
-                    video_id=video.video_id,
-                    source_hash=canonical.source_hash,
-                    duration=max(canonical.end, 0.05),
-                    output_dir=video_work / "visual-scout-frames",
-                )
-                telemetry.stop(f"visual_scout:{video.video_id}")
-                compute_budget.record(visual_result.usage)
-                visual_timelines[video.video_id] = visual_timeline
-                _write_json(video_work / "visual-timeline.json", visual_timeline.to_dict())
-                _write_json(
-                    run_dir / "visual" / f"{video.video_id}.json", visual_timeline.to_dict()
-                )
-                visual_meta = manifest.run_metadata.get("visual_inference")
-                if isinstance(visual_meta, dict):
-                    visual_meta.setdefault("scout_runs", []).append(
-                        {
-                            "video_id": video.video_id,
-                            "model": visual_result.model.to_dict(),
-                            "usage": asdict(visual_result.usage),
-                            "event_count": len(visual_timeline.events),
-                            "degraded": visual_result.degraded,
-                        }
+                try:
+                    visual_timeline, visual_result = scout_visual_timeline(
+                        media_for_visual,
+                        visual_scout_provider,
+                        video_id=video.video_id,
+                        source_hash=canonical.source_hash,
+                        duration=max(canonical.end, 0.05),
+                        output_dir=video_work / "visual-scout-frames",
                     )
+                except Exception as exc:
+                    LOGGER.warning(
+                        "visual scouting failed; continuing with canonical text evidence",
+                        extra={"video_id": video.video_id, "error": str(exc)},
+                    )
+                    visual_meta = manifest.run_metadata.get("visual_inference")
+                    if isinstance(visual_meta, dict):
+                        visual_meta.setdefault("scout_errors", []).append(
+                            {"video_id": video.video_id, "error": str(exc)}
+                        )
+                else:
+                    compute_budget.record(visual_result.usage)
+                    visual_timelines[video.video_id] = visual_timeline
+                    _write_json(video_work / "visual-timeline.json", visual_timeline.to_dict())
+                    _write_json(
+                        run_dir / "visual" / f"{video.video_id}.json", visual_timeline.to_dict()
+                    )
+                    visual_meta = manifest.run_metadata.get("visual_inference")
+                    if isinstance(visual_meta, dict):
+                        visual_meta.setdefault("scout_runs", []).append(
+                            {
+                                "video_id": video.video_id,
+                                "model": visual_result.model.to_dict(),
+                                "usage": asdict(visual_result.usage),
+                                "event_count": len(visual_timeline.events),
+                                "degraded": visual_result.degraded,
+                            }
+                        )
+                finally:
+                    telemetry.stop(f"visual_scout:{video.video_id}")
             elif cfg.visual_scout_enabled:
                 visual_meta = manifest.run_metadata.get("visual_inference")
                 if isinstance(visual_meta, dict):

@@ -1370,3 +1370,28 @@ def test_visual_scout_acquires_full_media_after_vtt_transcript(tmp_path: Path) -
     assert source.media_downloads == 1
     assert manifest["run_metadata"]["transcript_sources"]["allowed"]["kind"] == "youtube-vtt"
     assert manifest["run_metadata"]["visual_inference"]["scout_runs"][0]["event_count"] == 1
+
+
+def test_visual_scout_failure_degrades_without_dropping_source_analysis(tmp_path: Path) -> None:
+    brief = _write_pipeline_brief(tmp_path)
+    subtitle = tmp_path / "visual-fail.vtt"
+    subtitle.write_text(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\nAutomation can save time for a business.\n",
+        encoding="utf-8",
+    )
+    media = tmp_path / "visual-fail.mp4"
+    media.write_bytes(b"visual-source")
+    with patch("clipper.pipeline.scout_visual_timeline", side_effect=RuntimeError("tail decode")):
+        run_dir = run_pipeline(
+            brief,
+            settings=PipelineSettings(
+                artifact_root=tmp_path / "visual-fail-artifacts",
+                visual_scout_enabled=True,
+            ),
+            source_client=FakeSource(subtitle, media),
+            visual_scout_provider=DummyVisionProvider(),
+            render=False,
+        )
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["funnel"]["story_moments"] > 0
+    assert manifest["run_metadata"]["visual_inference"]["scout_errors"][0]["error"] == "tail decode"

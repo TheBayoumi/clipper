@@ -13,6 +13,7 @@ from clipper.visual_ai import (
     VisualReviewReport,
     adaptive_sample_times,
     extract_video_frames,
+    media_duration_seconds,
     parse_visual_review,
     parse_visual_timeline,
     repair_stage,
@@ -194,7 +195,10 @@ def test_scout_visual_timeline_uses_sparse_frames_and_no_audio_retranscription(
     frames = [tmp_path / "a.jpg", tmp_path / "b.jpg"]
     for frame in frames:
         frame.write_bytes(b"frame")
-    with patch("clipper.visual_ai.extract_video_frames", return_value=frames) as extractor:
+    with (
+        patch("clipper.visual_ai.media_duration_seconds", return_value=119.0),
+        patch("clipper.visual_ai.extract_video_frames", return_value=frames) as extractor,
+    ):
         timeline, result = scout_visual_timeline(
             tmp_path / "source.mp4",
             provider,
@@ -358,3 +362,53 @@ def test_extract_video_frames_handles_missing_open_decode_write_and_success(tmp_
     assert len(frames) == 2 and all(path.is_file() for path in frames)
     assert good_capture.set.call_count == 2
     good_capture.release.assert_called_once()
+
+
+def test_visual_scout_clamps_transcript_duration_to_real_media_eof(tmp_path: Path) -> None:
+    provider = FakeVision({"events": []})
+    frames = [tmp_path / "frame.jpg"]
+    frames[0].write_bytes(b"frame")
+    with (
+        patch("clipper.visual_ai.media_duration_seconds", return_value=2995.838),
+        patch("clipper.visual_ai.extract_video_frames", return_value=frames) as extractor,
+    ):
+        scout_visual_timeline(
+            tmp_path / "proxy.mp4",
+            provider,
+            video_id="v",
+            source_hash="h",
+            duration=2997.599,
+            output_dir=tmp_path / "frames",
+        )
+    times = extractor.call_args.args[1]
+    assert max(times) <= 2995.788
+    assert 2997.549 not in times
+
+
+def test_media_duration_probe_reads_frame_metadata_and_rejects_invalid_values(
+    tmp_path: Path,
+) -> None:
+    video = tmp_path / "duration.mp4"
+    video.write_bytes(b"video")
+    capture = Mock()
+    capture.isOpened.return_value = True
+    capture.get.side_effect = [30.0, 300.0]
+    fake_cv2 = SimpleNamespace(
+        VideoCapture=Mock(return_value=capture),
+        CAP_PROP_FPS=5,
+        CAP_PROP_FRAME_COUNT=7,
+    )
+    with patch.dict(sys.modules, {"cv2": fake_cv2}):
+        assert media_duration_seconds(video) == pytest.approx(10.0)
+    capture.release.assert_called_once()
+
+    bad = Mock()
+    bad.isOpened.return_value = True
+    bad.get.side_effect = [0.0, 300.0]
+    fake_cv2.VideoCapture.return_value = bad
+    with (
+        patch.dict(sys.modules, {"cv2": fake_cv2}),
+        pytest.raises(RuntimeError, match="determine media duration"),
+    ):
+        media_duration_seconds(video)
+    bad.release.assert_called_once()

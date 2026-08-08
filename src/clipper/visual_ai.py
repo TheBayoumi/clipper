@@ -134,6 +134,26 @@ def adaptive_sample_times(
     return tuple(sorted(round(value, 3) for value in samples if 0 <= value < duration))
 
 
+def media_duration_seconds(video_path: Path) -> float:
+    try:
+        import cv2
+    except ImportError as exc:  # pragma: no cover - base dependency in production image
+        raise RuntimeError("opencv-python-headless is required for visual media probing") from exc
+    if not video_path.is_file():
+        raise FileNotFoundError(video_path)
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"unable to open video for duration probing: {video_path}")
+    try:
+        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        frames = float(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)
+    finally:
+        capture.release()
+    if fps <= 0 or frames <= 0:
+        raise RuntimeError(f"unable to determine media duration: {video_path}")
+    return frames / fps
+
+
 def extract_video_frames(
     video_path: Path,
     times: tuple[float, ...],
@@ -207,8 +227,10 @@ def scout_visual_timeline(
     scene_cuts: tuple[float, ...] = (),
     candidate_ranges: tuple[tuple[float, float], ...] = (),
 ) -> tuple[VisualTimeline, ProviderResult[dict[str, Any]]]:
+    media_duration = media_duration_seconds(video_path)
+    effective_duration = min(duration, media_duration)
     times = adaptive_sample_times(
-        duration,
+        effective_duration,
         scene_cuts=scene_cuts,
         candidate_ranges=candidate_ranges,
     )
