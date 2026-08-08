@@ -363,7 +363,20 @@ class AutonomousEditorialPlanner:
         if not grounded_moments:
             raise EditorialGroundingError("open editorial model returned no grounded StoryMoments")
 
-        moment_payloads = [moment.to_dict() for moment in grounded_moments.values()]
+        moment_payloads = [
+            {
+                "moment_id": moment.moment_id,
+                "start_word_id": moment.supporting_word_ids[0],
+                "end_word_id": moment.supporting_word_ids[-1],
+                "semantic_summary": moment.semantic_summary,
+                "narrative_structure": moment.narrative_structure,
+                "required_prior_context": moment.required_prior_context,
+                "required_followup_context": moment.required_followup_context,
+                "editorial_reason": moment.editorial_reason,
+                "confidence": moment.confidence,
+            }
+            for moment in grounded_moments.values()
+        ]
         concept_payload = self._complete(
             "clip_concepts",
             timeline,
@@ -535,7 +548,12 @@ class AutonomousEditorialPlanner:
                         "must reference source word IDs; "
                         "generated text may only appear in overlay_text."
                     ),
-                    "concept": asdict(grounded_concept),
+                    "concept": {
+                        **asdict(grounded_concept),
+                        "start_word_id": grounded_concept.supporting_word_ids[0],
+                        "end_word_id": grounded_concept.supporting_word_ids[-1],
+                        "supporting_word_ids": None,
+                    },
                 },
             )
             grounded_hooks = [
@@ -569,8 +587,21 @@ class AutonomousEditorialPlanner:
                         "Use only supplied "
                         "canonical word IDs for spoken material."
                     ),
-                    "concept": asdict(grounded_concept),
-                    "hooks": [asdict(hook) for hook in grounded_hooks],
+                    "concept": {
+                        **asdict(grounded_concept),
+                        "start_word_id": grounded_concept.supporting_word_ids[0],
+                        "end_word_id": grounded_concept.supporting_word_ids[-1],
+                        "supporting_word_ids": None,
+                    },
+                    "hooks": [
+                        {
+                            **asdict(hook),
+                            "source_start_word_id": hook.source_word_ids[0],
+                            "source_end_word_id": hook.source_word_ids[-1],
+                            "source_word_ids": None,
+                        }
+                        for hook in grounded_hooks
+                    ],
                 },
             )
             for raw in self._array(plan_payload, "plans"):

@@ -164,6 +164,97 @@ def test_grounded_ai_contract_rejects_unknown_and_reordered_spoken_words() -> No
         )
 
 
+def test_compact_grounded_ranges_expand_to_exact_canonical_words() -> None:
+    timeline = _timeline()
+    moment = GroundedStoryMoment.from_payload(
+        {
+            "moment_id": "range-moment",
+            "start_word_id": "w1",
+            "end_word_id": "w4",
+            "semantic_summary": "A compact grounded moment",
+            "narrative_structure": "answer",
+            "editorial_reason": "complete source range",
+            "confidence": 0.9,
+        },
+        timeline,
+    )
+    concept = GroundedClipConcept.from_payload(
+        {
+            "concept_id": "range-concept",
+            "story_moment_ids": ["range-moment"],
+            "start_word_id": "w1",
+            "end_word_id": "w4",
+            "semantic_summary": "Compact concept",
+            "standalone_context": "",
+            "narrative_structure": "answer",
+            "recommended_duration": 20,
+            "visual_dependencies": [],
+            "confidence": 0.85,
+        },
+        timeline,
+    )
+    hook = GroundedHookVariant.from_payload(
+        {
+            "variant_id": "range-hook",
+            "strategy_label": "direct source hook",
+            "source_start_word_id": "w1",
+            "source_end_word_id": "w3",
+            "overlay_text": None,
+            "rationale": "grounded opening",
+            "confidence": 0.8,
+        },
+        timeline,
+    )
+    plan = GroundedEditPlan.from_payload(
+        {
+            "plan_id": "range-plan",
+            "video_id": "video",
+            "concept_id": concept.concept_id,
+            "variant_id": hook.variant_id,
+            "source_start_word_id": "w1",
+            "source_end_word_id": "w4",
+            "hook_start_word_id": "w1",
+            "hook_end_word_id": "w3",
+            "overlay_text": None,
+            "strategy_label": "direct source hook",
+            "caption_platform": "tiktok",
+            "confidence": 0.8,
+        },
+        timeline,
+    )
+    assert moment.supporting_word_ids == ("w1", "w2", "w3", "w4")
+    assert concept.supporting_word_ids == ("w1", "w2", "w3", "w4")
+    assert hook.source_word_ids == ("w1", "w2", "w3")
+    assert plan.source_word_ids == ("w1", "w2", "w3", "w4")
+    assert plan.hook_source_word_ids == ("w1", "w2", "w3")
+    with pytest.raises(EditorialGroundingError, match="unknown canonical"):
+        GroundedStoryMoment.from_payload(
+            {
+                "moment_id": "missing-range",
+                "start_word_id": "missing",
+                "end_word_id": "w4",
+                "semantic_summary": "bad",
+                "narrative_structure": "answer",
+                "editorial_reason": "bad",
+                "confidence": 0.5,
+            },
+            timeline,
+        )
+    with pytest.raises(EditorialGroundingError, match="chronology"):
+        GroundedHookVariant.from_payload(
+            {
+                "variant_id": "reversed",
+                "strategy_label": "bad",
+                "source_start_word_id": "w4",
+                "source_end_word_id": "w2",
+                "overlay_text": None,
+                "rationale": "bad",
+                "confidence": 0.5,
+            },
+            timeline,
+        )
+
+
 def test_grounded_editorial_payloads_compile_without_fabricating_spoken_text() -> None:
     timeline = _timeline()
     profile = EpisodeEditorialProfile.from_payload(

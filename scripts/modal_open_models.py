@@ -123,10 +123,63 @@ def _json_text(text: str) -> dict[str, Any]:
 def _editorial_output_budget(payload: dict[str, Any]) -> int:
     task = str(payload.get("task") or "")
     if task == "episode_editorial_profile" or task == "global_concept_comparison":
-        return 512
+        return 768
     if task.startswith("hook_variants:"):
         return 1024
     return 1536
+
+
+def _editorial_contract(task: str) -> str:
+    common = (
+        "Output exactly one compact JSON object, no markdown and no extra keys. "
+        "Keep prose fields concise. Use only IDs that appear in the supplied payload. "
+    )
+    if task == "episode_editorial_profile":
+        return common + (
+            'Schema: {"summary":"<=60 words",'
+            '"valuable_moment_characteristics":["3-5 short strings"],'
+            '"avoid_characteristics":["0-4 short strings"],"confidence":0.0}. '
+        )
+    if task.startswith("story_moments:"):
+        return common + (
+            'Schema: {"moments":[{"moment_id":"unique",'
+            '"start_word_id":"first canonical ID","end_word_id":"last canonical ID",'
+            '"semantic_summary":"<=24 words","narrative_structure":"short label",'
+            '"required_prior_context":"<=16 words or empty",'
+            '"required_followup_context":"<=16 words or empty",'
+            '"editorial_reason":"<=20 words","confidence":0.0}]}. '
+            "Return at most 8 non-overlapping meaningful moments. Do not copy full word-ID lists. "
+        )
+    if task == "clip_concepts":
+        return common + (
+            'Schema: {"concepts":[{"concept_id":"unique","story_moment_ids":["ids"],'
+            '"start_word_id":"first canonical ID","end_word_id":"last canonical ID",'
+            '"semantic_summary":"<=24 words","standalone_context":"<=16 words or empty",'
+            '"narrative_structure":"short label","recommended_duration":20.0,'
+            '"visual_dependencies":["short labels"],"confidence":0.0}]}. '
+            "Return at most 12 materially distinct contiguous concepts. "
+            "Do not copy full word-ID lists. "
+        )
+    if task == "global_concept_comparison":
+        return common + 'Schema: {"concept_ids":["best-first supplied concept IDs"]}. '
+    if task.startswith("hook_variants:"):
+        return common + (
+            'Schema: {"variants":[{"variant_id":"unique","strategy_label":"<=8 words",'
+            '"source_start_word_id":"first canonical ID","source_end_word_id":"last canonical ID",'
+            '"overlay_text":null,"rationale":"<=16 words","confidence":0.0}]}. '
+            "Return at most 4 materially different truthful hooks. Do not copy full word-ID lists. "
+        )
+    if task.startswith("edit_plans:"):
+        return common + (
+            'Schema: {"plans":[{"plan_id":"unique","video_id":"supplied video ID",'
+            '"concept_id":"supplied concept ID","variant_id":"supplied hook ID",'
+            '"source_start_word_id":"first edit ID","source_end_word_id":"last edit ID",'
+            '"hook_start_word_id":"first hook ID","hook_end_word_id":"last hook ID",'
+            '"overlay_text":null,"strategy_label":"<=8 words",'
+            '"caption_platform":"tiktok","confidence":0.0}]}. '
+            "Return at most 4 contiguous chronological plans. Do not copy full word-ID lists. "
+        )
+    return common + "Follow the task payload exactly."
 
 
 def _transport_error(exc: Exception) -> dict[str, Any]:
@@ -185,12 +238,13 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
                 dtype=torch.bfloat16,
                 low_cpu_mem_usage=True,
             )
+        task = str(payload.get("task") or "")
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "Return only valid JSON. Spoken content must reference canonical word IDs. "
-                    "Never invent spoken words."
+                    "You are a source-grounded podcast editor. Never invent spoken words or IDs. "
+                    + _editorial_contract(task)
                 ),
             },
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},

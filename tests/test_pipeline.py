@@ -761,13 +761,15 @@ class FakeOpenEditorialProvider:
         elif task == "clip_concepts":
             moments = payload["moments"]
             assert isinstance(moments, list) and isinstance(moments[0], dict)
-            word_ids = moments[0]["supporting_word_ids"]
+            start_word_id = moments[0]["start_word_id"]
+            end_word_id = moments[0]["end_word_id"]
             value = {
                 "concepts": [
                     {
                         "concept_id": "concept-1",
                         "story_moment_ids": ["moment-1"],
-                        "supporting_word_ids": word_ids,
+                        "start_word_id": start_word_id,
+                        "end_word_id": end_word_id,
                         "semantic_summary": "Complete source-grounded explanation",
                         "standalone_context": "",
                         "narrative_structure": "explanation",
@@ -782,13 +784,15 @@ class FakeOpenEditorialProvider:
         elif task.startswith("hook_variants:"):
             concept = payload["concept"]
             assert isinstance(concept, dict)
-            word_ids = list(concept["supporting_word_ids"])
+            start_word_id = concept["start_word_id"]
+            end_word_id = concept["end_word_id"]
             value = {
                 "variants": [
                     {
                         "variant_id": "hook-1",
                         "strategy_label": "start on the source explanation",
-                        "source_word_ids": word_ids,
+                        "source_start_word_id": start_word_id,
+                        "source_end_word_id": end_word_id,
                         "overlay_text": None,
                         "rationale": "The source opening is already clear",
                         "confidence": 0.9,
@@ -798,7 +802,8 @@ class FakeOpenEditorialProvider:
         elif task.startswith("edit_plans:"):
             concept = payload["concept"]
             assert isinstance(concept, dict)
-            word_ids = list(concept["supporting_word_ids"])
+            start_word_id = concept["start_word_id"]
+            end_word_id = concept["end_word_id"]
             value = {
                 "plans": [
                     {
@@ -806,8 +811,10 @@ class FakeOpenEditorialProvider:
                         "video_id": "allowed",
                         "concept_id": "concept-1",
                         "variant_id": "hook-1",
-                        "source_word_ids": word_ids,
-                        "hook_source_word_ids": word_ids,
+                        "source_start_word_id": start_word_id,
+                        "source_end_word_id": end_word_id,
+                        "hook_start_word_id": start_word_id,
+                        "hook_end_word_id": end_word_id,
                         "overlay_text": None,
                         "strategy_label": "source explanation",
                         "caption_platform": "tiktok",

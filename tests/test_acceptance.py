@@ -303,6 +303,10 @@ def test_balanced_editor_uses_pinned_qwen3_4b_on_single_l4() -> None:
     assert 'device_map={"": 0}' in editorial_block
     assert "dtype=torch.bfloat16" in editorial_block
     assert "_editorial_output_budget(payload)" in editorial_block
+    assert "_editorial_contract(task)" in editorial_block
+    assert '"start_word_id"' in worker
+    assert '"source_start_word_id"' in worker
+    assert "Do not copy full word-ID lists" in worker
     assert '"L4"' in editorial_block
     assert "Qwen/Qwen3-4B-Instruct-2507" in factory
     assert 'CLIPPER_EDITORIAL_QUANTIZATION", "bf16"' in factory

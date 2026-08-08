@@ -35,6 +35,30 @@ def _confidence(value: object) -> float:
     return result
 
 
+def _grounded_word_range(
+    payload: dict[str, Any],
+    timeline: CanonicalTimeline,
+    *,
+    list_field: str,
+    start_field: str,
+    end_field: str,
+) -> tuple[str, ...]:
+    raw_ids = payload.get(list_field)
+    if raw_ids is not None:
+        return _word_ids(raw_ids, list_field)
+    start_id = _nonempty(payload.get(start_field), start_field)
+    end_id = _nonempty(payload.get(end_field), end_field)
+    positions = {word.word_id: index for index, word in enumerate(timeline.words)}
+    if start_id not in positions or end_id not in positions:
+        missing = [word_id for word_id in (start_id, end_id) if word_id not in positions]
+        raise EditorialGroundingError(f"unknown canonical word IDs: {missing}")
+    start_index = positions[start_id]
+    end_index = positions[end_id]
+    if end_index < start_index:
+        raise EditorialGroundingError(f"{start_field}/{end_field} must preserve chronology")
+    return tuple(word.word_id for word in timeline.words[start_index : end_index + 1])
+
+
 def source_spans_from_word_ids(
     timeline: CanonicalTimeline, word_ids: tuple[str, ...], *, allow_reorder: bool = False
 ) -> tuple[SourceSpan, ...]:
@@ -97,7 +121,13 @@ class GroundedStoryMoment:
     def from_payload(
         cls, payload: dict[str, Any], timeline: CanonicalTimeline
     ) -> GroundedStoryMoment:
-        ids = _word_ids(payload.get("supporting_word_ids"), "supporting_word_ids")
+        ids = _grounded_word_range(
+            payload,
+            timeline,
+            list_field="supporting_word_ids",
+            start_field="start_word_id",
+            end_field="end_word_id",
+        )
         source_spans_from_word_ids(timeline, ids)
         return cls(
             _nonempty(payload.get("moment_id"), "moment_id"),
@@ -129,7 +159,13 @@ class GroundedHookVariant:
     def from_payload(
         cls, payload: dict[str, Any], timeline: CanonicalTimeline
     ) -> GroundedHookVariant:
-        ids = _word_ids(payload.get("source_word_ids"), "source_word_ids")
+        ids = _grounded_word_range(
+            payload,
+            timeline,
+            list_field="source_word_ids",
+            start_field="source_start_word_id",
+            end_field="source_end_word_id",
+        )
         source_spans_from_word_ids(timeline, ids)
         overlay = payload.get("overlay_text")
         if overlay is not None and not isinstance(overlay, str):
@@ -170,7 +206,13 @@ class GroundedClipConcept:
             raise EditorialGroundingError("story_moment_ids must be strings")
         if not isinstance(visual, list) or not all(isinstance(x, str) for x in visual):
             raise EditorialGroundingError("visual_dependencies must be strings")
-        ids = _word_ids(payload.get("supporting_word_ids"), "supporting_word_ids")
+        ids = _grounded_word_range(
+            payload,
+            timeline,
+            list_field="supporting_word_ids",
+            start_field="start_word_id",
+            end_field="end_word_id",
+        )
         source_spans_from_word_ids(timeline, ids)
         duration = float(payload.get("recommended_duration", 0.0))
         if duration <= 0:
@@ -206,8 +248,20 @@ class GroundedEditPlan:
         video_id = _nonempty(payload.get("video_id"), "video_id")
         if video_id != timeline.video_id:
             raise EditorialGroundingError("edit plan targets the wrong source video")
-        source_ids = _word_ids(payload.get("source_word_ids"), "source_word_ids")
-        hook_ids = _word_ids(payload.get("hook_source_word_ids"), "hook_source_word_ids")
+        source_ids = _grounded_word_range(
+            payload,
+            timeline,
+            list_field="source_word_ids",
+            start_field="source_start_word_id",
+            end_field="source_end_word_id",
+        )
+        hook_ids = _grounded_word_range(
+            payload,
+            timeline,
+            list_field="hook_source_word_ids",
+            start_field="hook_start_word_id",
+            end_field="hook_end_word_id",
+        )
         source_words = timeline.require_word_ids(source_ids)
         hook_words = timeline.require_word_ids(hook_ids)
         source_id_set = set(source_ids)
