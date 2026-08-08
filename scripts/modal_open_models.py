@@ -175,10 +175,14 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
         if _editorial_model is None or _editorial_tokenizer is None:
             model_id = "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
             _editorial_tokenizer = AutoTokenizer.from_pretrained(model_id)
+            offload_dir = f"{HF_CACHE}/qwen3-30b-fp8-offload"
+            os.makedirs(offload_dir, exist_ok=True)
             _editorial_model = AutoModelForCausalLM.from_pretrained(
                 model_id,
                 device_map="balanced_low_0",
-                max_memory={0: "14GiB", 1: "20GiB"},
+                max_memory={0: "16GiB", 1: "19GiB", "cpu": "24GiB"},
+                offload_folder=offload_dir,
+                offload_state_dict=True,
                 torch_dtype="auto",
                 low_cpu_mem_usage=True,
             )
