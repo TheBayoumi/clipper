@@ -3,7 +3,14 @@ from pathlib import Path
 import pytest
 
 from clipper.captions import CaptionLayout, create_word_reveal_ass, platform_caption_layout
-from clipper.models import ClipCandidate, TranscriptSegment, TranscriptWord
+from clipper.models import (
+    ClipCandidate,
+    EditPlan,
+    SourceSpan,
+    TranscriptSegment,
+    TranscriptWord,
+)
+from clipper.wordstream import segment_source_words
 
 
 def test_word_reveal_ass_uses_real_word_timestamps(tmp_path: Path) -> None:
@@ -42,7 +49,7 @@ def test_word_reveal_ass_synthesizes_missing_word_timing_and_groups(tmp_path: Pa
     assert text.count(r"{\ko") == 12
 
 
-def test_word_reveal_ass_clamps_words_to_clip(tmp_path: Path) -> None:
+def test_word_reveal_ass_drops_partial_boundary_words(tmp_path: Path) -> None:
     clip = ClipCandidate("v", 5, 7, "text", 1)
     segment = TranscriptSegment(
         4.5,
@@ -54,9 +61,14 @@ def test_word_reveal_ass_clamps_words_to_clip(tmp_path: Path) -> None:
             TranscriptWord(6.4, 7.5, "after"),
         ),
     )
-    text = create_word_reveal_ass(clip, [segment], tmp_path / "clamped.ass").read_text()
-    assert "0:00:00.00" in text
-    assert "0:00:02.00" in text
+    path = create_word_reveal_ass(clip, [segment], tmp_path / "clamped.ass")
+    text = path.read_text()
+    audit = __import__("json").loads(path.with_suffix(".caption-audit.json").read_text())
+    assert "before" not in text
+    assert "inside" in text
+    assert "after" not in text
+    assert audit["partial_words_dropped"] == 2
+    assert audit["first_audio_word"] == "inside"
 
 
 def test_platform_caption_safe_zone_moves_tiktok_captions_up() -> None:
@@ -87,9 +99,122 @@ def test_hook_overlay_uses_source_derived_text_and_safe_style(tmp_path: Path) ->
         [segment],
         tmp_path / "hook.ass",
         platform="tiktok",
-        hook_text="I made five million dollars",
+        hook_text="THE NUMBER THAT CHANGED EVERYTHING",
     ).read_text()
     assert "Style: Hook" in text
     assert "Dialogue: 1,0:00:00.00,0:00:01.80,Hook" in text
-    assert "I made five million dollars" in text
+    assert "THE NUMBER THAT CHANGED EVERYTHING" in text
     assert ",461,1" in text
+
+
+def _plan(start: float, end: float, *, anchor: float | None, word: str | None) -> EditPlan:
+    return EditPlan(
+        "plan",
+        "v",
+        "concept",
+        "variant",
+        "question",
+        (SourceSpan(start, end),),
+        None,
+        (),
+        "tiktok",
+        9.0,
+        "fingerprint",
+        anchor,
+        word,
+    )
+
+
+def test_first_caption_uses_trimmed_hook_word_across_vtt_cues(tmp_path: Path) -> None:
+    segments = [
+        TranscriptSegment(9.0, 9.3, "Dude,", (TranscriptWord(9.0, 9.3, "Dude"),)),
+        TranscriptSegment(
+            9.3,
+            10.0,
+            "before we head out,",
+            (
+                TranscriptWord(9.3, 9.48, "before"),
+                TranscriptWord(9.49, 9.62, "we"),
+                TranscriptWord(9.63, 9.82, "head"),
+                TranscriptWord(9.83, 10.0, "out"),
+            ),
+        ),
+        TranscriptSegment(
+            10.05,
+            12.4,
+            "what's one message for esports fans?",
+            (
+                TranscriptWord(10.05, 10.32, "what's"),
+                TranscriptWord(10.33, 10.50, "one"),
+                TranscriptWord(10.51, 10.78, "message"),
+                TranscriptWord(10.79, 10.92, "for"),
+                TranscriptWord(10.93, 11.35, "esports"),
+                TranscriptWord(11.36, 11.70, "fans?"),
+            ),
+        ),
+    ]
+    clip = ClipCandidate("v", 10.05, 12.4, "text", 1)
+    path = create_word_reveal_ass(
+        clip,
+        segments,
+        tmp_path / "trimmed.ass",
+        edit_plan=_plan(10.05, 12.4, anchor=10.05, word="what's"),
+    )
+    text = path.read_text()
+    audit = __import__("json").loads(path.with_suffix(".caption-audit.json").read_text())
+    assert "Dude" not in text and "before" not in text and "head" not in text
+    assert "what's" in text
+    assert audit["first_audio_word"] == "what's"
+    assert audit["first_caption_text"].lower().startswith("what's one message")
+    assert audit["alignment"] == "PASS"
+
+
+def test_first_caption_alignment_with_cue_interpolated_fallback(tmp_path: Path) -> None:
+    segment = TranscriptSegment(
+        9.0, 13.0, "Dude before we head out what's one message for esports fans?"
+    )
+    source_words = segment_source_words(segment)
+    anchor_word = next(word for word in source_words if word.text.lower() == "what's")
+    clip = ClipCandidate("v", anchor_word.source_start, 13.0, "text", 1)
+    path = create_word_reveal_ass(
+        clip,
+        [segment],
+        tmp_path / "fallback.ass",
+        edit_plan=_plan(
+            anchor_word.source_start, 13.0, anchor=anchor_word.source_start, word="what's"
+        ),
+    )
+    audit = __import__("json").loads(path.with_suffix(".caption-audit.json").read_text())
+    assert audit["timing_mode"] == "cue_interpolated"
+    assert audit["first_audio_word"].lower() == "what's"
+    assert audit["alignment"] == "PASS"
+
+
+def test_caption_grouping_crosses_original_vtt_cue_boundaries(tmp_path: Path) -> None:
+    clip = ClipCandidate("v", 0, 2.0, "text", 1)
+    segments = [
+        TranscriptSegment(
+            0, 0.8, "one two", (TranscriptWord(0, 0.35, "one"), TranscriptWord(0.36, 0.7, "two"))
+        ),
+        TranscriptSegment(
+            0.72,
+            1.5,
+            "three four",
+            (TranscriptWord(0.72, 1.05, "three"), TranscriptWord(1.06, 1.4, "four")),
+        ),
+    ]
+    text = create_word_reveal_ass(clip, segments, tmp_path / "cross-cue.ass").read_text()
+    assert text.count("Dialogue: 0,") == 1
+    assert "one" in text and "four" in text
+
+
+def test_duplicate_hook_overlay_is_suppressed(tmp_path: Path) -> None:
+    clip = ClipCandidate("v", 0, 3, "text", 1)
+    segment = TranscriptSegment(0, 3, "I made five million dollars.")
+    path = create_word_reveal_ass(
+        clip, [segment], tmp_path / "duplicate.ass", hook_text="I MADE FIVE MILLION DOLLARS"
+    )
+    text = path.read_text()
+    audit = __import__("json").loads(path.with_suffix(".caption-audit.json").read_text())
+    assert "Dialogue: 1," not in text
+    assert audit["hook_overlay_suppressed_duplicate"] is True

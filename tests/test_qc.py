@@ -28,6 +28,22 @@ def fixtures(tmp_path: Path) -> tuple[Path, Path, Path]:
         "1,0,0,0,100,100,0,0,1,4,0,2,80,80,461,1\n",
         encoding="utf-8",
     )
+    audit = tmp_path / "clip.caption-audit.json"
+    audit.write_text(
+        json.dumps(
+            {
+                "first_audio_word": "hello",
+                "first_audio_word_time": 0.0,
+                "first_audio_words": "hello world",
+                "first_caption_text": "hello world",
+                "first_caption_time": 0.0,
+                "first_caption_timing_delta_seconds": 0.0,
+                "alignment": "PASS",
+                "partial_words_dropped": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
     tracking = tmp_path / "clip.tracking.json"
     tracking.write_text(
         json.dumps(
@@ -287,3 +303,37 @@ def test_transition_and_render_quality_gates_reject_v8_failure_modes(tmp_path: P
     render = tmp_path / "x.render.json"
     render.write_text(json.dumps({"resampling_stages": 2, "digital_zoom_used": True}))
     assert _render_evidence(render)["digital_zoom_used"] is True
+
+
+def test_qc_rejects_first_caption_misalignment(tmp_path: Path) -> None:
+    video, ass, tracking = fixtures(tmp_path)
+    video.with_suffix(".caption-audit.json").write_text(
+        json.dumps(
+            {
+                "first_audio_word": "what's",
+                "first_audio_word_time": 0.0,
+                "first_audio_words": "what's one message",
+                "first_caption_text": "before we head",
+                "first_caption_time": 0.21,
+                "first_caption_timing_delta_seconds": 0.21,
+                "alignment": "FAIL",
+            }
+        )
+    )
+    calls = iter(
+        [
+            completed(stdout=probe_payload()),
+            completed(),
+            completed(stderr='{"input_i":"-14","input_tp":"-1.5","input_lra":"2"}'),
+            completed(),
+        ]
+    )
+    with (
+        patch("clipper.qc.shutil.which", return_value="tool"),
+        patch("clipper.qc._run", side_effect=lambda *_a, **_k: next(calls)),
+    ):
+        report = run_technical_qc(
+            video, expected_duration=20, caption_path=ass, tracking_path=tracking
+        )
+    assert report["status"] == "FAIL"
+    assert "first caption" in " | ".join(report["issues"])

@@ -219,6 +219,8 @@ class FFmpegRenderer:
             subtitle_path,
             platform=edit_plan.caption_platform if edit_plan is not None else "tiktok",
             hook_text=edit_plan.hook_text if edit_plan is not None else None,
+            edit_plan=edit_plan,
+            audit_path=output_path.with_suffix(".caption-audit.json"),
         )
         tracking_plan = (
             plan_speaker_crop(

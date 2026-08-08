@@ -57,6 +57,16 @@ def _caption_timing_mode(path: Path) -> str | None:
     return None
 
 
+def _caption_audit(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _tracking_evidence(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
@@ -143,6 +153,7 @@ def run_technical_qc(
     expected_height: int = 1920,
     expected_fps: float = 30.0,
     render_metadata_path: str | Path | None = None,
+    caption_audit_path: str | Path | None = None,
 ) -> dict[str, Any]:
     video = Path(video_path)
     caption = Path(caption_path)
@@ -151,6 +162,11 @@ def run_technical_qc(
         Path(render_metadata_path)
         if render_metadata_path is not None
         else video.with_suffix(".render.json")
+    )
+    caption_audit_file = (
+        Path(caption_audit_path)
+        if caption_audit_path is not None
+        else video.with_suffix(".caption-audit.json")
     )
     issues: list[str] = []
     if not video.is_file() or video.stat().st_size == 0:
@@ -258,6 +274,15 @@ def run_technical_qc(
     caption_safe = margin is not None and margin >= required_margin
     if not caption_safe:
         issues.append("caption bottom margin is outside configured platform safe region")
+    caption_audit = _caption_audit(caption_audit_file)
+    if not caption_audit:
+        issues.append("caption audit is missing or malformed")
+    else:
+        if caption_audit.get("alignment") != "PASS":
+            issues.append("first caption does not match the first audible words")
+        timing_delta = _float(caption_audit.get("first_caption_timing_delta_seconds"), 999.0)
+        if timing_delta > 0.08:
+            issues.append("first caption timing is not aligned with the first audible word")
     tracking_info = _tracking_evidence(tracking)
     no_filler = tracking_info.get("background_fill") == "none"
     if not no_filler:
@@ -312,6 +337,28 @@ def run_technical_qc(
             "safe_region_pass": caption_safe,
             "timing_mode": timing_mode,
             "word_exact": timing_mode == "word_exact",
+            "audit_path": str(caption_audit_file),
+            "first_audio_word": caption_audit.get("first_audio_word") if caption_audit else None,
+            "first_audio_words": caption_audit.get("first_audio_words") if caption_audit else None,
+            "first_audio_word_time": caption_audit.get("first_audio_word_time")
+            if caption_audit
+            else None,
+            "first_caption_text": caption_audit.get("first_caption_text")
+            if caption_audit
+            else None,
+            "first_caption_time": caption_audit.get("first_caption_time")
+            if caption_audit
+            else None,
+            "first_caption_timing_delta_seconds": (
+                caption_audit.get("first_caption_timing_delta_seconds") if caption_audit else None
+            ),
+            "alignment": caption_audit.get("alignment") if caption_audit else "FAIL",
+            "partial_words_dropped": caption_audit.get("partial_words_dropped")
+            if caption_audit
+            else None,
+            "hook_overlay_suppressed_duplicate": (
+                caption_audit.get("hook_overlay_suppressed_duplicate") if caption_audit else None
+            ),
         },
         "framing": {
             **tracking_info,

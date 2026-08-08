@@ -3,9 +3,13 @@ name: Live campaign acceptance
 on:
   push:
     branches:
-      - feat/whop-youtube-clipping-pipeline
+      - feat/word-reveal-face-tracking
     paths:
       - ".github/workflows/live-campaign.yml"
+      - "src/clipper/**"
+      - "campaigns/reach-double-coverage-dedicated.yaml"
+      - "Dockerfile"
+      - "pyproject.toml"
   workflow_dispatch:
 
 permissions:
@@ -14,51 +18,70 @@ permissions:
 jobs:
   live-campaign:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
       - name: Build exact candidate image
         run: docker build -t clipper-live:${GITHUB_SHA} .
 
-      - name: Run Reach campaign through Clipper using campaign-supplied media
+      - name: Run dedicated Double Coverage campaign through exact HEAD
         run: |
           mkdir -p live-artifacts
           docker run --rm \
+            --env GITHUB_SHA="${GITHUB_SHA}" \
+            --env CLIPPER_SOURCE_MAX_HEIGHT=1080 \
+            --env CLIPPER_RENDER_PROFILE=production \
             --env CLIPPER_WHISPER_MODEL=base.en \
             --env CLIPPER_WHISPER_DEVICE=cpu \
             --env CLIPPER_WHISPER_COMPUTE_TYPE=int8 \
             -v "$PWD/campaigns:/campaigns:ro" \
             -v "$PWD/live-artifacts:/artifacts" \
             clipper-live:${GITHUB_SHA} \
-            run --brief /campaigns/reach-double-coverage-clix.yaml --artifact-root /artifacts
+            run --brief /campaigns/reach-double-coverage-dedicated.yaml --artifact-root /artifacts
 
-      - name: Validate rendered campaign output
+      - name: Validate full production manifest and batch invariants
         run: |
-          python - <<'PY'
+          run_dir="$(dirname "$(find live-artifacts -name manifest.json -type f -print -quit)")"
+          test -n "$run_dir"
+          PYTHONPATH=src python - "$run_dir" <<'PY'
           import json
+          import sys
           from pathlib import Path
+          from clipper.acceptance import validate_live_run
 
-          manifests = list(Path("live-artifacts").glob("*/manifest.json"))
-          if len(manifests) != 1:
-              raise SystemExit(f"expected one manifest, found {len(manifests)}")
-          manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-          if manifest["errors"]:
-              raise SystemExit(f"pipeline errors: {manifest['errors']}")
-          if not manifest["planned_clips"]:
-              raise SystemExit("no clips were planned")
-          if not manifest["rendered_clips"]:
-              raise SystemExit("no clips were rendered")
-          print(json.dumps(manifest, indent=2))
+          run_dir = Path(sys.argv[1])
+          manifest = validate_live_run(
+              run_dir, expected_finalists=6, expected_shortlist=3
+          )
+          print(
+              json.dumps(
+                  {
+                      "run_dir": str(run_dir),
+                      "targets": manifest["targets"],
+                      "actual": manifest["actual"],
+                      "funnel": manifest["funnel"],
+                  },
+                  indent=2,
+              )
+          )
           PY
 
-          clip="$(find live-artifacts -path '*/clips/*.mp4' -type f | sort | head -n 1)"
-          test -n "$clip"
-          ffmpeg -v error -i "$clip" -f null -
-          ffprobe -v error -show_streams -show_format -of json "$clip" > live-artifacts/ffprobe.json
-          ffmpeg -v error -ss 2 -i "$clip" -frames:v 1 -y live-artifacts/preview.png
+      - name: Decode and inspect every finalist MP4
+        run: |
+          run_dir="$(dirname "$(find live-artifacts -name manifest.json -type f -print -quit)")"
+          count=0
+          for clip in "$run_dir"/clips/*.mp4; do
+            test -f "$clip"
+            count=$((count + 1))
+            ffprobe -v error -show_streams -show_format -of json "$clip" > "$clip.ffprobe.json"
+            ffmpeg -v error -i "$clip" -f null -
+            ffmpeg -v error -t 3 -i "$clip" -f null -
+            ffmpeg -v error -ss 0.25 -i "$clip" -frames:v 1 -y "$clip.first-025.png"
+          done
+          test "$count" -eq 6
 
-      - name: Upload live acceptance evidence
+      - name: Upload exact-HEAD live acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:

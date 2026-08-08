@@ -40,14 +40,14 @@ For public campaign-authorized YouTube sources, Clipper requests available capti
 
 Before production media download, Clipper inventories the authorized video's available streams and selects the highest practical MP4 video at or below `CLIPPER_SOURCE_MAX_HEIGHT` (default `1080`). The selected format ID, resolution, codec, bitrate, FPS and available alternatives are persisted beside the source media.
 
-## V9 editorial model
+## V10 editorial and production model
 
-The V9 pipeline preserves the V8 full-podcast editorial funnel while separating a source timestamp from the finished edit:
+V10 preserves the V8/V9 full-podcast editorial funnel while making the final edit, caption timeline, and batch yield explicit release contracts:
 
 - `StoryMoment` — a conversational/story unit discovered from the full transcript.
 - `ClipConcept` — a self-contained source story with setup, payoff, topic, duration, fingerprint, and editorial scores.
 - `HookVariant` — a legitimate source-derived opening strategy. Supported modes include direct, curiosity text, question, number, conflict, and strong opinion. `payoff_first` is intentionally not emitted until a multi-span reorder renderer can preserve continuity safely.
-- `EditPlan` — the exact source span, hook text, caption platform, ranking score, and meaning-driven visual beats sent to the renderer.
+- `EditPlan` — the authoritative source span(s), hook/caption start-word anchor, caption platform, ranking score, and meaning-driven visual beats sent to the renderer.
 
 ### Editorial scoring
 
@@ -67,7 +67,9 @@ When no embedding service is configured, V9 uses a deterministic lexical-semanti
 - Speaker-aware portrait framing starts from the maximum-resolution `9:16` source crop (`zoom_factor=1.0`) rather than globally enlarging faces.
 - Camera changes are classified before rendering: source-camera cuts and large same-shot speaker switches are hard cuts, acceptable two-person/small-displacement compositions hold, and only genuine same-speaker subject movement may use an eased displacement-aware reframe.
 - Source camera cuts are detected from the original footage and never receive a sliding crop transition. Transition evidence records reason, mode, distance, duration and source-cut timing for QC.
-- Word-synchronized ASS captions preserve source word timestamps when available. If exact words are unavailable, the ASS evidence is explicitly marked `TimingMode: cue_interpolated`; QC never labels that mode word-exact.
+- Word-synchronized ASS captions are built from one flattened clip-local word stream owned by the final `EditPlan`. Words already in progress at an editorial cut are dropped rather than clamped into a fake 0.0-second subtitle. Exact source timestamps are preserved when available; fallback timing is explicitly marked `TimingMode: cue_interpolated`.
+- Every render writes a caption audit recording the first complete audible words, first caption phrase/time, partial words dropped, and a PASS/FAIL first-caption alignment invariant. QC fails a mismatch.
+- Hook overlays are suppressed when they duplicate the opening spoken caption instead of stacking the same sentence twice.
 - Platform-safe caption presets for TikTok, Instagram Reels, YouTube Shorts, and generic vertical output. Presets are conservative margins rather than claims about permanent app UI coordinates.
 - Source-derived hook text can appear briefly above the dialogue.
 - Digital punch-ins are disabled by default. The renderer rejects legacy post-upscale punch beats because they resample already-upscaled pixels and visibly soften podcast footage.
@@ -114,6 +116,15 @@ editorial:
 
 Generic defaults remain intentionally cheap for CI/smoke runs. Real campaign YAML can opt into a larger internal production budget without changing the campaign's final submission target.
 
+
+### Batch yield and release status
+
+`final_render_budget` is a required production yield, not a best-effort maximum. V10 separates the highest-ranked primary render plans from a reserve queue. A render exception or technical-QC failure promotes the next reserve plan until the target is reached or the reserve pool is exhausted. The submission shortlist is created **after** render and QC and can only reference accepted MP4s.
+
+Every production manifest records `SUCCESS`, `DEGRADED`, or `FAILED`, explicit render/shortlist targets and actual counts, a full funnel ledger, per-attempt render outcomes, and a rejection ledger explaining attrition by stage/reason. A run that targets six finalists but produces two is `FAILED`; the CLI exits non-zero for a failed production run.
+
+The dedicated Double Coverage acceptance configuration intentionally distinguishes the six-clip review batch from the three-clip campaign submission shortlist.
+
 ## Render profiles and image quality
 
 Clipper separates encode speed from release quality:
@@ -149,21 +160,26 @@ Set `CLIPPER_CACHE_ROOT` to keep reusable analysis outside the per-run artifact 
 ```text
 artifacts/<campaign-id>-<UTC timestamp>/
 ├── brief.normalized.json
+├── transcript.json
 ├── story-moments.json
 ├── concept-ranking.json
 ├── hook-variants.json
+├── funnel.json
+├── rejections.json
+├── coverage.json
+├── editorial-review.json
 ├── edit-plans/
-│   └── plan-*.json
-├── clips/
-│   ├── 01-<topic>-<hook>.mp4
-│   ├── 01-<topic>-<hook>.ass
-│   └── 01-<topic>-<hook>.tracking.json
+├── clips/                 # accepted QC-passed review finalists only
+│   ├── *.mp4
+│   ├── *.ass
+│   ├── *.caption-audit.json
+│   ├── *.tracking.json
+│   └── *.render.json
+├── captions/              # copied accepted ASS + caption-audit evidence
+├── tracking/              # copied accepted tracking evidence
 ├── qc/
-│   └── 01-<topic>-<hook>.json
-├── work/<youtube-id>/
-│   ├── transcript.json
-│   ├── story-moments.json
-│   └── clip-candidates.json
+├── rejected/              # failed-QC attempts retained for diagnosis
+├── work/
 └── manifest.json
 ```
 
@@ -176,7 +192,7 @@ Each production render is checked for:
 - H.264 video + AAC audio
 - edit-plan duration agreement
 - objective loudness / true peak / long silence
-- caption safe-region margin and timing provenance
+- caption safe-region margin, timing provenance, first-caption word/text timing alignment, and partial-boundary-word audit
 - tracking evidence confirming no filler and a valid 9:16 source crop
 - transition QC rejecting source-cut sliding, excessive eased velocity, premature target reframes and short-window oscillation
 - source/crop resolution, effective upscale factor, resampling-stage count and digital-zoom evidence
@@ -235,7 +251,7 @@ Quality gate:
 make check
 ```
 
-CI runs Ruff, strict mypy, and pytest with a 95% coverage floor on Python 3.11 and 3.12. Heavy podcast production rendering is intentionally kept out of CI; CI uses deterministic fixtures and a bounded container smoke render.
+Standard CI runs Ruff, strict mypy, pytest with a 95% coverage floor on Python 3.11/3.12, and a bounded container smoke render. The separate `live-campaign.yml` release workflow targets the active production branch (or explicit workflow dispatch), runs `campaigns/reach-double-coverage-dedicated.yaml`, requires the complete six-finalist/three-shortlist batch, validates every MP4 and sidecar, and uploads `reach-live-<HEAD_SHA>` acceptance evidence.
 
 ## Publication boundary
 

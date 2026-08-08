@@ -501,6 +501,8 @@ class HookVariant:
     score: float
     rationale: str
     fingerprint: str
+    caption_start_source_time: float | None = None
+    caption_start_word: str | None = None
 
     @property
     def duration(self) -> float:
@@ -540,6 +542,8 @@ class EditPlan:
     caption_platform: str
     score: float
     transcript_fingerprint: str
+    caption_start_source_time: float | None = None
+    caption_start_word: str | None = None
 
     @property
     def duration(self) -> float:
@@ -573,6 +577,7 @@ class RenderedClip:
     end: float
     score: float
     source_url: str
+    concept_id: str | None = None
     plan_id: str | None = None
     hook_mode: str | None = None
     render_sha256: str | None = None
@@ -585,6 +590,14 @@ class RenderedClip:
 class PipelineManifest:
     campaign_id: str
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    status: str = "SUCCESS"
+    status_reason: str | None = None
+    targets: dict[str, int] = field(default_factory=dict)
+    actual: dict[str, int] = field(default_factory=dict)
+    funnel: dict[str, int | float | bool] = field(default_factory=dict)
+    rejections: list[dict[str, Any]] = field(default_factory=list)
+    render_attempts: list[dict[str, Any]] = field(default_factory=list)
+    reserve_plans: list[dict[str, Any]] = field(default_factory=list)
     discovered_videos: list[dict[str, Any]] = field(default_factory=list)
     story_moments: list[dict[str, Any]] = field(default_factory=list)
     clip_concepts: list[dict[str, Any]] = field(default_factory=list)

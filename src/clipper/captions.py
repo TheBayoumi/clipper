@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import re
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import ClipCandidate, TranscriptSegment, TranscriptWord
-
-_SPEAKER_RE = re.compile(r"^>>\s*")
+from .models import ClipCandidate, EditPlan, SourceSpan, TranscriptSegment
+from .wordstream import ClipLocalWord, build_clip_word_stream, clean_word, normalized_tokens
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,48 +64,26 @@ def _ass_timestamp(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
 
 
-def _clean_word(text: str) -> str:
-    cleaned = _SPEAKER_RE.sub("", text.strip())
-    return cleaned.replace("{", "(").replace("}", ")").replace("\\", "")
-
-
-def _synthetic_words(segment: TranscriptSegment) -> tuple[TranscriptWord, ...]:
-    tokens = [_clean_word(token) for token in segment.text.split()]
-    tokens = [token for token in tokens if token]
-    if not tokens:
-        return ()
-    step = segment.duration / len(tokens)
-    return tuple(
-        TranscriptWord(
-            segment.start + index * step,
-            segment.end if index + 1 == len(tokens) else segment.start + (index + 1) * step,
-            token,
-        )
-        for index, token in enumerate(tokens)
-    )
-
-
-def _clip_words(clip: ClipCandidate, segment: TranscriptSegment) -> list[TranscriptWord]:
-    source_words = segment.words or _synthetic_words(segment)
-    clipped: list[TranscriptWord] = []
-    for word in source_words:
-        start = max(word.start, clip.start)
-        end = min(word.end, clip.end)
-        text = _clean_word(word.text)
-        if text and end > start:
-            clipped.append(TranscriptWord(start, end, text))
-    return clipped
-
-
-def _group_words(words: Sequence[TranscriptWord]) -> list[list[TranscriptWord]]:
-    groups: list[list[TranscriptWord]] = []
-    current: list[TranscriptWord] = []
+def _group_words(words: Sequence[ClipLocalWord]) -> list[list[ClipLocalWord]]:
+    groups: list[list[ClipLocalWord]] = []
+    current: list[ClipLocalWord] = []
     chars = 0
     for word in words:
         projected_chars = chars + len(word.text) + (1 if current else 0)
-        gap = word.start - current[-1].end if current else 0.0
-        duration = word.end - current[0].start if current else word.duration
-        if current and (len(current) >= 5 or projected_chars > 32 or gap > 0.65 or duration > 3.0):
+        gap = word.local_start - current[-1].local_end if current else 0.0
+        duration = (
+            word.local_end - current[0].local_start
+            if current
+            else word.local_end - word.local_start
+        )
+        punctuation_break = bool(current and current[-1].text.rstrip().endswith((".", "?", "!")))
+        if current and (
+            len(current) >= 5
+            or projected_chars > 32
+            or gap > 0.65
+            or duration > 3.0
+            or punctuation_break
+        ):
             groups.append(current)
             current = []
             chars = 0
@@ -117,13 +94,79 @@ def _group_words(words: Sequence[TranscriptWord]) -> list[list[TranscriptWord]]:
     return groups
 
 
-def _karaoke_text(words: Sequence[TranscriptWord]) -> str:
+def _karaoke_text(words: Sequence[ClipLocalWord]) -> str:
     parts: list[str] = []
     for index, word in enumerate(words):
-        next_start = words[index + 1].start if index + 1 < len(words) else word.end
-        duration_cs = max(1, round((max(word.end, next_start) - word.start) * 100))
+        next_start = words[index + 1].local_start if index + 1 < len(words) else word.local_end
+        duration_cs = max(1, round((max(word.local_end, next_start) - word.local_start) * 100))
         parts.append(f"{{\\ko{duration_cs}}}{word.text}")
     return " ".join(parts)
+
+
+def _near_duplicate(left: str, right: str) -> bool:
+    left_tokens = normalized_tokens(left)
+    right_tokens = normalized_tokens(right)
+    if not left_tokens or not right_tokens:
+        return False
+    left_set, right_set = set(left_tokens), set(right_tokens)
+    containment = len(left_set & right_set) / max(1, min(len(left_set), len(right_set)))
+    prefix_equal = (
+        left_tokens[: min(5, len(left_tokens))] == right_tokens[: min(5, len(right_tokens))]
+    )
+    return containment >= 0.8 or prefix_equal
+
+
+def _caption_audit(
+    stream: Sequence[ClipLocalWord],
+    groups: Sequence[Sequence[ClipLocalWord]],
+    *,
+    timing_mode: str,
+    partial_words_dropped: int,
+    hook_text: str | None,
+    hook_suppressed: bool,
+) -> dict[str, object]:
+    first_group = list(groups[0]) if groups else []
+    caption_text = " ".join(word.text for word in first_group)
+    audible = list(stream[: len(first_group)])
+    audible_text = " ".join(word.text for word in audible)
+    first_audio_time = stream[0].local_start if stream else None
+    first_caption_time = first_group[0].local_start if first_group else None
+    delta = (
+        abs(float(first_caption_time) - float(first_audio_time))
+        if first_audio_time is not None and first_caption_time is not None
+        else None
+    )
+    aligned = bool(
+        first_group
+        and audible
+        and normalized_tokens(caption_text) == normalized_tokens(audible_text)
+        and delta is not None
+        and delta <= 0.08
+    )
+    return {
+        "timing_mode": timing_mode,
+        "first_audio_word": stream[0].text if stream else None,
+        "first_audio_word_time": first_audio_time,
+        "first_audio_words": audible_text,
+        "first_caption_text": caption_text,
+        "first_caption_time": first_caption_time,
+        "first_caption_timing_delta_seconds": delta,
+        "alignment": "PASS" if aligned else "FAIL",
+        "partial_words_dropped": partial_words_dropped,
+        "first_words": [
+            {
+                "text": word.text,
+                "source_start": word.source_start,
+                "source_end": word.source_end,
+                "local_start": word.local_start,
+                "local_end": word.local_end,
+                "exact": word.exact,
+            }
+            for word in stream[:8]
+        ],
+        "hook_overlay_text": hook_text,
+        "hook_overlay_suppressed_duplicate": hook_suppressed,
+    }
 
 
 def create_word_reveal_ass(
@@ -136,40 +179,46 @@ def create_word_reveal_ass(
     platform: str = "tiktok",
     max_lines: int = 2,
     hook_text: str | None = None,
+    edit_plan: EditPlan | None = None,
+    audit_path: str | Path | None = None,
 ) -> Path:
     output = Path(output_path)
     layout = platform_caption_layout(platform, max_lines=max_lines)
     bottom_margin = layout.bottom_margin_px(height)
     hook_margin = layout.hook_margin_px(height)
-    relevant_segments = [
-        segment for segment in segments if segment.end > clip.start and segment.start < clip.end
-    ]
+    source_spans = (
+        edit_plan.source_spans if edit_plan is not None else (SourceSpan(clip.start, clip.end),)
+    )
+    caption_anchor = edit_plan.caption_start_source_time if edit_plan is not None else None
+    stream, partial_words_dropped = build_clip_word_stream(
+        source_spans, segments, caption_start_source_time=caption_anchor
+    )
+    groups = _group_words(stream)
     timing_mode = (
-        "word_exact"
-        if relevant_segments and all(segment.words for segment in relevant_segments)
-        else "cue_interpolated"
+        "word_exact" if stream and all(word.exact for word in stream) else "cue_interpolated"
     )
     events: list[str] = []
-    for segment in segments:
-        if segment.end <= clip.start or segment.start >= clip.end:
+    for group in groups:
+        if not group:
             continue
-        for group in _group_words(_clip_words(clip, segment)):
-            if not group:
-                continue
-            start = group[0].start - clip.start
-            end = group[-1].end - clip.start
-            if end <= start:
-                continue
-            events.append(
-                "Dialogue: 0,"
-                f"{_ass_timestamp(start)},{_ass_timestamp(end)},Default,,0,0,0,,"
-                f"{_karaoke_text(group)}"
-            )
+        start = group[0].local_start
+        end = group[-1].local_end
+        if end <= start:
+            continue
+        events.append(
+            "Dialogue: 0,"
+            f"{_ass_timestamp(start)},{_ass_timestamp(end)},Default,,0,0,0,,"
+            f"{_karaoke_text(group)}"
+        )
 
-    if hook_text and hook_text.strip():
-        clean_hook = _clean_word(hook_text)[:90]
+    clean_hook = clean_word(hook_text)[:90] if hook_text and hook_text.strip() else ""
+    first_caption = " ".join(word.text for word in groups[0]) if groups else ""
+    suppress_hook = bool(
+        clean_hook and first_caption and _near_duplicate(clean_hook, first_caption)
+    )
+    if clean_hook and not suppress_hook:
         hook_end = min(1.8, clip.duration)
-        if clean_hook and hook_end > 0.2:
+        if hook_end > 0.2:
             events.insert(
                 0,
                 "Dialogue: 1,"
@@ -205,4 +254,16 @@ def create_word_reveal_ass(
         "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
     )
     output.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
+    audit = _caption_audit(
+        stream,
+        groups,
+        timing_mode=timing_mode,
+        partial_words_dropped=partial_words_dropped,
+        hook_text=clean_hook or None,
+        hook_suppressed=suppress_hook,
+    )
+    target_audit = (
+        Path(audit_path) if audit_path is not None else output.with_suffix(".caption-audit.json")
+    )
+    target_audit.write_text(json.dumps(audit, indent=2, sort_keys=True), encoding="utf-8")
     return output

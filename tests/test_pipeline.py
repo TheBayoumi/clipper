@@ -7,6 +7,8 @@ import pytest
 from clipper.models import (
     CampaignBrief,
     ClipCandidate,
+    ClipConcept,
+    EditorialScores,
     PipelineManifest,
     TranscriptSegment,
     VideoCandidate,
@@ -19,6 +21,15 @@ from clipper.pipeline import (
     _record_source_media_metadata,
     run_pipeline,
 )
+
+
+@pytest.fixture(autouse=True)
+def _pipeline_qc_pass():
+    with patch(
+        "clipper.pipeline.run_technical_qc",
+        return_value={"status": "PASS", "issues": [], "captions": {"alignment": "PASS"}},
+    ):
+        yield
 
 
 class FakeSource:
@@ -490,3 +501,159 @@ def test_pipeline_records_selected_source_format_metadata(tmp_path: Path) -> Non
     before = dict(manifest.run_metadata["source_media"])
     _record_source_media_metadata(manifest, "broken", media)
     assert manifest.run_metadata["source_media"] == before
+
+
+def _scores() -> EditorialScores:
+    return EditorialScores(8, 8, 8, 8, 5, 7, 4, 7, 8, 9, 8, 8)
+
+
+def _concept(index: int) -> ClipConcept:
+    start = float((index - 1) * 10)
+    return ClipConcept(
+        f"concept-{index}",
+        "allowed",
+        start,
+        start + 9.0,
+        f"automation story {index} made {index * 100} dollars and ended successfully.",
+        f"topic-{index}",
+        f"automation story {index}",
+        "ended successfully.",
+        "money_story",
+        9.0,
+        _scores(),
+        8.0 - index * 0.1,
+        f"cluster-{index}",
+        f"fingerprint-{index}",
+    )
+
+
+def _yield_brief(tmp_path: Path) -> Path:
+    path = tmp_path / "yield-brief.json"
+    path.write_text(
+        json.dumps(
+            {
+                "campaign_id": "yield",
+                "title": "Automation",
+                "objective": "Produce a resilient batch",
+                "keywords": ["automation", "money"],
+                "source_channel_ids": ["UC1"],
+                "rights_confirmed": True,
+                "min_clip_seconds": 8,
+                "max_clip_seconds": 20,
+                "clip_count": 1,
+                "max_clips_per_source": 3,
+                "production": {
+                    "candidate_pool_size": 36,
+                    "concept_count": 3,
+                    "variants_per_concept": 1,
+                    "final_render_budget": 2,
+                },
+                "hooks": {"enabled": ["direct"]},
+            }
+        )
+    )
+    return path
+
+
+def _yield_subtitle(tmp_path: Path) -> Path:
+    path = tmp_path / "yield.vtt"
+    path.write_text(
+        "WEBVTT\n\n"
+        "00:00:00.000 --> 00:00:09.000\n"
+        "automation story one made 100 dollars and ended successfully.\n\n"
+        "00:00:10.000 --> 00:00:19.000\n"
+        "automation story two made 200 dollars and ended successfully.\n\n"
+        "00:00:20.000 --> 00:00:29.000\n"
+        "automation story three made 300 dollars and ended successfully.\n"
+    )
+    return path
+
+
+class FailFirstRenderer(FakeRenderer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def render(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("first render failed")
+        return super().render(*args, **kwargs)
+
+
+def test_render_failure_promotes_reserve_until_target_is_reached(tmp_path: Path) -> None:
+    brief = _yield_brief(tmp_path)
+    subtitle = _yield_subtitle(tmp_path)
+    media = tmp_path / "yield.mp4"
+    media.write_bytes(b"source")
+    concepts = [_concept(1), _concept(2), _concept(3)]
+    with patch("clipper.pipeline.select_distinct_concepts", return_value=concepts):
+        run_dir = run_pipeline(
+            brief,
+            settings=PipelineSettings(artifact_root=tmp_path / "render-replace"),
+            source_client=FakeSource(subtitle, media),
+            renderer=FailFirstRenderer(),
+        )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "DEGRADED"
+    assert manifest["actual"]["rendered_finalists"] == 2
+    assert manifest["funnel"]["render_attempts"] == 3
+    assert manifest["funnel"]["replacement_attempts"] == 1
+    assert len(manifest["submission_shortlist"]) == 1
+    assert all(item["plan_id"] for item in manifest["submission_shortlist"])
+
+
+def test_qc_failure_promotes_reserve_and_shortlist_uses_only_qc_passed_clips(
+    tmp_path: Path,
+) -> None:
+    brief = _yield_brief(tmp_path)
+    subtitle = _yield_subtitle(tmp_path)
+    media = tmp_path / "yield-qc.mp4"
+    media.write_bytes(b"source")
+    concepts = [_concept(1), _concept(2), _concept(3)]
+    qc_results = [
+        {"status": "FAIL", "issues": ["first caption mismatch"]},
+        {"status": "PASS", "issues": []},
+        {"status": "PASS", "issues": []},
+    ]
+    with (
+        patch("clipper.pipeline.select_distinct_concepts", return_value=concepts),
+        patch("clipper.pipeline.run_technical_qc", side_effect=qc_results),
+    ):
+        run_dir = run_pipeline(
+            brief,
+            settings=PipelineSettings(artifact_root=tmp_path / "qc-replace"),
+            source_client=FakeSource(subtitle, media),
+            renderer=FakeRenderer(),
+        )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "DEGRADED"
+    assert manifest["funnel"]["technical_qc_fail"] == 1
+    assert manifest["funnel"]["technical_qc_pass"] == 2
+    accepted = {item["plan_id"] for item in manifest["rendered_clips"]}
+    assert {item["plan_id"] for item in manifest["submission_shortlist"]} <= accepted
+    assert not list((run_dir / "clips").glob("attempt-01-*.mp4"))
+    assert list((run_dir / "rejected").glob("attempt-01-*.mp4"))
+
+
+def test_pipeline_fails_when_reserve_pool_cannot_reach_render_target(tmp_path: Path) -> None:
+    brief = _yield_brief(tmp_path)
+    subtitle = _yield_subtitle(tmp_path)
+    media = tmp_path / "yield-fail.mp4"
+    media.write_bytes(b"source")
+    concepts = [_concept(1), _concept(2), _concept(3)]
+    with patch("clipper.pipeline.select_distinct_concepts", return_value=concepts):
+        run_dir = run_pipeline(
+            brief,
+            settings=PipelineSettings(artifact_root=tmp_path / "yield-fail"),
+            source_client=FakeSource(subtitle, media),
+            renderer=BrokenRenderer(),
+        )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "FAILED"
+    assert manifest["status_reason"] == "render_yield_below_required_target"
+    assert manifest["actual"] == {"rendered_finalists": 0, "submission_shortlist": 0}
+    assert manifest["funnel"]["render_attempts"] == 3
+    assert manifest["funnel"]["render_failures"] == 3
+    assert (run_dir / "funnel.json").is_file()
+    assert (run_dir / "rejections.json").is_file()

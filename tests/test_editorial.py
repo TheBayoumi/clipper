@@ -4,7 +4,9 @@ import pytest
 
 from clipper.editorial import (
     _find_hook_sentence,
+    _hook_start_anchor,
     _moment_type,
+    _overlay_duplicates_opening,
     _source_excerpt,
     _topic,
     aggregate_editorial_score,
@@ -16,6 +18,7 @@ from clipper.editorial import (
     mine_clip_concepts,
     score_editorial_text,
     select_distinct_concepts,
+    select_render_plan_queue,
     select_render_plans,
     select_submission_shortlist,
     semantic_similarity,
@@ -29,6 +32,7 @@ from clipper.models import (
     EditPlan,
     HookVariant,
     SourceSpan,
+    StoryMoment,
     TranscriptSegment,
 )
 
@@ -180,7 +184,7 @@ def test_moment_type_topic_and_excerpt_are_source_derived() -> None:
     assert _moment_type("When I started, I learned because it was hard.") == "story"
     assert _moment_type("There were 4 people there.") == "specific_fact"
     assert _moment_type("Simple creator insight.") == "insight"
-    assert _topic("Fortnite changed my career", brief().keywords) == "fortnite"
+    assert _topic("Fortnite changed my career", brief().keywords) == "career"
     assert _topic("alpha alpha beta gamma", []) == "alpha-beta-gamma"
     assert _source_excerpt("one two three", max_words=8) == "ONE TWO THREE"
     assert _source_excerpt("one two three four five six seven eight nine", max_words=4).endswith(
@@ -400,3 +404,164 @@ def test_distinct_selection_respects_topic_cap() -> None:
     ]
     selected = select_distinct_concepts(b, items)
     assert sum(item.topic == "creator" for item in selected) == 1
+
+
+def test_v10_diversity_rejection_ledger_explains_topic_and_semantic_losses() -> None:
+    base = brief()
+    strict = replace(
+        base,
+        diversity=replace(base.diversity, max_concepts_per_topic=1),
+        production=replace(base.production, concept_count=3),
+    )
+    first = concept("a", "creator money story with a strong payoff", topic="creator", score=9.0)
+    topic_duplicate = concept(
+        "b",
+        "creator tournament strategy with a different lesson",
+        topic="creator",
+        start=40,
+        end=64,
+        score=8.0,
+    )
+    semantic_duplicate = concept(
+        "c",
+        "creator money story with a strong payoff",
+        topic="money",
+        start=80,
+        end=104,
+        score=7.0,
+    )
+    rejections: list[dict[str, object]] = []
+    selected = select_distinct_concepts(
+        strict, [first, topic_duplicate, semantic_duplicate], rejections=rejections
+    )
+    reasons = {reason for item in rejections for reason in item["reasons"]}
+    assert [item.concept_id for item in selected] == [first.concept_id]
+    assert "topic_quota" in reasons
+    assert "semantic_cluster_duplicate" in reasons
+    assert all(item["scores"] for item in rejections)
+
+
+def test_v10_mining_rejection_ledger_records_boundary_attrition() -> None:
+    b = replace(brief(), min_clip_seconds=12, max_clip_seconds=30)
+    segments = [
+        TranscriptSegment(0, 6, "Why did I risk 5000 dollars on this business?"),
+        TranscriptSegment(6, 12, "and then because"),
+        TranscriptSegment(12, 18, "So like maybe this was nothing"),
+        TranscriptSegment(18, 24, "Before we head out thanks for watching."),
+        TranscriptSegment(24, 30, "The final lesson saved the business."),
+    ]
+    moment = StoryMoment(
+        "m",
+        "v",
+        0,
+        30,
+        " ".join(item.text for item in segments),
+        "story",
+        "business",
+        "setup",
+        "payoff",
+        scores(),
+        8.0,
+        "fp",
+    )
+    rejections: list[dict[str, object]] = []
+    mine_clip_concepts(b, "v", segments, [moment], rejections=rejections)
+    reasons = {reason for item in rejections for reason in item["reasons"]}
+    assert "no_semantic_closure" in reasons
+
+
+def test_v10_hook_anchor_overlay_and_render_reserve_helpers() -> None:
+    c = concept("hook", "What's one message for esports fans? Keep practicing.", end=20)
+    segments = [TranscriptSegment(0, 20, "What's one message for esports fans? Keep practicing.")]
+    anchor = _hook_start_anchor(segments, c, "What's one message for esports fans?")
+    assert anchor is not None and anchor[1].lower() == "what's"
+    assert _hook_start_anchor(segments, c, "sentence that is absent") is None
+    span = SourceSpan(0, 20)
+    assert _overlay_duplicates_opening("What's one message for esports fans", span, segments)
+    assert not _overlay_duplicates_opening(None, span, segments)
+
+    def plan(index: int, score: float) -> EditPlan:
+        return EditPlan(
+            f"p{index}",
+            "v",
+            f"c{index}",
+            f"v{index}",
+            "direct",
+            (SourceSpan(index * 30, index * 30 + 20),),
+            None,
+            (),
+            "tiktok",
+            score,
+            f"fp{index}",
+        )
+
+    plans = [plan(1, 9.0), plan(2, 8.0), plan(3, 7.0)]
+    primary, reserve = select_render_plan_queue(plans, budget=2)
+    assert len(primary) == 2 and len(reserve) == 1
+    assert {item.plan_id for item in primary}.isdisjoint({item.plan_id for item in reserve})
+
+
+def test_v10_topic_signals_choose_dominant_editorial_theme() -> None:
+    keywords = brief().keywords
+    assert _topic("My dad saw the skin and asked what I was doing", keywords) == "family"
+    assert (
+        _topic("I made $1.5 million from my creator code and bought nothing", keywords) == "money"
+    )
+    assert (
+        _topic("I won five World Cup tournament weeks and qualified again", keywords)
+        == "competition"
+    )
+    assert (
+        _topic("My reaction training coach made me practice aim every day", keywords) == "training"
+    )
+    assert _topic("We give away gaming computers to kids", keywords) == "giveaway"
+    assert _topic("I dropped out of school to build my career", keywords) == "career"
+
+
+def test_v10_story_moment_can_extend_forward_to_capture_answer_payoff() -> None:
+    b = replace(brief(), min_clip_seconds=18, max_clip_seconds=40)
+    segments = [
+        TranscriptSegment(0, 6, "What skill matters most in this game?"),
+        TranscriptSegment(6, 12, "I think it is reaction time because every fight happens fast."),
+        TranscriptSegment(12, 18, "The match can change instantly."),
+        TranscriptSegment(18, 24, "My coach made me train reaction drills every single day."),
+        TranscriptSegment(24, 30, "That training is why I can react before most players."),
+    ]
+    moment = StoryMoment(
+        "split",
+        "v",
+        0,
+        13,
+        "question and setup",
+        "question_answer",
+        "training",
+        "What skill matters most?",
+        "reaction time",
+        scores(),
+        8.0,
+        "fp-split",
+    )
+    stats: dict[str, int] = {}
+    concepts = mine_clip_concepts(b, "v", segments, [moment], stats=stats)
+    assert concepts
+    assert max(item.source_end for item in concepts) > moment.end
+    assert stats["candidate_starts"] > 0
+    assert stats["eligible_endpoints"] > 0
+    assert stats["concepts_after_quality"] >= len(concepts)
+    assert stats["concepts_after_moment_dedup"] >= len(concepts)
+    assert stats["semantic_representatives"] >= len(concepts)
+    assert stats["raw_pool"] == len(concepts)
+
+
+def test_v10_empty_mining_populates_zero_funnel_stats() -> None:
+    stats: dict[str, int] = {}
+    concepts = mine_clip_concepts(brief(), "v", [], [], stats=stats)
+    assert concepts == []
+    assert stats == {
+        "candidate_starts": 0,
+        "eligible_endpoints": 0,
+        "concepts_after_quality": 0,
+        "concepts_after_moment_dedup": 0,
+        "semantic_representatives": 0,
+        "raw_pool": 0,
+    }

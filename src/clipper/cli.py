@@ -62,8 +62,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "run":
             settings = replace(PipelineSettings.from_env(), artifact_root=args.artifact_root)
-            run_dir = run_pipeline(args.brief, settings=settings, render=not args.no_render)
+            should_render = not args.no_render
+            run_dir = run_pipeline(args.brief, settings=settings, render=should_render)
             print(run_dir)
+            if should_render:
+                manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+                if manifest.get("status") == "FAILED":
+                    return 1
             return 0
     except Exception as exc:
         logging.getLogger("clipper").error("%s", exc)

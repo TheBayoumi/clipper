@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -32,7 +34,7 @@ from .editorial import (
     generate_hook_variants,
     mine_clip_concepts,
     select_distinct_concepts,
-    select_render_plans,
+    select_render_plan_queue,
     select_submission_shortlist,
 )
 from .models import (
@@ -266,25 +268,43 @@ def _cached_editorial_analysis(
     brief: CampaignBrief,
     video_id: str,
     segments: list[TranscriptSegment],
-) -> tuple[list[StoryMoment], list[ClipConcept]]:
+) -> tuple[list[StoryMoment], list[ClipConcept], list[dict[str, object]], dict[str, int]]:
     key = analysis_cache_key(video_id, segments, brief)
     cached_moments = cache.read(key, "story-moments")
     cached_concepts = cache.read(key, "clip-candidates")
+    cached_rejections = cache.read(key, "editorial-rejections")
+    cached_stats = cache.read(key, "editorial-stats")
     if cached_moments is not None and cached_concepts is not None:
         try:
             moments = story_moments_from_payload(cached_moments)
             concepts = clip_concepts_from_payload(cached_concepts)
+            cached_rejection_items = (
+                [item for item in cached_rejections if isinstance(item, dict)]
+                if isinstance(cached_rejections, list)
+                else []
+            )
+            cached_analysis_stats = (
+                {str(k): int(v) for k, v in cached_stats.items() if isinstance(v, int)}
+                if isinstance(cached_stats, dict)
+                else {}
+            )
         except (KeyError, TypeError, ValueError):
-            moments, concepts = [], []
+            moments, concepts, cached_rejection_items, cached_analysis_stats = [], [], [], {}
         if moments and concepts:
             _cache_event(manifest, "editorial-analysis", key, True)
-            return moments, concepts
+            return moments, concepts, cached_rejection_items, cached_analysis_stats
+    rejections: list[dict[str, object]] = []
+    analysis_stats: dict[str, int] = {}
     moments = discover_story_moments(brief, video_id, segments)
-    concepts = mine_clip_concepts(brief, video_id, segments, moments)
+    concepts = mine_clip_concepts(
+        brief, video_id, segments, moments, rejections=rejections, stats=analysis_stats
+    )
     cache.write(key, "story-moments", [item.to_dict() for item in moments])
     cache.write(key, "clip-candidates", [item.to_dict() for item in concepts])
+    cache.write(key, "editorial-rejections", rejections)
+    cache.write(key, "editorial-stats", analysis_stats)
     _cache_event(manifest, "editorial-analysis", key, False)
-    return moments, concepts
+    return moments, concepts, rejections, analysis_stats
 
 
 def _safe_slug(value: str) -> str:
@@ -478,6 +498,7 @@ def run_pipeline(
     media_paths: dict[str, Path] = {}
     all_moments: list[StoryMoment] = []
     all_concepts: list[ClipConcept] = []
+    mining_stats: Counter[str] = Counter()
     video_index = {video.video_id: video for video in allowed}
 
     for video in allowed:
@@ -541,12 +562,14 @@ def run_pipeline(
                 [segment.to_dict() for segment in segments]
             )
             telemetry.start(f"editorial_analysis:{video.video_id}")
-            moments, concepts = _cached_editorial_analysis(
+            moments, concepts, source_rejections, source_stats = _cached_editorial_analysis(
                 cache, manifest, brief, video.video_id, segments
             )
             telemetry.stop(f"editorial_analysis:{video.video_id}")
             all_moments.extend(moments)
             all_concepts.extend(concepts)
+            manifest.rejections.extend(source_rejections)
+            mining_stats.update(source_stats)
             _write_json(video_work / "transcript.json", [segment.to_dict() for segment in segments])
             _write_json(video_work / "story-moments.json", [item.to_dict() for item in moments])
             _write_json(video_work / "clip-candidates.json", [item.to_dict() for item in concepts])
@@ -554,28 +577,125 @@ def run_pipeline(
             LOGGER.exception("source processing failed", extra={"video_id": video.video_id})
             manifest.errors.append({"video_id": video.video_id, "error": str(exc)})
 
-    selected_concepts = select_distinct_concepts(brief, all_concepts)
+    _write_json(
+        run_dir / "transcript.json",
+        {
+            video_id: [segment.to_dict() for segment in segments]
+            for video_id, segments in transcripts.items()
+        },
+    )
+    selected_concepts = select_distinct_concepts(
+        brief, all_concepts, rejections=manifest.rejections
+    )
     concept_index = {concept.concept_id: concept for concept in selected_concepts}
     variants = []
     plans: list[EditPlan] = []
     for concept in selected_concepts:
         concept_variants = generate_hook_variants(brief, concept, transcripts[concept.video_id])
+        if not concept_variants:
+            manifest.rejections.append(
+                {
+                    "concept_id": concept.concept_id,
+                    "video_id": concept.video_id,
+                    "stage": "hook_generation",
+                    "decision": "REJECT",
+                    "reasons": ["no_legitimate_hook_variants"],
+                    "scores": concept.scores.to_dict(),
+                }
+            )
+            continue
         variants.extend(concept_variants)
         plans.extend(
             build_edit_plan(brief, concept, variant, transcripts[concept.video_id])
             for variant in concept_variants
         )
-    render_plans = select_render_plans(plans, budget=brief.production.final_render_budget)
-    submission_plans = select_submission_shortlist(
-        render_plans, clip_count=brief.clip_count, max_per_source=brief.max_clips_per_source
-    )
+    target_finalists = brief.production.final_render_budget
+    primary_plans, reserve_plans = select_render_plan_queue(plans, budget=target_finalists)
 
+    manifest.targets = {
+        "rendered_finalists": target_finalists,
+        "submission_shortlist": brief.clip_count,
+    }
     manifest.story_moments = [item.to_dict() for item in all_moments]
     manifest.clip_concepts = [item.to_dict() for item in selected_concepts]
     manifest.hook_variants = [item.to_dict() for item in variants]
     manifest.edit_plans = [item.to_dict() for item in plans]
-    manifest.planned_clips = [item.to_dict() for item in render_plans]
-    manifest.submission_shortlist = [item.to_dict() for item in submission_plans]
+    manifest.planned_clips = [item.to_dict() for item in primary_plans]
+    manifest.reserve_plans = [item.to_dict() for item in reserve_plans]
+    manifest.submission_shortlist = []
+    transcript_segment_count = sum(len(items) for items in transcripts.values())
+    raw_count = len(all_concepts)
+    selected_count = len(selected_concepts)
+    manifest.funnel = {
+        "transcript_segments": transcript_segment_count,
+        "story_moments": len(all_moments),
+        "candidate_starts": mining_stats["candidate_starts"],
+        "eligible_endpoints": mining_stats["eligible_endpoints"],
+        "concepts_after_quality": mining_stats["concepts_after_quality"],
+        "concepts_after_moment_dedup": mining_stats["concepts_after_moment_dedup"],
+        "concepts_after_semantic_dedupe": mining_stats["semantic_representatives"],
+        "raw_concepts": raw_count,
+        "selected_concepts": selected_count,
+        "hook_variants": len(variants),
+        "edit_plans": len(plans),
+        "render_plans": len(primary_plans),
+        "reserve_plans": len(reserve_plans),
+        "render_attempts": 0,
+        "render_failures": 0,
+        "replacement_attempts": 0,
+        "technical_qc_pass": 0,
+        "technical_qc_fail": 0,
+        "render_success": 0,
+        "submission_shortlist": 0,
+        "concept_selection_retention_ratio": (
+            round(selected_count / raw_count, 4) if raw_count else 0.0
+        ),
+        "attrition_flag": bool(raw_count >= 8 and selected_count / max(raw_count, 1) < 0.2),
+    }
+    source_coverage: dict[str, object] = {}
+    for video_id, source_segments in transcripts.items():
+        duration = max((segment.end for segment in source_segments), default=0.0)
+        third = duration / 3 if duration else 0.0
+
+        def _period(start: float, period_size: float = third) -> str:
+            if not period_size or start < period_size:
+                return "early"
+            if start < period_size * 2:
+                return "middle"
+            return "late"
+
+        raw_periods = Counter(
+            _period(item.source_start) for item in all_concepts if item.video_id == video_id
+        )
+        selected_periods = Counter(
+            _period(item.source_start) for item in selected_concepts if item.video_id == video_id
+        )
+        render_periods = Counter(
+            _period(plan.source_spans[0].start)
+            for plan in primary_plans
+            if plan.video_id == video_id and plan.source_spans
+        )
+        render_count = sum(render_periods.values())
+        source_coverage[video_id] = {
+            "duration_seconds": duration,
+            "raw_concepts_by_period": dict(raw_periods),
+            "selected_concepts_by_period": dict(selected_periods),
+            "render_plans_by_period": dict(render_periods),
+            "suspicious_concentration": bool(
+                len(raw_periods) >= 2 and len(selected_periods) == 1 and len(selected_concepts) >= 4
+            ),
+            "render_suspicious_concentration": bool(
+                render_count >= 4
+                and render_periods
+                and max(render_periods.values()) > render_count / 2
+            ),
+        }
+    manifest.run_metadata["source_coverage"] = source_coverage
+    rejection_counts = Counter(
+        str(reason) for item in manifest.rejections for reason in (item.get("reasons") or [])
+    )
+    manifest.run_metadata["rejection_reason_counts"] = dict(rejection_counts)
+    _write_json(run_dir / "coverage.json", source_coverage)
     _write_json(run_dir / "story-moments.json", manifest.story_moments)
     _write_json(run_dir / "concept-ranking.json", manifest.clip_concepts)
     _write_json(run_dir / "hook-variants.json", manifest.hook_variants)
@@ -583,10 +703,29 @@ def run_pipeline(
         _write_json(run_dir / "edit-plans" / f"{_safe_slug(plan.plan_id)}.json", plan.to_dict())
 
     if render and active_renderer:
-        for index, plan in enumerate(render_plans, start=1):
+        queue = [("primary", plan) for plan in primary_plans] + [
+            ("reserve", plan) for plan in reserve_plans
+        ]
+        accepted_plans: list[EditPlan] = []
+        for queue_index, (queue_kind, plan) in enumerate(queue, start=1):
+            if len(accepted_plans) >= target_finalists:
+                break
             concept = concept_index[plan.concept_id]
             video = video_index[plan.video_id]
             clip = plan.to_clip_candidate(concept.text)
+            attempt = {
+                "attempt": queue_index,
+                "plan_id": plan.plan_id,
+                "concept_id": plan.concept_id,
+                "queue": queue_kind,
+                "status": "STARTED",
+            }
+            manifest.render_attempts.append(attempt)
+            manifest.funnel["render_attempts"] = int(manifest.funnel["render_attempts"]) + 1
+            if queue_kind == "reserve":
+                manifest.funnel["replacement_attempts"] = (
+                    int(manifest.funnel["replacement_attempts"]) + 1
+                )
             try:
                 render_media_path = media_paths.get(video.video_id)
                 if render_media_path is None:
@@ -599,7 +738,8 @@ def run_pipeline(
                         render_media_path
                     )
                 filename = (
-                    f"{index:02d}-{_safe_slug(concept.topic)}-{_safe_slug(plan.hook_mode)}.mp4"
+                    f"attempt-{queue_index:02d}-{_safe_slug(concept.topic)}-"
+                    f"{_safe_slug(plan.hook_mode)}.mp4"
                 )
                 output_path = clips_dir / filename
                 telemetry.start(f"render:{plan.plan_id}")
@@ -613,18 +753,6 @@ def run_pipeline(
                 )
                 telemetry.stop(f"render:{plan.plan_id}")
                 telemetry.sample_gpu()
-                rendered = RenderedClip(
-                    video_id=video.video_id,
-                    output_path=str(rendered_path),
-                    start=clip.start,
-                    end=clip.end,
-                    score=plan.score,
-                    source_url=video.url,
-                    plan_id=plan.plan_id,
-                    hook_mode=plan.hook_mode,
-                    render_sha256=_sha256_file(rendered_path),
-                )
-                manifest.rendered_clips.append(rendered.to_dict())
                 telemetry.start(f"technical_qc:{plan.plan_id}")
                 qc_report = run_technical_qc(
                     rendered_path,
@@ -634,16 +762,149 @@ def run_pipeline(
                     caption_platform=plan.caption_platform,
                     watermark_required=bool(brief.watermark_url),
                     watermark_present=watermark_path is not None and watermark_path.is_file(),
+                    caption_audit_path=rendered_path.with_suffix(".caption-audit.json"),
                 )
                 telemetry.stop(f"technical_qc:{plan.plan_id}")
                 qc_report["plan_id"] = plan.plan_id
                 manifest.technical_qc.append(qc_report)
                 _write_json(run_dir / "qc" / f"{rendered_path.stem}.json", qc_report)
+                if qc_report.get("status") != "PASS":
+                    manifest.funnel["technical_qc_fail"] = (
+                        int(manifest.funnel["technical_qc_fail"]) + 1
+                    )
+                    attempt["status"] = "QC_FAILED"
+                    attempt["issues"] = list(qc_report.get("issues") or [])
+                    manifest.rejections.append(
+                        {
+                            "concept_id": plan.concept_id,
+                            "video_id": plan.video_id,
+                            "stage": "technical_qc",
+                            "decision": "REJECT",
+                            "reasons": list(qc_report.get("issues") or ["technical_qc_failed"]),
+                            "scores": {"plan_score": plan.score},
+                            "plan_id": plan.plan_id,
+                        }
+                    )
+                    rejected_dir = run_dir / "rejected"
+                    rejected_dir.mkdir(parents=True, exist_ok=True)
+                    for candidate_path in [
+                        rendered_path,
+                        rendered_path.with_suffix(".ass"),
+                        rendered_path.with_suffix(".tracking.json"),
+                        rendered_path.with_suffix(".render.json"),
+                        rendered_path.with_suffix(".caption-audit.json"),
+                    ]:
+                        if candidate_path.exists():
+                            candidate_path.replace(rejected_dir / candidate_path.name)
+                    continue
+                manifest.funnel["technical_qc_pass"] = int(manifest.funnel["technical_qc_pass"]) + 1
+                rendered = RenderedClip(
+                    video_id=video.video_id,
+                    output_path=str(rendered_path),
+                    start=clip.start,
+                    end=clip.end,
+                    score=plan.score,
+                    source_url=video.url,
+                    concept_id=plan.concept_id,
+                    plan_id=plan.plan_id,
+                    hook_mode=plan.hook_mode,
+                    render_sha256=_sha256_file(rendered_path),
+                )
+                manifest.rendered_clips.append(rendered.to_dict())
+                accepted_plans.append(plan)
+                for evidence_dir, suffix in (
+                    ("captions", ".ass"),
+                    ("captions", ".caption-audit.json"),
+                    ("tracking", ".tracking.json"),
+                ):
+                    source_evidence = rendered_path.with_suffix(suffix)
+                    if source_evidence.is_file():
+                        destination = run_dir / evidence_dir / source_evidence.name
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(source_evidence, destination)
+                attempt["status"] = "ACCEPTED"
             except Exception as exc:
+                manifest.funnel["render_failures"] = int(manifest.funnel["render_failures"]) + 1
+                attempt["status"] = "RENDER_FAILED"
+                attempt["error"] = str(exc)
                 manifest.errors.append(
                     {"video_id": video.video_id, "plan_id": plan.plan_id, "error": str(exc)}
                 )
+                manifest.rejections.append(
+                    {
+                        "concept_id": plan.concept_id,
+                        "video_id": plan.video_id,
+                        "stage": "render",
+                        "decision": "REJECT",
+                        "reasons": ["render_exception"],
+                        "error": str(exc),
+                        "scores": {"plan_score": plan.score},
+                        "plan_id": plan.plan_id,
+                    }
+                )
 
+        shortlist_plans = select_submission_shortlist(
+            accepted_plans,
+            clip_count=brief.clip_count,
+            max_per_source=brief.max_clips_per_source,
+        )
+        rendered_by_plan = {
+            str(item.get("plan_id")): item
+            for item in manifest.rendered_clips
+            if item.get("plan_id")
+        }
+        manifest.submission_shortlist = [
+            rendered_by_plan[plan.plan_id]
+            for plan in shortlist_plans
+            if plan.plan_id in rendered_by_plan
+        ]
+        manifest.funnel["render_success"] = len(manifest.rendered_clips)
+        manifest.funnel["submission_shortlist"] = len(manifest.submission_shortlist)
+        manifest.actual = {
+            "rendered_finalists": len(manifest.rendered_clips),
+            "submission_shortlist": len(manifest.submission_shortlist),
+        }
+        if len(manifest.rendered_clips) < target_finalists:
+            manifest.status = "FAILED"
+            manifest.status_reason = "render_yield_below_required_target"
+        elif len(manifest.submission_shortlist) < brief.clip_count:
+            manifest.status = "FAILED"
+            manifest.status_reason = "submission_shortlist_below_required_target"
+        elif any(item.get("status") != "ACCEPTED" for item in manifest.render_attempts):
+            manifest.status = "DEGRADED"
+            manifest.status_reason = "recovered_with_replacement_candidates"
+        else:
+            manifest.status = "SUCCESS"
+            manifest.status_reason = None
+    else:
+        manifest.actual = {"rendered_finalists": 0, "submission_shortlist": 0}
+        manifest.status = "SUCCESS"
+        manifest.status_reason = "planning_only"
+
+    manifest.run_metadata["rejection_reason_counts"] = dict(
+        Counter(
+            str(reason) for item in manifest.rejections for reason in (item.get("reasons") or [])
+        )
+    )
+    _write_json(
+        run_dir / "editorial-review.json",
+        {
+            "status": "PENDING_HUMAN_REVIEW" if render else "NOT_APPLICABLE_PLANNING_ONLY",
+            "required": bool(render),
+            "clips": [
+                {
+                    "output_path": item.get("output_path"),
+                    "plan_id": item.get("plan_id"),
+                    "concept_id": item.get("concept_id"),
+                    "technical_qc": "PASS",
+                    "human_review": "PENDING",
+                }
+                for item in manifest.rendered_clips
+            ],
+        },
+    )
     manifest.performance = telemetry.finish(run_dir)
+    _write_json(run_dir / "funnel.json", manifest.funnel)
+    _write_json(run_dir / "rejections.json", manifest.rejections)
     _write_json(run_dir / "manifest.json", manifest.to_dict())
     return run_dir

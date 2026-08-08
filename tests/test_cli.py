@@ -62,3 +62,12 @@ def test_cli_run_and_error(tmp_path: Path, capsys, monkeypatch) -> None:
 
     with patch("clipper.cli.load_brief", side_effect=RuntimeError("boom")):
         assert main(["validate", "--brief", str(path)]) == 1
+
+
+def test_cli_run_returns_failure_for_failed_production_manifest(tmp_path: Path) -> None:
+    path = make_brief(tmp_path)
+    run_dir = tmp_path / "failed-run"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text('{"status":"FAILED"}')
+    with patch("clipper.cli.run_pipeline", return_value=run_dir):
+        assert main(["run", "--brief", str(path), "--artifact-root", str(tmp_path / "out")]) == 1
