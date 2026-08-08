@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -54,12 +54,18 @@ from .models import (
     VideoCandidate,
 )
 from .performance import RunTelemetry
-from .providers.base import EditorialProvider, EmbeddingProvider
-from .providers.factory import editorial_and_embedding_providers
+from .providers.base import EditorialProvider, EmbeddingProvider, VisionProvider
+from .providers.factory import (
+    editorial_and_embedding_providers,
+)
+from .providers.factory import (
+    vision_provider as build_vision_provider,
+)
 from .qc import run_technical_qc
 from .render import FFmpegRenderer
 from .rights import RightsError, assert_campaign_authorized, assert_video_allowed
 from .transcript import load_vtt, transcribe_with_faster_whisper
+from .visual_ai import repair_stage, review_rendered_clip
 from .youtube import YouTubeClient
 
 LOGGER = logging.getLogger("clipper")
@@ -192,6 +198,9 @@ class PipelineSettings:
     editorial_chunk_words: int = 900
     editorial_chunk_overlap_words: int = 120
     semantic_duplicate_threshold: float = 0.9
+    visual_review_enabled: bool = False
+    visual_escalation_enabled: bool = True
+    visual_escalation_threshold: float = 0.75
     cache_root: Path | None = None
 
     @classmethod
@@ -236,6 +245,11 @@ class PipelineSettings:
             ),
             semantic_duplicate_threshold=float(
                 os.getenv("CLIPPER_SEMANTIC_DUPLICATE_THRESHOLD", "0.9")
+            ),
+            visual_review_enabled=_env_bool("CLIPPER_VISUAL_REVIEW", False),
+            visual_escalation_enabled=_env_bool("CLIPPER_VISUAL_ESCALATION", True),
+            visual_escalation_threshold=float(
+                os.getenv("CLIPPER_VISUAL_ESCALATION_THRESHOLD", "0.75")
             ),
             cache_root=(
                 Path(os.environ["CLIPPER_CACHE_ROOT"]) if os.getenv("CLIPPER_CACHE_ROOT") else None
@@ -506,6 +520,8 @@ def run_pipeline(
     renderer: Renderer | None = None,
     editorial_provider: EditorialProvider | None = None,
     embedding_provider: EmbeddingProvider | None = None,
+    visual_review_provider: VisionProvider | None = None,
+    visual_escalation_provider: VisionProvider | None = None,
     render: bool = True,
 ) -> Path:
     brief = load_brief(brief_path)
@@ -531,6 +547,15 @@ def run_pipeline(
             chunk_overlap_words=cfg.editorial_chunk_overlap_words,
             semantic_duplicate_threshold=cfg.semantic_duplicate_threshold,
         )
+    if cfg.visual_review_enabled and visual_review_provider is None:
+        visual_review_provider = build_vision_provider(cfg.compute_profile)
+    if (
+        cfg.visual_review_enabled
+        and cfg.visual_escalation_enabled
+        and cfg.compute_profile == "quality"
+        and visual_escalation_provider is None
+    ):
+        visual_escalation_provider = build_vision_provider(cfg.compute_profile, large=True)
     if source_client is not None:
         source: SourceClient = source_client
     elif os.getenv("CLIPPER_SOURCE_FIXTURE_DIR"):
@@ -581,6 +606,21 @@ def run_pipeline(
             "engine": cfg.editorial_engine,
             "compute_profile": cfg.compute_profile,
             "degraded": cfg.editorial_engine == "heuristic",
+        },
+        "visual_inference": {
+            "enabled": cfg.visual_review_enabled,
+            "escalation_enabled": cfg.visual_escalation_enabled,
+            "escalation_threshold": cfg.visual_escalation_threshold,
+            "primary_model": (
+                visual_review_provider.identity.to_dict()
+                if visual_review_provider is not None
+                else None
+            ),
+            "escalation_model": (
+                visual_escalation_provider.identity.to_dict()
+                if visual_escalation_provider is not None
+                else None
+            ),
         },
         "render": {
             "profile": cfg.render_profile,
@@ -837,6 +877,9 @@ def run_pipeline(
         "tracking_preflight_fail": 0,
         "technical_qc_pass": 0,
         "technical_qc_fail": 0,
+        "editorial_qc_pass": 0,
+        "editorial_qc_fail": 0,
+        "visual_review_escalations": 0,
         "render_success": 0,
         "distinct_finalist_concepts": 0,
         "submission_shortlist": 0,
@@ -1032,6 +1075,92 @@ def run_pipeline(
                             candidate_path.replace(rejected_dir / candidate_path.name)
                     continue
                 manifest.funnel["technical_qc_pass"] = int(manifest.funnel["technical_qc_pass"]) + 1
+                if cfg.visual_review_enabled:
+                    if visual_review_provider is None:
+                        raise RuntimeError("visual review is enabled without a VisionProvider")
+                    tracking_payload: dict[str, object] = {}
+                    tracking_file = rendered_path.with_suffix(".tracking.json")
+                    if tracking_file.is_file():
+                        loaded_tracking = json.loads(tracking_file.read_text(encoding="utf-8"))
+                        if isinstance(loaded_tracking, dict):
+                            tracking_payload = loaded_tracking
+                    raw_transitions = tracking_payload.get("transitions", [])
+                    transition_items = raw_transitions if isinstance(raw_transitions, list) else []
+                    transition_times = tuple(
+                        float(item.get("start_time") or 0.0)
+                        for item in transition_items
+                        if isinstance(item, dict)
+                    )
+                    telemetry.start(f"editorial_qc:{plan.plan_id}")
+                    review, review_results = review_rendered_clip(
+                        rendered_path,
+                        visual_review_provider,
+                        duration=clip.duration,
+                        output_dir=run_dir / "visual-review" / rendered_path.stem / "frames",
+                        context={
+                            "plan_id": plan.plan_id,
+                            "concept_id": plan.concept_id,
+                            "source_start": clip.start,
+                            "source_end": clip.end,
+                            "hook_mode": plan.hook_mode,
+                            "technical_qc": qc_report,
+                        },
+                        transitions=transition_times,
+                        escalation=visual_escalation_provider,
+                        escalation_threshold=cfg.visual_escalation_threshold,
+                    )
+                    telemetry.stop(f"editorial_qc:{plan.plan_id}")
+                    review_payload = review.to_dict()
+                    review_payload["plan_id"] = plan.plan_id
+                    review_payload["models"] = [result.model.to_dict() for result in review_results]
+                    review_payload["usage"] = [asdict(result.usage) for result in review_results]
+                    manifest.editorial_qc.append(review_payload)
+                    _write_json(
+                        run_dir / "visual-review" / f"{rendered_path.stem}.json",
+                        review_payload,
+                    )
+                    if review.escalated:
+                        manifest.funnel["visual_review_escalations"] = (
+                            int(manifest.funnel["visual_review_escalations"]) + 1
+                        )
+                    if review.decision != "PASS":
+                        manifest.funnel["editorial_qc_fail"] = (
+                            int(manifest.funnel["editorial_qc_fail"]) + 1
+                        )
+                        attempt["status"] = "EDITORIAL_QC_FAILED"
+                        attempt["editorial_qc"] = review_payload
+                        issue_types = [issue.issue_type for issue in review.issues]
+                        manifest.rejections.append(
+                            {
+                                "concept_id": plan.concept_id,
+                                "video_id": plan.video_id,
+                                "stage": "editorial_qc",
+                                "decision": "REJECT",
+                                "reasons": issue_types or ["open_vlm_editorial_qc_failed"],
+                                "repair_stages": sorted(
+                                    {repair_stage(issue) for issue in issue_types}
+                                ),
+                                "scores": {"plan_score": plan.score},
+                                "plan_id": plan.plan_id,
+                            }
+                        )
+                        rejected_dir = run_dir / "rejected"
+                        rejected_dir.mkdir(parents=True, exist_ok=True)
+                        for candidate_path in [
+                            rendered_path,
+                            rendered_path.with_suffix(".ass"),
+                            rendered_path.with_suffix(".tracking.json"),
+                            rendered_path.with_suffix(".tracking-preflight.json"),
+                            rendered_path.with_suffix(".render.json"),
+                            rendered_path.with_suffix(".caption-audit.json"),
+                        ]:
+                            if candidate_path.exists():
+                                candidate_path.replace(rejected_dir / candidate_path.name)
+                        continue
+                    manifest.funnel["editorial_qc_pass"] = (
+                        int(manifest.funnel["editorial_qc_pass"]) + 1
+                    )
+                    attempt["editorial_qc"] = review_payload
                 rendered = RenderedClip(
                     video_id=video.video_id,
                     output_path=str(rendered_path),

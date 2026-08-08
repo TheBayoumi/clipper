@@ -22,6 +22,7 @@ from clipper.pipeline import (
     run_pipeline,
 )
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
+from clipper.visual_ai import VisualReviewIssue, VisualReviewReport
 
 
 @pytest.fixture(autouse=True)
@@ -904,3 +905,118 @@ def test_open_editorial_pipeline_bypasses_all_heuristic_entry_points(tmp_path: P
         "edit_plans:concept-1",
     ]
     assert embedding.calls == 1
+
+
+class DummyVisionProvider:
+    identity = ModelIdentity("fake-vlm", "rev", "none", "test", "visual", "v1")
+
+    def inspect(self, *, task: str, frames: list[Path], context: dict[str, object]):
+        raise AssertionError("pipeline visual review is patched in this test")
+
+
+def _visual_result(report: VisualReviewReport):
+    return (
+        report,
+        [
+            ProviderResult(
+                {"decision": report.decision},
+                DummyVisionProvider.identity,
+                InferenceUsage("test", "now", 0.01, input_units=4),
+            )
+        ],
+    )
+
+
+def test_visual_editorial_qc_repair_promotes_reserve_before_finalist_acceptance(
+    tmp_path: Path,
+) -> None:
+    brief = _yield_brief(tmp_path)
+    subtitle = _yield_subtitle(tmp_path)
+    media = tmp_path / "yield-visual.mp4"
+    media.write_bytes(b"source")
+    concepts = [_concept(1), _concept(2), _concept(3)]
+    repair = VisualReviewReport(
+        "REPAIR",
+        "The crop reverses while the same speaker continues.",
+        0.95,
+        (
+            VisualReviewIssue(
+                "crop_oscillation",
+                1.0,
+                1.8,
+                "HIGH",
+                0.95,
+                "TRACKING",
+                "The virtual camera jumps away and back.",
+            ),
+        ),
+    )
+    passed = VisualReviewReport("PASS", "The clip is visually coherent.", 0.95)
+    with (
+        patch("clipper.pipeline.select_distinct_concepts", return_value=concepts),
+        patch(
+            "clipper.pipeline.review_rendered_clip",
+            side_effect=[_visual_result(repair), _visual_result(passed), _visual_result(passed)],
+        ) as review_mock,
+    ):
+        run_dir = run_pipeline(
+            brief,
+            settings=PipelineSettings(
+                artifact_root=tmp_path / "visual-replace",
+                visual_review_enabled=True,
+            ),
+            source_client=FakeSource(subtitle, media),
+            renderer=FakeRenderer(),
+            visual_review_provider=DummyVisionProvider(),
+        )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "DEGRADED"
+    assert manifest["status_reason"] == "recovered_with_replacement_candidates"
+    assert manifest["funnel"]["editorial_qc_fail"] == 1
+    assert manifest["funnel"]["editorial_qc_pass"] == 2
+    assert manifest["funnel"]["render_attempts"] == 3
+    assert manifest["funnel"]["replacement_attempts"] == 1
+    assert len(manifest["editorial_qc"]) == 3
+    assert len(manifest["rendered_clips"]) == 2
+    assert all(item["decision"] == "PASS" for item in manifest["editorial_qc"][1:])
+    rejected = [item for item in manifest["rejections"] if item.get("stage") == "editorial_qc"]
+    assert rejected[0]["reasons"] == ["crop_oscillation"]
+    assert rejected[0]["repair_stages"] == ["TRACKING"]
+    assert list((run_dir / "rejected").glob("attempt-01-*.mp4"))
+    assert review_mock.call_count == 3
+
+
+def test_visual_review_escalation_is_recorded_in_pipeline_manifest(tmp_path: Path) -> None:
+    brief = _yield_brief(tmp_path)
+    subtitle = _yield_subtitle(tmp_path)
+    media = tmp_path / "yield-visual-escalation.mp4"
+    media.write_bytes(b"source")
+    concepts = [_concept(1), _concept(2), _concept(3)]
+    passed = VisualReviewReport("PASS", "Escalated review agrees.", 0.95, escalated=True)
+    with (
+        patch("clipper.pipeline.select_distinct_concepts", return_value=concepts),
+        patch(
+            "clipper.pipeline.review_rendered_clip",
+            return_value=_visual_result(passed),
+        ),
+    ):
+        run_dir = run_pipeline(
+            brief,
+            settings=PipelineSettings(
+                artifact_root=tmp_path / "visual-escalation",
+                visual_review_enabled=True,
+                visual_escalation_enabled=True,
+                compute_profile="quality",
+            ),
+            source_client=FakeSource(subtitle, media),
+            renderer=FakeRenderer(),
+            visual_review_provider=DummyVisionProvider(),
+            visual_escalation_provider=DummyVisionProvider(),
+        )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["funnel"]["visual_review_escalations"] == 2
+    assert manifest["funnel"]["editorial_qc_pass"] == 2
+    assert manifest["run_metadata"]["visual_inference"]["primary_model"]["model_id"] == "fake-vlm"
+    assert (
+        manifest["run_metadata"]["visual_inference"]["escalation_model"]["model_id"] == "fake-vlm"
+    )

@@ -620,6 +620,7 @@ class PipelineManifest:
     submission_shortlist: list[dict[str, Any]] = field(default_factory=list)
     rendered_clips: list[dict[str, Any]] = field(default_factory=list)
     technical_qc: list[dict[str, Any]] = field(default_factory=list)
+    editorial_qc: list[dict[str, Any]] = field(default_factory=list)
     run_metadata: dict[str, Any] = field(default_factory=dict)
     cache: dict[str, Any] = field(default_factory=dict)
     performance: dict[str, Any] = field(default_factory=dict)
