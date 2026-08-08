@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -37,6 +37,7 @@ from .editorial import (
     select_render_plan_queue,
     select_submission_shortlist,
 )
+from .fixture import FixtureSourceClient, SpanMedia
 from .models import (
     CampaignBrief,
     ClipCandidate,
@@ -44,8 +45,10 @@ from .models import (
     EditPlan,
     PipelineManifest,
     RenderedClip,
+    SourceSpan,
     StoryMoment,
     TranscriptSegment,
+    TranscriptWord,
     VideoCandidate,
 )
 from .performance import RunTelemetry
@@ -81,6 +84,77 @@ class Renderer(Protocol):
         watermark_path: Path | None = None,
         edit_plan: EditPlan | None = None,
     ) -> Path: ...
+
+
+def _span_media_for_plan(
+    source: SourceClient,
+    video: VideoCandidate,
+    plan: EditPlan,
+    work_dir: Path,
+) -> SpanMedia | None:
+    acquire = getattr(source, "download_media_span", None)
+    if not callable(acquire) or not plan.source_spans:
+        return None
+    start = min(span.start for span in plan.source_spans)
+    end = max(span.end for span in plan.source_spans)
+    result = acquire(video, start, end, work_dir)
+    if not isinstance(result, SpanMedia):
+        raise RuntimeError("span-aware source returned an invalid media descriptor")
+    return result
+
+
+def _localize_render_inputs(
+    clip: ClipCandidate,
+    plan: EditPlan,
+    segments: Sequence[TranscriptSegment],
+    span_media: SpanMedia,
+) -> tuple[ClipCandidate, EditPlan, list[TranscriptSegment]]:
+    origin = span_media.source_origin
+    end = span_media.source_end
+    if clip.start < origin - 1e-6 or clip.end > end + 1e-6:
+        raise RuntimeError(
+            "source span "
+            f"{origin:.3f}-{end:.3f} does not cover clip {clip.start:.3f}-{clip.end:.3f}"
+        )
+    local_clip = replace(clip, start=clip.start - origin, end=clip.end - origin)
+    local_spans = tuple(
+        SourceSpan(span.start - origin, span.end - origin) for span in plan.source_spans
+    )
+    local_anchor = (
+        plan.caption_start_source_time - origin
+        if plan.caption_start_source_time is not None
+        else None
+    )
+    local_plan = replace(plan, source_spans=local_spans, caption_start_source_time=local_anchor)
+    localized: list[TranscriptSegment] = []
+    for segment in segments:
+        if segment.end <= origin or segment.start >= end:
+            continue
+        if segment.words:
+            words = tuple(
+                TranscriptWord(word.start - origin, word.end - origin, word.text)
+                for word in segment.words
+                if word.start >= origin and word.end <= end
+            )
+            if not words:
+                continue
+            localized.append(
+                TranscriptSegment(
+                    max(0.0, max(segment.start, origin) - origin),
+                    min(segment.end, end) - origin,
+                    segment.text,
+                    words,
+                )
+            )
+            continue
+        if segment.start < origin or segment.end > end:
+            continue
+        localized.append(
+            TranscriptSegment(segment.start - origin, segment.end - origin, segment.text)
+        )
+    if not localized:
+        raise RuntimeError("span-aware source produced no transcript context for the render")
+    return local_clip, local_plan, localized
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -419,7 +493,12 @@ def run_pipeline(
     cfg = settings or PipelineSettings.from_env()
     telemetry = RunTelemetry()
     cache = FileCache(cfg.cache_root or (cfg.artifact_root / "_cache"))
-    source = source_client or YouTubeClient(max_height=cfg.source_max_height)
+    if source_client is not None:
+        source: SourceClient = source_client
+    elif os.getenv("CLIPPER_SOURCE_FIXTURE_DIR"):
+        source = FixtureSourceClient(os.environ["CLIPPER_SOURCE_FIXTURE_DIR"])
+    else:
+        source = YouTubeClient(max_height=cfg.source_max_height)
     active_renderer = renderer or (
         FFmpegRenderer(
             speaker_focus=cfg.speaker_focus,
@@ -454,7 +533,9 @@ def run_pipeline(
             "compute_type": cfg.whisper_compute_type,
         },
         "source_hashes": {},
+        "source_span_hashes": {},
         "source_media": {},
+        "source_mode": "private-fixture" if isinstance(source, FixtureSourceClient) else "live",
         "transcript_hashes": {},
         "transcript_sources": {},
         "render": {
@@ -467,8 +548,14 @@ def run_pipeline(
     _write_json(run_dir / "brief.normalized.json", brief.to_dict())
     watermark_path: Path | None = None
     if brief.watermark_url:
+        fixture_watermark = getattr(source, "campaign_watermark", None)
         telemetry.start("watermark_download")
-        watermark_path = _download_asset(brief.watermark_url, run_dir / "assets" / "watermark.png")
+        if callable(fixture_watermark):
+            watermark_path = fixture_watermark(brief)
+        else:
+            watermark_path = _download_asset(
+                brief.watermark_url, run_dir / "assets" / "watermark.png"
+            )
         telemetry.stop("watermark_download")
 
     telemetry.start("source_discovery")
@@ -727,16 +814,39 @@ def run_pipeline(
                     int(manifest.funnel["replacement_attempts"]) + 1
                 )
             try:
-                render_media_path = media_paths.get(video.video_id)
-                if render_media_path is None:
-                    telemetry.start(f"source_acquisition:{video.video_id}")
-                    render_media_path = source.download_media(video, work_dir / video.video_id)
-                    telemetry.stop(f"source_acquisition:{video.video_id}")
-                    media_paths[video.video_id] = render_media_path
-                    _record_source_media_metadata(manifest, video.video_id, render_media_path)
-                    manifest.run_metadata["source_hashes"][video.video_id] = file_sha256(
-                        render_media_path
+                telemetry.start(f"source_acquisition:{video.video_id}")
+                span_media = _span_media_for_plan(source, video, plan, work_dir / video.video_id)
+                if span_media is not None:
+                    render_media_path = span_media.path
+                    render_clip, render_plan, render_segments = _localize_render_inputs(
+                        clip, plan, transcripts[video.video_id], span_media
                     )
+                    span_hashes = manifest.run_metadata["source_span_hashes"].setdefault(
+                        video.video_id, {}
+                    )
+                    span_hashes[plan.plan_id] = {
+                        "sha256": span_media.sha256,
+                        "source_origin": span_media.source_origin,
+                        "source_end": span_media.source_end,
+                    }
+                else:
+                    cached_media_path = media_paths.get(video.video_id)
+                    if cached_media_path is None:
+                        cached_media_path = source.download_media(video, work_dir / video.video_id)
+                        media_paths[video.video_id] = cached_media_path
+                        _record_source_media_metadata(manifest, video.video_id, cached_media_path)
+                        manifest.run_metadata["source_hashes"][video.video_id] = file_sha256(
+                            cached_media_path
+                        )
+                    render_media_path = cached_media_path
+                    render_clip, render_plan, render_segments = (
+                        clip,
+                        plan,
+                        transcripts[video.video_id],
+                    )
+                telemetry.stop(f"source_acquisition:{video.video_id}")
+                if render_media_path is None:
+                    raise RuntimeError("source acquisition returned no media path")
                 filename = (
                     f"attempt-{queue_index:02d}-{_safe_slug(concept.topic)}-"
                     f"{_safe_slug(plan.hook_mode)}.mp4"
@@ -746,10 +856,10 @@ def run_pipeline(
                 rendered_path = active_renderer.render(
                     render_media_path,
                     output_path,
-                    clip,
-                    transcripts[video.video_id],
+                    render_clip,
+                    render_segments,
                     watermark_path,
-                    plan,
+                    render_plan,
                 )
                 telemetry.stop(f"render:{plan.plan_id}")
                 telemetry.sample_gpu()

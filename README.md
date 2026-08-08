@@ -253,6 +253,8 @@ make check
 
 Standard CI runs Ruff, strict mypy, pytest with a 95% coverage floor on Python 3.11/3.12, and a bounded container smoke render. The separate `live-campaign.yml` release workflow targets the active production branch (or explicit workflow dispatch), runs `campaigns/reach-double-coverage-dedicated.yaml`, requires the complete six-finalist/three-shortlist batch, validates every MP4 and sidecar, and uploads `reach-live-<HEAD_SHA>` acceptance evidence.
 
+GitHub-hosted runners can be rate-limited or bot-challenged by YouTube independently of Clipper. The live release workflow therefore supports a private `CLIPPER_SOURCE_FIXTURE_DIR`: a checksum-verified mirror of the authorized full timed transcript, required campaign watermark, and high-resolution source windows covering the current planned/reserve edit ranges. The fixture is stored as a private GitHub Actions artifact and is never committed to the public repository. It does **not** change normal production behavior: without `CLIPPER_SOURCE_FIXTURE_DIR`, Clipper continues to discover and acquire authorized sources through `YouTubeClient`. Fixture spans preserve their original source-keyframe origin so absolute podcast EditPlans and word timestamps are deterministically remapped to local media without source re-encoding.
+
 ## Publication boundary
 
 Clipper stops at production artifacts, QC evidence, and a submission shortlist. It does not automatically upload to TikTok, Instagram, YouTube Shorts, or Whop. Publishing must remain a separate explicitly authorized action after actual video review and account/campaign checks.

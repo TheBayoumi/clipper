@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   live-campaign:
@@ -21,6 +22,63 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+
+      - name: Prepare private authorized source fixture
+        id: fixture
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FIXTURE_URL: ${{ secrets.CLIPPER_LIVE_FIXTURE_URL }}
+          FIXTURE_SHA256: ${{ secrets.CLIPPER_LIVE_FIXTURE_SHA256 }}
+        run: |
+          set -euo pipefail
+          rm -rf live-fixture fixture.zip
+          mkdir -p live-fixture
+          reused=false
+          while read -r run_id; do
+            test -n "$run_id" || continue
+            test "$run_id" != "$GITHUB_RUN_ID" || continue
+            rm -rf live-fixture/*
+            if gh run download "$run_id" -n reach-source-fixture-v10 -D live-fixture; then
+              reused=true
+              echo "source=actions-artifact:$run_id" >> "$GITHUB_OUTPUT"
+              break
+            fi
+          done < <(
+            gh run list \
+              --workflow live-campaign.yml \
+              --branch feat/word-reveal-face-tracking \
+              --limit 10 \
+              --json databaseId \
+              --jq '.[].databaseId'
+          )
+          if [ "$reused" != true ]; then
+            test -n "$FIXTURE_URL" || { echo "No private acceptance fixture is available"; exit 1; }
+            test -n "$FIXTURE_SHA256" || { echo "Fixture SHA-256 secret is missing"; exit 1; }
+            curl --fail --location --retry 3 --silent --show-error "$FIXTURE_URL" -o fixture.zip
+            echo "$FIXTURE_SHA256  fixture.zip" | sha256sum --check --strict
+            unzip -q fixture.zip -d live-fixture
+            echo "source=encrypted-seed-url" >> "$GITHUB_OUTPUT"
+          fi
+          test -f live-fixture/fixture.json
+          test -f live-fixture/source.en.vtt
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          fixture = json.loads(Path("live-fixture/fixture.json").read_text())
+          assert fixture["video"]["video_id"] == "2Y4LP85PTak"
+          assert fixture["video"]["channel_id"] == "UCf1q6dhccWr6eQEcFFnJSbA"
+          assert len(fixture["spans"]) >= 10
+          print(json.dumps({"video": fixture["video"], "span_count": len(fixture["spans"])}, indent=2))
+          PY
+
+      - name: Mirror private fixture into Actions artifact storage
+        uses: actions/upload-artifact@v4
+        with:
+          name: reach-source-fixture-v10
+          path: live-fixture/
+          retention-days: 90
+          compression-level: 0
+          if-no-files-found: error
 
       - name: Build exact candidate image
         run: docker build -t clipper-live:${GITHUB_SHA} .
@@ -32,10 +90,12 @@ jobs:
             --env GITHUB_SHA="${GITHUB_SHA}" \
             --env CLIPPER_SOURCE_MAX_HEIGHT=1080 \
             --env CLIPPER_RENDER_PROFILE=production \
+            --env CLIPPER_SOURCE_FIXTURE_DIR=/fixture \
             --env CLIPPER_WHISPER_MODEL=base.en \
             --env CLIPPER_WHISPER_DEVICE=cpu \
             --env CLIPPER_WHISPER_COMPUTE_TYPE=int8 \
             -v "$PWD/campaigns:/campaigns:ro" \
+            -v "$PWD/live-fixture:/fixture:ro" \
             -v "$PWD/live-artifacts:/artifacts" \
             clipper-live:${GITHUB_SHA} \
             run --brief /campaigns/reach-double-coverage-dedicated.yaml --artifact-root /artifacts
@@ -54,6 +114,8 @@ jobs:
           manifest = validate_live_run(
               run_dir, expected_finalists=6, expected_shortlist=3
           )
+          if manifest.get("run_metadata", {}).get("source_mode") != "private-fixture":
+              raise SystemExit("live acceptance did not use the authorized private fixture")
           print(
               json.dumps(
                   {
