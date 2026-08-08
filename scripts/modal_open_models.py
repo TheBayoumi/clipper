@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import io
 import json
 import os
@@ -26,7 +27,13 @@ else:
 base_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg")
-    .env({"HF_HOME": HF_CACHE, "TRANSFORMERS_CACHE": HF_CACHE})
+    .env(
+        {
+            "HF_HOME": HF_CACHE,
+            "TRANSFORMERS_CACHE": HF_CACHE,
+            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+        }
+    )
 )
 text_image = base_image.uv_pip_install(
     "torch>=2.8,<3",
@@ -111,6 +118,19 @@ def _json_text(text: str) -> dict[str, Any]:
     return value
 
 
+def _editorial_output_budget(payload: dict[str, Any]) -> int:
+    task = str(payload.get("task") or "")
+    if task == "episode_editorial_profile" or task == "global_concept_comparison":
+        return 512
+    if task.startswith("hook_variants:"):
+        return 1024
+    return 1536
+
+
+def _transport_error(exc: Exception) -> dict[str, Any]:
+    return {"error": {"type": type(exc).__name__, "message": str(exc)}}
+
+
 @app.function(
     image=text_image,
     gpu="L4",
@@ -147,46 +167,62 @@ def embedding(payload: dict[str, Any]) -> dict[str, Any]:
 )
 def editorial(payload: dict[str, Any]) -> dict[str, Any]:
     global _editorial_model, _editorial_tokenizer
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    started = time.perf_counter()
-    if _editorial_model is None or _editorial_tokenizer is None:
-        model_id = "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
-        _editorial_tokenizer = AutoTokenizer.from_pretrained(model_id)
-        _editorial_model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            device_map="auto",
-            max_memory={0: "22GiB", 1: "22GiB"},
-            torch_dtype="auto",
+        started = time.perf_counter()
+        if _editorial_model is None or _editorial_tokenizer is None:
+            model_id = "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
+            _editorial_tokenizer = AutoTokenizer.from_pretrained(model_id)
+            _editorial_model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                device_map="balanced_low_0",
+                max_memory={0: "14GiB", 1: "20GiB"},
+                torch_dtype="auto",
+                low_cpu_mem_usage=True,
+            )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Return only valid JSON. Spoken content must reference canonical word IDs. "
+                    "Never invent spoken words."
+                ),
+            },
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+        rendered = _editorial_tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
         )
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "Return only valid JSON. Spoken content must reference canonical word IDs. "
-                "Never invent spoken words."
+        inputs = _editorial_tokenizer(rendered, return_tensors="pt").to(_editorial_model.device)
+        torch.cuda.empty_cache()
+        output = _editorial_model.generate(
+            **inputs,
+            max_new_tokens=_editorial_output_budget(payload),
+            do_sample=False,
+            use_cache=True,
+        )
+        generated = output[0][inputs["input_ids"].shape[-1] :]
+        text = _editorial_tokenizer.decode(generated, skip_special_tokens=True)
+        value = _json_text(text)
+        return {
+            "value": value,
+            "model": _model_evidence(model_id),
+            "usage": _usage(
+                started,
+                "L4:2",
+                input_units=int(inputs["input_ids"].numel()),
+                output_units=int(generated.numel()),
             ),
-        },
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-    ]
-    rendered = _editorial_tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-    inputs = _editorial_tokenizer(rendered, return_tensors="pt").to(_editorial_model.device)
-    output = _editorial_model.generate(**inputs, max_new_tokens=2048, do_sample=False)
-    generated = output[0][inputs["input_ids"].shape[-1] :]
-    text = _editorial_tokenizer.decode(generated, skip_special_tokens=True)
-    value = _json_text(text)
-    return {
-        "value": value,
-        "model": _model_evidence(model_id),
-        "usage": _usage(
-            started,
-            "L4:2",
-            input_units=int(inputs["input_ids"].numel()),
-            output_units=int(generated.numel()),
-        ),
-    }
+        }
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        return _transport_error(exc)
 
 
 def _vision_infer(payload: dict[str, Any], model_id: str, gpu: str) -> dict[str, Any]:

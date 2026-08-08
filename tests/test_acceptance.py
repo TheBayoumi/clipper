@@ -289,7 +289,10 @@ def test_modal_30b_workers_use_official_fp8_on_two_l4s() -> None:
     worker = Path("scripts/modal_open_models.py").read_text()
     factory = Path("src/clipper/providers/factory.py").read_text()
     assert 'gpu="L4:2"' in worker
-    assert 'max_memory={0: "22GiB", 1: "22GiB"}' in worker
+    assert 'device_map="balanced_low_0"' in worker
+    assert 'max_memory={0: "14GiB", 1: "20GiB"}' in worker
+    assert '"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"' in worker
+    assert "_editorial_output_budget(payload)" in worker
     assert "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8" in worker
     assert '"kernels>=0.15.2,<0.16"' in worker
     assert "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8" in factory

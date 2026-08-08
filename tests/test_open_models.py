@@ -389,6 +389,14 @@ def test_modal_adapters_validate_response_and_record_usage(tmp_path: Path) -> No
         pytest.raises(ValueError, match="invalid response"),
     ):
         editorial.complete_json(task="mine", payload={})
+    function.remote.return_value = {
+        "error": {"type": "OutOfMemoryError", "message": "CUDA out of memory"}
+    }
+    with (
+        patch.object(editorial, "_function", return_value=function),
+        pytest.raises(RuntimeError, match="OutOfMemoryError: CUDA out of memory"),
+    ):
+        editorial.complete_json(task="mine", payload={})
 
 
 @pytest.mark.parametrize(

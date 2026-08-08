@@ -35,9 +35,20 @@ class ModalJSONProvider:
             raise ProviderUnavailable("install clipper[modal]") from exc
         return modal.Function.from_name(self.app_name, self.function_name)
 
+    def _raise_remote_error(self, response: dict[str, Any]) -> None:
+        raw_error = response.get("error")
+        if not isinstance(raw_error, dict):
+            return
+        error_type = str(raw_error.get("type") or "RemoteError")
+        message = str(raw_error.get("message") or "remote inference failed")
+        raise RuntimeError(f"Modal {self.function_name} failed: {error_type}: {message}")
+
     def invoke(self, payload: dict[str, Any]) -> ProviderResult[dict[str, Any]]:
         response = self._function().remote(payload)
-        if not isinstance(response, dict) or not isinstance(response.get("value"), dict):
+        if not isinstance(response, dict):
+            raise ValueError("Modal provider returned an invalid response")
+        self._raise_remote_error(response)
+        if not isinstance(response.get("value"), dict):
             raise ValueError("Modal provider returned an invalid response")
         raw_usage = response.get("usage")
         usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
@@ -78,7 +89,10 @@ class ModalVisionProvider(ModalJSONProvider):
 class ModalEmbeddingProvider(ModalJSONProvider):
     def embed(self, texts: list[str]) -> ProviderResult[list[list[float]]]:
         response = self._function().remote({"texts": texts})
-        if not isinstance(response, dict) or not isinstance(response.get("vectors"), list):
+        if not isinstance(response, dict):
+            raise ValueError("Modal embedding provider returned an invalid response")
+        self._raise_remote_error(response)
+        if not isinstance(response.get("vectors"), list):
             raise ValueError("Modal embedding provider returned an invalid response")
         vectors: list[list[float]] = []
         for row in response["vectors"]:
