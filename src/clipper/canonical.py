@@ -67,6 +67,35 @@ class CanonicalTimeline:
                 return item
         raise KeyError(word_id)
 
+    def word_ref(self, word_id: str) -> str:
+        word = self.word(word_id)
+        prefix = f"{self.video_id}:"
+        if word.word_id.startswith(prefix):
+            tail = word.word_id[len(prefix) :]
+            compact, separator, digest = tail.partition(":")
+            if separator and digest and compact.startswith("w") and compact[1:].isdigit():
+                return compact
+        return word.word_id
+
+    def resolve_word_ref(self, ref: str) -> str:
+        clean = ref.strip()
+        if not clean:
+            raise ValueError("canonical word reference cannot be empty")
+        exact = [word.word_id for word in self.words if word.word_id == clean]
+        if exact:
+            return exact[0]
+        candidates = [
+            word.word_id
+            for word in self.words
+            if self.word_ref(word.word_id) == clean
+            or f"{self.video_id}:{self.word_ref(word.word_id)}" == clean
+        ]
+        if not candidates:
+            raise ValueError(f"unknown canonical word reference: {clean}")
+        if len(candidates) != 1:
+            raise ValueError(f"ambiguous canonical word reference: {clean}")
+        return candidates[0]
+
     def require_word_ids(self, word_ids: tuple[str, ...] | list[str]) -> tuple[CanonicalWord, ...]:
         index = {word.word_id: word for word in self.words}
         missing = [word_id for word_id in word_ids if word_id not in index]

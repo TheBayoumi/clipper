@@ -242,6 +242,7 @@ class AutonomousEditorialPlanner:
         return [
             {
                 "word_id": word.word_id,
+                "word_ref": timeline.word_ref(word.word_id),
                 "text": word.text,
                 "source_start": word.source_start,
                 "source_end": word.source_end,
@@ -366,8 +367,8 @@ class AutonomousEditorialPlanner:
         moment_payloads = [
             {
                 "moment_id": moment.moment_id,
-                "start_word_id": moment.supporting_word_ids[0],
-                "end_word_id": moment.supporting_word_ids[-1],
+                "start_word_id": timeline.word_ref(moment.supporting_word_ids[0]),
+                "end_word_id": timeline.word_ref(moment.supporting_word_ids[-1]),
                 "semantic_summary": moment.semantic_summary,
                 "narrative_structure": moment.narrative_structure,
                 "required_prior_context": moment.required_prior_context,
@@ -550,8 +551,8 @@ class AutonomousEditorialPlanner:
                     ),
                     "concept": {
                         **asdict(grounded_concept),
-                        "start_word_id": grounded_concept.supporting_word_ids[0],
-                        "end_word_id": grounded_concept.supporting_word_ids[-1],
+                        "start_word_id": timeline.word_ref(grounded_concept.supporting_word_ids[0]),
+                        "end_word_id": timeline.word_ref(grounded_concept.supporting_word_ids[-1]),
                         "supporting_word_ids": None,
                     },
                 },
@@ -589,15 +590,15 @@ class AutonomousEditorialPlanner:
                     ),
                     "concept": {
                         **asdict(grounded_concept),
-                        "start_word_id": grounded_concept.supporting_word_ids[0],
-                        "end_word_id": grounded_concept.supporting_word_ids[-1],
+                        "start_word_id": timeline.word_ref(grounded_concept.supporting_word_ids[0]),
+                        "end_word_id": timeline.word_ref(grounded_concept.supporting_word_ids[-1]),
                         "supporting_word_ids": None,
                     },
                     "hooks": [
                         {
                             **asdict(hook),
-                            "source_start_word_id": hook.source_word_ids[0],
-                            "source_end_word_id": hook.source_word_ids[-1],
+                            "source_start_word_id": timeline.word_ref(hook.source_word_ids[0]),
+                            "source_end_word_id": timeline.word_ref(hook.source_word_ids[-1]),
                             "source_word_ids": None,
                         }
                         for hook in grounded_hooks

@@ -46,12 +46,14 @@ def _grounded_word_range(
     raw_ids = payload.get(list_field)
     if raw_ids is not None:
         return _word_ids(raw_ids, list_field)
-    start_id = _nonempty(payload.get(start_field), start_field)
-    end_id = _nonempty(payload.get(end_field), end_field)
+    start_ref = _nonempty(payload.get(start_field), start_field)
+    end_ref = _nonempty(payload.get(end_field), end_field)
+    try:
+        start_id = timeline.resolve_word_ref(start_ref)
+        end_id = timeline.resolve_word_ref(end_ref)
+    except ValueError as exc:
+        raise EditorialGroundingError(str(exc)) from exc
     positions = {word.word_id: index for index, word in enumerate(timeline.words)}
-    if start_id not in positions or end_id not in positions:
-        missing = [word_id for word_id in (start_id, end_id) if word_id not in positions]
-        raise EditorialGroundingError(f"unknown canonical word IDs: {missing}")
     start_index = positions[start_id]
     end_index = positions[end_id]
     if end_index < start_index:

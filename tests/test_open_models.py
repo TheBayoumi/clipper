@@ -131,6 +131,42 @@ def test_canonical_validation_is_immutable_and_source_ordered() -> None:
         )
 
 
+def test_canonical_word_refs_are_short_unique_and_resolve_hashed_ids() -> None:
+    timeline = CanonicalTimeline(
+        "video",
+        "hash",
+        (
+            CanonicalWord(
+                "video:w0000044:aaaaaaaaaaaa",
+                "hello",
+                1.0,
+                1.2,
+                None,
+                None,
+                "aligned",
+                "test",
+            ),
+            CanonicalWord(
+                "video:w0000045:bbbbbbbbbbbb",
+                "world",
+                1.21,
+                1.4,
+                None,
+                None,
+                "aligned",
+                "test",
+            ),
+        ),
+    )
+    full = "video:w0000044:aaaaaaaaaaaa"
+    assert timeline.word_ref(full) == "w0000044"
+    assert timeline.resolve_word_ref("w0000044") == full
+    assert timeline.resolve_word_ref("video:w0000044") == full
+    assert timeline.resolve_word_ref(full) == full
+    with pytest.raises(ValueError, match="unknown canonical word reference"):
+        timeline.resolve_word_ref("w9999999")
+
+
 def test_grounded_ai_contract_rejects_unknown_and_reordered_spoken_words() -> None:
     timeline = _timeline()
     with pytest.raises(ValueError, match="unknown canonical"):
