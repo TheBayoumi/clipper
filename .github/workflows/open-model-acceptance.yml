@@ -204,7 +204,7 @@ jobs:
         env:
           CLIPPER_SOURCE_FIXTURE_DIR: ${{ github.workspace }}/live-fixture
           CLIPPER_EDITORIAL_ENGINE: open
-          CLIPPER_GROUNDING_ENGINE: legacy
+          CLIPPER_GROUNDING_ENGINE: open
           CLIPPER_COMPUTE_PROFILE: balanced
           CLIPPER_VISUAL_SCOUT: "true"
           CLIPPER_VISUAL_REVIEW: "false"

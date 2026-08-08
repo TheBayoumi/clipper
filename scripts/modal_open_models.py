@@ -16,8 +16,8 @@ HF_CACHE = "/model-cache"
 MEDIA_ROOT = "/media"
 L4_USD_PER_SECOND = 0.000222
 L40S_USD_PER_SECOND = 0.000542
-EDITORIAL_MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
-EDITORIAL_MODEL_REVISION = "f50518eb58dfc750271b273fc113bdfc16ec2280"
+EDITORIAL_MODEL_ID = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+EDITORIAL_MODEL_REVISION = "c9051e5f23e735fd6549f86b616377617848a621"
 
 model_cache = modal.Volume.from_name("clipper-hf-cache", create_if_missing=True)
 media_cache = modal.Volume.from_name("clipper-media-cache", create_if_missing=True)
@@ -217,28 +217,36 @@ def embedding(payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.function(
     image=text_image,
-    gpu="L4",
+    gpu="L40S",
     volumes={HF_CACHE: model_cache},
     secrets=[hf_secret],
-    timeout=1200,
-    memory=16384,
+    timeout=1800,
+    memory=32768,
 )
 def editorial(payload: dict[str, Any]) -> dict[str, Any]:
     global _editorial_model, _editorial_tokenizer
     try:
         import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
         started = time.perf_counter()
         if _editorial_model is None or _editorial_tokenizer is None:
             _editorial_tokenizer = AutoTokenizer.from_pretrained(
                 EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION
             )
+            quantization = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+            )
             _editorial_model = AutoModelForCausalLM.from_pretrained(
                 EDITORIAL_MODEL_ID,
                 revision=EDITORIAL_MODEL_REVISION,
-                device_map={"": 0},
+                device_map="auto",
                 dtype=torch.bfloat16,
+                quantization_config=quantization,
+                max_memory={0: "45GiB"},
                 low_cpu_mem_usage=True,
             )
         task = str(payload.get("task") or "")
@@ -270,7 +278,7 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
             "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
             "usage": _usage(
                 started,
-                "L4",
+                "L40S",
                 input_units=int(inputs["input_ids"].numel()),
                 output_units=int(generated.numel()),
             ),

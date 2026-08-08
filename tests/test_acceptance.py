@@ -285,35 +285,36 @@ def test_live_validator_accepts_more_distinct_finalists_than_minimum(tmp_path: P
     assert report["actual"]["distinct_finalist_concepts"] == 6
 
 
-def test_balanced_editor_uses_pinned_qwen3_4b_on_single_l4() -> None:
+def test_balanced_editor_uses_pinned_qwen3_30b_on_l40s() -> None:
     worker = Path("scripts/modal_open_models.py").read_text()
     factory = Path("src/clipper/providers/factory.py").read_text()
     local = Path("src/clipper/providers/local.py").read_text()
     editorial_block = worker[worker.index("def editorial") : worker.index("def _vision_infer")]
-    assert (
-        'gpu="L4"'
-        in worker[
-            worker.rfind("@app.function", 0, worker.index("def editorial")) : worker.index(
-                "def editorial"
-            )
-        ]
-    )
-    assert 'EDITORIAL_MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"' in worker
-    assert 'EDITORIAL_MODEL_REVISION = "f50518eb58dfc750271b273fc113bdfc16ec2280"' in worker
-    assert 'device_map={"": 0}' in editorial_block
-    assert "dtype=torch.bfloat16" in editorial_block
+    decorator = worker[
+        worker.rfind("@app.function", 0, worker.index("def editorial")) : worker.index(
+            "def editorial"
+        )
+    ]
+    assert 'gpu="L40S"' in decorator
+    assert 'EDITORIAL_MODEL_ID = "Qwen/Qwen3-30B-A3B-Instruct-2507"' in worker
+    assert 'EDITORIAL_MODEL_REVISION = "c9051e5f23e735fd6549f86b616377617848a621"' in worker
+    assert "BitsAndBytesConfig(" in editorial_block
+    assert "load_in_4bit=True" in editorial_block
+    assert 'bnb_4bit_quant_type="nf4"' in editorial_block
+    assert 'device_map="auto"' in editorial_block
+    assert 'max_memory={0: "45GiB"}' in editorial_block
+    assert '"L40S"' in editorial_block
     assert "_editorial_output_budget(payload)" in editorial_block
     assert "_editorial_contract(task)" in editorial_block
     assert '"start_word_id"' in worker
     assert '"source_start_word_id"' in worker
     assert "short word_ref values" in worker
     assert "Do not copy full word-ID lists" in worker
-    assert '"L4"' in editorial_block
-    assert "Qwen/Qwen3-4B-Instruct-2507" in factory
-    assert 'CLIPPER_EDITORIAL_QUANTIZATION", "bf16"' in factory
-    assert "f50518eb58dfc750271b273fc113bdfc16ec2280" in factory
+    assert "Qwen/Qwen3-30B-A3B-Instruct-2507" in factory
+    assert 'CLIPPER_EDITORIAL_QUANTIZATION", "bnb-4bit-nf4"' in factory
+    assert "c9051e5f23e735fd6549f86b616377617848a621" in factory
+    # local-lite deliberately keeps the smaller model; balanced is the high-quality Modal path.
     assert "Qwen/Qwen3-4B-Instruct-2507" in local
-    assert "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8" not in editorial_block
 
 
 def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
@@ -328,6 +329,7 @@ def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
     )
     assert 'speech_providers("balanced")' in workflow
     assert "CLIPPER_EDITORIAL_ENGINE: open" in workflow
+    assert "CLIPPER_GROUNDING_ENGINE: open" in workflow
     assert "CLIPPER_COMPUTE_PROFILE: balanced" in workflow
     assert "CLIPPER_VISUAL_SCOUT" in workflow
     assert "CLIPPER_OPEN_PROXY_URL" in workflow
