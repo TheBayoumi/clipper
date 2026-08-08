@@ -1,0 +1,62 @@
+from __future__ import annotations
+
+import importlib
+from pathlib import Path
+from typing import Any
+
+from .base import InferenceUsage, ModelIdentity, ProviderResult
+from .local import ProviderUnavailable
+
+
+class ModalJSONProvider:
+    def __init__(self, *, app_name: str, function_name: str, identity: ModelIdentity) -> None:
+        self.app_name = app_name
+        self.function_name = function_name
+        self.identity = identity
+
+    def _function(self) -> Any:
+        try:
+            modal = importlib.import_module("modal")
+        except ImportError as exc:
+            raise ProviderUnavailable("install clipper[modal]") from exc
+        return modal.Function.from_name(self.app_name, self.function_name)
+
+    def invoke(self, payload: dict[str, Any]) -> ProviderResult[dict[str, Any]]:
+        response = self._function().remote(payload)
+        if not isinstance(response, dict) or not isinstance(response.get("value"), dict):
+            raise ValueError("Modal provider returned an invalid response")
+        raw_usage = response.get("usage")
+        usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
+        return ProviderResult(
+            response["value"],
+            self.identity,
+            InferenceUsage(
+                provider="modal",
+                started_at=str(usage.get("started_at") or "unknown"),
+                duration_seconds=float(usage.get("duration_seconds") or 0.0),
+                gpu_type=str(usage["gpu_type"]) if usage.get("gpu_type") else None,
+                gpu_seconds=float(usage.get("gpu_seconds") or 0.0),
+                peak_vram_mb=float(usage["peak_vram_mb"])
+                if usage.get("peak_vram_mb") is not None
+                else None,
+                input_units=int(usage.get("input_units") or 0),
+                output_units=int(usage.get("output_units") or 0),
+                estimated_cost_usd=float(usage.get("estimated_cost_usd") or 0.0),
+            ),
+        )
+
+
+class ModalEditorialProvider(ModalJSONProvider):
+    def complete_json(
+        self, *, task: str, payload: dict[str, Any]
+    ) -> ProviderResult[dict[str, Any]]:
+        return self.invoke({"task": task, "payload": payload})
+
+
+class ModalVisionProvider(ModalJSONProvider):
+    def inspect(
+        self, *, task: str, frames: list[Path], context: dict[str, Any]
+    ) -> ProviderResult[dict[str, Any]]:
+        return self.invoke(
+            {"task": task, "frame_paths": [str(frame) for frame in frames], "context": context}
+        )

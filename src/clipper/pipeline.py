@@ -28,6 +28,7 @@ from .cache import (
     transcript_cache_key,
     transcript_segments_from_payload,
 )
+from .canonical import canonical_timeline_from_segments
 from .editorial import (
     build_edit_plan,
     discover_story_moments,
@@ -538,6 +539,7 @@ def run_pipeline(
         "source_mode": "private-fixture" if isinstance(source, FixtureSourceClient) else "live",
         "transcript_hashes": {},
         "transcript_sources": {},
+        "canonical_timelines": {},
         "render": {
             "profile": cfg.render_profile,
             "source_max_height": cfg.source_max_height,
@@ -645,9 +647,30 @@ def run_pipeline(
             if not segments:
                 raise RuntimeError("transcription produced no timestamped segments")
             transcripts[video.video_id] = segments
-            manifest.run_metadata["transcript_hashes"][video.video_id] = stable_hash(
-                [segment.to_dict() for segment in segments]
+            transcript_hash = stable_hash([segment.to_dict() for segment in segments])
+            manifest.run_metadata["transcript_hashes"][video.video_id] = transcript_hash
+            transcript_source = manifest.run_metadata["transcript_sources"][video.video_id]
+            grounding_hash = str(
+                manifest.run_metadata["source_hashes"].get(video.video_id)
+                or transcript_source.get("source_sha256")
+                or transcript_hash
             )
+            canonical = canonical_timeline_from_segments(
+                video.video_id,
+                grounding_hash,
+                segments,
+                transcript_source=str(transcript_source.get("kind") or "unknown"),
+            )
+            canonical_payload = canonical.to_dict()
+            canonical_hash = stable_hash(canonical_payload)
+            _write_json(run_dir / "canonical" / f"{video.video_id}.json", canonical_payload)
+            manifest.run_metadata["canonical_timelines"][video.video_id] = {
+                "schema_version": canonical.schema_version,
+                "sha256": canonical_hash,
+                "source_hash": grounding_hash,
+                "word_count": len(canonical.words),
+                "timing_modes": sorted({word.timing_mode for word in canonical.words}),
+            }
             telemetry.start(f"editorial_analysis:{video.video_id}")
             moments, concepts, source_rejections, source_stats = _cached_editorial_analysis(
                 cache, manifest, brief, video.video_id, segments

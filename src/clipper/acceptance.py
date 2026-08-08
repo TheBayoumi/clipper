@@ -38,7 +38,12 @@ def validate_live_run(
     }
     if targets != expected_targets:
         raise ValueError(f"unexpected production targets: {targets}")
-    if actual != targets:
+    if (
+        int(actual.get("rendered_finalists") or 0) != expected_finalists
+        or int(actual.get("submission_shortlist") or 0) != expected_shortlist
+        or int(actual.get("distinct_finalist_concepts") or 0) < distinct_target
+        or int(actual.get("distinct_shortlist_concepts") or 0) < expected_shortlist
+    ):
         raise ValueError(
             f"production yield does not meet target: target={targets}, actual={actual}"
         )

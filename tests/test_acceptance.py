@@ -266,3 +266,18 @@ def test_package_root_lazily_exposes_pipeline_without_eager_dependency_import() 
     missing_name = "missing_export"
     with pytest.raises(AttributeError):
         getattr(clipper, missing_name)
+
+
+def test_live_validator_accepts_more_distinct_finalists_than_minimum(tmp_path: Path) -> None:
+    _write_live_run(tmp_path, finalists=6, shortlist=3)
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    manifest["targets"]["distinct_finalist_concepts"] = 3
+    manifest["actual"]["distinct_finalist_concepts"] = 6
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    report = validate_live_run(
+        tmp_path,
+        expected_finalists=6,
+        expected_shortlist=3,
+        expected_distinct_finalists=3,
+    )
+    assert report["actual"]["distinct_finalist_concepts"] == 6

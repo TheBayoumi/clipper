@@ -709,3 +709,8 @@ def test_pipeline_records_tracking_preflight_repair(tmp_path: Path) -> None:
     assert manifest["funnel"]["tracking_preflight_pass"] == 2
     assert manifest["funnel"]["tracking_preflight_repaired"] == 2
     assert manifest["funnel"]["tracking_preflight_fail"] == 0
+    canonical_files = list((run_dir / "canonical").glob("*.json"))
+    assert len(canonical_files) == 1
+    canonical = json.loads(canonical_files[0].read_text())
+    assert canonical["schema_version"] == "canonical-timeline-v1"
+    assert manifest["run_metadata"]["canonical_timelines"]
