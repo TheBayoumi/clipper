@@ -77,8 +77,10 @@ from .providers.factory import (
 from .qc import run_technical_qc
 from .render import FFmpegRenderer
 from .rights import RightsError, assert_campaign_authorized, assert_video_allowed
+from .runtime import ComputeBudget, StageJournal
 from .transcript import load_vtt, transcribe_with_faster_whisper
-from .visual_ai import repair_stage, review_rendered_clip
+from .visual import VisualTimeline
+from .visual_ai import repair_stage, review_rendered_clip, scout_visual_timeline
 from .youtube import YouTubeClient
 
 LOGGER = logging.getLogger("clipper")
@@ -212,9 +214,11 @@ class PipelineSettings:
     editorial_chunk_words: int = 900
     editorial_chunk_overlap_words: int = 120
     semantic_duplicate_threshold: float = 0.9
+    visual_scout_enabled: bool = False
     visual_review_enabled: bool = False
     visual_escalation_enabled: bool = True
     visual_escalation_threshold: float = 0.75
+    compute_budget_usd: float = 1.0
     cache_root: Path | None = None
 
     @classmethod
@@ -261,11 +265,13 @@ class PipelineSettings:
             semantic_duplicate_threshold=float(
                 os.getenv("CLIPPER_SEMANTIC_DUPLICATE_THRESHOLD", "0.9")
             ),
+            visual_scout_enabled=_env_bool("CLIPPER_VISUAL_SCOUT", False),
             visual_review_enabled=_env_bool("CLIPPER_VISUAL_REVIEW", False),
             visual_escalation_enabled=_env_bool("CLIPPER_VISUAL_ESCALATION", True),
             visual_escalation_threshold=float(
                 os.getenv("CLIPPER_VISUAL_ESCALATION_THRESHOLD", "0.75")
             ),
+            compute_budget_usd=float(os.getenv("CLIPPER_COMPUTE_BUDGET_USD", "1.0")),
             cache_root=(
                 Path(os.environ["CLIPPER_CACHE_ROOT"]) if os.getenv("CLIPPER_CACHE_ROOT") else None
             ),
@@ -645,6 +651,7 @@ def run_pipeline(
     renderer: Renderer | None = None,
     editorial_provider: EditorialProvider | None = None,
     embedding_provider: EmbeddingProvider | None = None,
+    visual_scout_provider: VisionProvider | None = None,
     visual_review_provider: VisionProvider | None = None,
     visual_escalation_provider: VisionProvider | None = None,
     transcription_provider: TranscriptionProvider | None = None,
@@ -688,6 +695,8 @@ def run_pipeline(
             chunk_overlap_words=cfg.editorial_chunk_overlap_words,
             semantic_duplicate_threshold=cfg.semantic_duplicate_threshold,
         )
+    if cfg.visual_scout_enabled and visual_scout_provider is None:
+        visual_scout_provider = build_vision_provider(cfg.compute_profile)
     if cfg.visual_review_enabled and visual_review_provider is None:
         visual_review_provider = build_vision_provider(cfg.compute_profile)
     if (
@@ -726,6 +735,24 @@ def run_pipeline(
     work_dir = run_dir / "work"
     clips_dir = run_dir / "clips"
     run_dir.mkdir(parents=True, exist_ok=False)
+    journal = StageJournal(run_dir / "progress.json")
+    journal.start("pipeline", message="pipeline initialized")
+    compute_budget = ComputeBudget(cfg.compute_budget_usd)
+    model_progress_count = [0]
+
+    def _model_progress(stage: str, event: str) -> None:
+        if event in {"success", "cache_hit"}:
+            model_progress_count[0] += 1
+        journal.start("model_inference", checkpoint=stage, message=f"{event}:{stage}")
+        journal.progress(
+            "model_inference",
+            model_progress_count[0],
+            checkpoint=stage,
+            message=f"{event}:{stage}",
+        )
+
+    if open_planner is not None:
+        open_planner.progress_callback = _model_progress
     manifest = PipelineManifest(campaign_id=brief.campaign_id)
     manifest.run_metadata = {
         "git_commit_sha": _git_sha(),
@@ -758,9 +785,15 @@ def run_pipeline(
             "degraded": cfg.editorial_engine == "heuristic",
         },
         "visual_inference": {
-            "enabled": cfg.visual_review_enabled,
+            "scout_enabled": cfg.visual_scout_enabled,
+            "review_enabled": cfg.visual_review_enabled,
             "escalation_enabled": cfg.visual_escalation_enabled,
             "escalation_threshold": cfg.visual_escalation_threshold,
+            "scout_model": (
+                visual_scout_provider.identity.to_dict()
+                if visual_scout_provider is not None
+                else None
+            ),
             "primary_model": (
                 visual_review_provider.identity.to_dict()
                 if visual_review_provider is not None
@@ -772,6 +805,7 @@ def run_pipeline(
                 else None
             ),
         },
+        "compute_budget": compute_budget.to_dict(),
         "render": {
             "profile": cfg.render_profile,
             "source_max_height": cfg.source_max_height,
@@ -792,6 +826,7 @@ def run_pipeline(
             )
         telemetry.stop("watermark_download")
 
+    journal.start("source_discovery", message="discovering authorized sources")
     telemetry.start("source_discovery")
     direct_candidates = _campaign_media_candidates(brief)
     direct_ids = {video.video_id for video in direct_candidates}
@@ -814,9 +849,14 @@ def run_pipeline(
         allowed.append(video)
     allowed = allowed[: brief.source_limit]
     manifest.discovered_videos = [video.to_dict() for video in allowed]
+    journal.complete("source_discovery", message=f"{len(allowed)} authorized sources")
+    journal.start(
+        "source_processing", total=len(allowed), message="building canonical source evidence"
+    )
 
     transcripts: dict[str, list[TranscriptSegment]] = {}
     canonical_timelines: dict[str, CanonicalTimeline] = {}
+    visual_timelines: dict[str, VisualTimeline] = {}
     open_analyses: list[OpenVideoAnalysis] = []
     media_paths: dict[str, Path] = {}
     all_moments: list[StoryMoment] = []
@@ -824,7 +864,13 @@ def run_pipeline(
     mining_stats: Counter[str] = Counter()
     video_index = {video.video_id: video for video in allowed}
 
-    for video in allowed:
+    for source_index, video in enumerate(allowed, start=1):
+        journal.progress(
+            "source_processing",
+            source_index - 1,
+            checkpoint=video.video_id,
+            message=f"processing {video.video_id}",
+        )
         video_work = work_dir / video.video_id
         try:
             direct_media_url = brief.source_media_urls.get(video.video_id)
@@ -860,16 +906,19 @@ def run_pipeline(
                     video.video_id,
                     source_hash,
                 )
+                compute_budget.record_mapping(transcription_evidence.get("usage"))
                 telemetry.stop(f"canonical_transcription:{video.video_id}")
                 telemetry.start(f"canonical_alignment:{video.video_id}")
                 canonical, alignment_evidence = _cached_open_alignment(
                     cache, manifest, alignment_provider, media_path, canonical
                 )
+                compute_budget.record_mapping(alignment_evidence.get("usage"))
                 telemetry.stop(f"canonical_alignment:{video.video_id}")
                 telemetry.start(f"canonical_diarization:{video.video_id}")
                 canonical, diarization_evidence = _cached_open_diarization(
                     cache, manifest, diarization_provider, media_path, canonical
                 )
+                compute_budget.record_mapping(diarization_evidence.get("usage"))
                 telemetry.stop(f"canonical_diarization:{video.video_id}")
                 segments = transcript_segments_from_canonical(canonical)
                 manifest.run_metadata["transcript_sources"][video.video_id] = {
@@ -974,9 +1023,45 @@ def run_pipeline(
                 ),
             }
             canonical_timelines[video.video_id] = canonical
+            visual_timeline: VisualTimeline | None = None
+            media_for_visual = media_paths.get(video.video_id)
+            if cfg.visual_scout_enabled and visual_scout_provider is not None and media_for_visual:
+                telemetry.start(f"visual_scout:{video.video_id}")
+                visual_timeline, visual_result = scout_visual_timeline(
+                    media_for_visual,
+                    visual_scout_provider,
+                    video_id=video.video_id,
+                    source_hash=canonical.source_hash,
+                    duration=max(canonical.end, 0.05),
+                    output_dir=video_work / "visual-scout-frames",
+                )
+                telemetry.stop(f"visual_scout:{video.video_id}")
+                compute_budget.record(visual_result.usage)
+                visual_timelines[video.video_id] = visual_timeline
+                _write_json(video_work / "visual-timeline.json", visual_timeline.to_dict())
+                _write_json(
+                    run_dir / "visual" / f"{video.video_id}.json", visual_timeline.to_dict()
+                )
+                visual_meta = manifest.run_metadata.get("visual_inference")
+                if isinstance(visual_meta, dict):
+                    visual_meta.setdefault("scout_runs", []).append(
+                        {
+                            "video_id": video.video_id,
+                            "model": visual_result.model.to_dict(),
+                            "usage": asdict(visual_result.usage),
+                            "event_count": len(visual_timeline.events),
+                            "degraded": visual_result.degraded,
+                        }
+                    )
+            elif cfg.visual_scout_enabled:
+                visual_meta = manifest.run_metadata.get("visual_inference")
+                if isinstance(visual_meta, dict):
+                    visual_meta.setdefault("scout_skipped", []).append(
+                        {"video_id": video.video_id, "reason": "full_visual_media_unavailable"}
+                    )
             telemetry.start(f"editorial_analysis:{video.video_id}")
             if open_planner is not None:
-                analysis = open_planner.analyze_video(brief, canonical)
+                analysis = open_planner.analyze_video(brief, canonical, visual_timeline)
                 open_analyses.append(analysis)
                 moments = analysis.moments
                 concepts = analysis.concepts
@@ -1003,7 +1088,14 @@ def run_pipeline(
         except Exception as exc:
             LOGGER.exception("source processing failed", extra={"video_id": video.video_id})
             manifest.errors.append({"video_id": video.video_id, "error": str(exc)})
+        journal.progress(
+            "source_processing",
+            source_index,
+            checkpoint=video.video_id,
+            message=f"completed {video.video_id}",
+        )
 
+    journal.complete("source_processing", message=f"processed {len(allowed)} sources")
     _write_json(
         run_dir / "transcript.json",
         {
@@ -1012,6 +1104,7 @@ def run_pipeline(
         },
     )
     plans: list[EditPlan]
+    journal.start("editorial_planning", message="constructing diverse source-grounded plans")
     if open_planner is not None:
         open_batch = open_planner.plan_batch(brief, canonical_timelines, open_analyses)
         all_moments = open_batch.discovered_moments
@@ -1023,6 +1116,8 @@ def run_pipeline(
         manifest.run_metadata["editorial_inference"]["model_invocations"] = (
             open_batch.model_invocations
         )
+        for invocation in open_batch.model_invocations:
+            compute_budget.record_mapping(invocation.get("usage"))
         _write_json(run_dir / "open-model" / "model-invocations.json", open_batch.model_invocations)
         _write_json(
             run_dir / "open-model" / "discovered-concepts.json",
@@ -1053,6 +1148,11 @@ def run_pipeline(
                 build_edit_plan(brief, concept, variant, transcripts[concept.video_id])
                 for variant in concept_variants
             )
+    journal.complete("editorial_planning", message=f"planned {len(plans)} edit plans")
+    if "model_inference" in journal.states:
+        journal.complete(
+            "model_inference", message=f"completed {model_progress_count[0]} model stages"
+        )
     concept_index = {concept.concept_id: concept for concept in selected_concepts}
     target_finalists = brief.production.final_render_budget
     primary_plans, reserve_plans = select_render_plan_queue(plans, budget=target_finalists)
@@ -1162,7 +1262,14 @@ def run_pipeline(
             ("reserve", plan) for plan in reserve_plans
         ]
         accepted_plans: list[EditPlan] = []
+        journal.start("render", total=len(queue), message="rendering preflight-approved finalists")
         for queue_index, (queue_kind, plan) in enumerate(queue, start=1):
+            journal.progress(
+                "render",
+                queue_index - 1,
+                checkpoint=plan.plan_id,
+                message=f"attempting {queue_kind} plan {plan.plan_id}",
+            )
             if len(accepted_plans) >= target_finalists:
                 break
             concept = concept_index[plan.concept_id]
@@ -1324,10 +1431,14 @@ def run_pipeline(
                             "technical_qc": qc_report,
                         },
                         transitions=transition_times,
-                        escalation=visual_escalation_provider,
+                        escalation=(
+                            visual_escalation_provider if compute_budget.allow_large_vlm() else None
+                        ),
                         escalation_threshold=cfg.visual_escalation_threshold,
                     )
                     telemetry.stop(f"editorial_qc:{plan.plan_id}")
+                    for result in review_results:
+                        compute_budget.record(result.usage)
                     review_payload = review.to_dict()
                     review_payload["plan_id"] = plan.plan_id
                     review_payload["models"] = [result.model.to_dict() for result in review_results]
@@ -1425,6 +1536,10 @@ def run_pipeline(
                     }
                 )
 
+        journal.complete(
+            "render",
+            message=f"accepted {len(accepted_plans)} of {target_finalists} target finalists",
+        )
         shortlist_plans = select_submission_shortlist(
             accepted_plans,
             clip_count=brief.clip_count,
@@ -1510,6 +1625,8 @@ def run_pipeline(
             ],
         },
     )
+    manifest.run_metadata["compute_budget"] = compute_budget.to_dict()
+    journal.complete("pipeline", checkpoint="manifest.json", message=manifest.status)
     manifest.performance = telemetry.finish(run_dir)
     _write_json(run_dir / "funnel.json", manifest.funnel)
     _write_json(run_dir / "rejections.json", manifest.rejections)

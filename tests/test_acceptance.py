@@ -285,14 +285,14 @@ def test_live_validator_accepts_more_distinct_finalists_than_minimum(tmp_path: P
     assert report["actual"]["distinct_finalist_concepts"] == 6
 
 
-def test_modal_30b_workers_use_bounded_cpu_offload_on_l4() -> None:
+def test_modal_30b_workers_use_two_l4s_without_cpu_expert_offload() -> None:
     worker = Path("scripts/modal_open_models.py").read_text()
-    assert 'gpu="L4"' in worker
-    assert "llm_int8_enable_fp32_cpu_offload=True" in worker
-    assert 'max_memory={0: "20GiB", "cpu": "28GiB"}' in worker
-    assert "offload_folder=editorial_offload" in worker
-    assert "HF_CACHE}/offload/editorial" in worker
+    assert 'gpu="L4:2"' in worker
+    assert 'max_memory={0: "22GiB", 1: "22GiB"}' in worker
+    assert "llm_int8_enable_fp32_cpu_offload" not in worker
     assert "Qwen/Qwen3-30B-A3B-Instruct-2507" in worker
+    assert "return L4_USD_PER_SECOND * count" in worker
+    assert '"L4:2"' in worker
 
 
 def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:

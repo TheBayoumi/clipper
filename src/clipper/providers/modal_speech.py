@@ -63,6 +63,19 @@ class _ModalSpeechBase:
             raise ProviderUnavailable("install clipper[modal]") from exc
         return modal.Function.from_name(self.app_name, self.function_name)
 
+    def _resolved_identity(self, response: dict[str, Any]) -> ModelIdentity:
+        raw = response.get("model")
+        if not isinstance(raw, dict):
+            return self.identity
+        return ModelIdentity(
+            str(raw.get("model_id") or self.identity.model_id),
+            str(raw.get("revision") or self.identity.revision),
+            self.identity.quantization,
+            self.identity.inference_engine,
+            self.identity.prompt_version,
+            self.identity.schema_version,
+        )
+
     @staticmethod
     def _usage(response: dict[str, Any]) -> InferenceUsage:
         raw = response.get("usage")
@@ -99,7 +112,7 @@ class ModalTranscriptionProvider(_ModalSpeechBase):
             words,
             transcript_source="modal-faster-whisper-large-v3-turbo",
         )
-        return ProviderResult(timeline, self.identity, self._usage(response))
+        return ProviderResult(timeline, self._resolved_identity(response), self._usage(response))
 
 
 class ModalAlignmentProvider(_ModalSpeechBase):
@@ -113,7 +126,7 @@ class ModalAlignmentProvider(_ModalSpeechBase):
             raise ValueError("Modal alignment provider returned an invalid response")
         segments = [item for item in raw_segments if isinstance(item, dict)]
         value = apply_whisperx_alignment(timeline, segments)
-        return ProviderResult(value, self.identity, self._usage(response))
+        return ProviderResult(value, self._resolved_identity(response), self._usage(response))
 
 
 class ModalDiarizationProvider(_ModalSpeechBase):
@@ -131,4 +144,4 @@ class ModalDiarizationProvider(_ModalSpeechBase):
                 raise ValueError("Modal diarization turn is invalid")
             turns.append((float(raw[0]), float(raw[1]), str(raw[2])))
         value = apply_speaker_turns(timeline, turns)
-        return ProviderResult(value, self.identity, self._usage(response))
+        return ProviderResult(value, self._resolved_identity(response), self._usage(response))

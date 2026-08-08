@@ -354,6 +354,7 @@ def test_modal_adapters_validate_response_and_record_usage(tmp_path: Path) -> No
     function = Mock()
     function.remote.return_value = {
         "value": {"ok": True},
+        "model": {"model_id": "resolved/model", "revision": "sha123"},
         "usage": {
             "started_at": "2026-08-08T00:00:00Z",
             "duration_seconds": 2.5,
@@ -372,6 +373,8 @@ def test_modal_adapters_validate_response_and_record_usage(tmp_path: Path) -> No
     with patch.object(editorial, "_function", return_value=function):
         result = editorial.complete_json(task="mine", payload={})
     assert result.value == {"ok": True}
+    assert result.model.model_id == "resolved/model"
+    assert result.model.revision == "sha123"
     assert result.usage.gpu_type == "L40S"
     frame = tmp_path / "a.jpg"
     frame.write_bytes(b"frame-bytes")
@@ -1300,6 +1303,7 @@ def test_modal_media_bridge_and_speech_adapters(tmp_path: Path) -> None:
     function = Mock()
     function.remote.return_value = {
         "words": [{"text": "hello", "start": 0.0, "end": 0.2, "confidence": 0.9}],
+        "model": {"model_id": "resolved/asr", "revision": "asr-sha"},
         "usage": {"gpu_type": "L4", "gpu_seconds": 1.0},
     }
     with (
@@ -1308,6 +1312,8 @@ def test_modal_media_bridge_and_speech_adapters(tmp_path: Path) -> None:
     ):
         result = transcribe.transcribe(source, video_id="video", source_hash="abc")
     assert result.value.words[0].text == "hello"
+    assert result.model.model_id == "resolved/asr"
+    assert result.model.revision == "asr-sha"
     assert result.usage.gpu_type == "L4"
 
     timeline = result.value
@@ -1315,25 +1321,33 @@ def test_modal_media_bridge_and_speech_adapters(tmp_path: Path) -> None:
         app_name="app", function_name="align", identity=identity, media_bridge=bridge
     )
     function.remote.return_value = {
-        "segments": [{"words": [{"word": "hello", "start": 0.01, "end": 0.21, "score": 0.95}]}]
+        "segments": [{"words": [{"word": "hello", "start": 0.01, "end": 0.21, "score": 0.95}]}],
+        "model": {"model_id": "resolved/align", "revision": "align-sha"},
     }
     with (
         patch.object(bridge, "ensure_uploaded", return_value="/media/inputs/abc.wav"),
         patch.object(align, "_function", return_value=function),
     ):
-        aligned = align.align(source, timeline).value
+        aligned_result = align.align(source, timeline)
+    aligned = aligned_result.value
     assert aligned.words[0].timing_mode == "aligned"
+    assert aligned_result.model.revision == "align-sha"
 
     diarize = ModalDiarizationProvider(
         app_name="app", function_name="diarize", identity=identity, media_bridge=bridge
     )
-    function.remote.return_value = {"turns": [[0.0, 1.0, "SPEAKER_00"]]}
+    function.remote.return_value = {
+        "turns": [[0.0, 1.0, "SPEAKER_00"]],
+        "model": {"model_id": "resolved/diar", "revision": "diar-sha"},
+    }
     with (
         patch.object(bridge, "ensure_uploaded", return_value="/media/inputs/abc.wav"),
         patch.object(diarize, "_function", return_value=function),
     ):
-        spoken = diarize.diarize(source, aligned).value
+        spoken_result = diarize.diarize(source, aligned)
+    spoken = spoken_result.value
     assert spoken.words[0].speaker_id == "SPEAKER_00"
+    assert spoken_result.model.revision == "diar-sha"
 
 
 def test_speech_provider_factory_routes_local_and_modal() -> None:

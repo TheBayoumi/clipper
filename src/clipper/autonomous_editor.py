@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -24,6 +25,7 @@ from .models import (
     StoryMoment,
 )
 from .providers.base import EditorialProvider, EmbeddingProvider, InferenceUsage, ProviderResult
+from .visual import VisualTimeline
 
 
 @dataclass(slots=True)
@@ -108,6 +110,7 @@ class AutonomousEditorialPlanner:
         chunk_overlap_words: int = 120,
         semantic_duplicate_threshold: float = 0.9,
         hook_duplicate_threshold: float = 0.94,
+        progress_callback: Callable[[str, str], None] | None = None,
     ) -> None:
         if max_words_per_chunk < 200:
             raise ValueError("max_words_per_chunk must be at least 200")
@@ -122,6 +125,7 @@ class AutonomousEditorialPlanner:
         self.chunk_overlap_words = chunk_overlap_words
         self.semantic_duplicate_threshold = semantic_duplicate_threshold
         self.hook_duplicate_threshold = hook_duplicate_threshold
+        self.progress_callback = progress_callback
         self.invocations: list[dict[str, object]] = []
 
     def _campaign(self, brief: CampaignBrief) -> dict[str, object]:
@@ -144,6 +148,8 @@ class AutonomousEditorialPlanner:
         )
         cached = self.cache.read(key, "open-model-output")
         if isinstance(cached, dict):
+            if self.progress_callback is not None:
+                self.progress_callback(stage, "cache_hit")
             self.invocations.append(
                 {
                     "stage": stage,
@@ -153,7 +159,16 @@ class AutonomousEditorialPlanner:
                 }
             )
             return {str(k): v for k, v in cached.items()}
-        result = self.editorial.complete_json(task=stage, payload=payload)
+        if self.progress_callback is not None:
+            self.progress_callback(stage, "running")
+        try:
+            result = self.editorial.complete_json(task=stage, payload=payload)
+        except Exception:
+            if self.progress_callback is not None:
+                self.progress_callback(stage, "failed")
+            raise
+        if self.progress_callback is not None:
+            self.progress_callback(stage, "success")
         self.cache.write(key, "open-model-output", result.value)
         self._record(stage, key, result, cache_hit=False)
         return result.value
@@ -176,6 +191,8 @@ class AutonomousEditorialPlanner:
         )
         cached = self.cache.read(key, "embeddings")
         if isinstance(cached, list) and all(isinstance(row, list) for row in cached):
+            if self.progress_callback is not None:
+                self.progress_callback(stage, "cache_hit")
             vectors = [[float(value) for value in row] for row in cached]
             self.invocations.append(
                 {
@@ -186,7 +203,16 @@ class AutonomousEditorialPlanner:
                 }
             )
             return vectors
-        result = self.embeddings.embed(texts)
+        if self.progress_callback is not None:
+            self.progress_callback(stage, "running")
+        try:
+            result = self.embeddings.embed(texts)
+        except Exception:
+            if self.progress_callback is not None:
+                self.progress_callback(stage, "failed")
+            raise
+        if self.progress_callback is not None:
+            self.progress_callback(stage, "success")
         self.cache.write(key, "embeddings", result.value)
         self._record(stage, key, result, cache_hit=False)
         return result.value
@@ -259,7 +285,34 @@ class AutonomousEditorialPlanner:
             raise EditorialGroundingError(f"model output {key} must contain objects")
         return [{str(k): v for k, v in item.items()} for item in value]
 
-    def analyze_video(self, brief: CampaignBrief, timeline: CanonicalTimeline) -> OpenVideoAnalysis:
+    @staticmethod
+    def _visual_evidence(
+        timeline: VisualTimeline | None, start: float | None = None, end: float | None = None
+    ) -> list[dict[str, object]]:
+        if timeline is None:
+            return []
+        events = timeline.events
+        if start is not None and end is not None:
+            events = tuple(event for event in events if event.end > start and event.start < end)
+        return [
+            {
+                "start": event.start,
+                "end": event.end,
+                "scene_id": event.scene_id,
+                "summary": event.summary,
+                "visible_speakers": list(event.visible_speakers),
+                "event_labels": list(event.event_labels),
+                "confidence": event.confidence,
+            }
+            for event in events
+        ]
+
+    def analyze_video(
+        self,
+        brief: CampaignBrief,
+        timeline: CanonicalTimeline,
+        visual_timeline: VisualTimeline | None = None,
+    ) -> OpenVideoAnalysis:
         profile_payload = self._complete(
             "episode_editorial_profile",
             timeline,
@@ -271,12 +324,17 @@ class AutonomousEditorialPlanner:
                     "Do not use a fixed domain ontology."
                 ),
                 "timeline_evidence": self._profile_evidence(timeline),
+                "visual_evidence": self._visual_evidence(visual_timeline),
             },
         )
         profile = EpisodeEditorialProfile.from_payload(profile_payload)
         grounded_moments: dict[str, GroundedStoryMoment] = {}
         rejections: list[dict[str, object]] = []
         for chunk_index, words in enumerate(self._chunks(timeline)):
+            first_start = words[0].get("source_start") if words else None
+            last_end = words[-1].get("source_end") if words else None
+            chunk_start = float(first_start) if isinstance(first_start, int | float | str) else 0.0
+            chunk_end = float(last_end) if isinstance(last_end, int | float | str) else 0.0
             payload = self._complete(
                 f"story_moments:{chunk_index}",
                 timeline,
@@ -290,6 +348,9 @@ class AutonomousEditorialPlanner:
                         "Reference canonical word IDs only; do not invent transcript text."
                     ),
                     "words": words,
+                    "visual_evidence": self._visual_evidence(
+                        visual_timeline, chunk_start, chunk_end
+                    ),
                 },
             )
             for raw in self._array(payload, "moments"):

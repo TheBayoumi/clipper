@@ -15,6 +15,19 @@ class ModalJSONProvider:
         self.function_name = function_name
         self.identity = identity
 
+    def _resolved_identity(self, response: dict[str, Any]) -> ModelIdentity:
+        raw = response.get("model")
+        if not isinstance(raw, dict):
+            return self.identity
+        return ModelIdentity(
+            str(raw.get("model_id") or self.identity.model_id),
+            str(raw.get("revision") or self.identity.revision),
+            self.identity.quantization,
+            self.identity.inference_engine,
+            self.identity.prompt_version,
+            self.identity.schema_version,
+        )
+
     def _function(self) -> Any:
         try:
             modal = importlib.import_module("modal")
@@ -30,7 +43,7 @@ class ModalJSONProvider:
         usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
         return ProviderResult(
             response["value"],
-            self.identity,
+            self._resolved_identity(response),
             InferenceUsage(
                 provider="modal",
                 started_at=str(usage.get("started_at") or "unknown"),
@@ -74,9 +87,20 @@ class ModalEmbeddingProvider(ModalJSONProvider):
             vectors.append([float(value) for value in row])
         raw_usage = response.get("usage")
         usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
+        raw_model = response.get("model")
+        identity = self.identity
+        if isinstance(raw_model, dict):
+            identity = ModelIdentity(
+                str(raw_model.get("model_id") or self.identity.model_id),
+                str(raw_model.get("revision") or self.identity.revision),
+                self.identity.quantization,
+                self.identity.inference_engine,
+                self.identity.prompt_version,
+                self.identity.schema_version,
+            )
         return ProviderResult(
             vectors,
-            self.identity,
+            identity,
             InferenceUsage(
                 provider="modal",
                 started_at=str(usage.get("started_at") or "unknown"),

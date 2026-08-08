@@ -50,6 +50,33 @@ _editorial_model: Any | None = None
 _vision_models: dict[str, tuple[Any, Any]] = {}
 _whisper_model: Any | None = None
 _diarization_pipeline: Any | None = None
+_model_revisions: dict[str, str] = {}
+
+
+def _model_revision(model_id: str) -> str:
+    cached = _model_revisions.get(model_id)
+    if cached is not None:
+        return cached
+    from huggingface_hub import HfApi
+
+    revision = str(
+        HfApi(token=os.environ.get("HF_TOKEN") or None).model_info(model_id).sha or "unknown"
+    )
+    _model_revisions[model_id] = revision
+    return revision
+
+
+def _model_evidence(model_id: str, *, revision: str | None = None) -> dict[str, str]:
+    return {"model_id": model_id, "revision": revision or _model_revision(model_id)}
+
+
+def _gpu_rate(gpu: str) -> float:
+    if gpu == "L40S":
+        return L40S_USD_PER_SECOND
+    if gpu.startswith("L4"):
+        count = int(gpu.split(":", 1)[1]) if ":" in gpu else 1
+        return L4_USD_PER_SECOND * count
+    raise ValueError(f"unsupported GPU rate: {gpu}")
 
 
 def _usage(
@@ -58,7 +85,7 @@ def _usage(
     import torch
 
     duration = max(0.0, time.perf_counter() - started)
-    rate = L40S_USD_PER_SECOND if gpu == "L40S" else L4_USD_PER_SECOND
+    rate = _gpu_rate(gpu)
     peak = (
         float(torch.cuda.max_memory_allocated() / (1024 * 1024))
         if torch.cuda.is_available()
@@ -111,7 +138,7 @@ def embedding(payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.function(
     image=text_image,
-    gpu="L4",
+    gpu="L4:2",
     volumes={HF_CACHE: model_cache},
     secrets=[hf_secret],
     timeout=1800,
@@ -131,16 +158,11 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
             bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True,
-            llm_int8_enable_fp32_cpu_offload=True,
         )
-        editorial_offload = f"{HF_CACHE}/offload/editorial"
-        os.makedirs(editorial_offload, exist_ok=True)
         _editorial_model = AutoModelForCausalLM.from_pretrained(
             model_id,
             device_map="auto",
-            max_memory={0: "20GiB", "cpu": "28GiB"},
-            offload_folder=editorial_offload,
-            offload_state_dict=True,
+            max_memory={0: "22GiB", 1: "22GiB"},
             dtype=torch.bfloat16,
             quantization_config=quantization,
         )
@@ -164,9 +186,10 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
     value = _json_text(text)
     return {
         "value": value,
+        "model": _model_evidence(model_id),
         "usage": _usage(
             started,
-            "L4",
+            "L4:2",
             input_units=int(inputs["input_ids"].numel()),
             output_units=int(generated.numel()),
         ),
@@ -193,13 +216,8 @@ def _vision_infer(payload: dict[str, Any], model_id: str, gpu: str) -> dict[str,
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_compute_dtype=torch.bfloat16,
                 bnb_4bit_use_double_quant=True,
-                llm_int8_enable_fp32_cpu_offload=True,
             )
-            kwargs["max_memory"] = {0: "20GiB", "cpu": "28GiB"}
-            vlm_offload = f"{HF_CACHE}/offload/vision-large"
-            os.makedirs(vlm_offload, exist_ok=True)
-            kwargs["offload_folder"] = vlm_offload
-            kwargs["offload_state_dict"] = True
+            kwargs["max_memory"] = {0: "22GiB", 1: "22GiB"}
         model = AutoModelForImageTextToText.from_pretrained(model_id, **kwargs)
         _vision_models[model_id] = (processor, model)
     else:
@@ -227,6 +245,7 @@ def _vision_infer(payload: dict[str, Any], model_id: str, gpu: str) -> dict[str,
     text = processor.decode(generated, skip_special_tokens=True)
     return {
         "value": _json_text(text),
+        "model": _model_evidence(model_id),
         "usage": _usage(
             started,
             gpu,
@@ -250,14 +269,14 @@ def vision(payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.function(
     image=text_image,
-    gpu="L4",
+    gpu="L4:2",
     volumes={HF_CACHE: model_cache},
     secrets=[hf_secret],
     timeout=1800,
     memory=32768,
 )
 def vision_large(payload: dict[str, Any]) -> dict[str, Any]:
-    return _vision_infer(payload, "Qwen/Qwen3-VL-30B-A3B-Instruct", "L4")
+    return _vision_infer(payload, "Qwen/Qwen3-VL-30B-A3B-Instruct", "L4:2")
 
 
 @app.function(
@@ -294,7 +313,11 @@ def transcribe(payload: dict[str, Any]) -> dict[str, Any]:
             )
     if not words:
         raise ValueError("faster-whisper produced no timestamped words")
-    return {"words": words, "usage": _usage(started, "L4", output_units=len(words))}
+    return {
+        "words": words,
+        "model": _model_evidence("mobiuslabsgmbh/faster-whisper-large-v3-turbo"),
+        "usage": _usage(started, "L4", output_units=len(words)),
+    }
 
 
 @app.function(
@@ -381,7 +404,11 @@ def diarize(payload: dict[str, Any]) -> dict[str, Any]:
     ]
     if not turns:
         raise ValueError("pyannote produced no speaker turns")
-    return {"turns": turns, "usage": _usage(started, "L4", output_units=len(turns))}
+    return {
+        "turns": turns,
+        "model": _model_evidence("pyannote/speaker-diarization-community-1"),
+        "usage": _usage(started, "L4", output_units=len(turns)),
+    }
 
 
 @app.function(image=modal.Image.debian_slim(), timeout=120)
@@ -401,4 +428,4 @@ def hf_access_smoke() -> dict[str, Any]:
     if not token:
         raise RuntimeError("HF_TOKEN is not available inside Modal")
     info = HfApi(token=token).model_info("pyannote/speaker-diarization-community-1")
-    return {"ok": True, "model_id": info.id}
+    return {"ok": True, "model_id": info.id, "revision": info.sha}

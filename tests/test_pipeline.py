@@ -23,6 +23,7 @@ from clipper.pipeline import (
     run_pipeline,
 )
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
+from clipper.visual import VisualEvent, VisualTimeline
 from clipper.visual_ai import VisualReviewIssue, VisualReviewReport
 
 
@@ -724,11 +725,13 @@ class FakeOpenEditorialProvider:
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.payloads: dict[str, dict[str, object]] = {}
 
     def complete_json(
         self, *, task: str, payload: dict[str, object]
     ) -> ProviderResult[dict[str, object]]:
         self.calls.append(task)
+        self.payloads[task] = payload
         usage = InferenceUsage("test", "2026-08-08T00:00:00Z", 0.01)
         if task == "episode_editorial_profile":
             value: dict[str, object] = {
@@ -1227,3 +1230,93 @@ def test_open_grounding_requires_complete_provider_set(tmp_path: Path) -> None:
             transcription_provider=_GroundingTranscription(),
             render=False,
         )
+
+
+def test_open_editorial_pipeline_consumes_sparse_visual_timeline_when_media_exists(
+    tmp_path: Path,
+) -> None:
+    brief = tmp_path / "visual-open.json"
+    brief.write_text(
+        json.dumps(
+            {
+                "campaign_id": "visual-open",
+                "title": "Any visual domain",
+                "objective": "Find source-grounded stories",
+                "keywords": ["schema-required"],
+                "source_channel_ids": ["UC1"],
+                "rights_confirmed": True,
+                "min_clip_seconds": 8,
+                "max_clip_seconds": 20,
+                "clip_count": 1,
+                "production": {
+                    "candidate_pool_size": 10,
+                    "concept_count": 1,
+                    "variants_per_concept": 1,
+                    "final_render_budget": 1,
+                    "minimum_distinct_finalist_concepts": 1,
+                },
+            }
+        )
+    )
+    subtitle = tmp_path / "visual-open.vtt"
+    subtitle.write_text("WEBVTT\n")
+    media = tmp_path / "visual-open.mp4"
+    media.write_bytes(b"visual-source")
+    editorial = FakeOpenEditorialProvider()
+    embedding = FakeOpenEmbeddingProvider()
+    asr = _GroundingTranscription()
+    alignment = _GroundingAlignment()
+    diarization = _GroundingDiarization()
+    visual = VisualTimeline(
+        "allowed",
+        "visual-hash",
+        (
+            VisualEvent(
+                1.0,
+                2.0,
+                "scene-1",
+                "The guest visibly demonstrates an object while speaking.",
+                ("SPEAKER_00",),
+                ("demonstration",),
+                0.95,
+            ),
+        ),
+    )
+    visual_result = ProviderResult(
+        {"events": []},
+        DummyVisionProvider.identity,
+        InferenceUsage("test", "now", 0.01, input_units=1),
+    )
+    with patch(
+        "clipper.pipeline.scout_visual_timeline",
+        return_value=(visual, visual_result),
+    ) as scout:
+        run_dir = run_pipeline(
+            brief,
+            settings=PipelineSettings(
+                artifact_root=tmp_path / "visual-open-artifacts",
+                cache_root=tmp_path / "visual-open-cache",
+                editorial_engine="open",
+                grounding_engine="open",
+                compute_profile="local-lite",
+                visual_scout_enabled=True,
+                editorial_chunk_words=200,
+                editorial_chunk_overlap_words=20,
+            ),
+            source_client=_OpenGroundingSource(subtitle, media),
+            editorial_provider=editorial,
+            embedding_provider=embedding,
+            visual_scout_provider=DummyVisionProvider(),
+            transcription_provider=asr,
+            alignment_provider=alignment,
+            diarization_provider=diarization,
+            render=False,
+        )
+    assert scout.call_count == 1
+    profile_visual = editorial.payloads["episode_editorial_profile"]["visual_evidence"]
+    story_visual = editorial.payloads["story_moments:0"]["visual_evidence"]
+    assert isinstance(profile_visual, list) and profile_visual[0]["scene_id"] == "scene-1"
+    assert isinstance(story_visual, list) and story_visual[0]["event_labels"] == ["demonstration"]
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["run_metadata"]["visual_inference"]["scout_runs"][0]["event_count"] == 1
+    assert (run_dir / "visual" / "allowed.json").is_file()
