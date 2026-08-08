@@ -84,7 +84,9 @@ jobs:
         run: docker build -t clipper-live:${GITHUB_SHA} .
 
       - name: Run dedicated Double Coverage campaign through exact HEAD
+        id: production
         run: |
+          set +e
           mkdir -p live-artifacts
           docker run --rm \
             --env GITHUB_SHA="${GITHUB_SHA}" \
@@ -99,6 +101,80 @@ jobs:
             -v "$PWD/live-artifacts:/artifacts" \
             clipper-live:${GITHUB_SHA} \
             run --brief /campaigns/reach-double-coverage-dedicated.yaml --artifact-root /artifacts
+          rc=$?
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          echo "$rc" > live-artifacts/pipeline-exit-code.txt
+          exit 0
+
+      - name: Summarize production result for diagnostics
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          manifests = list(Path("live-artifacts").glob("*/manifest.json"))
+          if not manifests:
+              print("No manifest was produced")
+              raise SystemExit(0)
+          manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+          attempts = manifest.get("render_attempts") or []
+          rejections = manifest.get("rejections") or []
+          summary = {
+              "status": manifest.get("status"),
+              "status_reason": manifest.get("status_reason"),
+              "targets": manifest.get("targets"),
+              "actual": manifest.get("actual"),
+              "funnel": manifest.get("funnel"),
+              "errors": manifest.get("errors"),
+              "render_attempt_statuses": dict(Counter(str(item.get("status")) for item in attempts)),
+              "rejection_reasons": dict(
+                  Counter(str(reason) for item in rejections for reason in (item.get("reasons") or []))
+              ),
+              "technical_qc": [
+                  {
+                      "plan_id": item.get("plan_id"),
+                      "status": item.get("status"),
+                      "issues": item.get("issues"),
+                      "caption_alignment": (item.get("captions") or {}).get("alignment"),
+                  }
+                  for item in (manifest.get("technical_qc") or [])
+              ],
+          }
+          print(json.dumps(summary, indent=2))
+          PY
+
+      - name: Prepare small live diagnostics artifact
+        if: always()
+        run: |
+          rm -rf live-diagnostics
+          mkdir -p live-diagnostics
+          run_dir="$(dirname "$(find live-artifacts -name manifest.json -type f -print -quit)")"
+          if [ -n "$run_dir" ] && [ -d "$run_dir" ]; then
+            for file in manifest.json funnel.json rejections.json coverage.json transcript.json editorial-review.json; do
+              test -f "$run_dir/$file" && cp "$run_dir/$file" live-diagnostics/
+            done
+            test -d "$run_dir/qc" && cp -R "$run_dir/qc" live-diagnostics/qc
+            if [ -d "$run_dir/captions" ]; then
+              mkdir -p live-diagnostics/captions
+              find "$run_dir/captions" -name '*.caption-audit.json' -type f -exec cp {} live-diagnostics/captions/ \;
+            fi
+            if [ -d "$run_dir/tracking" ]; then
+              mkdir -p live-diagnostics/tracking
+              find "$run_dir/tracking" -name '*.tracking.json' -type f -exec cp {} live-diagnostics/tracking/ \;
+            fi
+          fi
+          test -f live-artifacts/pipeline-exit-code.txt && cp live-artifacts/pipeline-exit-code.txt live-diagnostics/
+
+      - name: Upload live diagnostics evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reach-live-diagnostics-${{ github.sha }}
+          path: live-diagnostics/
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Validate full production manifest and batch invariants
         run: |
@@ -144,7 +220,7 @@ jobs:
           test "$count" -eq 6
 
       - name: Upload exact-HEAD live acceptance evidence
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: reach-live-${{ github.sha }}
