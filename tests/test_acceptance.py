@@ -295,6 +295,7 @@ def test_modal_30b_workers_use_official_fp8_on_two_l4s() -> None:
     assert "offload_state_dict=True" in worker
     assert '"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"' in worker
     assert "_editorial_output_budget(payload)" in worker
+    assert 'cache_implementation="offloaded"' in worker
     assert "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8" in worker
     assert '"kernels>=0.15.2,<0.16"' in worker
     assert "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8" in factory

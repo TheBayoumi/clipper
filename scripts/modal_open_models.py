@@ -206,6 +206,7 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
             max_new_tokens=_editorial_output_budget(payload),
             do_sample=False,
             use_cache=True,
+            cache_implementation="offloaded",
         )
         generated = output[0][inputs["input_ids"].shape[-1] :]
         text = _editorial_tokenizer.decode(generated, skip_special_tokens=True)
