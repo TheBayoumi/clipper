@@ -265,8 +265,10 @@ class AutonomousEditorialPlanner:
     def _profile_evidence(self, timeline: CanonicalTimeline) -> list[dict[str, object]]:
         if len(timeline.words) <= 1800:
             return self._word_payload(timeline, 0, len(timeline.words))
-        window = 120
-        windows = 12
+        # A global episode profile needs representative coverage, not a second full transcript.
+        # Keep the sample stratified across the entire episode while bounding attention memory.
+        window = 60
+        windows = 8
         maximum_start = max(0, len(timeline.words) - window)
         starts = [round(index * maximum_start / (windows - 1)) for index in range(windows)]
         evidence: list[dict[str, object]] = []

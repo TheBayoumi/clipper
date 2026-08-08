@@ -801,7 +801,7 @@ def test_autonomous_planner_chunking_empty_and_long_profile_sampling(tmp_path: P
     assert len(chunks) > 9
     assert len(chunks[0]) == 200
     evidence = planner._profile_evidence(timeline)
-    assert len(evidence) == 12 * 120
+    assert len(evidence) == 8 * 60
     assert evidence[0]["word_id"] == "w0"
     assert evidence[-1]["word_id"] == "w1900"
 

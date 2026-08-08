@@ -211,8 +211,8 @@ class PipelineSettings:
     editorial_engine: str = "heuristic"
     grounding_engine: str = "legacy"
     compute_profile: str = "balanced"
-    editorial_chunk_words: int = 900
-    editorial_chunk_overlap_words: int = 120
+    editorial_chunk_words: int = 500
+    editorial_chunk_overlap_words: int = 80
     semantic_duplicate_threshold: float = 0.9
     visual_scout_enabled: bool = False
     visual_review_enabled: bool = False
@@ -258,9 +258,9 @@ class PipelineSettings:
             editorial_engine=os.getenv("CLIPPER_EDITORIAL_ENGINE", "heuristic").strip().lower(),
             grounding_engine=os.getenv("CLIPPER_GROUNDING_ENGINE", "legacy").strip().lower(),
             compute_profile=os.getenv("CLIPPER_COMPUTE_PROFILE", "balanced").strip().lower(),
-            editorial_chunk_words=int(os.getenv("CLIPPER_EDITORIAL_CHUNK_WORDS", "900")),
+            editorial_chunk_words=int(os.getenv("CLIPPER_EDITORIAL_CHUNK_WORDS", "500")),
             editorial_chunk_overlap_words=int(
-                os.getenv("CLIPPER_EDITORIAL_CHUNK_OVERLAP_WORDS", "120")
+                os.getenv("CLIPPER_EDITORIAL_CHUNK_OVERLAP_WORDS", "80")
             ),
             semantic_duplicate_threshold=float(
                 os.getenv("CLIPPER_SEMANTIC_DUPLICATE_THRESHOLD", "0.9")
