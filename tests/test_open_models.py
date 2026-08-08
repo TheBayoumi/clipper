@@ -40,6 +40,14 @@ from clipper.providers.modal import (
     ModalEmbeddingProvider,
     ModalVisionProvider,
 )
+from clipper.providers.speech import (
+    FasterWhisperTranscriptionProvider,
+    PyannoteDiarizationProvider,
+    WhisperXAlignmentProvider,
+    _alignment_segments,
+    apply_speaker_turns,
+    apply_whisperx_alignment,
+)
 from clipper.visual import VisualEvent, VisualTimeline
 
 
@@ -1000,3 +1008,223 @@ def test_provider_factory_profiles_and_modal_embedding_validation(monkeypatch) -
         pytest.raises(ValueError, match="vector must be a list"),
     ):
         provider.embed(["a"])
+
+
+def test_whisperx_alignment_preserves_word_ids_and_updates_only_matched_words() -> None:
+    timeline = _timeline()
+    aligned = apply_whisperx_alignment(
+        timeline,
+        [
+            {
+                "words": [
+                    {"word": "what's", "start": 10.02, "end": 10.19, "score": 0.91},
+                    {"word": "noise", "start": 10.2, "end": 10.3, "score": 0.2},
+                    {"word": "one", "start": 10.22, "end": 10.39, "score": 0.92},
+                    {"word": "message", "start": None, "end": 10.8},
+                ]
+            }
+        ],
+    )
+    assert [word.word_id for word in aligned.words] == ["w1", "w2", "w3", "w4"]
+    assert [word.text for word in aligned.words] == ["what's", "one", "message", "today"]
+    assert aligned.words[0].source_start == pytest.approx(10.02)
+    assert aligned.words[0].timing_mode == "aligned"
+    assert aligned.words[0].confidence == pytest.approx(0.91)
+    assert aligned.words[2].source_start == 10.41
+    with pytest.raises(ValueError, match="no canonical word matches"):
+        apply_whisperx_alignment(
+            timeline, [{"words": [{"word": "unrelated", "start": 1, "end": 2}]}]
+        )
+
+
+def test_alignment_segments_split_on_gap_and_duration() -> None:
+    words = (
+        CanonicalWord("a", "a", 0, 0.2, None, None, "word_exact", "x"),
+        CanonicalWord("b", "b", 0.3, 0.5, None, None, "word_exact", "x"),
+        CanonicalWord("c", "c", 2.0, 2.2, None, None, "word_exact", "x"),
+        CanonicalWord("d", "d", 35.0, 35.2, None, None, "word_exact", "x"),
+    )
+    segments = _alignment_segments(CanonicalTimeline("v", "h", words), max_seconds=30)
+    assert [item["text"] for item in segments] == ["a b", "c", "d"]
+    assert _alignment_segments(CanonicalTimeline("v", "h", ())) == []
+
+
+def test_speaker_turn_assignment_uses_maximum_temporal_overlap() -> None:
+    timeline = _timeline()
+    assigned = apply_speaker_turns(
+        timeline,
+        [(9.9, 10.35, "SPEAKER_00"), (10.3, 11.2, "SPEAKER_01")],
+    )
+    assert assigned.words[0].speaker_id == "SPEAKER_00"
+    assert assigned.words[1].speaker_id == "SPEAKER_00"
+    assert assigned.words[2].speaker_id == "SPEAKER_01"
+    assert assigned.words[3].speaker_id == "SPEAKER_01"
+    assert [word.word_id for word in assigned.words] == ["w1", "w2", "w3", "w4"]
+
+
+class _FWWord:
+    def __init__(self, start=None, end=None, word="", probability=None):  # type: ignore[no-untyped-def]
+        self.start = start
+        self.end = end
+        self.word = word
+        self.probability = probability
+
+
+class _FWSegment:
+    def __init__(self, words):  # type: ignore[no-untyped-def]
+        self.words = words
+
+
+def test_faster_whisper_provider_lazy_load_and_transcription(tmp_path: Path) -> None:
+    model = Mock()
+    model.transcribe.return_value = (
+        [
+            _FWSegment(
+                [
+                    _FWWord(0.0, 0.2, " Hello", 0.9),
+                    _FWWord(None, 0.3, "bad", 0.1),
+                    _FWWord(0.3, 0.6, " world", None),
+                ]
+            )
+        ],
+        object(),
+    )
+    module = SimpleNamespace(WhisperModel=Mock(return_value=model))
+    provider = FasterWhisperTranscriptionProvider(device="cpu", compute_type="int8")
+    with patch("clipper.providers.speech.importlib.import_module", return_value=module):
+        assert provider._load() is model
+        assert provider._load() is model
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"audio")
+    with patch.object(provider, "_load", return_value=model):
+        result = provider.transcribe(source, video_id="v", source_hash="h")
+    assert [word.text for word in result.value.words] == ["Hello", "world"]
+    assert [word.word_id for word in result.value.words] == ["v:w0000000", "v:w0000001"]
+    assert result.value.words[0].confidence == pytest.approx(0.9)
+    assert result.value.words[1].confidence is None
+    model.transcribe.assert_called_with(str(source), word_timestamps=True, vad_filter=True)
+
+
+def test_faster_whisper_provider_dependency_and_empty_result_failures(tmp_path: Path) -> None:
+    provider = FasterWhisperTranscriptionProvider()
+    with (
+        patch("clipper.providers.speech.importlib.import_module", side_effect=ImportError),
+        pytest.raises(ProviderUnavailable, match="asr"),
+    ):
+        provider._load()
+    model = Mock()
+    model.transcribe.return_value = ([_FWSegment([])], object())
+    with (
+        patch.object(provider, "_load", return_value=model),
+        pytest.raises(ValueError, match="no timestamped words"),
+    ):
+        provider.transcribe(tmp_path / "x.wav", video_id="v", source_hash="h")
+
+
+def test_whisperx_provider_runtime_and_failures(tmp_path: Path) -> None:
+    timeline = _timeline()
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"audio")
+    whisperx = SimpleNamespace(
+        load_audio=Mock(return_value="audio"),
+        load_align_model=Mock(return_value=("model", {"language": "en"})),
+        align=Mock(
+            return_value={
+                "segments": [
+                    {
+                        "words": [
+                            {
+                                "word": word.text,
+                                "start": word.source_start,
+                                "end": word.source_end,
+                                "score": 0.9,
+                            }
+                            for word in timeline.words
+                        ]
+                    }
+                ]
+            }
+        ),
+    )
+    provider = WhisperXAlignmentProvider(device="cpu")
+    with patch("clipper.providers.speech.importlib.import_module", return_value=whisperx):
+        result = provider.align(source, timeline)
+    assert all(word.timing_mode == "aligned" for word in result.value.words)
+    whisperx.load_align_model.assert_called_once_with(language_code="en", device="cpu")
+    with pytest.raises(ValueError, match="empty"):
+        provider.align(source, CanonicalTimeline("v", "h", ()))
+    with (
+        patch("clipper.providers.speech.importlib.import_module", side_effect=ImportError),
+        pytest.raises(ProviderUnavailable, match="alignment"),
+    ):
+        provider.align(source, timeline)
+    whisperx.align.return_value = {}
+    with (
+        patch("clipper.providers.speech.importlib.import_module", return_value=whisperx),
+        pytest.raises(ValueError, match="no aligned segments"),
+    ):
+        provider.align(source, timeline)
+
+
+class _Turn:
+    def __init__(self, start: float, end: float) -> None:
+        self.start = start
+        self.end = end
+
+
+class _Diarization:
+    def itertracks(self, *, yield_label: bool):
+        assert yield_label is True
+        yield _Turn(9.9, 10.4), "track", "A"
+        yield _Turn(10.4, 11.2), "track", "B"
+        yield _Turn(12.0, 12.0), "track", "ignored"
+
+
+def test_pyannote_provider_requires_gated_token_and_assigns_speakers(tmp_path: Path) -> None:
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        pytest.raises(ProviderUnavailable, match="HF_TOKEN"),
+    ):
+        PyannoteDiarizationProvider(token=None)._load()
+
+    fake_hf_token = "test-hf-token"  # noqa: S105
+    pipeline = Mock(return_value=SimpleNamespace(speaker_diarization=_Diarization()))
+    module = SimpleNamespace(Pipeline=SimpleNamespace(from_pretrained=Mock(return_value=pipeline)))
+    provider = PyannoteDiarizationProvider(token=fake_hf_token)
+    with patch("clipper.providers.speech.importlib.import_module", return_value=module):
+        assert provider._load() is pipeline
+        assert provider._load() is pipeline
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"audio")
+    with patch.object(provider, "_load", return_value=pipeline):
+        result = provider.diarize(source, _timeline())
+    assert [word.speaker_id for word in result.value.words] == ["A", "A", "B", "B"]
+    assert PyannoteDiarizationProvider._turns(_Diarization()) == [
+        (9.9, 10.4, "A"),
+        (10.4, 11.2, "B"),
+    ]
+
+
+def test_pyannote_dependency_device_and_invalid_output_failures() -> None:
+    fake_hf_token = "test-hf-token"  # noqa: S105
+    provider = PyannoteDiarizationProvider(token=fake_hf_token)
+    with (
+        patch("clipper.providers.speech.importlib.import_module", side_effect=ImportError),
+        pytest.raises(ProviderUnavailable, match="diarization"),
+    ):
+        provider._load()
+    pipeline = Mock()
+    module = SimpleNamespace(Pipeline=SimpleNamespace(from_pretrained=Mock(return_value=pipeline)))
+    device_provider = PyannoteDiarizationProvider(token=fake_hf_token, device="cuda")
+    with (
+        patch(
+            "clipper.providers.speech.importlib.import_module", side_effect=[module, ImportError()]
+        ),
+        pytest.raises(ProviderUnavailable, match="torch device"),
+    ):
+        device_provider._load()
+    with pytest.raises(ValueError, match="no speaker diarization tracks"):
+        PyannoteDiarizationProvider._turns(object())
+    empty = SimpleNamespace(itertracks=lambda **_kwargs: iter(()))
+    with pytest.raises(ValueError, match="no speaker turns"):
+        PyannoteDiarizationProvider._turns(empty)

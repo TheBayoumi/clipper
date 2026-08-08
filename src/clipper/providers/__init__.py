@@ -25,3 +25,15 @@ __all__ = [
     "VisionProvider",
     "compute_profile",
 ]
+
+from .speech import (
+    FasterWhisperTranscriptionProvider,
+    PyannoteDiarizationProvider,
+    WhisperXAlignmentProvider,
+)
+
+__all__ += [
+    "FasterWhisperTranscriptionProvider",
+    "PyannoteDiarizationProvider",
+    "WhisperXAlignmentProvider",
+]
