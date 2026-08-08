@@ -144,6 +144,39 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
+      - name: Restore prior compatible open-model cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf prior-open-evidence
+          mkdir -p open-evidence
+          restored=false
+          while IFS=$'\t' read -r run_id head_sha; do
+            test -n "$run_id" || continue
+            test "$run_id" != "$GITHUB_RUN_ID" || continue
+            rm -rf prior-open-evidence
+            mkdir -p prior-open-evidence
+            artifact="open-model-acceptance-$head_sha"
+            if gh run download "$run_id" -n "$artifact" -D prior-open-evidence; then
+              if [ -d prior-open-evidence/_cache ]; then
+                rm -rf open-evidence/_cache
+                cp -a prior-open-evidence/_cache open-evidence/_cache
+                echo "Restored model-stage cache from run $run_id ($head_sha)"
+                restored=true
+                break
+              fi
+            fi
+          done < <(
+            gh run list \
+              --workflow open-model-acceptance.yml \
+              --branch feat/word-reveal-face-tracking \
+              --limit 20 \
+              --json databaseId,headSha \
+              --jq '.[] | [.databaseId, .headSha] | @tsv'
+          )
+          echo "cache_restored=$restored"
+
       - name: Deploy exact-HEAD Modal open-model workers
         run: modal deploy scripts/modal_open_models.py
 

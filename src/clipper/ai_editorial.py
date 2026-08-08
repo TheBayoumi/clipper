@@ -247,9 +247,8 @@ class GroundedEditPlan:
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any], timeline: CanonicalTimeline) -> GroundedEditPlan:
-        video_id = _nonempty(payload.get("video_id"), "video_id")
-        if video_id != timeline.video_id:
-            raise EditorialGroundingError("edit plan targets the wrong source video")
+        # Source identity is provenance owned by the canonical timeline, never by model output.
+        video_id = timeline.video_id
         source_ids = _grounded_word_range(
             payload,
             timeline,

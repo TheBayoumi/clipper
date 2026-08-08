@@ -333,6 +333,10 @@ def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
     assert "CLIPPER_OPEN_PROXY_URL" in workflow
     assert "CLIPPER_OPEN_PROXY_SHA256" in workflow
     assert "reach-open-proxy-v1" in workflow
+    assert "Restore prior compatible open-model cache" in workflow
+    assert 'artifact="open-model-acceptance-$head_sha"' in workflow
+    assert "prior-open-evidence/_cache" in workflow
+    assert "open-evidence/_cache" in workflow
     assert 'manifest["full_media"]' in workflow
     assert "--no-render" in workflow
     assert "progress.json" in workflow

@@ -627,21 +627,35 @@ def test_grounded_payload_validation_branches() -> None:
             },
             timeline,
         )
-    with pytest.raises(EditorialGroundingError, match="wrong source"):
-        GroundedEditPlan.from_payload(
-            {
-                "plan_id": "p",
-                "video_id": "other",
-                "concept_id": "c",
-                "variant_id": "v",
-                "source_word_ids": ["w1"],
-                "hook_source_word_ids": ["w1"],
-                "strategy_label": "s",
-                "caption_platform": "tiktok",
-                "confidence": 0.5,
-            },
-            timeline,
-        )
+    bound_plan = GroundedEditPlan.from_payload(
+        {
+            "plan_id": "p",
+            "video_id": "hallucinated-other-video",
+            "concept_id": "c",
+            "variant_id": "v",
+            "source_word_ids": ["w1"],
+            "hook_source_word_ids": ["w1"],
+            "strategy_label": "s",
+            "caption_platform": "tiktok",
+            "confidence": 0.5,
+        },
+        timeline,
+    )
+    assert bound_plan.video_id == timeline.video_id
+    missing_video_plan = GroundedEditPlan.from_payload(
+        {
+            "plan_id": "p-no-video",
+            "concept_id": "c",
+            "variant_id": "v",
+            "source_word_ids": ["w1"],
+            "hook_source_word_ids": ["w1"],
+            "strategy_label": "s",
+            "caption_platform": "tiktok",
+            "confidence": 0.5,
+        },
+        timeline,
+    )
+    assert missing_video_plan.video_id == timeline.video_id
     with pytest.raises(EditorialGroundingError, match="overlay_text"):
         GroundedEditPlan.from_payload(
             {
