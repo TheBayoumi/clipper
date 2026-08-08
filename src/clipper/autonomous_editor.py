@@ -620,12 +620,29 @@ class AutonomousEditorialPlanner:
                             "decision": "REJECT",
                             "reasons": ["duration_outside_campaign_bounds"],
                             "plan_id": plan.plan_id,
+                            "duration_seconds": round(plan.duration, 6),
+                            "minimum_seconds": brief.min_clip_seconds,
+                            "maximum_seconds": brief.max_clip_seconds,
                         }
                     )
                     continue
                 plans.append(plan)
         if not plans:
-            raise EditorialGroundingError("open editorial planner produced no valid EditPlans")
+            reason_counts: dict[str, int] = {}
+            rejected_durations: list[float] = []
+            for rejection in rejections:
+                raw_reasons = rejection.get("reasons")
+                if isinstance(raw_reasons, list):
+                    for reason in raw_reasons:
+                        if isinstance(reason, str):
+                            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+                duration = rejection.get("duration_seconds")
+                if isinstance(duration, int | float):
+                    rejected_durations.append(float(duration))
+            raise EditorialGroundingError(
+                "open editorial planner produced no valid EditPlans; "
+                f"rejections={reason_counts}; durations={rejected_durations[:20]}"
+            )
         return OpenEditorialBatch(
             discovered_moments=discovered_moments,
             discovered_concepts=discovered_concepts,

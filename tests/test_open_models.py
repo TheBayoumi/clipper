@@ -1508,3 +1508,97 @@ def test_speech_provider_factory_routes_local_and_modal() -> None:
     assert isinstance(remote[0], ModalTranscriptionProvider)
     assert isinstance(remote[1], ModalAlignmentProvider)
     assert isinstance(remote[2], ModalDiarizationProvider)
+
+
+def test_plan_batch_reports_duration_rejections_when_all_model_plans_are_invalid(
+    tmp_path: Path,
+) -> None:
+    timeline = _timeline()
+    concept = ClipConcept(
+        "c",
+        "video",
+        10.0,
+        11.1,
+        "what's one message today",
+        "summary",
+        "",
+        "",
+        "question",
+        20.0,
+        EditorialScores(*(8.0 for _ in range(12))),
+        8.0,
+        "sem",
+        "fp",
+    )
+    moment = StoryMoment(
+        "m",
+        "video",
+        10.0,
+        11.1,
+        concept.text,
+        "question",
+        "summary",
+        "",
+        "",
+        EditorialScores(*(8.0 for _ in range(12))),
+        8.0,
+        "fp",
+    )
+    grounded = _grounded_concept("c", "summary")
+    analysis = OpenVideoAnalysis(
+        EpisodeEditorialProfile("x", ("x",), (), 0.9),
+        [moment],
+        [concept],
+        {
+            "m": GroundedStoryMoment(
+                "m", ("w1", "w2", "w3", "w4"), "x", "question", "", "", "x", 0.9
+            )
+        },
+        {"c": grounded},
+        [],
+    )
+
+    class InvalidDuration(_PlannerEditorial):
+        def complete_json(
+            self, *, task: str, payload: dict[str, object]
+        ) -> ProviderResult[dict[str, object]]:
+            del payload
+            if task == "global_concept_comparison":
+                value: dict[str, object] = {"concept_ids": ["c"]}
+            elif task == "hook_variants:c":
+                value = {
+                    "variants": [
+                        {
+                            "variant_id": "h",
+                            "strategy_label": "direct",
+                            "source_word_ids": ["w1", "w2", "w3", "w4"],
+                            "overlay_text": None,
+                            "rationale": "source grounded",
+                            "confidence": 0.9,
+                        }
+                    ]
+                }
+            elif task == "edit_plans:c":
+                value = {
+                    "plans": [
+                        {
+                            "plan_id": "p",
+                            "concept_id": "c",
+                            "variant_id": "h",
+                            "source_word_ids": ["w1", "w2", "w3", "w4"],
+                            "hook_source_word_ids": ["w1", "w2"],
+                            "overlay_text": None,
+                            "strategy_label": "direct",
+                            "caption_platform": "tiktok",
+                            "confidence": 0.9,
+                        }
+                    ]
+                }
+            else:
+                raise AssertionError(task)
+            return ProviderResult(value, self.identity, InferenceUsage("test", "now", 0.01))
+
+    with pytest.raises(EditorialGroundingError, match=r"duration_outside_campaign_bounds.*1\.1"):
+        AutonomousEditorialPlanner(
+            InvalidDuration(), _PlannerEmbeddings(), FileCache(tmp_path / "duration")
+        ).plan_batch(_open_brief(), {"video": timeline}, [analysis])
