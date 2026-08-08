@@ -111,7 +111,7 @@ def embedding(payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.function(
     image=text_image,
-    gpu="L40S",
+    gpu="L4",
     volumes={HF_CACHE: model_cache},
     secrets=[hf_secret],
     timeout=1800,
@@ -152,7 +152,7 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
         messages, tokenize=False, add_generation_prompt=True
     )
     inputs = _editorial_tokenizer(rendered, return_tensors="pt").to(_editorial_model.device)
-    output = _editorial_model.generate(**inputs, max_new_tokens=4096, do_sample=False)
+    output = _editorial_model.generate(**inputs, max_new_tokens=2048, do_sample=False)
     generated = output[0][inputs["input_ids"].shape[-1] :]
     text = _editorial_tokenizer.decode(generated, skip_special_tokens=True)
     value = _json_text(text)
@@ -160,7 +160,7 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
         "value": value,
         "usage": _usage(
             started,
-            "L40S",
+            "L4",
             input_units=int(inputs["input_ids"].numel()),
             output_units=int(generated.numel()),
         ),
@@ -238,14 +238,14 @@ def vision(payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.function(
     image=text_image,
-    gpu="L40S",
+    gpu="L4",
     volumes={HF_CACHE: model_cache},
     secrets=[hf_secret],
     timeout=1800,
     memory=32768,
 )
 def vision_large(payload: dict[str, Any]) -> dict[str, Any]:
-    return _vision_infer(payload, "Qwen/Qwen3-VL-30B-A3B-Instruct", "L40S")
+    return _vision_infer(payload, "Qwen/Qwen3-VL-30B-A3B-Instruct", "L4")
 
 
 @app.function(
