@@ -38,9 +38,9 @@ def editorial_and_embedding_providers(
         app_name=app,
         function_name="editorial",
         identity=ModelIdentity(
-            "Qwen/Qwen3-30B-A3B-Instruct-2507",
+            "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8",
             os.getenv("CLIPPER_EDITORIAL_MODEL_REVISION", "main"),
-            os.getenv("CLIPPER_EDITORIAL_QUANTIZATION", "none"),
+            os.getenv("CLIPPER_EDITORIAL_QUANTIZATION", "fp8"),
             "modal-transformers",
             "editor-v1",
             "editorial-json-v1",

@@ -285,12 +285,14 @@ def test_live_validator_accepts_more_distinct_finalists_than_minimum(tmp_path: P
     assert report["actual"]["distinct_finalist_concepts"] == 6
 
 
-def test_modal_30b_workers_use_two_l4s_without_cpu_expert_offload() -> None:
+def test_modal_30b_workers_use_official_fp8_on_two_l4s() -> None:
     worker = Path("scripts/modal_open_models.py").read_text()
+    factory = Path("src/clipper/providers/factory.py").read_text()
     assert 'gpu="L4:2"' in worker
     assert 'max_memory={0: "22GiB", 1: "22GiB"}' in worker
-    assert "llm_int8_enable_fp32_cpu_offload" not in worker
-    assert "Qwen/Qwen3-30B-A3B-Instruct-2507" in worker
+    assert "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8" in worker
+    assert "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8" in factory
+    assert 'CLIPPER_EDITORIAL_QUANTIZATION", "fp8"' in factory
     assert "return L4_USD_PER_SECOND * count" in worker
     assert '"L4:2"' in worker
 

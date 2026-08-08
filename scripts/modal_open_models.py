@@ -146,25 +146,17 @@ def embedding(payload: dict[str, Any]) -> dict[str, Any]:
 )
 def editorial(payload: dict[str, Any]) -> dict[str, Any]:
     global _editorial_model, _editorial_tokenizer
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     started = time.perf_counter()
     if _editorial_model is None or _editorial_tokenizer is None:
-        model_id = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+        model_id = "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
         _editorial_tokenizer = AutoTokenizer.from_pretrained(model_id)
-        quantization = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
         _editorial_model = AutoModelForCausalLM.from_pretrained(
             model_id,
             device_map="auto",
             max_memory={0: "22GiB", 1: "22GiB"},
-            dtype=torch.bfloat16,
-            quantization_config=quantization,
+            torch_dtype="auto",
         )
     messages = [
         {
