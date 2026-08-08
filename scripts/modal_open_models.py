@@ -131,10 +131,16 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
             bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True,
+            llm_int8_enable_fp32_cpu_offload=True,
         )
+        editorial_offload = f"{HF_CACHE}/offload/editorial"
+        os.makedirs(editorial_offload, exist_ok=True)
         _editorial_model = AutoModelForCausalLM.from_pretrained(
             model_id,
             device_map="auto",
+            max_memory={0: "20GiB", "cpu": "28GiB"},
+            offload_folder=editorial_offload,
+            offload_state_dict=True,
             dtype=torch.bfloat16,
             quantization_config=quantization,
         )
@@ -187,7 +193,13 @@ def _vision_infer(payload: dict[str, Any], model_id: str, gpu: str) -> dict[str,
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_compute_dtype=torch.bfloat16,
                 bnb_4bit_use_double_quant=True,
+                llm_int8_enable_fp32_cpu_offload=True,
             )
+            kwargs["max_memory"] = {0: "20GiB", "cpu": "28GiB"}
+            vlm_offload = f"{HF_CACHE}/offload/vision-large"
+            os.makedirs(vlm_offload, exist_ok=True)
+            kwargs["offload_folder"] = vlm_offload
+            kwargs["offload_state_dict"] = True
         model = AutoModelForImageTextToText.from_pretrained(model_id, **kwargs)
         _vision_models[model_id] = (processor, model)
     else:
