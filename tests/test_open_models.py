@@ -1725,3 +1725,36 @@ def test_plan_batch_reports_duration_rejections_when_all_model_plans_are_invalid
         AutonomousEditorialPlanner(
             InvalidDuration(), _PlannerEmbeddings(), FileCache(tmp_path / "duration")
         ).plan_batch(_open_brief(), {"video": timeline}, [analysis])
+
+
+def test_visual_timeline_roundtrip_and_payload_validation() -> None:
+    timeline = VisualTimeline(
+        "v",
+        "hash",
+        (VisualEvent(0.2, 1.0, "s", "reaction", ("A",), ("laugh",), 0.7),),
+    )
+    assert VisualTimeline.from_dict(timeline.to_dict()) == timeline
+    with pytest.raises(ValueError, match="events must be a list"):
+        VisualTimeline.from_dict({"video_id": "v", "source_hash": "h", "events": {}})
+    with pytest.raises(ValueError, match="event must be an object"):
+        VisualTimeline.from_dict({"video_id": "v", "source_hash": "h", "events": ["bad"]})
+    with pytest.raises(ValueError, match="visible_speakers"):
+        VisualTimeline.from_dict(
+            {
+                "video_id": "v",
+                "source_hash": "h",
+                "events": [
+                    {"start": 0, "end": 1, "scene_id": "s", "summary": "x", "visible_speakers": "A"}
+                ],
+            }
+        )
+    with pytest.raises(ValueError, match="event_labels"):
+        VisualTimeline.from_dict(
+            {
+                "video_id": "v",
+                "source_hash": "h",
+                "events": [
+                    {"start": 0, "end": 1, "scene_id": "s", "summary": "x", "event_labels": "x"}
+                ],
+            }
+        )

@@ -1402,3 +1402,61 @@ def test_visual_scout_failure_degrades_without_dropping_source_analysis(tmp_path
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["funnel"]["story_moments"] > 0
     assert manifest["run_metadata"]["visual_inference"]["scout_errors"][0]["error"] == "tail decode"
+
+
+def test_visual_scout_reuses_source_and_model_keyed_cache(tmp_path: Path) -> None:
+    brief = _write_pipeline_brief(tmp_path)
+    subtitle = tmp_path / "visual-cache.vtt"
+    subtitle.write_text(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\nAutomation can save time for a business.\n",
+        encoding="utf-8",
+    )
+    media = tmp_path / "visual-cache.mp4"
+    media.write_bytes(b"visual-source-cache")
+    timeline = VisualTimeline(
+        "allowed",
+        "visual-source-hash",
+        (VisualEvent(0.5, 1.5, "scene-1", "visible reaction", (), ("reaction",), 0.9),),
+    )
+    result = ProviderResult(
+        {"events": []},
+        DummyVisionProvider.identity,
+        InferenceUsage("test", "now", 0.01, input_units=1),
+    )
+    cache_root = tmp_path / "visual-cache-root"
+    with patch(
+        "clipper.pipeline.scout_visual_timeline",
+        return_value=(timeline, result),
+    ) as scout:
+        first = run_pipeline(
+            brief,
+            settings=PipelineSettings(
+                artifact_root=tmp_path / "visual-cache-first",
+                cache_root=cache_root,
+                visual_scout_enabled=True,
+            ),
+            source_client=FakeSource(subtitle, media),
+            visual_scout_provider=DummyVisionProvider(),
+            render=False,
+        )
+    assert scout.call_count == 1
+    first_manifest = json.loads((first / "manifest.json").read_text(encoding="utf-8"))
+    assert first_manifest["run_metadata"]["visual_inference"]["scout_runs"][0]["cache_hit"] is False
+
+    with patch("clipper.pipeline.scout_visual_timeline") as scout:
+        second = run_pipeline(
+            brief,
+            settings=PipelineSettings(
+                artifact_root=tmp_path / "visual-cache-second",
+                cache_root=cache_root,
+                visual_scout_enabled=True,
+            ),
+            source_client=FakeSource(subtitle, media),
+            visual_scout_provider=DummyVisionProvider(),
+            render=False,
+        )
+    scout.assert_not_called()
+    second_manifest = json.loads((second / "manifest.json").read_text(encoding="utf-8"))
+    scout_run = second_manifest["run_metadata"]["visual_inference"]["scout_runs"][0]
+    assert scout_run["cache_hit"] is True
+    assert scout_run["event_count"] == 1

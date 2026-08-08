@@ -49,3 +49,36 @@ class VisualTimeline:
             "source_hash": self.source_hash,
             "events": [event.to_dict() for event in self.events],
         }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> VisualTimeline:
+        raw_events = payload.get("events")
+        if not isinstance(raw_events, list):
+            raise ValueError("visual timeline events must be a list")
+        events: list[VisualEvent] = []
+        for raw in raw_events:
+            if not isinstance(raw, dict):
+                raise ValueError("visual timeline event must be an object")
+            visible = raw.get("visible_speakers", [])
+            labels = raw.get("event_labels", [])
+            if not isinstance(visible, list) or not all(isinstance(item, str) for item in visible):
+                raise ValueError("visual event visible_speakers must be strings")
+            if not isinstance(labels, list) or not all(isinstance(item, str) for item in labels):
+                raise ValueError("visual event event_labels must be strings")
+            events.append(
+                VisualEvent(
+                    start=float(raw.get("start") or 0.0),
+                    end=float(raw.get("end") or 0.0),
+                    scene_id=str(raw.get("scene_id") or ""),
+                    summary=str(raw.get("summary") or ""),
+                    visible_speakers=tuple(visible),
+                    event_labels=tuple(labels),
+                    confidence=float(raw.get("confidence") or 0.0),
+                )
+            )
+        return cls(
+            video_id=str(payload.get("video_id") or ""),
+            source_hash=str(payload.get("source_hash") or ""),
+            events=tuple(events),
+            schema_version=str(payload.get("schema_version") or "visual-timeline-v1"),
+        )

@@ -1040,15 +1040,32 @@ def run_pipeline(
                     media_for_visual = None
             if cfg.visual_scout_enabled and visual_scout_provider is not None and media_for_visual:
                 telemetry.start(f"visual_scout:{video.video_id}")
+                visual_media_hash = file_sha256(media_for_visual)
+                visual_cache_key = stable_hash(
+                    {
+                        "schema": CACHE_SCHEMA_VERSION,
+                        "stage": "visual-timeline-scout-v1",
+                        "video_id": video.video_id,
+                        "media_sha256": visual_media_hash,
+                        "duration": round(max(canonical.end, 0.05), 3),
+                        "model": visual_scout_provider.identity.to_dict(),
+                    }
+                )
                 try:
-                    visual_timeline, visual_result = scout_visual_timeline(
-                        media_for_visual,
-                        visual_scout_provider,
-                        video_id=video.video_id,
-                        source_hash=canonical.source_hash,
-                        duration=max(canonical.end, 0.05),
-                        output_dir=video_work / "visual-scout-frames",
-                    )
+                    cached_visual = cache.read(visual_cache_key, "visual-timeline")
+                    if isinstance(cached_visual, dict):
+                        visual_timeline = VisualTimeline.from_dict(cached_visual)
+                        visual_result = None
+                    else:
+                        visual_timeline, visual_result = scout_visual_timeline(
+                            media_for_visual,
+                            visual_scout_provider,
+                            video_id=video.video_id,
+                            source_hash=visual_media_hash,
+                            duration=max(canonical.end, 0.05),
+                            output_dir=video_work / "visual-scout-frames",
+                        )
+                        cache.write(visual_cache_key, "visual-timeline", visual_timeline.to_dict())
                 except Exception as exc:
                     LOGGER.warning(
                         "visual scouting failed; continuing with canonical text evidence",
@@ -1060,7 +1077,8 @@ def run_pipeline(
                             {"video_id": video.video_id, "error": str(exc)}
                         )
                 else:
-                    compute_budget.record(visual_result.usage)
+                    if visual_result is not None:
+                        compute_budget.record(visual_result.usage)
                     visual_timelines[video.video_id] = visual_timeline
                     _write_json(video_work / "visual-timeline.json", visual_timeline.to_dict())
                     _write_json(
@@ -1068,15 +1086,17 @@ def run_pipeline(
                     )
                     visual_meta = manifest.run_metadata.get("visual_inference")
                     if isinstance(visual_meta, dict):
-                        visual_meta.setdefault("scout_runs", []).append(
-                            {
-                                "video_id": video.video_id,
-                                "model": visual_result.model.to_dict(),
-                                "usage": asdict(visual_result.usage),
-                                "event_count": len(visual_timeline.events),
-                                "degraded": visual_result.degraded,
-                            }
-                        )
+                        run_entry: dict[str, object] = {
+                            "video_id": video.video_id,
+                            "model": visual_scout_provider.identity.to_dict(),
+                            "event_count": len(visual_timeline.events),
+                            "cache_key": visual_cache_key,
+                            "cache_hit": visual_result is None,
+                        }
+                        if visual_result is not None:
+                            run_entry["usage"] = asdict(visual_result.usage)
+                            run_entry["degraded"] = visual_result.degraded
+                        visual_meta.setdefault("scout_runs", []).append(run_entry)
                 finally:
                     telemetry.stop(f"visual_scout:{video.video_id}")
             elif cfg.visual_scout_enabled:
