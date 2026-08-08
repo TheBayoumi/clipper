@@ -292,6 +292,9 @@ def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
     assert "HF_TOKEN" in workflow
     assert "modal deploy scripts/modal_open_models.py" in workflow
     assert "hf_access_smoke" in workflow
+    assert workflow.index("Qwen embedding execution") < workflow.index(
+        "gated Hugging Face diarization access"
+    )
     assert 'speech_providers("balanced")' in workflow
     assert "CLIPPER_EDITORIAL_ENGINE: open" in workflow
     assert "CLIPPER_COMPUTE_PROFILE: balanced" in workflow

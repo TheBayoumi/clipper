@@ -85,28 +85,56 @@ jobs:
       - name: Deploy exact-HEAD Modal open-model workers
         run: modal deploy scripts/modal_open_models.py
 
-      - name: Verify Modal and gated Hugging Face access
+      - name: Verify Modal and Qwen embedding execution
         run: |
+          mkdir -p open-evidence
           python - <<'PY'
           import json
+          from pathlib import Path
           import modal
 
           app = "clipper-open-editor"
           credential = modal.Function.from_name(app, "credential_smoke").remote()
-          gated = modal.Function.from_name(app, "hf_access_smoke").remote()
           embedding = modal.Function.from_name(app, "embedding").remote(
               {"texts": ["Open-weight podcast editorial acceptance"]}
           )
           assert credential.get("ok") is True
+          assert isinstance(embedding.get("vectors"), list) and len(embedding["vectors"]) == 1
+          evidence = {"credential": credential, "embedding_usage": embedding.get("usage")}
+          Path("open-evidence/provider-smoke.json").write_text(json.dumps(evidence, indent=2) + "\n")
+          print(json.dumps(evidence, indent=2))
+          PY
+
+      - name: Run full-episode open editorial analysis through Modal
+        env:
+          CLIPPER_SOURCE_FIXTURE_DIR: ${{ github.workspace }}/live-fixture
+          CLIPPER_EDITORIAL_ENGINE: open
+          CLIPPER_GROUNDING_ENGINE: legacy
+          CLIPPER_COMPUTE_PROFILE: balanced
+          CLIPPER_VISUAL_REVIEW: "false"
+        run: |
+          clipper run \
+            --brief campaigns/reach-double-coverage-dedicated.yaml \
+            --artifact-root open-evidence \
+            --no-render
+
+      - name: Verify gated Hugging Face diarization access
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import modal
+
+          app = "clipper-open-editor"
+          gated = modal.Function.from_name(app, "hf_access_smoke").remote()
           assert gated.get("ok") is True
           assert gated.get("model_id") == "pyannote/speaker-diarization-community-1"
-          assert isinstance(embedding.get("vectors"), list) and len(embedding["vectors"]) == 1
-          print(json.dumps({"credential": credential, "hf": gated, "embedding_usage": embedding.get("usage")}, indent=2))
+          Path("open-evidence/hf-access.json").write_text(json.dumps(gated, indent=2) + "\n")
+          print(json.dumps(gated, indent=2))
           PY
 
       - name: Run real Modal speech grounding smoke on authorized podcast audio
         run: |
-          mkdir -p open-evidence
           python - <<'PY'
           import json
           from pathlib import Path
@@ -126,22 +154,9 @@ jobs:
           assert all(word.timing_mode == "aligned" for word in timeline.words)
           assert any(word.speaker_id for word in timeline.words)
           payload = timeline.to_dict()
-          (Path("open-evidence") / "speech-grounding-smoke.json").write_text(json.dumps(payload, indent=2) + "\n")
+          Path("open-evidence/speech-grounding-smoke.json").write_text(json.dumps(payload, indent=2) + "\n")
           print(json.dumps({"words": len(timeline.words), "speakers": sorted({w.speaker_id for w in timeline.words if w.speaker_id})}, indent=2))
           PY
-
-      - name: Run full-episode open editorial analysis through Modal
-        env:
-          CLIPPER_SOURCE_FIXTURE_DIR: ${{ github.workspace }}/live-fixture
-          CLIPPER_EDITORIAL_ENGINE: open
-          CLIPPER_GROUNDING_ENGINE: legacy
-          CLIPPER_COMPUTE_PROFILE: balanced
-          CLIPPER_VISUAL_REVIEW: "false"
-        run: |
-          clipper run \
-            --brief campaigns/reach-double-coverage-dedicated.yaml \
-            --artifact-root open-evidence \
-            --no-render
 
       - name: Validate full-episode open-model planning evidence
         run: |
