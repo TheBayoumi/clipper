@@ -285,23 +285,30 @@ def test_live_validator_accepts_more_distinct_finalists_than_minimum(tmp_path: P
     assert report["actual"]["distinct_finalist_concepts"] == 6
 
 
-def test_modal_30b_workers_use_official_fp8_on_two_l4s() -> None:
+def test_balanced_editor_uses_pinned_qwen3_4b_on_single_l4() -> None:
     worker = Path("scripts/modal_open_models.py").read_text()
     factory = Path("src/clipper/providers/factory.py").read_text()
-    assert 'gpu="L4:2"' in worker
-    assert 'device_map="balanced_low_0"' in worker
-    assert 'max_memory={0: "16GiB", 1: "19GiB", "cpu": "24GiB"}' in worker
-    assert "offload_folder=offload_dir" in worker
-    assert "offload_state_dict=True" in worker
-    assert '"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"' in worker
-    assert "_editorial_output_budget(payload)" in worker
-    assert 'cache_implementation="offloaded"' in worker
-    assert "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8" in worker
-    assert '"kernels>=0.15.2,<0.16"' in worker
-    assert "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8" in factory
-    assert 'CLIPPER_EDITORIAL_QUANTIZATION", "fp8"' in factory
-    assert "return L4_USD_PER_SECOND * count" in worker
-    assert '"L4:2"' in worker
+    local = Path("src/clipper/providers/local.py").read_text()
+    editorial_block = worker[worker.index("def editorial") : worker.index("def _vision_infer")]
+    assert (
+        'gpu="L4"'
+        in worker[
+            worker.rfind("@app.function", 0, worker.index("def editorial")) : worker.index(
+                "def editorial"
+            )
+        ]
+    )
+    assert 'EDITORIAL_MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"' in worker
+    assert 'EDITORIAL_MODEL_REVISION = "f50518eb58dfc750271b273fc113bdfc16ec2280"' in worker
+    assert 'device_map={"": 0}' in editorial_block
+    assert "dtype=torch.bfloat16" in editorial_block
+    assert "_editorial_output_budget(payload)" in editorial_block
+    assert '"L4"' in editorial_block
+    assert "Qwen/Qwen3-4B-Instruct-2507" in factory
+    assert 'CLIPPER_EDITORIAL_QUANTIZATION", "bf16"' in factory
+    assert "f50518eb58dfc750271b273fc113bdfc16ec2280" in factory
+    assert "Qwen/Qwen3-4B-Instruct-2507" in local
+    assert "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8" not in editorial_block
 
 
 def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:

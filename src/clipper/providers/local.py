@@ -68,8 +68,8 @@ class LocalEmbeddingProvider:
 class LocalEditorialProvider:
     def __init__(
         self,
-        model_id: str = "Qwen/Qwen3-30B-A3B-Instruct-2507",
-        revision: str = "main",
+        model_id: str = "Qwen/Qwen3-4B-Instruct-2507",
+        revision: str = "f50518eb58dfc750271b273fc113bdfc16ec2280",
         *,
         quantization: str = "none",
         device_map: str = "auto",
@@ -120,7 +120,7 @@ class LocalEditorialProvider:
             messages, tokenize=False, add_generation_prompt=True
         )
         inputs = tokenizer(rendered, return_tensors="pt").to(model.device)
-        output = model.generate(**inputs, max_new_tokens=4096, do_sample=False)
+        output = model.generate(**inputs, max_new_tokens=1536, do_sample=False)
         generated = output[0][inputs["input_ids"].shape[-1] :]
         text = tokenizer.decode(generated, skip_special_tokens=True).strip()
         try:

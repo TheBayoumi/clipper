@@ -16,6 +16,8 @@ HF_CACHE = "/model-cache"
 MEDIA_ROOT = "/media"
 L4_USD_PER_SECOND = 0.000222
 L40S_USD_PER_SECOND = 0.000542
+EDITORIAL_MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
+EDITORIAL_MODEL_REVISION = "f50518eb58dfc750271b273fc113bdfc16ec2280"
 
 model_cache = modal.Volume.from_name("clipper-hf-cache", create_if_missing=True)
 media_cache = modal.Volume.from_name("clipper-media-cache", create_if_missing=True)
@@ -159,11 +161,11 @@ def embedding(payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.function(
     image=text_image,
-    gpu="L4:2",
+    gpu="L4",
     volumes={HF_CACHE: model_cache},
     secrets=[hf_secret],
-    timeout=1800,
-    memory=32768,
+    timeout=1200,
+    memory=16384,
 )
 def editorial(payload: dict[str, Any]) -> dict[str, Any]:
     global _editorial_model, _editorial_tokenizer
@@ -173,17 +175,14 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
 
         started = time.perf_counter()
         if _editorial_model is None or _editorial_tokenizer is None:
-            model_id = "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
-            _editorial_tokenizer = AutoTokenizer.from_pretrained(model_id)
-            offload_dir = f"{HF_CACHE}/qwen3-30b-fp8-offload"
-            os.makedirs(offload_dir, exist_ok=True)
+            _editorial_tokenizer = AutoTokenizer.from_pretrained(
+                EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION
+            )
             _editorial_model = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                device_map="balanced_low_0",
-                max_memory={0: "16GiB", 1: "19GiB", "cpu": "24GiB"},
-                offload_folder=offload_dir,
-                offload_state_dict=True,
-                torch_dtype="auto",
+                EDITORIAL_MODEL_ID,
+                revision=EDITORIAL_MODEL_REVISION,
+                device_map={"": 0},
+                dtype=torch.bfloat16,
                 low_cpu_mem_usage=True,
             )
         messages = [
@@ -200,23 +199,21 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
             messages, tokenize=False, add_generation_prompt=True
         )
         inputs = _editorial_tokenizer(rendered, return_tensors="pt").to(_editorial_model.device)
-        torch.cuda.empty_cache()
         output = _editorial_model.generate(
             **inputs,
             max_new_tokens=_editorial_output_budget(payload),
             do_sample=False,
             use_cache=True,
-            cache_implementation="offloaded",
         )
         generated = output[0][inputs["input_ids"].shape[-1] :]
         text = _editorial_tokenizer.decode(generated, skip_special_tokens=True)
         value = _json_text(text)
         return {
             "value": value,
-            "model": _model_evidence(model_id),
+            "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
             "usage": _usage(
                 started,
-                "L4:2",
+                "L4",
                 input_units=int(inputs["input_ids"].numel()),
                 output_units=int(generated.numel()),
             ),
