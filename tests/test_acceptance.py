@@ -285,7 +285,7 @@ def test_live_validator_accepts_more_distinct_finalists_than_minimum(tmp_path: P
     assert report["actual"]["distinct_finalist_concepts"] == 6
 
 
-def test_balanced_editor_uses_pinned_qwen3_30b_on_l40s() -> None:
+def test_balanced_editor_uses_pinned_qwen3_30b_on_two_l4s() -> None:
     worker = Path("scripts/modal_open_models.py").read_text()
     factory = Path("src/clipper/providers/factory.py").read_text()
     local = Path("src/clipper/providers/local.py").read_text()
@@ -295,15 +295,15 @@ def test_balanced_editor_uses_pinned_qwen3_30b_on_l40s() -> None:
             "def editorial"
         )
     ]
-    assert 'gpu="L40S"' in decorator
+    assert 'gpu="L4:2"' in decorator
     assert 'EDITORIAL_MODEL_ID = "Qwen/Qwen3-30B-A3B-Instruct-2507"' in worker
     assert 'EDITORIAL_MODEL_REVISION = "c9051e5f23e735fd6549f86b616377617848a621"' in worker
     assert "BitsAndBytesConfig(" in editorial_block
     assert "load_in_4bit=True" in editorial_block
     assert 'bnb_4bit_quant_type="nf4"' in editorial_block
     assert 'device_map="auto"' in editorial_block
-    assert 'max_memory={0: "45GiB"}' in editorial_block
-    assert '"L40S"' in editorial_block
+    assert 'max_memory={0: "22GiB", 1: "22GiB"}' in editorial_block
+    assert '"L4:2"' in editorial_block
     assert "_editorial_output_budget(payload)" in editorial_block
     assert "_editorial_contract(task)" in editorial_block
     assert '"start_word_id"' in worker

@@ -217,7 +217,7 @@ def embedding(payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.function(
     image=text_image,
-    gpu="L40S",
+    gpu="L4:2",
     volumes={HF_CACHE: model_cache},
     secrets=[hf_secret],
     timeout=1800,
@@ -246,7 +246,7 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
                 device_map="auto",
                 dtype=torch.bfloat16,
                 quantization_config=quantization,
-                max_memory={0: "45GiB"},
+                max_memory={0: "22GiB", 1: "22GiB"},
                 low_cpu_mem_usage=True,
             )
         task = str(payload.get("task") or "")
@@ -278,7 +278,7 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
             "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
             "usage": _usage(
                 started,
-                "L40S",
+                "L4:2",
                 input_units=int(inputs["input_ids"].numel()),
                 output_units=int(generated.numel()),
             ),
