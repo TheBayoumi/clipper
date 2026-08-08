@@ -238,7 +238,7 @@ def main() -> int:
     image_quality = tracking.get("image_quality") or {}
     if image_quality.get("digital_zoom_used") is not False:
         raise RuntimeError("tracking evidence reports digital zoom")
-    if tracking.get("framing_mode") != "speaker_locked_portrait":
+    if tracking.get("framing_mode") not in {"speaker_locked_portrait", "stable_portrait_fallback"}:
         raise RuntimeError("render did not use speaker-locked portrait framing")
     if tracking.get("background_fill") != "none":
         raise RuntimeError("render reintroduced background filler")

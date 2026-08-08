@@ -66,6 +66,17 @@ class FakeRenderer:
         self.watermark_path = watermark_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"mp4")
+        output_path.with_suffix(".tracking-preflight.json").write_text(
+            json.dumps(
+                {
+                    "status": "PASS",
+                    "initial_issues": [],
+                    "repaired_with_stable_fallback": False,
+                    "final_issues": [],
+                    "final_framing_mode": "speaker_locked_portrait",
+                }
+            )
+        )
         return output_path
 
 
@@ -652,8 +663,49 @@ def test_pipeline_fails_when_reserve_pool_cannot_reach_render_target(tmp_path: P
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["status"] == "FAILED"
     assert manifest["status_reason"] == "render_yield_below_required_target"
-    assert manifest["actual"] == {"rendered_finalists": 0, "submission_shortlist": 0}
+    assert manifest["actual"] == {
+        "rendered_finalists": 0,
+        "submission_shortlist": 0,
+        "distinct_finalist_concepts": 0,
+        "distinct_shortlist_concepts": 0,
+    }
     assert manifest["funnel"]["render_attempts"] == 3
     assert manifest["funnel"]["render_failures"] == 3
     assert (run_dir / "funnel.json").is_file()
     assert (run_dir / "rejections.json").is_file()
+
+
+class RepairedPreflightRenderer(FakeRenderer):
+    def render(self, *args, **kwargs):
+        output_path = super().render(*args, **kwargs)
+        output_path.with_suffix(".tracking-preflight.json").write_text(
+            json.dumps(
+                {
+                    "status": "PASS",
+                    "initial_issues": ["back-and-forth crop oscillation detected"],
+                    "repaired_with_stable_fallback": True,
+                    "final_issues": [],
+                    "final_framing_mode": "stable_portrait_fallback",
+                }
+            )
+        )
+        return output_path
+
+
+def test_pipeline_records_tracking_preflight_repair(tmp_path: Path) -> None:
+    brief = _yield_brief(tmp_path)
+    subtitle = _yield_subtitle(tmp_path)
+    media = tmp_path / "yield-preflight.mp4"
+    media.write_bytes(b"source")
+    concepts = [_concept(1), _concept(2), _concept(3)]
+    with patch("clipper.pipeline.select_distinct_concepts", return_value=concepts):
+        run_dir = run_pipeline(
+            brief,
+            settings=PipelineSettings(artifact_root=tmp_path / "preflight"),
+            source_client=FakeSource(subtitle, media),
+            renderer=RepairedPreflightRenderer(),
+        )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["funnel"]["tracking_preflight_pass"] == 2
+    assert manifest["funnel"]["tracking_preflight_repaired"] == 2
+    assert manifest["funnel"]["tracking_preflight_fail"] == 0

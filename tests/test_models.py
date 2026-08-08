@@ -120,3 +120,38 @@ def test_v8_nested_production_config_parses_and_serializes() -> None:
 def test_v8_nested_config_rejects_invalid_values(patch: dict, message: str) -> None:
     with pytest.raises(BriefValidationError, match=message):
         CampaignBrief.from_dict(valid_data() | patch)
+
+
+def test_production_distinct_finalist_concept_validation() -> None:
+    from clipper.models import BriefValidationError, ProductionConfig
+
+    config = ProductionConfig.from_dict(
+        {
+            "candidate_pool_size": 36,
+            "concept_count": 10,
+            "variants_per_concept": 3,
+            "final_render_budget": 6,
+            "minimum_distinct_finalist_concepts": 3,
+        }
+    )
+    assert config.minimum_distinct_finalist_concepts == 3
+    with pytest.raises(BriefValidationError, match="final_render_budget"):
+        ProductionConfig.from_dict(
+            {
+                "candidate_pool_size": 36,
+                "concept_count": 10,
+                "variants_per_concept": 3,
+                "final_render_budget": 2,
+                "minimum_distinct_finalist_concepts": 3,
+            }
+        )
+    with pytest.raises(BriefValidationError, match="concept_count"):
+        ProductionConfig.from_dict(
+            {
+                "candidate_pool_size": 36,
+                "concept_count": 2,
+                "variants_per_concept": 3,
+                "final_render_budget": 6,
+                "minimum_distinct_finalist_concepts": 3,
+            }
+        )

@@ -1415,8 +1415,33 @@ def select_render_plan_queue(
 ) -> tuple[list[EditPlan], list[EditPlan]]:
     primary = select_render_plans(plans, budget=budget)
     primary_ids = {plan.plan_id for plan in primary}
+    primary_concepts = {plan.concept_id for plan in primary}
     ranked = sorted(plans, key=lambda item: (-item.score, item.concept_id, item.variant_id))
-    reserves = [plan for plan in ranked if plan.plan_id not in primary_ids]
+    grouped: dict[str, list[EditPlan]] = {}
+    for plan in ranked:
+        if plan.plan_id in primary_ids:
+            continue
+        grouped.setdefault(plan.concept_id, []).append(plan)
+    concept_order = sorted(
+        grouped,
+        key=lambda concept_id: (
+            concept_id in primary_concepts,
+            -grouped[concept_id][0].score,
+            concept_id,
+        ),
+    )
+    reserves: list[EditPlan] = []
+    depth = 0
+    while True:
+        added = False
+        for concept_id in concept_order:
+            variants = grouped[concept_id]
+            if depth < len(variants):
+                reserves.append(variants[depth])
+                added = True
+        if not added:
+            break
+        depth += 1
     return primary, reserves
 
 

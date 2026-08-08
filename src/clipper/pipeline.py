@@ -702,6 +702,8 @@ def run_pipeline(
     manifest.targets = {
         "rendered_finalists": target_finalists,
         "submission_shortlist": brief.clip_count,
+        "distinct_finalist_concepts": brief.production.minimum_distinct_finalist_concepts,
+        "distinct_shortlist_concepts": brief.clip_count,
     }
     manifest.story_moments = [item.to_dict() for item in all_moments]
     manifest.clip_concepts = [item.to_dict() for item in selected_concepts]
@@ -730,10 +732,15 @@ def run_pipeline(
         "render_attempts": 0,
         "render_failures": 0,
         "replacement_attempts": 0,
+        "tracking_preflight_pass": 0,
+        "tracking_preflight_repaired": 0,
+        "tracking_preflight_fail": 0,
         "technical_qc_pass": 0,
         "technical_qc_fail": 0,
         "render_success": 0,
+        "distinct_finalist_concepts": 0,
         "submission_shortlist": 0,
+        "distinct_shortlist_concepts": 0,
         "concept_selection_retention_ratio": (
             round(selected_count / raw_count, 4) if raw_count else 0.0
         ),
@@ -863,6 +870,22 @@ def run_pipeline(
                 )
                 telemetry.stop(f"render:{plan.plan_id}")
                 telemetry.sample_gpu()
+                preflight_path = rendered_path.with_suffix(".tracking-preflight.json")
+                if preflight_path.is_file():
+                    preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+                    attempt["tracking_preflight"] = preflight
+                    if preflight.get("status") == "PASS":
+                        manifest.funnel["tracking_preflight_pass"] = (
+                            int(manifest.funnel["tracking_preflight_pass"]) + 1
+                        )
+                    else:
+                        manifest.funnel["tracking_preflight_fail"] = (
+                            int(manifest.funnel["tracking_preflight_fail"]) + 1
+                        )
+                    if preflight.get("repaired_with_stable_fallback"):
+                        manifest.funnel["tracking_preflight_repaired"] = (
+                            int(manifest.funnel["tracking_preflight_repaired"]) + 1
+                        )
                 telemetry.start(f"technical_qc:{plan.plan_id}")
                 qc_report = run_technical_qc(
                     rendered_path,
@@ -901,6 +924,7 @@ def run_pipeline(
                         rendered_path,
                         rendered_path.with_suffix(".ass"),
                         rendered_path.with_suffix(".tracking.json"),
+                        rendered_path.with_suffix(".tracking-preflight.json"),
                         rendered_path.with_suffix(".render.json"),
                         rendered_path.with_suffix(".caption-audit.json"),
                     ]:
@@ -926,6 +950,7 @@ def run_pipeline(
                     ("captions", ".ass"),
                     ("captions", ".caption-audit.json"),
                     ("tracking", ".tracking.json"),
+                    ("tracking", ".tracking-preflight.json"),
                 ):
                     source_evidence = rendered_path.with_suffix(suffix)
                     if source_evidence.is_file():
@@ -968,18 +993,38 @@ def run_pipeline(
             for plan in shortlist_plans
             if plan.plan_id in rendered_by_plan
         ]
+        finalist_concepts = {
+            str(item.get("concept_id"))
+            for item in manifest.rendered_clips
+            if item.get("concept_id")
+        }
+        shortlist_concepts = {
+            str(item.get("concept_id"))
+            for item in manifest.submission_shortlist
+            if item.get("concept_id")
+        }
         manifest.funnel["render_success"] = len(manifest.rendered_clips)
+        manifest.funnel["distinct_finalist_concepts"] = len(finalist_concepts)
         manifest.funnel["submission_shortlist"] = len(manifest.submission_shortlist)
+        manifest.funnel["distinct_shortlist_concepts"] = len(shortlist_concepts)
         manifest.actual = {
             "rendered_finalists": len(manifest.rendered_clips),
             "submission_shortlist": len(manifest.submission_shortlist),
+            "distinct_finalist_concepts": len(finalist_concepts),
+            "distinct_shortlist_concepts": len(shortlist_concepts),
         }
         if len(manifest.rendered_clips) < target_finalists:
             manifest.status = "FAILED"
             manifest.status_reason = "render_yield_below_required_target"
+        elif len(finalist_concepts) < brief.production.minimum_distinct_finalist_concepts:
+            manifest.status = "FAILED"
+            manifest.status_reason = "distinct_finalist_concepts_below_required_target"
         elif len(manifest.submission_shortlist) < brief.clip_count:
             manifest.status = "FAILED"
             manifest.status_reason = "submission_shortlist_below_required_target"
+        elif len(shortlist_concepts) < brief.clip_count:
+            manifest.status = "FAILED"
+            manifest.status_reason = "distinct_shortlist_concepts_below_required_target"
         elif any(item.get("status") != "ACCEPTED" for item in manifest.render_attempts):
             manifest.status = "DEGRADED"
             manifest.status_reason = "recovered_with_replacement_candidates"
@@ -987,7 +1032,12 @@ def run_pipeline(
             manifest.status = "SUCCESS"
             manifest.status_reason = None
     else:
-        manifest.actual = {"rendered_finalists": 0, "submission_shortlist": 0}
+        manifest.actual = {
+            "rendered_finalists": 0,
+            "submission_shortlist": 0,
+            "distinct_finalist_concepts": 0,
+            "distinct_shortlist_concepts": 0,
+        }
         manifest.status = "SUCCESS"
         manifest.status_reason = "planning_only"
 

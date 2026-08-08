@@ -13,7 +13,11 @@ def _load_object(path: Path) -> dict[str, Any]:
 
 
 def validate_live_run(
-    run_dir: str | Path, *, expected_finalists: int, expected_shortlist: int
+    run_dir: str | Path,
+    *,
+    expected_finalists: int,
+    expected_shortlist: int,
+    expected_distinct_finalists: int | None = None,
 ) -> dict[str, Any]:
     root = Path(run_dir)
     manifest = _load_object(root / "manifest.json")
@@ -25,10 +29,14 @@ def validate_live_run(
         raise ValueError(f"pipeline errors remain: {manifest['errors']}")
     targets = manifest.get("targets") or {}
     actual = manifest.get("actual") or {}
-    if targets != {
+    distinct_target = expected_distinct_finalists or min(expected_shortlist, expected_finalists)
+    expected_targets = {
         "rendered_finalists": expected_finalists,
         "submission_shortlist": expected_shortlist,
-    }:
+        "distinct_finalist_concepts": distinct_target,
+        "distinct_shortlist_concepts": expected_shortlist,
+    }
+    if targets != expected_targets:
         raise ValueError(f"unexpected production targets: {targets}")
     if actual != targets:
         raise ValueError(
@@ -50,8 +58,11 @@ def validate_live_run(
     if None in rendered_plans or None in shortlist_plans or not shortlist_plans <= rendered_plans:
         raise ValueError("shortlist references a plan without an accepted rendered MP4")
     concepts = {item.get("concept_id") for item in rendered if item.get("concept_id")}
-    if len(concepts) < min(3, expected_finalists):
+    if len(concepts) < distinct_target:
         raise ValueError("finalist batch lacks minimum concept diversity")
+    shortlist_concepts = {item.get("concept_id") for item in shortlist if item.get("concept_id")}
+    if len(shortlist_concepts) != expected_shortlist:
+        raise ValueError("submission shortlist lacks required distinct concepts")
 
     clips = sorted((root / "clips").glob("*.mp4"))
     captions = sorted((root / "captions").glob("*.ass"))

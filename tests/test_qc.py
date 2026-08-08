@@ -11,6 +11,7 @@ from clipper.qc import (
     _tracking_evidence,
     _transition_issues,
     run_technical_qc,
+    tracking_plan_issues,
 )
 
 
@@ -337,3 +338,19 @@ def test_qc_rejects_first_caption_misalignment(tmp_path: Path) -> None:
         )
     assert report["status"] == "FAIL"
     assert "first caption" in " | ".join(report["issues"])
+
+
+def test_tracking_preflight_rejects_bad_geometry_filler_and_zoom() -> None:
+    issues = tracking_plan_issues(
+        {
+            "background_fill": "blur",
+            "crop_width": 100,
+            "crop_height": 100,
+            "transitions": [],
+            "image_quality": {"max_portrait_crop_height": 640, "digital_zoom_used": True},
+        }
+    )
+    assert "tracking evidence does not confirm no-filler portrait composition" in issues
+    assert "tracking crop is not a valid portrait crop" in issues
+    assert "crop resolution is materially below the maximum portrait crop" in issues
+    assert "tracking plan uses digital zoom that discards source pixels" in issues

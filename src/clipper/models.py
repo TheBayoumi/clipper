@@ -64,6 +64,7 @@ class ProductionConfig:
     concept_count: int = 10
     variants_per_concept: int = 1
     final_render_budget: int = 1
+    minimum_distinct_finalist_concepts: int = 1
 
     @classmethod
     def from_dict(cls, value: object) -> ProductionConfig:
@@ -76,6 +77,9 @@ class ProductionConfig:
             concept_count=int(value.get("concept_count", 10)),
             variants_per_concept=int(value.get("variants_per_concept", 1)),
             final_render_budget=int(value.get("final_render_budget", 1)),
+            minimum_distinct_finalist_concepts=int(
+                value.get("minimum_distinct_finalist_concepts", 1)
+            ),
         )
         if not 10 <= config.candidate_pool_size <= 100:
             raise BriefValidationError("production.candidate_pool_size must be between 10 and 100")
@@ -85,6 +89,15 @@ class ProductionConfig:
             raise BriefValidationError("production.variants_per_concept must be between 1 and 6")
         if not 1 <= config.final_render_budget <= 24:
             raise BriefValidationError("production.final_render_budget must be between 1 and 24")
+        if not 1 <= config.minimum_distinct_finalist_concepts <= config.final_render_budget:
+            raise BriefValidationError(
+                "production.minimum_distinct_finalist_concepts must be between 1 "
+                "and final_render_budget"
+            )
+        if config.minimum_distinct_finalist_concepts > config.concept_count:
+            raise BriefValidationError(
+                "production.minimum_distinct_finalist_concepts cannot exceed concept_count"
+            )
         return config
 
 

@@ -140,6 +140,26 @@ def _transition_issues(transitions: object) -> list[str]:
     return issues
 
 
+def tracking_plan_issues(payload: dict[str, Any]) -> list[str]:
+    """Validate tracking geometry before any expensive video encode."""
+    issues: list[str] = []
+    if payload.get("background_fill") != "none":
+        issues.append("tracking evidence does not confirm no-filler portrait composition")
+    crop_width = int(payload.get("crop_width") or 0)
+    crop_height = int(payload.get("crop_height") or 0)
+    if crop_width <= 0 or crop_height <= 0 or abs(crop_width / crop_height - 9 / 16) >= 0.02:
+        issues.append("tracking crop is not a valid portrait crop")
+    issues.extend(_transition_issues(payload.get("transitions", [])))
+    image_quality = payload.get("image_quality")
+    image_quality = image_quality if isinstance(image_quality, dict) else {}
+    max_crop_height = int(image_quality.get("max_portrait_crop_height") or 0)
+    if max_crop_height and crop_height < max_crop_height * 0.92:
+        issues.append("crop resolution is materially below the maximum portrait crop")
+    if bool(image_quality.get("digital_zoom_used")):
+        issues.append("tracking plan uses digital zoom that discards source pixels")
+    return list(dict.fromkeys(issues))
+
+
 def run_technical_qc(
     video_path: str | Path,
     *,
@@ -284,23 +304,17 @@ def run_technical_qc(
         if timing_delta > 0.08:
             issues.append("first caption timing is not aligned with the first audible word")
     tracking_info = _tracking_evidence(tracking)
+    tracking_issues = tracking_plan_issues(tracking_info)
+    issues.extend(tracking_issues)
     no_filler = tracking_info.get("background_fill") == "none"
-    if not no_filler:
-        issues.append("tracking evidence does not confirm no-filler portrait composition")
     crop_width = int(tracking_info.get("crop_width") or 0)
     crop_height = int(tracking_info.get("crop_height") or 0)
     valid_crop = (
         crop_width > 0 and crop_height > 0 and abs(crop_width / crop_height - 9 / 16) < 0.02
     )
-    if not valid_crop:
-        issues.append("tracking crop is not a valid portrait crop")
     transition_issues = _transition_issues(tracking_info.get("transitions", []))
-    issues.extend(transition_issues)
     image_quality = tracking_info.get("image_quality")
     image_quality = image_quality if isinstance(image_quality, dict) else {}
-    max_crop_height = int(image_quality.get("max_portrait_crop_height") or 0)
-    if max_crop_height and crop_height < max_crop_height * 0.92:
-        issues.append("crop resolution is materially below the maximum portrait crop")
     render_info = _render_evidence(render_metadata)
     if render_info:
         if int(render_info.get("resampling_stages") or 0) > 1:

@@ -9,11 +9,13 @@ from pathlib import Path
 
 from .captions import create_word_reveal_ass
 from .models import ClipCandidate, EditPlan, TranscriptSegment
+from .qc import tracking_plan_issues
 from .tracking import (
     DEFAULT_TARGET_ASPECT,
     TrackingPlan,
     plan_speaker_crop,
     portrait_crop_dimensions,
+    stable_portrait_fallback,
     tracking_expressions,
 )
 
@@ -247,8 +249,35 @@ class FFmpegRenderer:
                 speaker_focus=False,
             )
         )
+        initial_tracking = tracking_plan.to_dict()
+        has_geometry = tracking_plan.source_width > 0 and tracking_plan.source_height > 0
+        initial_issues = tracking_plan_issues(initial_tracking) if has_geometry else []
+        repaired = bool(initial_issues)
+        if repaired:
+            tracking_plan = stable_portrait_fallback(tracking_plan, clip.duration)
+        final_tracking = tracking_plan.to_dict()
+        final_issues = tracking_plan_issues(final_tracking) if has_geometry else []
+        preflight_status = "PASS" if has_geometry and not final_issues else "SKIPPED_NO_GEOMETRY"
+        if final_issues:
+            preflight_status = "FAIL"
+        output_path.with_suffix(".tracking-preflight.json").write_text(
+            json.dumps(
+                {
+                    "status": preflight_status,
+                    "initial_issues": initial_issues,
+                    "repaired_with_stable_fallback": repaired,
+                    "final_issues": final_issues,
+                    "final_framing_mode": tracking_plan.framing_mode,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if final_issues:
+            raise RenderError("tracking preflight failed: " + "; ".join(final_issues))
         output_path.with_suffix(".tracking.json").write_text(
-            json.dumps(tracking_plan.to_dict(), indent=2) + "\n",
+            json.dumps(final_tracking, indent=2) + "\n",
             encoding="utf-8",
         )
         command = build_ffmpeg_command(

@@ -14,7 +14,7 @@ from clipper.models import (
     TranscriptWord,
 )
 from clipper.render import FFmpegRenderer, RenderError, build_ffmpeg_command
-from clipper.tracking import FaceAnchor, TrackingPlan
+from clipper.tracking import CameraTransition, FaceAnchor, TrackingPlan
 
 
 def test_build_ffmpeg_command_contains_speaker_locked_vertical_and_audio_filters(
@@ -126,6 +126,8 @@ def test_renderer_success_writes_ass_and_speaker_evidence(tmp_path: Path) -> Non
         360,
         (FaceAnchor(0, 10, 5), FaceAnchor(10, 10, 5)),
         True,
+        crop_width=202,
+        crop_height=358,
         speaker_tracks=1,
         speaker_switches=0,
     )
@@ -226,3 +228,54 @@ def test_render_profiles_separate_smoke_review_and_production(tmp_path: Path) ->
         joined = " ".join(command)
         assert "split=2[base][zoomsrc]" not in joined
         assert joined.count("scale=1080:1920") == 1
+
+
+def test_renderer_repairs_oscillating_tracking_before_single_encode(tmp_path: Path) -> None:
+    clip = ClipCandidate("v", 0, 10, "caption now", 1)
+    segments = [
+        TranscriptSegment(
+            0,
+            2,
+            "caption now",
+            (TranscriptWord(0, 0.8, "caption"), TranscriptWord(1.0, 1.8, "now")),
+        )
+    ]
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    output = tmp_path / "out.mp4"
+    transitions = (
+        CameraTransition(
+            "speaker_change", 1.0, 1.5, 100, 202, 0.49, "eased_reframe", 0, 0, 100, 0, 1.0
+        ),
+        CameraTransition(
+            "speaker_change", 1.8, 2.3, 100, 202, 0.49, "eased_reframe", 100, 0, 0, 0, 1.8
+        ),
+    )
+    unstable = TrackingPlan(
+        1.0,
+        640,
+        360,
+        (FaceAnchor(0, 0, 0), FaceAnchor(10, 0, 0)),
+        True,
+        crop_width=202,
+        crop_height=358,
+        transitions=transitions,
+    )
+    with patch("clipper.render.shutil.which", return_value="/usr/bin/ffmpeg"):
+        renderer = FFmpegRenderer()
+
+    def encode(*_args, **_kwargs):
+        output.write_bytes(b"video")
+        return Mock()
+
+    with (
+        patch("clipper.render.plan_speaker_crop", return_value=unstable),
+        patch("clipper.render.subprocess.run", side_effect=encode) as run_mock,
+    ):
+        assert renderer.render(source, output, clip, segments) == output
+    assert run_mock.call_count == 1
+    preflight = json.loads(output.with_suffix(".tracking-preflight.json").read_text())
+    tracking = json.loads(output.with_suffix(".tracking.json").read_text())
+    assert preflight["status"] == "PASS" and preflight["repaired_with_stable_fallback"] is True
+    assert "back-and-forth crop oscillation detected" in preflight["initial_issues"]
+    assert tracking["framing_mode"] == "stable_portrait_fallback" and tracking["transitions"] == []

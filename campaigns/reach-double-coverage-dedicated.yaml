@@ -42,6 +42,7 @@ production:
   concept_count: 10
   variants_per_concept: 3
   final_render_budget: 6
+  minimum_distinct_finalist_concepts: 3
 diversity:
   semantic_similarity_threshold: 0.72
   max_concepts_per_topic: 2

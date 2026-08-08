@@ -670,6 +670,47 @@ def _transition_expression(
     return expression
 
 
+def stable_portrait_fallback(plan: TrackingPlan, duration: float) -> TrackingPlan:
+    """Replace an unstable virtual camera with a fixed maximum-resolution 9:16 crop."""
+    if plan.source_width <= 0 or plan.source_height <= 0:
+        return TrackingPlan(
+            1.0,
+            plan.source_width,
+            plan.source_height,
+            target_aspect=plan.target_aspect,
+            framing_mode="stable_portrait_fallback",
+            background_fill="none",
+            speaker_focus=False,
+        )
+    crop_width, crop_height = portrait_crop_dimensions(
+        plan.source_width,
+        plan.source_height,
+        target_aspect=plan.target_aspect,
+        zoom_factor=1.0,
+    )
+    x = max(0.0, (plan.source_width - crop_width) / 2)
+    y = max(0.0, (plan.source_height - crop_height) / 2)
+    end = max(0.001, duration)
+    return TrackingPlan(
+        1.0,
+        plan.source_width,
+        plan.source_height,
+        (FaceAnchor(0.0, x, y), FaceAnchor(end, x, y)),
+        face_detected=plan.face_detected,
+        crop_width=crop_width,
+        crop_height=crop_height,
+        target_aspect=plan.target_aspect,
+        framing_mode="stable_portrait_fallback",
+        background_fill="none",
+        speaker_focus=False,
+        speaker_tracks=plan.speaker_tracks,
+        speaker_switches=0,
+        reframe_events=0,
+        transitions=(),
+        source_cuts=plan.source_cuts,
+    )
+
+
 def tracking_expressions(plan: TrackingPlan | None) -> tuple[str, str]:
     if plan is None:
         return "(iw-ow)/2", "(ih-oh)/2"

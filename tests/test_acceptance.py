@@ -36,8 +36,18 @@ def _write_live_run(root: Path, *, finalists: int = 2, shortlist: int = 1) -> No
         "status": "SUCCESS",
         "status_reason": None,
         "errors": [],
-        "targets": {"rendered_finalists": finalists, "submission_shortlist": shortlist},
-        "actual": {"rendered_finalists": finalists, "submission_shortlist": shortlist},
+        "targets": {
+            "rendered_finalists": finalists,
+            "submission_shortlist": shortlist,
+            "distinct_finalist_concepts": min(shortlist, finalists),
+            "distinct_shortlist_concepts": shortlist,
+        },
+        "actual": {
+            "rendered_finalists": finalists,
+            "submission_shortlist": shortlist,
+            "distinct_finalist_concepts": min(shortlist, finalists),
+            "distinct_shortlist_concepts": shortlist,
+        },
         "rendered_clips": rendered,
         "submission_shortlist": rendered[:shortlist],
         "technical_qc": qc,
@@ -168,11 +178,15 @@ def test_live_validator_rejects_qc_count_and_concept_diversity(tmp_path: Path) -
     root.mkdir()
     _write_live_run(root, finalists=3, shortlist=1)
     manifest = json.loads((root / "manifest.json").read_text())
+    manifest["targets"]["distinct_finalist_concepts"] = 3
+    manifest["actual"]["distinct_finalist_concepts"] = 3
     for item in manifest["rendered_clips"]:
         item["concept_id"] = "same"
     (root / "manifest.json").write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="concept diversity"):
-        validate_live_run(root, expected_finalists=3, expected_shortlist=1)
+        validate_live_run(
+            root, expected_finalists=3, expected_shortlist=1, expected_distinct_finalists=3
+        )
 
 
 def test_live_validator_rejects_non_object_manifest_and_wrong_targets(tmp_path: Path) -> None:
@@ -227,3 +241,28 @@ def test_live_validator_rejects_count_qc_and_funnel_mismatches(tmp_path: Path) -
         (root / "manifest.json").write_text(json.dumps(manifest))
         with pytest.raises(ValueError, match=message):
             validate_live_run(root, expected_finalists=3, expected_shortlist=1)
+
+
+def test_live_validator_rejects_six_files_representing_only_two_concepts(tmp_path: Path) -> None:
+    _write_live_run(tmp_path, finalists=6, shortlist=3)
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    for index, item in enumerate(manifest["rendered_clips"]):
+        item["concept_id"] = f"concept-{index % 2}"
+    manifest["submission_shortlist"] = manifest["rendered_clips"][:3]
+    manifest["actual"]["distinct_finalist_concepts"] = 2
+    manifest["actual"]["distinct_shortlist_concepts"] = 2
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match=r"yield|concept diversity"):
+        validate_live_run(
+            tmp_path, expected_finalists=6, expected_shortlist=3, expected_distinct_finalists=3
+        )
+
+
+def test_package_root_lazily_exposes_pipeline_without_eager_dependency_import() -> None:
+    import clipper
+
+    assert clipper.PipelineSettings.__name__ == "PipelineSettings"
+    assert callable(clipper.run_pipeline)
+    missing_name = "missing_export"
+    with pytest.raises(AttributeError):
+        getattr(clipper, missing_name)

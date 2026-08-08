@@ -565,3 +565,40 @@ def test_v10_empty_mining_populates_zero_funnel_stats() -> None:
         "semantic_representatives": 0,
         "raw_pool": 0,
     }
+
+
+def test_render_reserves_prioritize_unrepresented_concepts_before_extra_variants() -> None:
+    def make(plan_id: str, concept_id: str, variant: str, score: float, start: float) -> EditPlan:
+        return EditPlan(
+            plan_id,
+            "video",
+            concept_id,
+            variant,
+            "direct",
+            (SourceSpan(start, start + 20),),
+            None,
+            (),
+            "tiktok",
+            score,
+            f"fp-{plan_id}",
+        )
+
+    plans = [
+        make("a1", "A", "v1", 10.0, 0),
+        make("a2", "A", "v2", 9.9, 0),
+        make("a3", "A", "v3", 9.8, 0),
+        make("b1", "B", "v1", 9.7, 60),
+        make("b2", "B", "v2", 9.6, 60),
+        make("c1", "C", "v1", 9.0, 120),
+        make("c2", "C", "v2", 8.9, 120),
+        make("d1", "D", "v1", 8.0, 180),
+        make("d2", "D", "v2", 7.9, 180),
+    ]
+    primary, reserve = select_render_plan_queue(plans, budget=2)
+    primary_concepts = {plan.concept_id for plan in primary}
+    unseen = [plan.concept_id for plan in reserve if plan.concept_id not in primary_concepts]
+    assert unseen[:2] == ["C", "D"]
+    first_repeat = next(
+        index for index, plan in enumerate(reserve) if plan.concept_id in primary_concepts
+    )
+    assert first_repeat >= 2
