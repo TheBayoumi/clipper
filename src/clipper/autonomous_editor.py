@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from .ai_editorial import (
@@ -217,6 +217,106 @@ class AutonomousEditorialPlanner:
         self._record(stage, key, result, cache_hit=False)
         return result.value
 
+    @staticmethod
+    def _repair_grounded_plan_duration(
+        brief: CampaignBrief,
+        timeline: CanonicalTimeline,
+        concept: GroundedClipConcept,
+        grounded_plan: GroundedEditPlan,
+    ) -> tuple[GroundedEditPlan | None, dict[str, object]]:
+        original = grounded_plan.compile(timeline, stable_hash(timeline.to_dict()))
+        if brief.min_clip_seconds <= original.duration <= brief.max_clip_seconds:
+            return grounded_plan, {}
+
+        positions = {word.word_id: index for index, word in enumerate(timeline.words)}
+        concept_positions = [positions[word_id] for word_id in concept.supporting_word_ids]
+        hook_positions = [positions[word_id] for word_id in grounded_plan.hook_source_word_ids]
+        source_positions = [positions[word_id] for word_id in grounded_plan.source_word_ids]
+        concept_start = min(concept_positions)
+        concept_end = max(concept_positions)
+        hook_start = min(hook_positions)
+        hook_end = max(hook_positions)
+        original_start = min(source_positions)
+        target = min(
+            brief.max_clip_seconds,
+            max(brief.min_clip_seconds, original.duration),
+        )
+
+        # A duration repair may only select source words from the grounded concept.
+        # Semantic expansion outside that evidence requires another model decision.
+        candidate_starts = list(range(concept_start, hook_start + 1))
+        candidates: list[tuple[float, int, int, float]] = []
+        for start_index in candidate_starts:
+            start_word = timeline.words[start_index]
+            for end_index in range(max(hook_end, start_index), concept_end + 1):
+                end_word = timeline.words[end_index]
+                duration = end_word.source_end - start_word.source_start
+                if duration < brief.min_clip_seconds:
+                    continue
+                if duration > brief.max_clip_seconds:
+                    break
+                boundary_bonus = 0.0
+                if end_word.text.rstrip().endswith((".", "?", "!")):
+                    boundary_bonus -= 1.0
+                if end_index < len(timeline.words) - 1:
+                    pause = timeline.words[end_index + 1].source_start - end_word.source_end
+                    if pause >= 0.35:
+                        boundary_bonus -= min(0.75, pause)
+                start_shift = abs(
+                    start_word.source_start - timeline.words[original_start].source_start
+                )
+                hook_delay = max(
+                    0.0, timeline.words[hook_start].source_start - start_word.source_start
+                )
+                score = (
+                    abs(duration - target) + 0.12 * start_shift + 0.08 * hook_delay + boundary_bonus
+                )
+                candidates.append((score, start_index, end_index, duration))
+
+        if not candidates:
+            return None, {
+                "concept_id": concept.concept_id,
+                "stage": "edit_plan",
+                "decision": "REJECT",
+                "reasons": ["duration_outside_campaign_bounds_no_grounded_repair"],
+                "plan_id": original.plan_id,
+                "original_duration": round(original.duration, 6),
+                "duration_seconds": round(original.duration, 6),
+                "minimum_seconds": brief.min_clip_seconds,
+                "maximum_seconds": brief.max_clip_seconds,
+                "campaign_min_seconds": brief.min_clip_seconds,
+                "campaign_max_seconds": brief.max_clip_seconds,
+                "grounded_context_duration": round(
+                    timeline.words[concept_end].source_end
+                    - timeline.words[concept_start].source_start,
+                    6,
+                ),
+            }
+
+        _, start_index, end_index, repaired_duration = min(candidates, key=lambda item: item[0])
+        repaired_ids = tuple(word.word_id for word in timeline.words[start_index : end_index + 1])
+        hook_id_set = set(grounded_plan.hook_source_word_ids)
+        if not hook_id_set.issubset(repaired_ids):
+            raise EditorialGroundingError("duration repair dropped grounded spoken hook words")
+        repaired = replace(grounded_plan, source_word_ids=repaired_ids)
+        evidence: dict[str, object] = {
+            "concept_id": concept.concept_id,
+            "stage": "edit_plan",
+            "decision": "REPAIR",
+            "reasons": ["duration_repaired_to_campaign_bounds"],
+            "plan_id": original.plan_id,
+            "original_duration": round(original.duration, 6),
+            "duration_seconds": round(original.duration, 6),
+            "repaired_duration": round(repaired_duration, 6),
+            "minimum_seconds": brief.min_clip_seconds,
+            "maximum_seconds": brief.max_clip_seconds,
+            "campaign_min_seconds": brief.min_clip_seconds,
+            "campaign_max_seconds": brief.max_clip_seconds,
+            "source_start_word_id": timeline.word_ref(repaired_ids[0]),
+            "source_end_word_id": timeline.word_ref(repaired_ids[-1]),
+        }
+        return repaired, evidence
+
     def _record(
         self,
         stage: str,
@@ -250,6 +350,45 @@ class AutonomousEditorialPlanner:
             }
             for word in timeline.words[start:end]
         ]
+
+    def _plan_context_words(
+        self,
+        timeline: CanonicalTimeline,
+        concept: GroundedClipConcept,
+        brief: CampaignBrief,
+        *,
+        max_words: int = 360,
+    ) -> list[dict[str, object]]:
+        positions = {word.word_id: index for index, word in enumerate(timeline.words)}
+        concept_positions = [positions[word_id] for word_id in concept.supporting_word_ids]
+        first_index = min(concept_positions)
+        last_index = max(concept_positions)
+        context_start_time = max(
+            timeline.start, timeline.words[first_index].source_start - brief.min_clip_seconds
+        )
+        context_end_time = min(
+            timeline.end, timeline.words[last_index].source_end + brief.max_clip_seconds
+        )
+        start_index = first_index
+        while start_index > 0 and timeline.words[start_index - 1].source_end >= context_start_time:
+            start_index -= 1
+        end_index = last_index + 1
+        while (
+            end_index < len(timeline.words)
+            and timeline.words[end_index].source_start <= context_end_time
+        ):
+            end_index += 1
+        if end_index - start_index > max_words:
+            before = max(0, first_index - start_index)
+            concept_width = last_index - first_index + 1
+            remaining = max(0, max_words - concept_width)
+            keep_before = min(before, remaining // 3)
+            start_index = max(0, first_index - keep_before)
+            end_index = min(len(timeline.words), start_index + max_words)
+            if end_index <= last_index:
+                end_index = last_index + 1
+                start_index = max(0, end_index - max_words)
+        return self._word_payload(timeline, start_index, end_index)
 
     def _chunks(self, timeline: CanonicalTimeline) -> list[list[dict[str, object]]]:
         if not timeline.words:
@@ -585,8 +724,11 @@ class AutonomousEditorialPlanner:
                     "campaign": self._campaign(brief),
                     "instruction": (
                         "Construct truthful source-grounded EditPlans. Preserve chronology. "
-                        "Use only supplied "
-                        "canonical word IDs for spoken material."
+                        "Use only supplied canonical word IDs for spoken material. "
+                        f"Every source range must be between {brief.min_clip_seconds:g} and "
+                        f"{brief.max_clip_seconds:g} seconds and must contain its spoken hook. "
+                        "Choose source_start_word_id/source_end_word_id from source_context_words; "
+                        "do not return only the hook unless it already satisfies duration bounds."
                     ),
                     "concept": {
                         **asdict(grounded_concept),
@@ -603,6 +745,9 @@ class AutonomousEditorialPlanner:
                         }
                         for hook in grounded_hooks
                     ],
+                    "source_context_words": self._plan_context_words(
+                        timeline, grounded_concept, brief
+                    ),
                 },
             )
             for raw in self._array(plan_payload, "plans"):
@@ -611,37 +756,46 @@ class AutonomousEditorialPlanner:
                     raise EditorialGroundingError("EditPlan references the wrong concept")
                 if grounded_plan.variant_id not in {hook.variant_id for hook in grounded_hooks}:
                     raise EditorialGroundingError("EditPlan references an unknown hook variant")
-                plan = grounded_plan.compile(timeline, stable_hash(timeline.to_dict()))
-                if not brief.min_clip_seconds <= plan.duration <= brief.max_clip_seconds:
-                    rejections.append(
-                        {
-                            "concept_id": concept.concept_id,
-                            "stage": "edit_plan",
-                            "decision": "REJECT",
-                            "reasons": ["duration_outside_campaign_bounds"],
-                            "plan_id": plan.plan_id,
-                            "duration_seconds": round(plan.duration, 6),
-                            "minimum_seconds": brief.min_clip_seconds,
-                            "maximum_seconds": brief.max_clip_seconds,
-                        }
-                    )
+                repaired_plan, repair_evidence = self._repair_grounded_plan_duration(
+                    brief, timeline, grounded_concept, grounded_plan
+                )
+                if repair_evidence:
+                    rejections.append(repair_evidence)
+                if repaired_plan is None:
                     continue
+                plan = repaired_plan.compile(timeline, stable_hash(timeline.to_dict()))
                 plans.append(plan)
         if not plans:
             reason_counts: dict[str, int] = {}
             rejected_durations: list[float] = []
-            for rejection in rejections:
+            failures = [
+                item for item in rejections if item.get("stage") in {"hook_generation", "edit_plan"}
+            ]
+            for rejection in failures:
                 raw_reasons = rejection.get("reasons")
                 if isinstance(raw_reasons, list):
                     for reason in raw_reasons:
                         if isinstance(reason, str):
                             reason_counts[reason] = reason_counts.get(reason, 0) + 1
-                duration = rejection.get("duration_seconds")
+                duration = rejection.get("original_duration", rejection.get("duration_seconds"))
                 if isinstance(duration, int | float):
                     rejected_durations.append(float(duration))
+            summary = [
+                {
+                    "concept_id": item.get("concept_id"),
+                    "plan_id": item.get("plan_id"),
+                    "reasons": item.get("reasons"),
+                    "original_duration": item.get(
+                        "original_duration", item.get("duration_seconds")
+                    ),
+                    "grounded_context_duration": item.get("grounded_context_duration"),
+                }
+                for item in failures[-12:]
+            ]
             raise EditorialGroundingError(
                 "open editorial planner produced no valid EditPlans; "
-                f"rejections={reason_counts}; durations={rejected_durations[:20]}"
+                f"rejections={reason_counts}; durations={rejected_durations[:20]}; "
+                f"diagnostics={summary}"
             )
         return OpenEditorialBatch(
             discovered_moments=discovered_moments,

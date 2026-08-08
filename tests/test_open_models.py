@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -882,6 +883,128 @@ def _grounded_concept(
         visual_dependencies=(),
         confidence=confidence,
     )
+
+
+def _long_grounded_timeline() -> CanonicalTimeline:
+    words = tuple(
+        CanonicalWord(
+            f"w{i:03d}",
+            f"token{i}{'.' if i % 20 == 19 else ''}",
+            i * 0.5,
+            i * 0.5 + 0.42,
+            "A",
+            0.99,
+            "aligned",
+            "whisperx",
+        )
+        for i in range(100)
+    )
+    return CanonicalTimeline("video", "source-hash", words)
+
+
+def test_edit_plan_context_exposes_grounded_words_around_concept(tmp_path: Path) -> None:
+    timeline = _long_grounded_timeline()
+    brief = replace(_open_brief(), min_clip_seconds=20, max_clip_seconds=45)
+    concept = GroundedClipConcept(
+        "c",
+        ("m",),
+        tuple(word.word_id for word in timeline.words[40:50]),
+        "grounded story",
+        "",
+        "story",
+        25,
+        (),
+        0.9,
+    )
+    planner = AutonomousEditorialPlanner(
+        _PlannerEditorial(), _PlannerEmbeddings(), FileCache(tmp_path / "context")
+    )
+    evidence = planner._plan_context_words(timeline, concept, brief)
+    refs = [str(item["word_ref"]) for item in evidence]
+    assert len(evidence) <= 360
+    assert timeline.word_ref(timeline.words[40].word_id) in refs
+    assert timeline.word_ref(timeline.words[49].word_id) in refs
+    assert float(evidence[0]["source_start"]) < timeline.words[40].source_start
+    assert float(evidence[-1]["source_end"]) > timeline.words[49].source_end
+    assert all(
+        "text" in item and "source_start" in item and "source_end" in item for item in evidence
+    )
+
+
+def test_duration_repair_expands_short_grounded_plan_to_campaign_minimum() -> None:
+    timeline = _long_grounded_timeline()
+    brief = replace(_open_brief(), min_clip_seconds=20, max_clip_seconds=45)
+    concept = GroundedClipConcept(
+        "c",
+        ("m",),
+        tuple(word.word_id for word in timeline.words),
+        "complete grounded story",
+        "",
+        "story",
+        28,
+        (),
+        0.9,
+    )
+    grounded = GroundedEditPlan(
+        "p-short",
+        "video",
+        "c",
+        "v",
+        tuple(word.word_id for word in timeline.words[:12]),
+        tuple(word.word_id for word in timeline.words[:4]),
+        None,
+        "direct",
+        "tiktok",
+        0.9,
+    )
+    repaired, evidence = AutonomousEditorialPlanner._repair_grounded_plan_duration(
+        brief, timeline, concept, grounded
+    )
+    assert repaired is not None
+    plan = repaired.compile(timeline, "fp")
+    assert brief.min_clip_seconds <= plan.duration <= brief.max_clip_seconds
+    assert plan.duration == pytest.approx(20.42)
+    assert set(grounded.hook_source_word_ids).issubset(repaired.source_word_ids)
+    assert evidence["decision"] == "REPAIR"
+    assert evidence["original_duration"] == pytest.approx(5.92)
+    assert evidence["repaired_duration"] == pytest.approx(plan.duration)
+
+
+def test_duration_repair_trims_long_plan_and_reports_unrepairable_context() -> None:
+    timeline = _long_grounded_timeline()
+    brief = replace(_open_brief(), min_clip_seconds=20, max_clip_seconds=45)
+    all_ids = tuple(word.word_id for word in timeline.words)
+    concept = GroundedClipConcept("c", ("m",), all_ids, "story", "", "story", 30, (), 0.9)
+    grounded = GroundedEditPlan(
+        "p-long",
+        "video",
+        "c",
+        "v",
+        all_ids,
+        tuple(word.word_id for word in timeline.words[4:8]),
+        None,
+        "direct",
+        "tiktok",
+        0.9,
+    )
+    repaired, evidence = AutonomousEditorialPlanner._repair_grounded_plan_duration(
+        brief, timeline, concept, grounded
+    )
+    assert repaired is not None
+    plan = repaired.compile(timeline, "fp")
+    assert 44 <= plan.duration <= 45
+    assert evidence["decision"] == "REPAIR"
+    assert evidence["original_duration"] == pytest.approx(49.92)
+
+    short_concept = replace(concept, supporting_word_ids=all_ids[:20])
+    short_plan = replace(grounded, plan_id="p-unrepairable", source_word_ids=all_ids[:10])
+    missing, rejected = AutonomousEditorialPlanner._repair_grounded_plan_duration(
+        brief, timeline, short_concept, short_plan
+    )
+    assert missing is None
+    assert rejected["decision"] == "REJECT"
+    assert rejected["reasons"] == ["duration_outside_campaign_bounds_no_grounded_repair"]
+    assert rejected["grounded_context_duration"] == pytest.approx(9.92)
 
 
 def test_autonomous_planner_validation_cosine_and_array_guards(tmp_path: Path) -> None:
