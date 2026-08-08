@@ -17,7 +17,13 @@ from clipper.ai_editorial import (
 )
 from clipper.autonomous_editor import AutonomousEditorialPlanner, OpenVideoAnalysis, _cosine
 from clipper.cache import FileCache
-from clipper.canonical import CanonicalTimeline, CanonicalWord, canonical_timeline_from_segments
+from clipper.canonical import (
+    CanonicalTimeline,
+    CanonicalWord,
+    canonical_timeline_from_segments,
+    canonical_timeline_from_word_payloads,
+    transcript_segments_from_canonical,
+)
 from clipper.models import (
     CampaignBrief,
     ClipConcept,
@@ -28,7 +34,11 @@ from clipper.models import (
     TranscriptWord,
 )
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult, compute_profile
-from clipper.providers.factory import editorial_and_embedding_providers, vision_provider
+from clipper.providers.factory import (
+    editorial_and_embedding_providers,
+    speech_providers,
+    vision_provider,
+)
 from clipper.providers.local import (
     LocalEditorialProvider,
     LocalEmbeddingProvider,
@@ -39,6 +49,12 @@ from clipper.providers.modal import (
     ModalEditorialProvider,
     ModalEmbeddingProvider,
     ModalVisionProvider,
+)
+from clipper.providers.modal_speech import (
+    ModalAlignmentProvider,
+    ModalDiarizationProvider,
+    ModalMediaBridge,
+    ModalTranscriptionProvider,
 )
 from clipper.providers.speech import (
     FasterWhisperTranscriptionProvider,
@@ -333,7 +349,7 @@ def test_local_vision_provider_json_path_without_real_model(tmp_path: Path) -> N
         provider.inspect(task="review", frames=[], context={})
 
 
-def test_modal_adapters_validate_response_and_record_usage() -> None:
+def test_modal_adapters_validate_response_and_record_usage(tmp_path: Path) -> None:
     identity = ModelIdentity("m", "r", "none", "modal")
     function = Mock()
     function.remote.return_value = {
@@ -357,8 +373,13 @@ def test_modal_adapters_validate_response_and_record_usage() -> None:
         result = editorial.complete_json(task="mine", payload={})
     assert result.value == {"ok": True}
     assert result.usage.gpu_type == "L40S"
+    frame = tmp_path / "a.jpg"
+    frame.write_bytes(b"frame-bytes")
     with patch.object(vision, "_function", return_value=function):
-        assert vision.inspect(task="review", frames=[Path("a.jpg")], context={}).value["ok"] is True
+        assert vision.inspect(task="review", frames=[frame], context={}).value["ok"] is True
+        payload = function.remote.call_args.args[0]
+        assert payload["frames_base64"]
+        assert "frame_paths" not in payload
     function.remote.return_value = {"value": []}
     with (
         patch.object(editorial, "_function", return_value=function),
@@ -1228,3 +1249,99 @@ def test_pyannote_dependency_device_and_invalid_output_failures() -> None:
     empty = SimpleNamespace(itertracks=lambda **_kwargs: iter(()))
     with pytest.raises(ValueError, match="no speaker turns"):
         PyannoteDiarizationProvider._turns(empty)
+
+
+def test_canonical_roundtrip_word_payloads_and_segment_grouping() -> None:
+    timeline = canonical_timeline_from_word_payloads(
+        "video",
+        "source-hash",
+        [
+            {"text": "hello", "start": 0.0, "end": 0.2, "confidence": 0.9},
+            {"text": "there", "start": 0.21, "end": 0.45, "confidence": 0.8},
+            {"text": "again", "start": 2.0, "end": 2.3, "confidence": None},
+        ],
+        transcript_source="modal-asr",
+    )
+    restored = CanonicalTimeline.from_dict(timeline.to_dict())
+    assert restored == timeline
+    segments = transcript_segments_from_canonical(restored, max_gap_seconds=0.5)
+    assert [segment.text for segment in segments] == ["hello there", "again"]
+    assert all(segment.words for segment in segments)
+    with pytest.raises(ValueError, match="grouping"):
+        transcript_segments_from_canonical(restored, max_words=0)
+    with pytest.raises(ValueError, match="no canonical words"):
+        canonical_timeline_from_word_payloads(
+            "video", "source-hash", [{"text": "", "start": 0, "end": 0}], transcript_source="x"
+        )
+
+
+def test_modal_media_bridge_and_speech_adapters(tmp_path: Path) -> None:
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"audio")
+    volume = Mock()
+    volume.listdir.return_value = []
+    upload = Mock()
+    manager = Mock()
+    manager.__enter__ = Mock(return_value=upload)
+    manager.__exit__ = Mock(return_value=False)
+    volume.batch_upload.return_value = manager
+    modal_module = SimpleNamespace(Volume=SimpleNamespace(from_name=Mock(return_value=volume)))
+    bridge = ModalMediaBridge("media")
+    with patch("clipper.providers.modal_speech.importlib.import_module", return_value=modal_module):
+        remote = bridge.ensure_uploaded(source, "abc")
+        assert remote == "/media/inputs/abc.wav"
+        assert bridge.ensure_uploaded(source, "abc") == remote
+    upload.put_file.assert_called_once_with(str(source), "/inputs/abc.wav")
+
+    identity = ModelIdentity("speech", "rev", "none", "modal")
+    transcribe = ModalTranscriptionProvider(
+        app_name="app", function_name="transcribe", identity=identity, media_bridge=bridge
+    )
+    function = Mock()
+    function.remote.return_value = {
+        "words": [{"text": "hello", "start": 0.0, "end": 0.2, "confidence": 0.9}],
+        "usage": {"gpu_type": "L4", "gpu_seconds": 1.0},
+    }
+    with (
+        patch.object(bridge, "ensure_uploaded", return_value="/media/inputs/abc.wav"),
+        patch.object(transcribe, "_function", return_value=function),
+    ):
+        result = transcribe.transcribe(source, video_id="video", source_hash="abc")
+    assert result.value.words[0].text == "hello"
+    assert result.usage.gpu_type == "L4"
+
+    timeline = result.value
+    align = ModalAlignmentProvider(
+        app_name="app", function_name="align", identity=identity, media_bridge=bridge
+    )
+    function.remote.return_value = {
+        "segments": [{"words": [{"word": "hello", "start": 0.01, "end": 0.21, "score": 0.95}]}]
+    }
+    with (
+        patch.object(bridge, "ensure_uploaded", return_value="/media/inputs/abc.wav"),
+        patch.object(align, "_function", return_value=function),
+    ):
+        aligned = align.align(source, timeline).value
+    assert aligned.words[0].timing_mode == "aligned"
+
+    diarize = ModalDiarizationProvider(
+        app_name="app", function_name="diarize", identity=identity, media_bridge=bridge
+    )
+    function.remote.return_value = {"turns": [[0.0, 1.0, "SPEAKER_00"]]}
+    with (
+        patch.object(bridge, "ensure_uploaded", return_value="/media/inputs/abc.wav"),
+        patch.object(diarize, "_function", return_value=function),
+    ):
+        spoken = diarize.diarize(source, aligned).value
+    assert spoken.words[0].speaker_id == "SPEAKER_00"
+
+
+def test_speech_provider_factory_routes_local_and_modal() -> None:
+    local = speech_providers("local-lite")
+    assert isinstance(local[0], FasterWhisperTranscriptionProvider)
+    assert isinstance(local[1], WhisperXAlignmentProvider)
+    assert isinstance(local[2], PyannoteDiarizationProvider)
+    remote = speech_providers("balanced")
+    assert isinstance(remote[0], ModalTranscriptionProvider)
+    assert isinstance(remote[1], ModalAlignmentProvider)
+    assert isinstance(remote[2], ModalDiarizationProvider)

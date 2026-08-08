@@ -283,3 +283,17 @@ def test_live_validator_accepts_more_distinct_finalists_than_minimum(tmp_path: P
         expected_distinct_finalists=3,
     )
     assert report["actual"]["distinct_finalist_concepts"] == 6
+
+
+def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
+    workflow = Path(".github/workflows/open-model-acceptance.yml").read_text()
+    assert "MODAL_TOKEN_ID" in workflow
+    assert "MODAL_TOKEN_SECRET" in workflow
+    assert "HF_TOKEN" in workflow
+    assert "modal deploy scripts/modal_open_models.py" in workflow
+    assert "hf_access_smoke" in workflow
+    assert 'speech_providers("balanced")' in workflow
+    assert "CLIPPER_EDITORIAL_ENGINE: open" in workflow
+    assert "CLIPPER_COMPUTE_PROFILE: balanced" in workflow
+    assert "--no-render" in workflow
+    assert "reach-double-coverage-dedicated.yaml" in workflow

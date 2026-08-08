@@ -3,14 +3,28 @@ from __future__ import annotations
 import os
 
 from .base import (
+    AlignmentProvider,
+    DiarizationProvider,
     EditorialProvider,
     EmbeddingProvider,
     ModelIdentity,
+    TranscriptionProvider,
     VisionProvider,
     compute_profile,
 )
 from .local import LocalEditorialProvider, LocalEmbeddingProvider, LocalVisionProvider
 from .modal import ModalEditorialProvider, ModalEmbeddingProvider, ModalVisionProvider
+from .modal_speech import (
+    ModalAlignmentProvider,
+    ModalDiarizationProvider,
+    ModalMediaBridge,
+    ModalTranscriptionProvider,
+)
+from .speech import (
+    FasterWhisperTranscriptionProvider,
+    PyannoteDiarizationProvider,
+    WhisperXAlignmentProvider,
+)
 
 
 def editorial_and_embedding_providers(
@@ -66,5 +80,60 @@ def vision_provider(profile_name: str, *, large: bool = False) -> VisionProvider
             "modal-transformers",
             "vision-v1",
             "vision-json-v1",
+        ),
+    )
+
+
+def speech_providers(
+    profile_name: str,
+) -> tuple[TranscriptionProvider, AlignmentProvider, DiarizationProvider]:
+    profile = compute_profile(profile_name)  # type: ignore[arg-type]
+    if profile.editorial_location == "local":
+        return (
+            FasterWhisperTranscriptionProvider(),
+            WhisperXAlignmentProvider(),
+            PyannoteDiarizationProvider(),
+        )
+    app = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
+    bridge = ModalMediaBridge(os.getenv("CLIPPER_MODAL_MEDIA_VOLUME", "clipper-media-cache"))
+    return (
+        ModalTranscriptionProvider(
+            app_name=app,
+            function_name="transcribe",
+            identity=ModelIdentity(
+                "faster-whisper/large-v3-turbo",
+                os.getenv("CLIPPER_ASR_MODEL_REVISION", "main"),
+                "int8_float16",
+                "modal-faster-whisper",
+                "none",
+                "canonical-timeline-v1",
+            ),
+            media_bridge=bridge,
+        ),
+        ModalAlignmentProvider(
+            app_name=app,
+            function_name="align",
+            identity=ModelIdentity(
+                "whisperx-forced-alignment",
+                os.getenv("CLIPPER_ALIGNMENT_MODEL_REVISION", "main"),
+                "none",
+                "modal-whisperx",
+                "none",
+                "canonical-timeline-v1",
+            ),
+            media_bridge=bridge,
+        ),
+        ModalDiarizationProvider(
+            app_name=app,
+            function_name="diarize",
+            identity=ModelIdentity(
+                "pyannote/speaker-diarization-community-1",
+                os.getenv("CLIPPER_DIARIZATION_MODEL_REVISION", "main"),
+                "none",
+                "modal-pyannote",
+                "none",
+                "canonical-timeline-v1",
+            ),
+            media_bridge=bridge,
         ),
     )

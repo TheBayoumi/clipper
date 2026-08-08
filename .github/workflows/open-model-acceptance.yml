@@ -1,0 +1,172 @@
+name: Open-model acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/word-reveal-face-tracking
+    paths:
+      - ".github/workflows/open-model-acceptance.yml"
+      - "scripts/modal_open_models.py"
+      - "src/clipper/providers/**"
+      - "src/clipper/canonical.py"
+      - "src/clipper/autonomous_editor.py"
+      - "src/clipper/pipeline.py"
+      - "pyproject.toml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  open-model-acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      CLIPPER_MODAL_APP: clipper-open-editor
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Verify required open-model credentials exist
+        run: |
+          test -n "$MODAL_TOKEN_ID"
+          test -n "$MODAL_TOKEN_SECRET"
+          test -n "$HF_TOKEN"
+
+      - name: Install lightweight client dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[modal]'
+
+      - name: Reuse private authorized Double Coverage fixture
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FIXTURE_URL: ${{ secrets.CLIPPER_LIVE_FIXTURE_URL }}
+          FIXTURE_SHA256: ${{ secrets.CLIPPER_LIVE_FIXTURE_SHA256 }}
+        run: |
+          set -euo pipefail
+          rm -rf live-fixture fixture.zip
+          mkdir -p live-fixture
+          reused=false
+          while read -r run_id; do
+            test -n "$run_id" || continue
+            rm -rf live-fixture/*
+            if gh run download "$run_id" -n reach-source-fixture-v10 -D live-fixture; then
+              reused=true
+              echo "Reused private source fixture from run $run_id"
+              break
+            fi
+          done < <(
+            gh run list \
+              --workflow live-campaign.yml \
+              --branch feat/word-reveal-face-tracking \
+              --limit 20 \
+              --json databaseId \
+              --jq '.[].databaseId'
+          )
+          if [ "$reused" != true ]; then
+            test -n "$FIXTURE_URL"
+            test -n "$FIXTURE_SHA256"
+            curl --fail --location --retry 3 --silent --show-error "$FIXTURE_URL" -o fixture.zip
+            echo "$FIXTURE_SHA256  fixture.zip" | sha256sum --check --strict
+            unzip -q fixture.zip -d live-fixture
+          fi
+          test -f live-fixture/fixture.json
+          test -f live-fixture/source.en.vtt
+
+      - name: Deploy exact-HEAD Modal open-model workers
+        run: modal deploy scripts/modal_open_models.py
+
+      - name: Verify Modal and gated Hugging Face access
+        run: |
+          python - <<'PY'
+          import json
+          import modal
+
+          app = "clipper-open-editor"
+          credential = modal.Function.from_name(app, "credential_smoke").remote()
+          gated = modal.Function.from_name(app, "hf_access_smoke").remote()
+          embedding = modal.Function.from_name(app, "embedding").remote(
+              {"texts": ["Open-weight podcast editorial acceptance"]}
+          )
+          assert credential.get("ok") is True
+          assert gated.get("ok") is True
+          assert gated.get("model_id") == "pyannote/speaker-diarization-community-1"
+          assert isinstance(embedding.get("vectors"), list) and len(embedding["vectors"]) == 1
+          print(json.dumps({"credential": credential, "hf": gated, "embedding_usage": embedding.get("usage")}, indent=2))
+          PY
+
+      - name: Run real Modal speech grounding smoke on authorized podcast audio
+        run: |
+          mkdir -p open-evidence
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from clipper.cache import file_sha256
+          from clipper.providers.factory import speech_providers
+
+          root = Path("live-fixture")
+          fixture = json.loads((root / "fixture.json").read_text())
+          first = fixture["spans"][0]
+          source = root / first["file"]
+          source_hash = file_sha256(source)
+          asr, alignment, diarization = speech_providers("balanced")
+          timeline = asr.transcribe(source, video_id=fixture["video"]["video_id"], source_hash=source_hash).value
+          timeline = alignment.align(source, timeline).value
+          timeline = diarization.diarize(source, timeline).value
+          assert timeline.words
+          assert all(word.timing_mode == "aligned" for word in timeline.words)
+          assert any(word.speaker_id for word in timeline.words)
+          payload = timeline.to_dict()
+          (Path("open-evidence") / "speech-grounding-smoke.json").write_text(json.dumps(payload, indent=2) + "\n")
+          print(json.dumps({"words": len(timeline.words), "speakers": sorted({w.speaker_id for w in timeline.words if w.speaker_id})}, indent=2))
+          PY
+
+      - name: Run full-episode open editorial analysis through Modal
+        env:
+          CLIPPER_SOURCE_FIXTURE_DIR: ${{ github.workspace }}/live-fixture
+          CLIPPER_EDITORIAL_ENGINE: open
+          CLIPPER_GROUNDING_ENGINE: legacy
+          CLIPPER_COMPUTE_PROFILE: balanced
+          CLIPPER_VISUAL_REVIEW: "false"
+        run: |
+          clipper run \
+            --brief campaigns/reach-double-coverage-dedicated.yaml \
+            --artifact-root open-evidence \
+            --no-render
+
+      - name: Validate full-episode open-model planning evidence
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifests = list(Path("open-evidence").glob("*/manifest.json"))
+          assert len(manifests) == 1, manifests
+          manifest = json.loads(manifests[0].read_text())
+          inference = manifest["run_metadata"]["editorial_inference"]
+          assert inference["engine"] == "open"
+          assert inference["degraded"] is False
+          assert manifest["funnel"]["story_moments"] >= 4
+          assert manifest["funnel"]["selected_concepts"] >= 3
+          assert manifest["funnel"]["edit_plans"] >= 3
+          assert manifest["status"] == "SUCCESS"
+          print(json.dumps({"head": "${{ github.sha }}", "funnel": manifest["funnel"], "editorial_inference": inference}, indent=2))
+          PY
+
+      - name: Upload exact-HEAD open-model acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-model-acceptance-${{ github.sha }}
+          path: open-evidence/
+          retention-days: 14
+          if-no-files-found: warn

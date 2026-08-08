@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib
 from pathlib import Path
 from typing import Any
@@ -57,9 +58,8 @@ class ModalVisionProvider(ModalJSONProvider):
     def inspect(
         self, *, task: str, frames: list[Path], context: dict[str, Any]
     ) -> ProviderResult[dict[str, Any]]:
-        return self.invoke(
-            {"task": task, "frame_paths": [str(frame) for frame in frames], "context": context}
-        )
+        encoded_frames = [base64.b64encode(frame.read_bytes()).decode("ascii") for frame in frames]
+        return self.invoke({"task": task, "frames_base64": encoded_frames, "context": context})
 
 
 class ModalEmbeddingProvider(ModalJSONProvider):

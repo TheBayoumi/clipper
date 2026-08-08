@@ -81,7 +81,7 @@ def test_fixture_source_verifies_identity_files_watermark_and_span(tmp_path: Pat
     span = client.download_media_span(video, 10.0, 20.0, tmp_path / "work")
     assert span == SpanMedia(tmp_path / "span.mp4", 8.0, 25.0, _hash(tmp_path / "span.mp4"))
     assert client.campaign_watermark(_brief()) == tmp_path / "watermark.png"
-    with pytest.raises(FixtureError, match="span-aware"):
+    with pytest.raises(FixtureError, match="no full media"):
         client.download_media(video, tmp_path / "work")
     with pytest.raises(FixtureError, match="no source span"):
         client.download_media_span(video, 1.0, 7.0, tmp_path / "work")
@@ -341,3 +341,18 @@ def test_pipeline_uses_span_fixture_and_records_span_hash(tmp_path: Path) -> Non
     assert result["status"] == "SUCCESS"
     assert result["run_metadata"]["source_span_hashes"]["v1"]
     assert result["actual"]["rendered_finalists"] == 1
+
+
+def test_fixture_source_can_supply_checksum_verified_full_media_for_open_grounding(
+    tmp_path: Path,
+) -> None:
+    root = _fixture(tmp_path)
+    full = tmp_path / "full.mp4"
+    full.write_bytes(b"full-authorized-media")
+    manifest_path = root / "fixture.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["full_media"] = {"file": "full.mp4", "sha256": _hash(full)}
+    manifest_path.write_text(json.dumps(manifest))
+    client = FixtureSourceClient(root)
+    video = client.discover(_brief())[0]
+    assert client.download_media(video, tmp_path / "work") == full

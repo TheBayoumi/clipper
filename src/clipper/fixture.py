@@ -63,6 +63,9 @@ class FixtureSourceClient:
         if not self.spans:
             raise FixtureError("fixture contains no source spans")
         self._verify_file("transcript", self.manifest.get("transcript"))
+        full_media = self.manifest.get("full_media")
+        if full_media is not None:
+            self._verify_file("full_media", full_media)
         watermark = self.manifest.get("watermark")
         if watermark is not None:
             self._verify_file("watermark", watermark)
@@ -106,8 +109,13 @@ class FixtureSourceClient:
         return self._verify_file("transcript", self.manifest["transcript"])
 
     def download_media(self, video: VideoCandidate, work_dir: Path) -> Path:
-        del video, work_dir
-        raise FixtureError("fixture source requires span-aware media acquisition")
+        del work_dir
+        if video.video_id != self.video.video_id:
+            raise FixtureError("fixture media request targets the wrong video")
+        entry = self.manifest.get("full_media")
+        if not isinstance(entry, dict):
+            raise FixtureError("fixture source has no full media for open grounding")
+        return self._verify_file("full_media", entry)
 
     def download_media_span(
         self, video: VideoCandidate, start: float, end: float, work_dir: Path

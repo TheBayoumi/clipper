@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from clipper.canonical import CanonicalTimeline, CanonicalWord
 from clipper.models import (
     CampaignBrief,
     ClipCandidate,
@@ -1020,3 +1021,209 @@ def test_visual_review_escalation_is_recorded_in_pipeline_manifest(tmp_path: Pat
     assert (
         manifest["run_metadata"]["visual_inference"]["escalation_model"]["model_id"] == "fake-vlm"
     )
+
+
+class _OpenGroundingSource(FakeSource):
+    def download_subtitles(self, _video: VideoCandidate, _work_dir: Path, _language: str) -> Path:
+        raise AssertionError("open grounding must not acquire subtitles")
+
+
+class _GroundingTranscription:
+    identity = ModelIdentity("asr", "rev", "none", "test", "none", "canonical-v1")
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def transcribe(
+        self, source: Path, *, video_id: str, source_hash: str
+    ) -> ProviderResult[CanonicalTimeline]:
+        self.calls += 1
+        assert source.is_file()
+        words = tuple(
+            CanonicalWord(
+                f"{video_id}:w{index:07d}",
+                text,
+                float(index),
+                float(index) + 0.8,
+                None,
+                0.95,
+                "word_exact",
+                "fake-asr",
+            )
+            for index, text in enumerate(
+                [
+                    "This",
+                    "explanation",
+                    "stands",
+                    "alone",
+                    "and",
+                    "clearly",
+                    "saves",
+                    "people",
+                    "time",
+                    "today",
+                ]
+            )
+        )
+        return ProviderResult(
+            CanonicalTimeline(video_id, source_hash, words),
+            self.identity,
+            InferenceUsage("test", "now", 0.01),
+        )
+
+
+class _GroundingAlignment:
+    identity = ModelIdentity("align", "rev", "none", "test", "none", "canonical-v1")
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def align(self, source: Path, timeline: CanonicalTimeline) -> ProviderResult[CanonicalTimeline]:
+        self.calls += 1
+        assert source.is_file()
+        words = tuple(
+            CanonicalWord(
+                word.word_id,
+                word.text,
+                word.source_start,
+                word.source_end,
+                word.speaker_id,
+                word.confidence,
+                "aligned",
+                "fake-asr+alignment",
+            )
+            for word in timeline.words
+        )
+        return ProviderResult(
+            CanonicalTimeline(timeline.video_id, timeline.source_hash, words),
+            self.identity,
+            InferenceUsage("test", "now", 0.01),
+        )
+
+
+class _GroundingDiarization:
+    identity = ModelIdentity("diar", "rev", "none", "test", "none", "canonical-v1")
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def diarize(
+        self, source: Path, timeline: CanonicalTimeline
+    ) -> ProviderResult[CanonicalTimeline]:
+        self.calls += 1
+        assert source.is_file()
+        words = tuple(
+            CanonicalWord(
+                word.word_id,
+                word.text,
+                word.source_start,
+                word.source_end,
+                "SPEAKER_00",
+                word.confidence,
+                word.timing_mode,
+                word.transcript_source,
+            )
+            for word in timeline.words
+        )
+        return ProviderResult(
+            CanonicalTimeline(timeline.video_id, timeline.source_hash, words),
+            self.identity,
+            InferenceUsage("test", "now", 0.01),
+        )
+
+
+def test_open_grounding_owns_canonical_timeline_and_bypasses_subtitles(tmp_path: Path) -> None:
+    brief = tmp_path / "grounded-open.json"
+    brief.write_text(
+        json.dumps(
+            {
+                "campaign_id": "open-grounding",
+                "title": "Any domain",
+                "objective": "Find useful standalone moments",
+                "keywords": ["schema-required"],
+                "source_channel_ids": ["UC1"],
+                "rights_confirmed": True,
+                "min_clip_seconds": 8,
+                "max_clip_seconds": 20,
+                "clip_count": 1,
+                "production": {
+                    "candidate_pool_size": 10,
+                    "concept_count": 1,
+                    "variants_per_concept": 1,
+                    "final_render_budget": 1,
+                    "minimum_distinct_finalist_concepts": 1,
+                },
+            }
+        )
+    )
+    subtitle = tmp_path / "must-not-read.vtt"
+    subtitle.write_text("WEBVTT\n")
+    media = tmp_path / "grounding-source.mp4"
+    media.write_bytes(b"grounding-source")
+    asr = _GroundingTranscription()
+    alignment = _GroundingAlignment()
+    diarization = _GroundingDiarization()
+    run_dir = run_pipeline(
+        brief,
+        settings=PipelineSettings(
+            artifact_root=tmp_path / "grounded-artifacts",
+            cache_root=tmp_path / "grounded-cache",
+            editorial_engine="open",
+            grounding_engine="open",
+            compute_profile="local-lite",
+            editorial_chunk_words=200,
+            editorial_chunk_overlap_words=20,
+        ),
+        source_client=_OpenGroundingSource(subtitle, media),
+        editorial_provider=FakeOpenEditorialProvider(),
+        embedding_provider=FakeOpenEmbeddingProvider(),
+        transcription_provider=asr,
+        alignment_provider=alignment,
+        diarization_provider=diarization,
+        render=False,
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert asr.calls == alignment.calls == diarization.calls == 1
+    assert manifest["run_metadata"]["grounding_inference"]["engine"] == "open"
+    assert manifest["run_metadata"]["transcript_sources"]["allowed"]["kind"] == "canonical-open"
+    assert manifest["run_metadata"]["canonical_timelines"]["allowed"]["speaker_count"] == 1
+    assert manifest["run_metadata"]["canonical_timelines"]["allowed"]["timing_modes"] == ["aligned"]
+    assert manifest["edit_plans"][0]["caption_start_word"] == "This"
+    transcript = json.loads((run_dir / "transcript.json").read_text())
+    assert transcript["allowed"][0]["words"][0]["text"] == "This"
+
+    second = run_pipeline(
+        brief,
+        settings=PipelineSettings(
+            artifact_root=tmp_path / "grounded-artifacts-second",
+            cache_root=tmp_path / "grounded-cache",
+            editorial_engine="open",
+            grounding_engine="open",
+            compute_profile="local-lite",
+            editorial_chunk_words=200,
+            editorial_chunk_overlap_words=20,
+        ),
+        source_client=_OpenGroundingSource(subtitle, media),
+        editorial_provider=FakeOpenEditorialProvider(),
+        embedding_provider=FakeOpenEmbeddingProvider(),
+        transcription_provider=asr,
+        alignment_provider=alignment,
+        diarization_provider=diarization,
+        render=False,
+    )
+    assert second.is_dir()
+    assert asr.calls == alignment.calls == diarization.calls == 1
+
+
+def test_open_grounding_requires_complete_provider_set(tmp_path: Path) -> None:
+    brief = _write_pipeline_brief(tmp_path)
+    with pytest.raises(ValueError, match="transcription, alignment, and diarization"):
+        run_pipeline(
+            brief,
+            settings=PipelineSettings(
+                artifact_root=tmp_path / "bad-grounding",
+                grounding_engine="open",
+            ),
+            transcription_provider=_GroundingTranscription(),
+            render=False,
+        )

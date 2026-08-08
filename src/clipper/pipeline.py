@@ -24,12 +24,17 @@ from .cache import (
     analysis_cache_key,
     clip_concepts_from_payload,
     file_sha256,
+    model_stage_cache_key,
     stable_hash,
     story_moments_from_payload,
     transcript_cache_key,
     transcript_segments_from_payload,
 )
-from .canonical import CanonicalTimeline, canonical_timeline_from_segments
+from .canonical import (
+    CanonicalTimeline,
+    canonical_timeline_from_segments,
+    transcript_segments_from_canonical,
+)
 from .editorial import (
     build_edit_plan,
     discover_story_moments,
@@ -54,9 +59,17 @@ from .models import (
     VideoCandidate,
 )
 from .performance import RunTelemetry
-from .providers.base import EditorialProvider, EmbeddingProvider, VisionProvider
+from .providers.base import (
+    AlignmentProvider,
+    DiarizationProvider,
+    EditorialProvider,
+    EmbeddingProvider,
+    TranscriptionProvider,
+    VisionProvider,
+)
 from .providers.factory import (
     editorial_and_embedding_providers,
+    speech_providers,
 )
 from .providers.factory import (
     vision_provider as build_vision_provider,
@@ -194,6 +207,7 @@ class PipelineSettings:
     speaker_window_seconds: float = 0.8
     speaker_min_detection_coverage: float = 0.35
     editorial_engine: str = "heuristic"
+    grounding_engine: str = "legacy"
     compute_profile: str = "balanced"
     editorial_chunk_words: int = 900
     editorial_chunk_overlap_words: int = 120
@@ -238,6 +252,7 @@ class PipelineSettings:
                 os.getenv("CLIPPER_SPEAKER_MIN_DETECTION_COVERAGE", "0.35")
             ),
             editorial_engine=os.getenv("CLIPPER_EDITORIAL_ENGINE", "heuristic").strip().lower(),
+            grounding_engine=os.getenv("CLIPPER_GROUNDING_ENGINE", "legacy").strip().lower(),
             compute_profile=os.getenv("CLIPPER_COMPUTE_PROFILE", "balanced").strip().lower(),
             editorial_chunk_words=int(os.getenv("CLIPPER_EDITORIAL_CHUNK_WORDS", "900")),
             editorial_chunk_overlap_words=int(
@@ -302,6 +317,116 @@ def _cache_event(manifest: PipelineManifest, stage: str, key: str, hit: bool) ->
     events = manifest.cache["events"]
     if isinstance(events, list):
         events.append({"stage": stage, "key": key, "hit": hit})
+
+
+def _grounding_cache_key(stage: str, source_hash: str, provider: object, payload: object) -> str:
+    identity = getattr(provider, "identity", None)
+    if identity is None:
+        raise ValueError("grounding provider has no model identity")
+    return model_stage_cache_key(
+        stage,
+        source_hash=source_hash,
+        campaign={},
+        model=identity,
+        payload=payload,
+    )
+
+
+def _cached_open_transcription(
+    cache: FileCache,
+    manifest: PipelineManifest,
+    provider: TranscriptionProvider,
+    media_path: Path,
+    video_id: str,
+    source_hash: str,
+) -> tuple[CanonicalTimeline, dict[str, object]]:
+    key = _grounding_cache_key(
+        "canonical-transcription", source_hash, provider, {"video_id": video_id}
+    )
+    cached = cache.read(key, "canonical")
+    if isinstance(cached, dict):
+        try:
+            value = CanonicalTimeline.from_dict(cached)
+        except (TypeError, ValueError):
+            value = None
+        if value is not None:
+            _cache_event(manifest, "canonical-transcription", key, True)
+            return value, {"model": provider.identity.to_dict(), "cache_hit": True}
+    result = provider.transcribe(media_path, video_id=video_id, source_hash=source_hash)
+    cache.write(key, "canonical", result.value.to_dict())
+    _cache_event(manifest, "canonical-transcription", key, False)
+    return result.value, {
+        "model": result.model.to_dict(),
+        "usage": asdict(result.usage),
+        "degraded": result.degraded,
+        "cache_hit": False,
+    }
+
+
+def _cached_open_alignment(
+    cache: FileCache,
+    manifest: PipelineManifest,
+    provider: AlignmentProvider,
+    media_path: Path,
+    timeline: CanonicalTimeline,
+) -> tuple[CanonicalTimeline, dict[str, object]]:
+    key = _grounding_cache_key(
+        "canonical-alignment",
+        timeline.source_hash,
+        provider,
+        {"timeline_sha256": stable_hash(timeline.to_dict())},
+    )
+    cached = cache.read(key, "canonical")
+    if isinstance(cached, dict):
+        try:
+            value = CanonicalTimeline.from_dict(cached)
+        except (TypeError, ValueError):
+            value = None
+        if value is not None:
+            _cache_event(manifest, "canonical-alignment", key, True)
+            return value, {"model": provider.identity.to_dict(), "cache_hit": True}
+    result = provider.align(media_path, timeline)
+    cache.write(key, "canonical", result.value.to_dict())
+    _cache_event(manifest, "canonical-alignment", key, False)
+    return result.value, {
+        "model": result.model.to_dict(),
+        "usage": asdict(result.usage),
+        "degraded": result.degraded,
+        "cache_hit": False,
+    }
+
+
+def _cached_open_diarization(
+    cache: FileCache,
+    manifest: PipelineManifest,
+    provider: DiarizationProvider,
+    media_path: Path,
+    timeline: CanonicalTimeline,
+) -> tuple[CanonicalTimeline, dict[str, object]]:
+    key = _grounding_cache_key(
+        "canonical-diarization",
+        timeline.source_hash,
+        provider,
+        {"timeline_sha256": stable_hash(timeline.to_dict())},
+    )
+    cached = cache.read(key, "canonical")
+    if isinstance(cached, dict):
+        try:
+            value = CanonicalTimeline.from_dict(cached)
+        except (TypeError, ValueError):
+            value = None
+        if value is not None:
+            _cache_event(manifest, "canonical-diarization", key, True)
+            return value, {"model": provider.identity.to_dict(), "cache_hit": True}
+    result = provider.diarize(media_path, timeline)
+    cache.write(key, "canonical", result.value.to_dict())
+    _cache_event(manifest, "canonical-diarization", key, False)
+    return result.value, {
+        "model": result.model.to_dict(),
+        "usage": asdict(result.usage),
+        "degraded": result.degraded,
+        "cache_hit": False,
+    }
 
 
 def _cached_vtt_transcript(
@@ -522,6 +647,9 @@ def run_pipeline(
     embedding_provider: EmbeddingProvider | None = None,
     visual_review_provider: VisionProvider | None = None,
     visual_escalation_provider: VisionProvider | None = None,
+    transcription_provider: TranscriptionProvider | None = None,
+    alignment_provider: AlignmentProvider | None = None,
+    diarization_provider: DiarizationProvider | None = None,
     render: bool = True,
 ) -> Path:
     brief = load_brief(brief_path)
@@ -531,6 +659,19 @@ def run_pipeline(
     cache = FileCache(cfg.cache_root or (cfg.artifact_root / "_cache"))
     if cfg.editorial_engine not in {"heuristic", "open"}:
         raise ValueError("CLIPPER_EDITORIAL_ENGINE must be heuristic or open")
+    if cfg.grounding_engine not in {"legacy", "open"}:
+        raise ValueError("CLIPPER_GROUNDING_ENGINE must be legacy or open")
+    grounding_providers = (transcription_provider, alignment_provider, diarization_provider)
+    if cfg.grounding_engine == "open":
+        supplied = [provider is not None for provider in grounding_providers]
+        if any(supplied) and not all(supplied):
+            raise ValueError(
+                "open grounding requires transcription, alignment, and diarization providers"
+            )
+        if not all(supplied):
+            transcription_provider, alignment_provider, diarization_provider = speech_providers(
+                cfg.compute_profile
+            )
     open_planner: AutonomousEditorialPlanner | None = None
     if cfg.editorial_engine == "open":
         if (editorial_provider is None) != (embedding_provider is None):
@@ -590,7 +731,11 @@ def run_pipeline(
         "git_commit_sha": _git_sha(),
         "cache_schema_version": CACHE_SCHEMA_VERSION,
         "transcription": {
-            "engine": "faster-whisper-or-youtube-vtt",
+            "engine": (
+                "canonical-open-asr-alignment-diarization"
+                if cfg.grounding_engine == "open"
+                else "faster-whisper-or-youtube-vtt"
+            ),
             "model": cfg.whisper_model,
             "device": cfg.whisper_device,
             "compute_type": cfg.whisper_compute_type,
@@ -602,6 +747,11 @@ def run_pipeline(
         "transcript_hashes": {},
         "transcript_sources": {},
         "canonical_timelines": {},
+        "grounding_inference": {
+            "engine": cfg.grounding_engine,
+            "compute_profile": cfg.compute_profile,
+            "models": [],
+        },
         "editorial_inference": {
             "engine": cfg.editorial_engine,
             "compute_profile": cfg.compute_profile,
@@ -678,46 +828,77 @@ def run_pipeline(
         video_work = work_dir / video.video_id
         try:
             direct_media_url = brief.source_media_urls.get(video.video_id)
-            if direct_media_url:
+            if cfg.grounding_engine == "open":
+                if (
+                    transcription_provider is None
+                    or alignment_provider is None
+                    or diarization_provider is None
+                ):
+                    raise RuntimeError("open grounding providers are not configured")
                 telemetry.start(f"source_acquisition:{video.video_id}")
-                media_path = _download_asset(
-                    direct_media_url,
-                    video_work / "source.mp4",
-                    max_bytes=4_000_000_000,
-                    expected_kind="media",
-                )
+                if direct_media_url:
+                    media_path = _download_asset(
+                        direct_media_url,
+                        video_work / "source.mp4",
+                        max_bytes=4_000_000_000,
+                        expected_kind="media",
+                    )
+                else:
+                    media_path = source.download_media(video, video_work)
                 telemetry.stop(f"source_acquisition:{video.video_id}")
                 media_paths[video.video_id] = media_path
-                telemetry.start(f"transcription:{video.video_id}")
-                segments, source_hash = _cached_asr_transcript(
-                    cache, manifest, video.video_id, media_path, brief, cfg
-                )
-                telemetry.stop(f"transcription:{video.video_id}")
+                _record_source_media_metadata(manifest, video.video_id, media_path)
+                source_hash = file_sha256(media_path)
                 manifest.run_metadata["source_hashes"][video.video_id] = source_hash
+
+                telemetry.start(f"canonical_transcription:{video.video_id}")
+                canonical, transcription_evidence = _cached_open_transcription(
+                    cache,
+                    manifest,
+                    transcription_provider,
+                    media_path,
+                    video.video_id,
+                    source_hash,
+                )
+                telemetry.stop(f"canonical_transcription:{video.video_id}")
+                telemetry.start(f"canonical_alignment:{video.video_id}")
+                canonical, alignment_evidence = _cached_open_alignment(
+                    cache, manifest, alignment_provider, media_path, canonical
+                )
+                telemetry.stop(f"canonical_alignment:{video.video_id}")
+                telemetry.start(f"canonical_diarization:{video.video_id}")
+                canonical, diarization_evidence = _cached_open_diarization(
+                    cache, manifest, diarization_provider, media_path, canonical
+                )
+                telemetry.stop(f"canonical_diarization:{video.video_id}")
+                segments = transcript_segments_from_canonical(canonical)
                 manifest.run_metadata["transcript_sources"][video.video_id] = {
-                    "kind": "faster-whisper",
+                    "kind": "canonical-open",
                     "source_sha256": source_hash,
                 }
+                grounding_inference = manifest.run_metadata.get("grounding_inference")
+                if isinstance(grounding_inference, dict):
+                    models = grounding_inference.get("models")
+                    if isinstance(models, list):
+                        models.append(
+                            {
+                                "video_id": video.video_id,
+                                "transcription": transcription_evidence,
+                                "alignment": alignment_evidence,
+                                "diarization": diarization_evidence,
+                            }
+                        )
             else:
-                telemetry.start(f"subtitle_acquisition:{video.video_id}")
-                subtitle_path = source.download_subtitles(video, video_work, brief.language)
-                telemetry.stop(f"subtitle_acquisition:{video.video_id}")
-                if subtitle_path:
-                    telemetry.start(f"transcription:{video.video_id}")
-                    segments, subtitle_hash = _cached_vtt_transcript(
-                        cache, manifest, video.video_id, subtitle_path, brief.language
-                    )
-                    telemetry.stop(f"transcription:{video.video_id}")
-                    manifest.run_metadata["transcript_sources"][video.video_id] = {
-                        "kind": "youtube-vtt",
-                        "source_sha256": subtitle_hash,
-                    }
-                else:
+                if direct_media_url:
                     telemetry.start(f"source_acquisition:{video.video_id}")
-                    media_path = source.download_media(video, video_work)
+                    media_path = _download_asset(
+                        direct_media_url,
+                        video_work / "source.mp4",
+                        max_bytes=4_000_000_000,
+                        expected_kind="media",
+                    )
                     telemetry.stop(f"source_acquisition:{video.video_id}")
                     media_paths[video.video_id] = media_path
-                    _record_source_media_metadata(manifest, video.video_id, media_path)
                     telemetry.start(f"transcription:{video.video_id}")
                     segments, source_hash = _cached_asr_transcript(
                         cache, manifest, video.video_id, media_path, brief, cfg
@@ -728,32 +909,69 @@ def run_pipeline(
                         "kind": "faster-whisper",
                         "source_sha256": source_hash,
                     }
+                else:
+                    telemetry.start(f"subtitle_acquisition:{video.video_id}")
+                    subtitle_path = source.download_subtitles(video, video_work, brief.language)
+                    telemetry.stop(f"subtitle_acquisition:{video.video_id}")
+                    if subtitle_path:
+                        telemetry.start(f"transcription:{video.video_id}")
+                        segments, subtitle_hash = _cached_vtt_transcript(
+                            cache, manifest, video.video_id, subtitle_path, brief.language
+                        )
+                        telemetry.stop(f"transcription:{video.video_id}")
+                        manifest.run_metadata["transcript_sources"][video.video_id] = {
+                            "kind": "youtube-vtt",
+                            "source_sha256": subtitle_hash,
+                        }
+                    else:
+                        telemetry.start(f"source_acquisition:{video.video_id}")
+                        media_path = source.download_media(video, video_work)
+                        telemetry.stop(f"source_acquisition:{video.video_id}")
+                        media_paths[video.video_id] = media_path
+                        _record_source_media_metadata(manifest, video.video_id, media_path)
+                        telemetry.start(f"transcription:{video.video_id}")
+                        segments, source_hash = _cached_asr_transcript(
+                            cache, manifest, video.video_id, media_path, brief, cfg
+                        )
+                        telemetry.stop(f"transcription:{video.video_id}")
+                        manifest.run_metadata["source_hashes"][video.video_id] = source_hash
+                        manifest.run_metadata["transcript_sources"][video.video_id] = {
+                            "kind": "faster-whisper",
+                            "source_sha256": source_hash,
+                        }
+                if not segments:
+                    raise RuntimeError("transcription produced no timestamped segments")
+                transcript_hash = stable_hash([segment.to_dict() for segment in segments])
+                transcript_source = manifest.run_metadata["transcript_sources"][video.video_id]
+                grounding_hash = str(
+                    manifest.run_metadata["source_hashes"].get(video.video_id)
+                    or transcript_source.get("source_sha256")
+                    or transcript_hash
+                )
+                canonical = canonical_timeline_from_segments(
+                    video.video_id,
+                    grounding_hash,
+                    segments,
+                    transcript_source=str(transcript_source.get("kind") or "unknown"),
+                )
+
             if not segments:
                 raise RuntimeError("transcription produced no timestamped segments")
             transcripts[video.video_id] = segments
             transcript_hash = stable_hash([segment.to_dict() for segment in segments])
             manifest.run_metadata["transcript_hashes"][video.video_id] = transcript_hash
-            transcript_source = manifest.run_metadata["transcript_sources"][video.video_id]
-            grounding_hash = str(
-                manifest.run_metadata["source_hashes"].get(video.video_id)
-                or transcript_source.get("source_sha256")
-                or transcript_hash
-            )
-            canonical = canonical_timeline_from_segments(
-                video.video_id,
-                grounding_hash,
-                segments,
-                transcript_source=str(transcript_source.get("kind") or "unknown"),
-            )
             canonical_payload = canonical.to_dict()
             canonical_hash = stable_hash(canonical_payload)
             _write_json(run_dir / "canonical" / f"{video.video_id}.json", canonical_payload)
             manifest.run_metadata["canonical_timelines"][video.video_id] = {
                 "schema_version": canonical.schema_version,
                 "sha256": canonical_hash,
-                "source_hash": grounding_hash,
+                "source_hash": canonical.source_hash,
                 "word_count": len(canonical.words),
                 "timing_modes": sorted({word.timing_mode for word in canonical.words}),
+                "speaker_count": len(
+                    {word.speaker_id for word in canonical.words if word.speaker_id is not None}
+                ),
             }
             canonical_timelines[video.video_id] = canonical
             telemetry.start(f"editorial_analysis:{video.video_id}")

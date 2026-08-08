@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import asdict, dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from .models import TranscriptSegment, TranscriptWord
 
@@ -82,6 +82,40 @@ class CanonicalTimeline:
             "words": [word.to_dict() for word in self.words],
         }
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> CanonicalTimeline:
+        raw_words = payload.get("words")
+        if not isinstance(raw_words, list):
+            raise ValueError("canonical timeline words must be a list")
+        words: list[CanonicalWord] = []
+        for raw in raw_words:
+            if not isinstance(raw, dict):
+                raise ValueError("canonical timeline word must be an object")
+            mode = str(raw.get("timing_mode") or "")
+            if mode not in {"word_exact", "aligned", "cue_interpolated"}:
+                raise ValueError(f"unsupported canonical timing mode: {mode}")
+            confidence_raw = raw.get("confidence")
+            words.append(
+                CanonicalWord(
+                    word_id=str(raw.get("word_id") or ""),
+                    text=str(raw.get("text") or ""),
+                    source_start=float(raw.get("source_start") or 0.0),
+                    source_end=float(raw.get("source_end") or 0.0),
+                    speaker_id=(
+                        str(raw["speaker_id"]) if raw.get("speaker_id") is not None else None
+                    ),
+                    confidence=(float(confidence_raw) if confidence_raw is not None else None),
+                    timing_mode=cast(TimingMode, mode),
+                    transcript_source=str(raw.get("transcript_source") or "unknown"),
+                )
+            )
+        return cls(
+            video_id=str(payload.get("video_id") or ""),
+            source_hash=str(payload.get("source_hash") or ""),
+            words=tuple(words),
+            schema_version=str(payload.get("schema_version") or "canonical-timeline-v1"),
+        )
+
 
 def _word_id(video_id: str, source_hash: str, index: int, word: TranscriptWord) -> str:
     payload = f"{source_hash}:{word.start:.6f}:{word.end:.6f}:{word.text}".encode()
@@ -127,3 +161,83 @@ def canonical_timeline_from_segments(
             )
             index += 1
     return CanonicalTimeline(video_id=video_id, source_hash=source_hash, words=tuple(canonical))
+
+
+def canonical_timeline_from_word_payloads(
+    video_id: str,
+    source_hash: str,
+    words: list[dict[str, Any]],
+    *,
+    transcript_source: str,
+) -> CanonicalTimeline:
+    canonical: list[CanonicalWord] = []
+    for index, raw in enumerate(words):
+        text = str(raw.get("text") or "").strip()
+        start = float(raw.get("start") or 0.0)
+        end = float(raw.get("end") or 0.0)
+        if not text or end <= start:
+            continue
+        source_word = TranscriptWord(start, end, text)
+        confidence_raw = raw.get("confidence")
+        canonical.append(
+            CanonicalWord(
+                word_id=_word_id(video_id, source_hash, index, source_word),
+                text=text,
+                source_start=start,
+                source_end=end,
+                speaker_id=None,
+                confidence=float(confidence_raw) if confidence_raw is not None else None,
+                timing_mode="word_exact",
+                transcript_source=transcript_source,
+            )
+        )
+    if not canonical:
+        raise ValueError("word payloads produced no canonical words")
+    return CanonicalTimeline(video_id=video_id, source_hash=source_hash, words=tuple(canonical))
+
+
+def transcript_segments_from_canonical(
+    timeline: CanonicalTimeline,
+    *,
+    max_gap_seconds: float = 1.0,
+    max_words: int = 28,
+) -> list[TranscriptSegment]:
+    if max_gap_seconds < 0 or max_words <= 0:
+        raise ValueError("canonical transcript grouping settings are invalid")
+    if not timeline.words:
+        return []
+    groups: list[list[CanonicalWord]] = []
+    current: list[CanonicalWord] = []
+    previous: CanonicalWord | None = None
+    for word in timeline.words:
+        split = bool(
+            current
+            and previous is not None
+            and (
+                word.source_start - previous.source_end > max_gap_seconds
+                or len(current) >= max_words
+                or (
+                    word.speaker_id is not None
+                    and previous.speaker_id is not None
+                    and word.speaker_id != previous.speaker_id
+                )
+            )
+        )
+        if split:
+            groups.append(current)
+            current = []
+        current.append(word)
+        previous = word
+    if current:
+        groups.append(current)
+    return [
+        TranscriptSegment(
+            start=group[0].source_start,
+            end=group[-1].source_end,
+            text=" ".join(word.text for word in group),
+            words=tuple(
+                TranscriptWord(word.source_start, word.source_end, word.text) for word in group
+            ),
+        )
+        for group in groups
+    ]
