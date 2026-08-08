@@ -102,7 +102,9 @@ def test_live_workflow_targets_current_branch_campaign_and_every_mp4() -> None:
     assert "feat/word-reveal-face-tracking" in workflow
     assert "reach-double-coverage-dedicated.yaml" in workflow
     assert "head -n 1" not in workflow
-    assert 'for clip in "$run_dir"/clips/*.mp4' in workflow
+    assert "for clip in /review/clips/*.mp4" in workflow
+    assert "clipper-live:${GITHUB_SHA}" in workflow
+    assert "--entrypoint /bin/sh" in workflow
     assert "reach-live-${{ github.sha }}" in workflow
 
 

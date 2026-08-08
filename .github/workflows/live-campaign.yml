@@ -208,22 +208,30 @@ jobs:
       - name: Decode and inspect every finalist MP4
         run: |
           run_dir="$(dirname "$(find live-artifacts -name manifest.json -type f -print -quit)")"
-          count=0
+          test -n "$run_dir"
+          count="$(find "$run_dir/clips" -maxdepth 1 -name '*.mp4' -type f | wc -l)"
+          test "$count" -eq 6
           inspection_dir="$RUNNER_TEMP/clipper-live-inspection"
           rm -rf "$inspection_dir"
           mkdir -p "$inspection_dir"
-          for clip in "$run_dir"/clips/*.mp4; do
-            test -f "$clip"
-            count=$((count + 1))
-            stem="$(basename "$clip" .mp4)"
-            ffprobe -v error -show_streams -show_format -of json "$clip" \
-              > "$inspection_dir/$stem.ffprobe.json"
-            ffmpeg -v error -i "$clip" -f null -
-            ffmpeg -v error -t 3 -i "$clip" -f null -
-            ffmpeg -v error -ss 0.25 -i "$clip" -frames:v 1 -y \
-              "$inspection_dir/$stem.first-025.png"
-          done
-          test "$count" -eq 6
+          docker run --rm \
+            --entrypoint /bin/sh \
+            -v "$PWD/$run_dir:/review:ro" \
+            -v "$inspection_dir:/inspection" \
+            clipper-live:${GITHUB_SHA} \
+            -ec '
+              count=0
+              for clip in /review/clips/*.mp4; do
+                test -f "$clip"
+                count=$((count + 1))
+                stem="$(basename "$clip" .mp4)"
+                ffprobe -v error -show_streams -show_format -of json "$clip" > "/inspection/$stem.ffprobe.json"
+                ffmpeg -v error -i "$clip" -f null -
+                ffmpeg -v error -t 3 -i "$clip" -f null -
+                ffmpeg -v error -ss 0.25 -i "$clip" -frames:v 1 -y "/inspection/$stem.first-025.png"
+              done
+              test "$count" -eq 6
+            '
 
       - name: Upload exact-HEAD live acceptance evidence
         if: success()
