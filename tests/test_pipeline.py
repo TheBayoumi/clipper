@@ -1320,3 +1320,53 @@ def test_open_editorial_pipeline_consumes_sparse_visual_timeline_when_media_exis
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["run_metadata"]["visual_inference"]["scout_runs"][0]["event_count"] == 1
     assert (run_dir / "visual" / "allowed.json").is_file()
+
+
+def test_visual_scout_acquires_full_media_after_vtt_transcript(tmp_path: Path) -> None:
+    brief = _write_pipeline_brief(tmp_path)
+    subtitle = tmp_path / "visual-scout.vtt"
+    subtitle.write_text(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\nAutomation can save time for a business.\n",
+        encoding="utf-8",
+    )
+    media = tmp_path / "visual-source.mp4"
+    media.write_bytes(b"visual-source")
+
+    class CountingSource(FakeSource):
+        def __init__(self, subtitle_path: Path, media_path: Path) -> None:
+            super().__init__(subtitle_path, media_path)
+            self.media_downloads = 0
+
+        def download_media(self, video: VideoCandidate, work_dir: Path) -> Path:
+            self.media_downloads += 1
+            return super().download_media(video, work_dir)
+
+    source = CountingSource(subtitle, media)
+    timeline = VisualTimeline(
+        "allowed",
+        "visual-source-hash",
+        (VisualEvent(0.5, 1.5, "scene-1", "visible reaction", (), ("reaction",), 0.9),),
+    )
+    result = ProviderResult(
+        {"events": []},
+        DummyVisionProvider.identity,
+        InferenceUsage("test", "now", 0.01, input_units=1),
+    )
+    with patch(
+        "clipper.pipeline.scout_visual_timeline",
+        return_value=(timeline, result),
+    ):
+        run_dir = run_pipeline(
+            brief,
+            settings=PipelineSettings(
+                artifact_root=tmp_path / "visual-vtt-artifacts",
+                visual_scout_enabled=True,
+            ),
+            source_client=source,
+            visual_scout_provider=DummyVisionProvider(),
+            render=False,
+        )
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert source.media_downloads == 1
+    assert manifest["run_metadata"]["transcript_sources"]["allowed"]["kind"] == "youtube-vtt"
+    assert manifest["run_metadata"]["visual_inference"]["scout_runs"][0]["event_count"] == 1

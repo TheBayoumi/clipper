@@ -291,6 +291,7 @@ def test_modal_30b_workers_use_official_fp8_on_two_l4s() -> None:
     assert 'gpu="L4:2"' in worker
     assert 'max_memory={0: "22GiB", 1: "22GiB"}' in worker
     assert "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8" in worker
+    assert '"kernels>=0.15.2,<0.16"' in worker
     assert "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8" in factory
     assert 'CLIPPER_EDITORIAL_QUANTIZATION", "fp8"' in factory
     assert "return L4_USD_PER_SECOND * count" in worker
@@ -310,5 +311,13 @@ def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
     assert 'speech_providers("balanced")' in workflow
     assert "CLIPPER_EDITORIAL_ENGINE: open" in workflow
     assert "CLIPPER_COMPUTE_PROFILE: balanced" in workflow
+    assert "CLIPPER_VISUAL_SCOUT" in workflow
+    assert "CLIPPER_OPEN_PROXY_URL" in workflow
+    assert "CLIPPER_OPEN_PROXY_SHA256" in workflow
+    assert "reach-open-proxy-v1" in workflow
+    assert 'manifest["full_media"]' in workflow
     assert "--no-render" in workflow
+    assert "progress.json" in workflow
+    assert 'kill -0 "$pid"' in workflow
+    assert 'wait "$pid"' in workflow
     assert "reach-double-coverage-dedicated.yaml" in workflow

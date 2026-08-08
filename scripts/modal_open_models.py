@@ -34,6 +34,7 @@ text_image = base_image.uv_pip_install(
     "accelerate>=1.14,<2",
     "sentence-transformers>=5.6,<6",
     "bitsandbytes>=0.47,<1",
+    "kernels>=0.15.2,<0.16",
     "pillow>=11,<13",
 )
 speech_image = base_image.uv_pip_install(

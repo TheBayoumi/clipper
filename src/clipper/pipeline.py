@@ -1025,6 +1025,19 @@ def run_pipeline(
             canonical_timelines[video.video_id] = canonical
             visual_timeline: VisualTimeline | None = None
             media_for_visual = media_paths.get(video.video_id)
+            if cfg.visual_scout_enabled and media_for_visual is None:
+                try:
+                    telemetry.start(f"visual_source_acquisition:{video.video_id}")
+                    media_for_visual = source.download_media(video, video_work / "visual-source")
+                    telemetry.stop(f"visual_source_acquisition:{video.video_id}")
+                    media_paths[video.video_id] = media_for_visual
+                    _record_source_media_metadata(manifest, video.video_id, media_for_visual)
+                except Exception as exc:
+                    LOGGER.warning(
+                        "visual scouting media acquisition unavailable",
+                        extra={"video_id": video.video_id, "error": str(exc)},
+                    )
+                    media_for_visual = None
             if cfg.visual_scout_enabled and visual_scout_provider is not None and media_for_visual:
                 telemetry.start(f"visual_scout:{video.video_id}")
                 visual_timeline, visual_result = scout_visual_timeline(
