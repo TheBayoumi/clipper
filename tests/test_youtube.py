@@ -41,7 +41,7 @@ def test_api_discovery_maps_results() -> None:
     assert result[0].view_count == 12
 
 
-def test_ytdlp_discovery_and_downloads(tmp_path: Path) -> None:
+def test_ytdlp_discovery_and_downloads_preserve_highest_source_quality(tmp_path: Path) -> None:
     payload = {
         "entries": [
             {
@@ -72,7 +72,7 @@ def test_ytdlp_discovery_and_downloads(tmp_path: Path) -> None:
     with patch("clipper.youtube._run", side_effect=fake_subtitles):
         assert client.download_subtitles(video, tmp_path, "en") == subtitle
 
-    media = tmp_path / "v1.mp4"
+    media = tmp_path / "v1.mkv"
     format_payload = {
         "formats": [
             {
@@ -109,10 +109,12 @@ def test_ytdlp_discovery_and_downloads(tmp_path: Path) -> None:
     with patch("clipper.youtube._run", side_effect=fake_media):
         assert client.download_media(video, tmp_path) == media
         assert client.download_media(video, tmp_path) == media
-    assert any("137+ba[ext=m4a]" in item for item in calls[-1])
+    assert any("401+bestaudio/401" in item for item in calls[-1])
+    assert "--remux-video" in calls[-1]
     evidence = json.loads(media.with_suffix(".source.json").read_text())
-    assert evidence["selected"]["height"] == 1080
-    assert evidence["selected"]["format_id"] == "137"
+    assert evidence["quality_policy"] == "highest_available_no_transcode"
+    assert evidence["selected"]["height"] == 2160
+    assert evidence["selected"]["format_id"] == "401"
 
 
 def test_ytdlp_missing_and_run_errors() -> None:
@@ -209,13 +211,14 @@ def test_download_subtitle_and_media_failure_paths(tmp_path: Path) -> None:
         client.download_media(video, tmp_path)
 
 
-def test_format_selection_honors_configured_height_and_prefers_mp4() -> None:
+def test_format_selection_prefers_quality_without_container_bias() -> None:
     payload = {
         "formats": [
             {
                 "format_id": "313",
                 "height": 2160,
                 "width": 3840,
+                "fps": 60,
                 "vcodec": "vp9",
                 "acodec": "none",
                 "ext": "webm",
@@ -225,6 +228,7 @@ def test_format_selection_honors_configured_height_and_prefers_mp4() -> None:
                 "format_id": "401",
                 "height": 2160,
                 "width": 3840,
+                "fps": 30,
                 "vcodec": "av01",
                 "acodec": "none",
                 "ext": "mp4",
@@ -234,6 +238,7 @@ def test_format_selection_honors_configured_height_and_prefers_mp4() -> None:
                 "format_id": "400",
                 "height": 1440,
                 "width": 2560,
+                "fps": 60,
                 "vcodec": "av01",
                 "acodec": "none",
                 "ext": "mp4",
@@ -241,12 +246,12 @@ def test_format_selection_honors_configured_height_and_prefers_mp4() -> None:
             },
         ]
     }
-    selected, available = YouTubeClient._select_video_format(payload, 2160)
-    assert selected["format_id"] == "401"
+    selected, available = YouTubeClient._select_video_format(payload, None)
+    assert selected["format_id"] == "313"
     selected_1440, _ = YouTubeClient._select_video_format(payload, 1440)
     assert selected_1440["format_id"] == "400"
-    assert available[0]["height"] == 2160
+    assert available[0]["format_id"] == "313"
     with pytest.raises(YouTubeError, match="no video format"):
         YouTubeClient._select_video_format(payload, 360)
-    with pytest.raises(YouTubeError, match="max_height"):
+    with pytest.raises(YouTubeError, match="at least 360"):
         YouTubeClient(None, max_height=200)
