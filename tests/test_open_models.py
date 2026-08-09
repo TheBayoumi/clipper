@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import io
-import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -38,7 +35,6 @@ from clipper.models import (
     TranscriptWord,
 )
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult, compute_profile
-from clipper.providers.editorial_prompt import editorial_contract, editorial_output_budget
 from clipper.providers.factory import (
     editorial_and_embedding_providers,
     speech_providers,
@@ -55,7 +51,6 @@ from clipper.providers.modal import (
     ModalEmbeddingProvider,
     ModalVisionProvider,
 )
-from clipper.providers.modal_endpoint import ModalEndpointEditorialProvider
 from clipper.providers.modal_speech import (
     ModalAlignmentProvider,
     ModalDiarizationProvider,
@@ -499,7 +494,16 @@ def test_modal_adapters_validate_response_and_record_usage(tmp_path: Path) -> No
             "estimated_cost_usd": 0.01,
         },
     }
+    editorial = ModalEditorialProvider(
+        app_name="clipper", function_name="editorial", identity=identity
+    )
     vision = ModalVisionProvider(app_name="clipper", function_name="vision", identity=identity)
+    with patch.object(editorial, "_function", return_value=function):
+        result = editorial.complete_json(task="mine", payload={})
+    assert result.value == {"ok": True}
+    assert result.model.model_id == "resolved/model"
+    assert result.model.revision == "sha123"
+    assert result.usage.gpu_type == "L40S"
     frame = tmp_path / "a.jpg"
     frame.write_bytes(b"frame-bytes")
     with patch.object(vision, "_function", return_value=function):
@@ -507,6 +511,20 @@ def test_modal_adapters_validate_response_and_record_usage(tmp_path: Path) -> No
         payload = function.remote.call_args.args[0]
         assert payload["frames_base64"]
         assert "frame_paths" not in payload
+    function.remote.return_value = {"value": []}
+    with (
+        patch.object(editorial, "_function", return_value=function),
+        pytest.raises(ValueError, match="invalid response"),
+    ):
+        editorial.complete_json(task="mine", payload={})
+    function.remote.return_value = {
+        "error": {"type": "OutOfMemoryError", "message": "CUDA out of memory"}
+    }
+    with (
+        patch.object(editorial, "_function", return_value=function),
+        pytest.raises(RuntimeError, match="OutOfMemoryError: CUDA out of memory"),
+    ):
+        editorial.complete_json(task="mine", payload={})
 
 
 @pytest.mark.parametrize(
@@ -1250,203 +1268,12 @@ def test_plan_batch_global_selection_and_plan_validation_errors(tmp_path: Path) 
         ).plan_batch(_open_brief(), {"video": timeline}, [])
 
 
-def test_managed_modal_endpoint_editorial_provider_uses_proxy_auth_and_json() -> None:
-    identity = ModelIdentity(
-        "Qwen/Qwen3.6-27B-FP8", "modal-managed", "fp8", "modal-managed-endpoint"
-    )
-    provider = ModalEndpointEditorialProvider(
-        endpoint_url="https://example.modal.direct",
-        proxy_token_id=("wk-test", "ws-test")[0],
-        proxy_token_secret=("wk-test", "ws-test")[1],
-        identity=identity,
-    )
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self) -> bytes:
-            return json.dumps(
-                {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": json.dumps(
-                                    {
-                                        "summary": "works",
-                                        "valuable_moment_characteristics": [],
-                                        "avoid_characteristics": [],
-                                        "confidence": 0.9,
-                                    }
-                                )
-                            }
-                        }
-                    ],
-                    "usage": {"prompt_tokens": 12, "completion_tokens": 7},
-                }
-            ).encode()
-
-    with patch("clipper.providers.modal_endpoint.urlopen", return_value=Response()) as opened:
-        result = provider.complete_json(task="episode_editorial_profile", payload={"source": "x"})
-    request = opened.call_args.args[0]
-    assert request.full_url == "https://example.modal.direct/v1/chat/completions"
-    assert request.get_header("Authorization") == "Bearer wk-test.ws-test"
-    body = json.loads(request.data.decode())
-    assert body["model"] == "Qwen/Qwen3.6-27B-FP8"
-    assert body["temperature"] == 0
-    assert result.value["summary"] == "works"
-    assert result.usage.provider == "modal-endpoint"
-    assert result.usage.input_units == 12
-    assert result.usage.output_units == 7
-
-
-def test_managed_modal_endpoint_provider_rejects_missing_credentials() -> None:
-    identity = ModelIdentity("m", "r", "none", "modal-managed-endpoint")
-    with pytest.raises(ProviderUnavailable, match="required"):
-        ModalEndpointEditorialProvider(
-            endpoint_url="",
-            proxy_token_id=("wk", "ws")[0],
-            proxy_token_secret=("wk", "ws")[1],
-            identity=identity,
-        )
-    with pytest.raises(ProviderUnavailable, match="proxy token"):
-        ModalEndpointEditorialProvider(
-            endpoint_url="https://endpoint",
-            proxy_token_id="",
-            proxy_token_secret="",
-            identity=identity,
-        )
-
-
-def test_editorial_prompt_contracts_cover_all_grounded_tasks() -> None:
-    assert editorial_output_budget({"task": "episode_editorial_profile"}) == 768
-    assert editorial_output_budget({"task": "global_concept_comparison"}) == 768
-    assert editorial_output_budget({"task": "hook_variants:c1"}) == 1024
-    assert editorial_output_budget({"task": "edit_plans:c1"}) == 1536
-    assert "summary" in editorial_contract("episode_editorial_profile")
-    assert "moments" in editorial_contract("story_moments:0")
-    assert "concepts" in editorial_contract("clip_concepts")
-    assert "concept_ids" in editorial_contract("global_concept_comparison")
-    assert "variants" in editorial_contract("hook_variants:c1")
-    assert "plans" in editorial_contract("edit_plans:c1")
-    assert "Follow the task payload" in editorial_contract("unknown")
-
-
-def test_managed_modal_endpoint_json_validation_and_https_requirement() -> None:
-    identity = ModelIdentity("m", "r", "none", "modal-managed-endpoint")
-    with pytest.raises(ProviderUnavailable, match="https"):
-        ModalEndpointEditorialProvider(
-            endpoint_url="http://unsafe",
-            proxy_token_id=("wk", "ws")[0],
-            proxy_token_secret=("wk", "ws")[1],
-            identity=identity,
-        )
-    assert ModalEndpointEditorialProvider._json_object('```json\n{"ok": true}\n```') == {"ok": True}
-    with pytest.raises(ValueError, match="JSON object"):
-        ModalEndpointEditorialProvider._json_object("[1, 2]")
-
-
-def test_managed_modal_endpoint_retries_transient_http_errors() -> None:
-    identity = ModelIdentity("m", "r", "none", "modal-managed-endpoint")
-    provider = ModalEndpointEditorialProvider(
-        endpoint_url="https://example.modal.direct",
-        proxy_token_id=("wk", "ws")[0],
-        proxy_token_secret=("wk", "ws")[1],
-        identity=identity,
-    )
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self) -> bytes:
-            return b'{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}'
-
-    transient = HTTPError(
-        "https://example.modal.direct",
-        503,
-        "cold",
-        hdrs=None,
-        fp=io.BytesIO(b"cold start"),
-    )
-    with (
-        patch(
-            "clipper.providers.modal_endpoint.urlopen", side_effect=[transient, Response()]
-        ) as opened,
-        patch("clipper.providers.modal_endpoint.time.sleep") as slept,
-    ):
-        result = provider.complete_json(task="unknown", payload={})
-    assert result.value == {"ok": True}
-    assert opened.call_count == 2
-    slept.assert_called_once()
-
-
-def test_managed_modal_endpoint_surfaces_transport_and_shape_failures() -> None:
-    identity = ModelIdentity("m", "r", "none", "modal-managed-endpoint")
-    provider = ModalEndpointEditorialProvider(
-        endpoint_url="https://example.modal.direct",
-        proxy_token_id=("wk", "ws")[0],
-        proxy_token_secret=("wk", "ws")[1],
-        identity=identity,
-    )
-
-    class Response:
-        def __init__(self, value: object) -> None:
-            self.value = value
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self) -> bytes:
-            return json.dumps(self.value).encode()
-
-    fatal = HTTPError(
-        "https://example.modal.direct", 401, "unauthorized", hdrs=None, fp=io.BytesIO(b"denied")
-    )
-    with (
-        patch("clipper.providers.modal_endpoint.urlopen", side_effect=fatal),
-        pytest.raises(RuntimeError, match="HTTP 401: denied"),
-    ):
-        provider.complete_json(task="x", payload={})
-
-    for value, message in [
-        ([], "invalid response"),
-        ({"choices": []}, "no choices"),
-        ({"choices": [{}]}, "no message content"),
-        ({"choices": [{"message": {"content": []}}]}, "no message content"),
-    ]:
-        with (
-            patch("clipper.providers.modal_endpoint.urlopen", return_value=Response(value)),
-            pytest.raises(ValueError, match=message),
-        ):
-            provider.complete_json(task="x", payload={})
-
-    with (
-        patch("clipper.providers.modal_endpoint.urlopen", side_effect=URLError("offline")),
-        patch("clipper.providers.modal_endpoint.time.sleep"),
-        pytest.raises(RuntimeError, match="offline"),
-    ):
-        provider.complete_json(task="x", payload={})
-
-
 def test_provider_factory_profiles_and_modal_embedding_validation(monkeypatch) -> None:
     local_editor, local_embed = editorial_and_embedding_providers("local-lite")
     assert isinstance(local_editor, LocalEditorialProvider)
     assert isinstance(local_embed, LocalEmbeddingProvider)
-    monkeypatch.setenv("CLIPPER_MODAL_EDITORIAL_ENDPOINT_URL", "https://example.modal.direct")
-    monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "wk-test")
-    monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "ws-test")
     modal_editor, modal_embed = editorial_and_embedding_providers("balanced")
-    assert isinstance(modal_editor, ModalEndpointEditorialProvider)
+    assert isinstance(modal_editor, ModalEditorialProvider)
     assert isinstance(modal_embed, ModalEmbeddingProvider)
     assert isinstance(vision_provider("local-lite"), LocalVisionProvider)
     assert isinstance(vision_provider("balanced"), ModalVisionProvider)

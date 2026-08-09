@@ -13,8 +13,7 @@ from .base import (
     compute_profile,
 )
 from .local import LocalEditorialProvider, LocalEmbeddingProvider, LocalVisionProvider
-from .modal import ModalEmbeddingProvider, ModalVisionProvider
-from .modal_endpoint import ModalEndpointEditorialProvider
+from .modal import ModalEditorialProvider, ModalEmbeddingProvider, ModalVisionProvider
 from .modal_speech import (
     ModalAlignmentProvider,
     ModalDiarizationProvider,
@@ -35,15 +34,17 @@ def editorial_and_embedding_providers(
     if profile.editorial_location == "local":
         return LocalEditorialProvider(), LocalEmbeddingProvider()
     app = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
-    editorial = ModalEndpointEditorialProvider(
-        endpoint_url=os.getenv("CLIPPER_MODAL_EDITORIAL_ENDPOINT_URL", ""),
-        proxy_token_id=os.getenv("MODAL_PROXY_TOKEN_ID", ""),
-        proxy_token_secret=os.getenv("MODAL_PROXY_TOKEN_SECRET", ""),
+    editorial = ModalEditorialProvider(
+        app_name=app,
+        function_name="editorial",
         identity=ModelIdentity(
-            os.getenv("CLIPPER_EDITORIAL_MODEL_ID", "Qwen/Qwen3.6-27B-FP8"),
-            os.getenv("CLIPPER_EDITORIAL_MODEL_REVISION", "modal-managed"),
-            "fp8",
-            "modal-managed-endpoint",
+            "Qwen/Qwen3-30B-A3B-Instruct-2507",
+            os.getenv(
+                "CLIPPER_EDITORIAL_MODEL_REVISION",
+                "110954009be4a882781a90356c7d2b8a9e3428dc",
+            ),
+            os.getenv("CLIPPER_EDITORIAL_QUANTIZATION", "bnb-4bit-nf4"),
+            "modal-transformers",
             "editor-v1",
             "editorial-json-v1",
         ),

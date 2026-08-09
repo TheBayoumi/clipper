@@ -8,7 +8,6 @@ on:
     paths:
       - ".github/workflows/open-model-acceptance.yml"
       - "scripts/modal_open_models.py"
-      - "scripts/modal_endpoint_bootstrap.py"
       - "src/clipper/providers/**"
       - "src/clipper/canonical.py"
       - "src/clipper/autonomous_editor.py"
@@ -47,37 +46,25 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e '.[modal]'
 
-      - name: Ensure managed Modal editorial endpoint
-        run: |
-          set -euo pipefail
-          BOOTSTRAP="$(python scripts/modal_endpoint_bootstrap.py --name clipper-editorial-qwen36-27b --model Qwen/Qwen3.6-27B-FP8)"
-          ENDPOINT_URL="$(python -c 'import json,sys; print(json.load(sys.stdin)["endpoint_url"])' <<< "$BOOTSTRAP")"
-          PROXY_ID="$(python -c 'import json,sys; print(json.load(sys.stdin)["proxy_token_id"])' <<< "$BOOTSTRAP")"
-          PROXY_SECRET="$(python -c 'import json,sys; print(json.load(sys.stdin)["proxy_token_secret"])' <<< "$BOOTSTRAP")"
-          echo "::add-mask::$PROXY_ID"
-          echo "::add-mask::$PROXY_SECRET"
-          echo "CLIPPER_MODAL_EDITORIAL_ENDPOINT_URL=$ENDPOINT_URL" >> "$GITHUB_ENV"
-          echo "CLIPPER_EDITORIAL_MODEL_ID=Qwen/Qwen3.6-27B-FP8" >> "$GITHUB_ENV"
-          echo "MODAL_PROXY_TOKEN_ID=$PROXY_ID" >> "$GITHUB_ENV"
-          echo "MODAL_PROXY_TOKEN_SECRET=$PROXY_SECRET" >> "$GITHUB_ENV"
-
-      - name: Deploy exact-HEAD specialized Modal workers
+      - name: Deploy exact-HEAD Modal open-model workers
         run: modal deploy scripts/modal_open_models.py
 
-      - name: Verify managed Qwen editorial endpoint and Modal embedding execution
+      - name: Verify Modal Qwen embedding and 30B editorial execution
         run: |
           mkdir -p open-evidence
           python - <<'PY'
           import json
           from pathlib import Path
+          import modal
 
-          from clipper.providers.factory import editorial_and_embedding_providers
-
-          editorial, embedding = editorial_and_embedding_providers("balanced")
-          embedded = embedding.embed(["Open-weight podcast editorial acceptance"])
-          completed = editorial.complete_json(
-              task="episode_editorial_profile",
-              payload={
+          app = "clipper-open-editor"
+          credential = modal.Function.from_name(app, "credential_smoke").remote()
+          embedding = modal.Function.from_name(app, "embedding").remote(
+              {"texts": ["Open-weight podcast editorial acceptance"]}
+          )
+          editorial = modal.Function.from_name(app, "editorial").remote(
+              {
+                  "task": "episode_editorial_profile",
                   "context": {
                       "source": "authorized acceptance smoke",
                       "word_refs": [
@@ -87,25 +74,24 @@ jobs:
                       ],
                   },
                   "campaign_constraints": {"authorized": True, "content_type": "clipping"},
-              },
+              }
           )
-          assert len(embedded.value) == 1
-          assert completed.model.model_id == "Qwen/Qwen3.6-27B-FP8"
-          assert isinstance(completed.value.get("summary"), str), completed.value
+          assert credential.get("ok") is True
+          assert isinstance(embedding.get("vectors"), list) and len(embedding["vectors"]) == 1
+          assert not editorial.get("error"), editorial
+          assert editorial.get("model", {}).get("model_id") == "Qwen/Qwen3-30B-A3B-Instruct-2507"
+          value = editorial.get("value")
+          assert isinstance(value, dict) and isinstance(value.get("summary"), str), editorial
           evidence = {
-              "embedding_usage": embedded.usage.to_dict(),
-              "editorial_model": completed.model.to_dict(),
-              "editorial_usage": completed.usage.to_dict(),
-              "editorial_value": completed.value,
+              "credential": credential,
+              "embedding_usage": embedding.get("usage"),
+              "editorial_model": editorial.get("model"),
+              "editorial_usage": editorial.get("usage"),
+              "editorial_value": value,
           }
           Path("open-evidence/provider-smoke.json").write_text(json.dumps(evidence, indent=2) + "\n")
           print(json.dumps(evidence, indent=2))
           PY
-
-      - name: Remove obsolete self-hosted Qwen 30B cache
-        run: |
-          modal volume rm -r clipper-hf-cache hub/models--Qwen--Qwen3-30B-A3B-Instruct-2507 || true
-          modal volume rm -r clipper-hf-cache models--Qwen--Qwen3-30B-A3B-Instruct-2507 || true
 
       - name: Verify gated Hugging Face diarization access
         run: |
@@ -169,16 +155,23 @@ jobs:
           rm -rf open-proxy
           mkdir -p open-proxy
           reused=false
-          artifact_id="$(
-            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=reach-open-proxy-v1&per_page=100" \
-              --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "feat/word-reveal-face-tracking")] | sort_by(.created_at) | reverse | .[0].id // empty'
-          )"
-          if [ -n "$artifact_id" ]; then
-            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > open-proxy.zip
-            unzip -q open-proxy.zip -d open-proxy
-            reused=true
-            echo "Reused durable full acceptance proxy artifact $artifact_id"
-          fi
+          while read -r run_id; do
+            test -n "$run_id" || continue
+            test "$run_id" != "$GITHUB_RUN_ID" || continue
+            rm -rf open-proxy/*
+            if gh run download "$run_id" -n reach-open-proxy-v1 -D open-proxy; then
+              reused=true
+              echo "Reused full acceptance proxy from run $run_id"
+              break
+            fi
+          done < <(
+            gh run list \
+              --workflow open-model-acceptance.yml \
+              --branch feat/word-reveal-face-tracking \
+              --limit 20 \
+              --json databaseId \
+              --jq '.[].databaseId'
+          )
           if [ "$reused" != true ]; then
             test -n "$PROXY_URL"
             test -n "$PROXY_SHA256"
@@ -334,10 +327,3 @@ jobs:
           path: open-evidence/
           retention-days: 14
           if-no-files-found: warn
-      - name: Revoke ephemeral Modal endpoint proxy token
-        if: always()
-        run: |
-          if [ -n "${MODAL_PROXY_TOKEN_ID:-}" ]; then
-            modal workspace proxy-tokens delete -y "$MODAL_PROXY_TOKEN_ID" || true
-          fi
-
