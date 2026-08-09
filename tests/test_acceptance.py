@@ -329,7 +329,7 @@ def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
     assert '"Qwen/Qwen3-30B-A3B-Instruct-2507"' in workflow
     assert "editorial_usage" in workflow
     assert "hf_access_smoke" in workflow
-    assert workflow.index("Qwen embedding execution") < workflow.index(
+    assert workflow.index("Modal Qwen embedding and 30B editorial execution") < workflow.index(
         "gated Hugging Face diarization access"
     )
     assert workflow.index("gated Hugging Face diarization access") < workflow.index(
