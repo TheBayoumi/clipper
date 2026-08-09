@@ -9,6 +9,16 @@ from .base import InferenceUsage, ModelIdentity, ProviderResult
 from .local import ProviderUnavailable
 
 
+class ModalRemoteError(RuntimeError):
+    """Structured error returned by a remote Modal inference function."""
+
+    def __init__(self, *, function_name: str, error_type: str, message: str) -> None:
+        self.function_name = function_name
+        self.error_type = error_type
+        self.remote_message = message
+        super().__init__(f"Modal {function_name} failed: {error_type}: {message}")
+
+
 class ModalJSONProvider:
     def __init__(self, *, app_name: str, function_name: str, identity: ModelIdentity) -> None:
         self.app_name = app_name
@@ -41,7 +51,11 @@ class ModalJSONProvider:
             return
         error_type = str(raw_error.get("type") or "RemoteError")
         message = str(raw_error.get("message") or "remote inference failed")
-        raise RuntimeError(f"Modal {self.function_name} failed: {error_type}: {message}")
+        raise ModalRemoteError(
+            function_name=self.function_name,
+            error_type=error_type,
+            message=message,
+        )
 
     def invoke(self, payload: dict[str, Any]) -> ProviderResult[dict[str, Any]]:
         response = self._function().remote(payload)
@@ -72,10 +86,42 @@ class ModalJSONProvider:
 
 
 class ModalEditorialProvider(ModalJSONProvider):
+    _MAX_OUTPUT_RECOVERY_ATTEMPTS = 3
+
+    @staticmethod
+    def _is_output_contract_error(exc: ModalRemoteError) -> bool:
+        if exc.error_type == "JSONDecodeError":
+            return True
+        return (
+            exc.error_type == "ValueError"
+            and "model output must be a JSON object" in exc.remote_message
+        )
+
     def complete_json(
         self, *, task: str, payload: dict[str, Any]
     ) -> ProviderResult[dict[str, Any]]:
-        return self.invoke({"task": task, "payload": payload})
+        request: dict[str, Any] = {"task": task, "payload": payload}
+        for attempt in range(1, self._MAX_OUTPUT_RECOVERY_ATTEMPTS + 1):
+            try:
+                return self.invoke(request)
+            except ModalRemoteError as exc:
+                if (
+                    not self._is_output_contract_error(exc)
+                    or attempt >= self._MAX_OUTPUT_RECOVERY_ATTEMPTS
+                ):
+                    raise
+                request = {
+                    "task": task,
+                    "payload": payload,
+                    "generation_recovery_attempt": attempt + 1,
+                    "generation_recovery_instruction": (
+                        "The previous generation violated the JSON output contract. Regenerate the "
+                        "complete answer from the original task as exactly one strict JSON object. "
+                        "Use valid JSON syntax with double-quoted keys and strings, no Markdown, no "
+                        "comments, no prose outside the object, and no truncated fields."
+                    ),
+                }
+        raise AssertionError("unreachable editorial recovery loop")
 
 
 class ModalVisionProvider(ModalJSONProvider):
