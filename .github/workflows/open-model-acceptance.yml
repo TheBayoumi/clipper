@@ -116,7 +116,9 @@ jobs:
           PY
 
       - name: Verify gated Hugging Face diarization access
+        id: diarization_access
         if: ${{ env.CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION != 'true' }}
+        continue-on-error: true
         run: |
           python - <<'PY'
           import json
@@ -130,6 +132,19 @@ jobs:
           Path("open-evidence/hf-access.json").write_text(json.dumps(gated, indent=2) + "\n")
           print(json.dumps(gated, indent=2))
           PY
+
+      - name: Select downstream diarization mode
+        run: |
+          set -euo pipefail
+          if [ "$CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION" = "true" ] || \
+             [ "${{ steps.diarization_access.outcome }}" != "success" ]; then
+            echo "CLIPPER_DIARIZATION_MODE=passthrough" >> "$GITHUB_ENV"
+            echo "CLIPPER_EXPECT_GROUNDING_DEGRADED=true" >> "$GITHUB_ENV"
+            echo "Continuing downstream validation without speaker labels."
+          else
+            echo "CLIPPER_DIARIZATION_MODE=pyannote" >> "$GITHUB_ENV"
+            echo "CLIPPER_EXPECT_GROUNDING_DEGRADED=false" >> "$GITHUB_ENV"
+          fi
 
       - name: Reuse private authorized Double Coverage fixture
         env:
@@ -263,7 +278,6 @@ jobs:
           CLIPPER_COMPUTE_PROFILE: balanced
           CLIPPER_VISUAL_SCOUT: "true"
           CLIPPER_VISUAL_REVIEW: "false"
-          CLIPPER_DIARIZATION_MODE: ${{ env.CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION == 'true' && 'passthrough' || 'pyannote' }}
         run: |
           set +e
           clipper run \
@@ -288,8 +302,6 @@ jobs:
           exit "$rc"
 
       - name: Run real Modal speech grounding smoke on authorized podcast audio
-        env:
-          CLIPPER_DIARIZATION_MODE: ${{ env.CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION == 'true' && 'passthrough' || 'pyannote' }}
         run: |
           python - <<'PY'
           import json
@@ -305,12 +317,16 @@ jobs:
           source = root / str(full_media["file"])
           source_hash = file_sha256(source)
           asr, alignment, diarization = speech_providers("balanced")
-          timeline = asr.transcribe(source, video_id=fixture["video"]["video_id"], source_hash=source_hash).value
+          timeline = asr.transcribe(
+              source,
+              video_id=fixture["video"]["video_id"],
+              source_hash=source_hash,
+          ).value
           timeline = alignment.align(source, timeline).value
           timeline = diarization.diarize(source, timeline).value
           assert timeline.words
           assert all(word.timing_mode == "aligned" for word in timeline.words)
-          degraded = os.environ.get("CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION") == "true"
+          degraded = os.environ.get("CLIPPER_EXPECT_GROUNDING_DEGRADED") == "true"
           if degraded:
               assert not any(word.speaker_id for word in timeline.words)
           else:
@@ -338,8 +354,8 @@ jobs:
           assert inference["engine"] == "open"
           assert inference["degraded"] is False
           grounding = manifest["run_metadata"]["grounding_inference"]
-          diagnostic = os.environ.get("CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION") == "true"
-          assert grounding["degraded"] is diagnostic
+          expected_degraded = os.environ.get("CLIPPER_EXPECT_GROUNDING_DEGRADED") == "true"
+          assert grounding["degraded"] is expected_degraded
           assert manifest["funnel"]["story_moments"] >= 4
           assert manifest["funnel"]["selected_concepts"] >= 3
           assert manifest["funnel"]["edit_plans"] >= 3
@@ -351,6 +367,12 @@ jobs:
           print(json.dumps({"head": "${{ github.sha }}", "source_master": source_master, "funnel": manifest["funnel"], "editorial_inference": inference}, indent=2))
           PY
 
+      - name: Enforce production diarization gate
+        if: ${{ always() && env.CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION != 'true' && steps.diarization_access.outcome != 'success' }}
+        run: |
+          echo "Production acceptance requires authorized pyannote speaker diarization access." >&2
+          exit 1
+
       - name: Upload exact-HEAD open-model acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -359,3 +381,7 @@ jobs:
           path: open-evidence/
           retention-days: 14
           if-no-files-found: warn
+
+      - name: Stop acceptance Modal containers
+        if: always()
+        run: modal app stop "$CLIPPER_MODAL_APP" --yes || true
