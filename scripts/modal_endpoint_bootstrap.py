@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
-import re
 import subprocess
 import time
 from collections.abc import Iterable
@@ -44,28 +43,22 @@ def _find_endpoint(value: Any, name: str) -> tuple[str, str] | None:
 
 
 def _proxy_token(value: Any) -> tuple[str, str]:
+    if isinstance(value, dict):
+        modal_key = str(value.get("Modal-Key") or "")
+        modal_secret = str(value.get("Modal-Secret") or "")
+        if modal_key.startswith("wk-") and modal_secret.startswith("ws-"):
+            return modal_key, modal_secret
+
     token_id = ""
     token_secret = ""
-
-    def inspect(raw: Any) -> None:
-        nonlocal token_id, token_secret
-        if isinstance(raw, dict):
-            for child in raw.values():
-                inspect(child)
-            return
-        if isinstance(raw, list):
-            for child in raw:
-                inspect(child)
-            return
-        text = str(raw)
-        id_match = re.search(r"(?:^|[=:\\s\"'])((?:wk)-[^\s\"',}]+)", text)
-        secret_match = re.search(r"(?:^|[=:\\s\"'])((?:ws)-[^\s\"',}]+)", text)
-        if id_match:
-            token_id = id_match.group(1)
-        if secret_match:
-            token_secret = secret_match.group(1)
-
-    inspect(value)
+    for item in _walk(value):
+        for key, raw in item.items():
+            text = str(raw)
+            lowered = str(key).lower()
+            if text.startswith("wk-") and ("id" in lowered or "token" in lowered):
+                token_id = text
+            elif text.startswith("ws-") and ("secret" in lowered or "token" in lowered):
+                token_secret = text
     if not token_id or not token_secret:
         raise RuntimeError("Modal proxy token JSON did not contain wk-/ws- credentials")
     return token_id, token_secret
