@@ -304,7 +304,7 @@ def test_balanced_editor_defaults_to_free_dual_l4_and_keeps_managed_opt_in() -> 
     assert '"endpoint", "create"' in Path("scripts/modal_endpoint_bootstrap.py").read_text()
 
 
-def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
+def test_open_model_workflow_uses_modal_hf_and_original_quality_master() -> None:
     workflow = Path(".github/workflows/open-model-acceptance.yml").read_text()
     assert "MODAL_TOKEN_ID" in workflow
     assert "MODAL_TOKEN_SECRET" in workflow
@@ -333,10 +333,18 @@ def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
     assert "gated Hugging Face diarization access" in workflow
     assert "CLIPPER_COMPUTE_PROFILE: balanced" in workflow
     assert "CLIPPER_VISUAL_SCOUT" in workflow
-    assert "CLIPPER_OPEN_PROXY_URL" in workflow
-    assert "CLIPPER_OPEN_PROXY_SHA256" in workflow
-    assert "reach-open-proxy-v1" in workflow
-    assert 'gh run download "$run_id" -n reach-open-proxy-v1' in workflow
+    assert "timeout-minutes:" not in workflow
+    assert 'modal app stop "$CLIPPER_MODAL_APP" --yes' in workflow
+    assert "cancel-in-progress: true" in workflow
+    assert "Acquire highest-quality full episode master inside Modal" in workflow
+    assert 'Function.from_name("clipper-open-editor", "acquire_source")' in workflow
+    assert '"quality_policy") == "highest_available_no_transcode"' in workflow
+    assert "source-master.json" in workflow
+    assert "modal volume get --force clipper-media-cache" in workflow
+    assert 'assert actual == evidence["sha256"]' in workflow
+    assert "CLIPPER_OPEN_PROXY_URL" not in workflow
+    assert "CLIPPER_OPEN_PROXY_SHA256" not in workflow
+    assert "reach-open-proxy-v1" not in workflow
     assert "Restore prior compatible open-model cache" in workflow
     assert 'artifact="open-model-acceptance-$head_sha"' in workflow
     assert "prior-open-evidence/_cache" in workflow
@@ -347,3 +355,7 @@ def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
     assert 'kill -0 "$pid"' in workflow
     assert 'wait "$pid"' in workflow
     assert "reach-double-coverage-dedicated.yaml" in workflow
+    assert "def acquire_source(" in worker
+    assert '"bestvideo+bestaudio/best"' in worker
+    assert '"quality_policy": "highest_available_no_transcode"' in worker
+    assert 'scaledown_window=2' in worker
