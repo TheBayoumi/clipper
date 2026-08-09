@@ -71,3 +71,42 @@ def test_cli_run_returns_failure_for_failed_production_manifest(tmp_path: Path) 
     (run_dir / "manifest.json").write_text('{"status":"FAILED"}')
     with patch("clipper.cli.run_pipeline", return_value=run_dir):
         assert main(["run", "--brief", str(path), "--artifact-root", str(tmp_path / "out")]) == 1
+
+
+def test_cli_benchmark_writes_report_and_returns_threshold_status(tmp_path: Path, capsys) -> None:
+    domains = [
+        "gaming",
+        "business",
+        "comedy_conversational",
+        "science_education",
+        "interview_personal",
+    ]
+    episodes = []
+    for index, domain in enumerate(domains):
+        stories = tmp_path / f"s{index}.json"
+        concepts = tmp_path / f"c{index}.json"
+        stories.write_text(json.dumps([{"start": 10, "end": 20}]))
+        concepts.write_text(json.dumps([{"source_start": 10, "source_end": 20}]))
+        episodes.append(
+            {
+                "episode_id": str(index),
+                "domain": domain,
+                "references": [
+                    {
+                        "reference_id": str(index),
+                        "start": 10,
+                        "end": 20,
+                        "semantic_group": str(index),
+                    }
+                ],
+                "predictions": {"story_moments": stories.name, "concepts": concepts.name},
+            }
+        )
+    manifest = tmp_path / "corpus.json"
+    manifest.write_text(
+        json.dumps({"schema_version": "clipper-benchmark-corpus-v1", "episodes": episodes})
+    )
+    output = tmp_path / "report.json"
+    assert main(["benchmark", "--manifest", str(manifest), "--output", str(output)]) == 0
+    assert json.loads(output.read_text())["status"] == "PASS"
+    assert '"status": "PASS"' in capsys.readouterr().out

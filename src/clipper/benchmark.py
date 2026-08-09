@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
 
 from .models import ClipConcept, StoryMoment
 
@@ -155,4 +158,221 @@ def aggregate_metrics(metrics: Iterable[BenchmarkMetrics]) -> BenchmarkMetrics:
         predicted_story_moments=total_moments,
         predicted_concepts=total_predictions,
         duplicate_concepts=duplicates,
+    )
+
+
+REQUIRED_ACCEPTANCE_DOMAINS = frozenset(
+    {"gaming", "business", "comedy_conversational", "science_education", "interview_personal"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkThresholds:
+    story_moment_recall: float = 0.85
+    clip_concept_precision: float = 0.80
+    semantic_duplicate_rate: float = 0.10
+    boundary_pass_rate: float = 0.90
+
+    def __post_init__(self) -> None:
+        for value in asdict(self).values():
+            if not 0.0 <= float(value) <= 1.0:
+                raise ValueError("benchmark thresholds must be between 0 and 1")
+
+    @classmethod
+    def from_dict(cls, payload: object) -> BenchmarkThresholds:
+        if payload is None:
+            return cls()
+        if not isinstance(payload, dict):
+            raise ValueError("benchmark thresholds must be an object")
+        allowed = set(asdict(cls()))
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ValueError(f"unsupported benchmark threshold: {sorted(unknown)[0]}")
+        return cls(**{key: float(payload[key]) for key in payload})
+
+
+@dataclass(frozen=True, slots=True)
+class CorpusBenchmarkResult:
+    status: str
+    thresholds: BenchmarkThresholds
+    aggregate: BenchmarkMetrics
+    domains: tuple[str, ...]
+    episode_metrics: tuple[tuple[str, str, BenchmarkMetrics], ...]
+    failures: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": "clipper-benchmark-result-v1",
+            "status": self.status,
+            "thresholds": asdict(self.thresholds),
+            "aggregate": self.aggregate.to_dict(),
+            "domains": list(self.domains),
+            "episodes": [
+                {"episode_id": episode_id, "domain": domain, "metrics": metrics.to_dict()}
+                for episode_id, domain, metrics in self.episode_metrics
+            ],
+            "failures": list(self.failures),
+        }
+
+
+def _reference_from_dict(payload: object) -> ReferenceMoment:
+    if not isinstance(payload, dict):
+        raise ValueError("benchmark reference must be an object")
+    return ReferenceMoment(
+        reference_id=str(payload.get("reference_id") or ""),
+        start=float(payload.get("start") or 0.0),
+        end=float(payload.get("end") or 0.0),
+        semantic_group=str(payload.get("semantic_group") or ""),
+        acceptable_start_min=(
+            float(payload["acceptable_start_min"])
+            if payload.get("acceptable_start_min") is not None
+            else None
+        ),
+        acceptable_start_max=(
+            float(payload["acceptable_start_max"])
+            if payload.get("acceptable_start_max") is not None
+            else None
+        ),
+        acceptable_end_min=(
+            float(payload["acceptable_end_min"])
+            if payload.get("acceptable_end_min") is not None
+            else None
+        ),
+        acceptable_end_max=(
+            float(payload["acceptable_end_max"])
+            if payload.get("acceptable_end_max") is not None
+            else None
+        ),
+    )
+
+
+def _artifact_ranges(path: Path, *, start_key: str, end_key: str) -> list[tuple[float, float]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError(f"benchmark prediction artifact must be a list: {path}")
+    rows: list[tuple[float, float]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError(f"benchmark prediction row must be an object: {path}")
+        start = float(item.get(start_key) or 0.0)
+        end = float(item.get(end_key) or 0.0)
+        if start < 0 or end <= start:
+            raise ValueError(f"benchmark prediction range is invalid: {path}")
+        rows.append((start, end))
+    return rows
+
+
+def evaluate_ranges(
+    references: Sequence[ReferenceMoment],
+    story_ranges: Sequence[tuple[float, float]],
+    concept_ranges: Sequence[tuple[float, float]],
+    *,
+    minimum_overlap: float = 0.5,
+) -> BenchmarkMetrics:
+    if not references:
+        raise ValueError("benchmark references must not be empty")
+    if not 0 < minimum_overlap <= 1:
+        raise ValueError("minimum_overlap must be in (0, 1]")
+    matched_reference_ids = {
+        reference.reference_id
+        for start, end in story_ranges
+        if (reference := _best_reference(start, end, references, minimum_overlap=minimum_overlap))
+        is not None
+    }
+    matched_concepts = [
+        (start, end, reference)
+        for start, end in concept_ranges
+        if (reference := _best_reference(start, end, references, minimum_overlap=minimum_overlap))
+        is not None
+    ]
+    group_counts: dict[str, int] = {}
+    for _start, _end, reference in matched_concepts:
+        group_counts[reference.semantic_group] = group_counts.get(reference.semantic_group, 0) + 1
+    duplicate_concepts = sum(max(0, count - 1) for count in group_counts.values())
+    boundary_passes = sum(
+        1 for start, end, reference in matched_concepts if _boundary_pass(start, end, reference)
+    )
+    return BenchmarkMetrics(
+        story_moment_recall=len(matched_reference_ids) / len(references),
+        clip_concept_precision=(len(matched_concepts) / len(concept_ranges))
+        if concept_ranges
+        else 0.0,
+        semantic_duplicate_rate=(duplicate_concepts / len(concept_ranges))
+        if concept_ranges
+        else 0.0,
+        boundary_pass_rate=(boundary_passes / len(matched_concepts)) if matched_concepts else 0.0,
+        matched_reference_moments=len(matched_reference_ids),
+        predicted_story_moments=len(story_ranges),
+        predicted_concepts=len(concept_ranges),
+        duplicate_concepts=duplicate_concepts,
+    )
+
+
+def _threshold_failures(metrics: BenchmarkMetrics, thresholds: BenchmarkThresholds) -> list[str]:
+    failures: list[str] = []
+    if metrics.story_moment_recall < thresholds.story_moment_recall:
+        failures.append("story_moment_recall_below_target")
+    if metrics.clip_concept_precision < thresholds.clip_concept_precision:
+        failures.append("clip_concept_precision_below_target")
+    if metrics.semantic_duplicate_rate > thresholds.semantic_duplicate_rate:
+        failures.append("semantic_duplicate_rate_above_target")
+    if metrics.boundary_pass_rate < thresholds.boundary_pass_rate:
+        failures.append("boundary_pass_rate_below_target")
+    return failures
+
+
+def evaluate_corpus_manifest(manifest_path: str | Path) -> CorpusBenchmarkResult:
+    path = Path(manifest_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != "clipper-benchmark-corpus-v1"
+    ):
+        raise ValueError("unsupported benchmark corpus manifest")
+    raw_episodes = payload.get("episodes")
+    if not isinstance(raw_episodes, list) or not raw_episodes:
+        raise ValueError("benchmark corpus must contain episodes")
+    thresholds = BenchmarkThresholds.from_dict(payload.get("thresholds"))
+    minimum_overlap = float(payload.get("minimum_overlap") or 0.5)
+    metrics: list[BenchmarkMetrics] = []
+    rows: list[tuple[str, str, BenchmarkMetrics]] = []
+    domains: set[str] = set()
+    for raw in raw_episodes:
+        if not isinstance(raw, dict):
+            raise ValueError("benchmark episode must be an object")
+        episode_id = str(raw.get("episode_id") or "").strip()
+        domain = str(raw.get("domain") or "").strip()
+        if not episode_id or not domain:
+            raise ValueError("benchmark episode requires episode_id and domain")
+        raw_references = raw.get("references")
+        if not isinstance(raw_references, list) or not raw_references:
+            raise ValueError(f"benchmark episode has no references: {episode_id}")
+        predictions = raw.get("predictions")
+        if not isinstance(predictions, dict):
+            raise ValueError(f"benchmark episode has no prediction artifacts: {episode_id}")
+        story_file = path.parent / str(predictions.get("story_moments") or "")
+        concept_file = path.parent / str(predictions.get("concepts") or "")
+        if not story_file.is_file() or not concept_file.is_file():
+            raise ValueError(f"benchmark prediction artifacts are missing: {episode_id}")
+        references = [_reference_from_dict(item) for item in raw_references]
+        result = evaluate_ranges(
+            references,
+            _artifact_ranges(story_file, start_key="start", end_key="end"),
+            _artifact_ranges(concept_file, start_key="source_start", end_key="source_end"),
+            minimum_overlap=minimum_overlap,
+        )
+        metrics.append(result)
+        rows.append((episode_id, domain, result))
+        domains.add(domain)
+    missing_domains = sorted(REQUIRED_ACCEPTANCE_DOMAINS - domains)
+    aggregate = aggregate_metrics(metrics)
+    failures = [f"missing_domain:{domain}" for domain in missing_domains]
+    failures.extend(_threshold_failures(aggregate, thresholds))
+    return CorpusBenchmarkResult(
+        status="PASS" if not failures else "FAIL",
+        thresholds=thresholds,
+        aggregate=aggregate,
+        domains=tuple(sorted(domains)),
+        episode_metrics=tuple(rows),
+        failures=tuple(failures),
     )

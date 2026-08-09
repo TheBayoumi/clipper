@@ -7,6 +7,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+from .benchmark import evaluate_corpus_manifest
 from .brief import load_brief
 from .pipeline import PipelineSettings, run_pipeline
 from .rights import assert_campaign_authorized
@@ -34,6 +35,12 @@ def _parser() -> argparse.ArgumentParser:
     discover = subparsers.add_parser("discover", help="discover authorized source videos")
     discover.add_argument("--brief", required=True, type=Path)
 
+    benchmark = subparsers.add_parser(
+        "benchmark", help="evaluate a private multi-domain acceptance corpus"
+    )
+    benchmark.add_argument("--manifest", required=True, type=Path)
+    benchmark.add_argument("--output", type=Path)
+
     run = subparsers.add_parser("run", help="execute transcription, planning, and rendering")
     run.add_argument("--brief", required=True, type=Path)
     run.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
@@ -60,6 +67,14 @@ def main(argv: list[str] | None = None) -> int:
             videos = YouTubeClient().discover(brief)
             print(json.dumps([video.to_dict() for video in videos], indent=2))
             return 0
+        if args.command == "benchmark":
+            result = evaluate_corpus_manifest(args.manifest)
+            output = json.dumps(result.to_dict(), indent=2) + "\n"
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(output, encoding="utf-8")
+            print(output, end="")
+            return 0 if result.status == "PASS" else 1
         if args.command == "run":
             settings = replace(PipelineSettings.from_env(), artifact_root=args.artifact_root)
             should_render = not args.no_render
