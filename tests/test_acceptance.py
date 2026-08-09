@@ -285,6 +285,25 @@ def test_live_validator_accepts_more_distinct_finalists_than_minimum(tmp_path: P
     assert report["actual"]["distinct_finalist_concepts"] == 6
 
 
+def test_modal_endpoint_bootstrap_parses_nested_and_env_style_proxy_tokens() -> None:
+    import importlib.util
+
+    path = Path("scripts/modal_endpoint_bootstrap.py")
+    spec = importlib.util.spec_from_file_location("modal_endpoint_bootstrap", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module._proxy_token(
+        {"credentials": ["MODAL_PROXY_TOKEN_ID=wk-abc", "MODAL_PROXY_TOKEN_SECRET=ws-def"]}
+    ) == ("wk-abc", "ws-def")
+    assert module._proxy_token({"nested": {"id": "wk-123", "secret": "ws-456"}}) == (
+        "wk-123",
+        "ws-456",
+    )
+    with pytest.raises(RuntimeError, match="wk-/ws-"):
+        module._proxy_token({"id": "not-a-token"})
+
+
 def test_balanced_editor_uses_managed_modal_endpoint_without_self_hosted_weights() -> None:
     worker = Path("scripts/modal_open_models.py").read_text()
     factory = Path("src/clipper/providers/factory.py").read_text()
