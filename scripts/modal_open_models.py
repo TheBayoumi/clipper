@@ -39,7 +39,7 @@ base_image = (
 )
 text_image = base_image.uv_pip_install(
     "torch>=2.8,<3",
-    "transformers>=5.14,<6",
+    "transformers>=4.57,<5",
     "accelerate>=1.14,<2",
     "sentence-transformers>=5.6,<6",
     "sentencepiece>=0.2,<1",

@@ -297,6 +297,8 @@ def test_balanced_editor_uses_pinned_qwen3_30b_on_two_l4s() -> None:
     ]
     assert 'gpu="L4:2"' in decorator
     assert 'EDITORIAL_MODEL_ID = "Qwen/Qwen3-30B-A3B-Instruct-2507"' in worker
+    assert '"transformers>=4.57,<5"' in worker
+    assert '"transformers>=5.14,<6"' not in worker
     assert '"sentencepiece>=0.2,<1"' in worker
     assert '"tiktoken>=0.11,<1"' in worker
     assert 'EDITORIAL_MODEL_REVISION = "c9051e5f23e735fd6549f86b616377617848a621"' in worker
