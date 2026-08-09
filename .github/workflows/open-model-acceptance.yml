@@ -30,7 +30,6 @@ permissions:
 jobs:
   open-model-acceptance:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -56,6 +55,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e '.[modal]'
+
+      - name: Terminate stale Modal acceptance containers
+        run: |
+          set -euo pipefail
+          modal app stop "$CLIPPER_MODAL_APP" --yes || true
+          modal volume rm -r clipper-media-cache /staging || true
 
       - name: Deploy exact-HEAD Modal open-model workers
         run: modal deploy scripts/modal_open_models.py
@@ -156,67 +161,60 @@ jobs:
           test -f live-fixture/fixture.json
           test -f live-fixture/source.en.vtt
 
-      - name: Prepare private full-episode visual/audio proxy
-        id: proxy
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PROXY_URL: ${{ secrets.CLIPPER_OPEN_PROXY_URL }}
-          PROXY_SHA256: ${{ secrets.CLIPPER_OPEN_PROXY_SHA256 }}
+      - name: Acquire highest-quality full episode master inside Modal
         run: |
           set -euo pipefail
-          rm -rf open-proxy
-          mkdir -p open-proxy
-          reused=false
-          while read -r run_id; do
-            test -n "$run_id" || continue
-            test "$run_id" != "$GITHUB_RUN_ID" || continue
-            rm -rf open-proxy/*
-            if gh run download "$run_id" -n reach-open-proxy-v1 -D open-proxy; then
-              reused=true
-              echo "Reused full acceptance proxy from run $run_id"
-              break
-            fi
-          done < <(
-            gh run list \
-              --workflow open-model-acceptance.yml \
-              --branch feat/word-reveal-face-tracking \
-              --limit 20 \
-              --json databaseId \
-              --jq '.[].databaseId'
+          mkdir -p open-evidence
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import modal
+
+          fixture = json.loads(Path("live-fixture/fixture.json").read_text())
+          video = fixture["video"]
+          result = modal.Function.from_name("clipper-open-editor", "acquire_source").remote(
+              {"video_url": video["url"], "video_id": video["video_id"]}
           )
-          if [ "$reused" != true ]; then
-            test -n "$PROXY_URL"
-            test -n "$PROXY_SHA256"
-            curl --fail --location --retry 3 --silent --show-error "$PROXY_URL" -o open-proxy/full-proxy.mp4
-            echo "$PROXY_SHA256  open-proxy/full-proxy.mp4" | sha256sum --check --strict
-          fi
-          test -s open-proxy/full-proxy.mp4
-          cp open-proxy/full-proxy.mp4 live-fixture/full-proxy.mp4
-          python - <<'PY2'
+          assert result.get("quality_policy") == "highest_available_no_transcode", result
+          assert int(result.get("bytes") or 0) > 0, result
+          assert int(result.get("video", {}).get("width") or 0) > 0, result
+          assert int(result.get("video", {}).get("height") or 0) > 0, result
+          Path("open-evidence/source-master.json").write_text(json.dumps(result, indent=2) + "\n")
+          Path("open-evidence/source-master.remote").write_text(str(result["volume_path"]) + "\n")
+          suffix = Path(str(result["volume_path"])).suffix or ".mkv"
+          Path("open-evidence/source-master.local").write_text(f"source-master{suffix}\n")
+          print(json.dumps(result, indent=2))
+          PY
+          remote_path="$(tr -d '\n' < open-evidence/source-master.remote)"
+          local_name="$(tr -d '\n' < open-evidence/source-master.local)"
+          modal volume get --force clipper-media-cache "$remote_path" "live-fixture/$local_name"
+          python - <<'PY'
           import hashlib
           import json
           from pathlib import Path
 
-          root = Path("live-fixture")
-          source = root / "full-proxy.mp4"
-          digest = hashlib.sha256(source.read_bytes()).hexdigest()
-          manifest_path = root / "fixture.json"
+          evidence = json.loads(Path("open-evidence/source-master.json").read_text())
+          local_name = Path("open-evidence/source-master.local").read_text().strip()
+          source = Path("live-fixture") / local_name
+          digest = hashlib.sha256()
+          with source.open("rb") as handle:
+              for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+                  digest.update(chunk)
+          actual = digest.hexdigest()
+          assert actual == evidence["sha256"], (actual, evidence["sha256"])
+          manifest_path = Path("live-fixture/fixture.json")
           manifest = json.loads(manifest_path.read_text())
-          manifest["full_media"] = {"file": "full-proxy.mp4", "sha256": digest}
+          manifest["full_media"] = {
+              "file": local_name,
+              "sha256": actual,
+              "quality_policy": "highest_available_no_transcode",
+              "source_url": evidence["source_url"],
+              "source_video": evidence["video"],
+              "source_audio": evidence["audio"],
+          }
           manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
-          print(json.dumps({"full_proxy_sha256": digest, "bytes": source.stat().st_size}, indent=2))
-          PY2
-          echo "reused=$reused" >> "$GITHUB_OUTPUT"
-
-      - name: Mirror full acceptance proxy into private Actions artifact storage
-        if: steps.proxy.outputs.reused != 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: reach-open-proxy-v1
-          path: open-proxy/full-proxy.mp4
-          retention-days: 90
-          compression-level: 0
-          if-no-files-found: error
+          print(json.dumps({"master": local_name, "sha256": actual, "bytes": source.stat().st_size}, indent=2))
+          PY
 
       - name: Restore prior compatible open-model cache
         env:
@@ -323,6 +321,10 @@ jobs:
           import os
           from pathlib import Path
 
+          source_master = json.loads(Path("open-evidence/source-master.json").read_text())
+          assert source_master["quality_policy"] == "highest_available_no_transcode"
+          assert int(source_master["video"]["width"]) > 0
+          assert int(source_master["video"]["height"]) > 0
           manifests = list(Path("open-evidence").glob("*/manifest.json"))
           assert len(manifests) == 1, manifests
           manifest = json.loads(manifests[0].read_text())
@@ -340,7 +342,7 @@ jobs:
           assert visual.get("scout_runs")
           assert visual["scout_runs"][0]["event_count"] > 0
           assert manifest["status"] == "SUCCESS"
-          print(json.dumps({"head": "${{ github.sha }}", "funnel": manifest["funnel"], "editorial_inference": inference}, indent=2))
+          print(json.dumps({"head": "${{ github.sha }}", "source_master": source_master, "funnel": manifest["funnel"], "editorial_inference": inference}, indent=2))
           PY
 
       - name: Upload exact-HEAD open-model acceptance evidence
