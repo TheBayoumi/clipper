@@ -276,7 +276,7 @@ class YouTubeClient:
                 timeout=180,
             ).stdout
         )
-        selected, available = self._select_video_format(info, self.max_height)
+        selected, available = self._select_video_format(info, None)
         format_id = str(selected["format_id"])
         format_selector = (
             format_id
@@ -304,7 +304,7 @@ class YouTubeClient:
             json.dumps(
                 {
                     "quality_policy": "highest_available_no_transcode",
-                    "max_height": self.max_height,
+                    "legacy_requested_max_height_ignored": self.max_height,
                     "selected": selected,
                     "available_formats": available,
                 },
