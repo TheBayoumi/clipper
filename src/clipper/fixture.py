@@ -117,12 +117,27 @@ class FixtureSourceClient:
             raise FixtureError("fixture source has no full media for open grounding")
         return self._verify_file("full_media", entry)
 
+    def _full_media_span(self, start: float, end: float) -> SpanMedia | None:
+        entry = self.manifest.get("full_media")
+        if not isinstance(entry, dict):
+            return None
+        source_end = self.video.duration_seconds
+        if source_end is None:
+            source_end = max(float(item.get("source_end") or 0.0) for item in self.spans)
+        if start < -1e-6 or source_end < end - 1e-6:
+            return None
+        path = self._verify_file("full_media", entry)
+        return SpanMedia(path, 0.0, source_end, str(entry["sha256"]))
+
     def download_media_span(
         self, video: VideoCandidate, start: float, end: float, work_dir: Path
     ) -> SpanMedia:
         del work_dir
         if video.video_id != self.video.video_id:
             raise FixtureError("fixture media request targets the wrong video")
+        master = self._full_media_span(start, end)
+        if master is not None:
+            return master
         covering: list[tuple[float, dict[str, Any]]] = []
         for item in self.spans:
             origin = float(item.get("source_origin") or 0.0)
