@@ -215,7 +215,8 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
     video_id = str(payload.get("video_id") or "").strip()
     if not video_url.startswith("https://"):
         raise ValueError("source acquisition requires an https video_url")
-    if not video_id or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in video_id):
+    safe_video_id_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+    if not video_id or any(char not in safe_video_id_chars for char in video_id):
         raise ValueError("source acquisition requires a safe video_id")
 
     staging = Path(MEDIA_ROOT) / "staging" / video_id
@@ -285,11 +286,19 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
     streams = probe_payload.get("streams") if isinstance(probe_payload, dict) else []
     stream_list = streams if isinstance(streams, list) else []
     video_stream = next(
-        (item for item in stream_list if isinstance(item, dict) and item.get("codec_type") == "video"),
+        (
+            item
+            for item in stream_list
+            if isinstance(item, dict) and item.get("codec_type") == "video"
+        ),
         {},
     )
     audio_stream = next(
-        (item for item in stream_list if isinstance(item, dict) and item.get("codec_type") == "audio"),
+        (
+            item
+            for item in stream_list
+            if isinstance(item, dict) and item.get("codec_type") == "audio"
+        ),
         {},
     )
     return {
