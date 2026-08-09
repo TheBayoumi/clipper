@@ -358,4 +358,4 @@ def test_open_model_workflow_uses_modal_hf_and_original_quality_master() -> None
     assert "def acquire_source(" in worker
     assert '"bestvideo+bestaudio/best"' in worker
     assert '"quality_policy": "highest_available_no_transcode"' in worker
-    assert 'scaledown_window=2' in worker
+    assert "scaledown_window=2" in worker
