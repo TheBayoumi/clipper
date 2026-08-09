@@ -180,7 +180,7 @@ jobs:
       - name: Deploy exact-HEAD Modal open-model workers
         run: modal deploy scripts/modal_open_models.py
 
-      - name: Verify Modal and Qwen embedding execution
+      - name: Verify Modal Qwen embedding and 30B editorial execution
         run: |
           mkdir -p open-evidence
           python - <<'PY'
@@ -193,9 +193,33 @@ jobs:
           embedding = modal.Function.from_name(app, "embedding").remote(
               {"texts": ["Open-weight podcast editorial acceptance"]}
           )
+          editorial = modal.Function.from_name(app, "editorial").remote(
+              {
+                  "task": "episode_editorial_profile",
+                  "context": {
+                      "source": "authorized acceptance smoke",
+                      "word_refs": [
+                          {"word_ref": "w000001", "text": "A", "start": 0.0, "end": 0.1},
+                          {"word_ref": "w000002", "text": "podcast", "start": 0.1, "end": 0.4},
+                          {"word_ref": "w000003", "text": "story", "start": 0.4, "end": 0.7},
+                      ],
+                  },
+                  "campaign_constraints": {"authorized": True, "content_type": "clipping"},
+              }
+          )
           assert credential.get("ok") is True
           assert isinstance(embedding.get("vectors"), list) and len(embedding["vectors"]) == 1
-          evidence = {"credential": credential, "embedding_usage": embedding.get("usage")}
+          assert not editorial.get("error"), editorial
+          assert editorial.get("model", {}).get("model_id") == "Qwen/Qwen3-30B-A3B-Instruct-2507"
+          value = editorial.get("value")
+          assert isinstance(value, dict) and isinstance(value.get("summary"), str), editorial
+          evidence = {
+              "credential": credential,
+              "embedding_usage": embedding.get("usage"),
+              "editorial_model": editorial.get("model"),
+              "editorial_usage": editorial.get("usage"),
+              "editorial_value": value,
+          }
           Path("open-evidence/provider-smoke.json").write_text(json.dumps(evidence, indent=2) + "\n")
           print(json.dumps(evidence, indent=2))
           PY
