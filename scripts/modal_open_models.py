@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import io
 import json
 import os
+import shutil
+import subprocess
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import modal
@@ -37,6 +41,7 @@ base_image = (
         }
     )
 )
+media_image = base_image.uv_pip_install("yt-dlp>=2026.7.4,<2027")
 text_image = base_image.uv_pip_install(
     "torch>=2.8,<3",
     "transformers>=4.57,<5",
@@ -121,6 +126,14 @@ def _json_text(text: str) -> dict[str, Any]:
     return value
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _editorial_output_budget(payload: dict[str, Any]) -> int:
     task = str(payload.get("task") or "")
     if task == "episode_editorial_profile" or task == "global_concept_comparison":
@@ -191,12 +204,126 @@ def _transport_error(exc: Exception) -> dict[str, Any]:
 
 
 @app.function(
+    image=media_image,
+    volumes={MEDIA_ROOT: media_cache},
+    timeout=7200,
+    memory=4096,
+    scaledown_window=2,
+)
+def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
+    video_url = str(payload.get("video_url") or "").strip()
+    video_id = str(payload.get("video_id") or "").strip()
+    if not video_url.startswith("https://"):
+        raise ValueError("source acquisition requires an https video_url")
+    if not video_id or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in video_id):
+        raise ValueError("source acquisition requires a safe video_id")
+
+    staging = Path(MEDIA_ROOT) / "staging" / video_id
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    output_template = staging / "source.%(ext)s"
+    command = [
+        "yt-dlp",
+        "--no-playlist",
+        "--no-warnings",
+        "--retries",
+        "10",
+        "--fragment-retries",
+        "10",
+        "--concurrent-fragments",
+        "4",
+        "--format",
+        "bestvideo+bestaudio/best",
+        "--merge-output-format",
+        "mkv",
+        "--output",
+        str(output_template),
+        "--print",
+        "after_move:filepath",
+        video_url,
+    ]
+    completed = subprocess.run(command, check=True, capture_output=True, text=True, timeout=7000)
+    printed_paths = [Path(line.strip()) for line in completed.stdout.splitlines() if line.strip()]
+    source = printed_paths[-1] if printed_paths else Path()
+    if not source.is_file() or source.stat().st_size <= 0:
+        candidates = [path for path in staging.glob("source.*") if path.is_file()]
+        if not candidates:
+            raise RuntimeError("yt-dlp completed without creating a source master")
+        source = max(candidates, key=lambda path: path.stat().st_size)
+
+    digest = _sha256_file(source)
+    suffix = source.suffix.lower() or ".mkv"
+    volume_path = f"/inputs/{digest}{suffix}"
+    target = Path(MEDIA_ROOT) / volume_path.lstrip("/")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_file() and target.stat().st_size > 0:
+        if _sha256_file(target) != digest:
+            raise RuntimeError("existing Modal source master hash mismatch")
+        source.unlink(missing_ok=True)
+    else:
+        source.replace(target)
+    media_cache.commit()
+    shutil.rmtree(staging, ignore_errors=True)
+
+    probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_streams",
+            "-show_format",
+            "-of",
+            "json",
+            str(target),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    probe_payload = json.loads(probe.stdout)
+    streams = probe_payload.get("streams") if isinstance(probe_payload, dict) else []
+    stream_list = streams if isinstance(streams, list) else []
+    video_stream = next(
+        (item for item in stream_list if isinstance(item, dict) and item.get("codec_type") == "video"),
+        {},
+    )
+    audio_stream = next(
+        (item for item in stream_list if isinstance(item, dict) and item.get("codec_type") == "audio"),
+        {},
+    )
+    return {
+        "video_id": video_id,
+        "source_url": video_url,
+        "sha256": digest,
+        "bytes": target.stat().st_size,
+        "volume_path": volume_path,
+        "mount_path": str(target),
+        "container": suffix.lstrip("."),
+        "quality_policy": "highest_available_no_transcode",
+        "video": {
+            "width": int(video_stream.get("width") or 0),
+            "height": int(video_stream.get("height") or 0),
+            "codec": str(video_stream.get("codec_name") or "unknown"),
+            "pixel_format": str(video_stream.get("pix_fmt") or "unknown"),
+            "frame_rate": str(video_stream.get("avg_frame_rate") or "unknown"),
+        },
+        "audio": {
+            "codec": str(audio_stream.get("codec_name") or "unknown"),
+            "sample_rate": str(audio_stream.get("sample_rate") or "unknown"),
+            "channels": int(audio_stream.get("channels") or 0),
+        },
+    }
+
+
+@app.function(
     image=text_image,
     gpu="L4",
     volumes={HF_CACHE: model_cache},
     secrets=[hf_secret],
     timeout=1200,
     memory=16384,
+    scaledown_window=2,
 )
 def embedding(payload: dict[str, Any]) -> dict[str, Any]:
     global _embedding_model
@@ -223,6 +350,7 @@ def embedding(payload: dict[str, Any]) -> dict[str, Any]:
     secrets=[hf_secret],
     timeout=1800,
     memory=32768,
+    scaledown_window=2,
 )
 def editorial(payload: dict[str, Any]) -> dict[str, Any]:
     global _editorial_model, _editorial_tokenizer
@@ -359,6 +487,7 @@ def _vision_infer(payload: dict[str, Any], model_id: str, gpu: str) -> dict[str,
     secrets=[hf_secret],
     timeout=1200,
     memory=24576,
+    scaledown_window=2,
 )
 def vision(payload: dict[str, Any]) -> dict[str, Any]:
     return _vision_infer(payload, "Qwen/Qwen3-VL-8B-Instruct", "L4")
@@ -371,6 +500,7 @@ def vision(payload: dict[str, Any]) -> dict[str, Any]:
     secrets=[hf_secret],
     timeout=1800,
     memory=32768,
+    scaledown_window=2,
 )
 def vision_large(payload: dict[str, Any]) -> dict[str, Any]:
     return _vision_infer(payload, "Qwen/Qwen3-VL-30B-A3B-Instruct", "L4:2")
@@ -383,6 +513,7 @@ def vision_large(payload: dict[str, Any]) -> dict[str, Any]:
     secrets=[hf_secret],
     timeout=1800,
     memory=24576,
+    scaledown_window=2,
 )
 def transcribe(payload: dict[str, Any]) -> dict[str, Any]:
     global _whisper_model
@@ -424,6 +555,7 @@ def transcribe(payload: dict[str, Any]) -> dict[str, Any]:
     secrets=[hf_secret],
     timeout=1800,
     memory=24576,
+    scaledown_window=2,
 )
 def align(payload: dict[str, Any]) -> dict[str, Any]:
     import whisperx
@@ -476,6 +608,7 @@ def align(payload: dict[str, Any]) -> dict[str, Any]:
     secrets=[hf_secret],
     timeout=1800,
     memory=24576,
+    scaledown_window=2,
 )
 def diarize(payload: dict[str, Any]) -> dict[str, Any]:
     global _diarization_pipeline
@@ -511,7 +644,7 @@ def diarize(payload: dict[str, Any]) -> dict[str, Any]:
         return _transport_error(exc)
 
 
-@app.function(image=modal.Image.debian_slim(), timeout=120)
+@app.function(image=modal.Image.debian_slim(), timeout=120, scaledown_window=2)
 def credential_smoke() -> dict[str, Any]:
     return {"app": APP_NAME, "ok": True}
 
@@ -520,6 +653,7 @@ def credential_smoke() -> dict[str, Any]:
     image=base_image.uv_pip_install("huggingface_hub>=0.35,<2"),
     secrets=[hf_secret],
     timeout=180,
+    scaledown_window=2,
 )
 def hf_access_smoke() -> dict[str, Any]:
     from huggingface_hub import HfApi, hf_hub_download
