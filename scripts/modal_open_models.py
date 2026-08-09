@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import io
 import json
 import os
@@ -15,6 +16,8 @@ HF_CACHE = "/model-cache"
 MEDIA_ROOT = "/media"
 L4_USD_PER_SECOND = 0.000222
 L40S_USD_PER_SECOND = 0.000542
+EDITORIAL_MODEL_ID = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+EDITORIAL_MODEL_REVISION = "110954009be4a882781a90356c7d2b8a9e3428dc"
 
 model_cache = modal.Volume.from_name("clipper-hf-cache", create_if_missing=True)
 media_cache = modal.Volume.from_name("clipper-media-cache", create_if_missing=True)
@@ -53,6 +56,8 @@ speech_image = base_image.uv_pip_install(
 
 app = modal.App(APP_NAME)
 _embedding_model: Any | None = None
+_editorial_tokenizer: Any | None = None
+_editorial_model: Any | None = None
 _vision_models: dict[str, tuple[Any, Any]] = {}
 _whisper_model: Any | None = None
 _diarization_pipeline: Any | None = None
@@ -116,6 +121,71 @@ def _json_text(text: str) -> dict[str, Any]:
     return value
 
 
+def _editorial_output_budget(payload: dict[str, Any]) -> int:
+    task = str(payload.get("task") or "")
+    if task == "episode_editorial_profile" or task == "global_concept_comparison":
+        return 768
+    if task.startswith("hook_variants:"):
+        return 1024
+    return 1536
+
+
+def _editorial_contract(task: str) -> str:
+    common = (
+        "Output exactly one compact JSON object, no markdown and no extra keys. "
+        "Keep prose fields concise. For range fields copy the supplied short word_ref values, "
+        "never reconstruct or abbreviate word_id values yourself. "
+    )
+    if task == "episode_editorial_profile":
+        return common + (
+            'Schema: {"summary":"<=60 words",'
+            '"valuable_moment_characteristics":["3-5 short strings"],'
+            '"avoid_characteristics":["0-4 short strings"],"confidence":0.0}. '
+        )
+    if task.startswith("story_moments:"):
+        return common + (
+            'Schema: {"moments":[{"moment_id":"unique",'
+            '"start_word_id":"first word_ref","end_word_id":"last word_ref",'
+            '"semantic_summary":"<=24 words","narrative_structure":"short label",'
+            '"required_prior_context":"<=16 words or empty",'
+            '"required_followup_context":"<=16 words or empty",'
+            '"editorial_reason":"<=20 words","confidence":0.0}]}. '
+            "Return at most 8 non-overlapping meaningful moments. Do not copy full word-ID lists. "
+        )
+    if task == "clip_concepts":
+        return common + (
+            'Schema: {"concepts":[{"concept_id":"unique","story_moment_ids":["ids"],'
+            '"start_word_id":"first word_ref","end_word_id":"last word_ref",'
+            '"semantic_summary":"<=24 words","standalone_context":"<=16 words or empty",'
+            '"narrative_structure":"short label","recommended_duration":20.0,'
+            '"visual_dependencies":["short labels"],"confidence":0.0}]}. '
+            "Return at most 12 materially distinct contiguous concepts. "
+            "Do not copy full word-ID lists. "
+        )
+    if task == "global_concept_comparison":
+        return common + 'Schema: {"concept_ids":["best-first supplied concept IDs"]}. '
+    if task.startswith("hook_variants:"):
+        return common + (
+            'Schema: {"variants":[{"variant_id":"unique","strategy_label":"<=8 words",'
+            '"source_start_word_id":"first word_ref","source_end_word_id":"last word_ref",'
+            '"overlay_text":null,"rationale":"<=16 words","confidence":0.0}]}. '
+            "Return at most 4 materially different truthful hooks. Do not copy full word-ID lists. "
+        )
+    if task.startswith("edit_plans:"):
+        return common + (
+            'Schema: {"plans":[{"plan_id":"unique","video_id":"supplied video ID",'
+            '"concept_id":"supplied concept ID","variant_id":"supplied hook ID",'
+            '"source_start_word_id":"first edit word_ref",'
+            '"source_end_word_id":"last edit word_ref",'
+            '"hook_start_word_id":"first hook word_ref",'
+            '"hook_end_word_id":"last hook word_ref",'
+            '"overlay_text":null,"strategy_label":"<=8 words",'
+            '"caption_platform":"tiktok","confidence":0.0}]}. '
+            "Return at most 4 contiguous chronological plans. Do not copy full word-ID lists. "
+        )
+    return common + "Follow the task payload exactly."
+
+
 def _transport_error(exc: Exception) -> dict[str, Any]:
     return {"error": {"type": type(exc).__name__, "message": str(exc)}}
 
@@ -144,6 +214,83 @@ def embedding(payload: dict[str, Any]) -> dict[str, Any]:
         "vectors": value,
         "usage": _usage(started, "L4", input_units=len(texts), output_units=len(value)),
     }
+
+
+@app.function(
+    image=text_image,
+    gpu="L4:2",
+    volumes={HF_CACHE: model_cache},
+    secrets=[hf_secret],
+    timeout=1800,
+    memory=32768,
+)
+def editorial(payload: dict[str, Any]) -> dict[str, Any]:
+    global _editorial_model, _editorial_tokenizer
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+        started = time.perf_counter()
+        if _editorial_model is None or _editorial_tokenizer is None:
+            _editorial_tokenizer = AutoTokenizer.from_pretrained(
+                EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION
+            )
+            quantization = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+            )
+            _editorial_model = AutoModelForCausalLM.from_pretrained(
+                EDITORIAL_MODEL_ID,
+                revision=EDITORIAL_MODEL_REVISION,
+                device_map="auto",
+                dtype=torch.bfloat16,
+                quantization_config=quantization,
+                max_memory={0: "22GiB", 1: "22GiB"},
+                low_cpu_mem_usage=True,
+            )
+        task = str(payload.get("task") or "")
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a source-grounded podcast editor. Never invent spoken words or IDs. "
+                    + _editorial_contract(task)
+                ),
+            },
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+        rendered = _editorial_tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = _editorial_tokenizer(rendered, return_tensors="pt").to(_editorial_model.device)
+        output = _editorial_model.generate(
+            **inputs,
+            max_new_tokens=_editorial_output_budget(payload),
+            do_sample=False,
+            use_cache=True,
+        )
+        generated = output[0][inputs["input_ids"].shape[-1] :]
+        text = _editorial_tokenizer.decode(generated, skip_special_tokens=True)
+        value = _json_text(text)
+        return {
+            "value": value,
+            "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
+            "usage": _usage(
+                started,
+                "L4:2",
+                input_units=int(inputs["input_ids"].numel()),
+                output_units=int(generated.numel()),
+            ),
+        }
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        return _transport_error(exc)
 
 
 def _vision_infer(payload: dict[str, Any], model_id: str, gpu: str) -> dict[str, Any]:
@@ -332,33 +479,36 @@ def align(payload: dict[str, Any]) -> dict[str, Any]:
 )
 def diarize(payload: dict[str, Any]) -> dict[str, Any]:
     global _diarization_pipeline
-    import torch
-    from pyannote.audio import Pipeline
+    try:
+        import torch
+        from pyannote.audio import Pipeline
 
-    started = time.perf_counter()
-    source_path = str(payload["source_path"])
-    token = os.environ.get("HF_TOKEN")
-    if not token:
-        raise RuntimeError("HF_TOKEN is required for pyannote community-1")
-    if _diarization_pipeline is None:
-        _diarization_pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-community-1", token=token
-        )
-        _diarization_pipeline.to(torch.device("cuda"))
-    result = _diarization_pipeline(source_path)
-    annotation = getattr(result, "speaker_diarization", result)
-    turns = [
-        [float(segment.start), float(segment.end), str(speaker)]
-        for segment, _track, speaker in annotation.itertracks(yield_label=True)
-        if segment.end > segment.start
-    ]
-    if not turns:
-        raise ValueError("pyannote produced no speaker turns")
-    return {
-        "turns": turns,
-        "model": _model_evidence("pyannote/speaker-diarization-community-1"),
-        "usage": _usage(started, "L4", output_units=len(turns)),
-    }
+        started = time.perf_counter()
+        source_path = str(payload["source_path"])
+        token = os.environ.get("HF_TOKEN")
+        if not token:
+            raise RuntimeError("HF_TOKEN is required for pyannote community-1")
+        if _diarization_pipeline is None:
+            _diarization_pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-community-1", token=token
+            )
+            _diarization_pipeline.to(torch.device("cuda"))
+        result = _diarization_pipeline(source_path)
+        annotation = getattr(result, "speaker_diarization", result)
+        turns = [
+            [float(segment.start), float(segment.end), str(speaker)]
+            for segment, _track, speaker in annotation.itertracks(yield_label=True)
+            if segment.end > segment.start
+        ]
+        if not turns:
+            raise ValueError("pyannote produced no speaker turns")
+        return {
+            "turns": turns,
+            "model": _model_evidence("pyannote/speaker-diarization-community-1"),
+            "usage": _usage(started, "L4", output_units=len(turns)),
+        }
+    except Exception as exc:
+        return _transport_error(exc)
 
 
 @app.function(image=modal.Image.debian_slim(), timeout=120)
@@ -378,6 +528,6 @@ def hf_access_smoke() -> dict[str, Any]:
     if not token:
         raise RuntimeError("HF_TOKEN is not available inside Modal")
     model_id = "pyannote/speaker-diarization-community-1"
-    hf_hub_download(repo_id=model_id, filename="config.yaml", token=token)
     info = HfApi(token=token).model_info(model_id)
-    return {"ok": True, "model_id": info.id, "revision": info.sha}
+    hf_hub_download(repo_id=model_id, filename="config.yaml", token=token)
+    return {"ok": True, "model_id": info.id, "revision": info.sha, "gated_file": "config.yaml"}

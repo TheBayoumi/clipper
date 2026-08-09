@@ -1442,16 +1442,25 @@ def test_provider_factory_profiles_and_modal_embedding_validation(monkeypatch) -
     local_editor, local_embed = editorial_and_embedding_providers("local-lite")
     assert isinstance(local_editor, LocalEditorialProvider)
     assert isinstance(local_embed, LocalEmbeddingProvider)
+    modal_editor, modal_embed = editorial_and_embedding_providers("balanced")
+    assert isinstance(modal_editor, ModalEditorialProvider)
+    assert modal_editor.identity.model_id == "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    assert modal_editor.identity.quantization == "bnb-4bit-nf4"
+
+    monkeypatch.setenv("CLIPPER_MODAL_EDITORIAL_BACKEND", "managed")
     monkeypatch.setenv("CLIPPER_MODAL_EDITORIAL_ENDPOINT_URL", "https://example.modal.direct")
     monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "wk-test")
     monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "ws-test")
-    modal_editor, modal_embed = editorial_and_embedding_providers("balanced")
-    assert isinstance(modal_editor, ModalEndpointEditorialProvider)
-    assert modal_editor.identity.model_id == "Qwen/Qwen3.5-4B"
-    monkeypatch.delenv("CLIPPER_EDITORIAL_MODEL_ID", raising=False)
+    managed_editor, _ = editorial_and_embedding_providers("balanced")
+    assert isinstance(managed_editor, ModalEndpointEditorialProvider)
+    assert managed_editor.identity.model_id == "Qwen/Qwen3.5-4B"
     quality_editor, _ = editorial_and_embedding_providers("quality")
     assert isinstance(quality_editor, ModalEndpointEditorialProvider)
     assert quality_editor.identity.model_id == "Qwen/Qwen3.6-27B-FP8"
+
+    monkeypatch.setenv("CLIPPER_MODAL_EDITORIAL_BACKEND", "invalid")
+    with pytest.raises(ValueError, match="unsupported Modal editorial backend"):
+        editorial_and_embedding_providers("balanced")
     assert isinstance(modal_embed, ModalEmbeddingProvider)
     assert isinstance(vision_provider("local-lite"), LocalVisionProvider)
     assert isinstance(vision_provider("balanced"), ModalVisionProvider)
@@ -1845,6 +1854,16 @@ def test_modal_media_bridge_and_speech_adapters(tmp_path: Path) -> None:
     spoken = spoken_result.value
     assert spoken.words[0].speaker_id == "SPEAKER_00"
     assert spoken_result.model.revision == "diar-sha"
+
+    function.remote.return_value = {
+        "error": {"type": "GatedRepoError", "message": "403 gated config.yaml"}
+    }
+    with (
+        patch.object(bridge, "ensure_uploaded", return_value="/media/inputs/abc.wav"),
+        patch.object(diarize, "_function", return_value=function),
+        pytest.raises(RuntimeError, match=r"GatedRepoError: 403 gated config\.yaml"),
+    ):
+        diarize.diarize(source, aligned)
 
 
 def test_speech_provider_factory_routes_local_and_modal() -> None:

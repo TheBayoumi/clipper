@@ -135,6 +135,12 @@ class ModalDiarizationProvider(_ModalSpeechBase):
     ) -> ProviderResult[CanonicalTimeline]:
         remote_path = self.media_bridge.ensure_uploaded(source, timeline.source_hash)
         response = self._function().remote({"source_path": remote_path})
+        if isinstance(response, dict) and isinstance(response.get("error"), dict):
+            error = response["error"]
+            raise RuntimeError(
+                f"Modal diarization failed: {error.get('type', 'RemoteError')}: "
+                f"{error.get('message', 'unknown remote error')}"
+            )
         raw_turns = response.get("turns") if isinstance(response, dict) else None
         if not isinstance(raw_turns, list):
             raise ValueError("Modal diarization provider returned an invalid response")

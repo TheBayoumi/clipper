@@ -285,26 +285,23 @@ def test_live_validator_accepts_more_distinct_finalists_than_minimum(tmp_path: P
     assert report["actual"]["distinct_finalist_concepts"] == 6
 
 
-def test_balanced_editor_uses_managed_modal_endpoint_without_self_hosted_weights() -> None:
+def test_balanced_editor_defaults_to_free_dual_l4_and_keeps_managed_opt_in() -> None:
     worker = Path("scripts/modal_open_models.py").read_text()
     factory = Path("src/clipper/providers/factory.py").read_text()
     workflow = Path(".github/workflows/open-model-acceptance.yml").read_text()
-    assert "def editorial(" not in worker
-    assert "AutoModelForCausalLM" not in worker
-    assert "Qwen/Qwen3-30B-A3B-Instruct-2507" not in worker
-    assert "EDITORIAL_MODEL_REVISION" not in worker
+    assert "def editorial(" in worker
+    assert "AutoModelForCausalLM" in worker
+    assert "Qwen/Qwen3-30B-A3B-Instruct-2507" in worker
+    assert 'gpu="L4:2"' in worker
+    assert "ModalEditorialProvider" in factory
     assert "ModalEndpointEditorialProvider" in factory
+    assert 'CLIPPER_MODAL_EDITORIAL_BACKEND", "function"' in factory
     assert "Qwen/Qwen3.5-4B" in factory
     assert "Qwen/Qwen3.6-27B-FP8" in factory
     assert "modal-managed-endpoint" in factory
-    assert "modal_endpoint_bootstrap.py" in workflow
-    assert "scripts/modal_endpoint_bootstrap.py" in workflow.split("jobs:", 1)[0]
+    assert "CLIPPER_MODAL_EDITORIAL_BACKEND: function" in workflow
+    assert "modal_endpoint_bootstrap.py" in workflow.split("jobs:", 1)[0]
     assert '"endpoint", "create"' in Path("scripts/modal_endpoint_bootstrap.py").read_text()
-    bootstrap = Path("scripts/modal_endpoint_bootstrap.py").read_text()
-    assert bootstrap.index("create_proxy_token()") < bootstrap.index(
-        "ensure_endpoint(args.name, args.model)"
-    )
-    assert "Remove obsolete self-hosted Qwen 30B cache" in workflow
 
 
 def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
@@ -313,15 +310,16 @@ def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
     assert "MODAL_TOKEN_SECRET" in workflow
     assert "HF_TOKEN" in workflow
     assert "modal deploy scripts/modal_open_models.py" in workflow
-    assert "modal_endpoint_bootstrap.py" in workflow
     assert "scripts/modal_endpoint_bootstrap.py" in workflow.split("jobs:", 1)[0]
-    assert "Qwen/Qwen3.5-4B" in workflow
-    assert 'Function.from_name(app, "editorial")' not in workflow
+    assert "CLIPPER_MODAL_EDITORIAL_BACKEND: function" in workflow
+    assert 'Function.from_name(app, "editorial")' in workflow
     assert "editorial_usage" in workflow
     assert "hf_access_smoke" in workflow
-    assert workflow.index(
-        "managed Qwen editorial endpoint and Modal embedding execution"
-    ) < workflow.index("gated Hugging Face diarization access")
+    worker = Path("scripts/modal_open_models.py").read_text()
+    assert 'hf_hub_download(repo_id=model_id, filename="config.yaml", token=token)' in worker
+    assert workflow.index("Qwen embedding and 30B editorial execution") < workflow.index(
+        "gated Hugging Face diarization access"
+    )
     assert workflow.index("gated Hugging Face diarization access") < workflow.index(
         "Run full-episode open editorial analysis through Modal"
     )
@@ -333,8 +331,7 @@ def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
     assert "CLIPPER_OPEN_PROXY_URL" in workflow
     assert "CLIPPER_OPEN_PROXY_SHA256" in workflow
     assert "reach-open-proxy-v1" in workflow
-    assert "actions/artifacts?name=reach-open-proxy-v1" in workflow
-    assert 'gh run download "$run_id" -n reach-open-proxy-v1' not in workflow
+    assert 'gh run download "$run_id" -n reach-open-proxy-v1' in workflow
     assert "Restore prior compatible open-model cache" in workflow
     assert 'artifact="open-model-acceptance-$head_sha"' in workflow
     assert "prior-open-evidence/_cache" in workflow

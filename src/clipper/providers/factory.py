@@ -13,7 +13,7 @@ from .base import (
     compute_profile,
 )
 from .local import LocalEditorialProvider, LocalEmbeddingProvider, LocalVisionProvider
-from .modal import ModalEmbeddingProvider, ModalVisionProvider
+from .modal import ModalEditorialProvider, ModalEmbeddingProvider, ModalVisionProvider
 from .modal_endpoint import ModalEndpointEditorialProvider
 from .modal_speech import (
     ModalAlignmentProvider,
@@ -35,22 +35,42 @@ def editorial_and_embedding_providers(
     if profile.editorial_location == "local":
         return LocalEditorialProvider(), LocalEmbeddingProvider()
     app = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
-    default_editorial_model = (
-        "Qwen/Qwen3.6-27B-FP8" if profile.name == "quality" else "Qwen/Qwen3.5-4B"
-    )
-    editorial = ModalEndpointEditorialProvider(
-        endpoint_url=os.getenv("CLIPPER_MODAL_EDITORIAL_ENDPOINT_URL", ""),
-        proxy_token_id=os.getenv("MODAL_PROXY_TOKEN_ID", ""),
-        proxy_token_secret=os.getenv("MODAL_PROXY_TOKEN_SECRET", ""),
-        identity=ModelIdentity(
-            os.getenv("CLIPPER_EDITORIAL_MODEL_ID", default_editorial_model),
-            os.getenv("CLIPPER_EDITORIAL_MODEL_REVISION", "modal-managed"),
-            "modal-managed",
-            "modal-managed-endpoint",
-            "editor-v1",
-            "editorial-json-v1",
-        ),
-    )
+    backend = os.getenv("CLIPPER_MODAL_EDITORIAL_BACKEND", "function").strip().lower()
+    if backend in {"function", "self-hosted", "modal-function"}:
+        editorial: EditorialProvider = ModalEditorialProvider(
+            app_name=app,
+            function_name="editorial",
+            identity=ModelIdentity(
+                "Qwen/Qwen3-30B-A3B-Instruct-2507",
+                os.getenv(
+                    "CLIPPER_EDITORIAL_MODEL_REVISION",
+                    "110954009be4a882781a90356c7d2b8a9e3428dc",
+                ),
+                os.getenv("CLIPPER_EDITORIAL_QUANTIZATION", "bnb-4bit-nf4"),
+                "modal-transformers",
+                "editor-v1",
+                "editorial-json-v1",
+            ),
+        )
+    elif backend in {"managed", "endpoint"}:
+        default_editorial_model = (
+            "Qwen/Qwen3.6-27B-FP8" if profile.name == "quality" else "Qwen/Qwen3.5-4B"
+        )
+        editorial = ModalEndpointEditorialProvider(
+            endpoint_url=os.getenv("CLIPPER_MODAL_EDITORIAL_ENDPOINT_URL", ""),
+            proxy_token_id=os.getenv("MODAL_PROXY_TOKEN_ID", ""),
+            proxy_token_secret=os.getenv("MODAL_PROXY_TOKEN_SECRET", ""),
+            identity=ModelIdentity(
+                os.getenv("CLIPPER_EDITORIAL_MODEL_ID", default_editorial_model),
+                os.getenv("CLIPPER_EDITORIAL_MODEL_REVISION", "modal-managed"),
+                "modal-managed",
+                "modal-managed-endpoint",
+                "editor-v1",
+                "editorial-json-v1",
+            ),
+        )
+    else:
+        raise ValueError(f"unsupported Modal editorial backend: {backend}")
     embedding = ModalEmbeddingProvider(
         app_name=app,
         function_name="embedding",
