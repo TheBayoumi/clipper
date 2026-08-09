@@ -2,6 +2,12 @@ name: Open-model acceptance
 
 on:
   workflow_dispatch:
+    inputs:
+      diagnostic_degraded_diarization:
+        description: Run the downstream open stack without speaker labels when gated pyannote access is unavailable
+        required: false
+        type: boolean
+        default: false
   push:
     branches:
       - feat/word-reveal-face-tracking
@@ -31,6 +37,7 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       CLIPPER_MODAL_APP: clipper-open-editor
       CLIPPER_MODAL_EDITORIAL_BACKEND: function
+      CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostic_degraded_diarization == true && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -98,6 +105,7 @@ jobs:
           PY
 
       - name: Verify gated Hugging Face diarization access
+        if: ${{ env.CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION != 'true' }}
         run: |
           python - <<'PY'
           import json
@@ -251,6 +259,7 @@ jobs:
           CLIPPER_COMPUTE_PROFILE: balanced
           CLIPPER_VISUAL_SCOUT: "true"
           CLIPPER_VISUAL_REVIEW: "false"
+          CLIPPER_DIARIZATION_MODE: ${{ env.CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION == 'true' && 'passthrough' || 'pyannote' }}
         run: |
           set +e
           clipper run \
@@ -275,9 +284,12 @@ jobs:
           exit "$rc"
 
       - name: Run real Modal speech grounding smoke on authorized podcast audio
+        env:
+          CLIPPER_DIARIZATION_MODE: ${{ env.CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION == 'true' && 'passthrough' || 'pyannote' }}
         run: |
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
           from clipper.cache import file_sha256
           from clipper.providers.factory import speech_providers
@@ -294,7 +306,11 @@ jobs:
           timeline = diarization.diarize(source, timeline).value
           assert timeline.words
           assert all(word.timing_mode == "aligned" for word in timeline.words)
-          assert any(word.speaker_id for word in timeline.words)
+          degraded = os.environ.get("CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION") == "true"
+          if degraded:
+              assert not any(word.speaker_id for word in timeline.words)
+          else:
+              assert any(word.speaker_id for word in timeline.words)
           payload = timeline.to_dict()
           Path("open-evidence/speech-grounding-smoke.json").write_text(json.dumps(payload, indent=2) + "\n")
           print(json.dumps({"words": len(timeline.words), "speakers": sorted({w.speaker_id for w in timeline.words if w.speaker_id})}, indent=2))
@@ -304,6 +320,7 @@ jobs:
         run: |
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
 
           manifests = list(Path("open-evidence").glob("*/manifest.json"))
@@ -312,6 +329,9 @@ jobs:
           inference = manifest["run_metadata"]["editorial_inference"]
           assert inference["engine"] == "open"
           assert inference["degraded"] is False
+          grounding = manifest["run_metadata"]["grounding_inference"]
+          diagnostic = os.environ.get("CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION") == "true"
+          assert grounding["degraded"] is diagnostic
           assert manifest["funnel"]["story_moments"] >= 4
           assert manifest["funnel"]["selected_concepts"] >= 3
           assert manifest["funnel"]["edit_plans"] >= 3

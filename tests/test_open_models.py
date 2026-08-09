@@ -64,6 +64,7 @@ from clipper.providers.modal_speech import (
 )
 from clipper.providers.speech import (
     FasterWhisperTranscriptionProvider,
+    PassthroughDiarizationProvider,
     PyannoteDiarizationProvider,
     WhisperXAlignmentProvider,
     _alignment_segments,
@@ -1866,7 +1867,9 @@ def test_modal_media_bridge_and_speech_adapters(tmp_path: Path) -> None:
         diarize.diarize(source, aligned)
 
 
-def test_speech_provider_factory_routes_local_and_modal() -> None:
+def test_speech_provider_factory_routes_local_modal_and_degraded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     local = speech_providers("local-lite")
     assert isinstance(local[0], FasterWhisperTranscriptionProvider)
     assert isinstance(local[1], WhisperXAlignmentProvider)
@@ -1875,6 +1878,19 @@ def test_speech_provider_factory_routes_local_and_modal() -> None:
     assert isinstance(remote[0], ModalTranscriptionProvider)
     assert isinstance(remote[1], ModalAlignmentProvider)
     assert isinstance(remote[2], ModalDiarizationProvider)
+
+    monkeypatch.setenv("CLIPPER_DIARIZATION_MODE", "passthrough")
+    degraded = speech_providers("balanced")
+    assert isinstance(degraded[2], PassthroughDiarizationProvider)
+    timeline = _timeline()
+    result = degraded[2].diarize(Path("unused.wav"), timeline)
+    assert result.value is timeline
+    assert result.degraded is True
+    assert result.model.model_id == "none/passthrough-diarization"
+
+    monkeypatch.setenv("CLIPPER_DIARIZATION_MODE", "invalid")
+    with pytest.raises(ValueError, match="unsupported diarization mode"):
+        speech_providers("balanced")
 
 
 def test_plan_batch_reports_duration_rejections_when_all_model_plans_are_invalid(

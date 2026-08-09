@@ -23,6 +23,7 @@ from .modal_speech import (
 )
 from .speech import (
     FasterWhisperTranscriptionProvider,
+    PassthroughDiarizationProvider,
     PyannoteDiarizationProvider,
     WhisperXAlignmentProvider,
 )
@@ -113,11 +114,17 @@ def speech_providers(
     profile_name: str,
 ) -> tuple[TranscriptionProvider, AlignmentProvider, DiarizationProvider]:
     profile = compute_profile(profile_name)  # type: ignore[arg-type]
+    diarization_mode = os.getenv("CLIPPER_DIARIZATION_MODE", "pyannote").strip().lower()
+    degraded_diarization = diarization_mode in {"passthrough", "none", "disabled"}
+    if not degraded_diarization and diarization_mode != "pyannote":
+        raise ValueError(f"unsupported diarization mode: {diarization_mode}")
     if profile.editorial_location == "local":
         return (
             FasterWhisperTranscriptionProvider(),
             WhisperXAlignmentProvider(),
-            PyannoteDiarizationProvider(),
+            PassthroughDiarizationProvider()
+            if degraded_diarization
+            else PyannoteDiarizationProvider(),
         )
     app = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
     bridge = ModalMediaBridge(os.getenv("CLIPPER_MODAL_MEDIA_VOLUME", "clipper-media-cache"))
@@ -148,7 +155,9 @@ def speech_providers(
             ),
             media_bridge=bridge,
         ),
-        ModalDiarizationProvider(
+        PassthroughDiarizationProvider()
+        if degraded_diarization
+        else ModalDiarizationProvider(
             app_name=app,
             function_name="diarize",
             identity=ModelIdentity(

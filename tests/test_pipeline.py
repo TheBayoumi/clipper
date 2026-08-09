@@ -23,6 +23,7 @@ from clipper.pipeline import (
     run_pipeline,
 )
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
+from clipper.providers.speech import PassthroughDiarizationProvider
 from clipper.visual import VisualEvent, VisualTimeline
 from clipper.visual_ai import VisualReviewIssue, VisualReviewReport
 
@@ -1195,6 +1196,7 @@ def test_open_grounding_owns_canonical_timeline_and_bypasses_subtitles(tmp_path:
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert asr.calls == alignment.calls == diarization.calls == 1
     assert manifest["run_metadata"]["grounding_inference"]["engine"] == "open"
+    assert manifest["run_metadata"]["grounding_inference"]["degraded"] is False
     assert manifest["run_metadata"]["transcript_sources"]["allowed"]["kind"] == "canonical-open"
     assert manifest["run_metadata"]["canonical_timelines"]["allowed"]["speaker_count"] == 1
     assert manifest["run_metadata"]["canonical_timelines"]["allowed"]["timing_modes"] == ["aligned"]
@@ -1223,6 +1225,31 @@ def test_open_grounding_owns_canonical_timeline_and_bypasses_subtitles(tmp_path:
     )
     assert second.is_dir()
     assert asr.calls == alignment.calls == diarization.calls == 1
+
+    degraded_run = run_pipeline(
+        brief,
+        settings=PipelineSettings(
+            artifact_root=tmp_path / "grounded-artifacts-degraded",
+            cache_root=tmp_path / "grounded-cache-degraded",
+            editorial_engine="open",
+            grounding_engine="open",
+            compute_profile="local-lite",
+            editorial_chunk_words=200,
+            editorial_chunk_overlap_words=20,
+        ),
+        source_client=_OpenGroundingSource(subtitle, media),
+        editorial_provider=FakeOpenEditorialProvider(),
+        embedding_provider=FakeOpenEmbeddingProvider(),
+        transcription_provider=_GroundingTranscription(),
+        alignment_provider=_GroundingAlignment(),
+        diarization_provider=PassthroughDiarizationProvider(),
+        render=False,
+    )
+    degraded_manifest = json.loads((degraded_run / "manifest.json").read_text())
+    grounding = degraded_manifest["run_metadata"]["grounding_inference"]
+    assert grounding["degraded"] is True
+    assert grounding["models"][0]["diarization"]["degraded"] is True
+    assert degraded_manifest["run_metadata"]["canonical_timelines"]["allowed"]["speaker_count"] == 0
 
 
 def test_open_grounding_requires_complete_provider_set(tmp_path: Path) -> None:

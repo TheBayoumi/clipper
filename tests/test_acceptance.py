@@ -326,6 +326,11 @@ def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
     assert 'speech_providers("balanced")' in workflow
     assert "CLIPPER_EDITORIAL_ENGINE: open" in workflow
     assert "CLIPPER_GROUNDING_ENGINE: open" in workflow
+    assert "diagnostic_degraded_diarization" in workflow
+    assert "CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION" in workflow
+    assert "CLIPPER_DIARIZATION_MODE" in workflow
+    assert "passthrough" in workflow
+    assert "gated Hugging Face diarization access" in workflow
     assert "CLIPPER_COMPUTE_PROFILE: balanced" in workflow
     assert "CLIPPER_VISUAL_SCOUT" in workflow
     assert "CLIPPER_OPEN_PROXY_URL" in workflow

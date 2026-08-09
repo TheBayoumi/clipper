@@ -419,3 +419,28 @@ class PyannoteDiarizationProvider:
         output = self._load()(str(source))
         value = apply_speaker_turns(timeline, self._turns(output))
         return ProviderResult(value, self.identity, _usage(started_at, started))
+
+
+class PassthroughDiarizationProvider:
+    """Diagnostic-only diarization that preserves aligned words without speaker labels."""
+
+    def __init__(self) -> None:
+        self.identity = ModelIdentity(
+            "none/passthrough-diarization",
+            "v1",
+            "none",
+            "deterministic-passthrough",
+            "none",
+            "canonical-timeline-v1",
+        )
+
+    def diarize(
+        self, source: Path, timeline: CanonicalTimeline
+    ) -> ProviderResult[CanonicalTimeline]:
+        started_at, started = _started()
+        return ProviderResult(
+            timeline,
+            self.identity,
+            _usage(started_at, started, provider="degraded"),
+            degraded=True,
+        )

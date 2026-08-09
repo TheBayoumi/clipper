@@ -777,6 +777,7 @@ def run_pipeline(
         "grounding_inference": {
             "engine": cfg.grounding_engine,
             "compute_profile": cfg.compute_profile,
+            "degraded": False,
             "models": [],
         },
         "editorial_inference": {
@@ -937,6 +938,9 @@ def run_pipeline(
                                 "diarization": diarization_evidence,
                             }
                         )
+                    grounding_inference["degraded"] = bool(
+                        grounding_inference.get("degraded") or diarization_evidence.get("degraded")
+                    )
             else:
                 if direct_media_url:
                     telemetry.start(f"source_acquisition:{video.video_id}")
