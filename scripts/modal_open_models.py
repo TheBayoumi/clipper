@@ -41,7 +41,21 @@ base_image = (
         }
     )
 )
-media_image = base_image.uv_pip_install("yt-dlp>=2026.7.4,<2027")
+media_image = (
+    modal.Image.from_registry("node:22-bookworm-slim", add_python="3.12")
+    .entrypoint([])
+    .apt_install("ffmpeg", "git")
+    .uv_pip_install(
+        "yt-dlp>=2026.7.4,<2027",
+        "bgutil-ytdlp-pot-provider==1.3.1",
+    )
+    .run_commands(
+        "git clone --depth 1 --branch 1.3.1 "
+        "https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git "
+        "/root/bgutil-ytdlp-pot-provider",
+        "cd /root/bgutil-ytdlp-pot-provider/server && npm ci && npx tsc",
+    )
+)
 text_image = base_image.uv_pip_install(
     "torch>=2.8,<3",
     "transformers>=4.57,<5",
@@ -226,13 +240,14 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
     command = [
         "yt-dlp",
         "--no-playlist",
-        "--no-warnings",
         "--retries",
         "10",
         "--fragment-retries",
         "10",
         "--concurrent-fragments",
         "4",
+        "--extractor-args",
+        "youtube:player_client=mweb",
         "--format",
         "bestvideo+bestaudio/best",
         "--merge-output-format",
@@ -243,7 +258,18 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
         "after_move:filepath",
         video_url,
     ]
-    completed = subprocess.run(command, check=True, capture_output=True, text=True, timeout=7000)
+    try:
+        completed = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=7000,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = "\n".join(part.strip() for part in (exc.stdout, exc.stderr) if part and part.strip())
+        detail = detail[-6000:] if detail else "yt-dlp returned no diagnostic output"
+        raise RuntimeError(f"yt-dlp source acquisition failed:\n{detail}") from exc
     printed_paths = [Path(line.strip()) for line in completed.stdout.splitlines() if line.strip()]
     source = printed_paths[-1] if printed_paths else Path()
     if not source.is_file() or source.stat().st_size <= 0:
