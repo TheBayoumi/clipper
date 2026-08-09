@@ -279,9 +279,7 @@ class YouTubeClient:
         selected, available = self._select_video_format(info, None)
         format_id = str(selected["format_id"])
         format_selector = (
-            format_id
-            if selected["audio_codec"] != "none"
-            else f"{format_id}+bestaudio/{format_id}"
+            format_id if selected["audio_codec"] != "none" else f"{format_id}+bestaudio/{format_id}"
         )
         command = [
             "yt-dlp",
