@@ -9,7 +9,13 @@ from typing import Any
 
 
 def _run(*args: str) -> str:
-    result = subprocess.run(args, check=True, capture_output=True, text=True)
+    result = subprocess.run(args, capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+        raise RuntimeError(
+            f"command failed ({result.returncode}): {' '.join(args)}"
+            + (f"\n{detail}" if detail else "")
+        )
     return result.stdout.strip()
 
 
