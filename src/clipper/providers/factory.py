@@ -41,7 +41,7 @@ def editorial_and_embedding_providers(
             "Qwen/Qwen3-30B-A3B-Instruct-2507",
             os.getenv(
                 "CLIPPER_EDITORIAL_MODEL_REVISION",
-                "c9051e5f23e735fd6549f86b616377617848a621",
+                "110954009be4a882781a90356c7d2b8a9e3428dc",
             ),
             os.getenv("CLIPPER_EDITORIAL_QUANTIZATION", "bnb-4bit-nf4"),
             "modal-transformers",

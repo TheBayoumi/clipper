@@ -302,7 +302,7 @@ def test_balanced_editor_uses_pinned_qwen3_30b_on_two_l4s() -> None:
     assert '"kernels>=0.15.2,<0.16"' not in worker
     assert '"sentencepiece>=0.2,<1"' in worker
     assert '"tiktoken>=0.11,<1"' in worker
-    assert 'EDITORIAL_MODEL_REVISION = "c9051e5f23e735fd6549f86b616377617848a621"' in worker
+    assert 'EDITORIAL_MODEL_REVISION = "110954009be4a882781a90356c7d2b8a9e3428dc"' in worker
     assert "BitsAndBytesConfig(" in editorial_block
     assert "load_in_4bit=True" in editorial_block
     assert 'bnb_4bit_quant_type="nf4"' in editorial_block
@@ -317,7 +317,7 @@ def test_balanced_editor_uses_pinned_qwen3_30b_on_two_l4s() -> None:
     assert "Do not copy full word-ID lists" in worker
     assert "Qwen/Qwen3-30B-A3B-Instruct-2507" in factory
     assert 'CLIPPER_EDITORIAL_QUANTIZATION", "bnb-4bit-nf4"' in factory
-    assert "c9051e5f23e735fd6549f86b616377617848a621" in factory
+    assert "110954009be4a882781a90356c7d2b8a9e3428dc" in factory
     # local-lite deliberately keeps the smaller model; balanced is the high-quality Modal path.
     assert "Qwen/Qwen3-4B-Instruct-2507" in local
 
