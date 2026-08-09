@@ -8,6 +8,7 @@ on:
     paths:
       - ".github/workflows/open-model-acceptance.yml"
       - "scripts/modal_open_models.py"
+      - "scripts/modal_endpoint_bootstrap.py"
       - "src/clipper/providers/**"
       - "src/clipper/canonical.py"
       - "src/clipper/autonomous_editor.py"

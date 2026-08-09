@@ -297,7 +297,12 @@ def test_balanced_editor_uses_managed_modal_endpoint_without_self_hosted_weights
     assert "Qwen/Qwen3.6-27B-FP8" in factory
     assert "modal-managed-endpoint" in factory
     assert "modal_endpoint_bootstrap.py" in workflow
+    assert "scripts/modal_endpoint_bootstrap.py" in workflow.split("jobs:", 1)[0]
     assert '"endpoint", "create"' in Path("scripts/modal_endpoint_bootstrap.py").read_text()
+    bootstrap = Path("scripts/modal_endpoint_bootstrap.py").read_text()
+    assert bootstrap.index("create_proxy_token()") < bootstrap.index(
+        "ensure_endpoint(args.name, args.model)"
+    )
     assert "Remove obsolete self-hosted Qwen 30B cache" in workflow
 
 
@@ -308,6 +313,7 @@ def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
     assert "HF_TOKEN" in workflow
     assert "modal deploy scripts/modal_open_models.py" in workflow
     assert "modal_endpoint_bootstrap.py" in workflow
+    assert "scripts/modal_endpoint_bootstrap.py" in workflow.split("jobs:", 1)[0]
     assert "Qwen/Qwen3.6-27B-FP8" in workflow
     assert 'Function.from_name(app, "editorial")' not in workflow
     assert "editorial_usage" in workflow

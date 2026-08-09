@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import subprocess
 import time
@@ -85,8 +86,13 @@ def main() -> None:
     parser.add_argument("--name", default="clipper-editorial")
     parser.add_argument("--model", default="Qwen/Qwen3.6-27B-FP8")
     args = parser.parse_args()
-    endpoint_url = ensure_endpoint(args.name, args.model)
     token_id, token_secret = create_proxy_token()
+    try:
+        endpoint_url = ensure_endpoint(args.name, args.model)
+    except Exception:
+        with contextlib.suppress(Exception):
+            _run("modal", "workspace", "proxy-tokens", "delete", "-y", token_id)
+        raise
     print(
         json.dumps(
             {
