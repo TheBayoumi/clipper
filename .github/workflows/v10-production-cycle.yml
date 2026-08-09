@@ -1,0 +1,217 @@
+name: V10 production HILP cycle
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/word-reveal-face-tracking
+    paths:
+      - ".github/workflows/v10-production-cycle.yml"
+      - "scripts/modal_v10_cycle.py"
+      - "scripts/modal_open_models.py"
+      - "src/clipper/hilp.py"
+      - "src/clipper/pipeline.py"
+      - "src/clipper/render.py"
+      - "src/clipper/providers/**"
+      - "campaigns/reach-double-coverage-dedicated.yaml"
+      - "Dockerfile"
+      - "pyproject.toml"
+      - ".ruff.toml"
+
+concurrency:
+  group: v10-production-hilp-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+  MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  CLIPPER_YOUTUBE_COOKIES_B64: ${{ secrets.CLIPPER_YOUTUBE_COOKIES_B64 }}
+  CLIPPER_MODAL_APP: clipper-open-editor
+  CLIPPER_V10_MODAL_APP: clipper-v10-cycle
+
+jobs:
+  production-hilp:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Verify production credentials before compute
+        run: |
+          set -euo pipefail
+          test -n "$MODAL_TOKEN_ID"
+          test -n "$MODAL_TOKEN_SECRET"
+          test -n "$HF_TOKEN"
+          test -n "$CLIPPER_YOUTUBE_COOKIES_B64" || {
+            echo "Missing CLIPPER_YOUTUBE_COOKIES_B64 GitHub Actions secret." >&2
+            echo "Store a base64-encoded Netscape yt-dlp cookie file; never commit it." >&2
+            exit 1
+          }
+
+      - name: Install lightweight orchestration dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[modal]'
+
+      - name: Terminate stale V10 Modal containers
+        run: |
+          set -euo pipefail
+          modal app stop "$CLIPPER_V10_MODAL_APP" --yes || true
+          modal app stop "$CLIPPER_MODAL_APP" --yes || true
+          modal volume rm -r clipper-media-cache /staging || true
+
+      - name: Deploy exact-HEAD open-model workers
+        run: modal deploy scripts/modal_open_models.py
+
+      - name: Deploy exact-HEAD source, Sortformer and cycle workers
+        run: modal deploy scripts/modal_v10_cycle.py
+
+      - name: Acquire authenticated highest-quality master inside Modal
+        run: |
+          set -euo pipefail
+          mkdir -p open-evidence
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          import modal
+
+          result = modal.Function.from_name("clipper-v10-cycle", "acquire_source").remote(
+              {
+                  "video_id": "2Y4LP85PTak",
+                  "video_url": "https://www.youtube.com/watch?v=2Y4LP85PTak",
+              }
+          )
+          assert result["quality_policy"] == "highest_available_no_transcode", result
+          assert int(result["video"]["width"]) > 0, result
+          assert int(result["video"]["height"]) > 0, result
+          assert int(result["bytes"]) > 0, result
+          assert result["volume_path"].startswith("/inputs/"), result
+          Path("open-evidence/source-master.json").write_text(
+              json.dumps(result, indent=2) + "\n"
+          )
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Run entire podcast, render finalists and execute simulated HILP
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          import modal
+
+          source = json.loads(Path("open-evidence/source-master.json").read_text())
+          brief_yaml = Path("campaigns/reach-double-coverage-dedicated.yaml").read_text()
+          result = modal.Function.from_name("clipper-v10-cycle", "run_full_cycle").remote(
+              {
+                  "source": source,
+                  "brief_yaml": brief_yaml,
+                  "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
+              }
+          )
+          assert result["status"] == "PASS", result
+          assert result["pipeline_status"] == "SUCCESS", result
+          assert int(result["rendered_finalists"]) >= 6, result
+          assert int(result["initial_shortlist"]) >= 3, result
+          assert result["hilp_status"] == "PASS", result
+          assert set(result["branches_exercised"]) == {"APPROVE", "REJECT", "REVISE"}
+          Path("open-evidence/cycle-result.json").write_text(
+              json.dumps(result, indent=2) + "\n"
+          )
+          with Path("open-evidence/run-path.txt").open("w") as handle:
+              handle.write(str(result["run_path"]) + "\n")
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Download only rendered/evidence bundle from Modal
+        run: |
+          set -euo pipefail
+          run_path="$(tr -d '\n' < open-evidence/run-path.txt)"
+          rm -rf cycle-evidence
+          modal volume get --force clipper-v10-artifacts "$run_path" cycle-evidence
+
+      - name: Validate automated HILP and decode every final MP4
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import subprocess
+          from pathlib import Path
+
+          from clipper.hilp import validate_hilp_evidence
+
+          roots = list(Path("cycle-evidence").rglob("manifest.json"))
+          assert len(roots) == 1, roots
+          run_dir = roots[0].parent
+          manifest = json.loads((run_dir / "manifest.json").read_text())
+          hilp = json.loads((run_dir / "hilp-simulation.json").read_text())
+          source = json.loads(Path("open-evidence/source-master.json").read_text())
+          validate_hilp_evidence(hilp)
+          assert manifest["status"] == "SUCCESS", manifest.get("status_reason")
+          assert len(manifest["rendered_clips"]) >= 6
+          assert len(manifest["submission_shortlist"]) >= 3
+          assert source["quality_policy"] == "highest_available_no_transcode"
+          queue = []
+          for item in hilp["final_shortlist"]:
+              requested = Path(str(item["output_path"]))
+              matches = list(run_dir.rglob(requested.name))
+              assert len(matches) == 1, (requested, matches)
+              local = matches[0]
+              subprocess.run(
+                  ["ffmpeg", "-v", "error", "-i", str(local), "-f", "null", "-"],
+                  check=True,
+                  timeout=1800,
+              )
+              digest = hashlib.sha256(local.read_bytes()).hexdigest()
+              assert digest == item["render_sha256"], (digest, item["render_sha256"])
+              queue.append(
+                  {
+                      "plan_id": item["plan_id"],
+                      "concept_id": item["concept_id"],
+                      "path": str(local),
+                      "sha256": digest,
+                  }
+              )
+          Path("open-evidence/manual-review-queue.json").write_text(
+              json.dumps(
+                  {
+                      "status": "PENDING_ACTUAL_MP4_INSPECTION",
+                      "clips": queue,
+                      "dod_complete": False,
+                  },
+                  indent=2,
+              )
+              + "\n"
+          )
+          summary = {"run_dir": str(run_dir), "hilp": hilp["status"], "clips": queue}
+          print(json.dumps(summary, indent=2))
+          PY
+
+      - name: Upload production cycle evidence for actual MP4 review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v10-production-hilp-${{ github.sha }}
+          path: |
+            open-evidence/
+            cycle-evidence/
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: warn
+
+      - name: Stop V10 Modal containers
+        if: always()
+        run: |
+          modal app stop "$CLIPPER_V10_MODAL_APP" --yes || true
+          modal app stop "$CLIPPER_MODAL_APP" --yes || true
