@@ -329,6 +329,9 @@ def test_open_model_workflow_uses_modal_hf_and_full_episode_fixture() -> None:
     assert workflow.index("Qwen embedding execution") < workflow.index(
         "gated Hugging Face diarization access"
     )
+    assert workflow.index("gated Hugging Face diarization access") < workflow.index(
+        "Run full-episode open editorial analysis through Modal"
+    )
     assert 'speech_providers("balanced")' in workflow
     assert "CLIPPER_EDITORIAL_ENGINE: open" in workflow
     assert "CLIPPER_GROUNDING_ENGINE: open" in workflow

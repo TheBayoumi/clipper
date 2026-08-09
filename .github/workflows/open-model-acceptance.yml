@@ -200,6 +200,22 @@ jobs:
           print(json.dumps(evidence, indent=2))
           PY
 
+      - name: Verify gated Hugging Face diarization access
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import modal
+
+          app = "clipper-open-editor"
+          gated = modal.Function.from_name(app, "hf_access_smoke").remote()
+          assert gated.get("ok") is True
+          assert gated.get("model_id") == "pyannote/speaker-diarization-community-1"
+          Path("open-evidence/hf-access.json").write_text(json.dumps(gated, indent=2) + "\n")
+          print(json.dumps(gated, indent=2))
+          PY
+
+
       - name: Run full-episode open editorial analysis through Modal
         env:
           CLIPPER_SOURCE_FIXTURE_DIR: ${{ github.workspace }}/live-fixture
@@ -230,21 +246,6 @@ jobs:
           progress="$(find open-evidence -name progress.json -type f -print -quit)"
           test -z "$progress" || cat "$progress"
           exit "$rc"
-
-      - name: Verify gated Hugging Face diarization access
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          import modal
-
-          app = "clipper-open-editor"
-          gated = modal.Function.from_name(app, "hf_access_smoke").remote()
-          assert gated.get("ok") is True
-          assert gated.get("model_id") == "pyannote/speaker-diarization-community-1"
-          Path("open-evidence/hf-access.json").write_text(json.dumps(gated, indent=2) + "\n")
-          print(json.dumps(gated, indent=2))
-          PY
 
       - name: Run real Modal speech grounding smoke on authorized podcast audio
         run: |
