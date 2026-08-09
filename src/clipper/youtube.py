@@ -61,10 +61,10 @@ def _run(command: Sequence[str], *, timeout: int = 900) -> subprocess.CompletedP
 
 
 class YouTubeClient:
-    def __init__(self, api_key: str | None = None, *, max_height: int = 1080) -> None:
+    def __init__(self, api_key: str | None = None, *, max_height: int | None = None) -> None:
         self.api_key = api_key or os.getenv("YOUTUBE_API_KEY")
-        if max_height < 360 or max_height > 4320:
-            raise YouTubeError("max_height must be between 360 and 4320")
+        if max_height is not None and max_height < 360:
+            raise YouTubeError("max_height must be at least 360 when configured")
         self.max_height = max_height
 
     def discover(self, brief: CampaignBrief) -> list[VideoCandidate]:
@@ -209,7 +209,7 @@ class YouTubeClient:
 
     @staticmethod
     def _select_video_format(
-        payload: dict[str, Any], max_height: int
+        payload: dict[str, Any], max_height: int | None
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         available: list[dict[str, Any]] = []
         for item in _object_list(payload.get("formats")):
@@ -230,28 +230,37 @@ class YouTubeClient:
                     "bitrate_kbps": float(item.get("tbr") or 0.0),
                 }
             )
-        eligible = [item for item in available if item["height"] <= max_height]
+        eligible = (
+            available
+            if max_height is None
+            else [item for item in available if int(item["height"]) <= max_height]
+        )
         if not eligible:
-            raise YouTubeError(f"no video format is available at or below {max_height}p")
-        mp4 = [item for item in eligible if item["container"] == "mp4"]
-        pool = mp4 or eligible
+            limit = "available source quality" if max_height is None else f"{max_height}p"
+            raise YouTubeError(f"no video format is available for {limit}")
         selected = max(
-            pool,
+            eligible,
             key=lambda item: (
                 int(item["height"]),
                 int(item["width"]),
-                float(item["bitrate_kbps"]),
                 float(item["fps"]),
+                float(item["bitrate_kbps"]),
             ),
         )
         available.sort(
-            key=lambda item: (int(item["height"]), float(item["bitrate_kbps"])), reverse=True
+            key=lambda item: (
+                int(item["height"]),
+                int(item["width"]),
+                float(item["fps"]),
+                float(item["bitrate_kbps"]),
+            ),
+            reverse=True,
         )
         return selected, available
 
     def download_media(self, video: VideoCandidate, work_dir: Path) -> Path:
         work_dir.mkdir(parents=True, exist_ok=True)
-        output = work_dir / f"{video.video_id}.mp4"
+        output = work_dir / f"{video.video_id}.mkv"
         metadata_path = output.with_suffix(".source.json")
         if output.is_file() and output.stat().st_size > 0:
             return output
@@ -269,24 +278,32 @@ class YouTubeClient:
         )
         selected, available = self._select_video_format(info, self.max_height)
         format_id = str(selected["format_id"])
+        format_selector = (
+            format_id
+            if selected["audio_codec"] != "none"
+            else f"{format_id}+bestaudio/{format_id}"
+        )
         command = [
             "yt-dlp",
             "--no-playlist",
             "--no-warnings",
             "-f",
-            f"{format_id}+ba[ext=m4a]/{format_id}+ba/{format_id}",
+            format_selector,
             "--merge-output-format",
-            "mp4",
+            "mkv",
+            "--remux-video",
+            "mkv",
             "-o",
             str(output),
             video.url,
         ]
-        _run(command, timeout=1800)
+        _run(command, timeout=7200)
         if not output.is_file() or output.stat().st_size == 0:
             raise YouTubeError(f"yt-dlp completed without creating {output}")
         metadata_path.write_text(
             json.dumps(
                 {
+                    "quality_policy": "highest_available_no_transcode",
                     "max_height": self.max_height,
                     "selected": selected,
                     "available_formats": available,
