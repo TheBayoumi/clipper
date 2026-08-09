@@ -20,8 +20,14 @@ on:
       - "src/clipper/providers/**"
       - "src/clipper/canonical.py"
       - "src/clipper/autonomous_editor.py"
+      - "src/clipper/fixture.py"
       - "src/clipper/pipeline.py"
+      - "src/clipper/youtube.py"
       - "pyproject.toml"
+
+concurrency:
+  group: open-model-acceptance-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
