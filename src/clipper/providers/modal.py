@@ -117,8 +117,8 @@ class ModalEditorialProvider(ModalJSONProvider):
                     "generation_recovery_instruction": (
                         "The previous generation violated the JSON output contract. Regenerate the "
                         "complete answer from the original task as exactly one strict JSON object. "
-                        "Use valid JSON syntax with double-quoted keys and strings, no Markdown, no "
-                        "comments, no prose outside the object, and no truncated fields."
+                        "Use valid JSON syntax with double-quoted keys and strings, no Markdown, "
+                        "no comments, no prose outside the object, and no truncated fields."
                     ),
                 }
         raise AssertionError("unreachable editorial recovery loop")
