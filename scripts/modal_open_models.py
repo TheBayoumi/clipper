@@ -45,7 +45,6 @@ text_image = base_image.uv_pip_install(
     "sentencepiece>=0.2,<1",
     "tiktoken>=0.11,<1",
     "bitsandbytes>=0.47,<1",
-    "kernels>=0.15.2,<0.16",
     "pillow>=11,<13",
 )
 speech_image = base_image.uv_pip_install(
