@@ -347,12 +347,22 @@ def test_fixture_source_can_supply_checksum_verified_full_media_for_open_groundi
     tmp_path: Path,
 ) -> None:
     root = _fixture(tmp_path)
-    full = tmp_path / "full.mp4"
+    full = tmp_path / "full.mkv"
     full.write_bytes(b"full-authorized-media")
     manifest_path = root / "fixture.json"
     manifest = json.loads(manifest_path.read_text())
-    manifest["full_media"] = {"file": "full.mp4", "sha256": _hash(full)}
+    manifest["full_media"] = {
+        "file": "full.mkv",
+        "sha256": _hash(full),
+        "quality_policy": "highest_available_no_transcode",
+    }
     manifest_path.write_text(json.dumps(manifest))
     client = FixtureSourceClient(root)
     video = client.discover(_brief())[0]
     assert client.download_media(video, tmp_path / "work") == full
+    assert client.download_media_span(video, 10.0, 20.0, tmp_path / "work") == SpanMedia(
+        full,
+        0.0,
+        100.0,
+        _hash(full),
+    )
