@@ -50,11 +50,11 @@ jobs:
           test -n "$MODAL_TOKEN_ID"
           test -n "$MODAL_TOKEN_SECRET"
           test -n "$HF_TOKEN"
-          test -n "$CLIPPER_YOUTUBE_COOKIES_B64" || {
-            echo "Missing CLIPPER_YOUTUBE_COOKIES_B64 GitHub Actions secret." >&2
-            echo "Store a base64-encoded Netscape yt-dlp cookie file; never commit it." >&2
-            exit 1
-          }
+          if [[ -n "${CLIPPER_YOUTUBE_COOKIES_B64:-}" ]]; then
+            echo "Optional YouTube cookies are available for authenticated fallback."
+          else
+            echo "No YouTube cookies configured; source acquisition will use the open PO-token provider path."
+          fi
 
       - name: Install lightweight orchestration dependencies
         run: |
@@ -74,7 +74,7 @@ jobs:
       - name: Deploy exact-HEAD source, Sortformer and cycle workers
         run: modal deploy scripts/modal_v10_cycle.py
 
-      - name: Acquire authenticated highest-quality master inside Modal
+      - name: Acquire highest-quality master inside Modal
         run: |
           set -euo pipefail
           mkdir -p open-evidence
