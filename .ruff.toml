@@ -1,5 +1,4 @@
 extend = "pyproject.toml"
-line-length = 102
 
 [lint.per-file-ignores]
 "tests/**/*.py" = ["S101"]
