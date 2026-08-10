@@ -2,5 +2,6 @@ extend = "pyproject.toml"
 line-length = 102
 
 [lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
 "scripts/modal_v10_cycle.py" = ["RUF001", "S108"]
 "src/clipper/hilp.py" = ["I001"]
