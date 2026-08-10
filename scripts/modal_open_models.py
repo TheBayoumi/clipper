@@ -267,7 +267,9 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
             timeout=7000,
         )
     except subprocess.CalledProcessError as exc:
-        detail = "\n".join(part.strip() for part in (exc.stdout, exc.stderr) if part and part.strip())
+        detail = "\n".join(
+            part.strip() for part in (exc.stdout, exc.stderr) if part and part.strip()
+        )
         detail = detail[-6000:] if detail else "yt-dlp returned no diagnostic output"
         raise RuntimeError(f"yt-dlp source acquisition failed:\n{detail}") from exc
     printed_paths = [Path(line.strip()) for line in completed.stdout.splitlines() if line.strip()]
