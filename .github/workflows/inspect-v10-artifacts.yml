@@ -17,19 +17,23 @@ jobs:
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      RUN_DIR: reach-double-coverage-dedicated-1f1adbf3-20260811T101251Z
     steps:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Install Modal client
         run: python -m pip install 'modal>=1.5.2,<2'
-      - name: List persisted V10 artifacts
+      - name: Inspect failed run evidence
         run: |
           set -euo pipefail
-          modal volume ls --json clipper-v10-artifacts / > /tmp/v10-volume.json
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          data = json.loads(Path('/tmp/v10-volume.json').read_text())
-          print(json.dumps(data, indent=2)[:120000])
-          PY
+          echo '=== RUN TREE ==='
+          modal volume ls --json clipper-v10-artifacts "$RUN_DIR" || true
+          for path in manifest.json progress.json; do
+            echo "=== $path ==="
+            modal volume get clipper-v10-artifacts "$RUN_DIR/$path" - || true
+          done
+          echo '=== WORK TREE ==='
+          modal volume ls --json clipper-v10-artifacts "$RUN_DIR/work" || true
+          echo '=== OPEN MODEL TREE ==='
+          modal volume ls --json clipper-v10-artifacts "$RUN_DIR/open-model" || true
