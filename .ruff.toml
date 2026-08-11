@@ -1,7 +1,7 @@
 extend = "pyproject.toml"
 
 # Branch pushes to this config intentionally exercise the exact-head V10 production HILP gate.
-# Keep this trigger aligned with grounding/runtime changes that require real full-podcast acceptance.
+# Keep this trigger aligned with grounding/runtime compatibility changes requiring full-podcast acceptance.
 [lint.per-file-ignores]
 "tests/**/*.py" = ["S101"]
 "scripts/modal_v10_cycle.py" = ["RUF001", "S108"]
