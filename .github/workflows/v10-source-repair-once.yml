@@ -178,7 +178,7 @@ jobs:
           ruff format scripts/modal_v10_cycle.py tests/test_modal_v10_source_contract.py
           ruff check scripts/modal_v10_cycle.py tests/test_modal_v10_source_contract.py
           ruff format --check scripts/modal_v10_cycle.py tests/test_modal_v10_source_contract.py
-          pytest -q tests/test_modal_v10_source_contract.py
+          pytest -q --no-cov tests/test_modal_v10_source_contract.py
           git diff --check
 
       - name: Commit exact public-ingestion fix
