@@ -556,12 +556,26 @@ class AutonomousEditorialPlanner:
         for proposal_index, raw in enumerate(self._array(concept_payload, "concepts")):
             try:
                 concept = GroundedClipConcept.from_payload(raw, timeline)
-                unknown = set(concept.story_moment_ids) - known_moments
+                resolved_moment_ids: list[str] = []
+                unknown: set[str] = set()
+                for moment_id in concept.story_moment_ids:
+                    if moment_id in known_moments:
+                        resolved_moment_ids.append(moment_id)
+                        continue
+                    candidates = sorted(
+                        known_id for known_id in known_moments if known_id.endswith(f":{moment_id}")
+                    )
+                    if len(candidates) == 1:
+                        resolved_moment_ids.append(candidates[0])
+                    else:
+                        unknown.add(moment_id)
                 if unknown:
                     raise EditorialGroundingError(
-                        f"concept {concept.concept_id} references unknown StoryMoments: "
-                        f"{sorted(unknown)}"
+                        f"concept {concept.concept_id} references unknown StoryMoments "
+                        f"or ambiguous aliases: {sorted(unknown)}"
                     )
+                if tuple(resolved_moment_ids) != concept.story_moment_ids:
+                    concept = replace(concept, story_moment_ids=tuple(resolved_moment_ids))
             except ValueError as exc:
                 rejections.append(
                     {
