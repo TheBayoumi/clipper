@@ -222,9 +222,58 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
     output_template = staging / "source.%(ext)s"
     cookie_path = staging / "youtube.cookies.txt"
     encoded_cookies = os.getenv("CLIPPER_YOUTUBE_COOKIES_B64", "").strip()
-    authenticated = bool(encoded_cookies)
-    command = [
+    cookies_available = bool(encoded_cookies)
+    if cookies_available:
+        try:
+            cookie_bytes = base64.b64decode(encoded_cookies, validate=True)
+        except ValueError as exc:
+            raise RuntimeError("CLIPPER_YOUTUBE_COOKIES_B64 is not valid base64") from exc
+        if not cookie_bytes.strip():
+            raise RuntimeError("CLIPPER_YOUTUBE_COOKIES_B64 decoded to an empty cookie file")
+        cookie_path.write_bytes(cookie_bytes)
+        cookie_path.chmod(0o600)
+
+    provider_arg = "youtubepot-bgutilscript:server_home=/root/bgutil-ytdlp-pot-provider/server"
+    attempts: list[tuple[str, list[str], bool]] = [
+        (
+            "bgutil_default_mweb",
+            [
+                "--extractor-args",
+                "youtube:player_client=default,mweb",
+                "--extractor-args",
+                provider_arg,
+            ],
+            False,
+        ),
+        ("bgutil_default_clients", ["--extractor-args", provider_arg], False),
+        (
+            "bgutil_embedded_android_vr",
+            [
+                "--extractor-args",
+                "youtube:player_client=web_embedded,android_vr",
+                "--extractor-args",
+                provider_arg,
+            ],
+            False,
+        ),
+    ]
+    if cookies_available:
+        attempts.append(
+            (
+                "cookies_bgutil_default_mweb",
+                [
+                    "--extractor-args",
+                    "youtube:player_client=default,mweb",
+                    "--extractor-args",
+                    provider_arg,
+                ],
+                True,
+            )
+        )
+
+    base_command = [
         "yt-dlp",
+        "--verbose",
         "--no-playlist",
         "--retries",
         "10",
@@ -232,8 +281,6 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
         "10",
         "--concurrent-fragments",
         "4",
-        "--extractor-args",
-        "youtube:player_client=mweb",
         "--format",
         "bestvideo+bestaudio/best",
         "--merge-output-format",
@@ -243,35 +290,44 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
         "--print",
         "after_move:filepath",
     ]
-    if authenticated:
-        try:
-            cookie_bytes = base64.b64decode(encoded_cookies, validate=True)
-        except ValueError as exc:
-            raise RuntimeError("CLIPPER_YOUTUBE_COOKIES_B64 is not valid base64") from exc
-        if not cookie_bytes.strip():
-            raise RuntimeError("CLIPPER_YOUTUBE_COOKIES_B64 decoded to an empty cookie file")
-        cookie_path.write_bytes(cookie_bytes)
-        cookie_path.chmod(0o600)
-        command.extend(["--cookies", str(cookie_path)])
-    command.append(video_url)
-
+    completed: subprocess.CompletedProcess[str] | None = None
+    authenticated = False
+    acquisition_errors: list[str] = []
     try:
-        completed = subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=7000,
-        )
-    except subprocess.CalledProcessError as exc:
-        detail = "\n".join(
-            part.strip() for part in (exc.stderr, exc.stdout) if part and part.strip()
-        )[-6000:]
-        if "Sign in to confirm you’re not a bot" in detail and not authenticated:
-            detail += "\nAuthenticated yt-dlp cookies are required from this cloud egress."
-        raise RuntimeError(f"yt-dlp source acquisition failed:\n{detail}") from exc
+        for strategy, extractor_options, use_cookies in attempts:
+            for partial in staging.glob("source.*"):
+                partial.unlink(missing_ok=True)
+            command = [*base_command, *extractor_options]
+            if use_cookies:
+                command.extend(["--cookies", str(cookie_path)])
+            command.append(video_url)
+            try:
+                candidate = subprocess.run(
+                    command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=1500,
+                )
+            except subprocess.CalledProcessError as exc:
+                detail = "\n".join(
+                    part.strip() for part in (exc.stderr, exc.stdout) if part and part.strip()
+                )[-6000:]
+                acquisition_errors.append(f"[{strategy}] {detail}")
+                continue
+            completed = candidate
+            authenticated = use_cookies
+            break
     finally:
         cookie_path.unlink(missing_ok=True)
+
+    if completed is None:
+        detail = "\n\n".join(acquisition_errors)[-12000:]
+        raise RuntimeError(
+            "yt-dlp source acquisition exhausted all public bgutil strategies"
+            + (" and the optional authenticated fallback" if cookies_available else "")
+            + f":\n{detail}"
+        )
 
     printed = [Path(line.strip()) for line in completed.stdout.splitlines() if line.strip()]
     source = printed[-1] if printed else Path()
