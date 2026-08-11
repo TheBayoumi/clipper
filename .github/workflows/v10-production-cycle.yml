@@ -44,6 +44,17 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Verify Sortformer dependency contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path("scripts/modal_v10_cycle.py").read_text(encoding="utf-8")
+          assert 'add_python="3.12"' in source
+          assert '"numba==0.66.0"' in source
+          assert '"nemo_toolkit[asr]>=2.5,<3"' in source
+          PY
+
       - name: Verify production credentials before compute
         run: |
           set -euo pipefail
