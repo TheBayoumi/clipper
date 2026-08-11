@@ -1,0 +1,186 @@
+name: V10 repair public source acquisition once
+
+on:
+  push:
+    branches:
+      - feat/word-reveal-face-tracking
+    paths:
+      - ".github/workflows/v10-source-repair-once.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/word-reveal-face-tracking
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Wire bgutil provider into actual yt-dlp acquisition
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/modal_v10_cycle.py")
+          text = path.read_text(encoding="utf-8")
+          start = text.index('    output_template = staging / "source.%(ext)s"\n')
+          end = text.index('    printed = [Path(line.strip()) for line in completed.stdout.splitlines() if line.strip()]\n', start)
+          replacement = '''    output_template = staging / "source.%(ext)s"
+          cookie_path = staging / "youtube.cookies.txt"
+          encoded_cookies = os.getenv("CLIPPER_YOUTUBE_COOKIES_B64", "").strip()
+          cookies_available = bool(encoded_cookies)
+          if cookies_available:
+              try:
+                  cookie_bytes = base64.b64decode(encoded_cookies, validate=True)
+              except ValueError as exc:
+                  raise RuntimeError("CLIPPER_YOUTUBE_COOKIES_B64 is not valid base64") from exc
+              if not cookie_bytes.strip():
+                  raise RuntimeError("CLIPPER_YOUTUBE_COOKIES_B64 decoded to an empty cookie file")
+              cookie_path.write_bytes(cookie_bytes)
+              cookie_path.chmod(0o600)
+
+          provider_arg = (
+              "youtubepot-bgutilscript:"
+              "server_home=/root/bgutil-ytdlp-pot-provider/server"
+          )
+          attempts: list[tuple[str, list[str], bool]] = [
+              (
+                  "bgutil_default_mweb",
+                  [
+                      "--extractor-args",
+                      "youtube:player_client=default,mweb",
+                      "--extractor-args",
+                      provider_arg,
+                  ],
+                  False,
+              ),
+              ("bgutil_default_clients", ["--extractor-args", provider_arg], False),
+              (
+                  "bgutil_embedded_android_vr",
+                  [
+                      "--extractor-args",
+                      "youtube:player_client=web_embedded,android_vr",
+                      "--extractor-args",
+                      provider_arg,
+                  ],
+                  False,
+              ),
+          ]
+          if cookies_available:
+              attempts.append(
+                  (
+                      "cookies_bgutil_default_mweb",
+                      [
+                          "--extractor-args",
+                          "youtube:player_client=default,mweb",
+                          "--extractor-args",
+                          provider_arg,
+                      ],
+                      True,
+                  )
+              )
+
+          base_command = [
+              "yt-dlp",
+              "--verbose",
+              "--no-playlist",
+              "--retries",
+              "10",
+              "--fragment-retries",
+              "10",
+              "--concurrent-fragments",
+              "4",
+              "--format",
+              "bestvideo+bestaudio/best",
+              "--merge-output-format",
+              "mkv",
+              "--output",
+              str(output_template),
+              "--print",
+              "after_move:filepath",
+          ]
+          completed: subprocess.CompletedProcess[str] | None = None
+          authenticated = False
+          acquisition_errors: list[str] = []
+          try:
+              for strategy, extractor_options, use_cookies in attempts:
+                  for partial in staging.glob("source.*"):
+                      partial.unlink(missing_ok=True)
+                  command = [*base_command, *extractor_options]
+                  if use_cookies:
+                      command.extend(["--cookies", str(cookie_path)])
+                  command.append(video_url)
+                  try:
+                      candidate = subprocess.run(
+                          command,
+                          check=True,
+                          capture_output=True,
+                          text=True,
+                          timeout=7000,
+                      )
+                  except subprocess.CalledProcessError as exc:
+                      detail = "\\n".join(
+                          part.strip()
+                          for part in (exc.stderr, exc.stdout)
+                          if part and part.strip()
+                      )[-6000:]
+                      acquisition_errors.append(f"[{strategy}] {detail}")
+                      continue
+                  completed = candidate
+                  authenticated = use_cookies
+                  break
+          finally:
+              cookie_path.unlink(missing_ok=True)
+
+          if completed is None:
+              detail = "\\n\\n".join(acquisition_errors)[-12000:]
+              raise RuntimeError(
+                  "yt-dlp source acquisition exhausted all public bgutil strategies"
+                  + (" and the optional authenticated fallback" if cookies_available else "")
+                  + f":\\n{detail}"
+              )
+
+          '''
+          path.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
+          PY
+
+      - name: Add source acquisition regression contract
+        run: |
+          cat > tests/test_modal_v10_source_contract.py <<'PY'
+          from pathlib import Path
+
+
+          def test_v10_public_youtube_acquisition_activates_bgutil_before_optional_cookies() -> None:
+              source = Path("scripts/modal_v10_cycle.py").read_text(encoding="utf-8")
+              assert "youtubepot-bgutilscript:" in source
+              assert "server_home=/root/bgutil-ytdlp-pot-provider/server" in source
+              assert "youtube:player_client=default,mweb" in source
+              assert "youtube:player_client=web_embedded,android_vr" in source
+              assert '"bgutil_default_mweb"' in source
+              assert '"cookies_bgutil_default_mweb"' in source
+              assert source.index('"bgutil_default_mweb"') < source.index('"cookies_bgutil_default_mweb"')
+              assert "Authenticated yt-dlp cookies are required from this cloud egress." not in source
+          PY
+
+      - name: Run canonical quality and focused regression suite
+        run: |
+          python -m pip install -e '.[dev]'
+          ruff format scripts/modal_v10_cycle.py tests/test_modal_v10_source_contract.py
+          ruff check scripts/modal_v10_cycle.py tests/test_modal_v10_source_contract.py
+          ruff format --check scripts/modal_v10_cycle.py tests/test_modal_v10_source_contract.py
+          pytest -q tests/test_modal_v10_source_contract.py
+          git diff --check
+
+      - name: Commit exact public-ingestion fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/modal_v10_cycle.py tests/test_modal_v10_source_contract.py
+          git commit -m "fix: activate bgutil for public YouTube acquisition"
+          git push origin HEAD:feat/word-reveal-face-tracking
