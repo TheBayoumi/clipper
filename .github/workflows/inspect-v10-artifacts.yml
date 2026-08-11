@@ -24,16 +24,29 @@ jobs:
           python-version: '3.12'
       - name: Install Modal client
         run: python -m pip install 'modal>=1.5.2,<2'
-      - name: Inspect failed run evidence
+      - name: Inspect cached editorial outputs
         run: |
-          set -euo pipefail
-          echo '=== RUN TREE ==='
-          modal volume ls --json clipper-v10-artifacts "$RUN_DIR" || true
-          for path in manifest.json progress.json; do
-            echo "=== $path ==="
-            modal volume get clipper-v10-artifacts "$RUN_DIR/$path" - || true
-          done
-          echo '=== WORK TREE ==='
-          modal volume ls --json clipper-v10-artifacts "$RUN_DIR/work" || true
-          echo '=== OPEN MODEL TREE ==='
-          modal volume ls --json clipper-v10-artifacts "$RUN_DIR/open-model" || true
+          python - <<'PY'
+          import json
+          from datetime import UTC, datetime
+          import modal
+
+          volume = modal.Volume.from_name("clipper-v10-artifacts")
+          entries = [
+              entry
+              for entry in volume.listdir("/_cache", recursive=True)
+              if entry.path.endswith("open-model-output.json")
+          ]
+          entries.sort(key=lambda entry: entry.mtime, reverse=True)
+          print(f"open-model cache files: {len(entries)}")
+          for entry in entries[:24]:
+              payload = b"".join(volume.read_file(entry.path)).decode("utf-8")
+              stamp = datetime.fromtimestamp(entry.mtime, tz=UTC).isoformat()
+              print("===", entry.path, stamp, "===")
+              print(payload[:16000])
+
+          print("=== VIDEO WORK TREE ===")
+          prefix = f"{__import__('os').environ['RUN_DIR']}/work/2Y4LP85PTak"
+          for entry in volume.listdir(prefix, recursive=True):
+              print(entry.path, entry.size, entry.mtime)
+          PY
