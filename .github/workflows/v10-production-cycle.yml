@@ -1,4 +1,4 @@
-name: V10 production HILP cycle
+name: V10 production render and HILP evidence
 
 on:
   workflow_dispatch:
@@ -9,8 +9,8 @@ on:
       - ".github/workflows/v10-production-cycle.yml"
       - "scripts/modal_v10_cycle.py"
       - "scripts/modal_open_models.py"
-      - "src/clipper/hilp.py"
       - "src/clipper/pipeline.py"
+      - "src/clipper/autonomous_editor.py"
       - "src/clipper/render.py"
       - "src/clipper/providers/**"
       - "campaigns/reach-double-coverage-dedicated.yaml"
@@ -34,7 +34,7 @@ env:
   CLIPPER_V10_MODAL_APP: clipper-v10-cycle
 
 jobs:
-  production-hilp:
+  production-render-evidence:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -67,6 +67,8 @@ jobs:
           assert 'with_options(cloud=value, timeout=1800)' in workflow
           assert 'with_options(region=value, timeout=1800)' in workflow
           assert 'source-egress-attempts.json' in workflow
+          assert "simulate_hilp_cycle" not in workflow
+          assert "hilp-simulation.json" not in workflow
           PY
 
       - name: Verify production credentials before compute
@@ -164,8 +166,7 @@ jobs:
           )
           if result is None:
               raise RuntimeError(
-                  "all autonomous Modal source egress pools failed: "
-                  + json.dumps(attempts)
+                  "all autonomous Modal source egress pools failed: " + json.dumps(attempts)
               )
           assert result["quality_policy"] == "highest_available_no_transcode", result
           assert int(result["video"]["width"]) > 0, result
@@ -178,7 +179,7 @@ jobs:
           print(json.dumps({"winner": winner, "result": result}, indent=2))
           PY
 
-      - name: Run entire podcast, render finalists and execute simulated HILP
+      - name: Run entire podcast and render production finalists
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -200,24 +201,21 @@ jobs:
           assert result["pipeline_status"] == "SUCCESS", result
           assert int(result["rendered_finalists"]) >= 6, result
           assert int(result["initial_shortlist"]) >= 3, result
-          assert result["hilp_status"] == "PASS", result
-          assert set(result["branches_exercised"]) == {"APPROVE", "REJECT", "REVISE"}
           Path("open-evidence/cycle-result.json").write_text(
               json.dumps(result, indent=2) + "\n"
           )
-          with Path("open-evidence/run-path.txt").open("w") as handle:
-              handle.write(str(result["run_path"]) + "\n")
+          Path("open-evidence/run-path.txt").write_text(str(result["run_path"]) + "\n")
           print(json.dumps(result, indent=2))
           PY
 
-      - name: Download only rendered/evidence bundle from Modal
+      - name: Download rendered and evidence bundle from Modal
         run: |
           set -euo pipefail
           run_path="$(tr -d '\n' < open-evidence/run-path.txt)"
           rm -rf cycle-evidence
           modal volume get --force clipper-v10-artifacts "$run_path" cycle-evidence
 
-      - name: Validate automated HILP and decode every final MP4
+      - name: Decode finalists and prepare actual HILP review queue
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -226,21 +224,26 @@ jobs:
           import subprocess
           from pathlib import Path
 
-          from clipper.hilp import validate_hilp_evidence
-
           roots = list(Path("cycle-evidence").rglob("manifest.json"))
           assert len(roots) == 1, roots
           run_dir = roots[0].parent
           manifest = json.loads((run_dir / "manifest.json").read_text())
-          hilp = json.loads((run_dir / "hilp-simulation.json").read_text())
           source = json.loads(Path("open-evidence/source-master.json").read_text())
-          validate_hilp_evidence(hilp)
           assert manifest["status"] == "SUCCESS", manifest.get("status_reason")
-          assert len(manifest["rendered_clips"]) >= 6
-          assert len(manifest["submission_shortlist"]) >= 3
+          rendered = manifest.get("rendered_clips") or []
+          shortlist = manifest.get("submission_shortlist") or []
+          assert len(rendered) >= 6, len(rendered)
+          assert len(shortlist) >= 3, len(shortlist)
           assert source["quality_policy"] == "highest_available_no_transcode"
+
+          shortlist_ids = {
+              str(item.get("plan_id"))
+              for item in shortlist
+              if isinstance(item, dict) and item.get("plan_id")
+          }
           queue = []
-          for item in hilp["final_shortlist"]:
+          for item in rendered:
+              assert isinstance(item, dict), item
               requested = Path(str(item["output_path"]))
               matches = list(run_dir.rglob(requested.name))
               assert len(matches) == 1, (requested, matches)
@@ -250,36 +253,73 @@ jobs:
                   check=True,
                   timeout=1800,
               )
+              probe = subprocess.run(
+                  [
+                      "ffprobe",
+                      "-v",
+                      "error",
+                      "-show_streams",
+                      "-show_format",
+                      "-of",
+                      "json",
+                      str(local),
+                  ],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+                  timeout=120,
+              )
+              metadata = json.loads(probe.stdout)
+              video_streams = [s for s in metadata.get("streams", []) if s.get("codec_type") == "video"]
+              audio_streams = [s for s in metadata.get("streams", []) if s.get("codec_type") == "audio"]
+              assert len(video_streams) == 1, video_streams
+              assert audio_streams, metadata
+              video = video_streams[0]
+              assert int(video["width"]) == 1080, video
+              assert int(video["height"]) == 1920, video
+              assert video.get("codec_name") == "h264", video
+              duration = float(metadata.get("format", {}).get("duration") or 0.0)
+              assert duration >= 20.0, duration
               digest = hashlib.sha256(local.read_bytes()).hexdigest()
-              assert digest == item["render_sha256"], (digest, item["render_sha256"])
+              expected = str(item.get("render_sha256") or "")
+              if expected:
+                  assert digest == expected, (digest, expected)
               queue.append(
                   {
-                      "plan_id": item["plan_id"],
-                      "concept_id": item["concept_id"],
+                      "plan_id": item.get("plan_id"),
+                      "concept_id": item.get("concept_id"),
                       "path": str(local),
                       "sha256": digest,
+                      "duration_seconds": duration,
+                      "width": int(video["width"]),
+                      "height": int(video["height"]),
+                      "codec": video.get("codec_name"),
+                      "initial_shortlist": str(item.get("plan_id")) in shortlist_ids,
+                      "decision": "PENDING_ACTUAL_REVIEW",
                   }
               )
+
           Path("open-evidence/manual-review-queue.json").write_text(
               json.dumps(
                   {
-                      "status": "PENDING_ACTUAL_MP4_INSPECTION",
+                      "status": "PENDING_ACTUAL_MP4_REVIEW",
                       "clips": queue,
+                      "required_reviewer_actions": ["APPROVE", "REJECT", "REVISE"],
+                      "automated_hilp_allowed": False,
                       "dod_complete": False,
                   },
                   indent=2,
               )
               + "\n"
           )
-          summary = {"run_dir": str(run_dir), "hilp": hilp["status"], "clips": queue}
-          print(json.dumps(summary, indent=2))
+          print(json.dumps({"run_dir": str(run_dir), "clips": queue}, indent=2))
           PY
 
-      - name: Upload production cycle evidence for actual MP4 review
+      - name: Upload production renders for actual MP4 review
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v10-production-hilp-${{ github.sha }}
+          name: v10-production-review-${{ github.sha }}
           path: |
             open-evidence/
             cycle-evidence/
