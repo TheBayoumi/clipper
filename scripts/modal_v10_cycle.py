@@ -50,6 +50,7 @@ media_image = (
 runner_image = (
     modal.Image.from_dockerfile("Dockerfile")
     .entrypoint([])
+    .apt_install("git")
     .uv_pip_install("modal>=1.5.2,<2", "huggingface-hub>=1.24,<2")
 )
 
