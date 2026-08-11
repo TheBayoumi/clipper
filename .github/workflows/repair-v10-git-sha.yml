@@ -1,0 +1,104 @@
+name: Repair V10 provenance propagation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/word-reveal-face-tracking
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Apply exact provenance fix
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          modal_path = Path('scripts/modal_v10_cycle.py')
+          modal = modal_path.read_text(encoding='utf-8')
+          old = '''    os.environ.update(
+        {
+            "CLIPPER_MODAL_APP": MODEL_APP,
+'''
+          new = '''    git_sha = str(payload.get("git_sha") or "").strip()
+    if git_sha:
+        if len(git_sha) != 40 or any(char not in "0123456789abcdefABCDEF" for char in git_sha):
+            raise ValueError("run_full_cycle git_sha must be a 40-character hexadecimal commit SHA")
+        os.environ["GITHUB_SHA"] = git_sha
+
+    os.environ.update(
+        {
+            "CLIPPER_MODAL_APP": MODEL_APP,
+'''
+          if old not in modal:
+              raise SystemExit('modal provenance insertion point not found')
+          modal = modal.replace(old, new, 1)
+          modal_path.write_text(modal, encoding='utf-8')
+
+          workflow_path = Path('.github/workflows/v10-production-cycle.yml')
+          workflow = workflow_path.read_text(encoding='utf-8')
+          old = '''          import json
+          from pathlib import Path
+
+          import modal
+
+          source = json.loads(Path("open-evidence/source-master.json").read_text())
+'''
+          new = '''          import json
+          import os
+          from pathlib import Path
+
+          import modal
+
+          source = json.loads(Path("open-evidence/source-master.json").read_text())
+'''
+          if old not in workflow:
+              raise SystemExit('workflow import insertion point not found')
+          workflow = workflow.replace(old, new, 1)
+          old = '''                  "source": source,
+                  "brief_yaml": brief_yaml,
+                  "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
+'''
+          new = '''                  "source": source,
+                  "brief_yaml": brief_yaml,
+                  "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
+                  "git_sha": os.environ["GITHUB_SHA"],
+'''
+          if old not in workflow:
+              raise SystemExit('workflow payload insertion point not found')
+          workflow = workflow.replace(old, new, 1)
+          workflow_path.write_text(workflow, encoding='utf-8')
+          PY
+      - name: Install dev dependencies
+        run: python -m pip install -e '.[dev,modal]'
+      - name: Guard provenance contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          modal = Path('scripts/modal_v10_cycle.py').read_text(encoding='utf-8')
+          workflow = Path('.github/workflows/v10-production-cycle.yml').read_text(encoding='utf-8')
+          assert 'git_sha = str(payload.get("git_sha") or "").strip()' in modal
+          assert 'os.environ["GITHUB_SHA"] = git_sha' in modal
+          assert '"git_sha": os.environ["GITHUB_SHA"]' in workflow
+          PY
+      - name: Quality gate
+        run: |
+          ruff check scripts/modal_v10_cycle.py
+          ruff format --check scripts/modal_v10_cycle.py
+          pytest --no-cov -q tests/test_pipeline.py tests/test_hilp.py
+      - name: Commit guarded repair
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scripts/modal_v10_cycle.py .github/workflows/v10-production-cycle.yml
+          git commit -m 'fix: propagate exact git sha into V10 Modal cycle'
+          git push origin HEAD:feat/word-reveal-face-tracking
