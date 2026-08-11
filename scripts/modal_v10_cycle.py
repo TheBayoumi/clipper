@@ -527,14 +527,12 @@ class VolumeSourceClient:
     scaledown_window=2,
 )
 def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
-    """Run the complete podcast pipeline and simulated HILP review in Modal."""
+    """Run the complete podcast pipeline and render production finalists in Modal."""
 
-    from clipper.hilp import simulate_hilp_cycle, validate_hilp_evidence
     from clipper.pipeline import PipelineSettings, run_pipeline
     from clipper.providers.base import ModelIdentity
     from clipper.providers.factory import speech_providers
     from clipper.providers.modal_speech import ModalDiarizationProvider, ModalMediaBridge
-    from clipper.render import FFmpegRenderer
 
     source_evidence = payload.get("source")
     if not isinstance(source_evidence, dict):
@@ -601,28 +599,6 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     if str(source_meta.get(source.video.video_id) or "") != source.source_sha256:
         raise RuntimeError("pipeline did not process the acquired source master hash")
 
-    renderer = FFmpegRenderer(
-        speaker_focus=settings.speaker_focus,
-        zoom_factor=settings.speaker_zoom,
-        speaker_sample_fps=settings.speaker_sample_fps,
-        speaker_switch_margin=settings.speaker_switch_margin,
-        speaker_min_reframe_seconds=settings.speaker_min_reframe_seconds,
-        speaker_max_reframe_seconds=settings.speaker_max_reframe_seconds,
-        speaker_seconds_per_crop=settings.speaker_seconds_per_crop,
-        speaker_hold_threshold=settings.speaker_hold_threshold,
-        speaker_reversal_guard_seconds=settings.speaker_reversal_guard_seconds,
-        speaker_window_seconds=settings.speaker_window_seconds,
-        speaker_min_detection_coverage=settings.speaker_min_detection_coverage,
-        profile=settings.render_profile,
-    )
-    watermark = run_dir / "assets" / "watermark.png"
-    hilp = simulate_hilp_cycle(
-        run_dir,
-        source_path=source.source_path,
-        renderer=renderer,
-        watermark_path=watermark if watermark.is_file() else None,
-    )
-    validate_hilp_evidence(hilp)
     artifact_volume.commit()
     run_relative = "/" + str(run_dir.relative_to(Path(ARTIFACT_ROOT))).replace(os.sep, "/")
     return {
@@ -633,7 +609,5 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
         "pipeline_status": manifest.get("status"),
         "rendered_finalists": len(manifest.get("rendered_clips") or []),
         "initial_shortlist": len(manifest.get("submission_shortlist") or []),
-        "hilp_status": hilp.get("status"),
-        "branches_exercised": hilp.get("branches_exercised"),
-        "final_shortlist": hilp.get("final_shortlist"),
+        "review_status": "PENDING_ACTUAL_MP4_REVIEW",
     }

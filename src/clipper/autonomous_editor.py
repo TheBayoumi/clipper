@@ -576,7 +576,7 @@ class AutonomousEditorialPlanner:
                     )
                 if tuple(resolved_moment_ids) != concept.story_moment_ids:
                     concept = replace(concept, story_moment_ids=tuple(resolved_moment_ids))
-            except ValueError as exc:
+            except (ValueError, EditorialGroundingError) as exc:
                 rejections.append(
                     {
                         "stage": "concept_grounding",
