@@ -1,0 +1,280 @@
+name: Repair V10 grounding resilience
+
+on:
+  push:
+    branches:
+      - feat/word-reveal-face-tracking
+    paths:
+      - ".github/workflows/repair-v10-grounding.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/word-reveal-face-tracking
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Apply grounding resilience fix
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          canonical_path = Path("src/clipper/canonical.py")
+          canonical = canonical_path.read_text(encoding="utf-8")
+          old = '''    def resolve_word_ref(self, ref: str) -> str:
+        clean = ref.strip()
+        if not clean:
+            raise ValueError("canonical word reference cannot be empty")
+        exact = [word.word_id for word in self.words if word.word_id == clean]
+        if exact:
+            return exact[0]
+        candidates = [
+            word.word_id
+            for word in self.words
+            if self.word_ref(word.word_id) == clean
+            or f"{self.video_id}:{self.word_ref(word.word_id)}" == clean
+        ]
+        if not candidates:
+            raise ValueError(f"unknown canonical word reference: {clean}")
+        if len(candidates) != 1:
+            raise ValueError(f"ambiguous canonical word reference: {clean}")
+        return candidates[0]
+'''
+          new = '''    def resolve_word_ref(self, ref: str) -> str:
+        clean = ref.strip()
+        if not clean:
+            raise ValueError("canonical word reference cannot be empty")
+        exact = [word.word_id for word in self.words if word.word_id == clean]
+        if exact:
+            return exact[0]
+
+        compact = clean
+        video_prefix = f"{self.video_id}:"
+        if compact.startswith(video_prefix):
+            compact = compact[len(video_prefix) :]
+        base, separator, _suffix = compact.partition(":")
+        if separator and base.startswith("w") and base[1:].isdigit():
+            compact = base
+
+        candidates = [
+            word.word_id
+            for word in self.words
+            if self.word_ref(word.word_id) == compact
+        ]
+        if not candidates:
+            raise ValueError(f"unknown canonical word reference: {clean}")
+        if len(candidates) != 1:
+            raise ValueError(f"ambiguous canonical word reference: {clean}")
+        return candidates[0]
+'''
+          if old not in canonical:
+              raise SystemExit("canonical resolve_word_ref block not found")
+          canonical_path.write_text(canonical.replace(old, new, 1), encoding="utf-8")
+
+          editor_path = Path("src/clipper/autonomous_editor.py")
+          editor = editor_path.read_text(encoding="utf-8")
+          old = '''            for raw in self._array(payload, "moments"):
+                moment = GroundedStoryMoment.from_payload(raw, timeline)
+                existing = grounded_moments.get(moment.moment_id)
+                if existing is None or moment.confidence > existing.confidence:
+                    grounded_moments[moment.moment_id] = moment
+        if not grounded_moments:
+            raise EditorialGroundingError("open editorial model returned no grounded StoryMoments")
+'''
+          new = '''            stage = f"story_moments:{chunk_index}"
+            for proposal_index, raw in enumerate(self._array(payload, "moments")):
+                try:
+                    moment = GroundedStoryMoment.from_payload(raw, timeline)
+                except ValueError as exc:
+                    rejections.append(
+                        {
+                            "stage": "story_moment_grounding",
+                            "model_stage": stage,
+                            "proposal_index": proposal_index,
+                            "moment_id": str(raw.get("moment_id") or ""),
+                            "decision": "REJECT",
+                            "reasons": ["invalid_grounded_story_moment"],
+                            "error": str(exc),
+                        }
+                    )
+                    continue
+                namespaced_id = f"chunk-{chunk_index}:{moment.moment_id}"
+                moment = replace(moment, moment_id=namespaced_id)
+                grounded_moments[namespaced_id] = moment
+        if not grounded_moments:
+            diagnostics = [item.get("error") for item in rejections[-8:] if item.get("error")]
+            raise EditorialGroundingError(
+                "open editorial model returned no grounded StoryMoments; "
+                f"rejected={len(rejections)}; diagnostics={diagnostics}"
+            )
+'''
+          if old not in editor:
+              raise SystemExit("story moment parsing block not found")
+          editor = editor.replace(old, new, 1)
+
+          old = '''        grounded_concepts = {
+            concept.concept_id: concept
+            for concept in (
+                GroundedClipConcept.from_payload(raw, timeline)
+                for raw in self._array(concept_payload, "concepts")
+            )
+        }
+        if not grounded_concepts:
+            raise EditorialGroundingError("open editorial model returned no grounded ClipConcepts")
+        known_moments = set(grounded_moments)
+        for concept in grounded_concepts.values():
+            unknown = set(concept.story_moment_ids) - known_moments
+            if unknown:
+                raise EditorialGroundingError(
+                    f"concept {concept.concept_id} references unknown StoryMoments: "
+                    f"{sorted(unknown)}"
+                )
+'''
+          new = '''        grounded_concepts: dict[str, GroundedClipConcept] = {}
+        known_moments = set(grounded_moments)
+        for proposal_index, raw in enumerate(self._array(concept_payload, "concepts")):
+            try:
+                concept = GroundedClipConcept.from_payload(raw, timeline)
+                unknown = set(concept.story_moment_ids) - known_moments
+                if unknown:
+                    raise EditorialGroundingError(
+                        f"concept {concept.concept_id} references unknown StoryMoments: "
+                        f"{sorted(unknown)}"
+                    )
+            except ValueError as exc:
+                rejections.append(
+                    {
+                        "stage": "concept_grounding",
+                        "proposal_index": proposal_index,
+                        "concept_id": str(raw.get("concept_id") or ""),
+                        "decision": "REJECT",
+                        "reasons": ["invalid_grounded_clip_concept"],
+                        "error": str(exc),
+                    }
+                )
+                continue
+            existing = grounded_concepts.get(concept.concept_id)
+            if existing is None or concept.confidence > existing.confidence:
+                grounded_concepts[concept.concept_id] = concept
+        if not grounded_concepts:
+            diagnostics = [item.get("error") for item in rejections[-8:] if item.get("error")]
+            raise EditorialGroundingError(
+                "open editorial model returned no grounded ClipConcepts; "
+                f"rejected={len(rejections)}; diagnostics={diagnostics}"
+            )
+'''
+          if old not in editor:
+              raise SystemExit("concept parsing block not found")
+          editor = editor.replace(old, new, 1)
+
+          old = '''            grounded_hooks = [
+                GroundedHookVariant.from_payload(raw, timeline)
+                for raw in self._array(hook_payload, "variants")
+            ]
+            grounded_hooks = self._dedupe_hooks(
+'''
+          new = '''            grounded_hooks: list[GroundedHookVariant] = []
+            for proposal_index, raw in enumerate(self._array(hook_payload, "variants")):
+                try:
+                    grounded_hooks.append(GroundedHookVariant.from_payload(raw, timeline))
+                except ValueError as exc:
+                    rejections.append(
+                        {
+                            "concept_id": concept.concept_id,
+                            "stage": "hook_generation",
+                            "proposal_index": proposal_index,
+                            "variant_id": str(raw.get("variant_id") or ""),
+                            "decision": "REJECT",
+                            "reasons": ["invalid_grounded_hook_variant"],
+                            "error": str(exc),
+                        }
+                    )
+            grounded_hooks = self._dedupe_hooks(
+'''
+          if old not in editor:
+              raise SystemExit("hook parsing block not found")
+          editor = editor.replace(old, new, 1)
+
+          old = '''            for raw in self._array(plan_payload, "plans"):
+                grounded_plan = GroundedEditPlan.from_payload(raw, timeline)
+                if grounded_plan.concept_id != concept.concept_id:
+                    raise EditorialGroundingError("EditPlan references the wrong concept")
+                if grounded_plan.variant_id not in {hook.variant_id for hook in grounded_hooks}:
+                    raise EditorialGroundingError("EditPlan references an unknown hook variant")
+                repaired_plan, repair_evidence = self._repair_grounded_plan_duration(
+                    brief, timeline, grounded_concept, grounded_plan
+                )
+'''
+          new = '''            known_hook_ids = {hook.variant_id for hook in grounded_hooks}
+            for proposal_index, raw in enumerate(self._array(plan_payload, "plans")):
+                try:
+                    grounded_plan = GroundedEditPlan.from_payload(raw, timeline)
+                    if grounded_plan.concept_id != concept.concept_id:
+                        raise EditorialGroundingError("EditPlan references the wrong concept")
+                    if grounded_plan.variant_id not in known_hook_ids:
+                        raise EditorialGroundingError("EditPlan references an unknown hook variant")
+                except ValueError as exc:
+                    rejections.append(
+                        {
+                            "concept_id": concept.concept_id,
+                            "stage": "edit_plan",
+                            "proposal_index": proposal_index,
+                            "plan_id": str(raw.get("plan_id") or ""),
+                            "decision": "REJECT",
+                            "reasons": ["invalid_grounded_edit_plan"],
+                            "error": str(exc),
+                        }
+                    )
+                    continue
+                repaired_plan, repair_evidence = self._repair_grounded_plan_duration(
+                    brief, timeline, grounded_concept, grounded_plan
+                )
+'''
+          if old not in editor:
+              raise SystemExit("edit plan parsing block not found")
+          editor_path.write_text(editor.replace(old, new, 1), encoding="utf-8")
+
+          tests_path = Path("tests/test_open_models.py")
+          tests = tests_path.read_text(encoding="utf-8")
+          addition = '''\n\ndef test_canonical_word_refs_accept_unique_model_truncated_digest_suffix() -> None:\n    timeline = _timeline()\n    assert timeline.resolve_word_ref("w1:partial") == "w1"\n    assert timeline.resolve_word_ref("video:w1:partial") == "w1"\n    with pytest.raises(ValueError, match="unknown canonical"):\n        timeline.resolve_word_ref("w9999999:partial")\n\n\ndef test_open_analysis_rejects_bad_proposal_without_discarding_valid_moment(\n    tmp_path: Path,\n) -> None:\n    brief = _open_brief()\n    timeline = _timeline()\n\n    class Mixed(_PlannerEditorial):\n        def complete_json(\n            self, *, task: str, payload: dict[str, object]\n        ) -> ProviderResult[dict[str, object]]:\n            del payload\n            if task == "episode_editorial_profile":\n                value: dict[str, object] = {\n                    "summary": "grounded test",\n                    "valuable_moment_characteristics": ["self contained"],\n                    "avoid_characteristics": [],\n                    "confidence": 0.9,\n                }\n            elif task == "story_moments:0":\n                value = {\n                    "moments": [\n                        {\n                            "moment_id": "bad",\n                            "start_word_id": "w9999999:invented",\n                            "end_word_id": "w4",\n                            "semantic_summary": "bad",\n                            "narrative_structure": "bad",\n                            "editorial_reason": "bad",\n                            "confidence": 0.9,\n                        },\n                        {\n                            "moment_id": "good",\n                            "start_word_id": "w1:partial",\n                            "end_word_id": "w4",\n                            "semantic_summary": "valid grounded moment",\n                            "narrative_structure": "answer",\n                            "editorial_reason": "self contained",\n                            "confidence": 0.9,\n                        },\n                    ]\n                }\n            elif task == "clip_concepts":\n                value = {\n                    "concepts": [\n                        {\n                            "concept_id": "c1",\n                            "story_moment_ids": ["chunk-0:good"],\n                            "start_word_id": "w1",\n                            "end_word_id": "w4",\n                            "semantic_summary": "valid concept",\n                            "standalone_context": "",\n                            "narrative_structure": "answer",\n                            "recommended_duration": 20,\n                            "visual_dependencies": [],\n                            "confidence": 0.9,\n                        }\n                    ]\n                }\n            else:\n                raise AssertionError(task)\n            return ProviderResult(value, self.identity, InferenceUsage("test", "now", 0.01))\n\n    analysis = AutonomousEditorialPlanner(\n        Mixed(), _PlannerEmbeddings([[1.0, 0.0]]), FileCache(tmp_path / "mixed")\n    ).analyze_video(brief, timeline)\n    assert list(analysis.grounded_moments) == ["chunk-0:good"]\n    assert [concept.concept_id for concept in analysis.concepts] == ["c1"]\n    assert any(item.get("reasons") == ["invalid_grounded_story_moment"] for item in analysis.rejections)\n'''
+          if "test_open_analysis_rejects_bad_proposal_without_discarding_valid_moment" in tests:
+              raise SystemExit("grounding regression tests already exist")
+          tests_path.write_text(tests + addition, encoding="utf-8")
+          PY
+      - name: Install dev dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Guard source changes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          canonical = Path('src/clipper/canonical.py').read_text()
+          editor = Path('src/clipper/autonomous_editor.py').read_text()
+          assert 'base, separator, _suffix = compact.partition(":")' in canonical
+          assert 'invalid_grounded_story_moment' in editor
+          assert 'namespaced_id = f"chunk-{chunk_index}:{moment.moment_id}"' in editor
+          assert 'invalid_grounded_clip_concept' in editor
+          assert 'invalid_grounded_hook_variant' in editor
+          assert 'invalid_grounded_edit_plan' in editor
+          PY
+      - name: Quality gate
+        run: |
+          ruff check src/clipper/canonical.py src/clipper/autonomous_editor.py tests/test_open_models.py
+          ruff format --check src/clipper/canonical.py src/clipper/autonomous_editor.py tests/test_open_models.py
+          mypy src/clipper/canonical.py src/clipper/autonomous_editor.py
+          pytest --no-cov -q tests/test_open_models.py
+      - name: Commit guarded repair
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/clipper/canonical.py src/clipper/autonomous_editor.py tests/test_open_models.py
+          git commit -m 'fix: preserve valid grounded editorial proposals'
+          git push origin HEAD:feat/word-reveal-face-tracking
