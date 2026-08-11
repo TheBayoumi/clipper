@@ -36,7 +36,7 @@ media_image = (
     .entrypoint([])
     .apt_install("ffmpeg", "git")
     .uv_pip_install(
-        "yt-dlp>=2026.7.4,<2027",
+        "yt-dlp[default]>=2026.7.4,<2027",
         "bgutil-ytdlp-pot-provider==1.3.1",
     )
     .run_commands(
@@ -274,6 +274,8 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
     base_command = [
         "yt-dlp",
         "--verbose",
+        "--js-runtimes",
+        "node",
         "--no-playlist",
         "--retries",
         "10",
