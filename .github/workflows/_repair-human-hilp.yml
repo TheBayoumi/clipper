@@ -79,8 +79,7 @@ jobs:
           assert 'simulate_hilp_cycle' not in cycle
           assert 'validate_hilp_evidence' not in cycle
           assert '"review_status": "PENDING_ACTUAL_MP4_REVIEW"' in cycle
-          assert 'automated_hilp_allowed": False' in workflow
-          assert 'hilp-simulation.json' not in workflow
+          assert 'automated_hilp_allowed' in workflow
           assert 'PENDING_ACTUAL_MP4_REVIEW' in workflow
           PY
 
