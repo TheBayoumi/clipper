@@ -44,7 +44,7 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Verify Sortformer dependency contract
+      - name: Verify production dependency and public-ingestion contract
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -53,6 +53,14 @@ jobs:
           assert 'add_python="3.12"' in source
           assert '"numba==0.66.0"' in source
           assert '"nemo_toolkit[asr]>=2.5,<3"' in source
+          assert '"youtubepot-bgutilscript:"' in source
+          assert "server_home=/root/bgutil-ytdlp-pot-provider/server" in source
+          assert "youtube:player_client=default,mweb" in source
+          assert "youtube:player_client=web_embedded,android_vr" in source
+          assert '"bgutil_default_mweb"' in source
+          assert '"cookies_bgutil_default_mweb"' in source
+          assert source.index('"bgutil_default_mweb"') < source.index('"cookies_bgutil_default_mweb"')
+          assert "Authenticated yt-dlp cookies are required from this cloud egress." not in source
           PY
 
       - name: Verify production credentials before compute
