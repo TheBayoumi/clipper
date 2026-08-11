@@ -62,6 +62,7 @@ nemo_image = (
     .apt_install("ffmpeg")
     .uv_pip_install(
         "torch>=2.8,<3",
+        "numba==0.66.0",
         "nemo_toolkit[asr]>=2.5,<3",
         "huggingface-hub>=0.28,<2",
     )
