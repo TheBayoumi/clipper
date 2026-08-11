@@ -28,60 +28,33 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          modal_path = Path('scripts/modal_v10_cycle.py')
-          modal = modal_path.read_text(encoding='utf-8')
-          old = '''    os.environ.update(
-        {
-            "CLIPPER_MODAL_APP": MODEL_APP,
-'''
-          new = '''    git_sha = str(payload.get("git_sha") or "").strip()
-    if git_sha:
-        if len(git_sha) != 40 or any(char not in "0123456789abcdefABCDEF" for char in git_sha):
-            raise ValueError("run_full_cycle git_sha must be a 40-character hexadecimal commit SHA")
-        os.environ["GITHUB_SHA"] = git_sha
-
-    os.environ.update(
-        {
-            "CLIPPER_MODAL_APP": MODEL_APP,
-'''
+          modal_path = Path("scripts/modal_v10_cycle.py")
+          modal = modal_path.read_text(encoding="utf-8")
+          old = "    os.environ.update(\n        {\n            \"CLIPPER_MODAL_APP\": MODEL_APP,\n"
+          new = (
+              "    git_sha = str(payload.get(\"git_sha\") or \"\").strip()\n"
+              "    if git_sha:\n"
+              "        if len(git_sha) != 40 or any(char not in \"0123456789abcdefABCDEF\" for char in git_sha):\n"
+              "            raise ValueError(\"run_full_cycle git_sha must be a 40-character hexadecimal commit SHA\")\n"
+              "        os.environ[\"GITHUB_SHA\"] = git_sha\n\n"
+              "    os.environ.update(\n        {\n            \"CLIPPER_MODAL_APP\": MODEL_APP,\n"
+          )
           if old not in modal:
-              raise SystemExit('modal provenance insertion point not found')
-          modal = modal.replace(old, new, 1)
-          modal_path.write_text(modal, encoding='utf-8')
+              raise SystemExit("modal provenance insertion point not found")
+          modal_path.write_text(modal.replace(old, new, 1), encoding="utf-8")
 
-          workflow_path = Path('.github/workflows/v10-production-cycle.yml')
-          workflow = workflow_path.read_text(encoding='utf-8')
-          old = '''          import json
-          from pathlib import Path
-
-          import modal
-
-          source = json.loads(Path("open-evidence/source-master.json").read_text())
-'''
-          new = '''          import json
-          import os
-          from pathlib import Path
-
-          import modal
-
-          source = json.loads(Path("open-evidence/source-master.json").read_text())
-'''
+          workflow_path = Path(".github/workflows/v10-production-cycle.yml")
+          workflow = workflow_path.read_text(encoding="utf-8")
+          old = "          import json\n          from pathlib import Path\n\n          import modal\n\n          source = json.loads(Path(\"open-evidence/source-master.json\").read_text())\n"
+          new = "          import json\n          import os\n          from pathlib import Path\n\n          import modal\n\n          source = json.loads(Path(\"open-evidence/source-master.json\").read_text())\n"
           if old not in workflow:
-              raise SystemExit('workflow import insertion point not found')
+              raise SystemExit("workflow import insertion point not found")
           workflow = workflow.replace(old, new, 1)
-          old = '''                  "source": source,
-                  "brief_yaml": brief_yaml,
-                  "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
-'''
-          new = '''                  "source": source,
-                  "brief_yaml": brief_yaml,
-                  "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
-                  "git_sha": os.environ["GITHUB_SHA"],
-'''
+          old = "                  \"source\": source,\n                  \"brief_yaml\": brief_yaml,\n                  \"channel_id\": \"UCf1q6dhccWr6eQEcFFnJSbA\",\n"
+          new = "                  \"source\": source,\n                  \"brief_yaml\": brief_yaml,\n                  \"channel_id\": \"UCf1q6dhccWr6eQEcFFnJSbA\",\n                  \"git_sha\": os.environ[\"GITHUB_SHA\"],\n"
           if old not in workflow:
-              raise SystemExit('workflow payload insertion point not found')
-          workflow = workflow.replace(old, new, 1)
-          workflow_path.write_text(workflow, encoding='utf-8')
+              raise SystemExit("workflow payload insertion point not found")
+          workflow_path.write_text(workflow.replace(old, new, 1), encoding="utf-8")
           PY
       - name: Install dev dependencies
         run: python -m pip install -e '.[dev,modal]'
@@ -89,8 +62,8 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          modal = Path('scripts/modal_v10_cycle.py').read_text(encoding='utf-8')
-          workflow = Path('.github/workflows/v10-production-cycle.yml').read_text(encoding='utf-8')
+          modal = Path("scripts/modal_v10_cycle.py").read_text(encoding="utf-8")
+          workflow = Path(".github/workflows/v10-production-cycle.yml").read_text(encoding="utf-8")
           assert 'git_sha = str(payload.get("git_sha") or "").strip()' in modal
           assert 'os.environ["GITHUB_SHA"] = git_sha' in modal
           assert '"git_sha": os.environ["GITHUB_SHA"]' in workflow
