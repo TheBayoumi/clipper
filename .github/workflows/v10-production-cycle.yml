@@ -53,8 +53,7 @@ jobs:
           assert 'add_python="3.12"' in source
           assert '"numba==0.66.0"' in source
           assert '"nemo_toolkit[asr]>=2.5,<3"' in source
-          assert '"youtubepot-bgutilscript:"' in source
-          assert "server_home=/root/bgutil-ytdlp-pot-provider/server" in source
+          assert "youtubepot-bgutilscript:server_home=/root/bgutil-ytdlp-pot-provider/server" in source
           assert "youtube:player_client=default,mweb" in source
           assert "youtube:player_client=web_embedded,android_vr" in source
           assert '"bgutil_default_mweb"' in source
