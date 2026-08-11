@@ -84,12 +84,16 @@ class CanonicalTimeline:
         exact = [word.word_id for word in self.words if word.word_id == clean]
         if exact:
             return exact[0]
-        candidates = [
-            word.word_id
-            for word in self.words
-            if self.word_ref(word.word_id) == clean
-            or f"{self.video_id}:{self.word_ref(word.word_id)}" == clean
-        ]
+
+        compact = clean
+        video_prefix = f"{self.video_id}:"
+        if compact.startswith(video_prefix):
+            compact = compact[len(video_prefix) :]
+        base, separator, _suffix = compact.partition(":")
+        if separator and base.startswith("w") and base[1:].isdigit():
+            compact = base
+
+        candidates = [word.word_id for word in self.words if self.word_ref(word.word_id) == compact]
         if not candidates:
             raise ValueError(f"unknown canonical word reference: {clean}")
         if len(candidates) != 1:

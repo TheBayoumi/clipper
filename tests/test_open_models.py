@@ -2018,3 +2018,83 @@ def test_visual_timeline_roundtrip_and_payload_validation() -> None:
                 ],
             }
         )
+
+
+def test_canonical_word_refs_accept_unique_model_truncated_digest_suffix() -> None:
+    timeline = _timeline()
+    assert timeline.resolve_word_ref("w1:partial") == "w1"
+    assert timeline.resolve_word_ref("video:w1:partial") == "w1"
+    with pytest.raises(ValueError, match="unknown canonical"):
+        timeline.resolve_word_ref("w9999999:partial")
+
+
+def test_open_analysis_rejects_bad_proposal_without_discarding_valid_moment(
+    tmp_path: Path,
+) -> None:
+    brief = _open_brief()
+    timeline = _timeline()
+
+    class Mixed(_PlannerEditorial):
+        def complete_json(
+            self, *, task: str, payload: dict[str, object]
+        ) -> ProviderResult[dict[str, object]]:
+            del payload
+            if task == "episode_editorial_profile":
+                value: dict[str, object] = {
+                    "summary": "grounded test",
+                    "valuable_moment_characteristics": ["self contained"],
+                    "avoid_characteristics": [],
+                    "confidence": 0.9,
+                }
+            elif task == "story_moments:0":
+                value = {
+                    "moments": [
+                        {
+                            "moment_id": "bad",
+                            "start_word_id": "w9999999:invented",
+                            "end_word_id": "w4",
+                            "semantic_summary": "bad",
+                            "narrative_structure": "bad",
+                            "editorial_reason": "bad",
+                            "confidence": 0.9,
+                        },
+                        {
+                            "moment_id": "good",
+                            "start_word_id": "w1:partial",
+                            "end_word_id": "w4",
+                            "semantic_summary": "valid grounded moment",
+                            "narrative_structure": "answer",
+                            "editorial_reason": "self contained",
+                            "confidence": 0.9,
+                        },
+                    ]
+                }
+            elif task == "clip_concepts":
+                value = {
+                    "concepts": [
+                        {
+                            "concept_id": "c1",
+                            "story_moment_ids": ["chunk-0:good"],
+                            "start_word_id": "w1",
+                            "end_word_id": "w4",
+                            "semantic_summary": "valid concept",
+                            "standalone_context": "",
+                            "narrative_structure": "answer",
+                            "recommended_duration": 20,
+                            "visual_dependencies": [],
+                            "confidence": 0.9,
+                        }
+                    ]
+                }
+            else:
+                raise AssertionError(task)
+            return ProviderResult(value, self.identity, InferenceUsage("test", "now", 0.01))
+
+    analysis = AutonomousEditorialPlanner(
+        Mixed(), _PlannerEmbeddings([[1.0, 0.0]]), FileCache(tmp_path / "mixed")
+    ).analyze_video(brief, timeline)
+    assert list(analysis.grounded_moments) == ["chunk-0:good"]
+    assert [concept.concept_id for concept in analysis.concepts] == ["c1"]
+    assert any(
+        item.get("reasons") == ["invalid_grounded_story_moment"] for item in analysis.rejections
+    )

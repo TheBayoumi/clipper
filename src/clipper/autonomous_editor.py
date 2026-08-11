@@ -495,13 +495,32 @@ class AutonomousEditorialPlanner:
                     ),
                 },
             )
-            for raw in self._array(payload, "moments"):
-                moment = GroundedStoryMoment.from_payload(raw, timeline)
-                existing = grounded_moments.get(moment.moment_id)
-                if existing is None or moment.confidence > existing.confidence:
-                    grounded_moments[moment.moment_id] = moment
+            stage = f"story_moments:{chunk_index}"
+            for proposal_index, raw in enumerate(self._array(payload, "moments")):
+                try:
+                    moment = GroundedStoryMoment.from_payload(raw, timeline)
+                except ValueError as exc:
+                    rejections.append(
+                        {
+                            "stage": "story_moment_grounding",
+                            "model_stage": stage,
+                            "proposal_index": proposal_index,
+                            "moment_id": str(raw.get("moment_id") or ""),
+                            "decision": "REJECT",
+                            "reasons": ["invalid_grounded_story_moment"],
+                            "error": str(exc),
+                        }
+                    )
+                    continue
+                namespaced_id = f"chunk-{chunk_index}:{moment.moment_id}"
+                moment = replace(moment, moment_id=namespaced_id)
+                grounded_moments[namespaced_id] = moment
         if not grounded_moments:
-            raise EditorialGroundingError("open editorial model returned no grounded StoryMoments")
+            diagnostics = [item.get("error") for item in rejections[-8:] if item.get("error")]
+            raise EditorialGroundingError(
+                "open editorial model returned no grounded StoryMoments; "
+                f"rejected={len(rejections)}; diagnostics={diagnostics}"
+            )
 
         moment_payloads = [
             {
@@ -532,23 +551,38 @@ class AutonomousEditorialPlanner:
                 "moments": moment_payloads,
             },
         )
-        grounded_concepts = {
-            concept.concept_id: concept
-            for concept in (
-                GroundedClipConcept.from_payload(raw, timeline)
-                for raw in self._array(concept_payload, "concepts")
-            )
-        }
-        if not grounded_concepts:
-            raise EditorialGroundingError("open editorial model returned no grounded ClipConcepts")
+        grounded_concepts: dict[str, GroundedClipConcept] = {}
         known_moments = set(grounded_moments)
-        for concept in grounded_concepts.values():
-            unknown = set(concept.story_moment_ids) - known_moments
-            if unknown:
-                raise EditorialGroundingError(
-                    f"concept {concept.concept_id} references unknown StoryMoments: "
-                    f"{sorted(unknown)}"
+        for proposal_index, raw in enumerate(self._array(concept_payload, "concepts")):
+            try:
+                concept = GroundedClipConcept.from_payload(raw, timeline)
+                unknown = set(concept.story_moment_ids) - known_moments
+                if unknown:
+                    raise EditorialGroundingError(
+                        f"concept {concept.concept_id} references unknown StoryMoments: "
+                        f"{sorted(unknown)}"
+                    )
+            except ValueError as exc:
+                rejections.append(
+                    {
+                        "stage": "concept_grounding",
+                        "proposal_index": proposal_index,
+                        "concept_id": str(raw.get("concept_id") or ""),
+                        "decision": "REJECT",
+                        "reasons": ["invalid_grounded_clip_concept"],
+                        "error": str(exc),
+                    }
                 )
+                continue
+            existing = grounded_concepts.get(concept.concept_id)
+            if existing is None or concept.confidence > existing.confidence:
+                grounded_concepts[concept.concept_id] = concept
+        if not grounded_concepts:
+            diagnostics = [item.get("error") for item in rejections[-8:] if item.get("error")]
+            raise EditorialGroundingError(
+                "open editorial model returned no grounded ClipConcepts; "
+                f"rejected={len(rejections)}; diagnostics={diagnostics}"
+            )
 
         representatives, clusters, duplicate_rejections = self._semantic_dedupe(
             brief, timeline, list(grounded_concepts.values())
@@ -696,10 +730,22 @@ class AutonomousEditorialPlanner:
                     },
                 },
             )
-            grounded_hooks = [
-                GroundedHookVariant.from_payload(raw, timeline)
-                for raw in self._array(hook_payload, "variants")
-            ]
+            grounded_hooks: list[GroundedHookVariant] = []
+            for proposal_index, raw in enumerate(self._array(hook_payload, "variants")):
+                try:
+                    grounded_hooks.append(GroundedHookVariant.from_payload(raw, timeline))
+                except ValueError as exc:
+                    rejections.append(
+                        {
+                            "concept_id": concept.concept_id,
+                            "stage": "hook_generation",
+                            "proposal_index": proposal_index,
+                            "variant_id": str(raw.get("variant_id") or ""),
+                            "decision": "REJECT",
+                            "reasons": ["invalid_grounded_hook_variant"],
+                            "error": str(exc),
+                        }
+                    )
             grounded_hooks = self._dedupe_hooks(
                 brief, timeline, grounded_hooks, concept.concept_id, rejections
             )
@@ -750,12 +796,27 @@ class AutonomousEditorialPlanner:
                     ),
                 },
             )
-            for raw in self._array(plan_payload, "plans"):
-                grounded_plan = GroundedEditPlan.from_payload(raw, timeline)
-                if grounded_plan.concept_id != concept.concept_id:
-                    raise EditorialGroundingError("EditPlan references the wrong concept")
-                if grounded_plan.variant_id not in {hook.variant_id for hook in grounded_hooks}:
-                    raise EditorialGroundingError("EditPlan references an unknown hook variant")
+            known_hook_ids = {hook.variant_id for hook in grounded_hooks}
+            for proposal_index, raw in enumerate(self._array(plan_payload, "plans")):
+                try:
+                    grounded_plan = GroundedEditPlan.from_payload(raw, timeline)
+                    if grounded_plan.concept_id != concept.concept_id:
+                        raise EditorialGroundingError("EditPlan references the wrong concept")
+                    if grounded_plan.variant_id not in known_hook_ids:
+                        raise EditorialGroundingError("EditPlan references an unknown hook variant")
+                except ValueError as exc:
+                    rejections.append(
+                        {
+                            "concept_id": concept.concept_id,
+                            "stage": "edit_plan",
+                            "proposal_index": proposal_index,
+                            "plan_id": str(raw.get("plan_id") or ""),
+                            "decision": "REJECT",
+                            "reasons": ["invalid_grounded_edit_plan"],
+                            "error": str(exc),
+                        }
+                    )
+                    continue
                 repaired_plan, repair_evidence = self._repair_grounded_plan_duration(
                     brief, timeline, grounded_concept, grounded_plan
                 )
