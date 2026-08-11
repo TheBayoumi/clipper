@@ -1,3 +1,4 @@
+# Exact-head acceptance trigger after human-HILP runtime repair
 name: V10 production render and HILP evidence
 
 on:
