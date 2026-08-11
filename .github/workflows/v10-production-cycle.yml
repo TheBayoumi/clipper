@@ -50,6 +50,7 @@ jobs:
           from pathlib import Path
 
           source = Path("scripts/modal_v10_cycle.py").read_text(encoding="utf-8")
+          workflow = Path(".github/workflows/v10-production-cycle.yml").read_text(encoding="utf-8")
           assert 'add_python="3.12"' in source
           assert '"numba==0.66.0"' in source
           assert '"nemo_toolkit[asr]>=2.5,<3"' in source
@@ -63,6 +64,9 @@ jobs:
           assert '"cookies_bgutil_default_mweb"' in source
           assert source.index('"bgutil_default_mweb"') < source.index('"cookies_bgutil_default_mweb"')
           assert "Authenticated yt-dlp cookies are required from this cloud egress." not in source
+          assert 'with_options(cloud=value, timeout=1800)' in workflow
+          assert 'with_options(region=value, timeout=1800)' in workflow
+          assert 'source-egress-attempts.json' in workflow
           PY
 
       - name: Verify production credentials before compute
@@ -95,7 +99,7 @@ jobs:
       - name: Deploy exact-HEAD source, Sortformer and cycle workers
         run: modal deploy scripts/modal_v10_cycle.py
 
-      - name: Acquire highest-quality master inside Modal
+      - name: Acquire highest-quality master across autonomous Modal egress pools
         run: |
           set -euo pipefail
           mkdir -p open-evidence
@@ -105,12 +109,64 @@ jobs:
 
           import modal
 
-          result = modal.Function.from_name("clipper-v10-cycle", "acquire_source").remote(
-              {
-                  "video_id": "2Y4LP85PTak",
-                  "video_url": "https://www.youtube.com/watch?v=2Y4LP85PTak",
-              }
+          payload = {
+              "video_id": "2Y4LP85PTak",
+              "video_url": "https://www.youtube.com/watch?v=2Y4LP85PTak",
+          }
+          base = modal.Function.from_name("clipper-v10-cycle", "acquire_source")
+          variants = [
+              ("cloud:gcp", "cloud", "gcp"),
+              ("cloud:aws", "cloud", "aws"),
+              ("cloud:oci", "cloud", "oci"),
+              ("region:eu", "region", "eu"),
+              ("region:ap", "region", "ap"),
+              ("region:sa", "region", "sa"),
+              ("region:af", "region", "af"),
+              ("default", "default", "auto"),
+          ]
+          attempts = []
+          result = None
+          winner = None
+          for label, kind, value in variants:
+              try:
+                  if kind == "cloud":
+                      candidate = base.with_options(cloud=value, timeout=1800).remote(payload)
+                  elif kind == "region":
+                      candidate = base.with_options(region=value, timeout=1800).remote(payload)
+                  else:
+                      candidate = base.remote(payload)
+              except Exception as exc:
+                  attempts.append(
+                      {
+                          "egress": label,
+                          "status": "FAIL",
+                          "error_type": type(exc).__name__,
+                          "error": str(exc)[-6000:],
+                      }
+                  )
+                  print(json.dumps(attempts[-1], indent=2))
+                  continue
+              result = candidate
+              winner = label
+              attempts.append(
+                  {
+                      "egress": label,
+                      "status": "PASS",
+                      "sha256": candidate.get("sha256"),
+                      "bytes": candidate.get("bytes"),
+                      "reused": candidate.get("reused"),
+                  }
+              )
+              break
+
+          Path("open-evidence/source-egress-attempts.json").write_text(
+              json.dumps({"winner": winner, "attempts": attempts}, indent=2) + "\n"
           )
+          if result is None:
+              raise RuntimeError(
+                  "all autonomous Modal source egress pools failed: "
+                  + json.dumps(attempts)
+              )
           assert result["quality_policy"] == "highest_available_no_transcode", result
           assert int(result["video"]["width"]) > 0, result
           assert int(result["video"]["height"]) > 0, result
@@ -119,7 +175,7 @@ jobs:
           Path("open-evidence/source-master.json").write_text(
               json.dumps(result, indent=2) + "\n"
           )
-          print(json.dumps(result, indent=2))
+          print(json.dumps({"winner": winner, "result": result}, indent=2))
           PY
 
       - name: Run entire podcast, render finalists and execute simulated HILP
