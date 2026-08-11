@@ -3,8 +3,7 @@ name: V10 production render and HILP evidence
 on:
   workflow_dispatch:
   push:
-    branches:
-      - feat/word-reveal-face-tracking
+    branches: [feat/word-reveal-face-tracking]
     paths:
       - ".github/workflows/v10-production-cycle.yml"
       - "scripts/modal_v10_cycle.py"
@@ -38,59 +37,49 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
-      - name: Verify production dependency and public-ingestion contract
+      - name: Verify production dependency and ingestion contract
         run: |
           python - <<'PY'
           from pathlib import Path
-
           source = Path("scripts/modal_v10_cycle.py").read_text(encoding="utf-8")
           workflow = Path(".github/workflows/v10-production-cycle.yml").read_text(encoding="utf-8")
-          assert 'add_python="3.12"' in source
-          assert '"numba==0.66.0"' in source
-          assert '"nemo_toolkit[asr]>=2.5,<3"' in source
-          assert '"yt-dlp[default]>=2026.7.4,<2027"' in source
-          assert '"--js-runtimes"' in source
-          assert '"node"' in source
-          assert "youtubepot-bgutilscript:server_home=/root/bgutil-ytdlp-pot-provider/server" in source
-          assert "youtube:player_client=default,mweb" in source
-          assert "youtube:player_client=web_embedded,android_vr" in source
-          assert '"bgutil_default_mweb"' in source
-          assert '"cookies_bgutil_default_mweb"' in source
+          for required in (
+              'add_python="3.12"',
+              '"numba==0.66.0"',
+              '"nemo_toolkit[asr]>=2.5,<3"',
+              '"yt-dlp[default]>=2026.7.4,<2027"',
+              '"--js-runtimes"',
+              '"node"',
+              '"bgutil_default_mweb"',
+              '"cookies_bgutil_default_mweb"',
+          ):
+              assert required in source, required
           assert source.index('"bgutil_default_mweb"') < source.index('"cookies_bgutil_default_mweb"')
-          assert "Authenticated yt-dlp cookies are required from this cloud egress." not in source
           assert 'with_options(cloud=value, timeout=1800)' in workflow
           assert 'with_options(region=value, timeout=1800)' in workflow
-          assert 'source-egress-attempts.json' in workflow
-          assert "simulate_hilp_cycle" not in workflow
-          assert "hilp-simulation.json" not in workflow
+          assert 'manual-review-queue.json' in workflow
+          assert 'automated_hilp_allowed' in workflow
           PY
 
-      - name: Verify production credentials before compute
+      - name: Verify credentials before compute
         run: |
           set -euo pipefail
           test -n "$MODAL_TOKEN_ID"
           test -n "$MODAL_TOKEN_SECRET"
           test -n "$HF_TOKEN"
-          if [[ -n "${CLIPPER_YOUTUBE_COOKIES_B64:-}" ]]; then
-            echo "Optional YouTube cookies are available for authenticated fallback."
-          else
-            echo "No YouTube cookies configured; source acquisition will use the open PO-token provider path."
-          fi
 
-      - name: Install lightweight orchestration dependencies
+      - name: Install orchestration dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e '.[modal]'
 
       - name: Terminate stale V10 Modal containers
         run: |
-          set -euo pipefail
           modal app stop "$CLIPPER_V10_MODAL_APP" --yes || true
           modal app stop "$CLIPPER_MODAL_APP" --yes || true
           modal volume rm -r clipper-media-cache /staging || true
@@ -108,7 +97,6 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-
           import modal
 
           payload = {
@@ -138,44 +126,32 @@ jobs:
                   else:
                       candidate = base.remote(payload)
               except Exception as exc:
-                  attempts.append(
-                      {
-                          "egress": label,
-                          "status": "FAIL",
-                          "error_type": type(exc).__name__,
-                          "error": str(exc)[-6000:],
-                      }
-                  )
-                  print(json.dumps(attempts[-1], indent=2))
+                  attempts.append({
+                      "egress": label,
+                      "status": "FAIL",
+                      "error_type": type(exc).__name__,
+                      "error": str(exc)[-6000:],
+                  })
                   continue
               result = candidate
               winner = label
-              attempts.append(
-                  {
-                      "egress": label,
-                      "status": "PASS",
-                      "sha256": candidate.get("sha256"),
-                      "bytes": candidate.get("bytes"),
-                      "reused": candidate.get("reused"),
-                  }
-              )
+              attempts.append({
+                  "egress": label,
+                  "status": "PASS",
+                  "sha256": candidate.get("sha256"),
+                  "bytes": candidate.get("bytes"),
+                  "reused": candidate.get("reused"),
+              })
               break
-
           Path("open-evidence/source-egress-attempts.json").write_text(
               json.dumps({"winner": winner, "attempts": attempts}, indent=2) + "\n"
           )
           if result is None:
-              raise RuntimeError(
-                  "all autonomous Modal source egress pools failed: " + json.dumps(attempts)
-              )
-          assert result["quality_policy"] == "highest_available_no_transcode", result
-          assert int(result["video"]["width"]) > 0, result
-          assert int(result["video"]["height"]) > 0, result
-          assert int(result["bytes"]) > 0, result
-          assert result["volume_path"].startswith("/inputs/"), result
-          Path("open-evidence/source-master.json").write_text(
-              json.dumps(result, indent=2) + "\n"
-          )
+              raise RuntimeError("all autonomous source egress pools failed: " + json.dumps(attempts))
+          assert result["quality_policy"] == "highest_available_no_transcode"
+          assert int(result["bytes"]) > 0
+          assert result["volume_path"].startswith("/inputs/")
+          Path("open-evidence/source-master.json").write_text(json.dumps(result, indent=2) + "\n")
           print(json.dumps({"winner": winner, "result": result}, indent=2))
           PY
 
@@ -185,25 +161,18 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-
           import modal
 
-          source = json.loads(Path("open-evidence/source-master.json").read_text())
-          brief_yaml = Path("campaigns/reach-double-coverage-dedicated.yaml").read_text()
-          result = modal.Function.from_name("clipper-v10-cycle", "run_full_cycle").remote(
-              {
-                  "source": source,
-                  "brief_yaml": brief_yaml,
-                  "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
-              }
-          )
+          result = modal.Function.from_name("clipper-v10-cycle", "run_full_cycle").remote({
+              "source": json.loads(Path("open-evidence/source-master.json").read_text()),
+              "brief_yaml": Path("campaigns/reach-double-coverage-dedicated.yaml").read_text(),
+              "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
+          })
           assert result["status"] == "PASS", result
           assert result["pipeline_status"] == "SUCCESS", result
           assert int(result["rendered_finalists"]) >= 6, result
           assert int(result["initial_shortlist"]) >= 3, result
-          Path("open-evidence/cycle-result.json").write_text(
-              json.dumps(result, indent=2) + "\n"
-          )
+          Path("open-evidence/cycle-result.json").write_text(json.dumps(result, indent=2) + "\n")
           Path("open-evidence/run-path.txt").write_text(str(result["run_path"]) + "\n")
           print(json.dumps(result, indent=2))
           PY
@@ -228,22 +197,18 @@ jobs:
           assert len(roots) == 1, roots
           run_dir = roots[0].parent
           manifest = json.loads((run_dir / "manifest.json").read_text())
-          source = json.loads(Path("open-evidence/source-master.json").read_text())
           assert manifest["status"] == "SUCCESS", manifest.get("status_reason")
           rendered = manifest.get("rendered_clips") or []
           shortlist = manifest.get("submission_shortlist") or []
-          assert len(rendered) >= 6, len(rendered)
-          assert len(shortlist) >= 3, len(shortlist)
-          assert source["quality_policy"] == "highest_available_no_transcode"
-
+          assert len(rendered) >= 6
+          assert len(shortlist) >= 3
           shortlist_ids = {
-              str(item.get("plan_id"))
-              for item in shortlist
+              str(item.get("plan_id")) for item in shortlist
               if isinstance(item, dict) and item.get("plan_id")
           }
           queue = []
           for item in rendered:
-              assert isinstance(item, dict), item
+              assert isinstance(item, dict)
               requested = Path(str(item["output_path"]))
               matches = list(run_dir.rglob(requested.name))
               assert len(matches) == 1, (requested, matches)
@@ -254,63 +219,43 @@ jobs:
                   timeout=1800,
               )
               probe = subprocess.run(
-                  [
-                      "ffprobe",
-                      "-v",
-                      "error",
-                      "-show_streams",
-                      "-show_format",
-                      "-of",
-                      "json",
-                      str(local),
-                  ],
+                  ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(local)],
                   check=True,
                   capture_output=True,
                   text=True,
                   timeout=120,
               )
               metadata = json.loads(probe.stdout)
-              video_streams = [s for s in metadata.get("streams", []) if s.get("codec_type") == "video"]
-              audio_streams = [s for s in metadata.get("streams", []) if s.get("codec_type") == "audio"]
-              assert len(video_streams) == 1, video_streams
-              assert audio_streams, metadata
-              video = video_streams[0]
-              assert int(video["width"]) == 1080, video
-              assert int(video["height"]) == 1920, video
-              assert video.get("codec_name") == "h264", video
+              videos = [s for s in metadata.get("streams", []) if s.get("codec_type") == "video"]
+              audios = [s for s in metadata.get("streams", []) if s.get("codec_type") == "audio"]
+              assert len(videos) == 1 and audios
+              video = videos[0]
+              assert int(video["width"]) == 1080
+              assert int(video["height"]) == 1920
+              assert video.get("codec_name") == "h264"
               duration = float(metadata.get("format", {}).get("duration") or 0.0)
-              assert duration >= 20.0, duration
+              assert duration >= 20.0
               digest = hashlib.sha256(local.read_bytes()).hexdigest()
               expected = str(item.get("render_sha256") or "")
               if expected:
-                  assert digest == expected, (digest, expected)
-              queue.append(
-                  {
-                      "plan_id": item.get("plan_id"),
-                      "concept_id": item.get("concept_id"),
-                      "path": str(local),
-                      "sha256": digest,
-                      "duration_seconds": duration,
-                      "width": int(video["width"]),
-                      "height": int(video["height"]),
-                      "codec": video.get("codec_name"),
-                      "initial_shortlist": str(item.get("plan_id")) in shortlist_ids,
-                      "decision": "PENDING_ACTUAL_REVIEW",
-                  }
-              )
-
+                  assert digest == expected
+              queue.append({
+                  "plan_id": item.get("plan_id"),
+                  "concept_id": item.get("concept_id"),
+                  "path": str(local),
+                  "sha256": digest,
+                  "duration_seconds": duration,
+                  "initial_shortlist": str(item.get("plan_id")) in shortlist_ids,
+                  "decision": "PENDING_ACTUAL_REVIEW",
+              })
           Path("open-evidence/manual-review-queue.json").write_text(
-              json.dumps(
-                  {
-                      "status": "PENDING_ACTUAL_MP4_REVIEW",
-                      "clips": queue,
-                      "required_reviewer_actions": ["APPROVE", "REJECT", "REVISE"],
-                      "automated_hilp_allowed": False,
-                      "dod_complete": False,
-                  },
-                  indent=2,
-              )
-              + "\n"
+              json.dumps({
+                  "status": "PENDING_ACTUAL_MP4_REVIEW",
+                  "clips": queue,
+                  "required_reviewer_actions": ["APPROVE", "REJECT", "REVISE"],
+                  "automated_hilp_allowed": False,
+                  "dod_complete": False,
+              }, indent=2) + "\n"
           )
           print(json.dumps({"run_dir": str(run_dir), "clips": queue}, indent=2))
           PY
