@@ -402,6 +402,48 @@ class AutonomousEditorialPlanner:
                 break
         return chunks
 
+    @staticmethod
+    def _resolve_story_moment_id(
+        requested_id: str,
+        concept: GroundedClipConcept,
+        grounded_moments: dict[str, GroundedStoryMoment],
+    ) -> str | None:
+        """Resolve model-local moment aliases using grounded source-word evidence.
+
+        Story-moment generation is chunked, so local IDs such as ``m1`` may be reused
+        by several chunks. Exact namespaced IDs remain authoritative. A local alias is
+        accepted only when it has one suffix match, or when the concept's grounded
+        source words select a unique best-overlap suffix match. Ties remain rejected.
+        """
+        if requested_id in grounded_moments:
+            return requested_id
+        candidates = sorted(
+            moment_id for moment_id in grounded_moments if moment_id.endswith(f":{requested_id}")
+        )
+        if len(candidates) == 1:
+            return candidates[0]
+        if not candidates:
+            return None
+
+        concept_words = set(concept.supporting_word_ids)
+        scored: list[tuple[tuple[float, float, int], str]] = []
+        for candidate_id in candidates:
+            moment_words = set(grounded_moments[candidate_id].supporting_word_ids)
+            overlap = len(concept_words & moment_words)
+            if overlap == 0:
+                continue
+            score = (
+                overlap / len(moment_words),
+                overlap / len(concept_words),
+                overlap,
+            )
+            scored.append((score, candidate_id))
+        if not scored:
+            return None
+        best_score = max(score for score, _ in scored)
+        winners = [candidate_id for score, candidate_id in scored if score == best_score]
+        return winners[0] if len(winners) == 1 else None
+
     def _profile_evidence(self, timeline: CanonicalTimeline) -> list[dict[str, object]]:
         if len(timeline.words) <= 1800:
             return self._word_payload(timeline, 0, len(timeline.words))
@@ -552,23 +594,17 @@ class AutonomousEditorialPlanner:
             },
         )
         grounded_concepts: dict[str, GroundedClipConcept] = {}
-        known_moments = set(grounded_moments)
         for proposal_index, raw in enumerate(self._array(concept_payload, "concepts")):
             try:
                 concept = GroundedClipConcept.from_payload(raw, timeline)
                 resolved_moment_ids: list[str] = []
                 unknown: set[str] = set()
                 for moment_id in concept.story_moment_ids:
-                    if moment_id in known_moments:
-                        resolved_moment_ids.append(moment_id)
-                        continue
-                    candidates = sorted(
-                        known_id for known_id in known_moments if known_id.endswith(f":{moment_id}")
-                    )
-                    if len(candidates) == 1:
-                        resolved_moment_ids.append(candidates[0])
-                    else:
+                    resolved = self._resolve_story_moment_id(moment_id, concept, grounded_moments)
+                    if resolved is None:
                         unknown.add(moment_id)
+                    elif resolved not in resolved_moment_ids:
+                        resolved_moment_ids.append(resolved)
                 if unknown:
                     raise EditorialGroundingError(
                         f"concept {concept.concept_id} references unknown StoryMoments "

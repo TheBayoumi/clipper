@@ -2098,3 +2098,82 @@ def test_open_analysis_rejects_bad_proposal_without_discarding_valid_moment(
     assert any(
         item.get("reasons") == ["invalid_grounded_story_moment"] for item in analysis.rejections
     )
+
+
+def test_story_moment_alias_disambiguates_with_grounded_word_overlap() -> None:
+    moments = {
+        "chunk-0:m1": GroundedStoryMoment(
+            "chunk-0:m1",
+            ("w1", "w2", "w3"),
+            "first",
+            "story",
+            "",
+            "",
+            "grounded",
+            0.9,
+        ),
+        "chunk-1:m1": GroundedStoryMoment(
+            "chunk-1:m1",
+            ("w5", "w6", "w7"),
+            "second",
+            "story",
+            "",
+            "",
+            "grounded",
+            0.9,
+        ),
+    }
+    concept = GroundedClipConcept(
+        "c1",
+        ("m1",),
+        ("w5", "w6", "w7", "w8"),
+        "second concept",
+        "",
+        "story",
+        20.0,
+        (),
+        0.9,
+    )
+    resolved = AutonomousEditorialPlanner._resolve_story_moment_id("m1", concept, moments)
+    assert resolved == "chunk-1:m1"
+    assert (
+        AutonomousEditorialPlanner._resolve_story_moment_id("chunk-0:m1", concept, moments)
+        == "chunk-0:m1"
+    )
+
+
+def test_story_moment_alias_keeps_true_overlap_ties_ambiguous() -> None:
+    moments = {
+        "chunk-0:m1": GroundedStoryMoment(
+            "chunk-0:m1",
+            ("w1", "w2"),
+            "first",
+            "story",
+            "",
+            "",
+            "grounded",
+            0.9,
+        ),
+        "chunk-1:m1": GroundedStoryMoment(
+            "chunk-1:m1",
+            ("w3", "w4"),
+            "second",
+            "story",
+            "",
+            "",
+            "grounded",
+            0.9,
+        ),
+    }
+    concept = GroundedClipConcept(
+        "c1",
+        ("m1",),
+        ("w1", "w3"),
+        "ambiguous concept",
+        "",
+        "story",
+        20.0,
+        (),
+        0.9,
+    )
+    assert AutonomousEditorialPlanner._resolve_story_moment_id("m1", concept, moments) is None
