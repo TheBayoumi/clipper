@@ -20,13 +20,20 @@ jobs:
           python-version: "3.12"
       - name: Install Modal client
         run: python -m pip install 'modal>=1.5.2,<2'
-      - name: Read persisted run progress and editorial cache
+      - name: Capture Modal editorial application logs
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
         run: |
           set -euo pipefail
           mkdir -p diagnostic
+          modal app logs clipper-open-editor --since 2h --tail 2000 --timestamps --show-function-id --show-container-id 2>&1 | tee diagnostic/modal-app.log || true
+      - name: Read latest V10 progress and open-model cache counts
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          set -euo pipefail
           python - <<'PY'
           import json
           import re
@@ -34,11 +41,6 @@ jobs:
           import modal
 
           volume = modal.Volume.from_name("clipper-v10-artifacts")
-
-          def read_bytes(remote_path: str) -> bytes:
-              raw = volume.read_file(remote_path)
-              return bytes(raw) if isinstance(raw, (bytes, bytearray)) else b"".join(raw)
-
           root = list(volume.listdir("/"))
           runs = []
           for entry in root:
@@ -52,74 +54,41 @@ jobs:
               raise RuntimeError("no V10 run directories found")
           selected = runs[0][1].rstrip("/")
           print(f"SELECTED_RUN={selected}")
-          Path("diagnostic/root-runs.json").write_text(json.dumps(runs[:20], indent=2) + "\n")
-
-          run_entries = list(volume.listdir(selected, recursive=True))
-          run_paths = sorted(str(getattr(entry, "path", "")) for entry in run_entries)
-          Path("diagnostic/run-files.txt").write_text("\n".join(run_paths) + "\n")
-          for suffix in ("progress.json", "brief.normalized.json"):
-              remote = f"{selected}/{suffix}"
-              if remote in run_paths:
-                  data = read_bytes(remote)
-                  Path("diagnostic", suffix.replace("/", "_")).write_bytes(data)
-                  print(f"\n===== {remote} =====")
-                  print(data.decode(errors="replace"))
+          entries = list(volume.listdir(selected, recursive=True))
+          paths = {str(getattr(entry, "path", "")) for entry in entries}
+          progress_path = f"{selected}/progress.json"
+          if progress_path in paths:
+              raw = volume.read_file(progress_path)
+              data = bytes(raw) if isinstance(raw, (bytes, bytearray)) else b"".join(raw)
+              Path("diagnostic/progress.json").write_bytes(data)
+              print(data.decode("utf-8", errors="replace"))
 
           cache_entries = list(volume.listdir("/_cache", recursive=True))
-          cache_paths = [
-              str(getattr(entry, "path", ""))
-              for entry in cache_entries
-              if str(getattr(entry, "path", "")).endswith("open-model-output.json")
-          ]
-          print(f"OPEN_MODEL_CACHE_FILES={len(cache_paths)}")
-          classified = []
-          concept_outputs = []
-          moment_outputs = []
-          for remote in cache_paths:
+          outputs = []
+          for entry in cache_entries:
+              remote = str(getattr(entry, "path", ""))
+              if not remote.endswith("open-model-output.json"):
+                  continue
               try:
-                  data = read_bytes(remote)
+                  raw = volume.read_file(remote)
+                  data = bytes(raw) if isinstance(raw, (bytes, bytearray)) else b"".join(raw)
                   payload = json.loads(data)
-              except Exception as exc:
-                  print(f"CACHE_READ_FAIL {remote}: {type(exc).__name__}: {exc}")
+              except Exception:
                   continue
               if not isinstance(payload, dict):
                   continue
-              keys = sorted(str(k) for k in payload)
-              entry = {"remote": remote, "keys": keys, "bytes": len(data)}
-              classified.append(entry)
-              if isinstance(payload.get("concepts"), list):
-                  entry["concept_count"] = len(payload["concepts"])
-                  concept_outputs.append({"remote": remote, "payload": payload})
-              if isinstance(payload.get("moments"), list):
-                  entry["moment_count"] = len(payload["moments"])
-                  moment_outputs.append({"remote": remote, "payload": payload})
-
-          Path("diagnostic/cache-classified.json").write_text(
-              json.dumps(classified, indent=2) + "\n"
-          )
-          Path("diagnostic/concept-outputs.json").write_text(
-              json.dumps(concept_outputs, indent=2) + "\n"
-          )
-          Path("diagnostic/moment-outputs.json").write_text(
-              json.dumps(moment_outputs[-12:], indent=2) + "\n"
-          )
-          print(f"CONCEPT_OUTPUTS={len(concept_outputs)} MOMENT_OUTPUTS={len(moment_outputs)}")
-          for index, item in enumerate(concept_outputs, start=1):
-              payload = item["payload"]
-              print(f"\n===== CONCEPT OUTPUT {index}: {item['remote']} =====")
-              for concept in payload.get("concepts", []):
-                  if not isinstance(concept, dict):
-                      print(repr(concept))
-                      continue
-                  print(json.dumps({
-                      "concept_id": concept.get("concept_id"),
-                      "story_moment_ids": concept.get("story_moment_ids"),
-                      "supporting_word_ids": concept.get("supporting_word_ids"),
-                      "recommended_duration": concept.get("recommended_duration"),
-                      "keys": sorted(concept),
-                  }, ensure_ascii=False))
-          if not concept_outputs:
-              raise RuntimeError("no cached clip_concepts model output found")
+              kind = (
+                  "concepts" if isinstance(payload.get("concepts"), list)
+                  else "moments" if isinstance(payload.get("moments"), list)
+                  else "other"
+              )
+              outputs.append({"remote": remote, "kind": kind, "keys": sorted(payload)})
+          Path("diagnostic/cache-summary.json").write_text(json.dumps(outputs, indent=2) + "\n")
+          print(json.dumps({
+              "open_model_outputs": len(outputs),
+              "moment_outputs": sum(item["kind"] == "moments" for item in outputs),
+              "concept_outputs": sum(item["kind"] == "concepts" for item in outputs),
+          }, indent=2))
           PY
       - name: Upload diagnostic evidence
         if: always()
