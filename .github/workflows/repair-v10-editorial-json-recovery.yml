@@ -1,0 +1,312 @@
+name: Repair V10 editorial JSON recovery
+
+on:
+  push:
+    branches:
+      - feat/word-reveal-face-tracking
+    paths:
+      - .github/workflows/repair-v10-editorial-json-recovery.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/word-reveal-face-tracking
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Apply bounded JSON recovery repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          modal_path = Path('src/clipper/providers/modal.py')
+          modal_source = modal_path.read_text(encoding='utf-8')
+          old = '''    @staticmethod
+              def _is_output_contract_error(exc: ModalRemoteError) -> bool:
+                  if exc.error_type == "JSONDecodeError":
+                      return True
+                  return (
+                      exc.error_type == "ValueError"
+                      and "model output must be a JSON object" in exc.remote_message
+                  )
+          '''
+          # Normalize indentation in the exact source block rather than relying on editor whitespace.
+          old = old.replace('              def', '    def').replace('                  ', '        ')
+          new = '''    @staticmethod
+              def _is_output_contract_error(exc: ModalRemoteError) -> bool:
+                  if exc.error_type in {"JSONDecodeError", "EditorialOutputTruncated"}:
+                      return True
+                  return (
+                      exc.error_type == "ValueError"
+                      and "model output must be a JSON object" in exc.remote_message
+                  )
+          '''
+          new = new.replace('              def', '    def').replace('                  ', '        ')
+          if old not in modal_source:
+              raise SystemExit('ModalEditorialProvider recovery matcher not found')
+          modal_path.write_text(modal_source.replace(old, new, 1), encoding='utf-8')
+
+          script_path = Path('scripts/modal_open_models.py')
+          source = script_path.read_text(encoding='utf-8')
+
+          old_transport = '''def _transport_error(exc: Exception) -> dict[str, Any]:
+              return {"error": {"type": type(exc).__name__, "message": str(exc)}}
+          '''.replace('              ', '    ')
+          new_transport = '''def _transport_error(exc: Exception, *, context: str | None = None) -> dict[str, Any]:
+              message = str(exc)
+              if context:
+                  message = f"{context}: {message}"
+              return {"error": {"type": type(exc).__name__, "message": message}}
+          '''.replace('              ', '    ')
+          if old_transport not in source:
+              raise SystemExit('transport error helper not found')
+          source = source.replace(old_transport, new_transport, 1)
+
+          old_json = '''def _json_text(text: str) -> dict[str, Any]:
+              value = json.loads(text.strip())
+              if not isinstance(value, dict):
+                  raise ValueError("model output must be a JSON object")
+              return value
+          '''.replace('              ', '    ')
+          new_json = '''class EditorialOutputTruncated(ValueError):
+              """Editorial generation exhausted its output budget before valid JSON completed."""
+
+
+          def _json_text(text: str) -> dict[str, Any]:
+              value = json.loads(text.strip())
+              if not isinstance(value, dict):
+                  raise ValueError("model output must be a JSON object")
+              return value
+          '''.replace('              ', '    ')
+          if old_json not in source:
+              raise SystemExit('json parser helper not found')
+          source = source.replace(old_json, new_json, 1)
+
+          old_budget = '''def _editorial_output_budget(payload: dict[str, Any]) -> int:
+              task = str(payload.get("task") or "")
+              if task == "episode_editorial_profile" or task == "global_concept_comparison":
+                  return 768
+              if task.startswith("story_moments:"):
+                  return 1024
+              if task.startswith("hook_variants:"):
+                  return 1024
+              return 1536
+          '''.replace('              ', '    ')
+          new_budget = '''def _editorial_recovery_attempt(payload: dict[str, Any]) -> int:
+              raw = payload.get("generation_recovery_attempt")
+              try:
+                  attempt = int(raw) if raw is not None else 1
+              except (TypeError, ValueError):
+                  attempt = 1
+              return max(1, min(attempt, 3))
+
+
+          def _editorial_output_budget(payload: dict[str, Any]) -> int:
+              task = str(payload.get("task") or "")
+              if task == "episode_editorial_profile" or task == "global_concept_comparison":
+                  base_budget = 1024
+              elif task.startswith("story_moments:") or task.startswith("hook_variants:"):
+                  base_budget = 1536
+              else:
+                  base_budget = 2048
+              return min(4096, base_budget * _editorial_recovery_attempt(payload))
+          '''.replace('              ', '    ')
+          if old_budget not in source:
+              raise SystemExit('editorial output budget helper not found')
+          source = source.replace(old_budget, new_budget, 1)
+
+          old_start = '''def editorial(payload: dict[str, Any]) -> dict[str, Any]:
+              global _editorial_model, _editorial_tokenizer
+              try:
+          '''.replace('              ', '    ')
+          new_start = '''def editorial(payload: dict[str, Any]) -> dict[str, Any]:
+              global _editorial_model, _editorial_tokenizer
+              task = str(payload.get("task") or "")
+              recovery_attempt = _editorial_recovery_attempt(payload)
+              try:
+          '''.replace('              ', '    ')
+          if old_start not in source:
+              raise SystemExit('editorial function start not found')
+          source = source.replace(old_start, new_start, 1)
+
+          source = source.replace('''        task = str(payload.get("task") or "")
+              messages = [
+          '''.replace('              ', '    '), '''        system_content = (
+              "You are a source-grounded podcast editor. Never invent spoken words or IDs. "
+              + _editorial_contract(task)
+          )
+          if recovery_attempt > 1:
+              system_content += (
+                  " This is a JSON recovery generation after an invalid or truncated response. "
+                  "Return the complete JSON object and close every string, array, and object. "
+                  "If needed, return fewer valid items with shorter prose rather than truncating."
+              )
+          messages = [
+          '''.replace('              ', '    '), 1)
+
+          old_messages = '''            {
+                  "role": "system",
+                  "content": (
+                      "You are a source-grounded podcast editor. Never invent spoken words or IDs. "
+                      + _editorial_contract(task)
+                  ),
+              },
+          '''.replace('              ', '    ')
+          new_messages = '''            {"role": "system", "content": system_content},
+          '''.replace('              ', '    ')
+          if old_messages not in source:
+              raise SystemExit('editorial system message block not found')
+          source = source.replace(old_messages, new_messages, 1)
+
+          old_generate = '''        output = _editorial_model.generate(
+              **inputs,
+              max_new_tokens=_editorial_output_budget(payload),
+              do_sample=False,
+              use_cache=True,
+          )
+          generated = output[0][inputs["input_ids"].shape[-1] :]
+          text = _editorial_tokenizer.decode(generated, skip_special_tokens=True)
+          value = _json_text(text)
+          '''.replace('              ', '    ')
+          new_generate = '''        output_budget = _editorial_output_budget(payload)
+          output = _editorial_model.generate(
+              **inputs,
+              max_new_tokens=output_budget,
+              do_sample=False,
+              use_cache=True,
+          )
+          generated = output[0][inputs["input_ids"].shape[-1] :]
+          text = _editorial_tokenizer.decode(generated, skip_special_tokens=True)
+          try:
+              value = _json_text(text)
+          except json.JSONDecodeError as exc:
+              if int(generated.numel()) >= output_budget:
+                  raise EditorialOutputTruncated(
+                      f"task={task} attempt={recovery_attempt} exhausted "
+                      f"max_new_tokens={output_budget}: {exc}"
+                  ) from exc
+              raise
+          '''.replace('              ', '    ')
+          if old_generate not in source:
+              raise SystemExit('editorial generation block not found')
+          source = source.replace(old_generate, new_generate, 1)
+
+          old_catch = '''        return _transport_error(exc)
+
+
+          def _vision_infer'''.replace('          ', '')
+          # Use a direct single replacement near the editorial/vision boundary.
+          needle = '        return _transport_error(exc)\n\n\ndef _vision_infer'
+          replacement = (
+              '        return _transport_error(\n'
+              '            exc, context=f"task={task or \'<missing>\'} attempt={recovery_attempt}"\n'
+              '        )\n\n\ndef _vision_infer'
+          )
+          if needle not in source:
+              raise SystemExit('editorial transport catch not found')
+          source = source.replace(needle, replacement, 1)
+
+          script_path.write_text(source, encoding='utf-8')
+          PY
+
+          cat > tests/test_modal_editorial_recovery.py <<'PY'
+          from pathlib import Path
+          from typing import Any
+
+          from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
+          from clipper.providers.modal import ModalEditorialProvider, ModalRemoteError
+
+
+          class SequenceEditorialProvider(ModalEditorialProvider):
+              def __init__(self, outcomes: list[object]) -> None:
+                  identity = ModelIdentity(
+                      "test/editorial", "rev", "none", "test", "prompt", "schema"
+                  )
+                  super().__init__(app_name="test", function_name="editorial", identity=identity)
+                  self.outcomes = outcomes
+                  self.requests: list[dict[str, Any]] = []
+
+              def invoke(self, payload: dict[str, Any]) -> ProviderResult[dict[str, Any]]:
+                  self.requests.append(payload)
+                  outcome = self.outcomes.pop(0)
+                  if isinstance(outcome, Exception):
+                      raise outcome
+                  assert isinstance(outcome, ProviderResult)
+                  return outcome
+
+
+          def _success() -> ProviderResult[dict[str, Any]]:
+              identity = ModelIdentity("test/editorial", "rev", "none", "test", "prompt", "schema")
+              return ProviderResult(
+                  {"moments": []},
+                  identity,
+                  InferenceUsage(provider="modal", started_at="now", duration_seconds=0.0),
+              )
+
+
+          def test_editorial_provider_recovers_from_truncation_then_json_error() -> None:
+              provider = SequenceEditorialProvider(
+                  [
+                      ModalRemoteError(
+                          function_name="editorial",
+                          error_type="EditorialOutputTruncated",
+                          message="task=story_moments:21 attempt=1 exhausted max_new_tokens=1536",
+                      ),
+                      ModalRemoteError(
+                          function_name="editorial",
+                          error_type="JSONDecodeError",
+                          message="task=story_moments:21 attempt=2 unterminated string",
+                      ),
+                      _success(),
+                  ]
+              )
+
+              result = provider.complete_json(task="story_moments:21", payload={"words": []})
+
+              assert result.value == {"moments": []}
+              assert [item.get("generation_recovery_attempt") for item in provider.requests] == [
+                  None,
+                  2,
+                  3,
+              ]
+
+
+          def test_modal_editorial_runtime_has_bounded_expanding_recovery_budget() -> None:
+              source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+              assert "class EditorialOutputTruncated(ValueError)" in source
+              assert "base_budget * _editorial_recovery_attempt(payload)" in source
+              assert "return min(4096," in source
+              assert "return fewer valid items with shorter prose rather than truncating" in source
+              assert "context=f\"task={task or '<missing>'} attempt={recovery_attempt}\"" in source
+          PY
+
+      - name: Install validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev,modal]'
+      - name: Full quality gate
+        run: |
+          ruff format .
+          ruff check .
+          mypy
+          pytest
+      - name: Commit validated repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'clipper-v10-repair-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add scripts/modal_open_models.py src/clipper/providers/modal.py tests/test_modal_editorial_recovery.py
+          git diff --cached --exit-code && { echo 'No repair changes to commit'; exit 1; } || true
+          git commit -m 'fix: recover truncated editorial JSON generations'
+          git push origin HEAD:feat/word-reveal-face-tracking
