@@ -1,0 +1,115 @@
+name: Inspect V10 run 17 grounding evidence
+
+on:
+  push:
+    branches: [feat/word-reveal-face-tracking]
+    paths:
+      - ".github/workflows/inspect-v10-run17.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Modal client
+        run: python -m pip install 'modal>=1.5.2,<2'
+      - name: Read latest persisted V10 diagnostics
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostic
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+          import modal
+
+          volume = modal.Volume.from_name("clipper-v10-artifacts")
+          root = list(volume.listdir("/"))
+          candidates = []
+          for entry in root:
+              path = str(getattr(entry, "path", ""))
+              if "reach-double-coverage-dedicated" not in path:
+                  continue
+              match = re.search(r"(2026\d{4}T\d{6}Z)", path)
+              stamp = match.group(1) if match else ""
+              candidates.append((stamp, path))
+          candidates.sort(reverse=True)
+          print("LATEST RUN DIRECTORIES:")
+          for item in candidates[:12]:
+              print(item)
+          Path("diagnostic/root-runs.json").write_text(
+              json.dumps(candidates[:20], indent=2) + "\n", encoding="utf-8"
+          )
+          if not candidates:
+              raise RuntimeError("no persisted V10 run directories found")
+
+          selected = candidates[0][1].rstrip("/")
+          print(f"SELECTED={selected}")
+          entries = list(volume.listdir(selected, recursive=True))
+          paths = sorted(str(getattr(entry, "path", "")) for entry in entries)
+          Path("diagnostic/file-list.txt").write_text("\n".join(paths) + "\n", encoding="utf-8")
+          print("SELECTED FILES:")
+          for path in paths:
+              print(path)
+
+          interesting_suffixes = (
+              "model-progress.jsonl",
+              "manifest.json",
+              "run-manifest.json",
+              "pipeline-manifest.json",
+              "editorial-evidence.jsonl",
+              "editorial.jsonl",
+              "evidence.jsonl",
+              "analysis.json",
+          )
+          copied = []
+          for remote_path in paths:
+              name = remote_path.rsplit("/", 1)[-1]
+              lower = name.lower()
+              if not (
+                  lower.endswith(interesting_suffixes)
+                  or "editorial" in lower
+                  or "model-progress" in lower
+                  or "manifest" in lower
+              ):
+                  continue
+              try:
+                  raw = volume.read_file(remote_path)
+                  if isinstance(raw, (bytes, bytearray)):
+                      data = bytes(raw)
+                  else:
+                      data = b"".join(raw)
+              except Exception as exc:
+                  print(f"READ_FAIL {remote_path}: {type(exc).__name__}: {exc}")
+                  continue
+              if len(data) > 2_000_000:
+                  data = data[-2_000_000:]
+              safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", remote_path.strip("/"))[-220:]
+              local = Path("diagnostic") / safe
+              local.write_bytes(data)
+              copied.append({"remote": remote_path, "local": str(local), "bytes": len(data)})
+              print(f"\n===== {remote_path} ({len(data)} bytes captured) =====")
+              print(data.decode("utf-8", errors="replace")[-120_000:])
+          Path("diagnostic/copied.json").write_text(
+              json.dumps(copied, indent=2) + "\n", encoding="utf-8"
+          )
+          if not copied:
+              raise RuntimeError("no diagnostic evidence files were readable")
+          PY
+      - name: Upload diagnostic evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: v10-run17-grounding-diagnostic
+          path: diagnostic/
+          retention-days: 7
+          if-no-files-found: error
