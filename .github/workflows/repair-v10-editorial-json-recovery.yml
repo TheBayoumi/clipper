@@ -241,7 +241,7 @@ jobs:
       - name: Install validation dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e '.[dev,modal]'
+          python -m pip install -e '.[dev]'
       - name: Full quality gate
         run: |
           ruff format .
