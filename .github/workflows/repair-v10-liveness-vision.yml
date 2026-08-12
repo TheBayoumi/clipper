@@ -1,0 +1,109 @@
+name: Repair V10 liveness and visual dependency
+
+on:
+  push:
+    branches: [feat/word-reveal-face-tracking]
+    paths:
+      - ".github/workflows/repair-v10-liveness-vision.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Apply production liveness and observability repair
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # 1) Make the Qwen3-VL image complete and pin the official torch/vision pair.
+          modal_script = Path("scripts/modal_open_models.py")
+          text = modal_script.read_text(encoding="utf-8")
+          old = '''text_image = base_image.uv_pip_install(\n    "torch>=2.8,<3",\n    "transformers>=4.57,<5",\n'''
+          new = '''text_image = base_image.uv_pip_install(\n    "torch==2.8.0",\n    "torchvision==0.23.0",\n    "transformers>=4.57,<5",\n'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit("text_image torch dependency block not found")
+
+          old_budget = '''def _editorial_output_budget(payload: dict[str, Any]) -> int:\n    task = str(payload.get("task") or "")\n    if task == "episode_editorial_profile" or task == "global_concept_comparison":\n        return 768\n    if task.startswith("hook_variants:"):\n        return 1024\n    return 1536\n'''
+          new_budget = '''def _editorial_output_budget(payload: dict[str, Any]) -> int:\n    task = str(payload.get("task") or "")\n    if task == "episode_editorial_profile" or task == "global_concept_comparison":\n        return 768\n    if task.startswith("story_moments:"):\n        return 1024\n    if task.startswith("hook_variants:"):\n        return 1024\n    return 1536\n'''
+          if old_budget in text:
+              text = text.replace(old_budget, new_budget, 1)
+          elif new_budget not in text:
+              raise SystemExit("editorial output budget block not found")
+          modal_script.write_text(text, encoding="utf-8")
+
+          # 2) A single failed StoryMoment chunk must not erase all prior grounded chunks.
+          editor = Path("src/clipper/autonomous_editor.py")
+          text = editor.read_text(encoding="utf-8")
+          old_loop = '''            payload = self._complete(\n                f"story_moments:{chunk_index}",\n                timeline,\n                brief,\n                {\n                    "campaign": self._campaign(brief),\n                    "editorial_profile": asdict(profile),\n                    "instruction": (\n                        "Return every independently meaningful moment supported by this chunk. "\n                        "Optimize recall. "\n                        "Reference canonical word IDs only; do not invent transcript text."\n                    ),\n                    "words": words,\n                    "visual_evidence": self._visual_evidence(\n                        visual_timeline, chunk_start, chunk_end\n                    ),\n                },\n            )\n            stage = f"story_moments:{chunk_index}"\n            for proposal_index, raw in enumerate(self._array(payload, "moments")):\n'''
+          new_loop = '''            stage = f"story_moments:{chunk_index}"\n            try:\n                payload = self._complete(\n                    stage,\n                    timeline,\n                    brief,\n                    {\n                        "campaign": self._campaign(brief),\n                        "editorial_profile": asdict(profile),\n                        "instruction": (\n                            "Return every independently meaningful moment supported by this chunk. "\n                            "Optimize recall. "\n                            "Reference canonical word IDs only; do not invent transcript text."\n                        ),\n                        "words": words,\n                        "visual_evidence": self._visual_evidence(\n                            visual_timeline, chunk_start, chunk_end\n                        ),\n                    },\n                )\n            except Exception as exc:\n                rejections.append(\n                    {\n                        "stage": "story_moment_inference",\n                        "model_stage": stage,\n                        "decision": "REJECT",\n                        "reasons": ["chunk_inference_failed"],\n                        "error_type": type(exc).__name__,\n                        "error": str(exc),\n                    }\n                )\n                continue\n            for proposal_index, raw in enumerate(self._array(payload, "moments")):\n'''
+          if old_loop in text:
+              text = text.replace(old_loop, new_loop, 1)
+          elif new_loop not in text:
+              raise SystemExit("StoryMoment inference loop not found")
+          editor.write_text(text, encoding="utf-8")
+
+          # 3) Preserve the real source exception when all authorized analyses fail.
+          pipeline = Path("src/clipper/pipeline.py")
+          text = pipeline.read_text(encoding="utf-8")
+          old_except = '''        except Exception as exc:\n            LOGGER.exception("source processing failed", extra={"video_id": video.video_id})\n            manifest.errors.append({"video_id": video.video_id, "error": str(exc)})\n        journal.progress(\n            "source_processing",\n            source_index,\n            checkpoint=video.video_id,\n            message=f"completed {video.video_id}",\n        )\n\n    journal.complete("source_processing", message=f"processed {len(allowed)} sources")\n'''
+          new_except = '''        except Exception as exc:\n            LOGGER.exception("source processing failed", extra={"video_id": video.video_id})\n            manifest.errors.append(\n                {\n                    "video_id": video.video_id,\n                    "error_type": type(exc).__name__,\n                    "error": str(exc),\n                }\n            )\n            journal.progress(\n                "source_processing",\n                source_index,\n                checkpoint=video.video_id,\n                message=f"failed {video.video_id}: {type(exc).__name__}",\n            )\n            continue\n        journal.progress(\n            "source_processing",\n            source_index,\n            checkpoint=video.video_id,\n            message=f"completed {video.video_id}",\n        )\n\n    if open_planner is not None and not open_analyses and manifest.errors:\n        source_errors = "; ".join(\n            f"{item.get('video_id', 'unknown')}: "\n            f"{item.get('error_type', 'Error')}: {item.get('error', '')}"\n            for item in manifest.errors\n        )\n        reason = f"all authorized source analyses failed: {source_errors}"\n        journal.fail("source_processing", reason)\n        raise RuntimeError(reason)\n    journal.complete(\n        "source_processing",\n        message=f"processed {len(allowed) - len(manifest.errors)} sources; "\n        f"failed {len(manifest.errors)}",\n    )\n'''
+          if old_except in text:
+              text = text.replace(old_except, new_except, 1)
+          elif new_except not in text:
+              raise SystemExit("source processing exception block not found")
+          pipeline.write_text(text, encoding="utf-8")
+
+          # 4) Add regression tests for the source contracts and chunk isolation behavior.
+          tests = Path("tests/test_open_models.py")
+          test_text = tests.read_text(encoding="utf-8")
+          marker = "def test_story_moment_chunk_inference_failure_preserves_other_grounded_chunks("
+          if marker not in test_text:
+              test_text += '''\n\ndef test_story_moment_chunk_inference_failure_preserves_other_grounded_chunks(\n    tmp_path: Path, monkeypatch: pytest.MonkeyPatch\n) -> None:\n    words = tuple(\n        CanonicalWord(\n            f"w{i}",\n            f"token{i}",\n            i * 0.1,\n            i * 0.1 + 0.08,\n            "A",\n            0.99,\n            "aligned",\n            "test",\n        )\n        for i in range(400)\n    )\n    timeline = CanonicalTimeline("video", "source-hash", words)\n    identity = ModelIdentity("test", "rev", None, "test", "p", "s")\n    editorial = Mock(identity=identity)\n    embeddings = Mock(identity=identity)\n    planner = AutonomousEditorialPlanner(\n        editorial,\n        embeddings,\n        FileCache(tmp_path / "cache"),\n        max_words_per_chunk=200,\n        chunk_overlap_words=0,\n    )\n\n    def complete(stage: str, *_args: object, **_kwargs: object) -> dict[str, object]:\n        if stage == "episode_editorial_profile":\n            return {\n                "summary": "episode",\n                "valuable_moment_characteristics": ["self contained"],\n                "avoid_characteristics": [],\n                "confidence": 0.9,\n            }\n        if stage == "story_moments:0":\n            raise RuntimeError("transient chunk failure")\n        if stage == "story_moments:1":\n            return {\n                "moments": [\n                    {\n                        "moment_id": "m1",\n                        "start_word_id": timeline.word_ref("w220"),\n                        "end_word_id": timeline.word_ref("w320"),\n                        "semantic_summary": "grounded surviving moment",\n                        "narrative_structure": "story",\n                        "required_prior_context": "",\n                        "required_followup_context": "",\n                        "editorial_reason": "self contained",\n                        "confidence": 0.9,\n                    }\n                ]\n            }\n        if stage == "clip_concepts":\n            return {\n                "concepts": [\n                    {\n                        "concept_id": "c1",\n                        "story_moment_ids": ["chunk-1:m1"],\n                        "start_word_id": timeline.word_ref("w220"),\n                        "end_word_id": timeline.word_ref("w320"),\n                        "semantic_summary": "surviving concept",\n                        "standalone_context": "",\n                        "narrative_structure": "story",\n                        "recommended_duration": 10.0,\n                        "visual_dependencies": [],\n                        "confidence": 0.9,\n                    }\n                ]\n            }\n        raise AssertionError(stage)\n\n    monkeypatch.setattr(planner, "_complete", complete)\n    monkeypatch.setattr(\n        planner,\n        "_semantic_dedupe",\n        lambda _brief, _timeline, concepts: (\n            concepts,\n            {concept.concept_id: "sem-test" for concept in concepts},\n            [],\n        ),\n    )\n    brief = CampaignBrief(\n        campaign_id="test",\n        campaign_name="Test",\n        source_channel_ids=("channel",),\n        clip_count=1,\n        min_clip_seconds=5.0,\n        max_clip_seconds=60.0,\n        watermark_text="TEST",\n    )\n    analysis = planner.analyze_video(brief, timeline)\n    assert len(analysis.moments) == 1\n    assert len(analysis.concepts) == 1\n    assert any(\n        item.get("reasons") == ["chunk_inference_failed"] for item in analysis.rejections\n    )\n'''
+              tests.write_text(test_text, encoding="utf-8")
+
+          contract = Path("tests/test_modal_v10_source_contract.py")
+          contract_text = contract.read_text(encoding="utf-8")
+          marker = "def test_open_model_image_has_qwen3_vl_torchvision_runtime_contract() -> None:"
+          if marker not in contract_text:
+              contract_text += '''\n\ndef test_open_model_image_has_qwen3_vl_torchvision_runtime_contract() -> None:\n    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")\n    assert '"torch==2.8.0"' in source\n    assert '"torchvision==0.23.0"' in source\n    assert 'if task.startswith("story_moments:"):' in source\n    assert "return 1024" in source\n'''
+              contract.write_text(contract_text, encoding="utf-8")
+          PY
+
+      - name: Install quality dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Format and validate complete source tree
+        run: |
+          ruff format scripts/modal_open_models.py src/clipper/autonomous_editor.py src/clipper/pipeline.py tests/test_open_models.py tests/test_modal_v10_source_contract.py
+          ruff check .
+          ruff format --check .
+          mypy
+          pytest
+
+      - name: Commit guarded source repair
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/modal_open_models.py src/clipper/autonomous_editor.py src/clipper/pipeline.py tests/test_open_models.py tests/test_modal_v10_source_contract.py
+          if git diff --cached --quiet; then
+            echo "No source repair changes needed"
+            exit 0
+          fi
+          git commit -m "fix: isolate editorial chunk failures and restore visual runtime"
+          git push origin HEAD:feat/word-reveal-face-tracking
