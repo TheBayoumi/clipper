@@ -519,25 +519,38 @@ class AutonomousEditorialPlanner:
             last_end = words[-1].get("source_end") if words else None
             chunk_start = float(first_start) if isinstance(first_start, int | float | str) else 0.0
             chunk_end = float(last_end) if isinstance(last_end, int | float | str) else 0.0
-            payload = self._complete(
-                f"story_moments:{chunk_index}",
-                timeline,
-                brief,
-                {
-                    "campaign": self._campaign(brief),
-                    "editorial_profile": asdict(profile),
-                    "instruction": (
-                        "Return every independently meaningful moment supported by this chunk. "
-                        "Optimize recall. "
-                        "Reference canonical word IDs only; do not invent transcript text."
-                    ),
-                    "words": words,
-                    "visual_evidence": self._visual_evidence(
-                        visual_timeline, chunk_start, chunk_end
-                    ),
-                },
-            )
             stage = f"story_moments:{chunk_index}"
+            try:
+                payload = self._complete(
+                    stage,
+                    timeline,
+                    brief,
+                    {
+                        "campaign": self._campaign(brief),
+                        "editorial_profile": asdict(profile),
+                        "instruction": (
+                            "Return every independently meaningful moment supported by this chunk. "
+                            "Optimize recall. "
+                            "Reference canonical word IDs only; do not invent transcript text."
+                        ),
+                        "words": words,
+                        "visual_evidence": self._visual_evidence(
+                            visual_timeline, chunk_start, chunk_end
+                        ),
+                    },
+                )
+            except Exception as exc:
+                rejections.append(
+                    {
+                        "stage": "story_moment_inference",
+                        "model_stage": stage,
+                        "decision": "REJECT",
+                        "reasons": ["chunk_inference_failed"],
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                )
+                continue
             for proposal_index, raw in enumerate(self._array(payload, "moments")):
                 try:
                     moment = GroundedStoryMoment.from_payload(raw, timeline)

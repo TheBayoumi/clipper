@@ -57,7 +57,8 @@ media_image = (
     )
 )
 text_image = base_image.uv_pip_install(
-    "torch>=2.8,<3",
+    "torch==2.8.0",
+    "torchvision==0.23.0",
     "transformers>=4.57,<5",
     "accelerate>=1.14,<2",
     "sentence-transformers>=5.6,<6",
@@ -152,6 +153,8 @@ def _editorial_output_budget(payload: dict[str, Any]) -> int:
     task = str(payload.get("task") or "")
     if task == "episode_editorial_profile" or task == "global_concept_comparison":
         return 768
+    if task.startswith("story_moments:"):
+        return 1024
     if task.startswith("hook_variants:"):
         return 1024
     return 1536

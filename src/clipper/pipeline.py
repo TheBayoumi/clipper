@@ -1137,7 +1137,20 @@ def run_pipeline(
             _write_json(video_work / "clip-candidates.json", [item.to_dict() for item in concepts])
         except Exception as exc:
             LOGGER.exception("source processing failed", extra={"video_id": video.video_id})
-            manifest.errors.append({"video_id": video.video_id, "error": str(exc)})
+            manifest.errors.append(
+                {
+                    "video_id": video.video_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+            journal.progress(
+                "source_processing",
+                source_index,
+                checkpoint=video.video_id,
+                message=f"failed {video.video_id}: {type(exc).__name__}",
+            )
+            continue
         journal.progress(
             "source_processing",
             source_index,
@@ -1145,7 +1158,20 @@ def run_pipeline(
             message=f"completed {video.video_id}",
         )
 
-    journal.complete("source_processing", message=f"processed {len(allowed)} sources")
+    if open_planner is not None and not open_analyses and manifest.errors:
+        source_errors = "; ".join(
+            f"{item.get('video_id', 'unknown')}: "
+            f"{item.get('error_type', 'Error')}: {item.get('error', '')}"
+            for item in manifest.errors
+        )
+        reason = f"all authorized source analyses failed: {source_errors}"
+        journal.fail("source_processing", reason)
+        raise RuntimeError(reason)
+    journal.complete(
+        "source_processing",
+        message=f"processed {len(allowed) - len(manifest.errors)} sources; "
+        f"failed {len(manifest.errors)}",
+    )
     _write_json(
         run_dir / "transcript.json",
         {

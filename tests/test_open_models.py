@@ -2177,3 +2177,103 @@ def test_story_moment_alias_keeps_true_overlap_ties_ambiguous() -> None:
         0.9,
     )
     assert AutonomousEditorialPlanner._resolve_story_moment_id("m1", concept, moments) is None
+
+
+def test_story_moment_chunk_inference_failure_preserves_other_grounded_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    words = tuple(
+        CanonicalWord(
+            f"w{i}",
+            f"token{i}",
+            i * 0.1,
+            i * 0.1 + 0.08,
+            "A",
+            0.99,
+            "aligned",
+            "test",
+        )
+        for i in range(400)
+    )
+    timeline = CanonicalTimeline("video", "source-hash", words)
+    identity = ModelIdentity("test", "rev", None, "test", "p", "s")
+    editorial = Mock(identity=identity)
+    embeddings = Mock(identity=identity)
+    planner = AutonomousEditorialPlanner(
+        editorial,
+        embeddings,
+        FileCache(tmp_path / "cache"),
+        max_words_per_chunk=200,
+        chunk_overlap_words=0,
+    )
+
+    def complete(stage: str, *_args: object, **_kwargs: object) -> dict[str, object]:
+        if stage == "episode_editorial_profile":
+            return {
+                "summary": "episode",
+                "valuable_moment_characteristics": ["self contained"],
+                "avoid_characteristics": [],
+                "confidence": 0.9,
+            }
+        if stage == "story_moments:0":
+            raise RuntimeError("transient chunk failure")
+        if stage == "story_moments:1":
+            return {
+                "moments": [
+                    {
+                        "moment_id": "m1",
+                        "start_word_id": timeline.word_ref("w220"),
+                        "end_word_id": timeline.word_ref("w320"),
+                        "semantic_summary": "grounded surviving moment",
+                        "narrative_structure": "story",
+                        "required_prior_context": "",
+                        "required_followup_context": "",
+                        "editorial_reason": "self contained",
+                        "confidence": 0.9,
+                    }
+                ]
+            }
+        if stage == "clip_concepts":
+            return {
+                "concepts": [
+                    {
+                        "concept_id": "c1",
+                        "story_moment_ids": ["chunk-1:m1"],
+                        "start_word_id": timeline.word_ref("w220"),
+                        "end_word_id": timeline.word_ref("w320"),
+                        "semantic_summary": "surviving concept",
+                        "standalone_context": "",
+                        "narrative_structure": "story",
+                        "recommended_duration": 10.0,
+                        "visual_dependencies": [],
+                        "confidence": 0.9,
+                    }
+                ]
+            }
+        raise AssertionError(stage)
+
+    monkeypatch.setattr(planner, "_complete", complete)
+    monkeypatch.setattr(
+        planner,
+        "_semantic_dedupe",
+        lambda _brief, _timeline, concepts: (
+            concepts,
+            {concept.concept_id: "sem-test" for concept in concepts},
+            [],
+        ),
+    )
+    brief = CampaignBrief(
+        campaign_id="test",
+        title="Test",
+        objective="Test grounded editorial resilience.",
+        keywords=["test"],
+        source_channel_ids=["channel"],
+        clip_count=1,
+        min_clip_seconds=5.0,
+        max_clip_seconds=60.0,
+        watermark_text="TEST",
+    )
+    analysis = planner.analyze_video(brief, timeline)
+    assert len(analysis.moments) == 1
+    assert len(analysis.concepts) == 1
+    assert any(item.get("reasons") == ["chunk_inference_failed"] for item in analysis.rejections)
