@@ -20,7 +20,7 @@ jobs:
           python-version: "3.12"
       - name: Install Modal client
         run: python -m pip install 'modal>=1.5.2,<2'
-      - name: Read latest persisted V10 diagnostics
+      - name: Read persisted run progress and editorial cache
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -34,82 +34,98 @@ jobs:
           import modal
 
           volume = modal.Volume.from_name("clipper-v10-artifacts")
+
+          def read_bytes(remote_path: str) -> bytes:
+              raw = volume.read_file(remote_path)
+              return bytes(raw) if isinstance(raw, (bytes, bytearray)) else b"".join(raw)
+
           root = list(volume.listdir("/"))
-          candidates = []
+          runs = []
           for entry in root:
               path = str(getattr(entry, "path", ""))
               if "reach-double-coverage-dedicated" not in path:
                   continue
               match = re.search(r"(2026\d{4}T\d{6}Z)", path)
-              stamp = match.group(1) if match else ""
-              candidates.append((stamp, path))
-          candidates.sort(reverse=True)
-          print("LATEST RUN DIRECTORIES:")
-          for item in candidates[:12]:
-              print(item)
-          Path("diagnostic/root-runs.json").write_text(
-              json.dumps(candidates[:20], indent=2) + "\n", encoding="utf-8"
-          )
-          if not candidates:
-              raise RuntimeError("no persisted V10 run directories found")
+              runs.append((match.group(1) if match else "", path))
+          runs.sort(reverse=True)
+          if not runs:
+              raise RuntimeError("no V10 run directories found")
+          selected = runs[0][1].rstrip("/")
+          print(f"SELECTED_RUN={selected}")
+          Path("diagnostic/root-runs.json").write_text(json.dumps(runs[:20], indent=2) + "\n")
 
-          selected = candidates[0][1].rstrip("/")
-          print(f"SELECTED={selected}")
-          entries = list(volume.listdir(selected, recursive=True))
-          paths = sorted(str(getattr(entry, "path", "")) for entry in entries)
-          Path("diagnostic/file-list.txt").write_text("\n".join(paths) + "\n", encoding="utf-8")
-          print("SELECTED FILES:")
-          for path in paths:
-              print(path)
+          run_entries = list(volume.listdir(selected, recursive=True))
+          run_paths = sorted(str(getattr(entry, "path", "")) for entry in run_entries)
+          Path("diagnostic/run-files.txt").write_text("\n".join(run_paths) + "\n")
+          for suffix in ("progress.json", "brief.normalized.json"):
+              remote = f"{selected}/{suffix}"
+              if remote in run_paths:
+                  data = read_bytes(remote)
+                  Path("diagnostic", suffix.replace("/", "_")).write_bytes(data)
+                  print(f"\n===== {remote} =====")
+                  print(data.decode(errors="replace"))
 
-          interesting_suffixes = (
-              "model-progress.jsonl",
-              "manifest.json",
-              "run-manifest.json",
-              "pipeline-manifest.json",
-              "editorial-evidence.jsonl",
-              "editorial.jsonl",
-              "evidence.jsonl",
-              "analysis.json",
-          )
-          copied = []
-          for remote_path in paths:
-              name = remote_path.rsplit("/", 1)[-1]
-              lower = name.lower()
-              if not (
-                  lower.endswith(interesting_suffixes)
-                  or "editorial" in lower
-                  or "model-progress" in lower
-                  or "manifest" in lower
-              ):
-                  continue
+          cache_entries = list(volume.listdir("/_cache", recursive=True))
+          cache_paths = [
+              str(getattr(entry, "path", ""))
+              for entry in cache_entries
+              if str(getattr(entry, "path", "")).endswith("open-model-output.json")
+          ]
+          print(f"OPEN_MODEL_CACHE_FILES={len(cache_paths)}")
+          classified = []
+          concept_outputs = []
+          moment_outputs = []
+          for remote in cache_paths:
               try:
-                  raw = volume.read_file(remote_path)
-                  if isinstance(raw, (bytes, bytearray)):
-                      data = bytes(raw)
-                  else:
-                      data = b"".join(raw)
+                  data = read_bytes(remote)
+                  payload = json.loads(data)
               except Exception as exc:
-                  print(f"READ_FAIL {remote_path}: {type(exc).__name__}: {exc}")
+                  print(f"CACHE_READ_FAIL {remote}: {type(exc).__name__}: {exc}")
                   continue
-              if len(data) > 2_000_000:
-                  data = data[-2_000_000:]
-              safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", remote_path.strip("/"))[-220:]
-              local = Path("diagnostic") / safe
-              local.write_bytes(data)
-              copied.append({"remote": remote_path, "local": str(local), "bytes": len(data)})
-              print(f"\n===== {remote_path} ({len(data)} bytes captured) =====")
-              print(data.decode("utf-8", errors="replace")[-120_000:])
-          Path("diagnostic/copied.json").write_text(
-              json.dumps(copied, indent=2) + "\n", encoding="utf-8"
+              if not isinstance(payload, dict):
+                  continue
+              keys = sorted(str(k) for k in payload)
+              entry = {"remote": remote, "keys": keys, "bytes": len(data)}
+              classified.append(entry)
+              if isinstance(payload.get("concepts"), list):
+                  entry["concept_count"] = len(payload["concepts"])
+                  concept_outputs.append({"remote": remote, "payload": payload})
+              if isinstance(payload.get("moments"), list):
+                  entry["moment_count"] = len(payload["moments"])
+                  moment_outputs.append({"remote": remote, "payload": payload})
+
+          Path("diagnostic/cache-classified.json").write_text(
+              json.dumps(classified, indent=2) + "\n"
           )
-          if not copied:
-              raise RuntimeError("no diagnostic evidence files were readable")
+          Path("diagnostic/concept-outputs.json").write_text(
+              json.dumps(concept_outputs, indent=2) + "\n"
+          )
+          Path("diagnostic/moment-outputs.json").write_text(
+              json.dumps(moment_outputs[-12:], indent=2) + "\n"
+          )
+          print(f"CONCEPT_OUTPUTS={len(concept_outputs)} MOMENT_OUTPUTS={len(moment_outputs)}")
+          for index, item in enumerate(concept_outputs, start=1):
+              payload = item["payload"]
+              print(f"\n===== CONCEPT OUTPUT {index}: {item['remote']} =====")
+              for concept in payload.get("concepts", []):
+                  if not isinstance(concept, dict):
+                      print(repr(concept))
+                      continue
+                  print(json.dumps({
+                      "concept_id": concept.get("concept_id"),
+                      "story_moment_ids": concept.get("story_moment_ids"),
+                      "supporting_word_ids": concept.get("supporting_word_ids"),
+                      "recommended_duration": concept.get("recommended_duration"),
+                      "keys": sorted(concept),
+                  }, ensure_ascii=False))
+          if not concept_outputs:
+              raise RuntimeError("no cached clip_concepts model output found")
           PY
       - name: Upload diagnostic evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: v10-run17-grounding-diagnostic
           path: diagnostic/
           retention-days: 7
-          if-no-files-found: error
+          if-no-files-found: warn
