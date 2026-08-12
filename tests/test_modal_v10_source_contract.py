@@ -20,5 +20,6 @@ def test_open_model_image_has_qwen3_vl_torchvision_runtime_contract() -> None:
     source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
     assert '"torch==2.8.0"' in source
     assert '"torchvision==0.23.0"' in source
-    assert 'if task.startswith("story_moments:"):' in source
-    assert "return 1024" in source
+    assert 'task.startswith("story_moments:")' in source
+    assert "base_budget = 1536" in source
+    assert "return min(4096, base_budget * _editorial_recovery_attempt(payload))" in source
