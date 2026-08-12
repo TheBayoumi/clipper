@@ -134,6 +134,10 @@ def _usage(
     }
 
 
+class EditorialOutputTruncated(ValueError):
+    """Editorial generation exhausted its output budget before valid JSON completed."""
+
+
 def _json_text(text: str) -> dict[str, Any]:
     value = json.loads(text.strip())
     if not isinstance(value, dict):
@@ -149,15 +153,24 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _editorial_recovery_attempt(payload: dict[str, Any]) -> int:
+    raw = payload.get("generation_recovery_attempt")
+    try:
+        attempt = int(raw) if raw is not None else 1
+    except (TypeError, ValueError):
+        attempt = 1
+    return max(1, min(attempt, 3))
+
+
 def _editorial_output_budget(payload: dict[str, Any]) -> int:
     task = str(payload.get("task") or "")
     if task == "episode_editorial_profile" or task == "global_concept_comparison":
-        return 768
-    if task.startswith("story_moments:"):
-        return 1024
-    if task.startswith("hook_variants:"):
-        return 1024
-    return 1536
+        base_budget = 1024
+    elif task.startswith("story_moments:") or task.startswith("hook_variants:"):
+        base_budget = 1536
+    else:
+        base_budget = 2048
+    return min(4096, base_budget * _editorial_recovery_attempt(payload))
 
 
 def _editorial_contract(task: str) -> str:
@@ -216,8 +229,11 @@ def _editorial_contract(task: str) -> str:
     return common + "Follow the task payload exactly."
 
 
-def _transport_error(exc: Exception) -> dict[str, Any]:
-    return {"error": {"type": type(exc).__name__, "message": str(exc)}}
+def _transport_error(exc: Exception, *, context: str | None = None) -> dict[str, Any]:
+    message = str(exc)
+    if context:
+        message = f"{context}: {message}"
+    return {"error": {"type": type(exc).__name__, "message": message}}
 
 
 @app.function(
@@ -394,6 +410,8 @@ def embedding(payload: dict[str, Any]) -> dict[str, Any]:
 )
 def editorial(payload: dict[str, Any]) -> dict[str, Any]:
     global _editorial_model, _editorial_tokenizer
+    task = str(payload.get("task") or "")
+    recovery_attempt = _editorial_recovery_attempt(payload)
     try:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -418,30 +436,42 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
                 max_memory={0: "22GiB", 1: "22GiB"},
                 low_cpu_mem_usage=True,
             )
-        task = str(payload.get("task") or "")
+        system_content = (
+            "You are a source-grounded podcast editor. Never invent spoken words or IDs. "
+            + _editorial_contract(task)
+        )
+        if recovery_attempt > 1:
+            system_content += (
+                " This is a JSON recovery generation after an invalid or truncated response. "
+                "Return the complete JSON object and close every string, array, and object. "
+                "If needed, return fewer valid items with shorter prose rather than truncating."
+            )
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a source-grounded podcast editor. Never invent spoken words or IDs. "
-                    + _editorial_contract(task)
-                ),
-            },
+            {"role": "system", "content": system_content},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ]
         rendered = _editorial_tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
         inputs = _editorial_tokenizer(rendered, return_tensors="pt").to(_editorial_model.device)
+        output_budget = _editorial_output_budget(payload)
         output = _editorial_model.generate(
             **inputs,
-            max_new_tokens=_editorial_output_budget(payload),
+            max_new_tokens=output_budget,
             do_sample=False,
             use_cache=True,
         )
         generated = output[0][inputs["input_ids"].shape[-1] :]
         text = _editorial_tokenizer.decode(generated, skip_special_tokens=True)
-        value = _json_text(text)
+        try:
+            value = _json_text(text)
+        except json.JSONDecodeError as exc:
+            if int(generated.numel()) >= output_budget:
+                raise EditorialOutputTruncated(
+                    f"task={task} attempt={recovery_attempt} exhausted "
+                    f"max_new_tokens={output_budget}: {exc}"
+                ) from exc
+            raise
         return {
             "value": value,
             "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
@@ -458,7 +488,9 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        return _transport_error(exc)
+        return _transport_error(
+            exc, context=f"task={task or '<missing>'} attempt={recovery_attempt}"
+        )
 
 
 def _vision_infer(payload: dict[str, Any], model_id: str, gpu: str) -> dict[str, Any]:

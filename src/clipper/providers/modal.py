@@ -90,7 +90,7 @@ class ModalEditorialProvider(ModalJSONProvider):
 
     @staticmethod
     def _is_output_contract_error(exc: ModalRemoteError) -> bool:
-        if exc.error_type == "JSONDecodeError":
+        if exc.error_type in {"JSONDecodeError", "EditorialOutputTruncated"}:
             return True
         return (
             exc.error_type == "ValueError"
