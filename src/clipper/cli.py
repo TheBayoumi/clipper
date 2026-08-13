@@ -10,7 +10,7 @@ from pathlib import Path
 from .benchmark import evaluate_corpus_manifest
 from .brief import load_brief
 from .pipeline import PipelineSettings, run_pipeline
-from .rights import assert_campaign_authorized
+from .rights import RightsError, assert_campaign_authorized, assert_video_allowed
 from .youtube import YouTubeClient
 
 
@@ -65,7 +65,14 @@ def main(argv: list[str] | None = None) -> int:
             brief = load_brief(args.brief)
             assert_campaign_authorized(brief)
             videos = YouTubeClient().discover(brief)
-            print(json.dumps([video.to_dict() for video in videos], indent=2))
+            allowed = []
+            for video in videos:
+                try:
+                    assert_video_allowed(brief, video)
+                except RightsError:
+                    continue
+                allowed.append(video)
+            print(json.dumps([video.to_dict() for video in allowed], indent=2))
             return 0
         if args.command == "benchmark":
             result = evaluate_corpus_manifest(args.manifest)
