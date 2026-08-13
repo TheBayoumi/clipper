@@ -20,7 +20,8 @@ def cpu_seconds() -> float:
     if _resource is not None:
         own = _resource.getrusage(_resource.RUSAGE_SELF)
         children = _resource.getrusage(_resource.RUSAGE_CHILDREN)
-        return own.ru_utime + own.ru_stime + children.ru_utime + children.ru_stime
+        total = own.ru_utime + own.ru_stime + children.ru_utime + children.ru_stime
+        return float(total)
     times = os.times()
     return times.user + times.system + times.children_user + times.children_system
 
