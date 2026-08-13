@@ -1,20 +1,36 @@
 from __future__ import annotations
 
-import resource
+import importlib
+import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
+from typing import Any
+
+_resource: Any | None
+try:
+    _resource = importlib.import_module("resource")
+except ModuleNotFoundError:
+    _resource = None
 
 
 def cpu_seconds() -> float:
-    own = resource.getrusage(resource.RUSAGE_SELF)
-    children = resource.getrusage(resource.RUSAGE_CHILDREN)
-    return own.ru_utime + own.ru_stime + children.ru_utime + children.ru_stime
+    if _resource is not None:
+        own = _resource.getrusage(_resource.RUSAGE_SELF)
+        children = _resource.getrusage(_resource.RUSAGE_CHILDREN)
+        return own.ru_utime + own.ru_stime + children.ru_utime + children.ru_stime
+    times = os.times()
+    return times.user + times.system + times.children_user + times.children_system
 
 
 def peak_rss_mb() -> float:
-    usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if _resource is None:
+        return 0.0
+    usage = float(_resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss)
+    if sys.platform == "darwin":
+        return round(usage / (1024.0 * 1024.0), 2)
     return round(usage / 1024.0, 2)
 
 
