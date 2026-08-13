@@ -320,8 +320,8 @@ def test_v10_production_workflow_uses_modal_hf_and_original_quality_master() -> 
     assert 'Function.from_name("clipper-v10-cycle", "acquire_source")' in workflow
     assert 'result["quality_policy"] == "highest_available_no_transcode"' in workflow
     assert "source-master.json" in workflow
-    assert 'with_options(cloud=value, timeout=1800)' in workflow
-    assert 'with_options(region=value, timeout=1800)' in workflow
+    assert "with_options(cloud=value, timeout=1800)" in workflow
+    assert "with_options(region=value, timeout=1800)" in workflow
     assert '"cloud:gcp"' in workflow
     assert '"cloud:aws"' in workflow
     assert '"cloud:oci"' in workflow
