@@ -1,8 +1,15 @@
 from pathlib import Path
 from subprocess import CompletedProcess
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from clipper.performance import RunTelemetry, directory_size_bytes, gpu_utilization_pct, peak_rss_mb
+from clipper.performance import (
+    RunTelemetry,
+    cpu_seconds,
+    directory_size_bytes,
+    gpu_utilization_pct,
+    peak_rss_mb,
+)
 
 
 def test_directory_size_and_peak_rss(tmp_path: Path) -> None:
@@ -12,6 +19,21 @@ def test_directory_size_and_peak_rss(tmp_path: Path) -> None:
     nested.mkdir()
     (nested / "b").write_bytes(b"12345")
     assert directory_size_bytes(tmp_path) == 8 and peak_rss_mb() > 0
+
+
+def test_windows_telemetry_fallback_does_not_require_resource() -> None:
+    fake_times = SimpleNamespace(
+        user=1.25,
+        system=0.75,
+        children_user=0.0,
+        children_system=0.0,
+    )
+    with (
+        patch("clipper.performance._resource", None),
+        patch("clipper.performance.os.times", return_value=fake_times),
+    ):
+        assert cpu_seconds() == 2.0
+        assert peak_rss_mb() == 0.0
 
 
 def test_gpu_utilization_handles_unavailable_failure_and_values() -> None:
