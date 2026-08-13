@@ -57,3 +57,18 @@ def test_unknown_extension_yaml_and_bad_yaml_root(tmp_path: Path) -> None:
     bad.write_text("- not\n- an\n- object\n", encoding="utf-8")
     with pytest.raises(BriefValidationError, match="root"):
         load_brief(bad)
+
+
+def test_template_source_id_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "brief.yaml"
+    path.write_text(
+        "campaign_id: c1\n"
+        "title: T\n"
+        "objective: G\n"
+        "keywords: [one]\n"
+        "source_channel_ids: [UC_REPLACE_WITH_AUTHORIZED_CHANNEL_ID]\n"
+        "rights_confirmed: true\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(BriefValidationError, match="example placeholder"):
+        load_brief(path)
