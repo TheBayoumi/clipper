@@ -97,15 +97,18 @@ def test_live_validator_rejects_underproduction_and_caption_mismatch(tmp_path: P
         validate_live_run(tmp_path, expected_finalists=3, expected_shortlist=1)
 
 
-def test_live_workflow_targets_current_branch_campaign_and_every_mp4() -> None:
-    workflow = Path(".github/workflows/live-campaign.yml").read_text()
+def test_v10_workflow_targets_current_branch_campaign_and_every_mp4() -> None:
+    workflow = Path(".github/workflows/v10-production-cycle.yml").read_text()
     assert "feat/word-reveal-face-tracking" in workflow
     assert "reach-double-coverage-dedicated.yaml" in workflow
-    assert "head -n 1" not in workflow
-    assert "for clip in /review/clips/*.mp4" in workflow
-    assert "clipper-live:${GITHUB_SHA}" in workflow
-    assert "--entrypoint /bin/sh" in workflow
-    assert "reach-live-${{ github.sha }}" in workflow
+    assert 'assert int(result["rendered_finalists"]) >= 6' in workflow
+    assert 'assert int(result["initial_shortlist"]) >= 3' in workflow
+    assert "for item in rendered:" in workflow
+    assert '"ffmpeg"' in workflow
+    assert "manual-review-queue.json" in workflow
+    assert "PENDING_ACTUAL_REVIEW" in workflow
+    assert '"automated_hilp_allowed": False' in workflow
+    assert "v10-production-review-${{ github.sha }}" in workflow
 
 
 def test_live_validator_rejects_release_gate_failures(tmp_path: Path) -> None:
@@ -288,7 +291,8 @@ def test_live_validator_accepts_more_distinct_finalists_than_minimum(tmp_path: P
 def test_balanced_editor_defaults_to_free_dual_l4_and_keeps_managed_opt_in() -> None:
     worker = Path("scripts/modal_open_models.py").read_text()
     factory = Path("src/clipper/providers/factory.py").read_text()
-    workflow = Path(".github/workflows/open-model-acceptance.yml").read_text()
+    production_workflow = Path(".github/workflows/v10-production-cycle.yml").read_text()
+    endpoint_bootstrap = Path("scripts/modal_endpoint_bootstrap.py").read_text()
     assert "def editorial(" in worker
     assert "AutoModelForCausalLM" in worker
     assert "Qwen/Qwen3-30B-A3B-Instruct-2507" in worker
@@ -299,63 +303,44 @@ def test_balanced_editor_defaults_to_free_dual_l4_and_keeps_managed_opt_in() -> 
     assert "Qwen/Qwen3.5-4B" in factory
     assert "Qwen/Qwen3.6-27B-FP8" in factory
     assert "modal-managed-endpoint" in factory
-    assert "CLIPPER_MODAL_EDITORIAL_BACKEND: function" in workflow
-    assert "modal_endpoint_bootstrap.py" in workflow.split("jobs:", 1)[0]
-    assert '"endpoint", "create"' in Path("scripts/modal_endpoint_bootstrap.py").read_text()
+    assert '"endpoint", "create"' in endpoint_bootstrap
+    assert "modal_endpoint_bootstrap.py" not in production_workflow
+    assert "modal deploy scripts/modal_open_models.py" in production_workflow
 
 
-def test_open_model_workflow_uses_modal_hf_and_original_quality_master() -> None:
-    workflow = Path(".github/workflows/open-model-acceptance.yml").read_text()
+def test_v10_production_workflow_uses_modal_hf_and_original_quality_master() -> None:
+    workflow = Path(".github/workflows/v10-production-cycle.yml").read_text()
+    source_worker = Path("scripts/modal_v10_cycle.py").read_text()
+    model_worker = Path("scripts/modal_open_models.py").read_text()
     assert "MODAL_TOKEN_ID" in workflow
     assert "MODAL_TOKEN_SECRET" in workflow
     assert "HF_TOKEN" in workflow
     assert "modal deploy scripts/modal_open_models.py" in workflow
-    assert "scripts/modal_endpoint_bootstrap.py" in workflow.split("jobs:", 1)[0]
-    assert "CLIPPER_MODAL_EDITORIAL_BACKEND: function" in workflow
-    assert 'Function.from_name(app, "editorial")' in workflow
-    assert "editorial_usage" in workflow
-    assert "hf_access_smoke" in workflow
-    worker = Path("scripts/modal_open_models.py").read_text()
-    assert 'hf_hub_download(repo_id=model_id, filename="config.yaml", token=token)' in worker
-    assert workflow.index("Qwen embedding and 30B editorial execution") < workflow.index(
-        "gated Hugging Face diarization access"
-    )
-    assert workflow.index("gated Hugging Face diarization access") < workflow.index(
-        "Run full-episode open editorial analysis through Modal"
-    )
-    assert 'speech_providers("balanced")' in workflow
-    assert "CLIPPER_EDITORIAL_ENGINE: open" in workflow
-    assert "CLIPPER_GROUNDING_ENGINE: open" in workflow
-    assert "diagnostic_degraded_diarization" in workflow
-    assert "CLIPPER_DIAGNOSTIC_DEGRADED_DIARIZATION" in workflow
-    assert "CLIPPER_DIARIZATION_MODE" in workflow
-    assert "passthrough" in workflow
-    assert "gated Hugging Face diarization access" in workflow
-    assert "CLIPPER_COMPUTE_PROFILE: balanced" in workflow
-    assert "CLIPPER_VISUAL_SCOUT" in workflow
-    assert "timeout-minutes:" not in workflow
-    assert 'modal app stop "$CLIPPER_MODAL_APP" --yes' in workflow
-    assert "cancel-in-progress: true" in workflow
-    assert "Acquire highest-quality full episode master inside Modal" in workflow
-    assert 'Function.from_name("clipper-open-editor", "acquire_source")' in workflow
-    assert '"quality_policy") == "highest_available_no_transcode"' in workflow
+    assert "modal deploy scripts/modal_v10_cycle.py" in workflow
+    assert 'Function.from_name("clipper-v10-cycle", "acquire_source")' in workflow
+    assert 'result["quality_policy"] == "highest_available_no_transcode"' in workflow
     assert "source-master.json" in workflow
-    assert "modal volume get --force clipper-media-cache" in workflow
-    assert 'assert actual == evidence["sha256"]' in workflow
-    assert "CLIPPER_OPEN_PROXY_URL" not in workflow
-    assert "CLIPPER_OPEN_PROXY_SHA256" not in workflow
-    assert "reach-open-proxy-v1" not in workflow
-    assert "Restore prior compatible open-model cache" in workflow
-    assert 'artifact="open-model-acceptance-$head_sha"' in workflow
-    assert "prior-open-evidence/_cache" in workflow
-    assert "open-evidence/_cache" in workflow
-    assert 'manifest["full_media"]' in workflow
-    assert "--no-render" in workflow
-    assert "progress.json" in workflow
-    assert 'kill -0 "$pid"' in workflow
-    assert 'wait "$pid"' in workflow
-    assert "reach-double-coverage-dedicated.yaml" in workflow
-    assert "def acquire_source(" in worker
-    assert '"bestvideo+bestaudio/best"' in worker
-    assert '"quality_policy": "highest_available_no_transcode"' in worker
-    assert "scaledown_window=2" in worker
+    assert 'with_options(cloud=value, timeout=1800)' in workflow
+    assert 'with_options(region=value, timeout=1800)' in workflow
+    assert '"cloud:gcp"' in workflow
+    assert '"cloud:aws"' in workflow
+    assert '"cloud:oci"' in workflow
+    assert 'Function.from_name("clipper-v10-cycle", "run_full_cycle")' in workflow
+    assert 'assert result["pipeline_status"] == "SUCCESS"' in workflow
+    assert 'assert int(result["rendered_finalists"]) >= 6' in workflow
+    assert 'assert int(result["initial_shortlist"]) >= 3' in workflow
+    assert "modal volume get --force clipper-v10-artifacts" in workflow
+    assert "manual-review-queue.json" in workflow
+    assert "PENDING_ACTUAL_MP4_REVIEW" in workflow
+    assert "PENDING_ACTUAL_REVIEW" in workflow
+    assert '"automated_hilp_allowed": False' in workflow
+    assert "v10-production-review-${{ github.sha }}" in workflow
+    assert "simulate_hilp_cycle" not in workflow
+    assert 'modal app stop "$CLIPPER_V10_MODAL_APP" --yes' in workflow
+    assert 'modal app stop "$CLIPPER_MODAL_APP" --yes' in workflow
+    assert "def acquire_source(" in source_worker
+    assert '"yt-dlp[default]>=2026.7.4,<2027"' in source_worker
+    assert '"quality_policy": "highest_available_no_transcode"' in source_worker
+    assert "scaledown_window=2" in source_worker
+    assert "Qwen/Qwen3-30B-A3B-Instruct-2507" in model_worker
+    assert '"torchvision==0.23.0"' in model_worker
