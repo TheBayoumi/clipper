@@ -29,6 +29,21 @@ def _load_json(text: str) -> dict[str, Any]:
     return _mapping(json.loads(text))
 
 
+def _reject_example_source_placeholders(data: dict[str, Any]) -> None:
+    for key in ("source_channel_ids", "allowed_video_ids"):
+        values = data.get(key)
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            normalized = value.strip().upper()
+            if "REPLACE_WITH" in normalized or normalized.startswith("UC_REPLACE"):
+                raise BriefValidationError(
+                    f"{key} contains an example placeholder; replace it with a real source ID"
+                )
+
+
 def load_brief(path: str | Path) -> CampaignBrief:
     brief_path = Path(path)
     if not brief_path.is_file():
@@ -44,4 +59,5 @@ def load_brief(path: str | Path) -> CampaignBrief:
             data = _load_json(text)
         except json.JSONDecodeError:
             data = _load_yaml(text)
+    _reject_example_source_placeholders(data)
     return CampaignBrief.from_dict(data)
