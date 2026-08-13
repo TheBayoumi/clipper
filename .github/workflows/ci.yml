@@ -1,3 +1,5 @@
+# Core fast gate: lint, format, typing, and tests only.
+# Production rendering/HILP evidence lives exclusively in v10-production-cycle.yml.
 name: CI
 
 on:
