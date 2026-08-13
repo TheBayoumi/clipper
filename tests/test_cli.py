@@ -39,6 +39,15 @@ def test_cli_discover(tmp_path: Path, capsys) -> None:
     assert '"video_id": "v1"' in capsys.readouterr().out
 
 
+def test_cli_discover_filters_video_outside_allow_list(tmp_path: Path, capsys) -> None:
+    path = make_brief(tmp_path)
+    video = VideoCandidate("v2", "Other", "UC2", "Other Channel", "https://youtu.be/v2")
+    with patch("clipper.cli.YouTubeClient") as client_cls:
+        client_cls.return_value.discover.return_value = [video]
+        assert main(["discover", "--brief", str(path)]) == 0
+    assert json.loads(capsys.readouterr().out) == []
+
+
 def test_cli_run_and_error(tmp_path: Path, capsys, monkeypatch) -> None:
     path = make_brief(tmp_path)
     monkeypatch.setenv("CLIPPER_WHISPER_MODEL", "base.en")
