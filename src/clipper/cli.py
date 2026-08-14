@@ -166,14 +166,10 @@ def _audit_model_evidence(
                 f"{expected_editorial}"
             )
         live = sum(
-            1
-            for item in invocations
-            if isinstance(item, dict) and item.get("cache_hit") is False
+            1 for item in invocations if isinstance(item, dict) and item.get("cache_hit") is False
         )
         cached = sum(
-            1
-            for item in invocations
-            if isinstance(item, dict) and item.get("cache_hit") is True
+            1 for item in invocations if isinstance(item, dict) and item.get("cache_hit") is True
         )
         audit["editorial"] = {
             "expected_model": expected_editorial,
