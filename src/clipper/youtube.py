@@ -493,7 +493,8 @@ class YouTubeClient:
             if not recovered:
                 raise YouTubeError(
                     "YouTube media download exhausted same-quality HTTP 403 recovery attempts; "
-                    f"quality remained locked to {initial_selected['width']}x{initial_selected['height']}; "
+                    "quality remained locked to "
+                    f"{initial_selected['width']}x{initial_selected['height']}; "
                     f"last error: {last_error}"
                 ) from last_error
 
