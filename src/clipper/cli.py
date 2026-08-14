@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import importlib.util
 import json
 import logging
@@ -14,6 +13,7 @@ from pathlib import Path
 
 from .benchmark import evaluate_corpus_manifest
 from .brief import load_brief
+from .modal_execution import ensure_modal_runtime, run_modal_pipeline
 from .pipeline import PipelineSettings, run_pipeline
 from .providers.factory import editorial_and_embedding_providers, speech_providers
 from .rights import RightsError, assert_campaign_authorized, assert_video_allowed
@@ -57,8 +57,9 @@ def _parser() -> argparse.ArgumentParser:
         "--resume",
         metavar="RUN_ID",
         help=(
-            "recover reusable source masters from a previous interrupted run and continue in a "
-            "new auditable run without downloading the same YouTube source again"
+            "continue from a previous interrupted run. In the default Modal V10 path the old "
+            "run is provenance only: local source masters are ignored and the canonical source "
+            "is acquired or reused directly inside Modal"
         ),
     )
     run.add_argument(
@@ -154,35 +155,20 @@ def _assert_runtime_dependencies(plan: dict[str, object]) -> None:
 
 
 def _assert_modal_functions_available(plan: dict[str, object]) -> None:
-    """Resolve deployed Modal functions before any large local source acquisition or upload."""
+    """Hydrate or deploy the complete default Modal runtime before source acquisition."""
     if not _requires_modal(plan):
         return
-    modal = importlib.import_module("modal")
-    app_name = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
-    expected: list[str] = []
-    for plan_key, function_name in (
-        ("transcription", "transcribe"),
-        ("alignment", "align"),
-        ("diarization", "diarize"),
-        ("editorial", "editorial"),
-        ("embedding", "embedding"),
-    ):
-        value = plan.get(plan_key)
-        if isinstance(value, dict) and str(value.get("inference_engine", "")).startswith("modal-"):
-            expected.append(function_name)
-    for function_name in expected:
-        try:
-            modal.Function.from_name(app_name, function_name)
-        except Exception as exc:
-            raise RuntimeError(
-                f"required Modal function {app_name}/{function_name} is unavailable. "
-                "Deploy the open-model workers before starting source acquisition with: "
-                "modal deploy scripts/modal_open_models.py"
-            ) from exc
+    try:
+        ensure_modal_runtime()
+    except Exception as exc:
+        raise RuntimeError(
+            "required Modal V10 runtime is unavailable and automatic exact-checkout deployment "
+            "did not recover it"
+        ) from exc
 
 
 def _source_client_for_run(settings: PipelineSettings) -> PersistentYouTubeClient | None:
-    """Keep authorized YouTube masters in a cache independent of inference freshness."""
+    """Keep authorized YouTube masters in a cache for explicit local/legacy execution only."""
     if os.getenv("CLIPPER_SOURCE_FIXTURE_DIR"):
         return None
     configured = os.getenv("CLIPPER_SOURCE_MEDIA_CACHE_ROOT")
@@ -208,8 +194,8 @@ def _resolve_resume_run(artifact_root: Path, resume: str) -> Path:
     return run_dir
 
 
-def _seed_resume_source_cache(settings: PipelineSettings, resume: str, *, campaign_id: str) -> Path:
-    """Promote completed source masters from an interrupted run into the persistent cache."""
+def _validate_resume_run(settings: PipelineSettings, resume: str, *, campaign_id: str) -> Path:
+    """Validate continuation provenance without importing any previous source media."""
     run_dir = _resolve_resume_run(settings.artifact_root, resume)
     if not run_dir.name.startswith(f"{campaign_id}-"):
         raise RuntimeError(f"resume run {run_dir.name} does not belong to campaign {campaign_id}")
@@ -221,6 +207,12 @@ def _seed_resume_source_cache(settings: PipelineSettings, resume: str, *, campai
             manifest = None
         if isinstance(manifest, dict) and manifest.get("status") == "SUCCESS":
             raise RuntimeError("refusing to resume a run that already completed successfully")
+    return run_dir
+
+
+def _seed_resume_source_cache(settings: PipelineSettings, resume: str, *, campaign_id: str) -> Path:
+    """Promote source masters only for explicit local/legacy execution."""
+    run_dir = _validate_resume_run(settings, resume, campaign_id=campaign_id)
 
     configured = os.getenv("CLIPPER_SOURCE_MEDIA_CACHE_ROOT")
     cache_root = Path(configured) if configured else settings.artifact_root / "_source-media-cache"
@@ -426,18 +418,44 @@ def main(argv: list[str] | None = None) -> int:
             _log_model_summary(plan)
             _assert_runtime_dependencies(plan)
             _assert_modal_functions_available(plan)
-            if args.resume:
-                brief = load_brief(args.brief)
-                assert_campaign_authorized(brief)
-                _seed_resume_source_cache(settings, args.resume, campaign_id=brief.campaign_id)
-            source_client = _source_client_for_run(settings)
+
+            brief = load_brief(args.brief)
+            assert_campaign_authorized(brief)
             should_render = not args.no_render
-            run_dir = run_pipeline(
-                args.brief,
-                settings=settings,
-                source_client=source_client,
-                render=should_render,
+            default_modal_pipeline = _requires_modal(plan) and not os.getenv(
+                "CLIPPER_SOURCE_FIXTURE_DIR"
             )
+            if default_modal_pipeline:
+                resume_run: Path | None = None
+                if args.resume:
+                    resume_run = _validate_resume_run(
+                        settings, args.resume, campaign_id=brief.campaign_id
+                    )
+                    LOGGER.info(
+                        "resume provenance accepted from %s; local source masters are intentionally "
+                        "ignored because default V10 execution acquires/reuses canonical media in Modal",
+                        resume_run,
+                    )
+                run_dir = run_modal_pipeline(
+                    args.brief,
+                    artifact_root=args.artifact_root,
+                    resume_from_run_id=resume_run.name if resume_run is not None else None,
+                    render=should_render,
+                    fresh_inference=args.fresh_inference,
+                )
+            else:
+                if args.resume:
+                    _seed_resume_source_cache(
+                        settings, args.resume, campaign_id=brief.campaign_id
+                    )
+                source_client = _source_client_for_run(settings)
+                run_dir = run_pipeline(
+                    args.brief,
+                    settings=settings,
+                    source_client=source_client,
+                    render=should_render,
+                )
+
             audit = _audit_model_evidence(run_dir, settings, plan)
             _log_model_summary(plan, audit)
             print(run_dir)
