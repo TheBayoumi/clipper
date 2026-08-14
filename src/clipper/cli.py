@@ -432,8 +432,9 @@ def main(argv: list[str] | None = None) -> int:
                         settings, args.resume, campaign_id=brief.campaign_id
                     )
                     LOGGER.info(
-                        "resume provenance accepted from %s; local source masters are intentionally "
-                        "ignored because default V10 execution acquires/reuses canonical media in Modal",
+                        "resume provenance accepted from %s; local source masters "
+                        "are intentionally ignored because default V10 execution "
+                        "acquires/reuses canonical media in Modal",
                         resume_run,
                     )
                 run_dir = run_modal_pipeline(
