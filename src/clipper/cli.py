@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -24,7 +25,7 @@ def _configure_logging(verbose: bool) -> None:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="clipper",
-        description="Rights-gated Whop campaign to YouTube clip pipeline.",
+        description="Rights-gated campaign-to-short-form clipping pipeline.",
     )
     parser.add_argument("--verbose", action="store_true")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -50,6 +51,18 @@ def _parser() -> argparse.ArgumentParser:
         help="stop after timestamped clip planning",
     )
     return parser
+
+
+def _v10_settings(artifact_root: Path) -> PipelineSettings:
+    """Use the open-weight V10 path unless the caller explicitly overrides it."""
+    base = PipelineSettings.from_env()
+    return replace(
+        base,
+        artifact_root=artifact_root,
+        editorial_engine=os.getenv("CLIPPER_EDITORIAL_ENGINE", "open").strip().lower(),
+        grounding_engine=os.getenv("CLIPPER_GROUNDING_ENGINE", "open").strip().lower(),
+        compute_profile=os.getenv("CLIPPER_COMPUTE_PROFILE", "balanced").strip().lower(),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -83,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
             print(output, end="")
             return 0 if result.status == "PASS" else 1
         if args.command == "run":
-            settings = replace(PipelineSettings.from_env(), artifact_root=args.artifact_root)
+            settings = _v10_settings(args.artifact_root)
             should_render = not args.no_render
             run_dir = run_pipeline(args.brief, settings=settings, render=should_render)
             print(run_dir)
