@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -17,6 +18,14 @@ from clipper.modal_execution import (
     run_modal_pipeline,
 )
 from clipper.models import CampaignBrief, VideoCandidate
+
+
+class NotFoundError(RuntimeError):
+    pass
+
+
+class ServiceError(RuntimeError):
+    pass
 
 
 def _brief(*, allowed: list[str] | None = None, channels: list[str] | None = None) -> CampaignBrief:
@@ -62,6 +71,20 @@ def test_function_hydrates_deployed_handle() -> None:
     handle.hydrate.assert_called_once_with()
 
 
+def test_function_retries_transient_service_errors() -> None:
+    handle = Mock()
+    handle.hydrate.side_effect = [ServiceError("unavailable"), ServiceError("unavailable"), None]
+    from_name = Mock(return_value=handle)
+    modal = SimpleNamespace(Function=SimpleNamespace(from_name=from_name))
+    with (
+        patch("clipper.modal_execution.importlib.import_module", return_value=modal),
+        patch("clipper.modal_execution.time.sleep") as sleep,
+    ):
+        assert _function("app", "worker") is handle
+    assert from_name.call_count == 3
+    assert [item.args[0] for item in sleep.call_args_list] == [2.0, 5.0]
+
+
 def test_deploy_requires_modal_cli_and_existing_source(tmp_path: Path) -> None:
     script = tmp_path / "worker.py"
     with (
@@ -91,6 +114,21 @@ def test_deploy_requires_modal_cli_and_existing_source(tmp_path: Path) -> None:
     )
 
 
+def test_deploy_retries_cli_failure(tmp_path: Path) -> None:
+    script = tmp_path / "worker.py"
+    script.write_text("# worker\n", encoding="utf-8")
+    failure = subprocess.CalledProcessError(1, ["modal", "deploy", str(script)])
+    with (
+        patch("clipper.modal_execution.shutil.which", return_value="modal"),
+        patch("clipper.modal_execution._repo_root", return_value=tmp_path),
+        patch("clipper.modal_execution.subprocess.run", side_effect=[failure, None]) as run,
+        patch("clipper.modal_execution.time.sleep") as sleep,
+    ):
+        _deploy(script)
+    assert run.call_count == 2
+    sleep.assert_called_once_with(2.0)
+
+
 def test_ensure_modal_runtime_always_deploys_exact_pipeline_worker() -> None:
     with (
         patch("clipper.modal_execution._function", return_value=Mock()) as function,
@@ -111,7 +149,7 @@ def test_ensure_modal_runtime_repairs_missing_model_and_deploys_pipeline() -> No
         calls.append((app, name))
         if name == "transcribe" and not model_failed:
             model_failed = True
-            raise RuntimeError("missing model")
+            raise NotFoundError("missing model")
         return Mock()
 
     with (
@@ -130,9 +168,22 @@ def test_ensure_modal_runtime_repairs_missing_model_and_deploys_pipeline() -> No
     assert ("clipper-v10-cycle", "run_full_cycle") in calls
 
 
+def test_ensure_modal_runtime_does_not_redeploy_on_connectivity_failure() -> None:
+    with (
+        patch("clipper.modal_execution._function", side_effect=ServiceError("unavailable")),
+        patch("clipper.modal_execution._deploy") as deploy,
+        pytest.raises(RuntimeError, match="control-plane validation failed"),
+    ):
+        ensure_modal_runtime()
+    deploy.assert_not_called()
+
+
 def test_ensure_modal_runtime_fails_closed_after_unsuccessful_redeploy() -> None:
     with (
-        patch("clipper.modal_execution._function", side_effect=RuntimeError("still missing")),
+        patch(
+            "clipper.modal_execution._function",
+            side_effect=[NotFoundError("missing"), RuntimeError("still missing")],
+        ),
         patch("clipper.modal_execution._deploy"),
         pytest.raises(RuntimeError, match="unavailable after deploy"),
     ):
