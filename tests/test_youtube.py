@@ -1,3 +1,4 @@
+import io
 import json
 import subprocess
 import urllib.error
@@ -112,10 +113,80 @@ def test_ytdlp_discovery_and_downloads_preserve_highest_source_quality(tmp_path:
     assert any("401+bestaudio/401" in item for item in calls[-1])
     assert "--remux-video" in calls[-1]
     assert "--newline" not in calls[-1]
+    assert calls[-1][calls[-1].index("--retries") + 1] == "3"
     evidence = json.loads(media.with_suffix(".source.json").read_text())
     assert evidence["quality_policy"] == "highest_available_no_transcode"
     assert evidence["selected"]["height"] == 2160
     assert evidence["selected"]["format_id"] == "401"
+    assert evidence["recovered_after_http_403"] is False
+
+
+def test_ytdlp_403_refreshes_and_uses_same_quality_alternate(tmp_path: Path) -> None:
+    client = YouTubeClient(None)
+    video = VideoCandidate("v1", "T", "UC1", "C", "https://youtube.test/v1")
+    media = tmp_path / "v1.mkv"
+    payload = {
+        "formats": [
+            {
+                "format_id": "313",
+                "height": 2160,
+                "width": 3840,
+                "fps": 60,
+                "vcodec": "vp9",
+                "acodec": "none",
+                "ext": "webm",
+                "tbr": 10000,
+            },
+            {
+                "format_id": "401",
+                "height": 2160,
+                "width": 3840,
+                "fps": 30,
+                "vcodec": "av01",
+                "acodec": "none",
+                "ext": "mp4",
+                "tbr": 4500,
+            },
+            {
+                "format_id": "137",
+                "height": 1080,
+                "width": 1920,
+                "fps": 30,
+                "vcodec": "avc1",
+                "acodec": "none",
+                "ext": "mp4",
+                "tbr": 1900,
+            },
+        ]
+    }
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        if "--dump-single-json" in command:
+            return Mock(stdout=json.dumps(payload))
+        selector = command[command.index("-f") + 1]
+        if selector.startswith("313+"):
+            raise YouTubeError("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+        media.write_bytes(b"video")
+        return Mock(stdout="")
+
+    with patch("clipper.youtube._run", side_effect=fake_run):
+        assert client.download_media(video, tmp_path) == media
+
+    download_calls = [item for item in calls if "-f" in item]
+    assert len(download_calls) == 3
+    assert download_calls[0][download_calls[0].index("-f") + 1].startswith("313+")
+    assert "youtube:player_client=android_vr" in download_calls[1]
+    assert "youtube:player_client=android_vr" in download_calls[2]
+    assert download_calls[2][download_calls[2].index("-f") + 1].startswith("401+")
+    assert all("137" not in item[item.index("-f") + 1] for item in download_calls)
+    evidence = json.loads(media.with_suffix(".source.json").read_text())
+    assert evidence["recovered_after_http_403"] is True
+    assert evidence["selected"]["height"] == 2160
+    assert evidence["selected"]["format_id"] == "401"
+    assert evidence["selected_player_client"] == "android_vr"
+    assert "HTTP Error 403" in evidence["download_attempts"][0]["error"]
 
 
 def test_ytdlp_missing_and_run_errors() -> None:
@@ -129,15 +200,48 @@ def test_ytdlp_missing_and_run_errors() -> None:
         _run(["missing"])
 
 
-def test_run_visible_does_not_capture_output() -> None:
-    completed = subprocess.CompletedProcess(["yt-dlp"], 0, stdout=None, stderr=None)
-    with patch("clipper.youtube.subprocess.run", return_value=completed) as run:
+def test_run_visible_streams_one_line_progress_and_preserves_error(capsys) -> None:
+    class Process:
+        stdout = io.BytesIO(
+            b"[download] 1.8% of 3.62GiB\rERROR: unable to download video data: "
+            b"HTTP Error 403: Forbidden\n"
+        )
+
+        def wait(self, timeout):
+            assert timeout == 900
+            return 1
+
+        def kill(self):
+            return None
+
+    with (
+        patch("clipper.youtube.subprocess.Popen", return_value=Process()),
+        pytest.raises(YouTubeError, match="HTTP Error 403"),
+    ):
+        _run(["yt-dlp"], visible=True)
+    visible = capsys.readouterr().err
+    assert "[download] 1.8%" in visible
+    assert "HTTP Error 403: Forbidden" in visible
+
+
+def test_run_visible_success_does_not_capture_away_progress(capsys) -> None:
+    class Process:
+        stdout = io.BytesIO(b"[download] 50%\r[download] 100%\n")
+
+        def wait(self, timeout):
+            assert timeout == 900
+            return 0
+
+        def kill(self):
+            return None
+
+    with patch("clipper.youtube.subprocess.Popen", return_value=Process()) as popen:
         result = _run(["yt-dlp"], visible=True)
     assert result.returncode == 0
-    kwargs = run.call_args.kwargs
-    assert kwargs["check"] is True
-    assert kwargs["text"] is True
-    assert "capture_output" not in kwargs
+    assert "[download] 100%" in capsys.readouterr().err
+    kwargs = popen.call_args.kwargs
+    assert kwargs["stdout"] is subprocess.PIPE
+    assert kwargs["stderr"] is subprocess.STDOUT
 
 
 def test_api_get_success_and_error() -> None:
