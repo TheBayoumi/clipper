@@ -127,9 +127,7 @@ def _top_hook_font_size(text: str, width: int, *, max_lines: int) -> int:
         return _HOOK_MAX_FONT_SIZE
     usable_width = max(320, width - 2 * _HOOK_HORIZONTAL_MARGIN_PX)
     target_chars_per_line = max(1, (len(normalized) + max_lines - 1) // max_lines)
-    estimated = int(
-        usable_width / (target_chars_per_line * _HOOK_AVERAGE_GLYPH_WIDTH_EM)
-    )
+    estimated = int(usable_width / (target_chars_per_line * _HOOK_AVERAGE_GLYPH_WIDTH_EM))
     return max(_HOOK_MIN_FONT_SIZE, min(_HOOK_MAX_FONT_SIZE, estimated))
 
 
