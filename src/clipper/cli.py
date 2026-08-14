@@ -247,7 +247,6 @@ def _seed_resume_source_cache(settings: PipelineSettings, resume: str, *, campai
         if sidecar.is_file():
             shutil.copy2(sidecar, target.with_suffix(".source.json"))
         imported.append(target)
-
     if not imported:
         raise RuntimeError(f"resume run contains no reusable YouTube MKV masters under {work_dir}")
     LOGGER.info(
@@ -446,9 +445,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             else:
                 if args.resume:
-                    _seed_resume_source_cache(
-                        settings, args.resume, campaign_id=brief.campaign_id
-                    )
+                    _seed_resume_source_cache(settings, args.resume, campaign_id=brief.campaign_id)
                 source_client = _source_client_for_run(settings)
                 run_dir = run_pipeline(
                     args.brief,
