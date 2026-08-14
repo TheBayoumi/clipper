@@ -67,7 +67,10 @@ def _hydrate_required(app_name: str, functions: tuple[str, ...]) -> None:
         try:
             _function(app_name, function_name)
         except Exception as exc:
-            message = f"required Modal function {app_name}/{function_name} is unavailable after deploy"
+            message = (
+                f"required Modal function {app_name}/{function_name} "
+                "is unavailable after deploy"
+            )
             raise RuntimeError(message) from exc
 
 
