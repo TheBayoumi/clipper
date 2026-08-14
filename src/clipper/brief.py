@@ -44,6 +44,23 @@ def _reject_example_source_placeholders(data: dict[str, Any]) -> None:
                 )
 
 
+def _normalize_semantic_brief(data: dict[str, Any]) -> dict[str, Any]:
+    """Bridge old schema requirements without requiring topic-word hardcoding.
+
+    CampaignBrief still carries a legacy ``keywords`` field for backwards compatibility.
+    The V10 open-weight planner does not consume it. When a modern brief omits the field,
+    use the campaign objective as neutral discovery context for old adapters only.
+    """
+    normalized = dict(data)
+    keywords = normalized.get("keywords")
+    if not isinstance(keywords, list) or not any(
+        isinstance(item, str) and item.strip() for item in keywords
+    ):
+        objective = str(normalized.get("objective") or normalized.get("title") or "campaign").strip()
+        normalized["keywords"] = [objective]
+    return normalized
+
+
 def load_brief(path: str | Path) -> CampaignBrief:
     brief_path = Path(path)
     if not brief_path.is_file():
@@ -60,4 +77,4 @@ def load_brief(path: str | Path) -> CampaignBrief:
         except json.JSONDecodeError:
             data = _load_yaml(text)
     _reject_example_source_placeholders(data)
-    return CampaignBrief.from_dict(data)
+    return CampaignBrief.from_dict(_normalize_semantic_brief(data))
