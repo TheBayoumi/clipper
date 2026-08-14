@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import shutil
 import subprocess
+import sys
+import threading
 import urllib.parse
 import urllib.request
+from collections import deque
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -42,17 +46,62 @@ def _object(value: object) -> dict[str, Any]:
     return {str(key): item for key, item in value.items()}
 
 
+def _run_visible(command: Sequence[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+    """Stream a subprocess verbatim while retaining a bounded tail for structured errors."""
+    process = subprocess.Popen(
+        list(command),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if process.stdout is None:  # pragma: no cover - defensive Popen contract guard
+        process.kill()
+        raise YouTubeError(f"unable to capture live output from {command[0]}")
+
+    tail: deque[str] = deque(maxlen=96)
+
+    def pump_output() -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        while True:
+            chunk = process.stdout.read(512)
+            if not chunk:
+                break
+            text = decoder.decode(chunk)
+            if text:
+                sys.stderr.write(text)
+                sys.stderr.flush()
+                tail.append(text)
+        final = decoder.decode(b"", final=True)
+        if final:
+            sys.stderr.write(final)
+            sys.stderr.flush()
+            tail.append(final)
+
+    pump = threading.Thread(target=pump_output, name="clipper-live-subprocess", daemon=True)
+    pump.start()
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        pump.join(timeout=2)
+        raise
+    pump.join(timeout=2)
+    detail = "".join(tail)[-12000:]
+    if returncode:
+        raise subprocess.CalledProcessError(
+            returncode,
+            list(command),
+            output=detail,
+            stderr=detail,
+        )
+    return subprocess.CompletedProcess(list(command), returncode, stdout=detail, stderr=detail)
+
+
 def _run(
     command: Sequence[str], *, timeout: int = 900, visible: bool = False
 ) -> subprocess.CompletedProcess[str]:
     try:
         if visible:
-            return subprocess.run(
-                list(command),
-                check=True,
-                text=True,
-                timeout=timeout,
-            )
+            return _run_visible(command, timeout=timeout)
         return subprocess.run(
             list(command),
             check=True,
@@ -67,6 +116,17 @@ def _run(
         raise YouTubeError(f"command failed: {' '.join(command[:3])}: {detail[-1200:]}") from exc
     except subprocess.TimeoutExpired as exc:
         raise YouTubeError(f"command timed out after {timeout}s: {command[0]}") from exc
+
+
+def _is_http_403(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "http error 403" in text or "403: forbidden" in text or "403 forbidden" in text
+
+
+def _retry_player_clients() -> tuple[str, ...]:
+    configured = os.getenv("CLIPPER_YTDLP_RETRY_CLIENTS", "android_vr,web_embedded")
+    clients = tuple(item.strip() for item in configured.split(",") if item.strip())
+    return clients or ("android_vr", "web_embedded")
 
 
 class YouTubeClient:
@@ -267,35 +327,74 @@ class YouTubeClient:
         )
         return selected, available
 
-    def download_media(self, video: VideoCandidate, work_dir: Path) -> Path:
-        work_dir.mkdir(parents=True, exist_ok=True)
-        output = work_dir / f"{video.video_id}.mkv"
-        metadata_path = output.with_suffix(".source.json")
-        if output.is_file() and output.stat().st_size > 0:
-            return output
-        info = _json_object(
+    @staticmethod
+    def _same_quality_formats(
+        available: Sequence[dict[str, Any]], selected: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        target_height = int(selected["height"])
+        target_width = int(selected["width"])
+        matching = [
+            item
+            for item in available
+            if int(item["height"]) == target_height and int(item["width"]) == target_width
+        ]
+        selected_id = str(selected["format_id"])
+        matching.sort(
+            key=lambda item: (
+                str(item["format_id"]) == selected_id,
+                float(item["fps"]),
+                float(item["bitrate_kbps"]),
+            ),
+            reverse=True,
+        )
+        return matching
+
+    @staticmethod
+    def _extractor_args(player_client: str | None) -> list[str]:
+        if not player_client:
+            return []
+        return ["--extractor-args", f"youtube:player_client={player_client}"]
+
+    def _video_info(self, url: str, player_client: str | None = None) -> dict[str, Any]:
+        return _json_object(
             _run(
                 [
                     "yt-dlp",
                     "--dump-single-json",
                     "--skip-download",
                     "--no-warnings",
-                    video.url,
+                    *self._extractor_args(player_client),
+                    url,
                 ],
                 timeout=180,
             ).stdout
         )
-        selected, available = self._select_video_format(info, None)
+
+    @staticmethod
+    def _format_selector(selected: dict[str, Any]) -> str:
         format_id = str(selected["format_id"])
-        format_selector = (
-            format_id if selected["audio_codec"] != "none" else f"{format_id}+bestaudio/{format_id}"
-        )
-        command = [
+        if selected["audio_codec"] != "none":
+            return format_id
+        return f"{format_id}+bestaudio/{format_id}"
+
+    def _download_command(
+        self,
+        video: VideoCandidate,
+        output: Path,
+        selected: dict[str, Any],
+        player_client: str | None = None,
+    ) -> list[str]:
+        return [
             "yt-dlp",
             "--no-playlist",
             "--no-warnings",
+            "--retries",
+            "3",
+            "--fragment-retries",
+            "3",
+            *self._extractor_args(player_client),
             "-f",
-            format_selector,
+            self._format_selector(selected),
             "--merge-output-format",
             "mkv",
             "--remux-video",
@@ -304,7 +403,100 @@ class YouTubeClient:
             str(output),
             video.url,
         ]
-        _run(command, timeout=7200, visible=True)
+
+    def download_media(self, video: VideoCandidate, work_dir: Path) -> Path:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        output = work_dir / f"{video.video_id}.mkv"
+        metadata_path = output.with_suffix(".source.json")
+        if output.is_file() and output.stat().st_size > 0:
+            return output
+
+        initial_info = self._video_info(video.url)
+        initial_selected, initial_available = self._select_video_format(initial_info, None)
+        attempts: list[dict[str, object]] = []
+        final_selected = initial_selected
+        final_available = initial_available
+        final_client: str | None = None
+
+        def attempt(selected: dict[str, Any], player_client: str | None) -> None:
+            command = self._download_command(video, output, selected, player_client)
+            label = player_client or "default"
+            try:
+                _run(command, timeout=7200, visible=True)
+            except YouTubeError as exc:
+                attempts.append(
+                    {
+                        "player_client": label,
+                        "format_id": str(selected["format_id"]),
+                        "height": int(selected["height"]),
+                        "width": int(selected["width"]),
+                        "status": "FAILED",
+                        "error": str(exc)[-1200:],
+                    }
+                )
+                raise
+            attempts.append(
+                {
+                    "player_client": label,
+                    "format_id": str(selected["format_id"]),
+                    "height": int(selected["height"]),
+                    "width": int(selected["width"]),
+                    "status": "SUCCESS",
+                }
+            )
+
+        try:
+            attempt(initial_selected, None)
+        except YouTubeError as first_error:
+            if not _is_http_403(first_error):
+                raise
+            last_error: YouTubeError = first_error
+            recovered = False
+            for player_client in _retry_player_clients():
+                try:
+                    refreshed_info = self._video_info(video.url, player_client)
+                    _, refreshed_available = self._select_video_format(refreshed_info, None)
+                except YouTubeError as refresh_error:
+                    attempts.append(
+                        {
+                            "player_client": player_client,
+                            "status": "METADATA_REFRESH_FAILED",
+                            "error": str(refresh_error)[-1200:],
+                        }
+                    )
+                    last_error = refresh_error
+                    continue
+                equivalent = self._same_quality_formats(refreshed_available, initial_selected)
+                if not equivalent:
+                    attempts.append(
+                        {
+                            "player_client": player_client,
+                            "status": "NO_EQUIVALENT_QUALITY_FORMAT",
+                            "required_height": int(initial_selected["height"]),
+                            "required_width": int(initial_selected["width"]),
+                        }
+                    )
+                    continue
+                for candidate in equivalent[:2]:
+                    try:
+                        attempt(candidate, player_client)
+                    except YouTubeError as retry_error:
+                        last_error = retry_error
+                        continue
+                    final_selected = candidate
+                    final_available = refreshed_available
+                    final_client = player_client
+                    recovered = True
+                    break
+                if recovered:
+                    break
+            if not recovered:
+                raise YouTubeError(
+                    "YouTube media download exhausted same-quality HTTP 403 recovery attempts; "
+                    f"quality remained locked to {initial_selected['width']}x{initial_selected['height']}; "
+                    f"last error: {last_error}"
+                ) from last_error
+
         if not output.is_file() or output.stat().st_size == 0:
             raise YouTubeError(f"yt-dlp completed without creating {output}")
         metadata_path.write_text(
@@ -312,8 +504,12 @@ class YouTubeClient:
                 {
                     "quality_policy": "highest_available_no_transcode",
                     "legacy_requested_max_height_ignored": self.max_height,
-                    "selected": selected,
-                    "available_formats": available,
+                    "initial_selected": initial_selected,
+                    "selected": final_selected,
+                    "selected_player_client": final_client or "default",
+                    "recovered_after_http_403": len(attempts) > 1,
+                    "download_attempts": attempts,
+                    "available_formats": final_available,
                 },
                 indent=2,
             )
