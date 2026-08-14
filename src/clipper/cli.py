@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import logging
 import os
@@ -115,6 +116,27 @@ def _resolved_model_plan(settings: PipelineSettings) -> dict[str, object]:
         plan["alignment"] = alignment.identity.to_dict()
         plan["diarization"] = diarization.identity.to_dict()
     return plan
+
+
+def _assert_runtime_dependencies(plan: dict[str, object]) -> None:
+    """Fail before source acquisition when the resolved model backend is not runnable."""
+    requires_modal = any(
+        isinstance(value, dict)
+        and str(value.get("inference_engine", "")).strip().lower().startswith("modal-")
+        for value in plan.values()
+    )
+    if not requires_modal:
+        return
+    try:
+        modal_spec = importlib.util.find_spec("modal")
+    except (ImportError, ValueError):
+        modal_spec = None
+    if modal_spec is None:
+        raise RuntimeError(
+            "resolved V10 model plan requires the Modal Python SDK, but 'modal' is not installed. "
+            "Install the balanced runtime before source acquisition with: "
+            'python -m pip install -e ".[modal]"'
+        )
 
 
 def _model_id(value: object) -> str | None:
@@ -275,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
             _assert_v10_execution(settings, args)
             plan = _resolved_model_plan(settings)
             _log_model_summary(plan)
+            _assert_runtime_dependencies(plan)
             should_render = not args.no_render
             run_dir = run_pipeline(args.brief, settings=settings, render=should_render)
             audit = _audit_model_evidence(run_dir, settings, plan)
