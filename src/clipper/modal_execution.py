@@ -90,11 +90,11 @@ def _repo_script(name: str) -> Path:
 
 
 def _deploy(script: Path) -> None:
-    """Deploy a Modal app, retrying bounded CLI/control-plane failures."""
+    """Deploy a missing Modal app, retrying bounded CLI/control-plane failures."""
 
     executable = shutil.which("modal")
     if executable is None:
-        raise RuntimeError("Modal CLI is required to deploy the default production runtime")
+        raise RuntimeError("Modal CLI is required to deploy a missing production runtime")
     if not script.is_file():
         raise RuntimeError(
             f"Modal runtime is not deployed and deployment source is unavailable: {script}"
@@ -103,7 +103,7 @@ def _deploy(script: Path) -> None:
     command = [executable, "deploy", str(script)]
     for attempt in range(1, _DEPLOY_ATTEMPTS + 1):
         LOGGER.info(
-            "deploying exact-checkout Modal runtime from %s (attempt %d/%d)",
+            "deploying missing Modal runtime from %s (attempt %d/%d)",
             script,
             attempt,
             _DEPLOY_ATTEMPTS,
@@ -137,18 +137,53 @@ def _hydrate_required(app_name: str, functions: tuple[str, ...]) -> None:
             _function(app_name, function_name)
         except Exception as exc:
             message = (
-                f"required Modal function {app_name}/{function_name} is unavailable after deploy "
-                f"({type(exc).__name__}: {exc})"
+                f"required Modal function {app_name}/{function_name} is unavailable after runtime "
+                f"repair ({type(exc).__name__}: {exc})"
             )
             raise RuntimeError(message) from exc
 
 
-def ensure_modal_runtime() -> None:
-    """Ensure model workers exist and deploy the exact checkout pipeline worker.
+def _ensure_deployed_runtime(
+    *,
+    app_name: str,
+    functions: tuple[str, ...],
+    deployment_script: str,
+) -> None:
+    """Attach to an existing Modal app; deploy it only when Modal reports NotFoundError."""
 
-    The source acquisition and full-cycle worker are always deployed from the active checkout so
-    `clipper run` cannot silently execute stale pipeline code from an older Modal deployment.
-    Model workers are redeployed only when Modal explicitly reports a NotFoundError. Connectivity,
+    missing_function: str | None = None
+    for function_name in functions:
+        try:
+            _function(app_name, function_name)
+        except Exception as exc:
+            if _is_modal_not_found(exc):
+                missing_function = function_name
+                break
+            raise RuntimeError(
+                "Modal control-plane validation failed while checking "
+                f"{app_name}/{function_name} ({type(exc).__name__}: {exc}); "
+                "refusing to misclassify this as a missing deployment"
+            ) from exc
+
+    if missing_function is None:
+        LOGGER.info("attached to deployed Modal runtime %s", app_name)
+        return
+
+    LOGGER.info(
+        "Modal runtime %s/%s is not deployed; repairing from local checkout",
+        app_name,
+        missing_function,
+    )
+    _deploy(_repo_script(deployment_script))
+    _hydrate_required(app_name, functions)
+
+
+def ensure_modal_runtime() -> None:
+    """Attach to the deployed Modal runtimes and repair only genuinely missing apps/functions.
+
+    Normal `clipper run` execution performs no deployment. Both the model workers and the V10
+    pipeline worker are reused from their existing Modal deployments. A local deploy is attempted
+    only when Modal explicitly reports NotFoundError for a required function. Connectivity,
     authentication, quota, and other service failures fail closed and are never misclassified as
     a missing deployment.
     """
@@ -156,31 +191,16 @@ def ensure_modal_runtime() -> None:
     model_app = os.getenv("CLIPPER_MODAL_APP", DEFAULT_MODEL_APP)
     pipeline_app = os.getenv("CLIPPER_V10_MODAL_APP", DEFAULT_PIPELINE_APP)
 
-    model_missing = False
-    for function_name in _REQUIRED_MODEL_FUNCTIONS:
-        try:
-            _function(model_app, function_name)
-        except Exception as exc:
-            if _is_modal_not_found(exc):
-                LOGGER.info(
-                    "Modal model runtime %s/%s is not deployed; repairing from exact checkout",
-                    model_app,
-                    function_name,
-                )
-                model_missing = True
-                break
-            raise RuntimeError(
-                "Modal control-plane validation failed while checking "
-                f"{model_app}/{function_name} ({type(exc).__name__}: {exc}); "
-                "refusing to misclassify this as a missing deployment"
-            ) from exc
-
-    if model_missing:
-        _deploy(_repo_script("modal_open_models.py"))
-        _hydrate_required(model_app, _REQUIRED_MODEL_FUNCTIONS)
-
-    _deploy(_repo_script("modal_v10_cycle.py"))
-    _hydrate_required(pipeline_app, _REQUIRED_PIPELINE_FUNCTIONS)
+    _ensure_deployed_runtime(
+        app_name=model_app,
+        functions=_REQUIRED_MODEL_FUNCTIONS,
+        deployment_script="modal_open_models.py",
+    )
+    _ensure_deployed_runtime(
+        app_name=pipeline_app,
+        functions=_REQUIRED_PIPELINE_FUNCTIONS,
+        deployment_script="modal_v10_cycle.py",
+    )
 
 
 def _authorized_candidates(brief: CampaignBrief) -> list[VideoCandidate]:
