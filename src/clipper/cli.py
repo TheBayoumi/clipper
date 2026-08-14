@@ -15,6 +15,7 @@ from .brief import load_brief
 from .pipeline import PipelineSettings, run_pipeline
 from .providers.factory import editorial_and_embedding_providers, speech_providers
 from .rights import RightsError, assert_campaign_authorized, assert_video_allowed
+from .source_cache import PersistentYouTubeClient
 from .youtube import YouTubeClient
 
 LOGGER = logging.getLogger("clipper")
@@ -137,6 +138,18 @@ def _assert_runtime_dependencies(plan: dict[str, object]) -> None:
             "Install the balanced runtime before source acquisition with: "
             'python -m pip install -e ".[modal]"'
         )
+
+
+def _source_client_for_run(settings: PipelineSettings) -> PersistentYouTubeClient | None:
+    """Keep authorized YouTube masters in a cache independent of inference freshness."""
+    if os.getenv("CLIPPER_SOURCE_FIXTURE_DIR"):
+        return None
+    configured = os.getenv("CLIPPER_SOURCE_MEDIA_CACHE_ROOT")
+    cache_root = Path(configured) if configured else settings.artifact_root / "_source-media-cache"
+    return PersistentYouTubeClient(
+        max_height=settings.source_max_height,
+        media_cache_root=cache_root,
+    )
 
 
 def _model_id(value: object) -> str | None:
@@ -298,8 +311,14 @@ def main(argv: list[str] | None = None) -> int:
             plan = _resolved_model_plan(settings)
             _log_model_summary(plan)
             _assert_runtime_dependencies(plan)
+            source_client = _source_client_for_run(settings)
             should_render = not args.no_render
-            run_dir = run_pipeline(args.brief, settings=settings, render=should_render)
+            run_dir = run_pipeline(
+                args.brief,
+                settings=settings,
+                source_client=source_client,
+                render=should_render,
+            )
             audit = _audit_model_evidence(run_dir, settings, plan)
             _log_model_summary(plan, audit)
             print(run_dir)
