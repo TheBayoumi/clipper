@@ -111,6 +111,7 @@ def test_ytdlp_discovery_and_downloads_preserve_highest_source_quality(tmp_path:
         assert client.download_media(video, tmp_path) == media
     assert any("401+bestaudio/401" in item for item in calls[-1])
     assert "--remux-video" in calls[-1]
+    assert "--newline" in calls[-1]
     evidence = json.loads(media.with_suffix(".source.json").read_text())
     assert evidence["quality_policy"] == "highest_available_no_transcode"
     assert evidence["selected"]["height"] == 2160
@@ -126,6 +127,17 @@ def test_ytdlp_missing_and_run_errors() -> None:
         pytest.raises(YouTubeError, match="not found"),
     ):
         _run(["missing"])
+
+
+def test_run_visible_does_not_capture_output() -> None:
+    completed = subprocess.CompletedProcess(["yt-dlp"], 0, stdout=None, stderr=None)
+    with patch("clipper.youtube.subprocess.run", return_value=completed) as run:
+        result = _run(["yt-dlp"], visible=True)
+    assert result.returncode == 0
+    kwargs = run.call_args.kwargs
+    assert kwargs["check"] is True
+    assert kwargs["text"] is True
+    assert "capture_output" not in kwargs
 
 
 def test_api_get_success_and_error() -> None:
