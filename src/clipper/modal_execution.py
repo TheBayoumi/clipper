@@ -37,8 +37,12 @@ def _function(app_name: str, function_name: str) -> Any:
     return handle
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
 def _repo_script(name: str) -> Path:
-    return Path(__file__).resolve().parents[2] / "scripts" / name
+    return _repo_root() / "scripts" / name
 
 
 def _deploy(script: Path) -> None:
@@ -50,14 +54,29 @@ def _deploy(script: Path) -> None:
             f"Modal runtime is not deployed and deployment source is unavailable: {script}"
         )
     LOGGER.info("deploying exact-checkout Modal runtime from %s", script)
-    subprocess.run([executable, "deploy", str(script)], check=True, timeout=1800)
+    subprocess.run(
+        [executable, "deploy", str(script)],
+        check=True,
+        timeout=1800,
+        cwd=_repo_root(),
+    )
+
+
+def _hydrate_required(app_name: str, functions: tuple[str, ...]) -> None:
+    for function_name in functions:
+        try:
+            _function(app_name, function_name)
+        except Exception as exc:
+            message = f"required Modal function {app_name}/{function_name} is unavailable after deploy"
+            raise RuntimeError(message) from exc
 
 
 def ensure_modal_runtime() -> None:
-    """Hydrate the exact functions used by the default cloud production pipeline.
+    """Ensure model workers exist and deploy the exact checkout pipeline worker.
 
-    A missing pipeline worker is repaired by deploying the exact checkout automatically so
-    `clipper run` remains the single user-facing production command.
+    The source acquisition and full-cycle worker are always deployed from the active checkout so
+    `clipper run` cannot silently execute stale pipeline code from an older Modal deployment.
+    Model workers are redeployed only when their required functions are unavailable.
     """
 
     model_app = os.getenv("CLIPPER_MODAL_APP", DEFAULT_MODEL_APP)
@@ -72,30 +91,10 @@ def ensure_modal_runtime() -> None:
             break
     if model_missing:
         _deploy(_repo_script("modal_open_models.py"))
-        for function_name in _REQUIRED_MODEL_FUNCTIONS:
-            try:
-                _function(model_app, function_name)
-            except Exception as exc:
-                raise RuntimeError(
-                    f"required Modal function {model_app}/{function_name} is unavailable after deploy"
-                ) from exc
+        _hydrate_required(model_app, _REQUIRED_MODEL_FUNCTIONS)
 
-    pipeline_missing = False
-    for function_name in _REQUIRED_PIPELINE_FUNCTIONS:
-        try:
-            _function(pipeline_app, function_name)
-        except Exception:
-            pipeline_missing = True
-            break
-    if pipeline_missing:
-        _deploy(_repo_script("modal_v10_cycle.py"))
-        for function_name in _REQUIRED_PIPELINE_FUNCTIONS:
-            try:
-                _function(pipeline_app, function_name)
-            except Exception as exc:
-                raise RuntimeError(
-                    f"required Modal function {pipeline_app}/{function_name} is unavailable after deploy"
-                ) from exc
+    _deploy(_repo_script("modal_v10_cycle.py"))
+    _hydrate_required(pipeline_app, _REQUIRED_PIPELINE_FUNCTIONS)
 
 
 def _authorized_candidates(brief: CampaignBrief) -> list[VideoCandidate]:
