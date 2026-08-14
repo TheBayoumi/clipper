@@ -218,7 +218,7 @@ def test_model_evidence_is_fail_closed_and_auditable(tmp_path: Path) -> None:
 
     no_manifest = tmp_path / "no-manifest"
     no_manifest.mkdir()
-    with pytest.raises(RuntimeError, match="manifest.json"):
+    with pytest.raises(RuntimeError, match=r"manifest\.json"):
         _audit_model_evidence(no_manifest, settings, open_plan())
 
 
