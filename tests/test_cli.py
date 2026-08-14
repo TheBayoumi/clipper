@@ -51,6 +51,9 @@ def test_cli_discover_filters_video_outside_allow_list(tmp_path: Path, capsys) -
 def test_cli_run_and_error(tmp_path: Path, capsys, monkeypatch) -> None:
     path = make_brief(tmp_path)
     monkeypatch.setenv("CLIPPER_WHISPER_MODEL", "base.en")
+    monkeypatch.delenv("CLIPPER_EDITORIAL_ENGINE", raising=False)
+    monkeypatch.delenv("CLIPPER_GROUNDING_ENGINE", raising=False)
+    monkeypatch.delenv("CLIPPER_COMPUTE_PROFILE", raising=False)
     with patch("clipper.cli.run_pipeline", return_value=tmp_path / "run") as run:
         assert (
             main(
@@ -65,12 +68,29 @@ def test_cli_run_and_error(tmp_path: Path, capsys, monkeypatch) -> None:
             )
             == 0
         )
+        settings = run.call_args.kwargs["settings"]
         assert run.call_args.kwargs["render"] is False
-        assert run.call_args.kwargs["settings"].whisper_model == "base.en"
+        assert settings.whisper_model == "base.en"
+        assert settings.editorial_engine == "open"
+        assert settings.grounding_engine == "open"
+        assert settings.compute_profile == "balanced"
     assert str(tmp_path / "run") in capsys.readouterr().out
 
     with patch("clipper.cli.load_brief", side_effect=RuntimeError("boom")):
         assert main(["validate", "--brief", str(path)]) == 1
+
+
+def test_cli_run_respects_explicit_engine_overrides(tmp_path: Path, monkeypatch) -> None:
+    path = make_brief(tmp_path)
+    monkeypatch.setenv("CLIPPER_EDITORIAL_ENGINE", "heuristic")
+    monkeypatch.setenv("CLIPPER_GROUNDING_ENGINE", "legacy")
+    monkeypatch.setenv("CLIPPER_COMPUTE_PROFILE", "local-lite")
+    with patch("clipper.cli.run_pipeline", return_value=tmp_path / "run") as run:
+        assert main(["run", "--brief", str(path), "--no-render"]) == 0
+    settings = run.call_args.kwargs["settings"]
+    assert settings.editorial_engine == "heuristic"
+    assert settings.grounding_engine == "legacy"
+    assert settings.compute_profile == "local-lite"
 
 
 def test_cli_run_returns_failure_for_failed_production_manifest(tmp_path: Path) -> None:
