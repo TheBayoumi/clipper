@@ -68,8 +68,7 @@ def _hydrate_required(app_name: str, functions: tuple[str, ...]) -> None:
             _function(app_name, function_name)
         except Exception as exc:
             message = (
-                f"required Modal function {app_name}/{function_name} "
-                "is unavailable after deploy"
+                f"required Modal function {app_name}/{function_name} is unavailable after deploy"
             )
             raise RuntimeError(message) from exc
 
@@ -185,9 +184,7 @@ def _acquire_remote_source(function: Any, candidate: VideoCandidate) -> dict[str
     )
 
 
-def _materialize_remote_run(
-    *, artifact_root: Path, volume_name: str, remote_run_path: str
-) -> Path:
+def _materialize_remote_run(*, artifact_root: Path, volume_name: str, remote_run_path: str) -> Path:
     executable = shutil.which("modal")
     if executable is None:
         raise RuntimeError("Modal CLI is required to download final production artifacts")
