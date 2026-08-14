@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -28,13 +29,59 @@ _REQUIRED_MODEL_FUNCTIONS = (
     "vision",
 )
 _REQUIRED_PIPELINE_FUNCTIONS = ("acquire_source", "run_full_cycle")
+_CONTROL_PLANE_ATTEMPTS = 3
+_DEPLOY_ATTEMPTS = 3
+_RETRY_DELAYS_SECONDS = (2.0, 5.0)
+
+
+def _exception_class_names(exc: BaseException) -> set[str]:
+    return {cls.__name__ for cls in type(exc).__mro__}
+
+
+def _is_modal_not_found(exc: BaseException) -> bool:
+    return "NotFoundError" in _exception_class_names(exc)
+
+
+def _is_retryable_modal_control_plane_error(exc: BaseException) -> bool:
+    names = _exception_class_names(exc)
+    return bool(names & {"ServiceError", "InternalFailure", "TimeoutError"})
+
+
+def _retry_delay(attempt: int) -> float:
+    index = max(0, min(attempt - 1, len(_RETRY_DELAYS_SECONDS) - 1))
+    return _RETRY_DELAYS_SECONDS[index]
 
 
 def _function(app_name: str, function_name: str) -> Any:
+    """Hydrate a deployed Modal Function with bounded retries for control-plane flakes."""
+
     modal = importlib.import_module("modal")
-    handle = modal.Function.from_name(app_name, function_name)
-    handle.hydrate()
-    return handle
+    for attempt in range(1, _CONTROL_PLANE_ATTEMPTS + 1):
+        handle = modal.Function.from_name(app_name, function_name)
+        try:
+            handle.hydrate()
+        except Exception as exc:
+            if (
+                _is_retryable_modal_control_plane_error(exc)
+                and attempt < _CONTROL_PLANE_ATTEMPTS
+            ):
+                delay = _retry_delay(attempt)
+                LOGGER.warning(
+                    "Modal control-plane request failed while hydrating %s/%s "
+                    "(%s: %s); retrying in %.1fs (%d/%d)",
+                    app_name,
+                    function_name,
+                    type(exc).__name__,
+                    str(exc),
+                    delay,
+                    attempt + 1,
+                    _CONTROL_PLANE_ATTEMPTS,
+                )
+                time.sleep(delay)
+                continue
+            raise
+        return handle
+    raise RuntimeError(f"failed to hydrate Modal function {app_name}/{function_name}")
 
 
 def _repo_root() -> Path:
@@ -46,6 +93,8 @@ def _repo_script(name: str) -> Path:
 
 
 def _deploy(script: Path) -> None:
+    """Deploy a Modal app, retrying bounded CLI/control-plane failures."""
+
     executable = shutil.which("modal")
     if executable is None:
         raise RuntimeError("Modal CLI is required to deploy the default production runtime")
@@ -53,13 +102,36 @@ def _deploy(script: Path) -> None:
         raise RuntimeError(
             f"Modal runtime is not deployed and deployment source is unavailable: {script}"
         )
-    LOGGER.info("deploying exact-checkout Modal runtime from %s", script)
-    subprocess.run(
-        [executable, "deploy", str(script)],
-        check=True,
-        timeout=1800,
-        cwd=_repo_root(),
-    )
+
+    command = [executable, "deploy", str(script)]
+    for attempt in range(1, _DEPLOY_ATTEMPTS + 1):
+        LOGGER.info(
+            "deploying exact-checkout Modal runtime from %s (attempt %d/%d)",
+            script,
+            attempt,
+            _DEPLOY_ATTEMPTS,
+        )
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                timeout=1800,
+                cwd=_repo_root(),
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            if attempt >= _DEPLOY_ATTEMPTS:
+                raise
+            delay = _retry_delay(attempt)
+            LOGGER.warning(
+                "Modal deployment command failed (%s); retrying in %.1fs (%d/%d)",
+                type(exc).__name__,
+                delay,
+                attempt + 1,
+                _DEPLOY_ATTEMPTS,
+            )
+            time.sleep(delay)
+            continue
+        return
 
 
 def _hydrate_required(app_name: str, functions: tuple[str, ...]) -> None:
@@ -68,7 +140,8 @@ def _hydrate_required(app_name: str, functions: tuple[str, ...]) -> None:
             _function(app_name, function_name)
         except Exception as exc:
             message = (
-                f"required Modal function {app_name}/{function_name} is unavailable after deploy"
+                f"required Modal function {app_name}/{function_name} is unavailable after deploy "
+                f"({type(exc).__name__}: {exc})"
             )
             raise RuntimeError(message) from exc
 
@@ -78,7 +151,9 @@ def ensure_modal_runtime() -> None:
 
     The source acquisition and full-cycle worker are always deployed from the active checkout so
     `clipper run` cannot silently execute stale pipeline code from an older Modal deployment.
-    Model workers are redeployed only when their required functions are unavailable.
+    Model workers are redeployed only when Modal explicitly reports a NotFoundError. Connectivity,
+    authentication, quota, and other service failures fail closed and are never misclassified as
+    a missing deployment.
     """
 
     model_app = os.getenv("CLIPPER_MODAL_APP", DEFAULT_MODEL_APP)
@@ -88,9 +163,21 @@ def ensure_modal_runtime() -> None:
     for function_name in _REQUIRED_MODEL_FUNCTIONS:
         try:
             _function(model_app, function_name)
-        except Exception:
-            model_missing = True
-            break
+        except Exception as exc:
+            if _is_modal_not_found(exc):
+                LOGGER.info(
+                    "Modal model runtime %s/%s is not deployed; repairing from exact checkout",
+                    model_app,
+                    function_name,
+                )
+                model_missing = True
+                break
+            raise RuntimeError(
+                "Modal control-plane validation failed while checking "
+                f"{model_app}/{function_name} ({type(exc).__name__}: {exc}); "
+                "refusing to misclassify this as a missing deployment"
+            ) from exc
+
     if model_missing:
         _deploy(_repo_script("modal_open_models.py"))
         _hydrate_required(model_app, _REQUIRED_MODEL_FUNCTIONS)
