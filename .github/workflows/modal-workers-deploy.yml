@@ -2,6 +2,11 @@ name: Deploy Modal workers
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feat/word-reveal-face-tracking
+    paths:
+      - ".github/workflows/modal-workers-deploy.yml"
 
 permissions:
   contents: read
