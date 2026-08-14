@@ -79,34 +79,39 @@ def test_deploy_requires_modal_cli_and_existing_source(tmp_path: Path) -> None:
     script.write_text("# worker\n", encoding="utf-8")
     with (
         patch("clipper.modal_execution.shutil.which", return_value="modal"),
+        patch("clipper.modal_execution._repo_root", return_value=tmp_path),
         patch("clipper.modal_execution.subprocess.run") as run,
     ):
         _deploy(script)
-    run.assert_called_once_with(["modal", "deploy", str(script)], check=True, timeout=1800)
+    run.assert_called_once_with(
+        ["modal", "deploy", str(script)],
+        check=True,
+        timeout=1800,
+        cwd=tmp_path,
+    )
 
 
-def test_ensure_modal_runtime_skips_deploy_when_every_function_hydrates() -> None:
+def test_ensure_modal_runtime_always_deploys_exact_pipeline_worker() -> None:
     with (
         patch("clipper.modal_execution._function", return_value=Mock()) as function,
         patch("clipper.modal_execution._deploy") as deploy,
+        patch("clipper.modal_execution._repo_script", side_effect=lambda name: Path(name)),
     ):
         ensure_modal_runtime()
     assert function.call_count == 8
-    deploy.assert_not_called()
+    deploy.assert_called_once_with(Path("modal_v10_cycle.py"))
 
 
-def test_ensure_modal_runtime_repairs_missing_model_and_pipeline_workers() -> None:
+def test_ensure_modal_runtime_repairs_missing_model_and_deploys_pipeline() -> None:
     calls: list[tuple[str, str]] = []
-    failed = {"model": False, "pipeline": False}
+    model_failed = False
 
     def fake_function(app: str, name: str) -> Mock:
+        nonlocal model_failed
         calls.append((app, name))
-        if name == "transcribe" and not failed["model"]:
-            failed["model"] = True
+        if name == "transcribe" and not model_failed:
+            model_failed = True
             raise RuntimeError("missing model")
-        if name == "acquire_source" and not failed["pipeline"]:
-            failed["pipeline"] = True
-            raise RuntimeError("missing pipeline")
         return Mock()
 
     with (
@@ -116,7 +121,7 @@ def test_ensure_modal_runtime_repairs_missing_model_and_pipeline_workers() -> No
     ):
         ensure_modal_runtime()
 
-    assert failed == {"model": True, "pipeline": True}
+    assert model_failed is True
     assert [call.args[0].name for call in deploy.call_args_list] == [
         "modal_open_models.py",
         "modal_v10_cycle.py",
@@ -214,7 +219,9 @@ def test_materialize_remote_run_downloads_only_artifact_directory(tmp_path: Path
     assert command[:5] == ["modal", "volume", "get", "--force", "artifacts-volume"]
 
 
-def test_materialize_remote_run_handles_flat_download_and_rejects_bad_targets(tmp_path: Path) -> None:
+def test_materialize_remote_run_handles_flat_download_and_bad_targets(
+    tmp_path: Path,
+) -> None:
     artifact_root = tmp_path / "artifacts"
     with (
         patch("clipper.modal_execution.shutil.which", return_value=None),
@@ -247,7 +254,7 @@ def test_materialize_remote_run_handles_flat_download_and_rejects_bad_targets(tm
             remote_run_path="/run",
         )
 
-    shutil_root = tmp_path / "flat-artifacts"
+    flat_root = tmp_path / "flat-artifacts"
 
     def flat_run(command: list[str], **_kwargs: object) -> None:
         staging = Path(command[-1])
@@ -259,7 +266,7 @@ def test_materialize_remote_run_handles_flat_download_and_rejects_bad_targets(tm
         patch("clipper.modal_execution.subprocess.run", side_effect=flat_run),
     ):
         result = _materialize_remote_run(
-            artifact_root=shutil_root,
+            artifact_root=flat_root,
             volume_name="volume",
             remote_run_path="/flat-run",
         )
@@ -310,7 +317,10 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
             "clipper.modal_execution._acquire_remote_source",
             return_value={"quality_policy": "highest_available_no_transcode", "sha256": "abc"},
         ) as acquire_remote,
-        patch("clipper.modal_execution._materialize_remote_run", return_value=materialized) as download,
+        patch(
+            "clipper.modal_execution._materialize_remote_run",
+            return_value=materialized,
+        ) as download,
     ):
         result = run_modal_pipeline(
             brief_path,
@@ -356,7 +366,10 @@ def test_run_modal_pipeline_rejects_missing_or_multi_source_and_bad_runner(tmp_p
     with (
         patch("clipper.modal_execution.ensure_modal_runtime"),
         patch("clipper.modal_execution._function", return_value=Mock()),
-        patch("clipper.modal_execution._authorized_candidates", return_value=[candidate, candidate]),
+        patch(
+            "clipper.modal_execution._authorized_candidates",
+            return_value=[candidate, candidate],
+        ),
         pytest.raises(RuntimeError, match="source_limit=1"),
     ):
         run_modal_pipeline(
