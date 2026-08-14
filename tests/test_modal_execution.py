@@ -76,9 +76,11 @@ def test_function_retries_transient_service_errors() -> None:
     handle.hydrate.side_effect = [ServiceError("unavailable"), ServiceError("unavailable"), None]
     from_name = Mock(return_value=handle)
     modal = SimpleNamespace(Function=SimpleNamespace(from_name=from_name))
-    with patch("clipper.modal_execution.time.sleep") as sleep:
-        with patch("clipper.modal_execution.importlib.import_module", return_value=modal):
-            assert _function("app", "worker") is handle
+    with (
+        patch("clipper.modal_execution.time.sleep") as sleep,
+        patch("clipper.modal_execution.importlib.import_module", return_value=modal),
+    ):
+        assert _function("app", "worker") is handle
     assert from_name.call_count == 3
     assert [item.args[0] for item in sleep.call_args_list] == [2.0, 5.0]
 
