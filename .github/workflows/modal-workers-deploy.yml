@@ -1,0 +1,100 @@
+name: Deploy Modal workers
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clipper-modal-workers-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+  MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  CLIPPER_MODAL_APP: clipper-open-editor
+
+jobs:
+  deploy-modal-workers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Verify deployment credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$MODAL_TOKEN_ID"
+          test -n "$MODAL_TOKEN_SECRET"
+          test -n "$HF_TOKEN"
+
+      - name: Install Modal orchestration dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[modal]'
+
+      - name: Deploy exact-HEAD open-model workers
+        shell: bash
+        run: |
+          set -euo pipefail
+          modal deploy scripts/modal_open_models.py
+
+      - name: Verify deployed app exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          modal app list | tee modal-apps.txt
+          grep -F "$CLIPPER_MODAL_APP" modal-apps.txt
+
+      - name: Record deployment evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          Path("modal-worker-deployment.json").write_text(
+              json.dumps(
+                  {
+                      "status": "DEPLOYED",
+                      "app": os.environ["CLIPPER_MODAL_APP"],
+                      "git_sha": os.environ["GITHUB_SHA"],
+                      "functions_expected": [
+                          "transcribe",
+                          "align",
+                          "diarize",
+                          "editorial",
+                          "embedding",
+                          "vision",
+                          "vision_large",
+                      ],
+                  },
+                  indent=2,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload deployment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: modal-workers-${{ github.sha }}
+          path: |
+            modal-apps.txt
+            modal-worker-deployment.json
+          if-no-files-found: warn
+          retention-days: 14
