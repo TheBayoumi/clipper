@@ -111,7 +111,7 @@ def test_ytdlp_discovery_and_downloads_preserve_highest_source_quality(tmp_path:
         assert client.download_media(video, tmp_path) == media
     assert any("401+bestaudio/401" in item for item in calls[-1])
     assert "--remux-video" in calls[-1]
-    assert "--newline" in calls[-1]
+    assert "--newline" not in calls[-1]
     evidence = json.loads(media.with_suffix(".source.json").read_text())
     assert evidence["quality_policy"] == "highest_available_no_transcode"
     assert evidence["selected"]["height"] == 2160
