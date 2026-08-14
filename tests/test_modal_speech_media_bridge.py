@@ -30,8 +30,8 @@ def test_video_source_is_reduced_to_cached_speech_wav_before_modal_upload(tmp_pa
 
     bridge = ModalMediaBridge("media")
     with (
-        patch("clipper.providers.modal_speech.importlib.import_module", return_value=modal_module),
         patch("clipper.providers.modal_speech.subprocess.run", side_effect=fake_ffmpeg) as ffmpeg,
+        patch("clipper.providers.modal_speech.importlib.import_module", return_value=modal_module),
     ):
         remote = bridge.ensure_uploaded(source, "abc123")
 
@@ -58,8 +58,8 @@ def test_cached_speech_derivative_skips_ffmpeg_on_next_bridge(tmp_path: Path) ->
 
     bridge = ModalMediaBridge("media")
     with (
-        patch("clipper.providers.modal_speech.importlib.import_module", return_value=modal_module),
         patch("clipper.providers.modal_speech.subprocess.run") as ffmpeg,
+        patch("clipper.providers.modal_speech.importlib.import_module", return_value=modal_module),
     ):
         remote = bridge.ensure_uploaded(source, "abc123")
 
@@ -75,8 +75,8 @@ def test_existing_audio_source_keeps_direct_upload_contract(tmp_path: Path) -> N
 
     bridge = ModalMediaBridge("media")
     with (
-        patch("clipper.providers.modal_speech.importlib.import_module", return_value=modal_module),
         patch("clipper.providers.modal_speech.subprocess.run") as ffmpeg,
+        patch("clipper.providers.modal_speech.importlib.import_module", return_value=modal_module),
     ):
         remote = bridge.ensure_uploaded(source, "abc123")
 
