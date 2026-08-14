@@ -29,6 +29,21 @@ def test_load_json_and_yaml(tmp_path: Path) -> None:
     assert load_brief(yaml_path).title == "Title"
 
 
+def test_load_semantic_brief_without_keywords(tmp_path: Path) -> None:
+    path = tmp_path / "brief.yaml"
+    path.write_text(
+        "campaign_id: c1\n"
+        "title: General podcast\n"
+        "objective: Find the strongest self-contained moments semantically.\n"
+        "allowed_video_ids: [v]\n"
+        "rights_confirmed: true\n",
+        encoding="utf-8",
+    )
+    brief = load_brief(path)
+    assert brief.campaign_id == "c1"
+    assert brief.keywords == ["Find the strongest self-contained moments semantically."]
+
+
 def test_load_unknown_extension_falls_back(tmp_path: Path) -> None:
     path = tmp_path / "brief.txt"
     path.write_text(json.dumps(DATA), encoding="utf-8")
