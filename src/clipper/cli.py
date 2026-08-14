@@ -416,7 +416,6 @@ def main(argv: list[str] | None = None) -> int:
             plan = _resolved_model_plan(settings)
             _log_model_summary(plan)
             _assert_runtime_dependencies(plan)
-            _assert_modal_functions_available(plan)
 
             brief = load_brief(args.brief)
             assert_campaign_authorized(brief)
@@ -444,6 +443,7 @@ def main(argv: list[str] | None = None) -> int:
                     fresh_inference=args.fresh_inference,
                 )
             else:
+                _assert_modal_functions_available(plan)
                 if args.resume:
                     _seed_resume_source_cache(settings, args.resume, campaign_id=brief.campaign_id)
                 source_client = _source_client_for_run(settings)
