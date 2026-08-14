@@ -19,6 +19,21 @@ def _fake_modal_volume() -> tuple[object, Mock, Mock]:
     return modal_module, volume, upload
 
 
+def test_modal_mounted_source_skips_derivative_and_volume_upload() -> None:
+    source = Path("/media/inputs/abc123.mkv")
+    bridge = ModalMediaBridge("media")
+
+    with (
+        patch("clipper.providers.modal_speech.subprocess.run") as ffmpeg,
+        patch("clipper.providers.modal_speech.importlib.import_module") as import_module,
+    ):
+        remote = bridge.ensure_uploaded(source, "abc123")
+
+    assert remote == "/media/inputs/abc123.mkv"
+    ffmpeg.assert_not_called()
+    import_module.assert_not_called()
+
+
 def test_video_source_is_reduced_to_cached_speech_wav_before_modal_upload(tmp_path: Path) -> None:
     source = tmp_path / "episode.mkv"
     source.write_bytes(b"video" * 200_000)
