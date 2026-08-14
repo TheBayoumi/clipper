@@ -61,10 +61,7 @@ def _function(app_name: str, function_name: str) -> Any:
         try:
             handle.hydrate()
         except Exception as exc:
-            if (
-                _is_retryable_modal_control_plane_error(exc)
-                and attempt < _CONTROL_PLANE_ATTEMPTS
-            ):
+            if _is_retryable_modal_control_plane_error(exc) and attempt < _CONTROL_PLANE_ATTEMPTS:
                 delay = _retry_delay(attempt)
                 LOGGER.warning(
                     "Modal control-plane request failed while hydrating %s/%s "
