@@ -38,6 +38,14 @@ class ModalMediaBridge:
         return modal.Volume.from_name(self.volume_name, create_if_missing=True)
 
     @staticmethod
+    def _mounted_modal_path(source: Path) -> str | None:
+        """Return a shared Modal mount path when the source already lives on the media Volume."""
+        normalized = source.as_posix()
+        if normalized.startswith("/media/inputs/"):
+            return normalized
+        return None
+
+    @staticmethod
     def _speech_source(source: Path, source_hash: str) -> Path:
         """Return a compact speech-only derivative for video inputs.
 
@@ -109,6 +117,12 @@ class ModalMediaBridge:
         cached = self._uploaded.get(key)
         if cached is not None:
             return cached
+
+        mounted_path = self._mounted_modal_path(source)
+        if mounted_path is not None:
+            LOGGER.info("reusing source already mounted on Modal media volume: %s", mounted_path)
+            self._uploaded[key] = mounted_path
+            return mounted_path
 
         transfer_source = self._speech_source(source, source_hash)
         suffix = transfer_source.suffix.lower() or ".bin"
