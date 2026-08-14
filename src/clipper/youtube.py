@@ -42,8 +42,17 @@ def _object(value: object) -> dict[str, Any]:
     return {str(key): item for key, item in value.items()}
 
 
-def _run(command: Sequence[str], *, timeout: int = 900) -> subprocess.CompletedProcess[str]:
+def _run(
+    command: Sequence[str], *, timeout: int = 900, visible: bool = False
+) -> subprocess.CompletedProcess[str]:
     try:
+        if visible:
+            return subprocess.run(
+                list(command),
+                check=True,
+                text=True,
+                timeout=timeout,
+            )
         return subprocess.run(
             list(command),
             check=True,
@@ -284,6 +293,7 @@ class YouTubeClient:
         command = [
             "yt-dlp",
             "--no-playlist",
+            "--newline",
             "--no-warnings",
             "-f",
             format_selector,
@@ -295,7 +305,7 @@ class YouTubeClient:
             str(output),
             video.url,
         ]
-        _run(command, timeout=7200)
+        _run(command, timeout=7200, visible=True)
         if not output.is_file() or output.stat().st_size == 0:
             raise YouTubeError(f"yt-dlp completed without creating {output}")
         metadata_path.write_text(
