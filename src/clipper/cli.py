@@ -8,7 +8,6 @@ import sys
 import uuid
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
 
 from .benchmark import evaluate_corpus_manifest
 from .brief import load_brief
