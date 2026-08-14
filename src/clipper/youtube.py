@@ -53,7 +53,8 @@ def _run_visible(command: Sequence[str], *, timeout: int) -> subprocess.Complete
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
-    if process.stdout is None:  # pragma: no cover - defensive Popen contract guard
+    reader = process.stdout
+    if reader is None:  # pragma: no cover - defensive Popen contract guard
         process.kill()
         raise YouTubeError(f"unable to capture live output from {command[0]}")
 
@@ -62,7 +63,7 @@ def _run_visible(command: Sequence[str], *, timeout: int) -> subprocess.Complete
     def pump_output() -> None:
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         while True:
-            chunk = process.stdout.read(512)
+            chunk = reader.read(512)
             if not chunk:
                 break
             text = decoder.decode(chunk)
