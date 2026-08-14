@@ -7,7 +7,12 @@ from unittest.mock import patch
 
 import pytest
 
-from clipper.cli import _audit_model_evidence, _model_id, _resolved_model_plan
+from clipper.cli import (
+    _assert_runtime_dependencies,
+    _audit_model_evidence,
+    _model_id,
+    _resolved_model_plan,
+)
 from clipper.pipeline import PipelineSettings
 
 
@@ -66,6 +71,43 @@ def test_resolved_model_plan_skips_disabled_provider_families() -> None:
         "grounding_engine": "legacy",
         "compute_profile": "balanced",
     }
+
+
+def test_runtime_dependency_preflight_skips_non_modal_plans() -> None:
+    with patch("clipper.cli.importlib.util.find_spec") as find_spec:
+        _assert_runtime_dependencies(
+            {"editorial": {"inference_engine": "transformers"}, "compute_profile": "local-lite"}
+        )
+    find_spec.assert_not_called()
+
+
+def test_runtime_dependency_preflight_accepts_installed_modal_sdk() -> None:
+    plan = {"editorial": {"inference_engine": "modal-transformers"}}
+    with patch("clipper.cli.importlib.util.find_spec", return_value=object()) as find_spec:
+        _assert_runtime_dependencies(plan)
+    find_spec.assert_called_once_with("modal")
+
+
+def test_runtime_dependency_preflight_rejects_missing_modal_sdk() -> None:
+    plan = {
+        "editorial": {"inference_engine": "modal-transformers"},
+        "transcription": {"inference_engine": "modal-faster-whisper"},
+    }
+    with (
+        patch("clipper.cli.importlib.util.find_spec", return_value=None),
+        pytest.raises(RuntimeError, match="before source acquisition") as captured,
+    ):
+        _assert_runtime_dependencies(plan)
+    assert 'pip install -e ".[modal]"' in str(captured.value)
+
+
+def test_runtime_dependency_preflight_handles_invalid_module_spec() -> None:
+    plan = {"alignment": {"inference_engine": "modal-whisperx"}}
+    with (
+        patch("clipper.cli.importlib.util.find_spec", side_effect=ValueError("bad spec")),
+        pytest.raises(RuntimeError, match="Modal Python SDK"),
+    ):
+        _assert_runtime_dependencies(plan)
 
 
 def test_model_id_rejects_non_mapping_and_empty_identity() -> None:
