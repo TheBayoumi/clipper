@@ -160,9 +160,7 @@ def test_resume_reuses_interrupted_source_master(tmp_path: Path) -> None:
     source.with_suffix(".source.json").write_text('{"quality":"source"}', encoding="utf-8")
 
     settings = PipelineSettings(artifact_root=artifact_root)
-    recovered = _seed_resume_source_cache(
-        settings, previous.name, campaign_id="c"
-    )
+    recovered = _seed_resume_source_cache(settings, previous.name, campaign_id="c")
 
     assert recovered == previous.resolve()
     cached = artifact_root / "_source-media-cache" / "v1" / "v1.mkv"
