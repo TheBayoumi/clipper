@@ -208,15 +208,11 @@ def _resolve_resume_run(artifact_root: Path, resume: str) -> Path:
     return run_dir
 
 
-def _seed_resume_source_cache(
-    settings: PipelineSettings, resume: str, *, campaign_id: str
-) -> Path:
+def _seed_resume_source_cache(settings: PipelineSettings, resume: str, *, campaign_id: str) -> Path:
     """Promote completed source masters from an interrupted run into the persistent cache."""
     run_dir = _resolve_resume_run(settings.artifact_root, resume)
     if not run_dir.name.startswith(f"{campaign_id}-"):
-        raise RuntimeError(
-            f"resume run {run_dir.name} does not belong to campaign {campaign_id}"
-        )
+        raise RuntimeError(f"resume run {run_dir.name} does not belong to campaign {campaign_id}")
     manifest_path = run_dir / "manifest.json"
     if manifest_path.is_file():
         try:
@@ -227,9 +223,7 @@ def _seed_resume_source_cache(
             raise RuntimeError("refusing to resume a run that already completed successfully")
 
     configured = os.getenv("CLIPPER_SOURCE_MEDIA_CACHE_ROOT")
-    cache_root = (
-        Path(configured) if configured else settings.artifact_root / "_source-media-cache"
-    )
+    cache_root = Path(configured) if configured else settings.artifact_root / "_source-media-cache"
     imported: list[Path] = []
     work_dir = run_dir / "work"
     for source in sorted(work_dir.glob("*/*.mkv")):
@@ -263,9 +257,7 @@ def _seed_resume_source_cache(
         imported.append(target)
 
     if not imported:
-        raise RuntimeError(
-            f"resume run contains no reusable YouTube MKV masters under {work_dir}"
-        )
+        raise RuntimeError(f"resume run contains no reusable YouTube MKV masters under {work_dir}")
     LOGGER.info(
         "resume recovered %d source master(s) from %s; continuing in a new auditable run",
         len(imported),
