@@ -129,7 +129,7 @@ def test_deploy_retries_cli_failure(tmp_path: Path) -> None:
     sleep.assert_called_once_with(2.0)
 
 
-def test_ensure_modal_runtime_always_deploys_exact_pipeline_worker() -> None:
+def test_ensure_modal_runtime_attaches_without_deploying_when_apps_exist() -> None:
     with (
         patch("clipper.modal_execution._function", return_value=Mock()) as function,
         patch("clipper.modal_execution._deploy") as deploy,
@@ -137,10 +137,10 @@ def test_ensure_modal_runtime_always_deploys_exact_pipeline_worker() -> None:
     ):
         ensure_modal_runtime()
     assert function.call_count == 8
-    deploy.assert_called_once_with(Path("modal_v10_cycle.py"))
+    deploy.assert_not_called()
 
 
-def test_ensure_modal_runtime_repairs_missing_model_and_deploys_pipeline() -> None:
+def test_ensure_modal_runtime_repairs_missing_model_without_redeploying_pipeline() -> None:
     calls: list[tuple[str, str]] = []
     model_failed = False
 
@@ -160,11 +160,33 @@ def test_ensure_modal_runtime_repairs_missing_model_and_deploys_pipeline() -> No
         ensure_modal_runtime()
 
     assert model_failed is True
-    assert [call.args[0].name for call in deploy.call_args_list] == [
-        "modal_open_models.py",
-        "modal_v10_cycle.py",
-    ]
+    assert [call.args[0].name for call in deploy.call_args_list] == ["modal_open_models.py"]
     assert ("clipper-open-editor", "transcribe") in calls
+    assert ("clipper-v10-cycle", "run_full_cycle") in calls
+
+
+def test_ensure_modal_runtime_repairs_missing_pipeline_only() -> None:
+    calls: list[tuple[str, str]] = []
+    pipeline_failed = False
+
+    def fake_function(app: str, name: str) -> Mock:
+        nonlocal pipeline_failed
+        calls.append((app, name))
+        if app == "clipper-v10-cycle" and name == "acquire_source" and not pipeline_failed:
+            pipeline_failed = True
+            raise NotFoundError("missing pipeline")
+        return Mock()
+
+    with (
+        patch("clipper.modal_execution._function", side_effect=fake_function),
+        patch("clipper.modal_execution._deploy") as deploy,
+        patch("clipper.modal_execution._repo_script", side_effect=lambda name: Path(name)),
+    ):
+        ensure_modal_runtime()
+
+    assert pipeline_failed is True
+    deploy.assert_called_once_with(Path("modal_v10_cycle.py"))
+    assert ("clipper-open-editor", "vision") in calls
     assert ("clipper-v10-cycle", "run_full_cycle") in calls
 
 
@@ -185,7 +207,7 @@ def test_ensure_modal_runtime_fails_closed_after_unsuccessful_redeploy() -> None
             side_effect=[NotFoundError("missing"), RuntimeError("still missing")],
         ),
         patch("clipper.modal_execution._deploy"),
-        pytest.raises(RuntimeError, match="unavailable after deploy"),
+        pytest.raises(RuntimeError, match="unavailable after runtime repair"),
     ):
         ensure_modal_runtime()
 
