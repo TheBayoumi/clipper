@@ -6,7 +6,8 @@ import json
 import os
 import shutil
 import subprocess
-import time
+import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -16,13 +17,10 @@ APP_NAME = os.getenv("CLIPPER_V10_MODAL_APP", "clipper-v10-cycle")
 MODEL_APP = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
 MEDIA_ROOT = "/media"
 ARTIFACT_ROOT = "/artifacts"
-NEMO_CACHE = "/nemo-cache"
-SORTFORMER_MODEL = "nvidia/diar_streaming_sortformer_4spk-v2.1"
 
 app = modal.App(APP_NAME)
 media_cache = modal.Volume.from_name("clipper-media-cache", create_if_missing=True)
 artifact_volume = modal.Volume.from_name("clipper-v10-artifacts", create_if_missing=True)
-nemo_cache = modal.Volume.from_name("clipper-nemo-cache", create_if_missing=True)
 
 if modal.is_local():
     youtube_secret = modal.Secret.from_dict(
@@ -53,25 +51,6 @@ runner_image = (
     .apt_install("git")
     .uv_pip_install("modal>=1.5.2,<2", "huggingface-hub>=1.24,<2")
 )
-
-nemo_image = (
-    modal.Image.from_registry(
-        "nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04",
-        add_python="3.12",
-    )
-    .entrypoint([])
-    .apt_install("ffmpeg")
-    .uv_pip_install(
-        "torch>=2.8,<3",
-        "numba==0.66.0",
-        "nemo_toolkit[asr]>=2.5,<3",
-        "huggingface-hub>=0.28,<2",
-    )
-    .env({"HF_HOME": NEMO_CACHE})
-)
-
-_sortformer: Any | None = None
-_sortformer_revision: str | None = None
 
 
 def _sha256(path: Path) -> str:
@@ -202,7 +181,7 @@ def _existing_source(video_id: str, video_url: str) -> dict[str, Any] | None:
     scaledown_window=2,
 )
 def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
-    """Acquire the highest available YouTube source once and retain the exact master."""
+    """Acquire the highest available authorized source directly inside Modal."""
 
     video_url = str(payload.get("video_url") or "").strip()
     video_id = str(payload.get("video_id") or "").strip()
@@ -374,103 +353,6 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
     return evidence
 
 
-@app.function(
-    image=nemo_image,
-    gpu="L4",
-    volumes={MEDIA_ROOT: media_cache, NEMO_CACHE: nemo_cache},
-    timeout=7200,
-    memory=24576,
-    scaledown_window=2,
-)
-def diarize_open(payload: dict[str, Any]) -> dict[str, Any]:
-    """Run public NeMo Streaming Sortformer diarization on a derived 16 kHz analysis WAV."""
-
-    global _sortformer, _sortformer_revision
-    import torch
-    from huggingface_hub import HfApi
-    from nemo.collections.asr.models import SortformerEncLabelModel
-
-    source = Path(str(payload.get("source_path") or ""))
-    if not source.is_file():
-        raise ValueError(f"diarization source does not exist: {source}")
-    started = time.perf_counter()
-    scratch = Path("/tmp") / f"clipper-diar-{source.stem}"
-    scratch.mkdir(parents=True, exist_ok=True)
-    wav = scratch / "analysis-16k-mono.wav"
-    try:
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-i",
-                str(source),
-                "-vn",
-                "-ac",
-                "1",
-                "-ar",
-                "16000",
-                "-c:a",
-                "pcm_s16le",
-                str(wav),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=1800,
-        )
-        if _sortformer is None:
-            _sortformer = SortformerEncLabelModel.from_pretrained(SORTFORMER_MODEL).eval()
-            if torch.cuda.is_available():
-                _sortformer = _sortformer.cuda()
-            _sortformer_revision = str(HfApi().model_info(SORTFORMER_MODEL).sha or "unknown")
-            nemo_cache.commit()
-        raw = _sortformer.diarize(audio=[str(wav)], batch_size=1, verbose=False)
-        if not isinstance(raw, list) or not raw or not isinstance(raw[0], list):
-            raise RuntimeError("NeMo Sortformer returned invalid diarization output")
-        turns: list[list[Any]] = []
-        for line in raw[0]:
-            parts = str(line).split()
-            if len(parts) != 3:
-                raise RuntimeError(f"invalid Sortformer segment: {line}")
-            start, end, speaker = float(parts[0]), float(parts[1]), str(parts[2])
-            if end > start:
-                turns.append([start, end, speaker])
-        if not turns:
-            raise RuntimeError("NeMo Sortformer returned no speaker turns")
-        duration = max(0.0, time.perf_counter() - started)
-        peak = (
-            float(torch.cuda.max_memory_allocated() / (1024 * 1024))
-            if torch.cuda.is_available()
-            else None
-        )
-        return {
-            "turns": turns,
-            "model": {
-                "model_id": SORTFORMER_MODEL,
-                "revision": _sortformer_revision or "unknown",
-            },
-            "analysis_audio": {
-                "sample_rate": 16000,
-                "channels": 1,
-                "derivative_only": True,
-                "source_master_unchanged": True,
-            },
-            "usage": {
-                "provider": "modal",
-                "duration_seconds": duration,
-                "gpu_type": "L4",
-                "gpu_seconds": duration,
-                "peak_vram_mb": peak,
-                "estimated_cost_usd": duration * 0.000222,
-            },
-        }
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
-
-
 class VolumeSourceClient:
     def __init__(self, evidence: dict[str, Any], channel_id: str) -> None:
         from clipper.models import VideoCandidate
@@ -480,9 +362,9 @@ class VolumeSourceClient:
         self.duration = float(evidence["duration_seconds"])
         self.video = VideoCandidate(
             video_id=str(evidence["video_id"]),
-            title="Double Coverage authorized production source",
+            title="Authorized production source",
             channel_id=channel_id,
-            channel_title="Double Coverage Podcast",
+            channel_title="Authorized source channel",
             url=str(evidence["source_url"]),
             duration_seconds=self.duration,
         )
@@ -527,12 +409,10 @@ class VolumeSourceClient:
     scaledown_window=2,
 )
 def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
-    """Run the complete podcast pipeline and render production finalists in Modal."""
+    """Run the canonical clipper pipeline inside Modal against the mounted source master."""
 
     from clipper.pipeline import PipelineSettings, run_pipeline
-    from clipper.providers.base import ModelIdentity
     from clipper.providers.factory import speech_providers
-    from clipper.providers.modal_speech import ModalDiarizationProvider, ModalMediaBridge
 
     source_evidence = payload.get("source")
     if not isinstance(source_evidence, dict):
@@ -543,6 +423,10 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("run_full_cycle requires campaign brief and channel ID")
     if source_evidence.get("quality_policy") != "highest_available_no_transcode":
         raise RuntimeError("source master violates no-downgrade policy")
+
+    render = bool(payload.get("render", True))
+    fresh_inference = bool(payload.get("fresh_inference", False))
+    resume_from_run_id = str(payload.get("resume_from_run_id") or "").strip() or None
 
     media_cache.reload()
     artifact_volume.reload()
@@ -565,21 +449,12 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
         }
     )
     settings = PipelineSettings.from_env()
-    asr, alignment, _ = speech_providers("balanced")
-    bridge = ModalMediaBridge("clipper-media-cache")
-    diarization = ModalDiarizationProvider(
-        app_name=APP_NAME,
-        function_name="diarize_open",
-        identity=ModelIdentity(
-            SORTFORMER_MODEL,
-            "runtime-resolved",
-            "none",
-            "modal-nemo-sortformer",
-            "none",
-            "canonical-timeline-v1",
-        ),
-        media_bridge=bridge,
-    )
+    if fresh_inference:
+        settings = replace(
+            settings,
+            cache_root=Path(ARTIFACT_ROOT) / "_fresh-cache" / uuid.uuid4().hex,
+        )
+    asr, alignment, diarization = speech_providers("balanced")
 
     run_dir = run_pipeline(
         brief_path,
@@ -588,16 +463,43 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
         transcription_provider=asr,
         alignment_provider=alignment,
         diarization_provider=diarization,
-        render=True,
+        render=render,
     )
-    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    if not isinstance(manifest, dict) or manifest.get("status") != "SUCCESS":
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise RuntimeError("production pipeline returned an invalid manifest")
+    if render and manifest.get("status") != "SUCCESS":
         raise RuntimeError(
             f"production pipeline did not reach SUCCESS: {manifest.get('status_reason')}"
         )
-    source_meta = manifest.get("run_metadata", {}).get("source_hashes", {})
-    if str(source_meta.get(source.video.video_id) or "") != source.source_sha256:
-        raise RuntimeError("pipeline did not process the acquired source master hash")
+    if not render and manifest.get("status") == "FAILED":
+        raise RuntimeError(
+            f"planning pipeline failed before render: {manifest.get('status_reason')}"
+        )
+
+    metadata = manifest.get("run_metadata")
+    if not isinstance(metadata, dict):
+        raise RuntimeError("production manifest is missing run_metadata")
+    source_meta = metadata.get("source_hashes")
+    if not isinstance(source_meta, dict) or str(source_meta.get(source.video.video_id) or "") != (
+        source.source_sha256
+    ):
+        raise RuntimeError("pipeline did not process the Modal-acquired source master hash")
+    metadata["source_execution"] = {
+        "mode": "modal-native",
+        "local_source_reused": False,
+        "source_volume": "clipper-media-cache",
+        "source_mount_path": source.source_path.as_posix(),
+        "source_sha256": source.source_sha256,
+    }
+    if resume_from_run_id is not None:
+        metadata["resume"] = {
+            "from_run_id": resume_from_run_id,
+            "mode": "provenance-only",
+            "local_source_reused": False,
+        }
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     artifact_volume.commit()
     run_relative = "/" + str(run_dir.relative_to(Path(ARTIFACT_ROOT))).replace(os.sep, "/")
@@ -609,5 +511,5 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
         "pipeline_status": manifest.get("status"),
         "rendered_finalists": len(manifest.get("rendered_clips") or []),
         "initial_shortlist": len(manifest.get("submission_shortlist") or []),
-        "review_status": "PENDING_ACTUAL_MP4_REVIEW",
+        "review_status": "PENDING_ACTUAL_MP4_REVIEW" if render else "NOT_RENDERED",
     }
