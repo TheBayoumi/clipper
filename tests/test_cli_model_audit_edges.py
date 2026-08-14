@@ -89,9 +89,7 @@ def test_model_audit_rejects_missing_grounding_records(tmp_path: Path) -> None:
         run_dir,
         {
             "editorial_inference": {
-                "model_invocations": [
-                    {"cache_hit": False, "model": {"model_id": "editor"}}
-                ]
+                "model_invocations": [{"cache_hit": False, "model": {"model_id": "editor"}}]
             },
             "grounding_inference": {"models": []},
         },
