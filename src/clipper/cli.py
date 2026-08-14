@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.util
 import json
 import logging
 import os
+import shutil
 import sys
 import uuid
 from dataclasses import replace
@@ -51,6 +53,14 @@ def _parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="execute transcription, planning, and rendering")
     run.add_argument("--brief", required=True, type=Path)
     run.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
+    run.add_argument(
+        "--resume",
+        metavar="RUN_ID",
+        help=(
+            "recover reusable source masters from a previous interrupted run and continue in a "
+            "new auditable run without downloading the same YouTube source again"
+        ),
+    )
     run.add_argument(
         "--no-render",
         action="store_true",
@@ -119,14 +129,17 @@ def _resolved_model_plan(settings: PipelineSettings) -> dict[str, object]:
     return plan
 
 
-def _assert_runtime_dependencies(plan: dict[str, object]) -> None:
-    """Fail before source acquisition when the resolved model backend is not runnable."""
-    requires_modal = any(
+def _requires_modal(plan: dict[str, object]) -> bool:
+    return any(
         isinstance(value, dict)
         and str(value.get("inference_engine", "")).strip().lower().startswith("modal-")
         for value in plan.values()
     )
-    if not requires_modal:
+
+
+def _assert_runtime_dependencies(plan: dict[str, object]) -> None:
+    """Fail before source acquisition when the resolved model backend is not runnable."""
+    if not _requires_modal(plan):
         return
     try:
         modal_spec = importlib.util.find_spec("modal")
@@ -140,6 +153,34 @@ def _assert_runtime_dependencies(plan: dict[str, object]) -> None:
         )
 
 
+def _assert_modal_functions_available(plan: dict[str, object]) -> None:
+    """Resolve deployed Modal functions before any large local source acquisition or upload."""
+    if not _requires_modal(plan):
+        return
+    modal = importlib.import_module("modal")
+    app_name = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
+    expected: list[str] = []
+    for plan_key, function_name in (
+        ("transcription", "transcribe"),
+        ("alignment", "align"),
+        ("diarization", "diarize"),
+        ("editorial", "editorial"),
+        ("embedding", "embedding"),
+    ):
+        value = plan.get(plan_key)
+        if isinstance(value, dict) and str(value.get("inference_engine", "")).startswith("modal-"):
+            expected.append(function_name)
+    for function_name in expected:
+        try:
+            modal.Function.from_name(app_name, function_name)
+        except Exception as exc:
+            raise RuntimeError(
+                f"required Modal function {app_name}/{function_name} is unavailable. "
+                "Deploy the open-model workers before starting source acquisition with: "
+                "modal deploy scripts/modal_open_models.py"
+            ) from exc
+
+
 def _source_client_for_run(settings: PipelineSettings) -> PersistentYouTubeClient | None:
     """Keep authorized YouTube masters in a cache independent of inference freshness."""
     if os.getenv("CLIPPER_SOURCE_FIXTURE_DIR"):
@@ -150,6 +191,87 @@ def _source_client_for_run(settings: PipelineSettings) -> PersistentYouTubeClien
         max_height=settings.source_max_height,
         media_cache_root=cache_root,
     )
+
+
+def _resolve_resume_run(artifact_root: Path, resume: str) -> Path:
+    run_id = resume.strip()
+    if not run_id or run_id in {".", ".."} or "/" in run_id or "\\" in run_id:
+        raise RuntimeError("--resume must be a run ID under the selected artifact root")
+    root = artifact_root.resolve()
+    run_dir = (root / run_id).resolve()
+    try:
+        run_dir.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("--resume resolved outside the selected artifact root") from exc
+    if not run_dir.is_dir():
+        raise RuntimeError(f"resume run does not exist: {run_dir}")
+    return run_dir
+
+
+def _seed_resume_source_cache(
+    settings: PipelineSettings, resume: str, *, campaign_id: str
+) -> Path:
+    """Promote completed source masters from an interrupted run into the persistent cache."""
+    run_dir = _resolve_resume_run(settings.artifact_root, resume)
+    if not run_dir.name.startswith(f"{campaign_id}-"):
+        raise RuntimeError(
+            f"resume run {run_dir.name} does not belong to campaign {campaign_id}"
+        )
+    manifest_path = run_dir / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            manifest = None
+        if isinstance(manifest, dict) and manifest.get("status") == "SUCCESS":
+            raise RuntimeError("refusing to resume a run that already completed successfully")
+
+    configured = os.getenv("CLIPPER_SOURCE_MEDIA_CACHE_ROOT")
+    cache_root = (
+        Path(configured) if configured else settings.artifact_root / "_source-media-cache"
+    )
+    imported: list[Path] = []
+    work_dir = run_dir / "work"
+    for source in sorted(work_dir.glob("*/*.mkv")):
+        if not source.is_file() or source.stat().st_size <= 0:
+            continue
+        video_id = source.parent.name
+        if source.name != f"{video_id}.mkv":
+            continue
+        target_dir = cache_root / video_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{video_id}.mkv"
+        if not target.is_file() or target.stat().st_size <= 0:
+            target.unlink(missing_ok=True)
+            try:
+                os.link(source, target)
+                transfer = "hard-linked"
+            except OSError:
+                shutil.copy2(source, target)
+                transfer = "copied"
+            LOGGER.info(
+                "resume source cache %s %s -> %s",
+                transfer,
+                source,
+                target,
+            )
+        else:
+            LOGGER.info("resume source cache already contains %s", target)
+        sidecar = source.with_suffix(".source.json")
+        if sidecar.is_file():
+            shutil.copy2(sidecar, target.with_suffix(".source.json"))
+        imported.append(target)
+
+    if not imported:
+        raise RuntimeError(
+            f"resume run contains no reusable YouTube MKV masters under {work_dir}"
+        )
+    LOGGER.info(
+        "resume recovered %d source master(s) from %s; continuing in a new auditable run",
+        len(imported),
+        run_dir,
+    )
+    return run_dir
 
 
 def _model_id(value: object) -> str | None:
@@ -311,6 +433,11 @@ def main(argv: list[str] | None = None) -> int:
             plan = _resolved_model_plan(settings)
             _log_model_summary(plan)
             _assert_runtime_dependencies(plan)
+            _assert_modal_functions_available(plan)
+            if args.resume:
+                brief = load_brief(args.brief)
+                assert_campaign_authorized(brief)
+                _seed_resume_source_cache(settings, args.resume, campaign_id=brief.campaign_id)
             source_client = _source_client_for_run(settings)
             should_render = not args.no_render
             run_dir = run_pipeline(
