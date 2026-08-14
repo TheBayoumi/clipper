@@ -98,12 +98,30 @@ def test_visible_run_timeout_kills_process() -> None:
     assert process.killed is True
 
 
+def test_visible_run_flushes_incomplete_utf8_tail(capsys) -> None:
+    class Process:
+        stdout = io.BytesIO(b"\xe2\x82")
+
+        def wait(self, timeout):
+            assert timeout == 900
+            return 0
+
+        def kill(self):
+            return None
+
+    with patch("clipper.youtube.subprocess.Popen", return_value=Process()):
+        result = _run(["yt-dlp"], visible=True)
+    assert result.returncode == 0
+    assert "\ufffd" in capsys.readouterr().err
+
+
 def test_direct_allowed_video_discovery_uses_metadata_path() -> None:
     brief = CampaignBrief.from_dict(
         {
             "campaign_id": "c",
             "title": "T",
             "objective": "O",
+            "keywords": ["neutral"],
             "allowed_video_ids": ["v1"],
             "rights_confirmed": True,
             "source_limit": 1,
@@ -122,9 +140,33 @@ def test_direct_allowed_video_discovery_uses_metadata_path() -> None:
         patch("clipper.youtube.shutil.which", return_value="yt-dlp"),
         patch("clipper.youtube._run", return_value=Mock(stdout=json.dumps(payload))) as run,
     ):
-        videos = client._discover_ytdlp(brief)
+        videos = client.discover(brief)
     assert [video.video_id for video in videos] == ["v1"]
     assert "https://www.youtube.com/watch?v=v1" in run.call_args.args[0]
+
+
+def test_api_discovery_forwards_published_after() -> None:
+    brief = CampaignBrief.from_dict(
+        {
+            "campaign_id": "c",
+            "title": "T",
+            "objective": "O",
+            "keywords": ["neutral"],
+            "source_channel_ids": ["UC1"],
+            "rights_confirmed": True,
+            "published_after": "2026-01-01T00:00:00Z",
+            "source_limit": 1,
+        }
+    )
+    client = YouTubeClient("key")
+    with patch.object(
+        client,
+        "_api_get",
+        side_effect=[{"items": []}, {"items": []}],
+    ) as api_get:
+        assert client.discover(brief) == []
+    search_params = api_get.call_args_list[0].args[1]
+    assert search_params["publishedAfter"] == "2026-01-01T00:00:00Z"
 
 
 def test_private_api_requires_key_and_format_selector_handles_muxed() -> None:
@@ -140,6 +182,15 @@ def test_private_api_requires_key_and_format_selector_handles_muxed() -> None:
         "--extractor-args",
         "youtube:player_client=android_vr",
     ]
+
+
+def test_format_selection_ignores_non_video_formats() -> None:
+    payload = _format_payload()
+    formats = payload["formats"]
+    assert isinstance(formats, list)
+    formats.insert(0, {"format_id": "audio", "height": 0, "vcodec": "none"})
+    selected, _ = YouTubeClient._select_video_format(payload, None)
+    assert selected["height"] == 2160
 
 
 def test_non_403_download_failure_does_not_enter_recovery(tmp_path: Path) -> None:
@@ -188,7 +239,7 @@ def test_403_exhaustion_records_refresh_and_quality_lock(tmp_path: Path, monkeyp
     ):
         client.download_media(video, tmp_path)
 
-    assert "HTTP Error 403" in str(captured.value.__cause__)
+    assert "android metadata refresh failed" in str(captured.value.__cause__)
     assert any("youtube:player_client=android_vr" in call for call in calls)
     assert any("youtube:player_client=web_embedded" in call for call in calls)
 
