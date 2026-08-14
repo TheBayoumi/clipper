@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from clipper.cli import _audit_model_evidence, main
+from clipper.cli import _audit_model_evidence, _seed_resume_source_cache, main
 from clipper.models import VideoCandidate
 from clipper.pipeline import PipelineSettings
 
@@ -148,6 +148,70 @@ def test_cli_run_defaults_to_audited_open_v10(tmp_path: Path, capsys, monkeypatc
     assert audit["editorial"]["cache_hits"] == 1
     assert audit["grounding"]["live_invocations"] == 2
     assert audit["grounding"]["cache_hits"] == 1
+
+
+def test_resume_reuses_interrupted_source_master(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    previous = artifact_root / "c-20260814T102639Z"
+    source_dir = previous / "work" / "v1"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "v1.mkv"
+    source.write_bytes(b"source-master")
+    source.with_suffix(".source.json").write_text('{"quality":"source"}', encoding="utf-8")
+
+    settings = PipelineSettings(artifact_root=artifact_root)
+    recovered = _seed_resume_source_cache(
+        settings, previous.name, campaign_id="c"
+    )
+
+    assert recovered == previous.resolve()
+    cached = artifact_root / "_source-media-cache" / "v1" / "v1.mkv"
+    assert cached.read_bytes() == b"source-master"
+    assert json.loads(cached.with_suffix(".source.json").read_text()) == {"quality": "source"}
+
+
+def test_cli_resume_accepts_run_id_and_seeds_before_pipeline(tmp_path: Path) -> None:
+    path = make_brief(tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    previous = artifact_root / "c-20260814T102639Z"
+    source_dir = previous / "work" / "v1"
+    source_dir.mkdir(parents=True)
+    (source_dir / "v1.mkv").write_bytes(b"source-master")
+
+    run_dir = tmp_path / "continued-run"
+    write_open_manifest(run_dir)
+    with (
+        patch("clipper.cli._resolved_model_plan", return_value=open_plan()),
+        patch("clipper.cli.run_pipeline", return_value=run_dir) as run,
+    ):
+        assert (
+            main(
+                [
+                    "run",
+                    "--brief",
+                    str(path),
+                    "--artifact-root",
+                    str(artifact_root),
+                    "--resume",
+                    previous.name,
+                    "--no-render",
+                ]
+            )
+            == 0
+        )
+    assert (artifact_root / "_source-media-cache" / "v1" / "v1.mkv").is_file()
+    run.assert_called_once()
+
+
+def test_resume_rejects_invalid_or_completed_run(tmp_path: Path) -> None:
+    settings = PipelineSettings(artifact_root=tmp_path / "artifacts")
+    with pytest.raises(RuntimeError, match="run ID"):
+        _seed_resume_source_cache(settings, "../escape", campaign_id="c")
+
+    completed = settings.artifact_root / "c-20260814T102639Z"
+    write_open_manifest(completed, status="SUCCESS")
+    with pytest.raises(RuntimeError, match="already completed successfully"):
+        _seed_resume_source_cache(settings, completed.name, campaign_id="c")
 
 
 def test_cli_refuses_accidental_legacy_and_local_lite(tmp_path: Path, monkeypatch) -> None:
