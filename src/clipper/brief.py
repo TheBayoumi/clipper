@@ -56,7 +56,9 @@ def _normalize_semantic_brief(data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(keywords, list) or not any(
         isinstance(item, str) and item.strip() for item in keywords
     ):
-        objective = str(normalized.get("objective") or normalized.get("title") or "campaign").strip()
+        objective = str(
+            normalized.get("objective") or normalized.get("title") or "campaign"
+        ).strip()
         normalized["keywords"] = [objective]
     return normalized
 
