@@ -293,7 +293,6 @@ class YouTubeClient:
         command = [
             "yt-dlp",
             "--no-playlist",
-            "--newline",
             "--no-warnings",
             "-f",
             format_selector,
