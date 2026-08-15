@@ -17,7 +17,6 @@ from typing import Any
 
 import modal
 
-from clipper.providers.editorial_prompt import editorial_contract
 
 APP_NAME = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
 # This is a Modal resource name, not credential material.
@@ -73,6 +72,7 @@ text_image = base_image.uv_pip_install(
     "tiktoken>=0.11,<1",
     "bitsandbytes>=0.47,<1",
     "pillow>=11,<13",
+    "outlines>=1.3,<2",
 ).add_local_python_source("clipper")
 speech_image = base_image.uv_pip_install(
     "torch>=2.8,<3",
@@ -85,6 +85,7 @@ app = modal.App(APP_NAME)
 _embedding_model: Any | None = None
 _editorial_tokenizer: Any | None = None
 _editorial_model: Any | None = None
+_editorial_structured_model: Any | None = None
 _vision_models: dict[str, tuple[Any, Any]] = {}
 _whisper_model: Any | None = None
 _diarization_pipeline: Any | None = None
@@ -221,13 +222,9 @@ def _editorial_recovery_attempt(payload: dict[str, Any]) -> int:
 
 
 def _editorial_output_budget(payload: dict[str, Any]) -> int:
-    task = str(payload.get("task") or "")
-    if task == "episode_editorial_profile" or task == "global_concept_comparison":
-        base_budget = 1024
-    elif task.startswith("story_moments:") or task.startswith("hook_variants:"):
-        base_budget = 1536
-    else:
-        base_budget = 2048
+    from clipper.providers.editorial_prompt import editorial_output_budget
+
+    base_budget = editorial_output_budget(payload)
     return min(4096, base_budget * _editorial_recovery_attempt(payload))
 
 
@@ -471,11 +468,18 @@ def embedding(payload: dict[str, Any]) -> dict[str, Any]:
     scaledown_window=2,
 )
 def editorial(payload: dict[str, Any]) -> dict[str, Any]:
-    global _editorial_model, _editorial_tokenizer
+    from clipper.providers.editorial_prompt import (
+        editorial_contract,
+        editorial_json_schema,
+    )
+
+    global _editorial_model, _editorial_structured_model, _editorial_tokenizer
     task = str(payload.get("task") or "")
     recovery_attempt = _editorial_recovery_attempt(payload)
     try:
         import torch
+        from outlines import from_transformers
+        from outlines.types import JsonSchema
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
         started = time.perf_counter()
@@ -498,16 +502,26 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
                 max_memory={0: "22GiB", 1: "22GiB"},
                 low_cpu_mem_usage=True,
             )
+            _editorial_structured_model = None
+
+        if _editorial_structured_model is None:
+            _editorial_structured_model = from_transformers(
+                _editorial_model,
+                _editorial_tokenizer,
+            )
+
         system_content = (
             "You are a source-grounded podcast editor. Never invent spoken words or IDs. "
             + editorial_contract(task)
         )
         if recovery_attempt > 1:
             system_content += (
-                " This is a JSON recovery generation after an invalid or truncated response. "
-                "Return the complete JSON object and close every string, array, and object. "
-                "If needed, return fewer valid items with shorter prose rather than truncating."
+                " This is a constrained recovery generation after a previous invalid, truncated, "
+                "or semantically rejected response. Return a complete object satisfying the JSON "
+                "Schema. If needed, return fewer valid items with shorter prose rather than "
+                "exhausting the output budget."
             )
+
         messages = [
             {"role": "system", "content": system_content},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -515,33 +529,63 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
         rendered = _editorial_tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        inputs = _editorial_tokenizer(rendered, return_tensors="pt").to(_editorial_model.device)
+        schema = JsonSchema(editorial_json_schema(task))
         output_budget = _editorial_output_budget(payload)
-        output = _editorial_model.generate(
-            **inputs,
+
+        input_ids = _editorial_tokenizer(
+            rendered,
+            add_special_tokens=False,
+        )["input_ids"]
+        input_units = len(input_ids)
+
+        text = _editorial_structured_model(
+            rendered,
+            schema,
             max_new_tokens=output_budget,
             do_sample=False,
             use_cache=True,
         )
-        generated = output[0][inputs["input_ids"].shape[-1] :]
-        text = _editorial_tokenizer.decode(generated, skip_special_tokens=True)
+        if not isinstance(text, str):
+            raise TypeError(
+                "Outlines transformers generation returned a non-string response: "
+                f"{type(text).__name__}"
+            )
+
+        output_ids = _editorial_tokenizer(
+            text,
+            add_special_tokens=False,
+        )["input_ids"]
+        output_units = len(output_ids)
+
         try:
             value = _json_text(text)
         except json.JSONDecodeError as exc:
-            if int(generated.numel()) >= output_budget:
+            # Outlines constrains syntax during decoding, so reaching this branch generally
+            # means generation was cut off by the output budget or an upstream library error.
+            if output_units >= output_budget:
                 raise EditorialOutputTruncated(
                     f"task={task} attempt={recovery_attempt} exhausted "
                     f"max_new_tokens={output_budget}: {exc}"
                 ) from exc
-            raise
+            raise RuntimeError(
+                "constrained editorial generation returned invalid JSON despite Outlines "
+                f"schema enforcement for task={task}: {exc}"
+            ) from exc
+
         return {
             "value": value,
             "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
+            "structured_generation": {
+                "engine": "outlines-transformers",
+                "schema_version": "editorial-json-v2",
+                "constrained": True,
+                "recovery_attempt": recovery_attempt,
+            },
             "usage": _usage(
                 started,
                 "L4:2",
-                input_units=int(inputs["input_ids"].numel()),
-                output_units=int(generated.numel()),
+                input_units=input_units,
+                output_units=output_units,
             ),
         }
     except Exception as exc:
@@ -834,6 +878,31 @@ def diarize(payload: dict[str, Any]) -> dict[str, Any]:
 @app.function(image=modal.Image.debian_slim(), timeout=120, scaledown_window=2)
 def credential_smoke() -> dict[str, Any]:
     return {"app": APP_NAME, "ok": True}
+
+
+@app.function(image=text_image, timeout=180, memory=4096, scaledown_window=2)
+def editorial_schema_smoke() -> dict[str, Any]:
+    from clipper.providers.editorial_prompt import editorial_json_schema
+    from outlines.types import JsonSchema
+
+    tasks = [
+        "episode_editorial_profile",
+        "story_moments:smoke",
+        "clip_concepts",
+        "global_concept_comparison",
+        "hook_variants:smoke",
+        "edit_plans:smoke",
+        "source_hazards:smoke",
+        "boundary_audit:smoke",
+    ]
+    for task in tasks:
+        JsonSchema(editorial_json_schema(task))
+    return {
+        "app": APP_NAME,
+        "ok": True,
+        "engine": "outlines-transformers",
+        "task_families": len(tasks),
+    }
 
 
 @app.function(

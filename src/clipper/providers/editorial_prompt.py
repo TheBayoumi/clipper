@@ -5,27 +5,271 @@ from typing import Any
 EDITORIAL_PROMPT_VERSION = "editor-v2"
 EDITORIAL_SCHEMA_VERSION = "editorial-json-v2"
 
+_BOUNDARY_STATUSES = ["COMPLETE", "NEEDS_CONTEXT", "INCOMPLETE", "UNCERTAIN"]
+_BOUNDARY_FAILURE_REASONS = [
+    "start_requires_prior_context",
+    "start_fragment",
+    "unresolved_reference",
+    "end_incomplete",
+    "open_question",
+    "unresolved_setup",
+    "unresolved_payoff",
+    "partial_number_or_unit",
+    "followup_context_required",
+    "boundary_uncertain",
+]
+_HAZARD_CLASSIFICATIONS = [
+    "editorial_content",
+    "advertisement",
+    "sponsor_read",
+    "promo",
+    "intro",
+    "outro",
+    "housekeeping",
+    "graphic_heavy",
+    "unknown",
+]
+
 
 def editorial_output_budget(payload: dict[str, Any]) -> int:
+    """Return the base output budget for one editorial generation attempt."""
+
     task = str(payload.get("task") or "")
     if task in {"episode_editorial_profile", "global_concept_comparison"}:
-        return 768
-    if task.startswith(("hook_variants:", "boundary_audit:")):
         return 1024
-    return 1536
+    if task.startswith(("story_moments:", "hook_variants:", "boundary_audit:")):
+        return 1536
+    return 2048
+
+
+def _string(*, nullable: bool = False) -> dict[str, Any]:
+    if nullable:
+        return {"type": ["string", "null"]}
+    return {"type": "string"}
+
+
+def _confidence() -> dict[str, Any]:
+    return {"type": "number", "minimum": 0.0, "maximum": 1.0}
+
+
+def _string_array(*, max_items: int | None = None) -> dict[str, Any]:
+    schema: dict[str, Any] = {"type": "array", "items": {"type": "string"}}
+    if max_items is not None:
+        schema["maxItems"] = max_items
+    return schema
+
+
+def _strict_object(
+    properties: dict[str, Any],
+    *,
+    required: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required if required is not None else list(properties),
+        "additionalProperties": False,
+    }
+
+
+def editorial_json_schema(task: str) -> dict[str, Any]:
+    """Return the machine-enforced JSON Schema for a V11 editorial task.
+
+    This deliberately covers only the eight V11 task families. Unknown tasks fail
+    closed instead of silently falling back to unconstrained text generation.
+    """
+
+    if task == "episode_editorial_profile":
+        return _strict_object(
+            {
+                "summary": _string(),
+                "valuable_moment_characteristics": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 3,
+                    "maxItems": 5,
+                },
+                "avoid_characteristics": _string_array(max_items=4),
+                "confidence": _confidence(),
+            }
+        )
+
+    if task.startswith("story_moments:"):
+        moment = _strict_object(
+            {
+                "moment_id": _string(),
+                "start_word_id": _string(),
+                "end_word_id": _string(),
+                "semantic_summary": _string(),
+                "narrative_structure": _string(),
+                "required_prior_context": _string(),
+                "required_followup_context": _string(),
+                "editorial_reason": _string(),
+                "confidence": _confidence(),
+            }
+        )
+        return _strict_object(
+            {
+                "moments": {
+                    "type": "array",
+                    "items": moment,
+                    "maxItems": 8,
+                }
+            }
+        )
+
+    if task == "clip_concepts":
+        concept = _strict_object(
+            {
+                "concept_id": _string(),
+                "story_moment_ids": _string_array(max_items=16),
+                "start_word_id": _string(),
+                "end_word_id": _string(),
+                "semantic_summary": _string(),
+                "standalone_context": _string(),
+                "required_prior_context": _string(),
+                "required_followup_context": _string(),
+                "narrative_structure": _string(),
+                "recommended_duration": {"type": "number", "minimum": 0.0},
+                "visual_dependencies": _string_array(max_items=12),
+                "confidence": _confidence(),
+            }
+        )
+        return _strict_object(
+            {
+                "concepts": {
+                    "type": "array",
+                    "items": concept,
+                    "maxItems": 12,
+                }
+            }
+        )
+
+    if task == "global_concept_comparison":
+        return _strict_object(
+            {
+                "concept_ids": _string_array(max_items=12),
+            }
+        )
+
+    if task.startswith("hook_variants:"):
+        variant = _strict_object(
+            {
+                "variant_id": _string(),
+                "strategy_label": _string(),
+                "source_start_word_id": _string(),
+                "source_end_word_id": _string(),
+                "overlay_text": _string(nullable=True),
+                "rationale": _string(),
+                "confidence": _confidence(),
+            }
+        )
+        return _strict_object(
+            {
+                "variants": {
+                    "type": "array",
+                    "items": variant,
+                    "maxItems": 4,
+                }
+            }
+        )
+
+    if task.startswith("edit_plans:"):
+        plan = _strict_object(
+            {
+                "plan_id": _string(),
+                "video_id": _string(),
+                "concept_id": _string(),
+                "variant_id": _string(),
+                "source_start_word_id": _string(),
+                "source_end_word_id": _string(),
+                "hook_start_word_id": _string(),
+                "hook_end_word_id": _string(),
+                "overlay_text": _string(nullable=True),
+                "strategy_label": _string(),
+                "caption_platform": {"type": "string", "enum": ["tiktok"]},
+                "confidence": _confidence(),
+            }
+        )
+        return _strict_object(
+            {
+                "plans": {
+                    "type": "array",
+                    "items": plan,
+                    "maxItems": 4,
+                }
+            }
+        )
+
+    if task.startswith("source_hazards:"):
+        segment = _strict_object(
+            {
+                "start_word_id": _string(),
+                "end_word_id": _string(),
+                "classification": {
+                    "type": "string",
+                    "enum": _HAZARD_CLASSIFICATIONS,
+                },
+                "confidence": _confidence(),
+                "evidence": _string_array(max_items=8),
+            }
+        )
+        return _strict_object(
+            {
+                "segments": {
+                    "type": "array",
+                    "items": segment,
+                    "maxItems": 64,
+                }
+            }
+        )
+
+    if task.startswith("boundary_audit:"):
+        return _strict_object(
+            {
+                "start_status": {"type": "string", "enum": _BOUNDARY_STATUSES},
+                "end_status": {"type": "string", "enum": _BOUNDARY_STATUSES},
+                "standalone_status": {"type": "string", "enum": _BOUNDARY_STATUSES},
+                "required_prior_context": _string(),
+                "required_followup_context": _string(),
+                "prior_context_included": {"type": "boolean"},
+                "followup_context_included": {"type": "boolean"},
+                "setup_resolved": {"type": "boolean"},
+                "payoff_resolved": {"type": "boolean"},
+                "open_questions": _string_array(max_items=12),
+                "open_references": _string_array(max_items=12),
+                "narrative_structure": _string(),
+                "boundary_confidence": _confidence(),
+                "failure_reasons": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": _BOUNDARY_FAILURE_REASONS,
+                    },
+                    "maxItems": 10,
+                    "uniqueItems": True,
+                },
+                "repair_start_word_id": _string(nullable=True),
+                "repair_end_word_id": _string(nullable=True),
+            }
+        )
+
+    raise ValueError(f"unsupported V11 editorial task for structured generation: {task!r}")
 
 
 def editorial_contract(task: str) -> str:
     common = (
         "Output exactly one compact JSON object, no markdown and no extra keys. "
-        "Keep prose fields concise. For range fields copy the supplied short word_ref values, "
-        "never reconstruct or abbreviate word_id values yourself. "
-        "The campaign maximum duration is a ceiling, never a target. Never invent source wording. "
-        "Preserve source chronology. The first audible content must be understandable without "
-        "hidden prior context, and the ending must resolve the semantic obligation created by the "
-        "clip. Reject incomplete stories rather than amputating them. Generated overlays must not "
-        "falsify spoken material. Campaign rules are hard constraints; exclude sponsor and promo "
-        "regions when policy forbids them. Lower confidence when required evidence is uncertain. "
+        "The runtime constrains generation to the task JSON Schema; satisfy its required fields "
+        "without adding commentary outside the object. Keep prose fields concise. For range "
+        "fields copy the supplied short word_ref values, never reconstruct or abbreviate word_id "
+        "values yourself. The campaign maximum duration is a ceiling, never a target. Never "
+        "invent source wording. Preserve source chronology. The first audible content must be "
+        "understandable without hidden prior context, and the ending must resolve the semantic "
+        "obligation created by the clip. Reject incomplete stories rather than amputating them. "
+        "Generated overlays must not falsify spoken material. Campaign rules are hard constraints; "
+        "exclude sponsor and promo regions when policy forbids them. Lower confidence when required "
+        "evidence is uncertain. "
     )
     if task == "episode_editorial_profile":
         return common + (
@@ -100,4 +344,4 @@ def editorial_contract(task: str) -> str:
             "end_incomplete, open_question, unresolved_setup, unresolved_payoff, "
             "partial_number_or_unit, followup_context_required, or boundary_uncertain. "
         )
-    return common + "Follow the task payload exactly."
+    raise ValueError(f"unsupported V11 editorial task: {task!r}")
