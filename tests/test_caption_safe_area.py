@@ -6,7 +6,7 @@ from clipper.models import ClipCandidate, TranscriptSegment
 
 def test_long_top_hook_stays_inside_portrait_safe_width(tmp_path: Path) -> None:
     clip = ClipCandidate("v", 0, 3, "text", 1)
-    segment = TranscriptSegment(0, 3, "unrelated spoken caption text")
+    segment = TranscriptSegment(2, 3, "unrelated spoken caption text")
     hook = (
         "THIS LONG TOP CAPTION MUST STAY INSIDE THE PORTRAIT FRAME "
         "WITHOUT BEING CUT OFF AT EITHER SIDE"

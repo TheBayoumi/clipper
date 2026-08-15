@@ -139,6 +139,9 @@ def _caption_audit(
     partial_words_dropped: int,
     hook_text: str | None,
     hook_suppressed: bool,
+    hook_rendered: bool,
+    hook_suppression_reason: str | None,
+    potential_hook_caption_overlap_seconds: float,
 ) -> dict[str, object]:
     first_group = list(groups[0]) if groups else []
     caption_text = " ".join(word.text for word in first_group)
@@ -181,6 +184,10 @@ def _caption_audit(
         ],
         "hook_overlay_text": hook_text,
         "hook_overlay_suppressed_duplicate": hook_suppressed,
+        "hook_overlay_rendered": hook_rendered,
+        "hook_overlay_suppression_reason": hook_suppression_reason,
+        "potential_hook_caption_overlap_seconds": potential_hook_caption_overlap_seconds,
+        "simultaneous_narrative_layers_max": 1 if groups or hook_rendered else 0,
     }
 
 
@@ -229,17 +236,35 @@ def create_word_reveal_ass(
     clean_hook = clean_word(hook_text)[:90] if hook_text and hook_text.strip() else ""
     hook_font_size = _top_hook_font_size(clean_hook, width, max_lines=max_lines)
     first_caption = " ".join(word.text for word in groups[0]) if groups else ""
-    suppress_hook = bool(
+    suppress_duplicate_hook = bool(
         clean_hook and first_caption and _near_duplicate(clean_hook, first_caption)
     )
-    if clean_hook and not suppress_hook:
-        hook_end = min(1.8, clip.duration)
-        if hook_end > 0.2:
-            events.insert(
-                0,
-                "Dialogue: 1,"
-                f"{_ass_timestamp(0.0)},{_ass_timestamp(hook_end)},Hook,,0,0,0,,{clean_hook}",
-            )
+    hook_end = min(1.8, clip.duration)
+    potential_hook_caption_overlap = sum(
+        max(0.0, min(hook_end, group[-1].local_end) - max(0.0, group[0].local_start))
+        for group in groups
+        if group
+    )
+    suppress_overlapping_hook = potential_hook_caption_overlap > 0.001
+    hook_suppression_reason = (
+        "duplicate_caption"
+        if suppress_duplicate_hook
+        else "caption_timing_overlap"
+        if clean_hook and suppress_overlapping_hook
+        else None
+    )
+    render_hook = bool(
+        clean_hook
+        and not suppress_duplicate_hook
+        and not suppress_overlapping_hook
+        and hook_end > 0.2
+    )
+    if render_hook:
+        events.insert(
+            0,
+            "Dialogue: 1,"
+            f"{_ass_timestamp(0.0)},{_ass_timestamp(hook_end)},Hook,,0,0,0,,{clean_hook}",
+        )
 
     style_format = (
         "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,"
@@ -278,7 +303,10 @@ def create_word_reveal_ass(
         timing_mode=timing_mode,
         partial_words_dropped=partial_words_dropped,
         hook_text=clean_hook or None,
-        hook_suppressed=suppress_hook,
+        hook_suppressed=suppress_duplicate_hook,
+        hook_rendered=render_hook,
+        hook_suppression_reason=hook_suppression_reason,
+        potential_hook_caption_overlap_seconds=round(potential_hook_caption_overlap, 3),
     )
     target_audit = (
         Path(audit_path) if audit_path is not None else output.with_suffix(".caption-audit.json")

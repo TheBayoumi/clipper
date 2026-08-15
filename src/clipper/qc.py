@@ -82,8 +82,10 @@ def _tracking_evidence(path: Path) -> dict[str, Any]:
         "speaker_tracks": payload.get("speaker_tracks"),
         "speaker_switches": payload.get("speaker_switches"),
         "reframe_events": payload.get("reframe_events"),
+        "face_detected": payload.get("face_detected"),
         "transitions": payload.get("transitions") or [],
         "source_cuts": payload.get("source_cuts") or [],
+        "composition": payload.get("composition") or {},
         "image_quality": payload.get("image_quality") or {},
     }
 
@@ -115,6 +117,8 @@ def _transition_issues(transitions: object) -> list[str]:
         moving.append(raw)
         if reason == "source_cut" and mode != "hard_cut":
             issues.append("source camera cut is incorrectly rendered as sliding crop motion")
+        if reason == "subject_motion" and mode != "hold":
+            issues.append("same-speaker crop motion is not allowed inside a source shot")
         if mode == "hard_cut" and end - start > 0.05:
             issues.append("hard crop cut has a non-zero transition duration")
         if mode == "eased_reframe":
@@ -125,7 +129,8 @@ def _transition_issues(transitions: object) -> list[str]:
                 issues.append("crop reframe velocity exceeds one crop width per second")
         if reason != "source_cut" and start + 0.05 < target_visible_at:
             issues.append("crop starts reframing before the target face is visible")
-    for previous, current in pairwise(moving):
+    camera_moves = [item for item in moving if str(item.get("reason") or "") != "source_cut"]
+    for previous, current in pairwise(camera_moves):
         gap = _float(current.get("start")) - _float(previous.get("end"))
         previous_dx = _float(previous.get("to_x")) - _float(previous.get("from_x"))
         current_dx = _float(current.get("to_x")) - _float(current.get("from_x"))
@@ -157,6 +162,18 @@ def tracking_plan_issues(payload: dict[str, Any]) -> list[str]:
         issues.append("crop resolution is materially below the maximum portrait crop")
     if bool(image_quality.get("digital_zoom_used")):
         issues.append("tracking plan uses digital zoom that discards source pixels")
+    composition = payload.get("composition")
+    composition = composition if isinstance(composition, dict) else {}
+    sample_count = int(composition.get("sample_count") or 0)
+    if bool(payload.get("face_detected")) and not sample_count:
+        issues.append("selected face composition evidence is missing")
+    if sample_count:
+        centered_ratio = _float(composition.get("centered_sample_ratio"))
+        visible_ratio = _float(composition.get("fully_visible_sample_ratio"))
+        if centered_ratio < 0.85:
+            issues.append("selected speaker is outside the horizontal framing safe region")
+        if visible_ratio < 0.98:
+            issues.append("selected speaker face is cropped in tracking evidence")
     return list(dict.fromkeys(issues))
 
 
@@ -303,6 +320,11 @@ def run_technical_qc(
         timing_delta = _float(caption_audit.get("first_caption_timing_delta_seconds"), 999.0)
         if timing_delta > 0.08:
             issues.append("first caption timing is not aligned with the first audible word")
+        narrative_layers = caption_audit.get("simultaneous_narrative_layers_max")
+        if not isinstance(narrative_layers, int):
+            issues.append("caption layer concurrency evidence is missing")
+        elif narrative_layers > 1:
+            issues.append("multiple narrative text layers overlap")
     tracking_info = _tracking_evidence(tracking)
     tracking_issues = tracking_plan_issues(tracking_info)
     issues.extend(tracking_issues)
@@ -372,6 +394,15 @@ def run_technical_qc(
             else None,
             "hook_overlay_suppressed_duplicate": (
                 caption_audit.get("hook_overlay_suppressed_duplicate") if caption_audit else None
+            ),
+            "hook_overlay_rendered": (
+                caption_audit.get("hook_overlay_rendered") if caption_audit else None
+            ),
+            "hook_overlay_suppression_reason": (
+                caption_audit.get("hook_overlay_suppression_reason") if caption_audit else None
+            ),
+            "simultaneous_narrative_layers_max": (
+                caption_audit.get("simultaneous_narrative_layers_max") if caption_audit else None
             ),
         },
         "framing": {

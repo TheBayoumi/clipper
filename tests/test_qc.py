@@ -41,6 +41,7 @@ def fixtures(tmp_path: Path) -> tuple[Path, Path, Path]:
                 "first_caption_timing_delta_seconds": 0.0,
                 "alignment": "PASS",
                 "partial_words_dropped": 0,
+                "simultaneous_narrative_layers_max": 1,
             }
         ),
         encoding="utf-8",
@@ -300,10 +301,28 @@ def test_transition_and_render_quality_gates_reject_v8_failure_modes(tmp_path: P
     assert "source camera cut" in issues
     assert "velocity" in issues
     assert "before the target face" in issues
-    assert "back-and-forth" in issues
+    assert "back-and-forth" not in issues
     render = tmp_path / "x.render.json"
     render.write_text(json.dumps({"resampling_stages": 2, "digital_zoom_used": True}))
     assert _render_evidence(render)["digital_zoom_used"] is True
+
+
+def test_transition_gate_rejects_same_speaker_camera_motion() -> None:
+    issues = _transition_issues(
+        [
+            {
+                "reason": "subject_motion",
+                "mode": "eased_reframe",
+                "start": 4.0,
+                "end": 4.5,
+                "normalized_distance": 0.2,
+                "target_visible_at": 4.0,
+                "from_x": 100.0,
+                "to_x": 300.0,
+            }
+        ]
+    )
+    assert "same-speaker crop motion is not allowed inside a source shot" in issues
 
 
 def test_qc_rejects_first_caption_misalignment(tmp_path: Path) -> None:
@@ -340,6 +359,54 @@ def test_qc_rejects_first_caption_misalignment(tmp_path: Path) -> None:
     assert "first caption" in " | ".join(report["issues"])
 
 
+def test_qc_rejects_overlapping_narrative_text_layers(tmp_path: Path) -> None:
+    video, ass, tracking = fixtures(tmp_path)
+    audit_path = video.with_suffix(".caption-audit.json")
+    audit = json.loads(audit_path.read_text())
+    audit["simultaneous_narrative_layers_max"] = 2
+    audit_path.write_text(json.dumps(audit))
+    calls = iter(
+        [
+            completed(stdout=probe_payload()),
+            completed(),
+            completed(stderr='{"input_i":"-14","input_tp":"-1.5","input_lra":"2"}'),
+            completed(),
+        ]
+    )
+    with (
+        patch("clipper.qc.shutil.which", return_value="tool"),
+        patch("clipper.qc._run", side_effect=lambda *_a, **_k: next(calls)),
+    ):
+        report = run_technical_qc(
+            video, expected_duration=20, caption_path=ass, tracking_path=tracking
+        )
+    assert "multiple narrative text layers overlap" in report["issues"]
+
+
+def test_qc_rejects_missing_caption_layer_concurrency_evidence(tmp_path: Path) -> None:
+    video, ass, tracking = fixtures(tmp_path)
+    audit_path = video.with_suffix(".caption-audit.json")
+    audit = json.loads(audit_path.read_text())
+    audit.pop("simultaneous_narrative_layers_max")
+    audit_path.write_text(json.dumps(audit))
+    calls = iter(
+        [
+            completed(stdout=probe_payload()),
+            completed(),
+            completed(stderr='{"input_i":"-14","input_tp":"-1.5","input_lra":"2"}'),
+            completed(),
+        ]
+    )
+    with (
+        patch("clipper.qc.shutil.which", return_value="tool"),
+        patch("clipper.qc._run", side_effect=lambda *_a, **_k: next(calls)),
+    ):
+        report = run_technical_qc(
+            video, expected_duration=20, caption_path=ass, tracking_path=tracking
+        )
+    assert "caption layer concurrency evidence is missing" in report["issues"]
+
+
 def test_tracking_preflight_rejects_bad_geometry_filler_and_zoom() -> None:
     issues = tracking_plan_issues(
         {
@@ -354,3 +421,42 @@ def test_tracking_preflight_rejects_bad_geometry_filler_and_zoom() -> None:
     assert "tracking crop is not a valid portrait crop" in issues
     assert "crop resolution is materially below the maximum portrait crop" in issues
     assert "tracking plan uses digital zoom that discards source pixels" in issues
+
+
+def test_tracking_preflight_rejects_off_center_or_cropped_selected_faces() -> None:
+    issues = tracking_plan_issues(
+        {
+            "background_fill": "none",
+            "crop_width": 1214,
+            "crop_height": 2158,
+            "transitions": [],
+            "image_quality": {
+                "max_portrait_crop_height": 2158,
+                "digital_zoom_used": False,
+            },
+            "composition": {
+                "sample_count": 20,
+                "centered_sample_ratio": 0.7,
+                "fully_visible_sample_ratio": 0.9,
+            },
+        }
+    )
+    assert "selected speaker is outside the horizontal framing safe region" in issues
+    assert "selected speaker face is cropped in tracking evidence" in issues
+
+
+def test_tracking_preflight_requires_composition_evidence_when_face_detected() -> None:
+    issues = tracking_plan_issues(
+        {
+            "background_fill": "none",
+            "crop_width": 1214,
+            "crop_height": 2158,
+            "face_detected": True,
+            "transitions": [],
+            "image_quality": {
+                "max_portrait_crop_height": 2158,
+                "digital_zoom_used": False,
+            },
+        }
+    )
+    assert "selected face composition evidence is missing" in issues

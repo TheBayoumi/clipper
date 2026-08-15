@@ -93,18 +93,40 @@ def test_caption_layout_validates_bounds() -> None:
 
 def test_hook_overlay_uses_source_derived_text_and_safe_style(tmp_path: Path) -> None:
     clip = ClipCandidate("v", 0, 3, "text", 1)
-    segment = TranscriptSegment(0, 3, "I made five million dollars.")
-    text = create_word_reveal_ass(
+    segment = TranscriptSegment(2, 3, "I made five million dollars.")
+    path = create_word_reveal_ass(
         clip,
         [segment],
         tmp_path / "hook.ass",
         platform="tiktok",
         hook_text="THE NUMBER THAT CHANGED EVERYTHING",
-    ).read_text()
+    )
+    text = path.read_text()
+    audit = __import__("json").loads(path.with_suffix(".caption-audit.json").read_text())
     assert "Style: Hook" in text
     assert "Dialogue: 1,0:00:00.00,0:00:01.80,Hook" in text
     assert "THE NUMBER THAT CHANGED EVERYTHING" in text
     assert ",461,1" in text
+    assert audit["hook_overlay_rendered"] is True
+    assert audit["simultaneous_narrative_layers_max"] == 1
+
+
+def test_hook_overlay_is_suppressed_while_spoken_captions_are_active(tmp_path: Path) -> None:
+    clip = ClipCandidate("v", 0, 3, "text", 1)
+    segment = TranscriptSegment(0, 3, "I made five million dollars.")
+    path = create_word_reveal_ass(
+        clip,
+        [segment],
+        tmp_path / "single-lane.ass",
+        hook_text="THE NUMBER THAT CHANGED EVERYTHING",
+    )
+    text = path.read_text()
+    audit = __import__("json").loads(path.with_suffix(".caption-audit.json").read_text())
+    assert "Dialogue: 1," not in text
+    assert "THE NUMBER THAT CHANGED EVERYTHING" not in text
+    assert audit["hook_overlay_suppression_reason"] == "caption_timing_overlap"
+    assert audit["potential_hook_caption_overlap_seconds"] > 0
+    assert audit["simultaneous_narrative_layers_max"] == 1
 
 
 def _plan(start: float, end: float, *, anchor: float | None, word: str | None) -> EditPlan:
@@ -218,3 +240,4 @@ def test_duplicate_hook_overlay_is_suppressed(tmp_path: Path) -> None:
     audit = __import__("json").loads(path.with_suffix(".caption-audit.json").read_text())
     assert "Dialogue: 1," not in text
     assert audit["hook_overlay_suppressed_duplicate"] is True
+    assert audit["hook_overlay_suppression_reason"] == "duplicate_caption"

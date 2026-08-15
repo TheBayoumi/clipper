@@ -586,7 +586,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
     from clipper.providers.factory import vision_provider
     from clipper.qc import run_technical_qc
     from clipper.render import FFmpegRenderer
-    from clipper.visual_ai import review_rendered_clip
+    from clipper.visual_ai import review_rendered_clip, tracking_transition_sample_times
 
     source_run_id = str(payload.get("source_run_id") or "")
     recovery_id = str(payload.get("recovery_id") or "")
@@ -864,6 +864,11 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
             )
             technical_qc.append(qc_payload)
             _copy_clip_evidence(rendered_path, rendered_path, partial_run_dir)
+            tracking_payload = json.loads(
+                rendered_path.with_suffix(".tracking.json").read_text(encoding="utf-8")
+            )
+            if not isinstance(tracking_payload, dict):
+                raise RuntimeError(f"tracking evidence is malformed for {key}")
             review, review_results = review_rendered_clip(
                 rendered_path,
                 reviewer,
@@ -878,7 +883,9 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                     "technical_qc": qc_payload,
                     "review_scope": "user-approved-targeted-recovery",
                 },
-                transitions=(),
+                transitions=tracking_transition_sample_times(
+                    tracking_payload.get("transitions", [])
+                ),
                 escalation=None,
             )
             review_payload = review.to_dict()

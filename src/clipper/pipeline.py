@@ -80,7 +80,12 @@ from .rights import RightsError, assert_campaign_authorized, assert_video_allowe
 from .runtime import ComputeBudget, StageJournal
 from .transcript import load_vtt, transcribe_with_faster_whisper
 from .visual import VisualTimeline
-from .visual_ai import repair_stage, review_rendered_clip, scout_visual_timeline
+from .visual_ai import (
+    repair_stage,
+    review_rendered_clip,
+    scout_visual_timeline,
+    tracking_transition_sample_times,
+)
 from .youtube import YouTubeClient
 
 LOGGER = logging.getLogger("clipper")
@@ -1487,11 +1492,7 @@ def run_pipeline(
                             tracking_payload = loaded_tracking
                     raw_transitions = tracking_payload.get("transitions", [])
                     transition_items = raw_transitions if isinstance(raw_transitions, list) else []
-                    transition_times = tuple(
-                        float(item.get("start_time") or 0.0)
-                        for item in transition_items
-                        if isinstance(item, dict)
-                    )
+                    transition_times = tracking_transition_sample_times(transition_items)
                     telemetry.start(f"editorial_qc:{plan.plan_id}")
                     review, review_results = review_rendered_clip(
                         rendered_path,

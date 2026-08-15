@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from itertools import pairwise
 from math import hypot
@@ -72,6 +73,16 @@ class FaceObservation:
     def center(self) -> tuple[float, float]:
         return self.x + self.width / 2, self.y + self.height / 2
 
+    def to_dict(self) -> dict[str, float | int]:
+        return {
+            "track_id": self.track_id,
+            "time": self.time,
+            "x": self.x,
+            "y": self.y,
+            "width": self.width,
+            "height": self.height,
+        }
+
 
 @dataclass(slots=True)
 class _TrackState:
@@ -105,6 +116,7 @@ class TrackingPlan:
     reframe_events: int = 0
     transitions: tuple[CameraTransition, ...] = ()
     source_cuts: tuple[float, ...] = ()
+    selected_faces: tuple[FaceObservation, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         max_crop_width, max_crop_height = portrait_crop_dimensions(
@@ -112,6 +124,7 @@ class TrackingPlan:
         )
         horizontal_scale = 1080 / self.crop_width if self.crop_width else 0.0
         vertical_scale = 1920 / self.crop_height if self.crop_height else 0.0
+        composition = _composition_evidence(self)
         return {
             "zoom_factor": self.zoom_factor,
             "source_width": self.source_width,
@@ -129,6 +142,8 @@ class TrackingPlan:
             "anchors": [anchor.to_dict() for anchor in self.anchors],
             "transitions": [item.to_dict() for item in self.transitions],
             "source_cuts": list(self.source_cuts),
+            "selected_face_samples": composition["samples"],
+            "composition": composition["summary"],
             "image_quality": {
                 "source_width": self.source_width,
                 "source_height": self.source_height,
@@ -353,6 +368,48 @@ def _segment_windows(
     return tuple(sorted(windows, key=lambda item: item.start))
 
 
+def _split_windows_at_source_cuts(
+    windows: tuple[_SpeakerWindow, ...], source_cuts: tuple[float, ...]
+) -> tuple[_SpeakerWindow, ...]:
+    """Keep speaker decisions inside one source-camera shot."""
+    if not source_cuts:
+        return windows
+    split: list[_SpeakerWindow] = []
+    for window in windows:
+        boundaries = [cut for cut in source_cuts if window.start + 0.08 <= cut <= window.end - 0.08]
+        cursor = window.start
+        for boundary in boundaries:
+            split.append(_SpeakerWindow(cursor, boundary))
+            cursor = boundary
+        if window.end - cursor >= 0.08:
+            split.append(_SpeakerWindow(cursor, window.end))
+    return tuple(split)
+
+
+def _shot_stable_targets(
+    windows: tuple[_SpeakerWindow, ...],
+    assignments: tuple[int | None, ...],
+    targets: tuple[tuple[float, float] | None, ...],
+    source_cuts: tuple[float, ...],
+) -> tuple[tuple[float, float] | None, ...]:
+    """Use one robust composition for each visible speaker in each source shot."""
+    grouped: dict[tuple[int, int], list[tuple[float, float]]] = {}
+    keys: list[tuple[int, int] | None] = []
+    for window, track_id, target in zip(windows, assignments, targets, strict=True):
+        if track_id is None or target is None:
+            keys.append(None)
+            continue
+        shot_index = bisect_right(source_cuts, (window.start + window.end) / 2)
+        key = (shot_index, track_id)
+        grouped.setdefault(key, []).append(target)
+        keys.append(key)
+    representative = {
+        key: (float(median(item[0] for item in values)), float(median(item[1] for item in values)))
+        for key, values in grouped.items()
+    }
+    return tuple(representative.get(key) if key is not None else None for key in keys)
+
+
 def _speaker_score(
     track: _TrackState,
     window: _SpeakerWindow,
@@ -497,8 +554,6 @@ def _speaker_locked_anchors(
     anchors = [FaceAnchor(0.0, *current)]
     transitions: list[CameraTransition] = []
     reframe_events = 0
-    dead_zone_x = max(24.0, crop_width * 0.18)
-    dead_zone_y = max(18.0, crop_height * 0.08)
     for index, (window, track_id, target, ready_time) in enumerate(
         zip(windows, assignments, targets, ready_times, strict=True)
     ):
@@ -507,11 +562,8 @@ def _speaker_locked_anchors(
         speaker_changed = track_id is not None and current_id is not None and track_id != current_id
         dx_signed = target[0] - current[0]
         dy_signed = target[1] - current[1]
-        dx = abs(dx_signed)
-        dy = abs(dy_signed)
         distance = hypot(dx_signed, dy_signed)
         normalized = distance / max(float(crop_width), 1.0)
-        composition_changed = dx > dead_zone_x or dy > dead_zone_y
         switch_at = _clamp(max(window.start, ready_time), 0.0, clip_duration)
         nearby_cut = _nearest_source_cut(source_cuts, switch_at)
         reverses_soon = speaker_changed and _speaker_change_reverses_soon(
@@ -561,7 +613,7 @@ def _speaker_locked_anchors(
             )
             current_id = track_id
             continue
-        if not speaker_changed and not composition_changed:
+        if not speaker_changed and nearby_cut is None:
             if distance > 0.0:
                 transitions.append(
                     CameraTransition(
@@ -591,16 +643,8 @@ def _speaker_locked_anchors(
             transition_end = switch_at
             reason = "speaker_change"
             mode = "hard_cut"
-        else:
-            transition_start = switch_at
-            duration = _clamp(
-                min_reframe_seconds + normalized * seconds_per_crop,
-                min_reframe_seconds,
-                max_reframe_seconds,
-            )
-            transition_end = min(clip_duration, transition_start + duration)
-            reason = "subject_motion"
-            mode = "eased_reframe"
+        else:  # Defensive: same-speaker movement was held above.
+            continue
 
         if anchors[-1].time < transition_start:
             anchors.append(FaceAnchor(transition_start, *current))
@@ -670,8 +714,110 @@ def _transition_expression(
     return expression
 
 
+def _crop_position_at(plan: TrackingPlan, at: float) -> tuple[float, float]:
+    if plan.anchors:
+        current = (plan.anchors[0].x, plan.anchors[0].y)
+    else:
+        current = (
+            max(0.0, (plan.source_width - plan.crop_width) / 2),
+            max(0.0, (plan.source_height - plan.crop_height) / 2),
+        )
+    active = sorted(
+        (item for item in plan.transitions if item.mode != "hold"), key=lambda item: item.start
+    )
+    if active:
+        for item in active:
+            if at < item.start:
+                return current
+            target = (item.to_x, item.to_y)
+            if item.mode == "hard_cut" or item.end <= item.start:
+                current = target
+                continue
+            if at < item.end:
+                unit = _clamp((at - item.start) / (item.end - item.start), 0.0, 1.0)
+                smooth = unit * unit * (3 - 2 * unit)
+                return (
+                    item.from_x + (item.to_x - item.from_x) * smooth,
+                    item.from_y + (item.to_y - item.from_y) * smooth,
+                )
+            current = target
+        return current
+    for previous, following in pairwise(plan.anchors):
+        if at >= following.time:
+            current = (following.x, following.y)
+            continue
+        if at <= previous.time or following.time <= previous.time:
+            return current
+        unit = (at - previous.time) / (following.time - previous.time)
+        return (
+            previous.x + (following.x - previous.x) * unit,
+            previous.y + (following.y - previous.y) * unit,
+        )
+    return current
+
+
+def _composition_evidence(plan: TrackingPlan) -> dict[str, object]:
+    if plan.crop_width <= 0 or plan.crop_height <= 0 or not plan.selected_faces:
+        return {
+            "samples": [],
+            "summary": {
+                "sample_count": 0,
+                "centered_sample_ratio": None,
+                "fully_visible_sample_ratio": None,
+                "max_horizontal_center_offset": None,
+                "face_height_ratio_min": None,
+                "face_height_ratio_max": None,
+            },
+        }
+    samples: list[dict[str, object]] = []
+    centered: list[bool] = []
+    visible: list[bool] = []
+    height_ratios: list[float] = []
+    offsets: list[float] = []
+    for face in plan.selected_faces:
+        crop_x, crop_y = _crop_position_at(plan, face.time)
+        center_x, center_y = face.center
+        relative_x = (center_x - crop_x) / plan.crop_width
+        relative_y = (center_y - crop_y) / plan.crop_height
+        height_ratio = face.height / plan.crop_height
+        center_offset = abs(relative_x - 0.5)
+        fully_visible = bool(
+            face.x >= crop_x
+            and face.x + face.width <= crop_x + plan.crop_width
+            and face.y >= crop_y
+            and face.y + face.height <= crop_y + plan.crop_height
+        )
+        samples.append(
+            {
+                **face.to_dict(),
+                "crop_x": round(crop_x, 3),
+                "crop_y": round(crop_y, 3),
+                "center_x_ratio": round(relative_x, 4),
+                "center_y_ratio": round(relative_y, 4),
+                "face_width_ratio": round(face.width / plan.crop_width, 4),
+                "face_height_ratio": round(height_ratio, 4),
+                "fully_visible": fully_visible,
+            }
+        )
+        centered.append(center_offset <= 0.22)
+        visible.append(fully_visible)
+        height_ratios.append(height_ratio)
+        offsets.append(center_offset)
+    return {
+        "samples": samples,
+        "summary": {
+            "sample_count": len(samples),
+            "centered_sample_ratio": sum(centered) / len(centered),
+            "fully_visible_sample_ratio": sum(visible) / len(visible),
+            "max_horizontal_center_offset": max(offsets),
+            "face_height_ratio_min": min(height_ratios),
+            "face_height_ratio_max": max(height_ratios),
+        },
+    }
+
+
 def stable_portrait_fallback(plan: TrackingPlan, duration: float) -> TrackingPlan:
-    """Replace an unstable virtual camera with a fixed maximum-resolution 9:16 crop."""
+    """Replace unstable motion with face-aware, shot-stable portrait crops."""
     if plan.source_width <= 0 or plan.source_height <= 0:
         return TrackingPlan(
             1.0,
@@ -688,26 +834,69 @@ def stable_portrait_fallback(plan: TrackingPlan, duration: float) -> TrackingPla
         target_aspect=plan.target_aspect,
         zoom_factor=1.0,
     )
-    x = max(0.0, (plan.source_width - crop_width) / 2)
-    y = max(0.0, (plan.source_height - crop_height) / 2)
     end = max(0.001, duration)
+    max_x = max(0.0, plan.source_width - crop_width)
+    max_y = max(0.0, plan.source_height - crop_height)
+    center = (max_x / 2, max_y / 2)
+    cuts = tuple(sorted(cut for cut in plan.source_cuts if 0.0 < cut < end))
+    boundaries = (0.0, *cuts, end)
+    positions: list[tuple[float, float]] = []
+    for start, stop in pairwise(boundaries):
+        candidates = [anchor for anchor in plan.anchors if start <= anchor.time < stop]
+        prior = [anchor for anchor in plan.anchors if anchor.time <= start]
+        if prior:
+            candidates.append(prior[-1])
+        if not candidates:
+            following = next((anchor for anchor in plan.anchors if anchor.time >= stop), None)
+            if following is not None:
+                candidates.append(following)
+        x = float(median(anchor.x for anchor in candidates)) if candidates else center[0]
+        y = float(median(anchor.y for anchor in candidates)) if candidates else center[1]
+        positions.append((_clamp(x, 0.0, max_x), _clamp(y, 0.0, max_y)))
+
+    anchors = [FaceAnchor(0.0, *positions[0])]
+    transitions: list[CameraTransition] = []
+    current = positions[0]
+    for cut, target in zip(cuts, positions[1:], strict=True):
+        distance = hypot(target[0] - current[0], target[1] - current[1])
+        if distance > 0.0:
+            anchors.append(FaceAnchor(cut, *target))
+            transitions.append(
+                CameraTransition(
+                    "source_cut",
+                    cut,
+                    cut,
+                    distance,
+                    crop_width,
+                    distance / max(float(crop_width), 1.0),
+                    "hard_cut",
+                    current[0],
+                    current[1],
+                    target[0],
+                    target[1],
+                    cut,
+                )
+            )
+            current = target
+    anchors.append(FaceAnchor(end, *current))
     return TrackingPlan(
         1.0,
         plan.source_width,
         plan.source_height,
-        (FaceAnchor(0.0, x, y), FaceAnchor(end, x, y)),
+        tuple(anchors),
         face_detected=plan.face_detected,
         crop_width=crop_width,
         crop_height=crop_height,
         target_aspect=plan.target_aspect,
         framing_mode="stable_portrait_fallback",
         background_fill="none",
-        speaker_focus=False,
+        speaker_focus=plan.face_detected,
         speaker_tracks=plan.speaker_tracks,
         speaker_switches=0,
-        reframe_events=0,
-        transitions=(),
+        reframe_events=len(transitions),
+        transitions=tuple(transitions),
         source_cuts=plan.source_cuts,
+        selected_faces=plan.selected_faces,
     )
 
 
@@ -798,6 +987,9 @@ def plan_speaker_crop(
                 and (not source_cuts or relative_time - source_cuts[-1] >= 0.4)
             ):
                 source_cuts.append(relative_time)
+                for known_track in tracks:
+                    known_track.last_box = None
+                    known_track.last_mouth = None
             previous_scene = scene
             if frame_index % sample_every:
                 frame_index += 1
@@ -846,7 +1038,10 @@ def plan_speaker_crop(
             speaker_focus=True,
         )
 
-    windows = _segment_windows(clip, segments, max_window_seconds=decision_window_seconds)
+    windows = _split_windows_at_source_cuts(
+        _segment_windows(clip, segments, max_window_seconds=decision_window_seconds),
+        tuple(source_cuts),
+    )
     assignments: list[int | None] = []
     targets: list[tuple[float, float] | None] = []
     ready_times: list[float] = []
@@ -877,11 +1072,17 @@ def plan_speaker_crop(
         )
         if active is not None:
             previous_track_id = active
+    stable_targets = _shot_stable_targets(
+        windows,
+        tuple(assignments),
+        tuple(targets),
+        tuple(source_cuts),
+    )
     anchors, transitions, reframe_events = _speaker_locked_anchors(
         clip.duration,
         windows,
         tuple(assignments),
-        tuple(targets),
+        stable_targets,
         tuple(ready_times),
         fallback,
         crop_width=crop_width,
@@ -898,6 +1099,13 @@ def plan_speaker_crop(
         for previous, current in pairwise(assignments)
         if previous is not None and current is not None and previous != current
     )
+    selected_faces_by_key: dict[tuple[int, float], FaceObservation] = {}
+    for window, track_id in zip(windows, assignments, strict=True):
+        if track_id is None or track_id not in tracks_by_id:
+            continue
+        for observation in tracks_by_id[track_id].observations:
+            if window.start <= observation.time <= window.end:
+                selected_faces_by_key[(track_id, observation.time)] = observation
     return TrackingPlan(
         zoom_factor,
         width,
@@ -913,4 +1121,8 @@ def plan_speaker_crop(
         reframe_events=reframe_events,
         transitions=transitions,
         source_cuts=tuple(source_cuts),
+        selected_faces=tuple(
+            selected_faces_by_key[key]
+            for key in sorted(selected_faces_by_key, key=lambda item: item[1])
+        ),
     )

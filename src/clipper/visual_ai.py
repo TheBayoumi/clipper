@@ -134,6 +134,38 @@ def adaptive_sample_times(
     return tuple(sorted(round(value, 3) for value in samples if 0 <= value < duration))
 
 
+def tracking_transition_sample_times(transitions: object) -> tuple[float, ...]:
+    """Return start, midpoint, and end samples for every rendered camera move."""
+    if not isinstance(transitions, (list, tuple)):
+        return ()
+    samples: set[float] = set()
+    for item in transitions:
+        if not isinstance(item, dict) or str(item.get("mode") or "") == "hold":
+            continue
+        raw_start = item.get("start")
+        if raw_start is None:
+            raw_start = item.get("start_time")
+        raw_end = item.get("end")
+        if raw_end is None:
+            raw_end = item.get("end_time", raw_start)
+        if not isinstance(raw_start, (int, float, str)) or not isinstance(
+            raw_end, (int, float, str)
+        ):
+            continue
+        try:
+            start = float(raw_start)
+            end = float(raw_end)
+        except (TypeError, ValueError):
+            continue
+        if start < 0 or end < start:
+            continue
+        samples.add(start)
+        samples.add(end)
+        if end > start:
+            samples.add((start + end) / 2)
+    return tuple(sorted(round(value, 3) for value in samples))
+
+
 def media_duration_seconds(video_path: Path) -> float:
     try:
         import cv2
@@ -309,6 +341,7 @@ def _compact_technical_qc(payload: object) -> object:
                 "no_filler_pass",
                 "valid_crop_pass",
                 "transition_qc_pass",
+                "composition",
             ),
         ),
         "image_quality": payload.get("image_quality", {}),

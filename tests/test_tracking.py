@@ -17,12 +17,15 @@ from clipper.tracking import (
     _mouth_motion,
     _scene_change_score,
     _segment_windows,
+    _shot_stable_targets,
     _speaker_locked_anchors,
     _speaker_window_crop,
     _SpeakerWindow,
+    _split_windows_at_source_cuts,
     _TrackState,
     plan_speaker_crop,
     portrait_crop_dimensions,
+    stable_portrait_fallback,
     tracking_expressions,
 )
 
@@ -169,7 +172,7 @@ def test_speaker_window_crop_uses_local_camera_composition_not_global_track_home
     assert _speaker_window_crop(track, _SpeakerWindow(9.0, 10.0), 180, 320, 640, 360) is None
 
 
-def test_speaker_locked_anchors_hold_crop_inside_dead_zone_and_ease_subject_motion() -> None:
+def test_speaker_locked_anchors_never_move_for_same_speaker_inside_a_shot() -> None:
     windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 4), _SpeakerWindow(4, 6))
     anchors, transitions, reframes = _speaker_locked_anchors(
         6.0,
@@ -181,16 +184,31 @@ def test_speaker_locked_anchors_hold_crop_inside_dead_zone_and_ease_subject_moti
         crop_width=202,
         crop_height=358,
     )
-    assert reframes == 1
-    assert transitions[0].mode == "hold"
-    assert transitions[-1].reason == "subject_motion"
-    assert transitions[-1].mode == "eased_reframe"
-    assert 4.35 <= transitions[-1].end <= 4.9
+    assert reframes == 0
+    assert transitions and all(item.mode == "hold" for item in transitions)
     plan = TrackingPlan(1.0, 640, 360, anchors, True, transitions=transitions)
     x, _ = tracking_expressions(plan)
-    assert "3-2*" in x
-    assert "if(lt(t,4.000)" in x
+    assert "3-2*" not in x
+    assert x == "100.000"
     assert tracking_expressions(None) == ("(iw-ow)/2", "(ih-oh)/2")
+
+
+def test_speaker_windows_split_and_targets_stabilize_per_source_shot() -> None:
+    windows = (_SpeakerWindow(0.0, 2.0), _SpeakerWindow(2.0, 4.0))
+    split = _split_windows_at_source_cuts(windows, (1.0, 3.0))
+    assert split == (
+        _SpeakerWindow(0.0, 1.0),
+        _SpeakerWindow(1.0, 2.0),
+        _SpeakerWindow(2.0, 3.0),
+        _SpeakerWindow(3.0, 4.0),
+    )
+    targets = _shot_stable_targets(
+        split,
+        (0, 0, 1, 1),
+        ((100.0, 0.0), (140.0, 0.0), (300.0, 2.0), (340.0, 2.0)),
+        (2.0,),
+    )
+    assert targets == ((120.0, 0.0), (120.0, 0.0), (320.0, 2.0), (320.0, 2.0))
 
 
 def test_reframe_waits_until_target_face_is_observed_and_uses_hard_speaker_cut() -> None:
@@ -294,6 +312,32 @@ def test_source_camera_cut_changes_crop_as_hard_cut_without_slide() -> None:
     assert "3-2*" not in x
 
 
+def test_stable_fallback_uses_face_anchors_per_source_shot() -> None:
+    plan = TrackingPlan(
+        1.0,
+        640,
+        360,
+        (
+            FaceAnchor(0.0, 20.0, 0.0),
+            FaceAnchor(4.0, 40.0, 0.0),
+            FaceAnchor(5.0, 380.0, 0.0),
+            FaceAnchor(10.0, 400.0, 0.0),
+        ),
+        True,
+        crop_width=202,
+        crop_height=358,
+        source_cuts=(5.0,),
+    )
+    repaired = stable_portrait_fallback(plan, 10.0)
+    assert repaired.framing_mode == "stable_portrait_fallback"
+    assert repaired.speaker_focus is True
+    assert repaired.anchors[0].x < 100
+    assert repaired.anchors[-1].x > 300
+    assert len(repaired.transitions) == 1
+    assert repaired.transitions[0].reason == "source_cut"
+    assert repaired.transitions[0].mode == "hard_cut"
+
+
 def test_scene_change_score_distinguishes_cut_from_static_frame() -> None:
     black = np.zeros((54, 96), dtype=np.uint8)
     white = np.full((54, 96), 255, dtype=np.uint8)
@@ -333,6 +377,26 @@ def test_tracking_plan_records_source_pixel_quality_evidence() -> None:
     assert quality["digital_zoom_used"] is False
     assert quality["effective_upscale_factor"] < 1.0
     assert payload["transitions"][0]["mode"] == "hard_cut"
+
+
+def test_tracking_plan_records_selected_face_composition_against_rendered_crop() -> None:
+    plan = TrackingPlan(
+        1.0,
+        640,
+        360,
+        (FaceAnchor(0.0, 100.0, 0.0), FaceAnchor(2.0, 100.0, 0.0)),
+        True,
+        crop_width=202,
+        crop_height=358,
+        selected_faces=(FaceObservation(0, 1.0, 150.0, 60.0, 100.0, 100.0, 0.1),),
+    )
+    payload = plan.to_dict()
+    composition = payload["composition"]
+    samples = payload["selected_face_samples"]
+    assert composition["sample_count"] == 1
+    assert composition["centered_sample_ratio"] == 1.0
+    assert composition["fully_visible_sample_ratio"] == 1.0
+    assert samples[0]["crop_x"] == 100.0
 
 
 class FakeCapture:

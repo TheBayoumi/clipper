@@ -19,6 +19,7 @@ from clipper.visual_ai import (
     repair_stage,
     review_rendered_clip,
     scout_visual_timeline,
+    tracking_transition_sample_times,
 )
 
 
@@ -137,6 +138,19 @@ def test_adaptive_sampling_covers_first_three_seconds_scene_cuts_and_episode() -
         adaptive_sample_times(0)
     with pytest.raises(ValueError, match="interval"):
         adaptive_sample_times(1, base_interval=0)
+
+
+def test_tracking_transition_samples_use_serialized_start_midpoint_and_end() -> None:
+    assert tracking_transition_sample_times(
+        [
+            {"mode": "hold", "start": 1.0, "end": 1.0},
+            {"mode": "eased_reframe", "start": 2.0, "end": 2.8},
+            {"mode": "hard_cut", "start": 4.0, "end": 4.0},
+            {"mode": "hard_cut", "start_time": 6.0, "end_time": 6.0},
+            {"mode": "hard_cut", "start": "bad", "end": 7.0},
+        ]
+    ) == (2.0, 2.4, 2.8, 4.0, 6.0)
+    assert tracking_transition_sample_times({}) == ()
 
 
 def test_parse_visual_timeline_sorts_and_validates_model_output() -> None:

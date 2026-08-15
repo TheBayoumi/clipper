@@ -14,7 +14,7 @@ from clipper.models import (
     TranscriptWord,
 )
 from clipper.render import FFmpegRenderer, RenderError, build_ffmpeg_command
-from clipper.tracking import CameraTransition, FaceAnchor, TrackingPlan
+from clipper.tracking import CameraTransition, FaceAnchor, FaceObservation, TrackingPlan
 
 
 def test_build_ffmpeg_command_contains_speaker_locked_vertical_and_audio_filters(
@@ -130,6 +130,7 @@ def test_renderer_success_writes_ass_and_speaker_evidence(tmp_path: Path) -> Non
         crop_height=358,
         speaker_tracks=1,
         speaker_switches=0,
+        selected_faces=(FaceObservation(0, 1.0, 60, 20, 80, 80, 0.1),),
     )
 
     def success(*_args, **_kwargs):
@@ -260,6 +261,7 @@ def test_renderer_repairs_oscillating_tracking_before_single_encode(tmp_path: Pa
         crop_width=202,
         crop_height=358,
         transitions=transitions,
+        selected_faces=(FaceObservation(0, 1.0, 60, 20, 80, 80, 0.1),),
     )
     with patch("clipper.render.shutil.which", return_value="/usr/bin/ffmpeg"):
         renderer = FFmpegRenderer()
