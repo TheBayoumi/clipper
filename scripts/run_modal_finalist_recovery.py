@@ -96,7 +96,10 @@ def main() -> int:
     )
     parser.add_argument("source_run_id")
     parser.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
-    parser.add_argument("--app", default=os.getenv("CLIPPER_V10_MODAL_APP", "clipper-v10-cycle"))
+    parser.add_argument(
+        "--app",
+        default=os.getenv("CLIPPER_MODAL_PIPELINE_APP", "clipper-production-pipeline"),
+    )
     reuse_group = parser.add_mutually_exclusive_group()
     reuse_group.add_argument(
         "--reuse-c14-from-run",
@@ -166,7 +169,7 @@ def main() -> int:
                     "status": "FAIL",
                     "source_run_id": args.source_run_id,
                     "recovery_id": recovery_id,
-                    "failure_evidence_volume": "clipper-v10-artifacts",
+                    "failure_evidence_volume": "clipper-production-artifacts",
                     "expected_failure_evidence_path": failed_run_path,
                 },
                 indent=2,
@@ -176,7 +179,7 @@ def main() -> int:
     if not isinstance(response, dict) or response.get("status") != "PASS":
         raise RuntimeError(f"targeted Modal recovery returned an invalid response: {response!r}")
     remote_run_path = str(response.get("run_path") or "")
-    volume_name = str(response.get("run_volume") or "clipper-v10-artifacts")
+    volume_name = str(response.get("run_volume") or "clipper-production-artifacts")
     if not remote_run_path:
         raise RuntimeError("targeted Modal recovery returned no run path")
     local_run = _materialize_remote_run(

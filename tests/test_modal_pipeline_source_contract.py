@@ -20,7 +20,7 @@ def _script_function(name: str) -> Any:
 
 
 def test_v10_public_youtube_acquisition_activates_bgutil_before_optional_cookies() -> None:
-    source = Path("scripts/modal_v10_cycle.py").read_text(encoding="utf-8")
+    source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     assert "youtubepot-bgutilscript:" in source
     assert "server_home=/root/bgutil-ytdlp-pot-provider/server" in source
     assert "youtube:player_client=default,mweb" in source
@@ -97,7 +97,7 @@ def test_modal_pyannote_normalizes_container_media_to_duration_safe_wav() -> Non
 
 
 def test_modal_cycle_uses_measured_controller_memory_and_single_progress_write() -> None:
-    cycle_source = Path("scripts/modal_v10_cycle.py").read_text(encoding="utf-8")
+    cycle_source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     pipeline_source = Path("src/clipper/pipeline.py").read_text(encoding="utf-8")
     assert "memory=8192" in cycle_source
     callback = pipeline_source.split("def _model_progress(stage: str, event: str) -> None:", 1)[
@@ -108,7 +108,7 @@ def test_modal_cycle_uses_measured_controller_memory_and_single_progress_write()
 
 
 def test_targeted_finalist_recovery_is_fail_closed_and_keeps_source_run_immutable() -> None:
-    source = Path("scripts/modal_v10_cycle.py").read_text(encoding="utf-8")
+    source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     recovery = source.split("def recover_finalists(", 1)[1].split("def run_full_cycle(", 1)[0]
 
     assert '_TARGETED_RECOVERY_PLANS = (("c14", "p3"), ("c5", "p1"))' in source

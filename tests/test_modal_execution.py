@@ -167,7 +167,7 @@ def test_ensure_modal_runtime_repairs_missing_model_without_redeploying_pipeline
     assert [call.args[0].name for call in deploy.call_args_list] == ["modal_open_models.py"]
     assert ("clipper-open-editor", "transcribe") in calls
     assert ("clipper-open-editor", "hf_access_smoke") in calls
-    assert ("clipper-v10-cycle", "run_full_cycle") in calls
+    assert ("clipper-production-pipeline", "run_full_cycle") in calls
     validate.assert_called_once_with("clipper-open-editor")
 
 
@@ -178,7 +178,7 @@ def test_ensure_modal_runtime_repairs_missing_pipeline_only() -> None:
     def fake_function(app: str, name: str) -> Mock:
         nonlocal pipeline_failed
         calls.append((app, name))
-        if app == "clipper-v10-cycle" and name == "acquire_source" and not pipeline_failed:
+        if app == "clipper-production-pipeline" and name == "acquire_source" and not pipeline_failed:
             pipeline_failed = True
             raise NotFoundError("missing pipeline")
         return Mock()
@@ -192,9 +192,9 @@ def test_ensure_modal_runtime_repairs_missing_pipeline_only() -> None:
         ensure_modal_runtime()
 
     assert pipeline_failed is True
-    deploy.assert_called_once_with(Path("modal_v10_cycle.py"))
+    deploy.assert_called_once_with(Path("modal_pipeline.py"))
     assert ("clipper-open-editor", "vision") in calls
-    assert ("clipper-v10-cycle", "run_full_cycle") in calls
+    assert ("clipper-production-pipeline", "run_full_cycle") in calls
     validate.assert_called_once_with("clipper-open-editor")
 
 
@@ -412,7 +412,7 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
     runner = Mock()
     runner.remote.return_value = {
         "run_path": "/campaign-run",
-        "run_volume": "clipper-v10-artifacts",
+        "run_volume": "clipper-production-artifacts",
     }
     materialized = tmp_path / "artifacts" / "campaign-run"
 
@@ -449,7 +449,7 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
     assert payload["fresh_inference"] is True
     download.assert_called_once_with(
         artifact_root=tmp_path / "artifacts",
-        volume_name="clipper-v10-artifacts",
+        volume_name="clipper-production-artifacts",
         remote_run_path="/campaign-run",
     )
 

@@ -15,14 +15,14 @@ from typing import Any
 
 import modal
 
-APP_NAME = os.getenv("CLIPPER_V10_MODAL_APP", "clipper-v10-cycle")
+APP_NAME = os.getenv("CLIPPER_MODAL_PIPELINE_APP", "clipper-production-pipeline")
 MODEL_APP = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
 MEDIA_ROOT = "/media"
 ARTIFACT_ROOT = "/artifacts"
 
 app = modal.App(APP_NAME)
 media_cache = modal.Volume.from_name("clipper-media-cache", create_if_missing=True)
-artifact_volume = modal.Volume.from_name("clipper-v10-artifacts", create_if_missing=True)
+artifact_volume = modal.Volume.from_name("clipper-production-artifacts", create_if_missing=True)
 
 if modal.is_local():
     youtube_secret = modal.Secret.from_dict(
@@ -1537,7 +1537,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
     run_relative = "/" + output_run_id
     return {
         "status": "PASS",
-        "run_volume": "clipper-v10-artifacts",
+        "run_volume": "clipper-production-artifacts",
         "run_path": run_relative,
         "source_run_id": source_run_id,
         "rendered_plan_keys": [
@@ -1659,7 +1659,7 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     run_relative = "/" + str(run_dir.relative_to(Path(ARTIFACT_ROOT))).replace(os.sep, "/")
     return {
         "status": "PASS",
-        "run_volume": "clipper-v10-artifacts",
+        "run_volume": "clipper-production-artifacts",
         "run_path": run_relative,
         "source": source_evidence,
         "pipeline_status": manifest.get("status"),

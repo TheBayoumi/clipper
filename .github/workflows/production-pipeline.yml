@@ -1,13 +1,13 @@
-# Exact-head acceptance trigger after human-HILP runtime repair
-name: V10 production render and HILP evidence
+# Exact-head production acceptance trigger after human-HILP runtime repair
+name: Production render and HILP evidence
 
 on:
   workflow_dispatch:
   push:
     branches: [feat/word-reveal-face-tracking]
     paths:
-      - ".github/workflows/v10-production-cycle.yml"
-      - "scripts/modal_v10_cycle.py"
+      - ".github/workflows/production-pipeline.yml"
+      - "scripts/modal_pipeline.py"
       - "scripts/modal_open_models.py"
       - "src/clipper/pipeline.py"
       - "src/clipper/autonomous_editor.py"
@@ -19,7 +19,7 @@ on:
       - ".ruff.toml"
 
 concurrency:
-  group: v10-production-hilp-${{ github.ref }}
+  group: production-hilp-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -30,7 +30,7 @@ env:
   MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
   CLIPPER_YOUTUBE_COOKIES_B64: ${{ secrets.CLIPPER_YOUTUBE_COOKIES_B64 }}
   CLIPPER_MODAL_APP: clipper-open-editor
-  CLIPPER_V10_MODAL_APP: clipper-v10-cycle
+  CLIPPER_MODAL_PIPELINE_APP: clipper-production-pipeline
 
 jobs:
   production-render-evidence:
@@ -46,8 +46,8 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          source = Path("scripts/modal_v10_cycle.py").read_text(encoding="utf-8")
-          workflow = Path(".github/workflows/v10-production-cycle.yml").read_text(encoding="utf-8")
+          source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+          workflow = Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
           for required in (
               'add_python="3.12"',
               '"numba==0.66.0"',
@@ -77,9 +77,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e '.[modal]'
 
-      - name: Terminate stale V10 Modal containers
+      - name: Terminate stale production Modal containers
         run: |
-          modal app stop "$CLIPPER_V10_MODAL_APP" --yes || true
+          modal app stop "$CLIPPER_MODAL_PIPELINE_APP" --yes || true
           modal app stop "$CLIPPER_MODAL_APP" --yes || true
           modal volume rm -r clipper-media-cache /staging || true
 
@@ -108,8 +108,8 @@ jobs:
           print(json.dumps(result, indent=2))
           PY
 
-      - name: Deploy exact-HEAD source, Sortformer and cycle workers
-        run: modal deploy scripts/modal_v10_cycle.py
+      - name: Deploy exact-HEAD source, Sortformer and pipeline workers
+        run: modal deploy scripts/modal_pipeline.py
 
       - name: Acquire highest-quality master across autonomous Modal egress pools
         run: |
@@ -124,7 +124,7 @@ jobs:
               "video_id": "2Y4LP85PTak",
               "video_url": "https://www.youtube.com/watch?v=2Y4LP85PTak",
           }
-          base = modal.Function.from_name("clipper-v10-cycle", "acquire_source")
+          base = modal.Function.from_name("clipper-production-pipeline", "acquire_source")
           variants = [
               ("cloud:gcp", "cloud", "gcp"),
               ("cloud:aws", "cloud", "aws"),
@@ -184,7 +184,7 @@ jobs:
           from pathlib import Path
           import modal
 
-          result = modal.Function.from_name("clipper-v10-cycle", "run_full_cycle").remote({
+          result = modal.Function.from_name("clipper-production-pipeline", "run_full_cycle").remote({
               "source": json.loads(Path("open-evidence/source-master.json").read_text()),
               "brief_yaml": Path("campaigns/reach-double-coverage-dedicated.yaml").read_text(),
               "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
@@ -203,7 +203,7 @@ jobs:
           set -euo pipefail
           run_path="$(tr -d '\n' < open-evidence/run-path.txt)"
           rm -rf cycle-evidence
-          modal volume get --force clipper-v10-artifacts "$run_path" cycle-evidence
+          modal volume get --force clipper-production-artifacts "$run_path" cycle-evidence
 
       - name: Decode finalists and prepare actual HILP review queue
         run: |
@@ -285,7 +285,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v10-production-review-${{ github.sha }}
+          name: production-review-${{ github.sha }}
           path: |
             open-evidence/
             cycle-evidence/
@@ -293,8 +293,8 @@ jobs:
           compression-level: 0
           if-no-files-found: warn
 
-      - name: Stop V10 Modal containers
+      - name: Stop production Modal containers
         if: always()
         run: |
-          modal app stop "$CLIPPER_V10_MODAL_APP" --yes || true
+          modal app stop "$CLIPPER_MODAL_PIPELINE_APP" --yes || true
           modal app stop "$CLIPPER_MODAL_APP" --yes || true

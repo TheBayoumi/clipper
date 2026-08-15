@@ -18,8 +18,8 @@ from .youtube import YouTubeClient
 
 LOGGER = logging.getLogger("clipper")
 DEFAULT_MODEL_APP = "clipper-open-editor"
-DEFAULT_PIPELINE_APP = "clipper-v10-cycle"
-DEFAULT_ARTIFACT_VOLUME = "clipper-v10-artifacts"
+DEFAULT_PIPELINE_APP = "clipper-production-pipeline"
+DEFAULT_ARTIFACT_VOLUME = "clipper-production-artifacts"
 _REQUIRED_MODEL_FUNCTIONS = (
     "transcribe",
     "align",
@@ -202,17 +202,17 @@ def _validate_model_access(app_name: str) -> None:
 
 
 def ensure_modal_runtime() -> None:
-    """Attach to the deployed Modal runtimes and repair only genuinely missing apps/functions.
+    """Attach to deployed Modal runtimes and repair only genuinely missing apps/functions.
 
-    Normal `clipper run` execution performs no deployment. Both the model workers and the V10
-    pipeline worker are reused from their existing Modal deployments. A local deploy is attempted
-    only when Modal explicitly reports NotFoundError for a required function. Connectivity,
-    authentication, quota, and other service failures fail closed and are never misclassified as
-    a missing deployment.
+    Normal `clipper run` execution performs no deployment. Both the model workers and the
+    production pipeline worker are reused from their existing Modal deployments. A local deploy
+    is attempted only when Modal explicitly reports NotFoundError for a required function.
+    Connectivity, authentication, quota, and other service failures fail closed and are never
+    misclassified as a missing deployment.
     """
 
     model_app = os.getenv("CLIPPER_MODAL_APP", DEFAULT_MODEL_APP)
-    pipeline_app = os.getenv("CLIPPER_V10_MODAL_APP", DEFAULT_PIPELINE_APP)
+    pipeline_app = os.getenv("CLIPPER_MODAL_PIPELINE_APP", DEFAULT_PIPELINE_APP)
 
     _ensure_deployed_runtime(
         app_name=model_app,
@@ -222,7 +222,7 @@ def ensure_modal_runtime() -> None:
     _ensure_deployed_runtime(
         app_name=pipeline_app,
         functions=_REQUIRED_PIPELINE_FUNCTIONS,
-        deployment_script="modal_v10_cycle.py",
+        deployment_script="modal_pipeline.py",
     )
     _validate_model_access(model_app)
 
@@ -380,7 +380,7 @@ def run_modal_pipeline(
     assert_campaign_authorized(brief)
     ensure_modal_runtime()
 
-    pipeline_app = os.getenv("CLIPPER_V10_MODAL_APP", DEFAULT_PIPELINE_APP)
+    pipeline_app = os.getenv("CLIPPER_MODAL_PIPELINE_APP", DEFAULT_PIPELINE_APP)
     acquire = _function(pipeline_app, "acquire_source")
     runner = _function(pipeline_app, "run_full_cycle")
     candidates = _authorized_candidates(brief)
