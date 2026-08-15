@@ -156,7 +156,23 @@ def main() -> int:
         request["base_run_id"] = args.repair_autoframe_from_run
         request["reuse_plan_keys"] = list(PLAN_KEYS)
         request["rerender_plan_keys"] = list(AUTOFRAME_REPAIR_KEYS)
-    response = _modal_function(args.app, "recover_finalists").remote(request)
+    try:
+        response = _modal_function(args.app, "recover_finalists").remote(request)
+    except Exception:
+        failed_run_path = f"/{args.source_run_id}-targeted-{recovery_id}-failed"
+        print(
+            json.dumps(
+                {
+                    "status": "FAIL",
+                    "source_run_id": args.source_run_id,
+                    "recovery_id": recovery_id,
+                    "failure_evidence_volume": "clipper-v10-artifacts",
+                    "expected_failure_evidence_path": failed_run_path,
+                },
+                indent=2,
+            )
+        )
+        raise
     if not isinstance(response, dict) or response.get("status") != "PASS":
         raise RuntimeError(f"targeted Modal recovery returned an invalid response: {response!r}")
     remote_run_path = str(response.get("run_path") or "")

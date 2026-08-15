@@ -28,7 +28,13 @@ from clipper.canonical import (
     canonical_timeline_from_word_payloads,
     transcript_segments_from_canonical,
 )
+from clipper.editorial_integrity import (
+    BoundaryAudit,
+    BoundaryFailureReason,
+    BoundaryStatus,
+)
 from clipper.models import (
+    AcceptancePolicy,
     CampaignBrief,
     ClipConcept,
     EditorialScores,
@@ -38,7 +44,12 @@ from clipper.models import (
     TranscriptWord,
 )
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult, compute_profile
-from clipper.providers.editorial_prompt import editorial_contract, editorial_output_budget
+from clipper.providers.editorial_prompt import (
+    EDITORIAL_PROMPT_VERSION,
+    EDITORIAL_SCHEMA_VERSION,
+    editorial_contract,
+    editorial_output_budget,
+)
 from clipper.providers.factory import (
     editorial_and_embedding_providers,
     speech_providers,
@@ -85,6 +96,27 @@ def _timeline() -> CanonicalTimeline:
             CanonicalWord("w4", "today", 10.81, 11.1, "A", 0.95, "aligned", "whisperx"),
         ),
     )
+
+
+def _passing_boundary_payload() -> dict[str, object]:
+    return {
+        "start_status": "COMPLETE",
+        "end_status": "COMPLETE",
+        "standalone_status": "COMPLETE",
+        "required_prior_context": "",
+        "required_followup_context": "",
+        "prior_context_included": True,
+        "followup_context_included": True,
+        "setup_resolved": True,
+        "payoff_resolved": True,
+        "open_questions": [],
+        "open_references": [],
+        "narrative_structure": "complete story",
+        "boundary_confidence": 0.95,
+        "failure_reasons": [],
+        "repair_start_word_id": None,
+        "repair_end_word_id": None,
+    }
 
 
 def test_canonical_timeline_exact_and_interpolated_ids_are_stable() -> None:
@@ -942,6 +974,142 @@ def test_edit_plan_context_exposes_grounded_words_around_concept(tmp_path: Path)
     )
 
 
+def test_plan_context_preserves_oversized_grounded_concept(tmp_path: Path) -> None:
+    timeline = _long_grounded_timeline(1000)
+    concept = GroundedClipConcept(
+        "wide",
+        ("m",),
+        tuple(word.word_id for word in timeline.words[800:900]),
+        "wide grounded story",
+        "",
+        "story",
+        40,
+        (),
+        0.9,
+    )
+    planner = AutonomousEditorialPlanner(
+        _PlannerEditorial(), _PlannerEmbeddings(), FileCache(tmp_path / "wide-context")
+    )
+    evidence = planner._plan_context_words(timeline, concept, _open_brief(), max_words=50)
+    refs = {str(item["word_ref"]) for item in evidence}
+    assert len(evidence) == 100
+    assert timeline.word_ref(timeline.words[800].word_id) in refs
+    assert timeline.word_ref(timeline.words[899].word_id) in refs
+
+
+def test_grounded_boundary_repair_preserves_chronology_and_spoken_hook() -> None:
+    timeline = _long_grounded_timeline()
+    plan = GroundedEditPlan(
+        "p",
+        "video",
+        "c",
+        "v",
+        tuple(word.word_id for word in timeline.words[10:60]),
+        tuple(word.word_id for word in timeline.words[20:25]),
+        None,
+        "direct",
+        "tiktok",
+        0.9,
+    )
+
+    def audit(start: str | None, end: str | None) -> BoundaryAudit:
+        return BoundaryAudit(
+            timeline.words[10].source_start,
+            timeline.words[59].source_end,
+            timeline.words[10].text,
+            timeline.words[59].text,
+            "prior",
+            "after",
+            BoundaryStatus.NEEDS_CONTEXT,
+            BoundaryStatus.COMPLETE,
+            BoundaryStatus.NEEDS_CONTEXT,
+            "setup",
+            "",
+            False,
+            True,
+            True,
+            True,
+            (),
+            (),
+            "story",
+            0.9,
+            (BoundaryFailureReason.START_REQUIRES_PRIOR_CONTEXT,),
+            plan.source_word_ids,
+            start,
+            end,
+            {"model_id": "test"},
+        )
+
+    repaired = AutonomousEditorialPlanner._apply_boundary_repair(
+        timeline, plan, audit("w005", "w070")
+    )
+    assert repaired.source_word_ids[0] == "w005"
+    assert repaired.source_word_ids[-1] == "w070"
+    assert set(plan.hook_source_word_ids) <= set(repaired.source_word_ids)
+
+    with pytest.raises(EditorialGroundingError, match="chronology"):
+        AutonomousEditorialPlanner._apply_boundary_repair(timeline, plan, audit("w070", "w005"))
+    with pytest.raises(EditorialGroundingError, match="hook"):
+        AutonomousEditorialPlanner._apply_boundary_repair(timeline, plan, audit("w000", "w015"))
+
+
+def test_structured_campaign_policy_builds_grounded_source_hazard_timeline(
+    tmp_path: Path,
+) -> None:
+    timeline = _long_grounded_timeline()
+    policy = AcceptancePolicy.from_dict(
+        {
+            "source_segments": {
+                "allow": ["editorial_content"],
+                "forbid": ["advertisement", "sponsor_read"],
+                "unknown": "escalate",
+            }
+        }
+    )
+    brief = replace(_open_brief(), acceptance_policy=policy)
+    response = {
+        "segments": [
+            {
+                "start_word_id": timeline.word_ref(timeline.words[0].word_id),
+                "end_word_id": timeline.word_ref(timeline.words[-1].word_id),
+                "classification": "editorial_content",
+                "confidence": 0.98,
+                "evidence": ["ordinary source conversation"],
+            }
+        ]
+    }
+    planner = AutonomousEditorialPlanner(
+        _PlannerEditorial(response),
+        _PlannerEmbeddings(),
+        FileCache(tmp_path / "hazard-cache"),
+    )
+    hazards, rejections = planner._classify_source_hazards(brief, timeline, None)
+    assert rejections == []
+    assert len(hazards) == 1
+    assert hazards[0].classification.value == "editorial_content"
+    assert hazards[0].source_word_ids[0] == timeline.words[0].word_id
+    assert hazards[0].source_word_ids[-1] == timeline.words[-1].word_id
+
+
+def test_source_hazard_model_failure_becomes_unknown_escalation_evidence(
+    tmp_path: Path,
+) -> None:
+    timeline = _long_grounded_timeline()
+    brief = replace(
+        _open_brief(),
+        acceptance_policy=AcceptancePolicy.from_dict({"source_segments": {"unknown": "escalate"}}),
+    )
+    planner = AutonomousEditorialPlanner(
+        _PlannerEditorial({"bad": []}),
+        _PlannerEmbeddings(),
+        FileCache(tmp_path / "hazard-failure-cache"),
+    )
+    hazards, rejections = planner._classify_source_hazards(brief, timeline, None)
+    assert hazards[0].classification.value == "unknown"
+    assert hazards[0].confidence == 0.0
+    assert rejections[0]["decision"] == "ESCALATE"
+
+
 def test_duration_repair_expands_short_grounded_plan_to_campaign_minimum() -> None:
     timeline = _long_grounded_timeline()
     brief = replace(_open_brief(), min_clip_seconds=20, max_clip_seconds=45)
@@ -1383,6 +1551,8 @@ def test_managed_modal_endpoint_provider_rejects_missing_credentials() -> None:
 
 
 def test_editorial_prompt_contracts_cover_all_grounded_tasks() -> None:
+    assert EDITORIAL_PROMPT_VERSION == "editor-v2"
+    assert EDITORIAL_SCHEMA_VERSION == "editorial-json-v2"
     assert editorial_output_budget({"task": "episode_editorial_profile"}) == 768
     assert editorial_output_budget({"task": "global_concept_comparison"}) == 768
     assert editorial_output_budget({"task": "hook_variants:c1"}) == 1024
@@ -1393,7 +1563,13 @@ def test_editorial_prompt_contracts_cover_all_grounded_tasks() -> None:
     assert "concept_ids" in editorial_contract("global_concept_comparison")
     assert "variants" in editorial_contract("hook_variants:c1")
     assert "plans" in editorial_contract("edit_plans:c1")
+    assert "segments" in editorial_contract("source_hazards:0")
+    assert "start_status" in editorial_contract("boundary_audit:p1")
+    assert "ceiling, never a target" in editorial_contract("edit_plans:c1")
     assert "Follow the task payload" in editorial_contract("unknown")
+    modal_source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+    assert "def _editorial_contract" not in modal_source
+    assert "from clipper.providers.editorial_prompt import editorial_contract" in modal_source
 
 
 def test_managed_modal_endpoint_json_validation_and_https_requirement() -> None:
@@ -2060,6 +2236,8 @@ def test_plan_batch_reports_duration_rejections_when_all_model_plans_are_invalid
                         }
                     ]
                 }
+            elif task.startswith("boundary_audit:"):
+                value = _passing_boundary_payload()
             else:
                 raise AssertionError(task)
             return ProviderResult(value, self.identity, InferenceUsage("test", "now", 0.01))
@@ -2173,6 +2351,8 @@ def test_plan_batch_rejects_oversized_hook_and_keeps_other_valid_plan(tmp_path: 
                         },
                     ]
                 }
+            elif task.startswith("boundary_audit:"):
+                value = _passing_boundary_payload()
             else:
                 raise AssertionError(task)
             return ProviderResult(value, self.identity, InferenceUsage("test", "now", 0.01))
@@ -2297,6 +2477,8 @@ def test_plan_batch_rejects_failed_model_completion_and_keeps_other_concept(
                         }
                     ]
                 }
+            elif task.startswith("boundary_audit:"):
+                value = _passing_boundary_payload()
             else:
                 raise AssertionError(task)
             return ProviderResult(value, self.identity, InferenceUsage("test", "now", 0.01))

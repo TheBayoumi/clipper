@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from .ai_editorial import (
@@ -17,6 +17,14 @@ from .ai_editorial import (
 )
 from .cache import FileCache, model_stage_cache_key, stable_hash
 from .canonical import CanonicalTimeline
+from .editorial_integrity import (
+    BoundaryAudit,
+    GateDecision,
+    HazardClassification,
+    SourceHazardSegment,
+    evaluate_campaign_policy,
+    evaluate_pre_render_eligibility,
+)
 from .models import (
     CampaignBrief,
     ClipConcept,
@@ -37,6 +45,7 @@ class OpenVideoAnalysis:
     grounded_moments: dict[str, GroundedStoryMoment]
     grounded_concepts: dict[str, GroundedClipConcept]
     rejections: list[dict[str, object]]
+    source_hazards: list[SourceHazardSegment] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -48,6 +57,9 @@ class OpenEditorialBatch:
     plans: list[EditPlan]
     rejections: list[dict[str, object]]
     model_invocations: list[dict[str, object]]
+    boundary_audits: list[dict[str, object]] = field(default_factory=list)
+    campaign_policy_audits: list[dict[str, object]] = field(default_factory=list)
+    source_hazards: list[dict[str, object]] = field(default_factory=list)
 
 
 def _compat_scores(confidence: float) -> EditorialScores:
@@ -84,6 +96,7 @@ def _compact_campaign(brief: CampaignBrief) -> dict[str, object]:
         "clip_count": brief.clip_count,
         "planning_concept_budget": brief.production.concept_count,
         "final_render_budget": brief.production.final_render_budget,
+        "acceptance_policy": asdict(brief.acceptance_policy),
     }
 
 
@@ -382,15 +395,21 @@ class AutonomousEditorialPlanner:
         ):
             end_index += 1
         if end_index - start_index > max_words:
-            before = max(0, first_index - start_index)
             concept_width = last_index - first_index + 1
-            remaining = max(0, max_words - concept_width)
-            keep_before = min(before, remaining // 3)
-            start_index = max(0, first_index - keep_before)
-            end_index = min(len(timeline.words), start_index + max_words)
-            if end_index <= last_index:
+            if concept_width >= max_words:
+                # The cap applies to surrounding context, never to the grounded concept itself.
+                # Truncating either edge can amputate the setup or resolution before planning.
+                start_index = first_index
                 end_index = last_index + 1
-                start_index = max(0, end_index - max_words)
+            else:
+                before = max(0, first_index - start_index)
+                remaining = max_words - concept_width
+                keep_before = min(before, remaining // 3)
+                start_index = max(0, first_index - keep_before)
+                end_index = min(len(timeline.words), start_index + max_words)
+                if end_index <= last_index:
+                    end_index = last_index + 1
+                    start_index = max(0, end_index - max_words)
         return self._word_payload(timeline, start_index, end_index)
 
     def _chunks(self, timeline: CanonicalTimeline) -> list[list[dict[str, object]]]:
@@ -404,6 +423,174 @@ class AutonomousEditorialPlanner:
             if end == len(timeline.words):
                 break
         return chunks
+
+    def _classify_source_hazards(
+        self,
+        brief: CampaignBrief,
+        timeline: CanonicalTimeline,
+        visual_timeline: VisualTimeline | None,
+    ) -> tuple[list[SourceHazardSegment], list[dict[str, object]]]:
+        if not brief.acceptance_policy.enabled:
+            return [], []
+        segments: list[SourceHazardSegment] = []
+        rejections: list[dict[str, object]] = []
+        model_identity: dict[str, object] = dict(self.editorial.identity.to_dict())
+        for chunk_index, words in enumerate(self._chunks(timeline)):
+            raw_chunk_start = words[0]["source_start"]
+            raw_chunk_end = words[-1]["source_end"]
+            if not isinstance(raw_chunk_start, int | float | str) or not isinstance(
+                raw_chunk_end, int | float | str
+            ):
+                raise EditorialGroundingError("source hazard chunk timestamps are invalid")
+            chunk_start = float(raw_chunk_start)
+            chunk_end = float(raw_chunk_end)
+            stage = f"source_hazards:{chunk_index}"
+            try:
+                payload = self._complete(
+                    stage,
+                    timeline,
+                    brief,
+                    {
+                        "campaign": self._campaign(brief),
+                        "instruction": (
+                            "Classify the entire supplied source-word interval into exhaustive, "
+                            "chronological source-content segments. Fuse transcript semantics with "
+                            "the supplied visual evidence. Do not omit ordinary editorial content. "
+                            "Use UNKNOWN when evidence is insufficient; uncertainty is not PASS."
+                        ),
+                        "words": words,
+                        "visual_evidence": self._visual_evidence(
+                            visual_timeline, chunk_start, chunk_end
+                        ),
+                    },
+                )
+                for raw in self._array(payload, "segments"):
+                    segments.append(
+                        SourceHazardSegment.from_payload(
+                            raw,
+                            timeline,
+                            model_identity=model_identity,
+                        )
+                    )
+            except Exception as exc:
+                source_ids = tuple(str(item["word_id"]) for item in words)
+                segments.append(
+                    SourceHazardSegment(
+                        start=chunk_start,
+                        end=chunk_end,
+                        classification=HazardClassification.UNKNOWN,
+                        confidence=0.0,
+                        evidence=("source_hazard_classification_failed",),
+                        model_identity=model_identity,
+                        source_word_ids=source_ids,
+                    )
+                )
+                rejections.append(
+                    {
+                        "stage": "source_hazard_classification",
+                        "model_stage": stage,
+                        "decision": "ESCALATE",
+                        "reasons": ["policy_uncertain"],
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                )
+        segments.sort(key=lambda item: (item.start, item.end, item.classification.value))
+        return segments, rejections
+
+    def _boundary_audit(
+        self,
+        brief: CampaignBrief,
+        timeline: CanonicalTimeline,
+        concept: GroundedClipConcept,
+        plan: GroundedEditPlan,
+        *,
+        stage_suffix: str = "",
+    ) -> BoundaryAudit:
+        positions = {word.word_id: index for index, word in enumerate(timeline.words)}
+        start_index = positions[plan.source_word_ids[0]]
+        end_index = positions[plan.source_word_ids[-1]]
+        selected = timeline.words[start_index : end_index + 1]
+        before = timeline.words[max(0, start_index - 36) : start_index]
+        after = timeline.words[end_index + 1 : min(len(timeline.words), end_index + 37)]
+        stage = f"boundary_audit:{plan.plan_id}{stage_suffix}"
+        payload = self._complete(
+            stage,
+            timeline,
+            brief,
+            {
+                "campaign": self._campaign(brief),
+                "instruction": (
+                    "Evaluate the exact proposed clip as a minimal sufficient story. The maximum "
+                    "duration is a ceiling, never a target. Judge semantics, not punctuation or "
+                    "pauses alone. First audible content must be understandable without hidden "
+                    "context; the ending must resolve every obligation created by the clip. "
+                    "Report uncertainty rather than optimistic PASS. Suggest grounded repair word "
+                    "references only when a localized chronological repair can preserve truth."
+                ),
+                "concept": {
+                    "concept_id": concept.concept_id,
+                    "semantic_summary": concept.semantic_summary,
+                    "narrative_structure": concept.narrative_structure,
+                    "required_prior_context": concept.required_prior_context,
+                    "required_followup_context": concept.required_followup_context,
+                },
+                "plan": {
+                    "plan_id": plan.plan_id,
+                    "source_start_word_id": timeline.word_ref(plan.source_word_ids[0]),
+                    "source_end_word_id": timeline.word_ref(plan.source_word_ids[-1]),
+                    "duration_seconds": selected[-1].source_end - selected[0].source_start,
+                },
+                "pre_start_words": self._word_payload(
+                    timeline, max(0, start_index - 36), start_index
+                ),
+                "clip_words": self._word_payload(timeline, start_index, end_index + 1),
+                "post_end_words": self._word_payload(
+                    timeline, end_index + 1, min(len(timeline.words), end_index + 37)
+                ),
+            },
+        )
+        return BoundaryAudit.from_payload(
+            payload,
+            source_start=selected[0].source_start,
+            source_end=selected[-1].source_end,
+            first_source_word=selected[0].text,
+            last_source_word=selected[-1].text,
+            pre_start_context=" ".join(word.text for word in before),
+            post_end_context=" ".join(word.text for word in after),
+            source_word_evidence=tuple(word.word_id for word in selected),
+            model_identity=dict(self.editorial.identity.to_dict()),
+            prompt_version=self.editorial.identity.prompt_version,
+            schema_version="boundary-audit-v1",
+            required_prior_context=concept.required_prior_context,
+            required_followup_context=concept.required_followup_context,
+        )
+
+    @staticmethod
+    def _apply_boundary_repair(
+        timeline: CanonicalTimeline,
+        plan: GroundedEditPlan,
+        audit: BoundaryAudit,
+    ) -> GroundedEditPlan:
+        positions = {word.word_id: index for index, word in enumerate(timeline.words)}
+        start_id = (
+            timeline.resolve_word_ref(audit.repair_start_word_id)
+            if audit.repair_start_word_id
+            else plan.source_word_ids[0]
+        )
+        end_id = (
+            timeline.resolve_word_ref(audit.repair_end_word_id)
+            if audit.repair_end_word_id
+            else plan.source_word_ids[-1]
+        )
+        start_index = positions[start_id]
+        end_index = positions[end_id]
+        if end_index < start_index:
+            raise EditorialGroundingError("boundary repair must preserve source chronology")
+        repaired_ids = tuple(word.word_id for word in timeline.words[start_index : end_index + 1])
+        if not set(plan.hook_source_word_ids).issubset(repaired_ids):
+            raise EditorialGroundingError("boundary repair dropped grounded spoken hook words")
+        return replace(plan, source_word_ids=repaired_ids)
 
     @staticmethod
     def _resolve_story_moment_id(
@@ -628,6 +815,30 @@ class AutonomousEditorialPlanner:
                     )
                 if tuple(resolved_moment_ids) != concept.story_moment_ids:
                     concept = replace(concept, story_moment_ids=tuple(resolved_moment_ids))
+                linked_moments = [grounded_moments[item] for item in resolved_moment_ids]
+                required_prior = concept.required_prior_context or "; ".join(
+                    dict.fromkeys(
+                        item.required_prior_context
+                        for item in linked_moments
+                        if item.required_prior_context
+                    )
+                )
+                required_followup = concept.required_followup_context or "; ".join(
+                    dict.fromkeys(
+                        item.required_followup_context
+                        for item in linked_moments
+                        if item.required_followup_context
+                    )
+                )
+                if (
+                    required_prior != concept.required_prior_context
+                    or required_followup != concept.required_followup_context
+                ):
+                    concept = replace(
+                        concept,
+                        required_prior_context=required_prior,
+                        required_followup_context=required_followup,
+                    )
             except (ValueError, EditorialGroundingError) as exc:
                 rejections.append(
                     {
@@ -660,6 +871,10 @@ class AutonomousEditorialPlanner:
             self._compat_concept(timeline, item, clusters[item.concept_id])
             for item in representatives
         ]
+        source_hazards, hazard_rejections = self._classify_source_hazards(
+            brief, timeline, visual_timeline
+        )
+        rejections.extend(hazard_rejections)
         return OpenVideoAnalysis(
             profile=profile,
             moments=moments,
@@ -667,6 +882,7 @@ class AutonomousEditorialPlanner:
             grounded_moments=grounded_moments,
             grounded_concepts=grounded_concepts,
             rejections=rejections,
+            source_hazards=source_hazards,
         )
 
     def _semantic_dedupe(
@@ -723,9 +939,22 @@ class AutonomousEditorialPlanner:
         discovered_moments = [moment for analysis in analyses for moment in analysis.moments]
         discovered_concepts = [concept for analysis in analyses for concept in analysis.concepts]
         grounded: dict[str, GroundedClipConcept] = {}
+        hazards_by_video: dict[str, list[SourceHazardSegment]] = {}
+        source_hazard_evidence: list[dict[str, object]] = []
         rejections: list[dict[str, object]] = []
         for analysis in analyses:
             grounded.update(analysis.grounded_concepts)
+            if analysis.source_hazards:
+                if not analysis.concepts:
+                    raise EditorialGroundingError(
+                        "source hazard evidence has no associated grounded video"
+                    )
+                hazard_video_id = analysis.concepts[0].video_id
+                hazards_by_video.setdefault(hazard_video_id, []).extend(analysis.source_hazards)
+                source_hazard_evidence.extend(
+                    {**hazard.to_dict(), "video_id": hazard_video_id}
+                    for hazard in analysis.source_hazards
+                )
         if not discovered_concepts:
             raise EditorialGroundingError("open editorial analysis produced no concepts")
 
@@ -773,6 +1002,8 @@ class AutonomousEditorialPlanner:
 
         variants: list[HookVariant] = []
         plans: list[EditPlan] = []
+        boundary_audits: list[dict[str, object]] = []
+        campaign_policy_audits: list[dict[str, object]] = []
         for concept in selected:
             timeline = timelines[concept.video_id]
             grounded_concept = grounded[concept.concept_id]
@@ -911,7 +1142,86 @@ class AutonomousEditorialPlanner:
                     if repaired_plan is None:
                         rejections.append(repair_evidence)
                         continue
+                    boundary = self._boundary_audit(
+                        brief,
+                        timeline,
+                        grounded_concept,
+                        repaired_plan,
+                    )
+                    policy = evaluate_campaign_policy(
+                        brief,
+                        boundary.source_start,
+                        boundary.source_end,
+                        tuple(hazards_by_video.get(concept.video_id, [])),
+                        (),
+                    )
+                    eligibility = evaluate_pre_render_eligibility(
+                        brief,
+                        boundary,
+                        policy,
+                        repaired=bool(repair_evidence),
+                    )
+                    boundary_payload = boundary.to_dict(brief.acceptance_policy)
+                    boundary_payload.update(
+                        {"plan_id": repaired_plan.plan_id, "attempt": "initial"}
+                    )
+                    boundary_audits.append(boundary_payload)
+                    policy_payload = policy.to_dict()
+                    policy_payload.update({"plan_id": repaired_plan.plan_id, "attempt": "initial"})
+                    campaign_policy_audits.append(policy_payload)
+                    if eligibility.decision == GateDecision.REPAIR:
+                        repaired_plan = self._apply_boundary_repair(
+                            timeline, repaired_plan, boundary
+                        )
+                        boundary = self._boundary_audit(
+                            brief,
+                            timeline,
+                            grounded_concept,
+                            repaired_plan,
+                            stage_suffix=":repair-1",
+                        )
+                        policy = evaluate_campaign_policy(
+                            brief,
+                            boundary.source_start,
+                            boundary.source_end,
+                            tuple(hazards_by_video.get(concept.video_id, [])),
+                            (),
+                        )
+                        eligibility = evaluate_pre_render_eligibility(
+                            brief, boundary, policy, repaired=True
+                        )
+                        boundary_payload = boundary.to_dict(brief.acceptance_policy)
+                        boundary_payload.update(
+                            {"plan_id": repaired_plan.plan_id, "attempt": "repair-1"}
+                        )
+                        boundary_audits.append(boundary_payload)
+                        policy_payload = policy.to_dict()
+                        policy_payload.update(
+                            {"plan_id": repaired_plan.plan_id, "attempt": "repair-1"}
+                        )
+                        campaign_policy_audits.append(policy_payload)
+                    if eligibility.decision != GateDecision.PASS:
+                        rejections.append(
+                            {
+                                "concept_id": concept.concept_id,
+                                "stage": "pre_render_editorial_integrity",
+                                "proposal_index": proposal_index,
+                                "plan_id": repaired_plan.plan_id,
+                                "decision": eligibility.decision.value,
+                                "reasons": list(eligibility.reasons)
+                                or ["editorial_integrity_failed"],
+                                "boundary_audit": boundary.to_dict(brief.acceptance_policy),
+                                "campaign_policy_audit": policy.to_dict(),
+                            }
+                        )
+                        continue
                     plan = repaired_plan.compile(timeline, stable_hash(timeline.to_dict()))
+                    plan = replace(
+                        plan,
+                        boundary_audit=boundary.to_dict(brief.acceptance_policy),
+                        campaign_policy_audit=policy.to_dict(),
+                        pre_render_eligibility=eligibility.to_dict(),
+                    )
                 except ValueError as exc:
                     rejections.append(
                         {
@@ -932,7 +1242,10 @@ class AutonomousEditorialPlanner:
             reason_counts: dict[str, int] = {}
             rejected_durations: list[float] = []
             failures = [
-                item for item in rejections if item.get("stage") in {"hook_generation", "edit_plan"}
+                item
+                for item in rejections
+                if item.get("stage")
+                in {"hook_generation", "edit_plan", "pre_render_editorial_integrity"}
             ]
             for rejection in failures:
                 raw_reasons = rejection.get("reasons")
@@ -968,6 +1281,9 @@ class AutonomousEditorialPlanner:
             plans=plans,
             rejections=rejections,
             model_invocations=list(self.invocations),
+            boundary_audits=boundary_audits,
+            campaign_policy_audits=campaign_policy_audits,
+            source_hazards=source_hazard_evidence,
         )
 
     def _dedupe_hooks(

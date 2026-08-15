@@ -210,6 +210,8 @@ class GroundedClipConcept:
     recommended_duration: float
     visual_dependencies: tuple[str, ...]
     confidence: float
+    required_prior_context: str = ""
+    required_followup_context: str = ""
 
     @classmethod
     def from_payload(
@@ -246,6 +248,8 @@ class GroundedClipConcept:
             duration,
             tuple(x.strip() for x in visual if x.strip()),
             _confidence(payload.get("confidence", 0.0)),
+            str(payload.get("required_prior_context") or "").strip(),
+            str(payload.get("required_followup_context") or "").strip(),
         )
 
 

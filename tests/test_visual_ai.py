@@ -123,6 +123,19 @@ def test_parse_visual_review_validates_schema_and_numbers() -> None:
         parse_visual_review({"decision": "PASS", "summary": "x", "overall_confidence": None})
 
 
+@pytest.mark.parametrize("decision", ["REJECT", "ESCALATE"])
+def test_visual_review_supports_fatal_and_uncertain_release_decisions(decision: str) -> None:
+    report = parse_visual_review(
+        {
+            "decision": decision,
+            "summary": "Campaign evidence does not permit PASS.",
+            "overall_confidence": 0.9,
+            "issues": [],
+        }
+    )
+    assert report.decision == decision
+
+
 def test_adaptive_sampling_covers_first_three_seconds_scene_cuts_and_episode() -> None:
     times = adaptive_sample_times(
         200,
@@ -313,7 +326,7 @@ def test_rendered_clip_review_escalates_and_disagreement_is_conservative(tmp_pat
             context={},
             escalation=disagreement_large,
         )
-    assert report.decision == "REPAIR" and report.escalated is True
+    assert report.decision == "ESCALATE" and report.escalated is True
     assert report.issues[-1].issue_type == "reviewer_disagreement"
     assert report.issues[-1].severity == "HIGH"
 

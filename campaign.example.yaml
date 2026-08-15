@@ -29,3 +29,31 @@ watermark_text: null
 watermark_url: null
 required_hashtags: []
 posting_requirements: []
+
+acceptance_policy:
+  source_segments:
+    allow:
+      - editorial_content
+    forbid:
+      - advertisement
+      - sponsor_read
+      - promo
+      - intro
+      - outro
+      - housekeeping
+    unknown: escalate
+    safety_buffer_seconds: 0.25
+  branding:
+    supplied_campaign_assets_allowed: true
+    foreign_logos: forbid
+    minimum_confidence: 0.75
+  generated_media:
+    ai_generated_source_video: forbid
+  portrayal:
+    negative_creator_portrayal: forbid
+  language:
+    on_screen_text: en
+  editorial:
+    require_standalone_context: true
+    require_resolved_ending: true
+    minimum_boundary_confidence: 0.75

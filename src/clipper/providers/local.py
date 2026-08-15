@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from .base import InferenceUsage, ModelIdentity, ProviderResult
+from .editorial_prompt import (
+    EDITORIAL_PROMPT_VERSION,
+    EDITORIAL_SCHEMA_VERSION,
+    editorial_contract,
+    editorial_output_budget,
+)
 
 
 class ProviderUnavailable(RuntimeError):
@@ -75,7 +81,12 @@ class LocalEditorialProvider:
         device_map: str = "auto",
     ) -> None:
         self.identity = ModelIdentity(
-            model_id, revision, quantization, "transformers", "editor-v1", "editorial-json-v1"
+            model_id,
+            revision,
+            quantization,
+            "transformers",
+            EDITORIAL_PROMPT_VERSION,
+            EDITORIAL_SCHEMA_VERSION,
         )
         self.device_map = device_map
         self._tokenizer: Any | None = None
@@ -107,8 +118,8 @@ class LocalEditorialProvider:
             {
                 "role": "system",
                 "content": (
-                    "Return only valid JSON. Never invent spoken words; "
-                    "reference canonical word IDs."
+                    "You are a source-grounded podcast editor. "
+                    "Never invent spoken words or IDs. " + editorial_contract(task)
                 ),
             },
             {
@@ -120,7 +131,11 @@ class LocalEditorialProvider:
             messages, tokenize=False, add_generation_prompt=True
         )
         inputs = tokenizer(rendered, return_tensors="pt").to(model.device)
-        output = model.generate(**inputs, max_new_tokens=1536, do_sample=False)
+        output = model.generate(
+            **inputs,
+            max_new_tokens=editorial_output_budget({"task": task}),
+            do_sample=False,
+        )
         generated = output[0][inputs["input_ids"].shape[-1] :]
         text = tokenizer.decode(generated, skip_special_tokens=True).strip()
         try:

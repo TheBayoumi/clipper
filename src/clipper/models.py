@@ -56,6 +56,267 @@ BeatType = Literal[
     "graphic",
     "payoff_hold",
 ]
+PolicyAction = Literal["allow", "forbid", "escalate"]
+ForeignLogoPolicy = Literal["allow", "forbid", "escalate"]
+
+SOURCE_HAZARD_CLASSIFICATIONS = frozenset(
+    {
+        "editorial_content",
+        "advertisement",
+        "sponsor_read",
+        "promo",
+        "intro",
+        "outro",
+        "housekeeping",
+        "graphic_heavy",
+        "unknown",
+    }
+)
+
+
+def _policy_action(value: object, field_name: str) -> PolicyAction:
+    normalized = str(value).strip().lower()
+    if normalized not in {"allow", "forbid", "escalate"}:
+        raise BriefValidationError(f"{field_name} must be allow, forbid, or escalate")
+    return cast(PolicyAction, normalized)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSegmentPolicy:
+    allow: tuple[str, ...] = ("editorial_content",)
+    forbid: tuple[str, ...] = (
+        "advertisement",
+        "sponsor_read",
+        "promo",
+        "intro",
+        "outro",
+        "housekeeping",
+    )
+    unknown: PolicyAction = "escalate"
+    safety_buffer_seconds: float = 0.0
+
+    @classmethod
+    def from_dict(cls, value: object) -> SourceSegmentPolicy:
+        if value is None:
+            return cls()
+        if not isinstance(value, dict):
+            raise BriefValidationError("acceptance_policy.source_segments must be an object")
+        unknown_fields = set(value) - {
+            "allow",
+            "forbid",
+            "unknown",
+            "safety_buffer_seconds",
+        }
+        if unknown_fields:
+            raise BriefValidationError(
+                f"unsupported acceptance_policy.source_segments rule: {sorted(unknown_fields)[0]}"
+            )
+
+        def classifications(field_name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+            raw = value.get(field_name, list(default))
+            if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+                raise BriefValidationError(
+                    f"acceptance_policy.source_segments.{field_name} must be a list of strings"
+                )
+            normalized = tuple(dict.fromkeys(item.strip().lower() for item in raw if item.strip()))
+            unsupported = set(normalized) - SOURCE_HAZARD_CLASSIFICATIONS
+            if unsupported:
+                raise BriefValidationError(
+                    f"unsupported source hazard classification: {sorted(unsupported)[0]}"
+                )
+            return normalized
+
+        allow = classifications("allow", cls().allow)
+        forbid = classifications("forbid", cls().forbid)
+        if set(allow) & set(forbid):
+            raise BriefValidationError(
+                "acceptance_policy source classifications cannot be both allowed and forbidden"
+            )
+        safety_buffer = float(value.get("safety_buffer_seconds", 0.0))
+        if not 0.0 <= safety_buffer <= 5.0:
+            raise BriefValidationError(
+                "acceptance_policy.source_segments.safety_buffer_seconds must be between 0 and 5"
+            )
+        return cls(
+            allow=allow,
+            forbid=forbid,
+            unknown=_policy_action(
+                value.get("unknown", "escalate"), "acceptance_policy.source_segments.unknown"
+            ),
+            safety_buffer_seconds=safety_buffer,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class BrandingPolicy:
+    supplied_campaign_assets_allowed: bool = True
+    foreign_logos: ForeignLogoPolicy = "escalate"
+    minimum_confidence: float = 0.75
+
+    @classmethod
+    def from_dict(cls, value: object) -> BrandingPolicy:
+        if value is None:
+            return cls()
+        if not isinstance(value, dict):
+            raise BriefValidationError("acceptance_policy.branding must be an object")
+        unknown_fields = set(value) - {
+            "supplied_campaign_assets_allowed",
+            "foreign_logos",
+            "minimum_confidence",
+        }
+        if unknown_fields:
+            raise BriefValidationError(
+                f"unsupported acceptance_policy.branding rule: {sorted(unknown_fields)[0]}"
+            )
+        action = _policy_action(
+            value.get("foreign_logos", "escalate"),
+            "acceptance_policy.branding.foreign_logos",
+        )
+        confidence = float(value.get("minimum_confidence", 0.75))
+        if not 0.0 <= confidence <= 1.0:
+            raise BriefValidationError(
+                "acceptance_policy.branding.minimum_confidence must be between 0 and 1"
+            )
+        return cls(
+            supplied_campaign_assets_allowed=bool(
+                value.get("supplied_campaign_assets_allowed", True)
+            ),
+            foreign_logos=action,
+            minimum_confidence=confidence,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EditorialAcceptancePolicy:
+    require_standalone_context: bool = True
+    require_resolved_ending: bool = True
+    minimum_boundary_confidence: float = 0.75
+
+    @classmethod
+    def from_dict(cls, value: object) -> EditorialAcceptancePolicy:
+        if value is None:
+            return cls()
+        if not isinstance(value, dict):
+            raise BriefValidationError("acceptance_policy.editorial must be an object")
+        unknown_fields = set(value) - {
+            "require_standalone_context",
+            "require_resolved_ending",
+            "minimum_boundary_confidence",
+        }
+        if unknown_fields:
+            raise BriefValidationError(
+                f"unsupported acceptance_policy.editorial rule: {sorted(unknown_fields)[0]}"
+            )
+        confidence = float(value.get("minimum_boundary_confidence", 0.75))
+        if not 0.0 <= confidence <= 1.0:
+            raise BriefValidationError(
+                "acceptance_policy.editorial.minimum_boundary_confidence must be between 0 and 1"
+            )
+        return cls(
+            require_standalone_context=bool(value.get("require_standalone_context", True)),
+            require_resolved_ending=bool(value.get("require_resolved_ending", True)),
+            minimum_boundary_confidence=confidence,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptancePolicy:
+    enabled: bool = False
+    source_segments: SourceSegmentPolicy = field(default_factory=SourceSegmentPolicy)
+    branding: BrandingPolicy = field(default_factory=BrandingPolicy)
+    ai_generated_source_video: PolicyAction = "escalate"
+    negative_creator_portrayal: PolicyAction = "escalate"
+    on_screen_text_language: str | None = None
+    editorial: EditorialAcceptancePolicy = field(default_factory=EditorialAcceptancePolicy)
+
+    @classmethod
+    def from_dict(cls, value: object) -> AcceptancePolicy:
+        if value is None:
+            return cls()
+        if not isinstance(value, dict):
+            raise BriefValidationError("acceptance_policy must be an object")
+        unknown_fields = set(value) - {
+            "enabled",
+            "source_segments",
+            "branding",
+            "generated_media",
+            "portrayal",
+            "language",
+            "editorial",
+        }
+        if unknown_fields:
+            raise BriefValidationError(
+                f"unsupported acceptance_policy rule: {sorted(unknown_fields)[0]}"
+            )
+
+        generated = value.get("generated_media", {})
+        if not isinstance(generated, dict):
+            raise BriefValidationError("acceptance_policy.generated_media must be an object")
+        generated_unknown = set(generated) - {"ai_generated_source_video"}
+        if generated_unknown:
+            raise BriefValidationError(
+                "unsupported acceptance_policy.generated_media rule: "
+                f"{sorted(generated_unknown)[0]}"
+            )
+
+        portrayal = value.get("portrayal", {})
+        if not isinstance(portrayal, dict):
+            raise BriefValidationError("acceptance_policy.portrayal must be an object")
+        portrayal_unknown = set(portrayal) - {"negative_creator_portrayal"}
+        if portrayal_unknown:
+            raise BriefValidationError(
+                f"unsupported acceptance_policy.portrayal rule: {sorted(portrayal_unknown)[0]}"
+            )
+
+        language = value.get("language", {})
+        if not isinstance(language, dict):
+            raise BriefValidationError("acceptance_policy.language must be an object")
+        language_unknown = set(language) - {"on_screen_text"}
+        if language_unknown:
+            raise BriefValidationError(
+                f"unsupported acceptance_policy.language rule: {sorted(language_unknown)[0]}"
+            )
+        language_value = str(language.get("on_screen_text") or "").strip().lower() or None
+        if language_value is not None and len(language_value) not in {2, 3}:
+            raise BriefValidationError(
+                "acceptance_policy.language.on_screen_text must be an ISO language code"
+            )
+
+        return cls(
+            enabled=bool(value.get("enabled", True)),
+            source_segments=SourceSegmentPolicy.from_dict(value.get("source_segments")),
+            branding=BrandingPolicy.from_dict(value.get("branding")),
+            ai_generated_source_video=_policy_action(
+                generated.get("ai_generated_source_video", "escalate"),
+                "acceptance_policy.generated_media.ai_generated_source_video",
+            ),
+            negative_creator_portrayal=_policy_action(
+                portrayal.get("negative_creator_portrayal", "escalate"),
+                "acceptance_policy.portrayal.negative_creator_portrayal",
+            ),
+            on_screen_text_language=language_value,
+            editorial=EditorialAcceptancePolicy.from_dict(value.get("editorial")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "source_segments": {
+                "allow": list(self.source_segments.allow),
+                "forbid": list(self.source_segments.forbid),
+                "unknown": self.source_segments.unknown,
+                "safety_buffer_seconds": self.source_segments.safety_buffer_seconds,
+            },
+            "branding": asdict(self.branding),
+            "generated_media": {
+                "ai_generated_source_video": self.ai_generated_source_video,
+            },
+            "portrayal": {
+                "negative_creator_portrayal": self.negative_creator_portrayal,
+            },
+            "language": {"on_screen_text": self.on_screen_text_language},
+            "editorial": asdict(self.editorial),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +518,7 @@ class CampaignBrief:
     watermark_url: str | None = None
     required_hashtags: list[str] = field(default_factory=list)
     posting_requirements: list[str] = field(default_factory=list)
+    acceptance_policy: AcceptancePolicy = field(default_factory=AcceptancePolicy)
     production: ProductionConfig = field(default_factory=ProductionConfig)
     diversity: DiversityConfig = field(default_factory=DiversityConfig)
     hooks: HooksConfig = field(default_factory=HooksConfig)
@@ -300,6 +562,7 @@ class CampaignBrief:
             ),
             required_hashtags=_string_list(data, "required_hashtags"),
             posting_requirements=_string_list(data, "posting_requirements"),
+            acceptance_policy=AcceptancePolicy.from_dict(data.get("acceptance_policy")),
             production=ProductionConfig.from_dict(data.get("production")),
             diversity=DiversityConfig.from_dict(data.get("diversity")),
             hooks=HooksConfig.from_dict(data.get("hooks")),
@@ -340,7 +603,9 @@ class CampaignBrief:
             )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["acceptance_policy"] = self.acceptance_policy.to_dict()
+        return data
 
     @property
     def search_query(self) -> str:
@@ -558,6 +823,9 @@ class EditPlan:
     transcript_fingerprint: str
     caption_start_source_time: float | None = None
     caption_start_word: str | None = None
+    boundary_audit: dict[str, Any] | None = None
+    campaign_policy_audit: dict[str, Any] | None = None
+    pre_render_eligibility: dict[str, Any] | None = None
 
     @property
     def duration(self) -> float:
@@ -621,7 +889,10 @@ class PipelineManifest:
     submission_shortlist: list[dict[str, Any]] = field(default_factory=list)
     rendered_clips: list[dict[str, Any]] = field(default_factory=list)
     technical_qc: list[dict[str, Any]] = field(default_factory=list)
+    boundary_qc: list[dict[str, Any]] = field(default_factory=list)
+    campaign_policy_qc: list[dict[str, Any]] = field(default_factory=list)
     editorial_qc: list[dict[str, Any]] = field(default_factory=list)
+    publication_state: str = "TECHNICALLY_INCOMPLETE"
     run_metadata: dict[str, Any] = field(default_factory=dict)
     cache: dict[str, Any] = field(default_factory=dict)
     performance: dict[str, Any] = field(default_factory=dict)

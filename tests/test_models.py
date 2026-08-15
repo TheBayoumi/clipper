@@ -155,3 +155,74 @@ def test_production_distinct_finalist_concept_validation() -> None:
                 "minimum_distinct_finalist_concepts": 3,
             }
         )
+
+
+def test_v11_structured_acceptance_policy_parses_and_serializes() -> None:
+    brief = CampaignBrief.from_dict(
+        valid_data()
+        | {
+            "acceptance_policy": {
+                "source_segments": {
+                    "allow": ["editorial_content"],
+                    "forbid": ["advertisement", "sponsor_read"],
+                    "unknown": "escalate",
+                    "safety_buffer_seconds": 0.25,
+                },
+                "branding": {
+                    "supplied_campaign_assets_allowed": True,
+                    "foreign_logos": "forbid",
+                },
+                "generated_media": {"ai_generated_source_video": "forbid"},
+                "portrayal": {"negative_creator_portrayal": "forbid"},
+                "language": {"on_screen_text": "en"},
+                "editorial": {
+                    "require_standalone_context": True,
+                    "require_resolved_ending": True,
+                    "minimum_boundary_confidence": 0.8,
+                },
+            }
+        }
+    )
+    assert brief.acceptance_policy.enabled is True
+    assert brief.acceptance_policy.source_segments.forbid == (
+        "advertisement",
+        "sponsor_read",
+    )
+    assert brief.acceptance_policy.branding.foreign_logos == "forbid"
+    assert brief.to_dict()["acceptance_policy"]["editorial"][
+        "minimum_boundary_confidence"
+    ] == pytest.approx(0.8)
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        "not-an-object",
+        {"unrepresentable_hard_rule": "silently pass"},
+        {"source_segments": "not-an-object"},
+        {"source_segments": {"unsupported": True}},
+        {"source_segments": {"allow": "editorial_content"}},
+        {"source_segments": {"forbid": ["made_up_hazard"]}},
+        {"source_segments": {"allow": ["promo"], "forbid": ["promo"]}},
+        {"source_segments": {"safety_buffer_seconds": 10}},
+        {"branding": "not-an-object"},
+        {"branding": {"unsupported": True}},
+        {"branding": {"foreign_logos": "maybe"}},
+        {"branding": {"minimum_confidence": 2.0}},
+        {"editorial": "not-an-object"},
+        {"editorial": {"unsupported": True}},
+        {"editorial": {"minimum_boundary_confidence": 2.0}},
+        {"generated_media": "not-an-object"},
+        {"generated_media": {"unsupported": True}},
+        {"generated_media": {"ai_generated_source_video": "maybe"}},
+        {"portrayal": "not-an-object"},
+        {"portrayal": {"unsupported": True}},
+        {"portrayal": {"negative_creator_portrayal": "maybe"}},
+        {"language": "not-an-object"},
+        {"language": {"unsupported": True}},
+        {"language": {"on_screen_text": "english"}},
+    ],
+)
+def test_v11_acceptance_policy_rejects_unknown_or_unsafe_rules(policy: object) -> None:
+    with pytest.raises(BriefValidationError):
+        CampaignBrief.from_dict(valid_data() | {"acceptance_policy": policy})

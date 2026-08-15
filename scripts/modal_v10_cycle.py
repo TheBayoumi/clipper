@@ -648,7 +648,10 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
     partial_run_dir = _direct_volume_child(
         ARTIFACT_ROOT, f".{output_run_id}.partial", label="partial output run ID"
     )
-    if output_run_dir.exists() or partial_run_dir.exists():
+    failed_run_dir = _direct_volume_child(
+        ARTIFACT_ROOT, f"{output_run_id}-failed", label="failed output run ID"
+    )
+    if output_run_dir.exists() or partial_run_dir.exists() or failed_run_dir.exists():
         raise RuntimeError(f"refusing to overwrite targeted recovery: {output_run_id}")
 
     original_manifest = _load_json_object(source_run_dir / "manifest.json")
@@ -761,6 +764,125 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
     )
     reviewer = vision_provider("balanced")
 
+    planned_finalists = [
+        {
+            "concept_id": concept_id,
+            "plan_id": plan_id,
+            "mode": (
+                "RERENDER_AND_REVIEW"
+                if (concept_id, plan_id) in freshly_rendered_keys
+                else "REUSE_AND_REVALIDATE"
+            ),
+            "status": "PENDING",
+            "stages": (
+                {
+                    "prepare": "PENDING",
+                    "render": "PENDING",
+                    "technical_qc": "PENDING",
+                    "visual_review": "PENDING",
+                }
+                if (concept_id, plan_id) in freshly_rendered_keys
+                else {
+                    "prepare": "PENDING",
+                    "evidence_reuse": "PENDING",
+                    "technical_qc": "PENDING",
+                    "visual_review": "REUSED",
+                }
+            ),
+        }
+        for concept_id, plan_id in all_final_keys
+    ]
+    recovery_progress: dict[str, Any] = {
+        "schema_version": "clipper-targeted-recovery-progress-v1",
+        "source_run_id": source_run_id,
+        "output_run_id": output_run_id,
+        "status": "PENDING",
+        "completed_finalists": 0,
+        "total_finalists": len(planned_finalists),
+        "expected_remote_visual_reviews": [
+            {"concept_id": concept_id, "plan_id": plan_id}
+            for concept_id, plan_id in freshly_rendered_keys
+        ],
+        "finalists": planned_finalists,
+        "final_acceptance": "PENDING",
+        "active": None,
+        "failure": None,
+    }
+
+    def _progress_item(key: tuple[str, str]) -> dict[str, Any]:
+        return next(
+            item for item in planned_finalists if (item["concept_id"], item["plan_id"]) == key
+        )
+
+    def persist_recovery_progress(event: str) -> None:
+        recovery_progress["updated_at"] = datetime.now(UTC).isoformat()
+        progress_root = (
+            output_run_dir
+            if output_run_dir.is_dir()
+            else failed_run_dir
+            if failed_run_dir.is_dir()
+            else partial_run_dir
+        )
+        progress_root.mkdir(parents=True, exist_ok=True)
+        progress_path = progress_root / "recovery-progress.json"
+        temporary = progress_path.with_name(f".{progress_path.name}.{os.getpid()}.tmp")
+        temporary.write_text(
+            json.dumps(recovery_progress, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, progress_path)
+        print(
+            "clipper targeted recovery event: "
+            + json.dumps(
+                {
+                    "event": event,
+                    "output_run_id": output_run_id,
+                    "status": recovery_progress["status"],
+                    "completed_finalists": recovery_progress["completed_finalists"],
+                    "active": recovery_progress["active"],
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        artifact_volume.commit()
+
+    def begin_finalist_stage(key: tuple[str, str], stage: str) -> None:
+        item = _progress_item(key)
+        stages = item["stages"]
+        if not isinstance(stages, dict) or stages.get(stage) != "PENDING":
+            raise RuntimeError(f"invalid recovery stage transition for {key}: {stage}")
+        item["status"] = "RUNNING"
+        stages[stage] = "RUNNING"
+        recovery_progress["active"] = {
+            "concept_id": key[0],
+            "plan_id": key[1],
+            "stage": stage,
+        }
+        persist_recovery_progress("finalist_stage_started")
+
+    def pass_finalist_stage(key: tuple[str, str], stage: str) -> None:
+        item = _progress_item(key)
+        stages = item["stages"]
+        if not isinstance(stages, dict) or stages.get(stage) != "RUNNING":
+            raise RuntimeError(f"invalid recovery stage completion for {key}: {stage}")
+        stages[stage] = "PASS"
+        recovery_progress["active"] = None
+        persist_recovery_progress("finalist_stage_passed")
+
+    def pass_finalist(key: tuple[str, str]) -> None:
+        item = _progress_item(key)
+        stages = item["stages"]
+        if not isinstance(stages, dict) or any(
+            status not in {"PASS", "REUSED"} for status in stages.values()
+        ):
+            raise RuntimeError(f"recovery finalist has incomplete stages: {key}")
+        item["status"] = "PASS"
+        recovery_progress["completed_finalists"] = sum(
+            candidate["status"] == "PASS" for candidate in planned_finalists
+        )
+        persist_recovery_progress("finalist_passed")
+
     def require_current_qc(
         rendered_path: Path,
         *,
@@ -835,6 +957,8 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
 
     try:
         partial_run_dir.mkdir(parents=True, exist_ok=False)
+        recovery_progress["status"] = "RUNNING"
+        persist_recovery_progress("recovery_started")
         for directory_name in ("assets", "canonical", "edit-plans"):
             source_directory = source_run_dir / directory_name
             if source_directory.is_dir():
@@ -864,10 +988,13 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
 
         for attempt_number, key in enumerate(_RECOVERED_FINALISTS, start=1):
             result = prior_results[key]
+            begin_finalist_stage(key, "prepare")
             plan = _edit_plan_from_payload(plan_by_key[key])
             concept = concept_by_id[key[0]]
             clip = plan.to_clip_candidate(str(concept.get("text") or ""))
+            pass_finalist_stage(key, "prepare")
             if key in rerendered_recovered_keys:
+                begin_finalist_stage(key, "render")
                 rendered_path = renderer.render(
                     source_path,
                     partial_run_dir
@@ -878,13 +1005,17 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                     watermark_path,
                     plan,
                 )
+                pass_finalist_stage(key, "render")
+                begin_finalist_stage(key, "technical_qc")
                 qc_payload = require_current_qc(rendered_path, clip=clip, plan=plan, key=key)
+                pass_finalist_stage(key, "technical_qc")
                 (partial_run_dir / "qc").mkdir(parents=True, exist_ok=True)
                 (partial_run_dir / "qc" / f"{rendered_path.stem}.json").write_text(
                     json.dumps(qc_payload, indent=2) + "\n", encoding="utf-8"
                 )
                 technical_qc.append(qc_payload)
                 _copy_clip_evidence(rendered_path, rendered_path, partial_run_dir)
+                begin_finalist_stage(key, "visual_review")
                 review_payload = review_fresh_render(
                     rendered_path,
                     clip=clip,
@@ -893,6 +1024,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                     qc_payload=qc_payload,
                     review_scope="approved_legacy_caption_repair",
                 )
+                pass_finalist_stage(key, "visual_review")
                 editorial_qc.append(review_payload)
                 new_review_payloads.append(review_payload)
                 (partial_run_dir / "visual-review" / f"{rendered_path.stem}.json").write_text(
@@ -918,7 +1050,9 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                         "editorial_qc": review_payload,
                     }
                 )
+                pass_finalist(key)
                 continue
+            begin_finalist_stage(key, "evidence_reuse")
             reuse_run_id = source_run_id
             reuse_run_dir = source_run_dir
             report = result["report"]
@@ -954,7 +1088,10 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                 raise FileNotFoundError(source_clip)
             destination_clip = partial_run_dir / "clips" / clip_name
             _copy_clip_evidence(source_clip, destination_clip, partial_run_dir)
+            pass_finalist_stage(key, "evidence_reuse")
+            begin_finalist_stage(key, "technical_qc")
             qc_payload = require_current_qc(destination_clip, clip=clip, plan=plan, key=key)
+            pass_finalist_stage(key, "technical_qc")
             qc_payload["reused_from_run_id"] = reuse_run_id
             video_payload = qc_payload.get("video")
             if isinstance(video_payload, dict):
@@ -1000,13 +1137,17 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                     "editorial_qc": review_payload,
                 }
             )
+            pass_finalist(key)
 
         for offset, key in enumerate(_TARGETED_RECOVERY_PLANS, start=1):
+            begin_finalist_stage(key, "prepare")
             plan = _edit_plan_from_payload(plan_by_key[key])
             concept = concept_by_id[key[0]]
             clip = plan.to_clip_candidate(str(concept.get("text") or ""))
+            pass_finalist_stage(key, "prepare")
             attempt_number = len(_RECOVERED_FINALISTS) + offset
             if key in reused_targeted_keys:
+                begin_finalist_stage(key, "evidence_reuse")
                 if base_run_dir is None:
                     raise RuntimeError("targeted reuse base run is unavailable")
                 base_rendered = base_rendered_by_key[key]
@@ -1016,7 +1157,10 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                 source_clip = base_run_dir / "clips" / clip_name
                 destination_clip = partial_run_dir / "clips" / clip_name
                 _copy_clip_evidence(source_clip, destination_clip, partial_run_dir)
+                pass_finalist_stage(key, "evidence_reuse")
+                begin_finalist_stage(key, "technical_qc")
                 qc_payload = require_current_qc(destination_clip, clip=clip, plan=plan, key=key)
+                pass_finalist_stage(key, "technical_qc")
                 review_payload = _load_json_object(
                     base_run_dir / "visual-review" / f"{source_clip.stem}.json"
                 )
@@ -1059,12 +1203,14 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                         "editorial_qc": review_payload,
                     }
                 )
+                pass_finalist(key)
                 continue
             output_path = (
                 partial_run_dir
                 / "clips"
                 / f"attempt-{attempt_number:02d}-{key[0]}-{key[1]}-{plan.hook_mode}.mp4"
             )
+            begin_finalist_stage(key, "render")
             rendered_path = renderer.render(
                 source_path,
                 output_path,
@@ -1073,6 +1219,8 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                 watermark_path,
                 plan,
             )
+            pass_finalist_stage(key, "render")
+            begin_finalist_stage(key, "technical_qc")
             qc_payload = run_technical_qc(
                 rendered_path,
                 expected_duration=clip.duration,
@@ -1090,6 +1238,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                 raise RuntimeError(
                     f"targeted technical QC failed for {key}: {qc_payload.get('issues')}"
                 )
+            pass_finalist_stage(key, "technical_qc")
             (partial_run_dir / "qc").mkdir(parents=True, exist_ok=True)
             (partial_run_dir / "qc" / f"{rendered_path.stem}.json").write_text(
                 json.dumps(qc_payload, indent=2) + "\n", encoding="utf-8"
@@ -1101,6 +1250,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
             )
             if not isinstance(tracking_payload, dict):
                 raise RuntimeError(f"tracking evidence is malformed for {key}")
+            begin_finalist_stage(key, "visual_review")
             review, review_results = review_rendered_clip(
                 rendered_path,
                 reviewer,
@@ -1135,6 +1285,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                 raise RuntimeError(
                     f"targeted visual review did not pass for {key}: {review_payload}"
                 )
+            pass_finalist_stage(key, "visual_review")
             editorial_qc.append(review_payload)
             new_review_payloads.append(review_payload)
             (partial_run_dir / "visual-review" / f"{rendered_path.stem}.json").write_text(
@@ -1160,6 +1311,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                     "editorial_qc": review_payload,
                 }
             )
+            pass_finalist(key)
 
         physical_prefix = partial_run_dir.as_posix()
         stable_prefix = f"{ARTIFACT_ROOT}/{output_run_id}"
@@ -1334,17 +1486,52 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
         target_payload = final_manifest.get("targets")
         if not isinstance(target_payload, dict):
             raise RuntimeError("targeted recovery manifest is missing campaign targets")
+        recovery_progress["final_acceptance"] = "RUNNING"
+        recovery_progress["active"] = {"stage": "final_acceptance"}
+        persist_recovery_progress("final_acceptance_started")
         validate_live_run(
             partial_run_dir,
             expected_finalists=6,
             expected_shortlist=6,
             expected_distinct_finalists=int(target_payload.get("distinct_finalist_concepts") or 0),
         )
+        recovery_progress["final_acceptance"] = "PASS"
+        recovery_progress["active"] = None
+        persist_recovery_progress("final_acceptance_passed")
         partial_run_dir.replace(output_run_dir)
-        artifact_volume.commit()
-    except Exception:
-        if partial_run_dir.exists():
-            shutil.rmtree(partial_run_dir)
+        recovery_progress["status"] = "PASS"
+        persist_recovery_progress("recovery_passed")
+    except Exception as exc:
+        error_message = str(exc).strip() or repr(exc)
+        active = recovery_progress.get("active")
+        if isinstance(active, dict) and active.get("concept_id") and active.get("plan_id"):
+            failed_key = (str(active["concept_id"]), str(active["plan_id"]))
+            failed_item = _progress_item(failed_key)
+            failed_item["status"] = "FAIL"
+            failed_stages = failed_item.get("stages")
+            failed_stage = str(active.get("stage") or "")
+            if isinstance(failed_stages, dict) and failed_stage in failed_stages:
+                failed_stages[failed_stage] = "FAIL"
+        if active == {"stage": "final_acceptance"}:
+            recovery_progress["final_acceptance"] = "FAIL"
+        recovery_progress["status"] = "FAIL"
+        recovery_progress["failure"] = {
+            "type": type(exc).__name__,
+            "message": error_message[:4000],
+            "active": active,
+        }
+        try:
+            persist_recovery_progress("recovery_failed")
+            if partial_run_dir.is_dir():
+                partial_run_dir.replace(failed_run_dir)
+                recovery_progress["failure_path"] = failed_run_dir.as_posix()
+                persist_recovery_progress("failure_artifacts_preserved")
+        except Exception as persistence_exc:
+            print(
+                "clipper failed to persist targeted recovery failure evidence: "
+                f"{type(persistence_exc).__name__}: {persistence_exc}",
+                flush=True,
+            )
         raise
 
     run_relative = "/" + output_run_id

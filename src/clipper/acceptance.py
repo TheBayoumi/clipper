@@ -21,12 +21,20 @@ def validate_live_run(
 ) -> dict[str, Any]:
     root = Path(run_dir)
     manifest = _load_object(root / "manifest.json")
-    if manifest.get("status") != "SUCCESS":
+    if manifest.get("status") not in {"SUCCESS", "DEGRADED"}:
         raise ValueError(
             f"production status is {manifest.get('status')}: {manifest.get('status_reason')}"
         )
     if manifest.get("errors"):
         raise ValueError(f"pipeline errors remain: {manifest['errors']}")
+    if manifest.get("publication_state") not in {
+        "READY_FOR_HUMAN_REVIEW",
+        "READY_TO_PUBLISH",
+    }:
+        raise ValueError(
+            "production completed without publish-readiness evidence: "
+            f"{manifest.get('publication_state') or 'UNKNOWN'}"
+        )
     targets = manifest.get("targets") or {}
     actual = manifest.get("actual") or {}
     distinct_target = expected_distinct_finalists or min(expected_shortlist, expected_finalists)
@@ -51,6 +59,9 @@ def validate_live_run(
     rendered = manifest.get("rendered_clips") or []
     shortlist = manifest.get("submission_shortlist") or []
     qc = manifest.get("technical_qc") or []
+    boundary_qc = manifest.get("boundary_qc") or []
+    campaign_policy_qc = manifest.get("campaign_policy_qc") or []
+    editorial_qc = manifest.get("editorial_qc") or []
     if len(rendered) != expected_finalists:
         raise ValueError(f"expected {expected_finalists} rendered finalists, found {len(rendered)}")
     if len(shortlist) != expected_shortlist:
@@ -62,6 +73,47 @@ def validate_live_run(
     shortlist_plans = {item.get("plan_id") for item in shortlist}
     if None in rendered_plans or None in shortlist_plans or not shortlist_plans <= rendered_plans:
         raise ValueError("shortlist references a plan without an accepted rendered MP4")
+
+    def require_one_pass(
+        reports: object,
+        *,
+        decision_field: str,
+        label: str,
+    ) -> None:
+        if not isinstance(reports, list):
+            raise ValueError(f"{label} evidence must be a list")
+        matching = [
+            item
+            for item in reports
+            if isinstance(item, dict) and item.get("plan_id") in rendered_plans
+        ]
+        report_plans = [item.get("plan_id") for item in matching]
+        if (
+            len(matching) != expected_finalists
+            or set(report_plans) != rendered_plans
+            or any(item.get(decision_field) != "PASS" for item in matching)
+        ):
+            raise ValueError(f"every finalist must have exactly one PASS {label} report")
+
+    require_one_pass(boundary_qc, decision_field="decision", label="boundary-QC")
+    require_one_pass(
+        campaign_policy_qc,
+        decision_field="decision",
+        label="campaign-policy-QC",
+    )
+    require_one_pass(editorial_qc, decision_field="decision", label="multimodal-editorial-QC")
+    if any(
+        item.get("multimodal_editorial_review_decision") != "PASS"
+        for item in boundary_qc
+        if isinstance(item, dict) and item.get("plan_id") in rendered_plans
+    ):
+        raise ValueError("boundary-QC is missing final multimodal confirmation")
+    if any(
+        item.get("multimodal_policy_review_decision") != "PASS"
+        for item in campaign_policy_qc
+        if isinstance(item, dict) and item.get("plan_id") in rendered_plans
+    ):
+        raise ValueError("campaign-policy-QC is missing final multimodal confirmation")
     concepts = {item.get("concept_id") for item in rendered if item.get("concept_id")}
     if len(concepts) < distinct_target:
         raise ValueError("finalist batch lacks minimum concept diversity")
@@ -73,11 +125,15 @@ def validate_live_run(
     captions = sorted((root / "captions").glob("*.ass"))
     audits = sorted((root / "captions").glob("*.caption-audit.json"))
     tracking = sorted((root / "tracking").glob("*.tracking.json"))
+    boundary_audits = sorted((root / "boundary").glob("*.boundary-audit.json"))
+    policy_audits = sorted((root / "policy").glob("*.policy-audit.json"))
     counts = {
         "clips": len(clips),
         "captions": len(captions),
         "caption_audits": len(audits),
         "tracking": len(tracking),
+        "boundary_audits": len(boundary_audits),
+        "policy_audits": len(policy_audits),
     }
     if any(value != expected_finalists for value in counts.values()):
         raise ValueError(f"incomplete finalist artifact inventory: {counts}")
@@ -124,6 +180,13 @@ def validate_live_run(
         "render_plans",
         "render_attempts",
         "technical_qc_pass",
+        "boundary_reject_count",
+        "boundary_repair_count",
+        "policy_reject_count",
+        "hazard_reject_count",
+        "editorial_qc_pass",
+        "editorial_review_reject_count",
+        "reserve_promotions",
         "render_success",
         "submission_shortlist",
     }
@@ -134,6 +197,8 @@ def validate_live_run(
         raise ValueError("funnel render_success does not match target")
     if int(funnel["technical_qc_pass"]) != expected_finalists:
         raise ValueError("funnel technical_qc_pass does not match target")
+    if int(funnel["editorial_qc_pass"]) != expected_finalists:
+        raise ValueError("funnel editorial_qc_pass does not match target")
     if int(funnel["submission_shortlist"]) != expected_shortlist:
         raise ValueError("funnel submission_shortlist does not match target")
 

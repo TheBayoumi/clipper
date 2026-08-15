@@ -125,6 +125,14 @@ def test_targeted_finalist_recovery_is_fail_closed_and_keeps_source_run_immutabl
     assert "validate_live_run(" in recovery
     assert '"passed-targeted-reuse"' in recovery
     assert "partial_run_dir.replace(output_run_dir)" in recovery
+    assert '"expected_remote_visual_reviews"' in recovery
+    assert '"visual_review": "REUSED"' in recovery
+    assert 'begin_finalist_stage(key, "visual_review")' in recovery
+    assert "pass_finalist(key)" in recovery
+    assert 'recovery_progress["status"] = "FAIL"' in recovery
+    assert "partial_run_dir.replace(failed_run_dir)" in recovery
+    assert 'persist_recovery_progress("failure_artifacts_preserved")' in recovery
+    assert "shutil.rmtree(partial_run_dir)" not in recovery
     assert "_replace_path_prefix(" in recovery
     assert 'stable_prefix = f"{ARTIFACT_ROOT}/{output_run_id}"' in recovery
     assert "source_run_dir.replace" not in recovery
@@ -143,5 +151,6 @@ def test_targeted_recovery_launcher_sends_evidence_not_local_frames() -> None:
     assert '"--repair-autoframe-from-run"' in source
     assert '"c3", "plan_id": "p3"' in source
     assert '"frames_base64"' not in source
+    assert '"expected_failure_evidence_path": failed_run_path' in source
     assert '"c14", "plan_id": "p3"' in source
     assert '"c5", "plan_id": "p1"' in source

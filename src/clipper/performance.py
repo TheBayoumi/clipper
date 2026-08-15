@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import importlib
 import os
 import shutil
@@ -28,7 +29,39 @@ def cpu_seconds() -> float:
 
 def peak_rss_mb() -> float:
     if _resource is None:
-        return 0.0
+        if sys.platform != "win32":
+            return 0.0
+
+        class ProcessMemoryCounters(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.c_ulong),
+                ("page_fault_count", ctypes.c_ulong),
+                ("peak_working_set_size", ctypes.c_size_t),
+                ("working_set_size", ctypes.c_size_t),
+                ("quota_peak_paged_pool_usage", ctypes.c_size_t),
+                ("quota_paged_pool_usage", ctypes.c_size_t),
+                ("quota_peak_non_paged_pool_usage", ctypes.c_size_t),
+                ("quota_non_paged_pool_usage", ctypes.c_size_t),
+                ("pagefile_usage", ctypes.c_size_t),
+                ("peak_pagefile_usage", ctypes.c_size_t),
+            ]
+
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        windows_api: Any = ctypes.windll
+        windows_api.kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        windows_api.psapi.GetProcessMemoryInfo.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ProcessMemoryCounters),
+            ctypes.c_ulong,
+        ]
+        windows_api.psapi.GetProcessMemoryInfo.restype = ctypes.c_int
+        process = windows_api.kernel32.GetCurrentProcess()
+        ok = windows_api.psapi.GetProcessMemoryInfo(process, ctypes.byref(counters), counters.cb)
+        if not ok:
+            return 0.0
+        peak_bytes = int(counters.peak_working_set_size)
+        return float(round(peak_bytes / (1024.0 * 1024.0), 2))
     usage = float(_resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss)
     if sys.platform == "darwin":
         return round(usage / (1024.0 * 1024.0), 2)

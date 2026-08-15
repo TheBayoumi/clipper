@@ -33,7 +33,7 @@ def test_windows_telemetry_fallback_does_not_require_resource() -> None:
         patch("clipper.performance.os.times", return_value=fake_times),
     ):
         assert cpu_seconds() == 2.0
-        assert peak_rss_mb() == 0.0
+        assert peak_rss_mb() > 0.0
 
 
 def test_gpu_utilization_handles_unavailable_failure_and_values() -> None:

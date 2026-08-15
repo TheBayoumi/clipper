@@ -8,7 +8,7 @@ from typing import Any, Literal, cast
 from .providers.base import ProviderResult, VisionProvider
 from .visual import VisualEvent, VisualTimeline
 
-ReviewDecision = Literal["PASS", "REPAIR"]
+ReviewDecision = Literal["PASS", "REPAIR", "REJECT", "ESCALATE"]
 Severity = Literal["LOW", "MEDIUM", "HIGH"]
 
 
@@ -46,7 +46,7 @@ class VisualReviewReport:
     escalated: bool = False
 
     def __post_init__(self) -> None:
-        if self.decision not in {"PASS", "REPAIR"}:
+        if self.decision not in {"PASS", "REPAIR", "REJECT", "ESCALATE"}:
             raise ValueError("visual review decision is invalid")
         if not self.summary.strip():
             raise ValueError("visual review summary cannot be empty")
@@ -93,7 +93,7 @@ def parse_visual_review(payload: dict[str, Any]) -> VisualReviewReport:
                 description=str(item.get("description") or "").strip(),
             )
         )
-    if decision not in {"PASS", "REPAIR"}:
+    if decision not in {"PASS", "REPAIR", "REJECT", "ESCALATE"}:
         raise ValueError("visual review decision is invalid")
     issues = tuple(issues_list)
     return VisualReviewReport(
@@ -285,6 +285,8 @@ def scout_visual_timeline(
 
 
 def _needs_escalation(report: VisualReviewReport, threshold: float) -> bool:
+    if report.decision == "ESCALATE":
+        return True
     if report.overall_confidence < threshold:
         return True
     return any(issue.severity == "HIGH" and issue.confidence < threshold for issue in report.issues)
@@ -371,11 +373,16 @@ def _review_context(
             "transitions and reframes are visually coherent",
             "captions do not obstruct important visual content",
             "ending feels complete",
+            "canonical transcript proves a complete start and ending",
+            "campaign source-segment and branding policy passes",
+            "approved campaign overlay is not confused with source-visible foreign branding",
             "no visible quality degradation",
         ],
         "instruction": (
-            "Return PASS or REPAIR with timestamped structured issues. "
-            "Do not infer spoken words from pixels."
+            "Return PASS, REPAIR, REJECT, or ESCALATE with timestamped structured issues. "
+            "Use canonical transcript evidence for semantic judgment and frames for visual "
+            "judgment. Do not infer spoken words from pixels. Missing or uncertain mandatory "
+            "evidence must never become PASS."
         ),
     }
 
@@ -430,8 +437,8 @@ def review_rendered_clip(
     )
     issues = tuple(first_report.issues + second_report.issues + (disagreement,))
     return VisualReviewReport(
-        "REPAIR",
-        "Visual reviewers disagree; conservative repair/review is required.",
+        "ESCALATE",
+        "Visual reviewers disagree; release decision requires further review.",
         max(first_report.overall_confidence, second_report.overall_confidence),
         issues,
         escalated=True,

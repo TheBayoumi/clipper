@@ -823,6 +823,25 @@ class FakeOpenEditorialProvider:
                     }
                 ]
             }
+        elif task.startswith("boundary_audit:"):
+            value = {
+                "start_status": "COMPLETE",
+                "end_status": "COMPLETE",
+                "standalone_status": "COMPLETE",
+                "required_prior_context": "",
+                "required_followup_context": "",
+                "prior_context_included": True,
+                "followup_context_included": True,
+                "setup_resolved": True,
+                "payoff_resolved": True,
+                "open_questions": [],
+                "open_references": [],
+                "narrative_structure": "complete explanation",
+                "boundary_confidence": 0.95,
+                "failure_reasons": [],
+                "repair_start_word_id": None,
+                "repair_end_word_id": None,
+            }
         else:
             raise AssertionError(f"unexpected task {task}")
         return ProviderResult(value, self.identity, usage)
@@ -915,6 +934,7 @@ def test_open_editorial_pipeline_bypasses_all_heuristic_entry_points(tmp_path: P
         "global_concept_comparison",
         "hook_variants:concept-1",
         "edit_plans:concept-1",
+        "boundary_audit:plan-1",
     ]
     assert embedding.calls == 1
 

@@ -12,6 +12,7 @@ from .base import (
     VisionProvider,
     compute_profile,
 )
+from .editorial_prompt import EDITORIAL_PROMPT_VERSION, EDITORIAL_SCHEMA_VERSION
 from .local import LocalEditorialProvider, LocalEmbeddingProvider, LocalVisionProvider
 from .modal import ModalEditorialProvider, ModalEmbeddingProvider, ModalVisionProvider
 from .modal_endpoint import ModalEndpointEditorialProvider
@@ -49,8 +50,8 @@ def editorial_and_embedding_providers(
                 ),
                 os.getenv("CLIPPER_EDITORIAL_QUANTIZATION", "bnb-4bit-nf4"),
                 "modal-transformers",
-                "editor-v1",
-                "editorial-json-v1",
+                EDITORIAL_PROMPT_VERSION,
+                EDITORIAL_SCHEMA_VERSION,
             ),
         )
     elif backend in {"managed", "endpoint"}:
@@ -66,8 +67,8 @@ def editorial_and_embedding_providers(
                 os.getenv("CLIPPER_EDITORIAL_MODEL_REVISION", "modal-managed"),
                 "modal-managed",
                 "modal-managed-endpoint",
-                "editor-v1",
-                "editorial-json-v1",
+                EDITORIAL_PROMPT_VERSION,
+                EDITORIAL_SCHEMA_VERSION,
             ),
         )
     else:

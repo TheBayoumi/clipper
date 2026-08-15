@@ -7,10 +7,13 @@ from clipper.acceptance import validate_live_run
 
 
 def _write_live_run(root: Path, *, finalists: int = 2, shortlist: int = 1) -> None:
-    for directory in ("clips", "captions", "tracking"):
+    for directory in ("clips", "captions", "tracking", "boundary", "policy"):
         (root / directory).mkdir(parents=True, exist_ok=True)
     rendered = []
     qc = []
+    boundary_qc = []
+    campaign_policy_qc = []
+    editorial_qc = []
     for index in range(finalists):
         plan_id = f"plan-{index}"
         clip = root / "clips" / f"{index:02d}.mp4"
@@ -27,6 +30,12 @@ def _write_live_run(root: Path, *, finalists: int = 2, shortlist: int = 1) -> No
             )
         )
         (root / "tracking" / f"{index:02d}.tracking.json").write_text("{}")
+        (root / "boundary" / f"{index:02d}.boundary-audit.json").write_text(
+            json.dumps({"plan_id": plan_id, "decision": "PASS"})
+        )
+        (root / "policy" / f"{index:02d}.policy-audit.json").write_text(
+            json.dumps({"plan_id": plan_id, "decision": "PASS"})
+        )
         rendered.append(
             {"plan_id": plan_id, "concept_id": f"concept-{index}", "output_path": str(clip)}
         )
@@ -43,9 +52,25 @@ def _write_live_run(root: Path, *, finalists: int = 2, shortlist: int = 1) -> No
                 "watermark": {"required": True, "renderer_asset_present": True},
             }
         )
+        boundary_qc.append(
+            {
+                "plan_id": plan_id,
+                "decision": "PASS",
+                "multimodal_editorial_review_decision": "PASS",
+            }
+        )
+        campaign_policy_qc.append(
+            {
+                "plan_id": plan_id,
+                "decision": "PASS",
+                "multimodal_policy_review_decision": "PASS",
+            }
+        )
+        editorial_qc.append({"plan_id": plan_id, "decision": "PASS"})
     manifest = {
         "status": "SUCCESS",
         "status_reason": None,
+        "publication_state": "READY_FOR_HUMAN_REVIEW",
         "errors": [],
         "targets": {
             "rendered_finalists": finalists,
@@ -62,6 +87,9 @@ def _write_live_run(root: Path, *, finalists: int = 2, shortlist: int = 1) -> No
         "rendered_clips": rendered,
         "submission_shortlist": rendered[:shortlist],
         "technical_qc": qc,
+        "boundary_qc": boundary_qc,
+        "campaign_policy_qc": campaign_policy_qc,
+        "editorial_qc": editorial_qc,
         "funnel": {
             "transcript_segments": 100,
             "story_moments": 20,
@@ -72,6 +100,13 @@ def _write_live_run(root: Path, *, finalists: int = 2, shortlist: int = 1) -> No
             "render_plans": finalists,
             "render_attempts": finalists,
             "technical_qc_pass": finalists,
+            "boundary_reject_count": 0,
+            "boundary_repair_count": 0,
+            "policy_reject_count": 0,
+            "hazard_reject_count": 0,
+            "editorial_qc_pass": finalists,
+            "editorial_review_reject_count": 0,
+            "reserve_promotions": 0,
             "render_success": finalists,
             "submission_shortlist": shortlist,
         },
@@ -91,6 +126,66 @@ def test_live_validator_accepts_complete_qc_passed_batch(tmp_path: Path) -> None
     _write_live_run(tmp_path, finalists=3, shortlist=1)
     manifest = validate_live_run(tmp_path, expected_finalists=3, expected_shortlist=1)
     assert manifest["status"] == "SUCCESS"
+
+
+def test_technical_pass_with_editorial_fail_is_not_publish_ready(tmp_path: Path) -> None:
+    _write_live_run(tmp_path, finalists=3, shortlist=1)
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    manifest["editorial_qc"][0]["decision"] = "REJECT"
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="multimodal-editorial-QC"):
+        validate_live_run(tmp_path, expected_finalists=3, expected_shortlist=1)
+
+
+def test_technical_pass_with_missing_editorial_evidence_is_not_publish_ready(
+    tmp_path: Path,
+) -> None:
+    _write_live_run(tmp_path, finalists=3, shortlist=1)
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    manifest["editorial_qc"] = manifest["editorial_qc"][1:]
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="multimodal-editorial-QC"):
+        validate_live_run(tmp_path, expected_finalists=3, expected_shortlist=1)
+
+
+def test_pipeline_completion_state_does_not_replace_publication_readiness(tmp_path: Path) -> None:
+    _write_live_run(tmp_path, finalists=3, shortlist=1)
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    manifest["publication_state"] = "REVIEW_REQUIRED"
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="publish-readiness"):
+        validate_live_run(tmp_path, expected_finalists=3, expected_shortlist=1)
+
+
+def test_live_validator_requires_final_multimodal_boundary_and_policy_confirmation(
+    tmp_path: Path,
+) -> None:
+    _write_live_run(tmp_path, finalists=3, shortlist=1)
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["boundary_qc"][0]["multimodal_editorial_review_decision"] = "SKIPPED"
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="boundary-QC is missing"):
+        validate_live_run(tmp_path, expected_finalists=3, expected_shortlist=1)
+
+    manifest["boundary_qc"][0]["multimodal_editorial_review_decision"] = "PASS"
+    manifest["campaign_policy_qc"][0]["multimodal_policy_review_decision"] = "UNKNOWN"
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="campaign-policy-QC is missing"):
+        validate_live_run(tmp_path, expected_finalists=3, expected_shortlist=1)
+
+
+def test_recovered_degraded_run_can_be_ready_when_every_finalist_passes(tmp_path: Path) -> None:
+    _write_live_run(tmp_path, finalists=3, shortlist=1)
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["status"] = "DEGRADED"
+    manifest["status_reason"] = "recovered_with_replacement_candidates"
+    manifest_path.write_text(json.dumps(manifest))
+    assert (
+        validate_live_run(tmp_path, expected_finalists=3, expected_shortlist=1)["publication_state"]
+        == "READY_FOR_HUMAN_REVIEW"
+    )
 
 
 def test_live_validator_rejects_underproduction_and_caption_mismatch(tmp_path: Path) -> None:

@@ -17,6 +17,8 @@ from typing import Any
 
 import modal
 
+from clipper.providers.editorial_prompt import editorial_contract
+
 APP_NAME = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
 # This is a Modal resource name, not credential material.
 HF_SECRET_NAME = "custom-secret"  # noqa: S105
@@ -71,7 +73,7 @@ text_image = base_image.uv_pip_install(
     "tiktoken>=0.11,<1",
     "bitsandbytes>=0.47,<1",
     "pillow>=11,<13",
-)
+).add_local_python_source("clipper")
 speech_image = base_image.uv_pip_install(
     "torch>=2.8,<3",
     "faster-whisper>=1.2.1,<2",
@@ -178,7 +180,8 @@ def _vision_contract(task: str) -> str:
             '"overall_confidence":0.0,"issues":[{"issue_type":"short_label",'
             '"start":0.0,"end":1.0,"severity":"LOW","confidence":0.0,'
             '"repair_target":"TRACKING","description":"visible problem"}]}. '
-            "decision must be PASS or REPAIR; severity must be LOW, MEDIUM, or HIGH."
+            "decision must be PASS, REPAIR, REJECT, or ESCALATE; severity must be LOW, "
+            "MEDIUM, or HIGH."
         )
     return "Return one JSON object whose fields satisfy the supplied task and context."
 
@@ -226,62 +229,6 @@ def _editorial_output_budget(payload: dict[str, Any]) -> int:
     else:
         base_budget = 2048
     return min(4096, base_budget * _editorial_recovery_attempt(payload))
-
-
-def _editorial_contract(task: str) -> str:
-    common = (
-        "Output exactly one compact JSON object, no markdown and no extra keys. "
-        "Keep prose fields concise. For range fields copy the supplied short word_ref values, "
-        "never reconstruct or abbreviate word_id values yourself. "
-    )
-    if task == "episode_editorial_profile":
-        return common + (
-            'Schema: {"summary":"<=60 words",'
-            '"valuable_moment_characteristics":["3-5 short strings"],'
-            '"avoid_characteristics":["0-4 short strings"],"confidence":0.0}. '
-        )
-    if task.startswith("story_moments:"):
-        return common + (
-            'Schema: {"moments":[{"moment_id":"unique",'
-            '"start_word_id":"first word_ref","end_word_id":"last word_ref",'
-            '"semantic_summary":"<=24 words","narrative_structure":"short label",'
-            '"required_prior_context":"<=16 words or empty",'
-            '"required_followup_context":"<=16 words or empty",'
-            '"editorial_reason":"<=20 words","confidence":0.0}]}. '
-            "Return at most 8 non-overlapping meaningful moments. Do not copy full word-ID lists. "
-        )
-    if task == "clip_concepts":
-        return common + (
-            'Schema: {"concepts":[{"concept_id":"unique","story_moment_ids":["ids"],'
-            '"start_word_id":"first word_ref","end_word_id":"last word_ref",'
-            '"semantic_summary":"<=24 words","standalone_context":"<=16 words or empty",'
-            '"narrative_structure":"short label","recommended_duration":20.0,'
-            '"visual_dependencies":["short labels"],"confidence":0.0}]}. '
-            "Return at most 12 materially distinct contiguous concepts. "
-            "Do not copy full word-ID lists. "
-        )
-    if task == "global_concept_comparison":
-        return common + 'Schema: {"concept_ids":["best-first supplied concept IDs"]}. '
-    if task.startswith("hook_variants:"):
-        return common + (
-            'Schema: {"variants":[{"variant_id":"unique","strategy_label":"<=8 words",'
-            '"source_start_word_id":"first word_ref","source_end_word_id":"last word_ref",'
-            '"overlay_text":null,"rationale":"<=16 words","confidence":0.0}]}. '
-            "Return at most 4 materially different truthful hooks. Do not copy full word-ID lists. "
-        )
-    if task.startswith("edit_plans:"):
-        return common + (
-            'Schema: {"plans":[{"plan_id":"unique","video_id":"supplied video ID",'
-            '"concept_id":"supplied concept ID","variant_id":"supplied hook ID",'
-            '"source_start_word_id":"first edit word_ref",'
-            '"source_end_word_id":"last edit word_ref",'
-            '"hook_start_word_id":"first hook word_ref",'
-            '"hook_end_word_id":"last hook word_ref",'
-            '"overlay_text":null,"strategy_label":"<=8 words",'
-            '"caption_platform":"tiktok","confidence":0.0}]}. '
-            "Return at most 4 contiguous chronological plans. Do not copy full word-ID lists. "
-        )
-    return common + "Follow the task payload exactly."
 
 
 def _transport_error(exc: Exception, *, context: str | None = None) -> dict[str, Any]:
@@ -553,7 +500,7 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
             )
         system_content = (
             "You are a source-grounded podcast editor. Never invent spoken words or IDs. "
-            + _editorial_contract(task)
+            + editorial_contract(task)
         )
         if recovery_attempt > 1:
             system_content += (

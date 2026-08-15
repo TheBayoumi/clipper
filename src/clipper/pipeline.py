@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
@@ -1203,12 +1203,29 @@ def run_pipeline(
         manifest.run_metadata["editorial_inference"]["model_invocations"] = (
             open_batch.model_invocations
         )
+        manifest.run_metadata["pre_render_boundary_audits"] = open_batch.boundary_audits
+        manifest.run_metadata["pre_render_campaign_policy_audits"] = (
+            open_batch.campaign_policy_audits
+        )
+        manifest.run_metadata["source_hazards"] = open_batch.source_hazards
         for invocation in open_batch.model_invocations:
             compute_budget.record_mapping(invocation.get("usage"))
         _write_json(run_dir / "open-model" / "model-invocations.json", open_batch.model_invocations)
         _write_json(
             run_dir / "open-model" / "discovered-concepts.json",
             [item.to_dict() for item in all_concepts],
+        )
+        _write_json(
+            run_dir / "open-model" / "boundary-audits.json",
+            open_batch.boundary_audits,
+        )
+        _write_json(
+            run_dir / "open-model" / "campaign-policy-audits.json",
+            open_batch.campaign_policy_audits,
+        )
+        _write_json(
+            run_dir / "open-model" / "source-hazards.json",
+            open_batch.source_hazards,
         )
     else:
         selected_concepts = select_distinct_concepts(
@@ -1282,8 +1299,39 @@ def run_pipeline(
         "tracking_preflight_fail": 0,
         "technical_qc_pass": 0,
         "technical_qc_fail": 0,
+        "boundary_reject_count": sum(
+            1
+            for item in manifest.rejections
+            if item.get("stage") == "pre_render_editorial_integrity"
+            and any(
+                str(reason).startswith(("start_", "end_", "unresolved_", "open_"))
+                or str(reason) in {"partial_number_or_unit", "followup_context_required"}
+                for reason in (item.get("reasons") or [])
+            )
+        ),
+        "boundary_repair_count": sum(
+            1
+            for item in manifest.run_metadata.get("pre_render_boundary_audits", [])
+            if isinstance(item, dict) and item.get("attempt") == "repair-1"
+        ),
+        "policy_reject_count": sum(
+            1
+            for item in manifest.rejections
+            if item.get("stage") == "pre_render_editorial_integrity"
+            and any(
+                str(reason) in {"forbidden_source_segment", "foreign_branding"}
+                for reason in (item.get("reasons") or [])
+            )
+        ),
+        "hazard_reject_count": sum(
+            1
+            for item in manifest.rejections
+            if "forbidden_source_segment" in (item.get("reasons") or [])
+        ),
         "editorial_qc_pass": 0,
         "editorial_qc_fail": 0,
+        "editorial_review_reject_count": 0,
+        "reserve_promotions": 0,
         "visual_review_escalations": 0,
         "render_success": 0,
         "distinct_finalist_concepts": 0,
@@ -1375,6 +1423,28 @@ def run_pipeline(
                 manifest.funnel["replacement_attempts"] = (
                     int(manifest.funnel["replacement_attempts"]) + 1
                 )
+                manifest.funnel["reserve_promotions"] = (
+                    int(manifest.funnel["reserve_promotions"]) + 1
+                )
+            if brief.acceptance_policy.enabled and (
+                not plan.boundary_audit
+                or not plan.campaign_policy_audit
+                or not plan.pre_render_eligibility
+                or plan.pre_render_eligibility.get("decision") != "PASS"
+            ):
+                attempt["status"] = "PRE_RENDER_EDITORIAL_INTEGRITY_FAILED"
+                reasons = ["missing_or_failed_pre_render_editorial_integrity"]
+                manifest.rejections.append(
+                    {
+                        "concept_id": plan.concept_id,
+                        "video_id": plan.video_id,
+                        "stage": "pre_render_editorial_integrity",
+                        "decision": "REJECT",
+                        "reasons": reasons,
+                        "plan_id": plan.plan_id,
+                    }
+                )
+                continue
             try:
                 telemetry.start(f"source_acquisition:{video.video_id}")
                 span_media = _span_media_for_plan(source, video, plan, work_dir / video.video_id)
@@ -1500,6 +1570,23 @@ def run_pipeline(
                     transition_items = raw_transitions if isinstance(raw_transitions, list) else []
                     transition_times = tracking_transition_sample_times(transition_items)
                     telemetry.start(f"editorial_qc:{plan.plan_id}")
+                    boundary_context = plan.boundary_audit or {}
+                    raw_word_ids = boundary_context.get("source_word_evidence", [])
+                    clip_word_ids = (
+                        tuple(str(item) for item in raw_word_ids)
+                        if isinstance(raw_word_ids, list)
+                        else ()
+                    )
+                    canonical_clip_text = (
+                        " ".join(
+                            word.text
+                            for word in canonical_timelines[plan.video_id].require_word_ids(
+                                clip_word_ids
+                            )
+                        )
+                        if clip_word_ids
+                        else concept.text
+                    )
                     review, review_results = review_rendered_clip(
                         rendered_path,
                         visual_review_provider,
@@ -1512,6 +1599,24 @@ def run_pipeline(
                             "source_end": clip.end,
                             "hook_mode": plan.hook_mode,
                             "technical_qc": qc_report,
+                            "canonical_clip_transcript": canonical_clip_text,
+                            "first_complete_audible_words": boundary_context.get(
+                                "first_source_word"
+                            ),
+                            "last_complete_audible_words": boundary_context.get("last_source_word"),
+                            "pre_start_source_context": boundary_context.get("pre_start_context"),
+                            "post_end_source_context": boundary_context.get("post_end_context"),
+                            "narrative_structure": boundary_context.get("narrative_structure"),
+                            "boundary_audit": boundary_context,
+                            "source_hazard_and_policy_audit": (plan.campaign_policy_audit or {}),
+                            "campaign_acceptance_policy": asdict(brief.acceptance_policy),
+                            "expected_campaign_watermark": {
+                                "required": bool(brief.watermark_url),
+                                "renderer_asset_present": watermark_path is not None
+                                and watermark_path.is_file(),
+                                "origin": "campaign_overlay",
+                            },
+                            "edit_plan_provenance": plan.to_dict(),
                         },
                         transitions=transition_times,
                         escalation=(
@@ -1538,6 +1643,9 @@ def run_pipeline(
                     if review.decision != "PASS":
                         manifest.funnel["editorial_qc_fail"] = (
                             int(manifest.funnel["editorial_qc_fail"]) + 1
+                        )
+                        manifest.funnel["editorial_review_reject_count"] = (
+                            int(manifest.funnel["editorial_review_reject_count"]) + 1
                         )
                         attempt["status"] = "EDITORIAL_QC_FAILED"
                         attempt["editorial_qc"] = review_payload
@@ -1573,6 +1681,35 @@ def run_pipeline(
                         int(manifest.funnel["editorial_qc_pass"]) + 1
                     )
                     attempt["editorial_qc"] = review_payload
+                raw_editorial_qc = attempt.get("editorial_qc")
+                multimodal_decision = (
+                    raw_editorial_qc.get("decision")
+                    if isinstance(raw_editorial_qc, dict)
+                    else "SKIPPED"
+                )
+                if plan.boundary_audit is not None:
+                    boundary_qc = {
+                        **plan.boundary_audit,
+                        "plan_id": plan.plan_id,
+                        "multimodal_editorial_review_decision": multimodal_decision,
+                    }
+                    manifest.boundary_qc.append(boundary_qc)
+                    _write_json(
+                        run_dir / "boundary" / f"{rendered_path.stem}.boundary-audit.json",
+                        boundary_qc,
+                    )
+                if plan.campaign_policy_audit is not None:
+                    campaign_policy_qc = {
+                        **plan.campaign_policy_audit,
+                        "plan_id": plan.plan_id,
+                        "pre_render_decision": plan.campaign_policy_audit.get("decision"),
+                        "multimodal_policy_review_decision": multimodal_decision,
+                    }
+                    manifest.campaign_policy_qc.append(campaign_policy_qc)
+                    _write_json(
+                        run_dir / "policy" / f"{rendered_path.stem}.policy-audit.json",
+                        campaign_policy_qc,
+                    )
                 rendered = RenderedClip(
                     video_id=video.video_id,
                     output_path=str(rendered_path),
@@ -1676,6 +1813,37 @@ def run_pipeline(
         else:
             manifest.status = "SUCCESS"
             manifest.status_reason = None
+        evidence_count = len(manifest.rendered_clips)
+        rendered_plan_ids = {
+            str(item["plan_id"])
+            for item in manifest.rendered_clips
+            if item.get("plan_id") is not None
+        }
+
+        def _complete_plan_evidence(reports: list[dict[str, Any]], verdict_field: str) -> bool:
+            passed = [
+                str(item["plan_id"])
+                for item in reports
+                if item.get("plan_id") in rendered_plan_ids and item.get(verdict_field) == "PASS"
+            ]
+            return len(passed) == evidence_count and set(passed) == rendered_plan_ids
+
+        technical_complete = _complete_plan_evidence(manifest.technical_qc, "status")
+        boundary_complete = not brief.acceptance_policy.enabled or _complete_plan_evidence(
+            manifest.boundary_qc, "decision"
+        )
+        policy_complete = not brief.acceptance_policy.enabled or _complete_plan_evidence(
+            manifest.campaign_policy_qc, "decision"
+        )
+        editorial_complete = cfg.visual_review_enabled and _complete_plan_evidence(
+            manifest.editorial_qc, "decision"
+        )
+        if manifest.status == "FAILED":
+            manifest.publication_state = "FAILED"
+        elif technical_complete and boundary_complete and policy_complete and editorial_complete:
+            manifest.publication_state = "READY_FOR_HUMAN_REVIEW"
+        else:
+            manifest.publication_state = "REVIEW_REQUIRED"
     else:
         manifest.actual = {
             "rendered_finalists": 0,
@@ -1685,6 +1853,7 @@ def run_pipeline(
         }
         manifest.status = "SUCCESS"
         manifest.status_reason = "planning_only"
+        manifest.publication_state = "TECHNICALLY_INCOMPLETE"
 
     manifest.run_metadata["rejection_reason_counts"] = dict(
         Counter(
