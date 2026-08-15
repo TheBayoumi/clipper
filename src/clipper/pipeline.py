@@ -210,7 +210,7 @@ class PipelineSettings:
     speaker_max_reframe_seconds: float = 0.9
     speaker_seconds_per_crop: float = 0.75
     speaker_hold_threshold: float = 0.28
-    speaker_reversal_guard_seconds: float = 1.25
+    speaker_reversal_guard_seconds: float = 2.0
     speaker_window_seconds: float = 0.8
     speaker_min_detection_coverage: float = 0.35
     editorial_engine: str = "heuristic"
@@ -254,7 +254,7 @@ class PipelineSettings:
             speaker_seconds_per_crop=float(os.getenv("CLIPPER_SPEAKER_SECONDS_PER_CROP", "0.75")),
             speaker_hold_threshold=float(os.getenv("CLIPPER_SPEAKER_HOLD_THRESHOLD", "0.28")),
             speaker_reversal_guard_seconds=float(
-                os.getenv("CLIPPER_SPEAKER_REVERSAL_GUARD_SECONDS", "1.25")
+                os.getenv("CLIPPER_SPEAKER_REVERSAL_GUARD_SECONDS", "2.0")
             ),
             speaker_window_seconds=float(os.getenv("CLIPPER_SPEAKER_WINDOW_SECONDS", "0.8")),
             speaker_min_detection_coverage=float(

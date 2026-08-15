@@ -135,7 +135,7 @@ def _transition_issues(transitions: object) -> list[str]:
         previous_dx = _float(previous.get("to_x")) - _float(previous.get("from_x"))
         current_dx = _float(current.get("to_x")) - _float(current.get("from_x"))
         if (
-            0 <= gap < 1.5
+            0 <= gap <= 2.0
             and previous_dx * current_dx < 0
             and _float(previous.get("normalized_distance")) > 0.15
             and _float(current.get("normalized_distance")) > 0.15

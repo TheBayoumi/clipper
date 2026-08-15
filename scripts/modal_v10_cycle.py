@@ -600,6 +600,22 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
     )
     if requested != _TARGETED_RECOVERY_PLANS:
         raise ValueError("targeted recovery is restricted to c14/p3 and c5/p1 in that order")
+    reuse_raw = payload.get("reuse_plan_keys", [])
+    if not isinstance(reuse_raw, list):
+        raise ValueError("targeted recovery reuse_plan_keys must be a list")
+    reused_targeted_keys = tuple(
+        (str(item.get("concept_id") or ""), str(item.get("plan_id") or ""))
+        for item in reuse_raw
+        if isinstance(item, dict)
+    )
+    if reused_targeted_keys not in ((), (("c14", "p3"),)):
+        raise ValueError("targeted recovery may reuse only the already-passed c14/p3 canary")
+    base_run_id = str(payload.get("base_run_id") or "")
+    if bool(reused_targeted_keys) != bool(base_run_id):
+        raise ValueError("targeted recovery reuse requires a base_run_id and reuse_plan_keys")
+    freshly_rendered_keys = tuple(
+        key for key in _TARGETED_RECOVERY_PLANS if key not in reused_targeted_keys
+    )
 
     prior_recovery = payload.get("prior_review_recovery")
     if not isinstance(prior_recovery, dict):
@@ -652,6 +668,23 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("source manifest is missing edit plans or concepts")
     if not isinstance(discovered_videos, list):
         raise RuntimeError("source manifest is missing discovered videos")
+    base_run_dir: Path | None = None
+    base_rendered_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    if base_run_id:
+        base_run_dir = _direct_volume_child(ARTIFACT_ROOT, base_run_id, label="base run ID")
+        base_manifest = _load_json_object(base_run_dir / "manifest.json")
+        if base_manifest.get("status") != "SUCCESS":
+            raise RuntimeError("targeted reuse requires a successful base run")
+        base_rendered = base_manifest.get("rendered_clips")
+        if not isinstance(base_rendered, list):
+            raise RuntimeError("targeted reuse base run has no rendered clips")
+        base_rendered_by_key = {
+            (str(item.get("concept_id") or ""), str(item.get("plan_id") or "")): item
+            for item in base_rendered
+            if isinstance(item, dict)
+        }
+        if any(key not in base_rendered_by_key for key in reused_targeted_keys):
+            raise RuntimeError("targeted reuse base run is missing an approved plan")
     plan_by_key = {
         (str(item.get("concept_id") or ""), str(item.get("plan_id") or "")): item
         for item in edit_plan_payloads
@@ -749,6 +782,8 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
         technical_qc: list[dict[str, Any]] = []
         editorial_qc: list[dict[str, Any]] = []
         render_attempts: list[dict[str, Any]] = []
+        new_review_payloads: list[dict[str, Any]] = []
+        new_rendered_clips: list[dict[str, Any]] = []
 
         for attempt_number, key in enumerate(_RECOVERED_FINALISTS, start=1):
             result = prior_results[key]
@@ -828,6 +863,62 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
             concept = concept_by_id[key[0]]
             clip = plan.to_clip_candidate(str(concept.get("text") or ""))
             attempt_number = len(_RECOVERED_FINALISTS) + offset
+            if key in reused_targeted_keys:
+                if base_run_dir is None:
+                    raise RuntimeError("targeted reuse base run is unavailable")
+                base_rendered = base_rendered_by_key[key]
+                clip_name = Path(str(base_rendered.get("output_path") or "")).name
+                if not clip_name.endswith(".mp4"):
+                    raise RuntimeError(f"targeted reuse clip path is invalid for {key}")
+                source_clip = base_run_dir / "clips" / clip_name
+                destination_clip = partial_run_dir / "clips" / clip_name
+                _copy_clip_evidence(source_clip, destination_clip, partial_run_dir)
+                qc_payload = _load_json_object(base_run_dir / "qc" / f"{source_clip.stem}.json")
+                review_payload = _load_json_object(
+                    base_run_dir / "visual-review" / f"{source_clip.stem}.json"
+                )
+                if qc_payload.get("status") != "PASS" or qc_payload.get("issues") not in ([], ()):
+                    raise RuntimeError(f"targeted reuse technical QC is not PASS: {key}")
+                if review_payload.get("decision") != "PASS" or review_payload.get("issues") not in (
+                    [],
+                    (),
+                ):
+                    raise RuntimeError(f"targeted reuse visual review is not PASS: {key}")
+                qc_payload["reused_from_run_id"] = base_run_id
+                review_payload["reused_from_run_id"] = base_run_id
+                (partial_run_dir / "qc" / f"{destination_clip.stem}.json").write_text(
+                    json.dumps(qc_payload, indent=2) + "\n", encoding="utf-8"
+                )
+                (partial_run_dir / "visual-review").mkdir(parents=True, exist_ok=True)
+                (partial_run_dir / "visual-review" / f"{destination_clip.stem}.json").write_text(
+                    json.dumps(review_payload, indent=2) + "\n", encoding="utf-8"
+                )
+                shutil.copytree(
+                    base_run_dir / "visual-review" / source_clip.stem / "frames",
+                    partial_run_dir / "visual-review" / destination_clip.stem / "frames",
+                )
+                rendered_clips.append(
+                    _rendered_clip_payload(
+                        plan=plan,
+                        output_path=destination_clip,
+                        source_url=source_url,
+                        source_hash=_sha256(destination_clip),
+                    )
+                )
+                technical_qc.append(qc_payload)
+                editorial_qc.append(review_payload)
+                render_attempts.append(
+                    {
+                        "attempt": attempt_number,
+                        "concept_id": key[0],
+                        "plan_id": key[1],
+                        "queue": "passed-targeted-reuse",
+                        "status": "ACCEPTED",
+                        "technical_qc": "PASS",
+                        "editorial_qc": review_payload,
+                    }
+                )
+                continue
             output_path = (
                 partial_run_dir
                 / "clips"
@@ -904,6 +995,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                     f"targeted visual review did not pass for {key}: {review_payload}"
                 )
             editorial_qc.append(review_payload)
+            new_review_payloads.append(review_payload)
             (partial_run_dir / "visual-review" / f"{rendered_path.stem}.json").write_text(
                 json.dumps(review_payload, indent=2) + "\n", encoding="utf-8"
             )
@@ -915,6 +1007,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                     source_hash=_sha256(rendered_path),
                 )
             )
+            new_rendered_clips.append(rendered_clips[-1])
             render_attempts.append(
                 {
                     "attempt": attempt_number,
@@ -988,7 +1081,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
             final_manifest["run_metadata"] = metadata
         new_review_usage = [
             usage
-            for item in editorial_qc[-2:]
+            for item in new_review_payloads
             for usage in item.get("usage", [])
             if isinstance(usage, dict)
         ]
@@ -1004,11 +1097,15 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
             "reused_passed_plan_keys": [
                 {"concept_id": concept_id, "plan_id": plan_id}
                 for concept_id, plan_id in _RECOVERED_FINALISTS
+            ]
+            + [
+                {"concept_id": concept_id, "plan_id": plan_id}
+                for concept_id, plan_id in reused_targeted_keys
             ],
             "excluded_duplicate_plan_key": {"concept_id": "c11", "plan_id": "p2"},
             "approved_data_boundary": (
-                "source master remained in clipper-media-cache; only the two derived "
-                "visual-review frame sets were sent to clipper-open-editor"
+                "source master remained in clipper-media-cache; only freshly rendered "
+                "derived visual-review frame sets were sent to clipper-open-editor"
             ),
             "source_sha256": source_sha256,
             "vision_frame_set_counts": {
@@ -1022,7 +1119,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                         ).glob("*.jpg")
                     )
                 )
-                for item in rendered_clips[-2:]
+                for item in new_rendered_clips
             },
             "new_visual_review_estimated_cost_usd": sum(
                 float(item.get("estimated_cost_usd") or 0.0) for item in new_review_usage
@@ -1057,7 +1154,11 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
             "output_run_id": output_run_id,
             "rendered_plan_keys": [
                 {"concept_id": concept_id, "plan_id": plan_id}
-                for concept_id, plan_id in _TARGETED_RECOVERY_PLANS
+                for concept_id, plan_id in freshly_rendered_keys
+            ],
+            "reused_targeted_plan_keys": [
+                {"concept_id": concept_id, "plan_id": plan_id}
+                for concept_id, plan_id in reused_targeted_keys
             ],
             "finalist_plan_keys": [
                 {"concept_id": item["concept_id"], "plan_id": item["plan_id"]}
@@ -1095,7 +1196,11 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
         "source_run_id": source_run_id,
         "rendered_plan_keys": [
             {"concept_id": concept_id, "plan_id": plan_id}
-            for concept_id, plan_id in _TARGETED_RECOVERY_PLANS
+            for concept_id, plan_id in freshly_rendered_keys
+        ],
+        "reused_targeted_plan_keys": [
+            {"concept_id": concept_id, "plan_id": plan_id}
+            for concept_id, plan_id in reused_targeted_keys
         ],
         "rendered_finalists": 6,
         "submission_shortlist": 6,

@@ -90,6 +90,10 @@ def main() -> int:
     parser.add_argument("source_run_id")
     parser.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
     parser.add_argument("--app", default=os.getenv("CLIPPER_V10_MODAL_APP", "clipper-v10-cycle"))
+    parser.add_argument(
+        "--reuse-c14-from-run",
+        help="Reuse an already-passed c14/p3 result and rerender only c5/p1.",
+    )
     args = parser.parse_args()
 
     source_run = args.artifact_root / args.source_run_id
@@ -109,14 +113,16 @@ def main() -> int:
 
     prior_review = _load_object(source_run / "visual-review-recovery.json")
     recovery_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    response = _modal_function(args.app, "recover_finalists").remote(
-        {
-            "source_run_id": args.source_run_id,
-            "recovery_id": recovery_id,
-            "plan_keys": list(PLAN_KEYS),
-            "prior_review_recovery": prior_review,
-        }
-    )
+    request = {
+        "source_run_id": args.source_run_id,
+        "recovery_id": recovery_id,
+        "plan_keys": list(PLAN_KEYS),
+        "prior_review_recovery": prior_review,
+    }
+    if args.reuse_c14_from_run:
+        request["base_run_id"] = args.reuse_c14_from_run
+        request["reuse_plan_keys"] = [PLAN_KEYS[0]]
+    response = _modal_function(args.app, "recover_finalists").remote(request)
     if not isinstance(response, dict) or response.get("status") != "PASS":
         raise RuntimeError(f"targeted Modal recovery returned an invalid response: {response!r}")
     remote_run_path = str(response.get("run_path") or "")

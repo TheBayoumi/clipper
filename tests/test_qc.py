@@ -325,6 +325,34 @@ def test_transition_gate_rejects_same_speaker_camera_motion() -> None:
     assert "same-speaker crop motion is not allowed inside a source shot" in issues
 
 
+def test_transition_gate_rejects_one_and_a_half_second_camera_reversal() -> None:
+    issues = _transition_issues(
+        [
+            {
+                "reason": "speaker_change",
+                "mode": "hard_cut",
+                "start": 41.79175,
+                "end": 41.79175,
+                "normalized_distance": 0.6,
+                "target_visible_at": 41.79175,
+                "from_x": 1129.0,
+                "to_x": 1856.0,
+            },
+            {
+                "reason": "speaker_change",
+                "mode": "hard_cut",
+                "start": 43.29325,
+                "end": 43.29325,
+                "normalized_distance": 0.6,
+                "target_visible_at": 43.29325,
+                "from_x": 1856.0,
+                "to_x": 1129.0,
+            },
+        ]
+    )
+    assert "back-and-forth crop oscillation detected" in issues
+
+
 def test_qc_rejects_first_caption_misalignment(tmp_path: Path) -> None:
     video, ass, tracking = fixtures(tmp_path)
     video.with_suffix(".caption-audit.json").write_text(

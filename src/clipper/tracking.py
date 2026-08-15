@@ -540,7 +540,7 @@ def _speaker_locked_anchors(
     max_reframe_seconds: float = 0.9,
     seconds_per_crop: float = 0.75,
     speaker_hold_threshold: float = 0.28,
-    speaker_reversal_guard_seconds: float = 1.25,
+    speaker_reversal_guard_seconds: float = 2.0,
 ) -> tuple[
     tuple[FaceAnchor, ...],
     tuple[CameraTransition, ...],
@@ -1058,7 +1058,7 @@ def plan_speaker_crop(
     max_reframe_seconds: float = 0.9,
     seconds_per_crop: float = 0.75,
     speaker_hold_threshold: float = 0.28,
-    speaker_reversal_guard_seconds: float = 1.25,
+    speaker_reversal_guard_seconds: float = 2.0,
     decision_window_seconds: float = 0.8,
     min_detection_coverage: float = 0.35,
     target_aspect: float = DEFAULT_TARGET_ASPECT,

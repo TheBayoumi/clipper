@@ -114,7 +114,9 @@ def test_targeted_finalist_recovery_is_fail_closed_and_keeps_source_run_immutabl
     assert '_TARGETED_RECOVERY_PLANS = (("c14", "p3"), ("c5", "p1"))' in source
     assert "if requested != _TARGETED_RECOVERY_PLANS:" in recovery
     assert "tracking_transition_sample_times" in recovery
-    assert '"source master remained in clipper-media-cache; only the two derived "' in recovery
+    assert '"source master remained in clipper-media-cache; only freshly rendered "' in recovery
+    assert 'reused_targeted_keys not in ((), (("c14", "p3"),))' in recovery
+    assert '"passed-targeted-reuse"' in recovery
     assert "partial_run_dir.replace(output_run_dir)" in recovery
     assert "_replace_path_prefix(" in recovery
     assert 'stable_prefix = f"{ARTIFACT_ROOT}/{output_run_id}"' in recovery
@@ -127,6 +129,7 @@ def test_targeted_recovery_launcher_sends_evidence_not_local_frames() -> None:
 
     assert '"prior_review_recovery": prior_review' in source
     assert '"plan_keys": list(PLAN_KEYS)' in source
+    assert 'request["reuse_plan_keys"] = [PLAN_KEYS[0]]' in source
     assert '"frames_base64"' not in source
     assert '"c14", "plan_id": "p3"' in source
     assert '"c5", "plan_id": "p1"' in source

@@ -164,7 +164,7 @@ class FFmpegRenderer:
         speaker_max_reframe_seconds: float = 0.9,
         speaker_seconds_per_crop: float = 0.75,
         speaker_hold_threshold: float = 0.28,
-        speaker_reversal_guard_seconds: float = 1.25,
+        speaker_reversal_guard_seconds: float = 2.0,
         speaker_window_seconds: float = 0.8,
         speaker_min_detection_coverage: float = 0.35,
         profile: str = "production",

@@ -269,6 +269,28 @@ def test_transient_speaker_reversal_is_held_to_prevent_camera_whiplash() -> None
     assert rendered == (0, 0, 0)
 
 
+def test_one_and_a_half_second_speaker_reversal_is_held_by_default() -> None:
+    windows = (
+        _SpeakerWindow(0, 2),
+        _SpeakerWindow(2, 3.5015),
+        _SpeakerWindow(3.5015, 5),
+    )
+    anchors, transitions, reframes, rendered = _speaker_locked_anchors(
+        5.0,
+        windows,
+        (0, 1, 0),
+        ((100.0, 0.0), (827.0, 0.0), (100.0, 0.0)),
+        (0.0, 2.0, 3.5015),
+        (230.0, 0.0),
+        crop_width=1214,
+        crop_height=2158,
+    )
+    assert reframes == 0
+    assert all(item.mode == "hold" for item in transitions)
+    assert anchors[0].x == anchors[-1].x == 100.0
+    assert rendered == (0, 0, 0)
+
+
 def test_persistent_large_speaker_change_is_a_single_hard_cut() -> None:
     windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 3), _SpeakerWindow(3, 4))
     anchors, transitions, reframes, _rendered = _speaker_locked_anchors(
