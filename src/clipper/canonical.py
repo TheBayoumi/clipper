@@ -271,6 +271,12 @@ def transcript_segments_from_canonical(
             words=tuple(
                 TranscriptWord(word.source_start, word.source_end, word.text) for word in group
             ),
+            speaker_id=(
+                group[0].speaker_id
+                if group[0].speaker_id is not None
+                and all(word.speaker_id == group[0].speaker_id for word in group)
+                else None
+            ),
         )
         for group in groups
     ]

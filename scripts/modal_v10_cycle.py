@@ -500,37 +500,6 @@ def _edit_plan_from_payload(payload: dict[str, Any]) -> Any:
     )
 
 
-def _transcript_segments(payload: object) -> list[Any]:
-    from clipper.models import TranscriptSegment, TranscriptWord
-
-    if not isinstance(payload, list):
-        raise RuntimeError("source transcript must be a list")
-    segments: list[Any] = []
-    for item in payload:
-        if not isinstance(item, dict):
-            raise RuntimeError("source transcript contains a non-object segment")
-        raw_words = item.get("words", [])
-        if not isinstance(raw_words, list):
-            raise RuntimeError("source transcript words must be a list")
-        segments.append(
-            TranscriptSegment(
-                start=float(item["start"]),
-                end=float(item["end"]),
-                text=str(item["text"]),
-                words=tuple(
-                    TranscriptWord(
-                        start=float(word["start"]),
-                        end=float(word["end"]),
-                        text=str(word["text"]),
-                    )
-                    for word in raw_words
-                    if isinstance(word, dict)
-                ),
-            )
-        )
-    return segments
-
-
 def _copy_clip_evidence(source_clip: Path, destination_clip: Path, run_dir: Path) -> None:
     destination_clip.parent.mkdir(parents=True, exist_ok=True)
     if source_clip.resolve() != destination_clip.resolve():
@@ -583,6 +552,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
     """Repair only explicitly selected finalists and revalidate every reused clip."""
 
     from clipper.acceptance import validate_live_run
+    from clipper.canonical import CanonicalTimeline, transcript_segments_from_canonical
     from clipper.pipeline import PipelineSettings
     from clipper.providers.factory import vision_provider
     from clipper.qc import run_technical_qc
@@ -623,13 +593,18 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
         for item in rerender_raw
         if isinstance(item, dict)
     )
-    if rerendered_recovered_keys not in ((), _RECOVERED_FINALISTS):
-        raise ValueError("legacy caption repair must rerender exactly all four reused finalists")
+    if (
+        len(set(rerendered_recovered_keys)) != len(rerendered_recovered_keys)
+        or any(key not in _RECOVERED_FINALISTS for key in rerendered_recovered_keys)
+        or rerendered_recovered_keys
+        != tuple(key for key in _RECOVERED_FINALISTS if key in rerendered_recovered_keys)
+    ):
+        raise ValueError("recovered finalist rerenders must be a unique ordered subset")
     base_run_id = str(payload.get("base_run_id") or "")
     if bool(reused_targeted_keys) != bool(base_run_id):
         raise ValueError("targeted recovery reuse requires a base_run_id and reuse_plan_keys")
     if rerendered_recovered_keys and reused_targeted_keys != _TARGETED_RECOVERY_PLANS:
-        raise ValueError("legacy caption repair must reuse both already-passed canaries")
+        raise ValueError("recovered finalist repair must reuse both already-passed canaries")
     freshly_rendered_keys = (
         *rerendered_recovered_keys,
         *(key for key in _TARGETED_RECOVERY_PLANS if key not in reused_targeted_keys),
@@ -701,7 +676,15 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
             for item in base_rendered
             if isinstance(item, dict)
         }
-        if any(key not in base_rendered_by_key for key in reused_targeted_keys):
+        reused_recovered_keys = (
+            tuple(key for key in _RECOVERED_FINALISTS if key not in rerendered_recovered_keys)
+            if rerendered_recovered_keys
+            else ()
+        )
+        if any(
+            key not in base_rendered_by_key
+            for key in (*reused_targeted_keys, *reused_recovered_keys)
+        ):
             raise RuntimeError("targeted reuse base run is missing an approved plan")
     plan_by_key = {
         (str(item.get("concept_id") or ""), str(item.get("plan_id") or "")): item
@@ -742,8 +725,12 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
     if not source_url:
         raise RuntimeError("source URL evidence is missing")
 
-    transcript_payload = _load_json_object(source_run_dir / "transcript.json")
-    segments = _transcript_segments(transcript_payload.get(video_id))
+    canonical = CanonicalTimeline.from_dict(
+        _load_json_object(source_run_dir / "canonical" / f"{video_id}.json")
+    )
+    if canonical.video_id != video_id or canonical.source_hash != source_sha256:
+        raise RuntimeError("canonical timeline failed targeted recovery verification")
+    segments = transcript_segments_from_canonical(canonical)
     watermark_path = source_run_dir / "assets" / "watermark.png"
     if not watermark_path.is_file():
         raise RuntimeError("required campaign watermark is missing")
@@ -932,16 +919,43 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                     }
                 )
                 continue
+            reuse_run_id = source_run_id
+            reuse_run_dir = source_run_dir
+            report = result["report"]
+            review_payload = {
+                **report,
+                "concept_id": key[0],
+                "plan_id": key[1],
+                "models": [result["model"]],
+                "usage": [result["usage"]],
+                "recovered": True,
+                "recovery_source": "approved_visual_review_replay",
+            }
             clip_name = str(result.get("clip") or "")
+            if rerendered_recovered_keys:
+                if base_run_dir is None:
+                    raise RuntimeError("recovered finalist reuse base run is unavailable")
+                reuse_run_id = base_run_id
+                reuse_run_dir = base_run_dir
+                clip_name = Path(str(base_rendered_by_key[key].get("output_path") or "")).name
+                review_payload = _load_json_object(
+                    base_run_dir / "visual-review" / f"{Path(clip_name).stem}.json"
+                )
+                if review_payload.get("decision") != "PASS" or review_payload.get("issues") not in (
+                    [],
+                    (),
+                ):
+                    raise RuntimeError(f"recovered finalist reuse visual review is not PASS: {key}")
+                review_payload["reused_from_run_id"] = base_run_id
             if Path(clip_name).name != clip_name or not clip_name.endswith(".mp4"):
                 raise RuntimeError(f"invalid prior clip name: {clip_name!r}")
-            source_clip = source_run_dir / "clips" / clip_name
+            source_clip = reuse_run_dir / "clips" / clip_name
             if not source_clip.is_file():
                 raise FileNotFoundError(source_clip)
             destination_clip = partial_run_dir / "clips" / clip_name
             _copy_clip_evidence(source_clip, destination_clip, partial_run_dir)
             qc_payload = require_current_qc(destination_clip, clip=clip, plan=plan, key=key)
-            qc_payload["reused_from_run_id"] = source_run_id
+            qc_payload["reused_from_run_id"] = reuse_run_id
             video_payload = qc_payload.get("video")
             if isinstance(video_payload, dict):
                 video_payload["path"] = str(destination_clip)
@@ -955,22 +969,12 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                 json.dumps(qc_payload, indent=2) + "\n", encoding="utf-8"
             )
             technical_qc.append(qc_payload)
-            report = result["report"]
-            review_payload = {
-                **report,
-                "concept_id": key[0],
-                "plan_id": key[1],
-                "models": [result["model"]],
-                "usage": [result["usage"]],
-                "recovered": True,
-                "recovery_source": "approved_visual_review_replay",
-            }
             editorial_qc.append(review_payload)
             (partial_run_dir / "visual-review").mkdir(parents=True, exist_ok=True)
             (partial_run_dir / "visual-review" / f"{destination_clip.stem}.json").write_text(
                 json.dumps(review_payload, indent=2) + "\n", encoding="utf-8"
             )
-            source_frames = source_run_dir / "visual-review" / source_clip.stem / "frames"
+            source_frames = reuse_run_dir / "visual-review" / source_clip.stem / "frames"
             if not source_frames.is_dir():
                 raise RuntimeError(f"prior visual review frame set is missing: {source_frames}")
             shutil.copytree(

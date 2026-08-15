@@ -9,20 +9,30 @@ from clipper.tracking import (
     FaceAnchor,
     FaceObservation,
     TrackingPlan,
+    _best_stable_axis_position,
     _box_iou,
     _choose_active_speaker,
+    _crop_position_at,
+    _dedupe_face_boxes,
     _detect_face_boxes,
+    _detect_face_boxes_with_recovery,
     _face_box_plausible,
     _match_track,
     _mouth_motion,
+    _mouth_patch,
+    _piecewise_expression,
+    _safe_shot_targets,
     _scene_change_score,
     _segment_windows,
     _shot_stable_targets,
+    _speaker_change_reverses_soon,
     _speaker_locked_anchors,
+    _speaker_score,
     _speaker_window_crop,
     _SpeakerWindow,
     _split_windows_at_source_cuts,
     _TrackState,
+    _transition_expression,
     plan_speaker_crop,
     portrait_crop_dimensions,
     stable_portrait_fallback,
@@ -64,6 +74,87 @@ def test_portrait_crop_dimensions_reject_invalid_parameters() -> None:
         assert "zoom_factor" in str(exc)
     else:
         raise AssertionError("invalid zoom was accepted")
+
+
+def test_tracking_defensive_geometry_and_detection_edges() -> None:
+    assert portrait_crop_dimensions(360, 640) == (360, 640)
+    assert portrait_crop_dimensions(300, 640) == (298, 532)
+    assert (
+        _best_stable_axis_position(
+            [], crop_extent=202, max_position=438.0, preferred=100.0, target_ratio=0.5
+        )
+        == 100.0
+    )
+    assert tracking_expressions(TrackingPlan(1.0, 640, 360)) == (
+        "(iw-ow)/2",
+        "(ih-oh)/2",
+    )
+    assert _piecewise_expression((), "x") == "(iw-ow)/2"
+    assert _face_box_plausible((0, 0, 10, 10), 0, 0) is False
+    assert _dedupe_face_boxes([(10, 10, 100, 100), (15, 15, 90, 90)]) == [(10, 10, 100, 100)]
+    assert _mouth_patch(np.zeros((10, 10), dtype=np.uint8), (0, 0, 2, 2)) is None
+
+    clip = ClipCandidate("v", 0.0, 1.0, "text", 1)
+    try:
+        _segment_windows(clip, [], max_window_seconds=0)
+    except ValueError as exc:
+        assert "positive" in str(exc)
+    else:
+        raise AssertionError("zero decision window was accepted")
+    assert _segment_windows(clip, [TranscriptSegment(0.0, 0.05, "short")]) == (
+        _SpeakerWindow(0.0, 1.0),
+    )
+
+    empty = _track(0)
+    assert _speaker_score(empty, _SpeakerWindow(0.0, 1.0)) == (-1.0, 0)
+    speaker = _track(1, _obs(1, 0.2, 100.0, 0.1), _obs(1, 0.7, 100.0, 0.1))
+    listener = _track(2, _obs(2, 0.2, 300.0, 0.01), _obs(2, 0.7, 300.0, 0.01))
+    assert _choose_active_speaker([speaker, listener], _SpeakerWindow(0.0, 1.0), 99) == 1
+    assert _choose_active_speaker([speaker, listener], _SpeakerWindow(0.0, 1.0), 1) == 1
+
+
+def test_tracking_transition_defensive_paths_remain_stable() -> None:
+    windows = (_SpeakerWindow(0.0, 1.0), _SpeakerWindow(1.0, 2.0))
+    assert _speaker_change_reverses_soon(0, None, windows, (1, 0), (), 2.0) is False
+    assert _speaker_change_reverses_soon(0, 0, windows, (1, 0), (), 0.5) is False
+    assert _speaker_change_reverses_soon(0, 0, windows, (1, 0), (1.0,), 2.0) is False
+
+    anchors, _transitions, _reframes, rendered = _speaker_locked_anchors(
+        2.0,
+        windows,
+        (0, None),
+        ((100.0, 0.0), None),
+        (0.0, 1.0),
+        (219.0, 1.0),
+        crop_width=202,
+        crop_height=358,
+    )
+    assert anchors[-1].x == 100.0
+    assert rendered == (0, 0)
+
+    eased = CameraTransition(
+        "speaker_change", 1.0, 2.0, 100.0, 202, 0.49, "eased_reframe", 0, 0, 100, 0, 1.0
+    )
+    assert "3-2*" in _transition_expression((eased,), "x", 0.0)
+    assert _crop_position_at(TrackingPlan(1.0, 640, 360, crop_width=202, crop_height=358), 0.5) == (
+        219.0,
+        1.0,
+    )
+
+
+def test_stable_fallback_can_use_following_anchor_when_interval_has_no_samples() -> None:
+    plan = TrackingPlan(
+        1.0,
+        640,
+        360,
+        (FaceAnchor(3.0, 300.0, 1.0),),
+        True,
+        crop_width=202,
+        crop_height=358,
+        source_cuts=(2.0,),
+    )
+    repaired = stable_portrait_fallback(plan, 3.0)
+    assert repaired.anchors[0].x == 300.0
 
 
 def test_box_matching_preserves_face_identity_instead_of_chasing_largest_detection() -> None:
@@ -123,7 +214,39 @@ def test_active_speaker_prefers_mouth_motion_and_hysteresis() -> None:
 
     clear_new_speaker = _track(1, _obs(1, 0.2, 300, 0.20), _obs(1, 0.7, 300, 0.18))
     assert _choose_active_speaker([speaker, clear_new_speaker], window, 0) == 1
-    assert _choose_active_speaker([], window, 0) == 0
+    assert _choose_active_speaker([], window, 0) is None
+
+
+def test_face_detection_retries_missed_sample_at_higher_resolution() -> None:
+    frame = np.zeros((540, 960, 3), dtype=np.uint8)
+
+    class ResolutionSensitiveDetector:
+        def empty(self) -> bool:
+            return False
+
+        def detectMultiScale(self, gray, **_kwargs):
+            if gray.shape[1] <= 480:
+                return np.empty((0, 4), dtype=int)
+            return np.array([[400, 100, 160, 160]])
+
+    gray, scale, boxes = _detect_face_boxes_with_recovery(
+        frame,
+        ResolutionSensitiveDetector(),
+        EmptyDetector(),
+    )
+    assert gray.shape[1] == 960
+    assert scale == 1.0
+    assert boxes == [(400, 100, 160, 160)]
+
+    wide_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    gray, scale, boxes = _detect_face_boxes_with_recovery(
+        wide_frame,
+        NoFaceDetector(),
+        EmptyDetector(),
+    )
+    assert gray.shape[1] == 960
+    assert scale == 0.5
+    assert boxes == []
 
 
 def test_sparse_high_motion_detection_cannot_override_persistent_speaker() -> None:
@@ -154,6 +277,18 @@ def test_segment_windows_clip_absolute_transcript_times() -> None:
     assert abs(windows[-1].start - 4.8) < 1e-9
     assert windows[-1].end == 5.0
     assert _segment_windows(clip, []) == (_SpeakerWindow(0.0, 5.0),)
+
+
+def test_segment_windows_preserve_diarized_speaker_identity() -> None:
+    clip = ClipCandidate("v", 10.0, 12.0, "text", 1)
+    windows = _segment_windows(
+        clip,
+        [TranscriptSegment(10.0, 12.0, "speaker turn", speaker_id="SPEAKER_01")],
+    )
+    assert windows
+    assert {window.speaker_id for window in windows} == {"SPEAKER_01"}
+    split = _split_windows_at_source_cuts(windows, (1.0,))
+    assert {window.speaker_id for window in split} == {"SPEAKER_01"}
 
 
 def test_speaker_window_crop_uses_local_camera_composition_not_global_track_home() -> None:
@@ -209,6 +344,44 @@ def test_speaker_windows_split_and_targets_stabilize_per_source_shot() -> None:
         (2.0,),
     )
     assert targets == ((120.0, 0.0), (120.0, 0.0), (320.0, 2.0), (320.0, 2.0))
+
+
+def test_unobserved_source_shot_resets_to_center_instead_of_stale_crop() -> None:
+    windows = (_SpeakerWindow(0.0, 2.0), _SpeakerWindow(2.0, 4.0))
+    targets, fallback_shots = _safe_shot_targets(
+        windows,
+        ((80.0, 0.0), None),
+        (2.0,),
+        (219.0, 1.0),
+        4.0,
+    )
+    assert targets == ((80.0, 0.0), (219.0, 1.0))
+    assert fallback_shots == ((2.0, 4.0),)
+
+    anchors, transitions, _reframes, _rendered = _speaker_locked_anchors(
+        4.0,
+        windows,
+        (0, None),
+        targets,
+        (0.0, 2.0),
+        (219.0, 1.0),
+        crop_width=202,
+        crop_height=358,
+        source_cuts=(2.0,),
+    )
+    assert anchors[-1] == FaceAnchor(4.0, 219.0, 1.0)
+    assert transitions[-1].reason == "source_cut"
+    assert transitions[-1].mode == "hard_cut"
+
+    filled, fallback_shots = _safe_shot_targets(
+        (_SpeakerWindow(0.0, 1.0), _SpeakerWindow(1.0, 2.0)),
+        (None, (120.0, 0.0)),
+        (),
+        (219.0, 1.0),
+        2.0,
+    )
+    assert filled == ((120.0, 0.0), (120.0, 0.0))
+    assert fallback_shots == ()
 
 
 def test_reframe_waits_until_target_face_is_observed_and_uses_hard_speaker_cut() -> None:
@@ -470,6 +643,65 @@ def test_tracking_plan_records_selected_face_composition_against_rendered_crop()
     assert samples[0]["crop_x"] == 100.0
 
 
+def test_tracking_plan_records_safe_center_fallback_for_unobserved_shot() -> None:
+    plan = TrackingPlan(
+        1.0,
+        640,
+        360,
+        (
+            FaceAnchor(0.0, 80.0, 1.0),
+            FaceAnchor(2.0, 219.0, 1.0),
+            FaceAnchor(4.0, 219.0, 1.0),
+        ),
+        True,
+        crop_width=202,
+        crop_height=358,
+        source_cuts=(2.0,),
+        selected_faces=(FaceObservation(0, 1.0, 130.0, 60.0, 100.0, 100.0, 0.1),),
+        safe_fallback_shots=((2.0, 4.0),),
+    )
+    coverage = plan.to_dict()["shot_coverage"]
+    assert isinstance(coverage, list)
+    assert coverage[0]["status"] == "face_observed"
+    assert coverage[1]["status"] == "safe_center_fallback"
+    assert coverage[1]["safe_centered"] is True
+
+    uncovered = TrackingPlan(
+        1.0,
+        640,
+        360,
+        (FaceAnchor(0.0, 80.0, 1.0), FaceAnchor(2.0, 80.0, 1.0)),
+        True,
+        crop_width=202,
+        crop_height=358,
+        source_cuts=(1.0,),
+    ).to_dict()["shot_coverage"]
+    assert isinstance(uncovered, list)
+    assert [shot["status"] for shot in uncovered] == ["uncovered", "uncovered"]
+
+
+def test_stable_fallback_centers_explicitly_unobserved_source_shot() -> None:
+    plan = TrackingPlan(
+        1.0,
+        640,
+        360,
+        (
+            FaceAnchor(0.0, 80.0, 1.0),
+            FaceAnchor(2.0, 80.0, 1.0),
+            FaceAnchor(4.0, 80.0, 1.0),
+        ),
+        True,
+        crop_width=202,
+        crop_height=358,
+        source_cuts=(2.0,),
+        selected_faces=(FaceObservation(0, 1.0, 130.0, 60.0, 100.0, 100.0, 0.1),),
+        safe_fallback_shots=((2.0, 4.0),),
+    )
+    repaired = stable_portrait_fallback(plan, 4.0)
+    assert repaired.anchors[-1] == FaceAnchor(4.0, 219.0, 1.0)
+    assert repaired.to_dict()["shot_coverage"][1]["safe_centered"] is True
+
+
 class FakeCapture:
     def __init__(self, opened: bool = True) -> None:
         self.opened = opened
@@ -521,7 +753,10 @@ class NoFaceDetector:
 
 def test_plan_speaker_crop_locks_single_speaker_without_per_frame_drift(tmp_path: Path) -> None:
     clip = ClipCandidate("v", 0, 3, "text", 1)
-    segments = [TranscriptSegment(0, 1.5, "first"), TranscriptSegment(1.5, 3, "second")]
+    segments = [
+        TranscriptSegment(0, 1.5, "first", speaker_id="SPEAKER_00"),
+        TranscriptSegment(1.5, 3, "second", speaker_id="SPEAKER_00"),
+    ]
     capture = FakeCapture()
     with (
         patch("clipper.tracking.cv2.VideoCapture", return_value=capture),

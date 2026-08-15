@@ -62,6 +62,7 @@ def test_transcript_cache_deserialization_preserves_words() -> None:
             "start": 1.0,
             "end": 3.0,
             "text": "hello world",
+            "speaker_id": "SPEAKER_00",
             "words": [
                 {"start": 1.0, "end": 1.5, "text": "hello"},
                 {"start": 1.6, "end": 2.2, "text": "world"},
@@ -75,6 +76,7 @@ def test_transcript_cache_deserialization_preserves_words() -> None:
             3.0,
             "hello world",
             (TranscriptWord(1.0, 1.5, "hello"), TranscriptWord(1.6, 2.2, "world")),
+            "SPEAKER_00",
         )
     ]
     with pytest.raises(ValueError, match="list"):

@@ -86,6 +86,7 @@ def _tracking_evidence(path: Path) -> dict[str, Any]:
         "transitions": payload.get("transitions") or [],
         "source_cuts": payload.get("source_cuts") or [],
         "composition": payload.get("composition") or {},
+        "shot_coverage": payload.get("shot_coverage") or [],
         "image_quality": payload.get("image_quality") or {},
     }
 
@@ -174,6 +175,18 @@ def tracking_plan_issues(payload: dict[str, Any]) -> list[str]:
             issues.append("selected speaker is outside the horizontal framing safe region")
         if visible_ratio < 0.98:
             issues.append("selected speaker face is cropped in tracking evidence")
+    shot_coverage = payload.get("shot_coverage")
+    if isinstance(shot_coverage, list):
+        for shot in shot_coverage:
+            if not isinstance(shot, dict):
+                issues.append("source shot coverage evidence is malformed")
+                continue
+            duration = _float(shot.get("duration"))
+            status = str(shot.get("status") or "")
+            if duration >= 0.5 and status == "uncovered":
+                issues.append("source shot carries a stale crop without face coverage")
+            if status == "safe_center_fallback" and not bool(shot.get("safe_centered")):
+                issues.append("unobserved source shot is not using the safe centered crop")
     return list(dict.fromkeys(issues))
 
 

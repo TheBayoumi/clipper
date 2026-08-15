@@ -1826,16 +1826,39 @@ def test_canonical_roundtrip_word_payloads_and_segment_grouping() -> None:
         "video",
         "source-hash",
         [
-            {"text": "hello", "start": 0.0, "end": 0.2, "confidence": 0.9},
-            {"text": "there", "start": 0.21, "end": 0.45, "confidence": 0.8},
-            {"text": "again", "start": 2.0, "end": 2.3, "confidence": None},
+            {
+                "text": "hello",
+                "start": 0.0,
+                "end": 0.2,
+                "confidence": 0.9,
+            },
+            {
+                "text": "there",
+                "start": 0.21,
+                "end": 0.45,
+                "confidence": 0.8,
+            },
+            {
+                "text": "again",
+                "start": 2.0,
+                "end": 2.3,
+                "confidence": None,
+            },
         ],
         transcript_source="modal-asr",
+    )
+    timeline = replace(
+        timeline,
+        words=tuple(
+            replace(word, speaker_id="SPEAKER_00" if index < 2 else "SPEAKER_01")
+            for index, word in enumerate(timeline.words)
+        ),
     )
     restored = CanonicalTimeline.from_dict(timeline.to_dict())
     assert restored == timeline
     segments = transcript_segments_from_canonical(restored, max_gap_seconds=0.5)
     assert [segment.text for segment in segments] == ["hello there", "again"]
+    assert [segment.speaker_id for segment in segments] == ["SPEAKER_00", "SPEAKER_01"]
     assert all(segment.words for segment in segments)
     with pytest.raises(ValueError, match="grouping"):
         transcript_segments_from_canonical(restored, max_words=0)

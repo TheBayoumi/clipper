@@ -19,6 +19,7 @@ LEGACY_FINALIST_KEYS = (
     {"concept_id": "c11", "plan_id": "p1"},
     {"concept_id": "c2", "plan_id": "p4"},
 )
+AUTOFRAME_REPAIR_KEYS = ({"concept_id": "c3", "plan_id": "p3"},)
 _ARTIFACT_PATH_MARKERS = (
     "/clips/",
     "/captions/",
@@ -109,6 +110,14 @@ def main() -> int:
             "the four legacy finalists with overlapping opening captions."
         ),
     )
+    reuse_group.add_argument(
+        "--repair-autoframe-from-run",
+        metavar="RUN_ID",
+        help=(
+            "Reuse five passed finalists from RUN_ID, then rerender and review only "
+            "c3/p3 with the current autoframing implementation."
+        ),
+    )
     args = parser.parse_args()
 
     source_run = args.artifact_root / args.source_run_id
@@ -143,6 +152,10 @@ def main() -> int:
         request["base_run_id"] = args.repair_legacy_captions_from_run
         request["reuse_plan_keys"] = list(PLAN_KEYS)
         request["rerender_plan_keys"] = list(LEGACY_FINALIST_KEYS)
+    elif args.repair_autoframe_from_run:
+        request["base_run_id"] = args.repair_autoframe_from_run
+        request["reuse_plan_keys"] = list(PLAN_KEYS)
+        request["rerender_plan_keys"] = list(AUTOFRAME_REPAIR_KEYS)
     response = _modal_function(args.app, "recover_finalists").remote(request)
     if not isinstance(response, dict) or response.get("status") != "PASS":
         raise RuntimeError(f"targeted Modal recovery returned an invalid response: {response!r}")

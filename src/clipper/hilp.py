@@ -57,6 +57,7 @@ def _segment(raw: object) -> TranscriptSegment:
         float(raw["end"]),
         str(raw["text"]),
         words,
+        str(raw["speaker_id"]) if raw.get("speaker_id") is not None else None,
     )
 
 

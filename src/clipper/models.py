@@ -389,6 +389,7 @@ class TranscriptSegment:
     end: float
     text: str
     words: tuple[TranscriptWord, ...] = ()
+    speaker_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.start < 0 or self.end <= self.start:

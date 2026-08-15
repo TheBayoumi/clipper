@@ -174,13 +174,19 @@ def _localize_render_inputs(
                     min(segment.end, end) - origin,
                     segment.text,
                     words,
+                    segment.speaker_id,
                 )
             )
             continue
         if segment.start < origin or segment.end > end:
             continue
         localized.append(
-            TranscriptSegment(segment.start - origin, segment.end - origin, segment.text)
+            TranscriptSegment(
+                segment.start - origin,
+                segment.end - origin,
+                segment.text,
+                speaker_id=segment.speaker_id,
+            )
         )
     if not localized:
         raise RuntimeError("span-aware source produced no transcript context for the render")

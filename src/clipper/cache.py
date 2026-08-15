@@ -143,7 +143,13 @@ def transcript_segments_from_payload(payload: object) -> list[TranscriptSegment]
             if isinstance(word, dict)
         )
         segments.append(
-            TranscriptSegment(float(item["start"]), float(item["end"]), str(item["text"]), words)
+            TranscriptSegment(
+                float(item["start"]),
+                float(item["end"]),
+                str(item["text"]),
+                words,
+                str(item["speaker_id"]) if item.get("speaker_id") is not None else None,
+            )
         )
     return segments
 

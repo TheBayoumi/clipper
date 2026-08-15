@@ -488,3 +488,79 @@ def test_tracking_preflight_requires_composition_evidence_when_face_detected() -
         }
     )
     assert "selected face composition evidence is missing" in issues
+
+
+def test_tracking_preflight_rejects_stale_crop_in_uncovered_source_shot() -> None:
+    issues = tracking_plan_issues(
+        {
+            "background_fill": "none",
+            "crop_width": 1214,
+            "crop_height": 2158,
+            "transitions": [],
+            "image_quality": {
+                "max_portrait_crop_height": 2158,
+                "digital_zoom_used": False,
+            },
+            "shot_coverage": [
+                {
+                    "start": 15.766,
+                    "end": 17.267,
+                    "duration": 1.501,
+                    "status": "uncovered",
+                    "safe_centered": False,
+                }
+            ],
+        }
+    )
+    assert "source shot carries a stale crop without face coverage" in issues
+
+
+def test_tracking_preflight_accepts_centered_fallback_for_unobserved_shot() -> None:
+    issues = tracking_plan_issues(
+        {
+            "background_fill": "none",
+            "crop_width": 1214,
+            "crop_height": 2158,
+            "transitions": [],
+            "image_quality": {
+                "max_portrait_crop_height": 2158,
+                "digital_zoom_used": False,
+            },
+            "shot_coverage": [
+                {
+                    "start": 15.766,
+                    "end": 17.267,
+                    "duration": 1.501,
+                    "status": "safe_center_fallback",
+                    "safe_centered": True,
+                }
+            ],
+        }
+    )
+    assert "source shot carries a stale crop without face coverage" not in issues
+    assert "unobserved source shot is not using the safe centered crop" not in issues
+
+
+def test_tracking_preflight_rejects_malformed_or_off_center_fallback_evidence() -> None:
+    issues = tracking_plan_issues(
+        {
+            "background_fill": "none",
+            "crop_width": 1214,
+            "crop_height": 2158,
+            "transitions": [],
+            "image_quality": {
+                "max_portrait_crop_height": 2158,
+                "digital_zoom_used": False,
+            },
+            "shot_coverage": [
+                "bad",
+                {
+                    "duration": 1.0,
+                    "status": "safe_center_fallback",
+                    "safe_centered": False,
+                },
+            ],
+        }
+    )
+    assert "source shot coverage evidence is malformed" in issues
+    assert "unobserved source shot is not using the safe centered crop" in issues

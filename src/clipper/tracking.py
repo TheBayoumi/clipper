@@ -15,6 +15,8 @@ cv2: Any = importlib.import_module("cv2")
 
 DEFAULT_TARGET_ASPECT = 9 / 16
 FACE_VERTICAL_POSITION = 0.38
+FACE_ANALYSIS_WIDTH = 480
+FACE_RECOVERY_ANALYSIS_WIDTH = 960
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +98,7 @@ class _TrackState:
 class _SpeakerWindow:
     start: float
     end: float
+    speaker_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +120,7 @@ class TrackingPlan:
     transitions: tuple[CameraTransition, ...] = ()
     source_cuts: tuple[float, ...] = ()
     selected_faces: tuple[FaceObservation, ...] = ()
+    safe_fallback_shots: tuple[tuple[float, float], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         max_crop_width, max_crop_height = portrait_crop_dimensions(
@@ -125,6 +129,7 @@ class TrackingPlan:
         horizontal_scale = 1080 / self.crop_width if self.crop_width else 0.0
         vertical_scale = 1920 / self.crop_height if self.crop_height else 0.0
         composition = _composition_evidence(self)
+        shot_coverage = _shot_coverage_evidence(self)
         return {
             "zoom_factor": self.zoom_factor,
             "source_width": self.source_width,
@@ -144,6 +149,7 @@ class TrackingPlan:
             "source_cuts": list(self.source_cuts),
             "selected_face_samples": composition["samples"],
             "composition": composition["summary"],
+            "shot_coverage": shot_coverage,
             "image_quality": {
                 "source_width": self.source_width,
                 "source_height": self.source_height,
@@ -299,6 +305,27 @@ def _detect_face_boxes(
     return _dedupe_face_boxes(plausible)
 
 
+def _detect_face_boxes_with_recovery(
+    frame: Any,
+    frontal_detector: Any,
+    profile_detector: Any,
+) -> tuple[Any, float, list[tuple[int, int, int, int]]]:
+    """Retry missed faces at higher resolution without taxing every sampled frame."""
+    source_width = int(frame.shape[1])
+    for analysis_width in (FACE_ANALYSIS_WIDTH, FACE_RECOVERY_ANALYSIS_WIDTH):
+        scale = min(1.0, analysis_width / max(source_width, 1))
+        analysis = (
+            cv2.resize(frame, (round(source_width * scale), round(frame.shape[0] * scale)))
+            if scale < 1.0
+            else frame
+        )
+        gray = cv2.cvtColor(analysis, cv2.COLOR_BGR2GRAY)
+        boxes = _detect_face_boxes(gray, frontal_detector, profile_detector)
+        if boxes or scale >= 1.0:
+            return gray, scale, boxes
+    return gray, scale, boxes
+
+
 def _match_track(
     box: tuple[float, float, float, float],
     tracks: list[_TrackState],
@@ -361,7 +388,13 @@ def _segment_windows(
         while cursor < end - 1e-9:
             window_end = min(end, cursor + max_window_seconds)
             if window_end - cursor >= 0.08:
-                windows.append(_SpeakerWindow(cursor - clip.start, window_end - clip.start))
+                windows.append(
+                    _SpeakerWindow(
+                        cursor - clip.start,
+                        window_end - clip.start,
+                        segment.speaker_id,
+                    )
+                )
             cursor = window_end
     if not windows:
         return (_SpeakerWindow(0.0, clip.duration),)
@@ -379,10 +412,10 @@ def _split_windows_at_source_cuts(
         boundaries = [cut for cut in source_cuts if window.start + 0.08 <= cut <= window.end - 0.08]
         cursor = window.start
         for boundary in boundaries:
-            split.append(_SpeakerWindow(cursor, boundary))
+            split.append(_SpeakerWindow(cursor, boundary, window.speaker_id))
             cursor = boundary
         if window.end - cursor >= 0.08:
-            split.append(_SpeakerWindow(cursor, window.end))
+            split.append(_SpeakerWindow(cursor, window.end, window.speaker_id))
     return tuple(split)
 
 
@@ -408,6 +441,45 @@ def _shot_stable_targets(
         for key, values in grouped.items()
     }
     return tuple(representative.get(key) if key is not None else None for key in keys)
+
+
+def _safe_shot_targets(
+    windows: tuple[_SpeakerWindow, ...],
+    targets: tuple[tuple[float, float] | None, ...],
+    source_cuts: tuple[float, ...],
+    fallback: tuple[float, float],
+    clip_duration: float,
+) -> tuple[tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]]:
+    """Fill detector gaps from the same shot, or reset an uncovered shot to center."""
+    indexed = [
+        (bisect_right(source_cuts, (window.start + window.end) / 2), index, target)
+        for index, (window, target) in enumerate(zip(windows, targets, strict=True))
+    ]
+    observed_by_shot: dict[int, list[tuple[int, tuple[float, float]]]] = {}
+    for shot_index, index, target in indexed:
+        if target is not None:
+            observed_by_shot.setdefault(shot_index, []).append((index, target))
+
+    safe: list[tuple[float, float]] = []
+    fallback_indices: set[int] = set()
+    for shot_index, index, target in indexed:
+        if target is not None:
+            safe.append(target)
+            continue
+        observed = observed_by_shot.get(shot_index, [])
+        if observed:
+            safe.append(min(observed, key=lambda item: abs(item[0] - index))[1])
+            continue
+        safe.append(fallback)
+        fallback_indices.add(shot_index)
+
+    boundaries = (0.0, *source_cuts, clip_duration)
+    fallback_shots = tuple(
+        (boundaries[index], boundaries[index + 1])
+        for index in sorted(fallback_indices)
+        if index + 1 < len(boundaries)
+    )
+    return tuple(safe), fallback_shots
 
 
 def _speaker_score(
@@ -455,7 +527,7 @@ def _choose_active_speaker(
     ]
     visible = [item for item in scored if item[1] >= 0 and item[2] > 0]
     if not visible:
-        return previous_track_id
+        return None
     if len(visible) == 1:
         return visible[0][0]
     visible.sort(key=lambda item: item[1], reverse=True)
@@ -828,6 +900,47 @@ def _composition_evidence(plan: TrackingPlan) -> dict[str, object]:
     }
 
 
+def _shot_coverage_evidence(plan: TrackingPlan) -> list[dict[str, object]]:
+    """Record every source shot, including intervals where no face was selected."""
+    duration = max((anchor.time for anchor in plan.anchors), default=0.0)
+    if duration <= 0:
+        return []
+    boundaries = (0.0, *sorted(cut for cut in plan.source_cuts if 0 < cut < duration), duration)
+    evidence: list[dict[str, object]] = []
+    for index, (start, end) in enumerate(pairwise(boundaries)):
+        sample_count = sum(
+            1
+            for face in plan.selected_faces
+            if start <= face.time and (face.time < end or index == len(boundaries) - 2)
+        )
+        safe_fallback = any(
+            abs(start - fallback_start) <= 0.05 and abs(end - fallback_end) <= 0.05
+            for fallback_start, fallback_end in plan.safe_fallback_shots
+        )
+        crop_x, crop_y = _crop_position_at(plan, start + (end - start) / 2)
+        center_x = max(0.0, (plan.source_width - plan.crop_width) / 2)
+        center_y = max(0.0, (plan.source_height - plan.crop_height) / 2)
+        evidence.append(
+            {
+                "start": start,
+                "end": end,
+                "duration": end - start,
+                "selected_face_samples": sample_count,
+                "crop_x": crop_x,
+                "crop_y": crop_y,
+                "safe_centered": abs(crop_x - center_x) <= 1.0 and abs(crop_y - center_y) <= 1.0,
+                "status": (
+                    "face_observed"
+                    if sample_count
+                    else "safe_center_fallback"
+                    if safe_fallback
+                    else "uncovered"
+                ),
+            }
+        )
+    return evidence
+
+
 def _best_stable_axis_position(
     spans: list[tuple[float, float, float]],
     *,
@@ -968,6 +1081,13 @@ def stable_portrait_fallback(plan: TrackingPlan, duration: float) -> TrackingPla
                 )
             )
             continue
+        safe_center = any(
+            abs(start - fallback_start) <= 0.05 and abs(stop - fallback_stop) <= 0.05
+            for fallback_start, fallback_stop in plan.safe_fallback_shots
+        )
+        if safe_center:
+            positions.append(center)
+            continue
         candidates = [anchor for anchor in plan.anchors if start <= anchor.time < stop]
         prior = [anchor for anchor in plan.anchors if anchor.time <= start]
         if prior:
@@ -1028,6 +1148,7 @@ def stable_portrait_fallback(plan: TrackingPlan, duration: float) -> TrackingPla
         transitions=tuple(transitions),
         source_cuts=plan.source_cuts,
         selected_faces=plan.selected_faces,
+        safe_fallback_shots=plan.safe_fallback_shots,
     )
 
 
@@ -1094,6 +1215,7 @@ def plan_speaker_crop(
             crop_height=crop_height,
             target_aspect=target_aspect,
             speaker_focus=False,
+            safe_fallback_shots=((0.0, clip.duration),),
         )
 
     capture.set(cv2.CAP_PROP_POS_MSEC, max(0.0, clip.start) * 1000)
@@ -1125,14 +1247,9 @@ def plan_speaker_crop(
             if frame_index % sample_every:
                 frame_index += 1
                 continue
-            scale = min(1.0, 480 / width)
-            analysis = (
-                cv2.resize(frame, (round(width * scale), round(height * scale)))
-                if scale < 1.0
-                else frame
+            gray, scale, boxes = _detect_face_boxes_with_recovery(
+                frame, frontal_detector, profile_detector
             )
-            gray = cv2.cvtColor(analysis, cv2.COLOR_BGR2GRAY)
-            boxes = _detect_face_boxes(gray, frontal_detector, profile_detector)
             used: set[int] = set()
             for analysis_box in sorted(boxes, key=lambda item: item[0]):
                 ax, ay, aw, ah = analysis_box
@@ -1167,6 +1284,7 @@ def plan_speaker_crop(
             crop_height=crop_height,
             target_aspect=target_aspect,
             speaker_focus=True,
+            safe_fallback_shots=tuple(pairwise((0.0, *source_cuts, clip.duration))),
         )
 
     windows = _split_windows_at_source_cuts(
@@ -1177,12 +1295,20 @@ def plan_speaker_crop(
     targets: list[tuple[float, float] | None] = []
     ready_times: list[float] = []
     previous_track_id: int | None = None
+    speaker_tracks_by_shot: dict[tuple[int, str], int] = {}
     tracks_by_id = {track.track_id: track for track in stable_tracks}
     for window in windows:
+        shot_index = bisect_right(source_cuts, (window.start + window.end) / 2)
+        speaker_key = (shot_index, window.speaker_id) if window.speaker_id is not None else None
+        preferred_track_id = (
+            speaker_tracks_by_shot.get(speaker_key)
+            if speaker_key is not None
+            else previous_track_id
+        )
         active = _choose_active_speaker(
             stable_tracks,
             window,
-            previous_track_id,
+            preferred_track_id,
             switch_margin=switch_margin,
             sample_fps=sample_fps,
             min_detection_coverage=min_detection_coverage,
@@ -1203,17 +1329,26 @@ def plan_speaker_crop(
         )
         if active is not None:
             previous_track_id = active
+            if speaker_key is not None:
+                speaker_tracks_by_shot[speaker_key] = active
     stable_targets = _shot_stable_targets(
         windows,
         tuple(assignments),
         tuple(targets),
         tuple(source_cuts),
     )
+    safe_targets, safe_fallback_shots = _safe_shot_targets(
+        windows,
+        stable_targets,
+        tuple(source_cuts),
+        fallback,
+        clip.duration,
+    )
     anchors, transitions, reframe_events, rendered_assignments = _speaker_locked_anchors(
         clip.duration,
         windows,
         tuple(assignments),
-        stable_targets,
+        safe_targets,
         tuple(ready_times),
         fallback,
         crop_width=crop_width,
@@ -1256,4 +1391,5 @@ def plan_speaker_crop(
             selected_faces_by_key[key]
             for key in sorted(selected_faces_by_key, key=lambda item: item[1])
         ),
+        safe_fallback_shots=safe_fallback_shots,
     )

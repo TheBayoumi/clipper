@@ -114,9 +114,12 @@ def test_targeted_finalist_recovery_is_fail_closed_and_keeps_source_run_immutabl
     assert '_TARGETED_RECOVERY_PLANS = (("c14", "p3"), ("c5", "p1"))' in source
     assert "if requested != _TARGETED_RECOVERY_PLANS:" in recovery
     assert "tracking_transition_sample_times" in recovery
+    assert "segments = transcript_segments_from_canonical(canonical)" in recovery
     assert '"source master remained in clipper-media-cache; only freshly rendered "' in recovery
     assert "_TARGETED_RECOVERY_PLANS," in recovery
-    assert "if rerendered_recovered_keys not in ((), _RECOVERED_FINALISTS):" in recovery
+    assert "any(key not in _RECOVERED_FINALISTS" in recovery
+    assert "recovered finalist rerenders must be a unique ordered subset" in recovery
+    assert "reuse_run_dir = base_run_dir" in recovery
     assert '"legacy-caption-repair"' in recovery
     assert "require_current_qc(destination_clip" in recovery
     assert "validate_live_run(" in recovery
@@ -136,6 +139,8 @@ def test_targeted_recovery_launcher_sends_evidence_not_local_frames() -> None:
     assert 'request["reuse_plan_keys"] = [PLAN_KEYS[0]]' in source
     assert 'request["reuse_plan_keys"] = list(PLAN_KEYS)' in source
     assert 'request["rerender_plan_keys"] = list(LEGACY_FINALIST_KEYS)' in source
+    assert 'request["rerender_plan_keys"] = list(AUTOFRAME_REPAIR_KEYS)' in source
+    assert '"--repair-autoframe-from-run"' in source
     assert '"c3", "plan_id": "p3"' in source
     assert '"frames_base64"' not in source
     assert '"c14", "plan_id": "p3"' in source
