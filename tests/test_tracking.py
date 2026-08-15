@@ -174,7 +174,7 @@ def test_speaker_window_crop_uses_local_camera_composition_not_global_track_home
 
 def test_speaker_locked_anchors_never_move_for_same_speaker_inside_a_shot() -> None:
     windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 4), _SpeakerWindow(4, 6))
-    anchors, transitions, reframes = _speaker_locked_anchors(
+    anchors, transitions, reframes, _rendered = _speaker_locked_anchors(
         6.0,
         windows,
         (0, 0, 0),
@@ -213,7 +213,7 @@ def test_speaker_windows_split_and_targets_stabilize_per_source_shot() -> None:
 
 def test_reframe_waits_until_target_face_is_observed_and_uses_hard_speaker_cut() -> None:
     windows = (_SpeakerWindow(0, 1), _SpeakerWindow(1, 2))
-    anchors, transitions, reframes = _speaker_locked_anchors(
+    anchors, transitions, reframes, _rendered = _speaker_locked_anchors(
         2.0,
         windows,
         (0, 1),
@@ -234,7 +234,7 @@ def test_reframe_waits_until_target_face_is_observed_and_uses_hard_speaker_cut()
 
 def test_same_shot_small_speaker_change_holds_instead_of_panning() -> None:
     windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 4))
-    anchors, transitions, reframes = _speaker_locked_anchors(
+    anchors, transitions, reframes, _rendered = _speaker_locked_anchors(
         4.0,
         windows,
         (0, 1),
@@ -252,7 +252,7 @@ def test_same_shot_small_speaker_change_holds_instead_of_panning() -> None:
 
 def test_transient_speaker_reversal_is_held_to_prevent_camera_whiplash() -> None:
     windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 2.25), _SpeakerWindow(2.25, 4))
-    anchors, transitions, reframes = _speaker_locked_anchors(
+    anchors, transitions, reframes, rendered = _speaker_locked_anchors(
         4.0,
         windows,
         (0, 1, 0),
@@ -266,11 +266,12 @@ def test_transient_speaker_reversal_is_held_to_prevent_camera_whiplash() -> None
     assert reframes == 0
     assert all(item.mode == "hold" for item in transitions)
     assert anchors[0].x == anchors[-1].x == 100.0
+    assert rendered == (0, 0, 0)
 
 
 def test_persistent_large_speaker_change_is_a_single_hard_cut() -> None:
     windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 3), _SpeakerWindow(3, 4))
-    anchors, transitions, reframes = _speaker_locked_anchors(
+    anchors, transitions, reframes, _rendered = _speaker_locked_anchors(
         4.0,
         windows,
         (0, 1, 1),
@@ -291,7 +292,7 @@ def test_persistent_large_speaker_change_is_a_single_hard_cut() -> None:
 
 def test_source_camera_cut_changes_crop_as_hard_cut_without_slide() -> None:
     windows = (_SpeakerWindow(0, 2), _SpeakerWindow(2, 4))
-    anchors, transitions, reframes = _speaker_locked_anchors(
+    anchors, transitions, reframes, _rendered = _speaker_locked_anchors(
         4.0,
         windows,
         (0, 1),

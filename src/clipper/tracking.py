@@ -541,7 +541,12 @@ def _speaker_locked_anchors(
     seconds_per_crop: float = 0.75,
     speaker_hold_threshold: float = 0.28,
     speaker_reversal_guard_seconds: float = 1.25,
-) -> tuple[tuple[FaceAnchor, ...], tuple[CameraTransition, ...], int]:
+) -> tuple[
+    tuple[FaceAnchor, ...],
+    tuple[CameraTransition, ...],
+    int,
+    tuple[int | None, ...],
+]:
     current = next((target for target in targets if target is not None), fallback)
     current_id = next(
         (
@@ -553,11 +558,13 @@ def _speaker_locked_anchors(
     )
     anchors = [FaceAnchor(0.0, *current)]
     transitions: list[CameraTransition] = []
+    rendered_assignments: list[int | None] = []
     reframe_events = 0
     for index, (window, track_id, target, ready_time) in enumerate(
         zip(windows, assignments, targets, ready_times, strict=True)
     ):
         if target is None:
+            rendered_assignments.append(current_id)
             continue
         speaker_changed = track_id is not None and current_id is not None and track_id != current_id
         dx_signed = target[0] - current[0]
@@ -576,6 +583,7 @@ def _speaker_locked_anchors(
         )
 
         if reverses_soon:
+            rendered_assignments.append(current_id)
             transitions.append(
                 CameraTransition(
                     "speaker_change",
@@ -612,8 +620,10 @@ def _speaker_locked_anchors(
                 )
             )
             current_id = track_id
+            rendered_assignments.append(current_id)
             continue
         if not speaker_changed and nearby_cut is None:
+            rendered_assignments.append(current_id)
             if distance > 0.0:
                 transitions.append(
                     CameraTransition(
@@ -644,6 +654,7 @@ def _speaker_locked_anchors(
             reason = "speaker_change"
             mode = "hard_cut"
         else:  # Defensive: same-speaker movement was held above.
+            rendered_assignments.append(current_id)
             continue
 
         if anchors[-1].time < transition_start:
@@ -667,10 +678,11 @@ def _speaker_locked_anchors(
         )
         current = target
         current_id = track_id if track_id is not None else current_id
+        rendered_assignments.append(current_id)
         reframe_events += 1
     if anchors[-1].time < clip_duration:
         anchors.append(FaceAnchor(clip_duration, *current))
-    return tuple(anchors), tuple(transitions), reframe_events
+    return tuple(anchors), tuple(transitions), reframe_events, tuple(rendered_assignments)
 
 
 def _piecewise_expression(anchors: tuple[FaceAnchor, ...], axis: str) -> str:
@@ -1197,7 +1209,7 @@ def plan_speaker_crop(
         tuple(targets),
         tuple(source_cuts),
     )
-    anchors, transitions, reframe_events = _speaker_locked_anchors(
+    anchors, transitions, reframe_events, rendered_assignments = _speaker_locked_anchors(
         clip.duration,
         windows,
         tuple(assignments),
@@ -1219,7 +1231,7 @@ def plan_speaker_crop(
         if previous is not None and current is not None and previous != current
     )
     selected_faces_by_key: dict[tuple[int, float], FaceObservation] = {}
-    for window, track_id in zip(windows, assignments, strict=True):
+    for window, track_id in zip(windows, rendered_assignments, strict=True):
         if track_id is None or track_id not in tracks_by_id:
             continue
         for observation in tracks_by_id[track_id].observations:
