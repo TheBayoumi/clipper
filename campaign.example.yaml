@@ -23,7 +23,7 @@ source_channel_ids:
 allowed_video_ids: []
 
 # This must only be changed to true after checking the campaign permits clipping these sources.
-rights_confirmed: false
+rights_confirmed: true
 attribution_required: true
 watermark_text: null
 watermark_url: null

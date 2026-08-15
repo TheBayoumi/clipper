@@ -1360,7 +1360,11 @@ def select_render_plans(plans: Sequence[EditPlan], *, budget: int) -> list[EditP
         used_concepts.add(plan.concept_id)
 
     selected: list[EditPlan] = []
-    selected_ids: set[str] = set()
+    selected_ids: set[tuple[str, str, str]] = set()
+
+    def identity(plan: EditPlan) -> tuple[str, str, str]:
+        return plan.video_id, plan.concept_id, plan.plan_id
+
     video_ids = {plan.video_id for plan in unique}
     if budget >= 3 and len(video_ids) == 1 and unique:
         episode_end = max(span.end for plan in unique for span in plan.source_spans)
@@ -1378,35 +1382,35 @@ def select_render_plans(plans: Sequence[EditPlan], *, budget: int) -> list[EditP
             if candidates and len(selected) < budget:
                 best = candidates[0]
                 selected.append(best)
-                selected_ids.add(best.plan_id)
+                selected_ids.add(identity(best))
         max_per_period = max(1, math.ceil(budget * 0.5))
         period_counts = Counter(bucket(plan) for plan in selected)
         for plan in unique:
             if len(selected) >= budget:
                 break
-            if plan.plan_id in selected_ids:
+            if identity(plan) in selected_ids:
                 continue
             period = bucket(plan)
             if period_counts[period] >= max_per_period:
                 continue
             selected.append(plan)
-            selected_ids.add(plan.plan_id)
+            selected_ids.add(identity(plan))
             period_counts[period] += 1
 
     for plan in unique:
         if len(selected) >= budget:
             return selected
-        if plan.plan_id in selected_ids:
+        if identity(plan) in selected_ids:
             continue
         selected.append(plan)
-        selected_ids.add(plan.plan_id)
+        selected_ids.add(identity(plan))
     for plan in ranked:
         if len(selected) >= budget:
             break
-        if plan.plan_id in selected_ids:
+        if identity(plan) in selected_ids:
             continue
         selected.append(plan)
-        selected_ids.add(plan.plan_id)
+        selected_ids.add(identity(plan))
     return selected
 
 
@@ -1414,12 +1418,12 @@ def select_render_plan_queue(
     plans: Sequence[EditPlan], *, budget: int
 ) -> tuple[list[EditPlan], list[EditPlan]]:
     primary = select_render_plans(plans, budget=budget)
-    primary_ids = {plan.plan_id for plan in primary}
+    primary_ids = {(plan.video_id, plan.concept_id, plan.plan_id) for plan in primary}
     primary_concepts = {plan.concept_id for plan in primary}
     ranked = sorted(plans, key=lambda item: (-item.score, item.concept_id, item.variant_id))
     grouped: dict[str, list[EditPlan]] = {}
     for plan in ranked:
-        if plan.plan_id in primary_ids:
+        if (plan.video_id, plan.concept_id, plan.plan_id) in primary_ids:
             continue
         grouped.setdefault(plan.concept_id, []).append(plan)
     concept_order = sorted(

@@ -7,6 +7,7 @@ on:
       - feat/word-reveal-face-tracking
     paths:
       - ".github/workflows/modal-workers-deploy.yml"
+      - "scripts/modal_open_models.py"
 
 permissions:
   contents: read
@@ -18,7 +19,6 @@ concurrency:
 env:
   MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
   MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-  HF_TOKEN: ${{ secrets.HF_TOKEN }}
   CLIPPER_MODAL_APP: clipper-open-editor
 
 jobs:
@@ -33,13 +33,12 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Verify deployment credentials
+      - name: Verify Modal deployment credentials
         shell: bash
         run: |
           set -euo pipefail
           test -n "$MODAL_TOKEN_ID"
           test -n "$MODAL_TOKEN_SECRET"
-          test -n "$HF_TOKEN"
 
       - name: Install Modal orchestration dependencies
         shell: bash
@@ -60,6 +59,28 @@ jobs:
           set -euo pipefail
           modal app list | tee modal-apps.txt
           grep -F "$CLIPPER_MODAL_APP" modal-apps.txt
+
+      - name: Verify named Hugging Face secret access
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import modal
+
+          result = modal.Function.from_name(
+              os.environ["CLIPPER_MODAL_APP"], "hf_access_smoke"
+          ).remote()
+          assert isinstance(result, dict) and result.get("ok") is True, result
+          Path("modal-hf-access.json").write_text(
+              json.dumps(result, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(result, indent=2))
+          PY
 
       - name: Record deployment evidence
         shell: bash
@@ -84,6 +105,7 @@ jobs:
                           "embedding",
                           "vision",
                           "vision_large",
+                          "hf_access_smoke",
                       ],
                   },
                   indent=2,
@@ -100,6 +122,7 @@ jobs:
           name: modal-workers-${{ github.sha }}
           path: |
             modal-apps.txt
+            modal-hf-access.json
             modal-worker-deployment.json
           if-no-files-found: warn
           retention-days: 14

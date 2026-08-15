@@ -658,7 +658,7 @@ def test_grounded_payload_validation_branches() -> None:
         )
 
 
-def test_grounded_noncontiguous_plan_is_rejected_at_compile() -> None:
+def test_grounded_continuous_plan_preserves_internal_source_silence() -> None:
     timeline = CanonicalTimeline(
         "video",
         "hash",
@@ -681,8 +681,36 @@ def test_grounded_noncontiguous_plan_is_rejected_at_compile() -> None:
         },
         timeline,
     )
-    with pytest.raises(EditorialGroundingError, match="contiguous"):
-        grounded.compile(timeline, "fp")
+    plan = grounded.compile(timeline, "fp")
+    assert len(plan.source_spans) == 1
+    assert plan.source_spans[0].start == 0
+    assert plan.source_spans[0].end == pytest.approx(3.2)
+
+
+def test_grounded_plan_rejects_actual_canonical_word_skips() -> None:
+    timeline = CanonicalTimeline(
+        "video",
+        "hash",
+        (
+            CanonicalWord("a", "a", 0, 0.2, None, None, "aligned", "x"),
+            CanonicalWord("b", "b", 1, 1.2, None, None, "aligned", "x"),
+            CanonicalWord("c", "c", 3, 3.2, None, None, "aligned", "x"),
+        ),
+    )
+    with pytest.raises(EditorialGroundingError, match="consecutive canonical words"):
+        GroundedEditPlan.from_payload(
+            {
+                "plan_id": "p",
+                "concept_id": "c",
+                "variant_id": "v",
+                "source_word_ids": ["a", "c"],
+                "hook_source_word_ids": ["a"],
+                "strategy_label": "s",
+                "caption_platform": "tiktok",
+                "confidence": 0.8,
+            },
+            timeline,
+        )
 
 
 def test_compute_profile_rejects_unknown_name() -> None:
@@ -868,7 +896,7 @@ def _grounded_concept(
     )
 
 
-def _long_grounded_timeline() -> CanonicalTimeline:
+def _long_grounded_timeline(word_count: int = 100) -> CanonicalTimeline:
     words = tuple(
         CanonicalWord(
             f"w{i:03d}",
@@ -880,7 +908,7 @@ def _long_grounded_timeline() -> CanonicalTimeline:
             "aligned",
             "whisperx",
         )
-        for i in range(100)
+        for i in range(word_count)
     )
     return CanonicalTimeline("video", "source-hash", words)
 
@@ -988,6 +1016,38 @@ def test_duration_repair_trims_long_plan_and_reports_unrepairable_context() -> N
     assert rejected["decision"] == "REJECT"
     assert rejected["reasons"] == ["duration_outside_campaign_bounds_no_grounded_repair"]
     assert rejected["grounded_context_duration"] == pytest.approx(9.92)
+
+
+def test_duration_repair_rejects_oversized_source_spanning_hook_without_compiling() -> None:
+    timeline = _long_grounded_timeline(200)
+    brief = replace(_open_brief(), min_clip_seconds=45, max_clip_seconds=60)
+    all_ids = tuple(word.word_id for word in timeline.words)
+    concept = GroundedClipConcept("c", ("m",), all_ids, "story", "", "story", 55, (), 0.9)
+    grounded = GroundedEditPlan.from_payload(
+        {
+            "plan_id": "p0",
+            "concept_id": "c",
+            "variant_id": "v0",
+            "source_start_word_id": timeline.word_ref(all_ids[0]),
+            "source_end_word_id": timeline.word_ref(all_ids[-1]),
+            "hook_start_word_id": timeline.word_ref(all_ids[0]),
+            "hook_end_word_id": timeline.word_ref(all_ids[-1]),
+            "overlay_text": "A grounded overlay.",
+            "strategy_label": "curiosity",
+            "caption_platform": "tiktok",
+            "confidence": 0.95,
+        },
+        timeline,
+    )
+
+    repaired, evidence = AutonomousEditorialPlanner._repair_grounded_plan_duration(
+        brief, timeline, concept, grounded
+    )
+
+    assert repaired is None
+    assert evidence["plan_id"] == "p0"
+    assert evidence["original_duration"] == pytest.approx(99.92)
+    assert evidence["reasons"] == ["duration_outside_campaign_bounds_no_grounded_repair"]
 
 
 def test_autonomous_planner_validation_cosine_and_array_guards(tmp_path: Path) -> None:
@@ -1985,6 +2045,249 @@ def test_plan_batch_reports_duration_rejections_when_all_model_plans_are_invalid
         AutonomousEditorialPlanner(
             InvalidDuration(), _PlannerEmbeddings(), FileCache(tmp_path / "duration")
         ).plan_batch(_open_brief(), {"video": timeline}, [analysis])
+
+
+def test_plan_batch_rejects_oversized_hook_and_keeps_other_valid_plan(tmp_path: Path) -> None:
+    timeline = _long_grounded_timeline(200)
+    brief = replace(_open_brief(), min_clip_seconds=45, max_clip_seconds=60)
+    all_ids = tuple(word.word_id for word in timeline.words)
+    grounded = GroundedClipConcept("c", ("m",), all_ids, "complete story", "", "story", 55, (), 0.9)
+    concept = ClipConcept(
+        "c",
+        "video",
+        timeline.start,
+        timeline.end,
+        "complete story",
+        "summary",
+        "",
+        "",
+        "story",
+        55,
+        EditorialScores(*(8.0 for _ in range(12))),
+        8.0,
+        "sem",
+        "fp",
+    )
+    moment = StoryMoment(
+        "m",
+        "video",
+        timeline.start,
+        timeline.end,
+        "complete story",
+        "story",
+        "summary",
+        "",
+        "",
+        EditorialScores(*(8.0 for _ in range(12))),
+        8.0,
+        "fp",
+    )
+    analysis = OpenVideoAnalysis(
+        EpisodeEditorialProfile("x", ("x",), (), 0.9),
+        [moment],
+        [concept],
+        {
+            "m": GroundedStoryMoment(
+                "m", all_ids, "complete story", "story", "", "", "grounded", 0.9
+            )
+        },
+        {"c": grounded},
+        [],
+    )
+
+    class MixedPlans(_PlannerEditorial):
+        def complete_json(
+            self, *, task: str, payload: dict[str, object]
+        ) -> ProviderResult[dict[str, object]]:
+            del payload
+            if task == "global_concept_comparison":
+                value: dict[str, object] = {"concept_ids": ["c"]}
+            elif task == "hook_variants:c":
+                value = {
+                    "variants": [
+                        {
+                            "variant_id": "h-long",
+                            "strategy_label": "overlay",
+                            "source_word_ids": list(all_ids),
+                            "overlay_text": "A grounded overlay.",
+                            "rationale": "source grounded",
+                            "confidence": 0.95,
+                        },
+                        {
+                            "variant_id": "h-good",
+                            "strategy_label": "direct",
+                            "source_word_ids": list(all_ids[:4]),
+                            "overlay_text": None,
+                            "rationale": "source grounded",
+                            "confidence": 0.9,
+                        },
+                    ]
+                }
+            elif task == "edit_plans:c":
+                value = {
+                    "plans": [
+                        {
+                            "plan_id": "p-bad",
+                            "concept_id": "c",
+                            "variant_id": "h-long",
+                            "source_word_ids": list(all_ids),
+                            "hook_source_word_ids": list(all_ids),
+                            "overlay_text": "A grounded overlay.",
+                            "strategy_label": "overlay",
+                            "caption_platform": "tiktok",
+                            "confidence": 0.95,
+                        },
+                        {
+                            "plan_id": "p-good",
+                            "concept_id": "c",
+                            "variant_id": "h-good",
+                            "source_word_ids": list(all_ids[:120]),
+                            "hook_source_word_ids": list(all_ids[:4]),
+                            "overlay_text": None,
+                            "strategy_label": "direct",
+                            "caption_platform": "tiktok",
+                            "confidence": 0.9,
+                        },
+                    ]
+                }
+            else:
+                raise AssertionError(task)
+            return ProviderResult(value, self.identity, InferenceUsage("test", "now", 0.01))
+
+    batch = AutonomousEditorialPlanner(
+        MixedPlans(), _PlannerEmbeddings(), FileCache(tmp_path / "mixed-duration")
+    ).plan_batch(brief, {"video": timeline}, [analysis])
+
+    assert [plan.plan_id for plan in batch.plans] == ["p-good"]
+    assert batch.plans[0].duration == pytest.approx(59.92)
+    bad_rejection = next(item for item in batch.rejections if item.get("plan_id") == "p-bad")
+    assert bad_rejection["reasons"] == ["duration_outside_campaign_bounds_no_grounded_repair"]
+
+
+def test_plan_batch_rejects_failed_model_completion_and_keeps_other_concept(
+    tmp_path: Path,
+) -> None:
+    timeline = _long_grounded_timeline()
+    all_ids = tuple(word.word_id for word in timeline.words)
+    concept_ids = ("c-bad", "c-good")
+    moments = [
+        StoryMoment(
+            f"m-{concept_id}",
+            "video",
+            timeline.start,
+            timeline.end,
+            f"story {concept_id}",
+            "story",
+            "summary",
+            "",
+            "",
+            EditorialScores(*(8.0 for _ in range(12))),
+            8.0,
+            "fp",
+        )
+        for concept_id in concept_ids
+    ]
+    concepts = [
+        ClipConcept(
+            concept_id,
+            "video",
+            timeline.start,
+            timeline.end,
+            f"story {concept_id}",
+            "summary",
+            "",
+            "",
+            "story",
+            30,
+            EditorialScores(*(8.0 for _ in range(12))),
+            8.0,
+            "sem",
+            "fp",
+        )
+        for concept_id in concept_ids
+    ]
+    grounded_moments = {
+        f"m-{concept_id}": GroundedStoryMoment(
+            f"m-{concept_id}", all_ids, f"story {concept_id}", "story", "", "", "grounded", 0.9
+        )
+        for concept_id in concept_ids
+    }
+    grounded_concepts = {
+        concept_id: GroundedClipConcept(
+            concept_id,
+            (f"m-{concept_id}",),
+            all_ids,
+            f"story {concept_id}",
+            "",
+            "story",
+            30,
+            (),
+            0.9,
+        )
+        for concept_id in concept_ids
+    }
+    analysis = OpenVideoAnalysis(
+        EpisodeEditorialProfile("x", ("x",), (), 0.9),
+        moments,
+        concepts,
+        grounded_moments,
+        grounded_concepts,
+        [],
+    )
+
+    class OneFailedPlan(_PlannerEditorial):
+        def complete_json(
+            self, *, task: str, payload: dict[str, object]
+        ) -> ProviderResult[dict[str, object]]:
+            del payload
+            if task == "global_concept_comparison":
+                value: dict[str, object] = {"concept_ids": list(concept_ids)}
+            elif task.startswith("hook_variants:"):
+                concept_id = task.removeprefix("hook_variants:")
+                value = {
+                    "variants": [
+                        {
+                            "variant_id": f"h-{concept_id}",
+                            "strategy_label": "direct",
+                            "source_word_ids": list(all_ids[:4]),
+                            "overlay_text": None,
+                            "rationale": "source grounded",
+                            "confidence": 0.9,
+                        }
+                    ]
+                }
+            elif task == "edit_plans:c-bad":
+                raise RuntimeError("JSONDecodeError: exhausted retries")
+            elif task == "edit_plans:c-good":
+                value = {
+                    "plans": [
+                        {
+                            "plan_id": "p-good",
+                            "concept_id": "c-good",
+                            "variant_id": "h-c-good",
+                            "source_word_ids": list(all_ids[:80]),
+                            "hook_source_word_ids": list(all_ids[:4]),
+                            "overlay_text": None,
+                            "strategy_label": "direct",
+                            "caption_platform": "tiktok",
+                            "confidence": 0.9,
+                        }
+                    ]
+                }
+            else:
+                raise AssertionError(task)
+            return ProviderResult(value, self.identity, InferenceUsage("test", "now", 0.01))
+
+    batch = AutonomousEditorialPlanner(
+        OneFailedPlan(), _PlannerEmbeddings(), FileCache(tmp_path / "model-failure")
+    ).plan_batch(_open_brief(), {"video": timeline}, [analysis])
+
+    assert [plan.plan_id for plan in batch.plans] == ["p-good"]
+    rejection = next(item for item in batch.rejections if item.get("concept_id") == "c-bad")
+    assert rejection["stage"] == "edit_plan"
+    assert rejection["reasons"] == ["model_completion_failed"]
+    assert rejection["error_type"] == "RuntimeError"
+    assert "JSONDecodeError" in str(rejection["error"])
 
 
 def test_visual_timeline_roundtrip_and_payload_validation() -> None:

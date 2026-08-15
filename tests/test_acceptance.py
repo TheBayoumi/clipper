@@ -310,11 +310,19 @@ def test_balanced_editor_defaults_to_free_dual_l4_and_keeps_managed_opt_in() -> 
 
 def test_v10_production_workflow_uses_modal_hf_and_original_quality_master() -> None:
     workflow = Path(".github/workflows/v10-production-cycle.yml").read_text()
+    deployment_workflow = Path(".github/workflows/modal-workers-deploy.yml").read_text()
     source_worker = Path("scripts/modal_v10_cycle.py").read_text()
     model_worker = Path("scripts/modal_open_models.py").read_text()
     assert "MODAL_TOKEN_ID" in workflow
     assert "MODAL_TOKEN_SECRET" in workflow
-    assert "HF_TOKEN" in workflow
+    assert "HF_TOKEN" not in workflow
+    assert "HF_TOKEN" not in deployment_workflow
+    assert 'HF_SECRET_NAME = "custom-secret"' in model_worker
+    assert "modal.Secret.from_name(HF_SECRET_NAME)" in model_worker
+    assert "modal.Secret.from_dict" not in model_worker
+    assert model_worker.count("secrets=[hf_secret]") == 8
+    assert "hf_access_smoke" in workflow
+    assert "hf_access_smoke" in deployment_workflow
     assert "modal deploy scripts/modal_open_models.py" in workflow
     assert "modal deploy scripts/modal_v10_cycle.py" in workflow
     assert 'Function.from_name("clipper-v10-cycle", "acquire_source")' in workflow

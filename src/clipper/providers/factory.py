@@ -104,7 +104,7 @@ def vision_provider(profile_name: str, *, large: bool = False) -> VisionProvider
             os.getenv("CLIPPER_VISION_MODEL_REVISION", "main"),
             os.getenv("CLIPPER_VISION_QUANTIZATION", "none"),
             "modal-transformers",
-            "vision-v1",
+            "vision-v2",
             "vision-json-v1",
         ),
     )

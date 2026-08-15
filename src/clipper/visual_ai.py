@@ -258,14 +258,75 @@ def _needs_escalation(report: VisualReviewReport, threshold: float) -> bool:
     return any(issue.severity == "HIGH" and issue.confidence < threshold for issue in report.issues)
 
 
+def _compact_technical_qc(payload: object) -> object:
+    if not isinstance(payload, dict):
+        return payload
+
+    def selected(section: str, fields: tuple[str, ...]) -> dict[str, Any]:
+        value = payload.get(section)
+        if not isinstance(value, dict):
+            return {}
+        return {field: value[field] for field in fields if field in value}
+
+    return {
+        "status": payload.get("status"),
+        "issues": payload.get("issues", []),
+        "video": selected(
+            "video",
+            (
+                "duration_seconds",
+                "expected_duration_seconds",
+                "width",
+                "height",
+                "fps",
+                "video_codec",
+                "audio_codec",
+                "decode_pass",
+            ),
+        ),
+        "audio": selected("audio", ("integrated_lufs", "true_peak_dbfs", "lra_lu")),
+        "captions": selected(
+            "captions",
+            (
+                "platform",
+                "safe_region_pass",
+                "timing_mode",
+                "word_exact",
+                "alignment",
+                "partial_words_dropped",
+            ),
+        ),
+        "framing": selected(
+            "framing",
+            (
+                "framing_mode",
+                "background_fill",
+                "zoom_factor",
+                "speaker_tracks",
+                "speaker_switches",
+                "reframe_events",
+                "source_cuts",
+                "no_filler_pass",
+                "valid_crop_pass",
+                "transition_qc_pass",
+            ),
+        ),
+        "image_quality": payload.get("image_quality", {}),
+        "watermark": payload.get("watermark", {}),
+    }
+
+
 def _review_context(
     *,
     duration: float,
     frame_times: tuple[float, ...],
     context: dict[str, Any],
 ) -> dict[str, Any]:
+    compact_context = dict(context)
+    if "technical_qc" in compact_context:
+        compact_context["technical_qc"] = _compact_technical_qc(compact_context["technical_qc"])
     return {
-        **context,
+        **compact_context,
         "duration": duration,
         "frame_timestamps": list(frame_times),
         "inspection_requirements": [

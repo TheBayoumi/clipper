@@ -28,7 +28,6 @@ permissions:
 env:
   MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
   MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-  HF_TOKEN: ${{ secrets.HF_TOKEN }}
   CLIPPER_YOUTUBE_COOKIES_B64: ${{ secrets.CLIPPER_YOUTUBE_COOKIES_B64 }}
   CLIPPER_MODAL_APP: clipper-open-editor
   CLIPPER_V10_MODAL_APP: clipper-v10-cycle
@@ -72,7 +71,6 @@ jobs:
           set -euo pipefail
           test -n "$MODAL_TOKEN_ID"
           test -n "$MODAL_TOKEN_SECRET"
-          test -n "$HF_TOKEN"
 
       - name: Install orchestration dependencies
         run: |
@@ -87,6 +85,28 @@ jobs:
 
       - name: Deploy exact-HEAD open-model workers
         run: modal deploy scripts/modal_open_models.py
+
+      - name: Verify named Hugging Face secret access
+        run: |
+          set -euo pipefail
+          mkdir -p open-evidence
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import modal
+
+          result = modal.Function.from_name(
+              os.environ["CLIPPER_MODAL_APP"], "hf_access_smoke"
+          ).remote()
+          assert isinstance(result, dict) and result.get("ok") is True, result
+          Path("open-evidence/modal-hf-access.json").write_text(
+              json.dumps(result, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(result, indent=2))
+          PY
 
       - name: Deploy exact-HEAD source, Sortformer and cycle workers
         run: modal deploy scripts/modal_v10_cycle.py

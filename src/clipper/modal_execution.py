@@ -27,6 +27,7 @@ _REQUIRED_MODEL_FUNCTIONS = (
     "embedding",
     "editorial",
     "vision",
+    "hf_access_smoke",
 )
 _REQUIRED_PIPELINE_FUNCTIONS = ("acquire_source", "run_full_cycle")
 _CONTROL_PLANE_ATTEMPTS = 3
@@ -178,6 +179,28 @@ def _ensure_deployed_runtime(
     _hydrate_required(app_name, functions)
 
 
+def _validate_model_access(app_name: str) -> None:
+    """Fail before production compute when the deployed Hugging Face secret is unusable."""
+
+    smoke = _function(app_name, "hf_access_smoke")
+    try:
+        result = smoke.remote()
+    except Exception as exc:
+        raise RuntimeError(
+            "Modal Hugging Face access preflight failed for "
+            f"{app_name}/hf_access_smoke ({type(exc).__name__}: {exc})"
+        ) from exc
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise RuntimeError(
+            f"Modal Hugging Face access preflight returned an invalid result: {result!r}"
+        )
+    LOGGER.info(
+        "Modal Hugging Face access verified for %s at revision %s",
+        result.get("model_id", "pyannote/speaker-diarization-community-1"),
+        result.get("revision", "unknown"),
+    )
+
+
 def ensure_modal_runtime() -> None:
     """Attach to the deployed Modal runtimes and repair only genuinely missing apps/functions.
 
@@ -201,6 +224,7 @@ def ensure_modal_runtime() -> None:
         functions=_REQUIRED_PIPELINE_FUNCTIONS,
         deployment_script="modal_v10_cycle.py",
     )
+    _validate_model_access(model_app)
 
 
 def _authorized_candidates(brief: CampaignBrief) -> list[VideoCandidate]:
@@ -303,6 +327,9 @@ def _materialize_remote_run(*, artifact_root: Path, volume_name: str, remote_run
     staging = artifact_root / f"._modal-transfer-{uuid.uuid4().hex}"
     staging.mkdir(parents=True, exist_ok=False)
     try:
+        modal_env = os.environ.copy()
+        modal_env["PYTHONUTF8"] = "1"
+        modal_env["PYTHONIOENCODING"] = "utf-8"
         subprocess.run(
             [
                 executable,
@@ -314,6 +341,7 @@ def _materialize_remote_run(*, artifact_root: Path, volume_name: str, remote_run
                 str(staging),
             ],
             check=True,
+            env=modal_env,
             timeout=7200,
         )
         manifests = list(staging.rglob("manifest.json"))

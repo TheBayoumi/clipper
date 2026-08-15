@@ -14,6 +14,7 @@ from clipper.modal_execution import (
     _deploy,
     _function,
     _materialize_remote_run,
+    _validate_model_access,
     ensure_modal_runtime,
     run_modal_pipeline,
 )
@@ -134,10 +135,12 @@ def test_ensure_modal_runtime_attaches_without_deploying_when_apps_exist() -> No
         patch("clipper.modal_execution._function", return_value=Mock()) as function,
         patch("clipper.modal_execution._deploy") as deploy,
         patch("clipper.modal_execution._repo_script", side_effect=lambda name: Path(name)),
+        patch("clipper.modal_execution._validate_model_access") as validate,
     ):
         ensure_modal_runtime()
-    assert function.call_count == 8
+    assert function.call_count == 9
     deploy.assert_not_called()
+    validate.assert_called_once_with("clipper-open-editor")
 
 
 def test_ensure_modal_runtime_repairs_missing_model_without_redeploying_pipeline() -> None:
@@ -156,13 +159,16 @@ def test_ensure_modal_runtime_repairs_missing_model_without_redeploying_pipeline
         patch("clipper.modal_execution._function", side_effect=fake_function),
         patch("clipper.modal_execution._deploy") as deploy,
         patch("clipper.modal_execution._repo_script", side_effect=lambda name: Path(name)),
+        patch("clipper.modal_execution._validate_model_access") as validate,
     ):
         ensure_modal_runtime()
 
     assert model_failed is True
     assert [call.args[0].name for call in deploy.call_args_list] == ["modal_open_models.py"]
     assert ("clipper-open-editor", "transcribe") in calls
+    assert ("clipper-open-editor", "hf_access_smoke") in calls
     assert ("clipper-v10-cycle", "run_full_cycle") in calls
+    validate.assert_called_once_with("clipper-open-editor")
 
 
 def test_ensure_modal_runtime_repairs_missing_pipeline_only() -> None:
@@ -181,6 +187,7 @@ def test_ensure_modal_runtime_repairs_missing_pipeline_only() -> None:
         patch("clipper.modal_execution._function", side_effect=fake_function),
         patch("clipper.modal_execution._deploy") as deploy,
         patch("clipper.modal_execution._repo_script", side_effect=lambda name: Path(name)),
+        patch("clipper.modal_execution._validate_model_access") as validate,
     ):
         ensure_modal_runtime()
 
@@ -188,6 +195,7 @@ def test_ensure_modal_runtime_repairs_missing_pipeline_only() -> None:
     deploy.assert_called_once_with(Path("modal_v10_cycle.py"))
     assert ("clipper-open-editor", "vision") in calls
     assert ("clipper-v10-cycle", "run_full_cycle") in calls
+    validate.assert_called_once_with("clipper-open-editor")
 
 
 def test_ensure_modal_runtime_does_not_redeploy_on_connectivity_failure() -> None:
@@ -210,6 +218,32 @@ def test_ensure_modal_runtime_fails_closed_after_unsuccessful_redeploy() -> None
         pytest.raises(RuntimeError, match="unavailable after runtime repair"),
     ):
         ensure_modal_runtime()
+
+
+def test_validate_model_access_requires_successful_remote_smoke() -> None:
+    smoke = Mock()
+    smoke.remote.return_value = {
+        "ok": True,
+        "model_id": "pyannote/speaker-diarization-community-1",
+        "revision": "revision",
+    }
+    with patch("clipper.modal_execution._function", return_value=smoke) as function:
+        _validate_model_access("clipper-open-editor")
+    function.assert_called_once_with("clipper-open-editor", "hf_access_smoke")
+
+    smoke.remote.return_value = {"ok": False}
+    with (
+        patch("clipper.modal_execution._function", return_value=smoke),
+        pytest.raises(RuntimeError, match="invalid result"),
+    ):
+        _validate_model_access("clipper-open-editor")
+
+    smoke.remote.side_effect = RuntimeError("denied")
+    with (
+        patch("clipper.modal_execution._function", return_value=smoke),
+        pytest.raises(RuntimeError, match="Hugging Face access preflight failed"),
+    ):
+        _validate_model_access("clipper-open-editor")
 
 
 def test_authorized_candidates_build_direct_youtube_requests_without_download() -> None:
@@ -290,6 +324,9 @@ def test_materialize_remote_run_downloads_only_artifact_directory(tmp_path: Path
     assert (result / "clip.mp4").read_bytes() == b"clip"
     command = run.call_args.args[0]
     assert command[:5] == ["modal", "volume", "get", "--force", "artifacts-volume"]
+    child_env = run.call_args.kwargs["env"]
+    assert child_env["PYTHONUTF8"] == "1"
+    assert child_env["PYTHONIOENCODING"] == "utf-8"
 
 
 def test_materialize_remote_run_handles_flat_download_and_bad_targets(
@@ -421,6 +458,23 @@ def test_run_modal_pipeline_rejects_missing_or_multi_source_and_bad_runner(tmp_p
     brief_path = tmp_path / "brief.json"
     _write_brief(brief_path)
     candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
+
+    with (
+        patch(
+            "clipper.modal_execution.ensure_modal_runtime",
+            side_effect=RuntimeError("model access denied"),
+        ),
+        patch("clipper.modal_execution._function") as function,
+        pytest.raises(RuntimeError, match="model access denied"),
+    ):
+        run_modal_pipeline(
+            brief_path,
+            artifact_root=tmp_path / "artifacts",
+            resume_from_run_id=None,
+            render=True,
+            fresh_inference=False,
+        )
+    function.assert_not_called()
 
     with (
         patch("clipper.modal_execution.ensure_modal_runtime"),

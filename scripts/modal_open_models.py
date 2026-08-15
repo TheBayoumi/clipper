@@ -8,7 +8,9 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import time
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -16,19 +18,22 @@ from typing import Any
 import modal
 
 APP_NAME = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
+# This is a Modal resource name, not credential material.
+HF_SECRET_NAME = "custom-secret"  # noqa: S105
 HF_CACHE = "/model-cache"
 MEDIA_ROOT = "/media"
 L4_USD_PER_SECOND = 0.000222
 L40S_USD_PER_SECOND = 0.000542
 EDITORIAL_MODEL_ID = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 EDITORIAL_MODEL_REVISION = "110954009be4a882781a90356c7d2b8a9e3428dc"
+VISION_MAX_PIXELS_PER_FRAME = 512 * 28 * 28
+VISION_MAX_NEW_TOKENS = 2048
+VISION_FALLBACK_CONTEXT_LIMIT = 262_144
+VISION_MAX_ATTEMPTS = 2
 
 model_cache = modal.Volume.from_name("clipper-hf-cache", create_if_missing=True)
 media_cache = modal.Volume.from_name("clipper-media-cache", create_if_missing=True)
-if modal.is_local():
-    hf_secret = modal.Secret.from_dict({"HF_TOKEN": os.environ.get("HF_TOKEN", "")})
-else:
-    hf_secret = modal.Secret.from_dict({})
+hf_secret = modal.Secret.from_name(HF_SECRET_NAME)
 
 base_image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -36,7 +41,7 @@ base_image = (
     .env(
         {
             "HF_HOME": HF_CACHE,
-            "TRANSFORMERS_CACHE": HF_CACHE,
+            "HF_HUB_CACHE": HF_CACHE,
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
         }
     )
@@ -110,6 +115,10 @@ def _gpu_rate(gpu: str) -> float:
     raise ValueError(f"unsupported GPU rate: {gpu}")
 
 
+def _gpu_count(gpu: str) -> int:
+    return int(gpu.split(":", 1)[1]) if ":" in gpu else 1
+
+
 def _usage(
     started: float, gpu: str, *, input_units: int = 0, output_units: int = 0
 ) -> dict[str, Any]:
@@ -117,17 +126,21 @@ def _usage(
 
     duration = max(0.0, time.perf_counter() - started)
     rate = _gpu_rate(gpu)
-    peak = (
-        float(torch.cuda.max_memory_allocated() / (1024 * 1024))
+    peak_by_device = (
+        {
+            str(index): float(torch.cuda.max_memory_allocated(index) / (1024 * 1024))
+            for index in range(torch.cuda.device_count())
+        }
         if torch.cuda.is_available()
-        else None
+        else {}
     )
     return {
         "started_at": datetime.now(UTC).isoformat(),
         "duration_seconds": duration,
         "gpu_type": gpu,
-        "gpu_seconds": duration,
-        "peak_vram_mb": peak,
+        "gpu_seconds": duration * _gpu_count(gpu),
+        "peak_vram_mb": max(peak_by_device.values(), default=None),
+        "peak_vram_mb_by_device": peak_by_device,
         "input_units": input_units,
         "output_units": output_units,
         "estimated_cost_usd": duration * rate,
@@ -139,10 +152,52 @@ class EditorialOutputTruncated(ValueError):
 
 
 def _json_text(text: str) -> dict[str, Any]:
-    value = json.loads(text.strip())
+    candidate = text.strip()
+    if candidate.startswith("```") and candidate.endswith("```"):
+        lines = candidate.splitlines()
+        if len(lines) >= 3 and lines[0].strip().casefold() in {"```", "```json"}:
+            candidate = "\n".join(lines[1:-1]).strip()
+    value = json.loads(candidate)
     if not isinstance(value, dict):
         raise ValueError("model output must be a JSON object")
     return value
+
+
+def _vision_contract(task: str) -> str:
+    if task == "visual_timeline_scout":
+        return (
+            'Schema: {"events":[{"start":0.0,"end":1.0,"scene_id":"scene-1",'
+            '"summary":"visible evidence","visible_speakers":["speaker labels"],'
+            '"event_labels":["short labels"],"confidence":0.0}]}. '
+            "Use only supplied frame_timestamps for start and end. Return events=[] when no "
+            "reliable visual event is visible."
+        )
+    if task in {"rendered_clip_review", "rendered_clip_review_escalation"}:
+        return (
+            'Schema: {"decision":"PASS","summary":"short review",'
+            '"overall_confidence":0.0,"issues":[{"issue_type":"short_label",'
+            '"start":0.0,"end":1.0,"severity":"LOW","confidence":0.0,'
+            '"repair_target":"TRACKING","description":"visible problem"}]}. '
+            "decision must be PASS or REPAIR; severity must be LOW, MEDIUM, or HIGH."
+        )
+    return "Return one JSON object whose fields satisfy the supplied task and context."
+
+
+def _vision_prompt(payload: dict[str, Any], attempt: int) -> str:
+    task = str(payload.get("task") or "")
+    recovery = ""
+    if attempt > 1:
+        recovery = (
+            " Recovery attempt: the previous response was empty or malformed. Return one "
+            "complete JSON object, with no markdown fence or explanatory text."
+        )
+    return (
+        "Return only one complete valid JSON object. Do not retranscribe audio. "
+        + _vision_contract(task)
+        + recovery
+        + " Payload: "
+        + json.dumps({"task": task, "context": payload.get("context")}, ensure_ascii=False)
+    )
 
 
 def _sha256_file(path: Path) -> str:
@@ -230,10 +285,70 @@ def _editorial_contract(task: str) -> str:
 
 
 def _transport_error(exc: Exception, *, context: str | None = None) -> dict[str, Any]:
+    traceback.print_exception(exc)
     message = str(exc)
     if context:
         message = f"{context}: {message}"
     return {"error": {"type": type(exc).__name__, "message": message}}
+
+
+def _diarization_audio_source(source_path: str) -> tuple[Path, bool]:
+    """Return an audio file whose stream header has a concrete duration.
+
+    YouTube MKV masters can carry duration only at the container level. Pyannote 4's
+    TorchCodec-backed crop path reads the audio-stream duration and eventually evaluates
+    ``None * sample_rate`` when that field is absent. A compact PCM WAV gives TorchCodec
+    complete stream metadata while preserving the canonical source master for rendering.
+    """
+
+    source = Path(source_path)
+    if not source.is_file():
+        raise FileNotFoundError(f"diarization source does not exist: {source}")
+    if source.suffix.lower() in {".wav", ".wave"}:
+        return source, False
+
+    key = hashlib.sha256(str(source).encode("utf-8")).hexdigest()[:24]
+    target = Path(tempfile.gettempdir()) / f"clipper-pyannote-{key}.wav"
+    temporary = target.with_suffix(".tmp.wav")
+    target.unlink(missing_ok=True)
+    temporary.unlink(missing_ok=True)
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-y",
+                "-i",
+                str(source),
+                "-map",
+                "0:a:0",
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_s16le",
+                str(temporary),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if not temporary.is_file() or temporary.stat().st_size <= 44:
+            raise RuntimeError("ffmpeg produced no usable diarization WAV")
+        temporary.replace(target)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "ffmpeg returned no diagnostic output").strip()
+        raise RuntimeError(f"diarization WAV extraction failed: {detail[-4000:]}") from exc
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return target, True
 
 
 @app.function(
@@ -515,46 +630,91 @@ def _vision_infer(payload: dict[str, Any], model_id: str, gpu: str) -> dict[str,
                 bnb_4bit_use_double_quant=True,
             )
             kwargs["max_memory"] = {0: "22GiB", 1: "22GiB"}
+        else:
+            # Split the dense 8B weights so neither L4 is crowded before visual input arrives.
+            kwargs["device_map"] = "balanced"
+            kwargs["max_memory"] = {0: "20GiB", 1: "20GiB"}
+        processor.image_processor.size["longest_edge"] = VISION_MAX_PIXELS_PER_FRAME
         model = AutoModelForImageTextToText.from_pretrained(model_id, **kwargs)
+        model.generation_config.do_sample = False
+        model.generation_config.temperature = None
+        model.generation_config.top_p = None
+        model.generation_config.top_k = None
         _vision_models[model_id] = (processor, model)
     else:
         processor, model = cached
-    content: list[dict[str, Any]] = [{"type": "image", "image": frame} for frame in frames]
-    content.append(
-        {
-            "type": "text",
-            "text": "Return only valid JSON. Do not retranscribe audio. "
-            + json.dumps(
-                {"task": payload.get("task"), "context": payload.get("context")}, ensure_ascii=False
+    total_input_units = 0
+    total_output_units = 0
+    for attempt in range(1, VISION_MAX_ATTEMPTS + 1):
+        content: list[dict[str, Any]] = [{"type": "image", "image": frame} for frame in frames]
+        content.append({"type": "text", "text": _vision_prompt(payload, attempt)})
+        messages = [{"role": "user", "content": content}]
+        inputs = processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        input_units = int(inputs["input_ids"].numel())
+        text_config = getattr(model.config, "text_config", model.config)
+        context_limit = int(
+            getattr(text_config, "max_position_embeddings", VISION_FALLBACK_CONTEXT_LIMIT)
+        )
+        if input_units + VISION_MAX_NEW_TOKENS > context_limit:
+            raise ValueError(
+                "vision request exceeds model context after pixel bounding: "
+                f"input_tokens={input_units} output_reserve={VISION_MAX_NEW_TOKENS} "
+                f"context_limit={context_limit} frames={len(frames)}"
+            )
+        total_input_units += input_units
+        inputs = inputs.to(model.device)
+        output = model.generate(
+            **inputs,
+            max_new_tokens=VISION_MAX_NEW_TOKENS,
+            do_sample=False,
+            temperature=None,
+            top_p=None,
+            top_k=None,
+        )
+        generated = output[0][inputs["input_ids"].shape[-1] :]
+        output_units = int(generated.numel())
+        total_output_units += output_units
+        text = processor.decode(generated, skip_special_tokens=True)
+        try:
+            value = _json_text(text)
+        except (json.JSONDecodeError, ValueError) as exc:
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+            print(
+                "vision JSON validation failed: "
+                f"task={payload.get('task')!s} attempt={attempt} tokens={output_units} "
+                f"chars={len(text)} sha256={digest} error={type(exc).__name__}: {exc}"
+            )
+            if attempt < VISION_MAX_ATTEMPTS:
+                del output, generated, inputs
+                torch.cuda.empty_cache()
+                continue
+            raise ValueError(
+                "vision model did not return valid JSON after recovery: "
+                f"task={payload.get('task')!s} attempts={attempt} tokens={output_units} "
+                f"chars={len(text)} sha256={digest}"
+            ) from exc
+        return {
+            "value": value,
+            "model": _model_evidence(model_id),
+            "usage": _usage(
+                started,
+                gpu,
+                input_units=total_input_units,
+                output_units=total_output_units,
             ),
         }
-    )
-    messages = [{"role": "user", "content": content}]
-    inputs = processor.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=True,
-        return_dict=True,
-        return_tensors="pt",
-    ).to(model.device)
-    output = model.generate(**inputs, max_new_tokens=2048, do_sample=False)
-    generated = output[0][inputs["input_ids"].shape[-1] :]
-    text = processor.decode(generated, skip_special_tokens=True)
-    return {
-        "value": _json_text(text),
-        "model": _model_evidence(model_id),
-        "usage": _usage(
-            started,
-            gpu,
-            input_units=int(inputs["input_ids"].numel()),
-            output_units=int(generated.numel()),
-        ),
-    }
+    raise AssertionError("vision recovery loop exhausted without returning")
 
 
 @app.function(
     image=text_image,
-    gpu="L4",
+    gpu="L4:2",
     volumes={HF_CACHE: model_cache},
     secrets=[hf_secret],
     timeout=1200,
@@ -562,7 +722,7 @@ def _vision_infer(payload: dict[str, Any], model_id: str, gpu: str) -> dict[str,
     scaledown_window=2,
 )
 def vision(payload: dict[str, Any]) -> dict[str, Any]:
-    return _vision_infer(payload, "Qwen/Qwen3-VL-8B-Instruct", "L4")
+    return _vision_infer(payload, "Qwen/Qwen3-VL-8B-Instruct", "L4:2")
 
 
 @app.function(
@@ -684,12 +844,15 @@ def align(payload: dict[str, Any]) -> dict[str, Any]:
 )
 def diarize(payload: dict[str, Any]) -> dict[str, Any]:
     global _diarization_pipeline
+    cleanup_source: Path | None = None
     try:
         import torch
         from pyannote.audio import Pipeline
 
         started = time.perf_counter()
         source_path = str(payload["source_path"])
+        if not source_path.startswith(f"{MEDIA_ROOT}/"):
+            raise ValueError("source_path must be mounted media")
         token = os.environ.get("HF_TOKEN")
         if not token:
             raise RuntimeError("HF_TOKEN is required for pyannote community-1")
@@ -698,7 +861,9 @@ def diarize(payload: dict[str, Any]) -> dict[str, Any]:
                 "pyannote/speaker-diarization-community-1", token=token
             )
             _diarization_pipeline.to(torch.device("cuda"))
-        result = _diarization_pipeline(source_path)
+        diarization_source, should_cleanup = _diarization_audio_source(source_path)
+        cleanup_source = diarization_source if should_cleanup else None
+        result = _diarization_pipeline(str(diarization_source))
         annotation = getattr(result, "speaker_diarization", result)
         turns = [
             [float(segment.start), float(segment.end), str(speaker)]
@@ -714,6 +879,9 @@ def diarize(payload: dict[str, Any]) -> dict[str, Any]:
         }
     except Exception as exc:
         return _transport_error(exc)
+    finally:
+        if cleanup_source is not None:
+            cleanup_source.unlink(missing_ok=True)
 
 
 @app.function(image=modal.Image.debian_slim(), timeout=120, scaledown_window=2)

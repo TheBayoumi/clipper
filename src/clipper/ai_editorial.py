@@ -81,6 +81,23 @@ def source_spans_from_word_ids(
     return tuple(spans)
 
 
+def continuous_source_span_from_word_ids(
+    timeline: CanonicalTimeline, word_ids: tuple[str, ...]
+) -> SourceSpan:
+    """Resolve one continuous source interval without treating ordinary pauses as cuts."""
+    if not word_ids:
+        raise EditorialGroundingError("source word IDs must not be empty")
+    words = timeline.require_word_ids(word_ids)
+    positions = {word.word_id: index for index, word in enumerate(timeline.words)}
+    selected_positions = tuple(positions[word_id] for word_id in word_ids)
+    expected_positions = tuple(range(selected_positions[0], selected_positions[-1] + 1))
+    if selected_positions != expected_positions:
+        raise EditorialGroundingError(
+            "source word IDs must be consecutive canonical words in source order"
+        )
+    return SourceSpan(words[0].source_start, words[-1].source_end)
+
+
 @dataclass(frozen=True, slots=True)
 class EpisodeEditorialProfile:
     summary: str
@@ -263,6 +280,8 @@ class GroundedEditPlan:
             start_field="hook_start_word_id",
             end_field="hook_end_word_id",
         )
+        continuous_source_span_from_word_ids(timeline, source_ids)
+        continuous_source_span_from_word_ids(timeline, hook_ids)
         source_words = timeline.require_word_ids(source_ids)
         hook_words = timeline.require_word_ids(hook_ids)
         source_id_set = set(source_ids)
@@ -270,7 +289,6 @@ class GroundedEditPlan:
             raise EditorialGroundingError(
                 "spoken hook word IDs must belong to the edit source words"
             )
-        source_spans_from_word_ids(timeline, source_ids)
         overlay = payload.get("overlay_text")
         if overlay is not None and not isinstance(overlay, str):
             raise EditorialGroundingError("overlay_text must be a string or null")
@@ -290,11 +308,7 @@ class GroundedEditPlan:
         )
 
     def compile(self, timeline: CanonicalTimeline, transcript_fingerprint: str) -> EditPlan:
-        spans = source_spans_from_word_ids(timeline, self.source_word_ids)
-        if len(spans) != 1:
-            raise EditorialGroundingError(
-                "current renderer requires one contiguous grounded source span"
-            )
+        spans = (continuous_source_span_from_word_ids(timeline, self.source_word_ids),)
         hook_words = timeline.require_word_ids(self.hook_source_word_ids)
         first_hook = hook_words[0]
         structural_mode: HookMode = "curiosity_text" if self.overlay_text else "direct"

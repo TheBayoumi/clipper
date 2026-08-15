@@ -240,6 +240,37 @@ def test_rendered_clip_review_pass_does_not_escalate(tmp_path: Path) -> None:
     assert 3.0 in context["frame_timestamps"]
 
 
+def test_rendered_clip_review_compacts_technical_qc_tracking_details(tmp_path: Path) -> None:
+    provider = FakeVision(_pass_payload())
+    frame = tmp_path / "f.jpg"
+    frame.write_bytes(b"frame")
+    technical_qc = {
+        "status": "PASS",
+        "issues": [],
+        "video": {"width": 1080, "height": 1920, "path": "private.mp4"},
+        "framing": {
+            "framing_mode": "speaker_locked_portrait",
+            "speaker_switches": 4,
+            "transitions": [{"start": index / 10} for index in range(100)],
+        },
+        "captions": {"alignment": "PASS", "audit_path": "private.json"},
+    }
+    with patch("clipper.visual_ai.extract_video_frames", return_value=[frame]):
+        review_rendered_clip(
+            tmp_path / "clip.mp4",
+            provider,
+            duration=12,
+            output_dir=tmp_path / "review",
+            context={"technical_qc": technical_qc},
+        )
+    _, _, context = provider.calls[0]
+    compact = context["technical_qc"]
+    assert compact["video"] == {"width": 1080, "height": 1920}
+    assert compact["framing"]["speaker_switches"] == 4
+    assert "transitions" not in compact["framing"]
+    assert "audit_path" not in compact["captions"]
+
+
 def test_rendered_clip_review_escalates_and_disagreement_is_conservative(tmp_path: Path) -> None:
     frames = [tmp_path / "f.jpg"]
     frames[0].write_bytes(b"frame")

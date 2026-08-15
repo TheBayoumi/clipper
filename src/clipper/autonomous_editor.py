@@ -12,6 +12,7 @@ from .ai_editorial import (
     GroundedEditPlan,
     GroundedHookVariant,
     GroundedStoryMoment,
+    continuous_source_span_from_word_ids,
     source_spans_from_word_ids,
 )
 from .cache import FileCache, model_stage_cache_key, stable_hash
@@ -224,8 +225,10 @@ class AutonomousEditorialPlanner:
         concept: GroundedClipConcept,
         grounded_plan: GroundedEditPlan,
     ) -> tuple[GroundedEditPlan | None, dict[str, object]]:
-        original = grounded_plan.compile(timeline, stable_hash(timeline.to_dict()))
-        if brief.min_clip_seconds <= original.duration <= brief.max_clip_seconds:
+        original_duration = continuous_source_span_from_word_ids(
+            timeline, grounded_plan.source_word_ids
+        ).duration
+        if brief.min_clip_seconds <= original_duration <= brief.max_clip_seconds:
             return grounded_plan, {}
 
         positions = {word.word_id: index for index, word in enumerate(timeline.words)}
@@ -239,7 +242,7 @@ class AutonomousEditorialPlanner:
         original_start = min(source_positions)
         target = min(
             brief.max_clip_seconds,
-            max(brief.min_clip_seconds, original.duration),
+            max(brief.min_clip_seconds, original_duration),
         )
 
         # A duration repair may only select source words from the grounded concept.
@@ -279,9 +282,9 @@ class AutonomousEditorialPlanner:
                 "stage": "edit_plan",
                 "decision": "REJECT",
                 "reasons": ["duration_outside_campaign_bounds_no_grounded_repair"],
-                "plan_id": original.plan_id,
-                "original_duration": round(original.duration, 6),
-                "duration_seconds": round(original.duration, 6),
+                "plan_id": grounded_plan.plan_id,
+                "original_duration": round(original_duration, 6),
+                "duration_seconds": round(original_duration, 6),
                 "minimum_seconds": brief.min_clip_seconds,
                 "maximum_seconds": brief.max_clip_seconds,
                 "campaign_min_seconds": brief.min_clip_seconds,
@@ -304,9 +307,9 @@ class AutonomousEditorialPlanner:
             "stage": "edit_plan",
             "decision": "REPAIR",
             "reasons": ["duration_repaired_to_campaign_bounds"],
-            "plan_id": original.plan_id,
-            "original_duration": round(original.duration, 6),
-            "duration_seconds": round(original.duration, 6),
+            "plan_id": grounded_plan.plan_id,
+            "original_duration": round(original_duration, 6),
+            "duration_seconds": round(original_duration, 6),
             "repaired_duration": round(repaired_duration, 6),
             "minimum_seconds": brief.min_clip_seconds,
             "maximum_seconds": brief.max_clip_seconds,
@@ -773,26 +776,43 @@ class AutonomousEditorialPlanner:
         for concept in selected:
             timeline = timelines[concept.video_id]
             grounded_concept = grounded[concept.concept_id]
-            hook_payload = self._complete(
-                f"hook_variants:{concept.concept_id}",
-                timeline,
-                brief,
-                {
-                    "campaign": self._campaign(brief),
-                    "instruction": (
-                        "Return only materially different truthful hook constructions. "
-                        "Return as many as are legitimate, not a fixed count. Spoken hooks "
-                        "must reference source word IDs; "
-                        "generated text may only appear in overlay_text."
-                    ),
-                    "concept": {
-                        **asdict(grounded_concept),
-                        "start_word_id": timeline.word_ref(grounded_concept.supporting_word_ids[0]),
-                        "end_word_id": timeline.word_ref(grounded_concept.supporting_word_ids[-1]),
-                        "supporting_word_ids": None,
+            try:
+                hook_payload = self._complete(
+                    f"hook_variants:{concept.concept_id}",
+                    timeline,
+                    brief,
+                    {
+                        "campaign": self._campaign(brief),
+                        "instruction": (
+                            "Return only materially different truthful hook constructions. "
+                            "Return as many as are legitimate, not a fixed count. Spoken hooks "
+                            "must reference source word IDs; "
+                            "generated text may only appear in overlay_text."
+                        ),
+                        "concept": {
+                            **asdict(grounded_concept),
+                            "start_word_id": timeline.word_ref(
+                                grounded_concept.supporting_word_ids[0]
+                            ),
+                            "end_word_id": timeline.word_ref(
+                                grounded_concept.supporting_word_ids[-1]
+                            ),
+                            "supporting_word_ids": None,
+                        },
                     },
-                },
-            )
+                )
+            except Exception as exc:
+                rejections.append(
+                    {
+                        "concept_id": concept.concept_id,
+                        "stage": "hook_generation",
+                        "decision": "REJECT",
+                        "reasons": ["model_completion_failed"],
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                )
+                continue
             grounded_hooks: list[GroundedHookVariant] = []
             for proposal_index, raw in enumerate(self._array(hook_payload, "variants")):
                 try:
@@ -825,40 +845,58 @@ class AutonomousEditorialPlanner:
             variants.extend(
                 self._compat_hook(timeline, concept.concept_id, hook) for hook in grounded_hooks
             )
-            plan_payload = self._complete(
-                f"edit_plans:{concept.concept_id}",
-                timeline,
-                brief,
-                {
-                    "campaign": self._campaign(brief),
-                    "instruction": (
-                        "Construct truthful source-grounded EditPlans. Preserve chronology. "
-                        "Use only supplied canonical word IDs for spoken material. "
-                        f"Every source range must be between {brief.min_clip_seconds:g} and "
-                        f"{brief.max_clip_seconds:g} seconds and must contain its spoken hook. "
-                        "Choose source_start_word_id/source_end_word_id from source_context_words; "
-                        "do not return only the hook unless it already satisfies duration bounds."
-                    ),
-                    "concept": {
-                        **asdict(grounded_concept),
-                        "start_word_id": timeline.word_ref(grounded_concept.supporting_word_ids[0]),
-                        "end_word_id": timeline.word_ref(grounded_concept.supporting_word_ids[-1]),
-                        "supporting_word_ids": None,
+            try:
+                plan_payload = self._complete(
+                    f"edit_plans:{concept.concept_id}",
+                    timeline,
+                    brief,
+                    {
+                        "campaign": self._campaign(brief),
+                        "instruction": (
+                            "Construct truthful source-grounded EditPlans. Preserve chronology. "
+                            "Use only supplied canonical word IDs for spoken material. "
+                            f"Every source range must be between {brief.min_clip_seconds:g} and "
+                            f"{brief.max_clip_seconds:g} seconds and must contain its spoken hook. "
+                            "Choose source_start_word_id/source_end_word_id from "
+                            "source_context_words; do not return only the hook unless it already "
+                            "satisfies duration bounds."
+                        ),
+                        "concept": {
+                            **asdict(grounded_concept),
+                            "start_word_id": timeline.word_ref(
+                                grounded_concept.supporting_word_ids[0]
+                            ),
+                            "end_word_id": timeline.word_ref(
+                                grounded_concept.supporting_word_ids[-1]
+                            ),
+                            "supporting_word_ids": None,
+                        },
+                        "hooks": [
+                            {
+                                **asdict(hook),
+                                "source_start_word_id": timeline.word_ref(hook.source_word_ids[0]),
+                                "source_end_word_id": timeline.word_ref(hook.source_word_ids[-1]),
+                                "source_word_ids": None,
+                            }
+                            for hook in grounded_hooks
+                        ],
+                        "source_context_words": self._plan_context_words(
+                            timeline, grounded_concept, brief
+                        ),
                     },
-                    "hooks": [
-                        {
-                            **asdict(hook),
-                            "source_start_word_id": timeline.word_ref(hook.source_word_ids[0]),
-                            "source_end_word_id": timeline.word_ref(hook.source_word_ids[-1]),
-                            "source_word_ids": None,
-                        }
-                        for hook in grounded_hooks
-                    ],
-                    "source_context_words": self._plan_context_words(
-                        timeline, grounded_concept, brief
-                    ),
-                },
-            )
+                )
+            except Exception as exc:
+                rejections.append(
+                    {
+                        "concept_id": concept.concept_id,
+                        "stage": "edit_plan",
+                        "decision": "REJECT",
+                        "reasons": ["model_completion_failed"],
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                )
+                continue
             known_hook_ids = {hook.variant_id for hook in grounded_hooks}
             for proposal_index, raw in enumerate(self._array(plan_payload, "plans")):
                 try:
@@ -867,6 +905,13 @@ class AutonomousEditorialPlanner:
                         raise EditorialGroundingError("EditPlan references the wrong concept")
                     if grounded_plan.variant_id not in known_hook_ids:
                         raise EditorialGroundingError("EditPlan references an unknown hook variant")
+                    repaired_plan, repair_evidence = self._repair_grounded_plan_duration(
+                        brief, timeline, grounded_concept, grounded_plan
+                    )
+                    if repaired_plan is None:
+                        rejections.append(repair_evidence)
+                        continue
+                    plan = repaired_plan.compile(timeline, stable_hash(timeline.to_dict()))
                 except ValueError as exc:
                     rejections.append(
                         {
@@ -880,14 +925,8 @@ class AutonomousEditorialPlanner:
                         }
                     )
                     continue
-                repaired_plan, repair_evidence = self._repair_grounded_plan_duration(
-                    brief, timeline, grounded_concept, grounded_plan
-                )
                 if repair_evidence:
                     rejections.append(repair_evidence)
-                if repaired_plan is None:
-                    continue
-                plan = repaired_plan.compile(timeline, stable_hash(timeline.to_dict()))
                 plans.append(plan)
         if not plans:
             reason_counts: dict[str, int] = {}

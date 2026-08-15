@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from clipper.modal_execution import _materialize_remote_run
+
+PLAN_KEYS = (
+    {"concept_id": "c14", "plan_id": "p3"},
+    {"concept_id": "c5", "plan_id": "p1"},
+)
+_ARTIFACT_PATH_MARKERS = (
+    "/clips/",
+    "/captions/",
+    "/tracking/",
+    "/visual-review/",
+    "/qc/",
+    "/assets/",
+)
+
+
+def _load_object(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"expected a JSON object: {path}")
+    return payload
+
+
+def _modal_function(app_name: str, function_name: str) -> Any:
+    try:
+        import modal
+    except ImportError as exc:  # pragma: no cover - exercised only without the Modal extra
+        raise RuntimeError("install clipper[modal] before running targeted recovery") from exc
+    return modal.Function.from_name(app_name, function_name)
+
+
+def normalize_materialized_recovery_paths(run_dir: Path, serialized_root: str) -> int:
+    """Rewrite Modal artifact paths for the environment consuming the manifest."""
+
+    manifest = _load_object(run_dir / "manifest.json")
+    if manifest.get("status") != "SUCCESS" or not isinstance(
+        manifest.get("run_metadata", {}).get("targeted_recovery"), dict
+    ):
+        raise RuntimeError("refusing to normalize a non-recovery manifest")
+
+    root = serialized_root.rstrip("/\\")
+
+    def rewrite(value: Any) -> Any:
+        if isinstance(value, str):
+            normalized = value.replace("\\", "/")
+            for marker in _ARTIFACT_PATH_MARKERS:
+                marker_index = normalized.find(marker)
+                if marker_index >= 0:
+                    relative = normalized[marker_index + 1 :]
+                    if root.startswith("/"):
+                        return f"{root}/{relative}"
+                    return str(Path(root).joinpath(*relative.split("/")))
+            return value
+        if isinstance(value, list):
+            return [rewrite(item) for item in value]
+        if isinstance(value, dict):
+            return {key: rewrite(item) for key, item in value.items()}
+        return value
+
+    paths = [run_dir / "manifest.json", run_dir / "editorial-review.json"]
+    paths.extend(sorted((run_dir / "qc").glob("*.json")))
+    rewritten = 0
+    for path in paths:
+        before = _load_object(path)
+        after = rewrite(before)
+        if after != before:
+            path.write_text(
+                json.dumps(after, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            rewritten += 1
+    return rewritten
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Render c14/p3 and c5/p1 inside Modal, review only their derived frames, "
+            "and materialize the six-finalist recovery run."
+        )
+    )
+    parser.add_argument("source_run_id")
+    parser.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
+    parser.add_argument("--app", default=os.getenv("CLIPPER_V10_MODAL_APP", "clipper-v10-cycle"))
+    args = parser.parse_args()
+
+    source_run = args.artifact_root / args.source_run_id
+    if not source_run.is_dir():
+        raise FileNotFoundError(source_run)
+    manifest = _load_object(source_run / "manifest.json")
+    if manifest.get("status") != "FAILED":
+        raise RuntimeError("the source run is not the expected failed manifest")
+    plan_keys = {
+        (str(item.get("concept_id") or ""), str(item.get("plan_id") or ""))
+        for item in manifest.get("edit_plans", [])
+        if isinstance(item, dict)
+    }
+    expected = {(item["concept_id"], item["plan_id"]) for item in PLAN_KEYS}
+    if not expected.issubset(plan_keys):
+        raise RuntimeError("the source run does not contain c14/p3 and c5/p1")
+
+    prior_review = _load_object(source_run / "visual-review-recovery.json")
+    recovery_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    response = _modal_function(args.app, "recover_finalists").remote(
+        {
+            "source_run_id": args.source_run_id,
+            "recovery_id": recovery_id,
+            "plan_keys": list(PLAN_KEYS),
+            "prior_review_recovery": prior_review,
+        }
+    )
+    if not isinstance(response, dict) or response.get("status") != "PASS":
+        raise RuntimeError(f"targeted Modal recovery returned an invalid response: {response!r}")
+    remote_run_path = str(response.get("run_path") or "")
+    volume_name = str(response.get("run_volume") or "clipper-v10-artifacts")
+    if not remote_run_path:
+        raise RuntimeError("targeted Modal recovery returned no run path")
+    local_run = _materialize_remote_run(
+        artifact_root=args.artifact_root,
+        volume_name=volume_name,
+        remote_run_path=remote_run_path,
+    )
+    normalize_materialized_recovery_paths(local_run, str(local_run.resolve()))
+    print(json.dumps({**response, "local_run": str(local_run.resolve())}, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

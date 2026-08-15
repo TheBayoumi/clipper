@@ -743,7 +743,6 @@ def run_pipeline(
     def _model_progress(stage: str, event: str) -> None:
         if event in {"success", "cache_hit"}:
             model_progress_count[0] += 1
-        journal.start("model_inference", checkpoint=stage, message=f"{event}:{stage}")
         journal.progress(
             "model_inference",
             model_progress_count[0],
@@ -752,6 +751,7 @@ def run_pipeline(
         )
 
     if open_planner is not None:
+        journal.start("model_inference", message="awaiting open-model inference")
         open_planner.progress_callback = _model_progress
     manifest = PipelineManifest(campaign_id=brief.campaign_id)
     manifest.run_metadata = {

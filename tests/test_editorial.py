@@ -391,6 +391,35 @@ def test_render_budget_prioritizes_concept_diversity_then_variants() -> None:
     assert len(shortlist) == 2 and len({item.concept_id for item in shortlist}) == 2
 
 
+def test_render_queue_treats_model_plan_ids_as_concept_scoped() -> None:
+    def plan(concept_id: str, variant_id: str, score: float, start: float) -> EditPlan:
+        return EditPlan(
+            "p1",
+            "video",
+            concept_id,
+            variant_id,
+            "direct",
+            (SourceSpan(start, start + 20),),
+            None,
+            (),
+            "tiktok",
+            score,
+            f"fp-{concept_id}",
+        )
+
+    plans = [
+        plan("c1", "v1", 9.5, 0),
+        plan("c2", "v1", 9.4, 60),
+        plan("c3", "v1", 9.3, 120),
+        plan("c4", "v1", 9.2, 180),
+    ]
+    primary, reserve = select_render_plan_queue(plans, budget=3)
+    assert len(primary) == 3
+    assert len({item.concept_id for item in primary}) == 3
+    assert len(reserve) == 1
+    assert reserve[0].concept_id not in {item.concept_id for item in primary}
+
+
 def test_distinct_selection_respects_topic_cap() -> None:
     b = replace(brief(), diversity=replace(brief().diversity, max_concepts_per_topic=1))
     items = [
