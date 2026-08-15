@@ -816,6 +816,89 @@ def _composition_evidence(plan: TrackingPlan) -> dict[str, object]:
     }
 
 
+def _best_stable_axis_position(
+    spans: list[tuple[float, float, float]],
+    *,
+    crop_extent: int,
+    max_position: float,
+    preferred: float,
+    target_ratio: float,
+    safe_region: tuple[float, float] | None = None,
+) -> float:
+    """Choose a fixed crop axis that contains and composes the most face samples."""
+    if not spans or crop_extent <= 0:
+        return _clamp(preferred, 0.0, max_position)
+    candidates = {
+        0.0,
+        max_position,
+        _clamp(preferred, 0.0, max_position),
+    }
+    for start, stop, center in spans:
+        candidates.update(
+            {
+                _clamp(start, 0.0, max_position),
+                _clamp(stop - crop_extent, 0.0, max_position),
+                _clamp(center - crop_extent * target_ratio, 0.0, max_position),
+            }
+        )
+        if safe_region is not None:
+            candidates.add(_clamp(center - crop_extent * safe_region[0], 0.0, max_position))
+            candidates.add(_clamp(center - crop_extent * safe_region[1], 0.0, max_position))
+
+    def score(position: float) -> tuple[int, int, float, float]:
+        visible = sum(
+            1
+            for start, stop, _center in spans
+            if start >= position - 1e-6 and stop <= position + crop_extent + 1e-6
+        )
+        if safe_region is None:
+            safe = visible
+        else:
+            safe = sum(
+                1
+                for _start, _stop, center in spans
+                if safe_region[0] <= (center - position) / crop_extent <= safe_region[1]
+            )
+        center_error = sum(
+            abs((center - position) / crop_extent - target_ratio) for _start, _stop, center in spans
+        )
+        return visible, safe, -center_error, -abs(position - preferred)
+
+    return max(candidates, key=score)
+
+
+def _face_stable_crop_position(
+    faces: list[FaceObservation],
+    *,
+    crop_width: int,
+    crop_height: int,
+    source_width: int,
+    source_height: int,
+    preferred: tuple[float, float],
+) -> tuple[float, float]:
+    max_x = max(0.0, source_width - crop_width)
+    max_y = max(0.0, source_height - crop_height)
+    x_spans = [(face.x, face.x + face.width, face.center[0]) for face in faces]
+    y_spans = [(face.y, face.y + face.height, face.center[1]) for face in faces]
+    return (
+        _best_stable_axis_position(
+            x_spans,
+            crop_extent=crop_width,
+            max_position=max_x,
+            preferred=preferred[0],
+            target_ratio=0.5,
+            safe_region=(0.28, 0.72),
+        ),
+        _best_stable_axis_position(
+            y_spans,
+            crop_extent=crop_height,
+            max_position=max_y,
+            preferred=preferred[1],
+            target_ratio=FACE_VERTICAL_POSITION,
+        ),
+    )
+
+
 def stable_portrait_fallback(plan: TrackingPlan, duration: float) -> TrackingPlan:
     """Replace unstable motion with face-aware, shot-stable portrait crops."""
     if plan.source_width <= 0 or plan.source_height <= 0:
@@ -839,9 +922,40 @@ def stable_portrait_fallback(plan: TrackingPlan, duration: float) -> TrackingPla
     max_y = max(0.0, plan.source_height - crop_height)
     center = (max_x / 2, max_y / 2)
     cuts = tuple(sorted(cut for cut in plan.source_cuts if 0.0 < cut < end))
-    boundaries = (0.0, *cuts, end)
+    speaker_changes = tuple(
+        sorted(
+            {
+                item.start
+                for item in plan.transitions
+                if item.mode != "hold"
+                and item.reason == "speaker_change"
+                and 0.0 < item.start < end
+            }
+        )
+    )
+    boundaries = tuple(sorted({0.0, *cuts, *speaker_changes, end}))
     positions: list[tuple[float, float]] = []
-    for start, stop in pairwise(boundaries):
+    intervals = tuple(pairwise(boundaries))
+    for interval_index, (start, stop) in enumerate(intervals):
+        faces = [
+            face
+            for face in plan.selected_faces
+            if start <= face.time and (face.time < stop or interval_index == len(intervals) - 1)
+        ]
+        sample_at = start + (stop - start) / 2
+        preferred = _crop_position_at(plan, sample_at)
+        if faces:
+            positions.append(
+                _face_stable_crop_position(
+                    faces,
+                    crop_width=crop_width,
+                    crop_height=crop_height,
+                    source_width=plan.source_width,
+                    source_height=plan.source_height,
+                    preferred=preferred,
+                )
+            )
+            continue
         candidates = [anchor for anchor in plan.anchors if start <= anchor.time < stop]
         prior = [anchor for anchor in plan.anchors if anchor.time <= start]
         if prior:
@@ -857,15 +971,20 @@ def stable_portrait_fallback(plan: TrackingPlan, duration: float) -> TrackingPla
     anchors = [FaceAnchor(0.0, *positions[0])]
     transitions: list[CameraTransition] = []
     current = positions[0]
-    for cut, target in zip(cuts, positions[1:], strict=True):
+    for boundary, target in zip(boundaries[1:-1], positions[1:], strict=True):
         distance = hypot(target[0] - current[0], target[1] - current[1])
         if distance > 0.0:
-            anchors.append(FaceAnchor(cut, *target))
+            reason = (
+                "source_cut"
+                if any(abs(boundary - cut) <= 0.05 for cut in cuts)
+                else "speaker_change"
+            )
+            anchors.append(FaceAnchor(boundary, *target))
             transitions.append(
                 CameraTransition(
-                    "source_cut",
-                    cut,
-                    cut,
+                    reason,
+                    boundary,
+                    boundary,
                     distance,
                     crop_width,
                     distance / max(float(crop_width), 1.0),
@@ -874,7 +993,7 @@ def stable_portrait_fallback(plan: TrackingPlan, duration: float) -> TrackingPla
                     current[1],
                     target[0],
                     target[1],
-                    cut,
+                    boundary,
                 )
             )
             current = target

@@ -338,6 +338,54 @@ def test_stable_fallback_uses_face_anchors_per_source_shot() -> None:
     assert repaired.transitions[0].mode == "hard_cut"
 
 
+def test_stable_fallback_optimizes_face_visibility_instead_of_stale_anchor() -> None:
+    plan = TrackingPlan(
+        1.0,
+        640,
+        360,
+        (FaceAnchor(0.0, 0.0, 0.0), FaceAnchor(10.0, 0.0, 0.0)),
+        True,
+        crop_width=202,
+        crop_height=358,
+        selected_faces=(
+            FaceObservation(0, 1.0, 380.0, 60.0, 80.0, 80.0, 0.1),
+            FaceObservation(0, 5.0, 390.0, 60.0, 80.0, 80.0, 0.1),
+            FaceObservation(0, 9.0, 400.0, 60.0, 80.0, 80.0, 0.1),
+        ),
+    )
+    repaired = stable_portrait_fallback(plan, 10.0)
+    composition = repaired.to_dict()["composition"]
+    assert repaired.anchors[0].x > 300
+    assert composition["centered_sample_ratio"] == 1.0
+    assert composition["fully_visible_sample_ratio"] == 1.0
+
+
+def test_stable_fallback_keeps_speaker_changes_as_hard_cuts() -> None:
+    transition = CameraTransition(
+        "speaker_change", 5.0, 5.0, 360.0, 202, 1.78, "hard_cut", 0, 0, 360, 0, 5.0
+    )
+    plan = TrackingPlan(
+        1.0,
+        640,
+        360,
+        (FaceAnchor(0.0, 0.0, 0.0), FaceAnchor(5.0, 360.0, 0.0)),
+        True,
+        crop_width=202,
+        crop_height=358,
+        transitions=(transition,),
+        selected_faces=(
+            FaceObservation(0, 2.0, 40.0, 60.0, 80.0, 80.0, 0.1),
+            FaceObservation(1, 7.0, 500.0, 60.0, 80.0, 80.0, 0.1),
+        ),
+    )
+    repaired = stable_portrait_fallback(plan, 10.0)
+    composition = repaired.to_dict()["composition"]
+    assert len(repaired.transitions) == 1
+    assert repaired.transitions[0].reason == "speaker_change"
+    assert repaired.transitions[0].mode == "hard_cut"
+    assert composition["fully_visible_sample_ratio"] == 1.0
+
+
 def test_scene_change_score_distinguishes_cut_from_static_frame() -> None:
     black = np.zeros((54, 96), dtype=np.uint8)
     white = np.full((54, 96), 255, dtype=np.uint8)

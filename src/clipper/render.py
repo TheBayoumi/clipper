@@ -268,6 +268,8 @@ class FFmpegRenderer:
                     "repaired_with_stable_fallback": repaired,
                     "final_issues": final_issues,
                     "final_framing_mode": tracking_plan.framing_mode,
+                    "initial_composition": initial_tracking.get("composition"),
+                    "final_composition": final_tracking.get("composition"),
                 },
                 indent=2,
             )
@@ -275,7 +277,12 @@ class FFmpegRenderer:
             encoding="utf-8",
         )
         if final_issues:
-            raise RenderError("tracking preflight failed: " + "; ".join(final_issues))
+            composition = json.dumps(final_tracking.get("composition") or {}, sort_keys=True)
+            raise RenderError(
+                "tracking preflight failed: "
+                + "; ".join(final_issues)
+                + f"; composition={composition}"
+            )
         output_path.with_suffix(".tracking.json").write_text(
             json.dumps(final_tracking, indent=2) + "\n",
             encoding="utf-8",

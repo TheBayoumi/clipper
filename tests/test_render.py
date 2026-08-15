@@ -280,4 +280,5 @@ def test_renderer_repairs_oscillating_tracking_before_single_encode(tmp_path: Pa
     tracking = json.loads(output.with_suffix(".tracking.json").read_text())
     assert preflight["status"] == "PASS" and preflight["repaired_with_stable_fallback"] is True
     assert "back-and-forth crop oscillation detected" in preflight["initial_issues"]
+    assert preflight["final_composition"]["fully_visible_sample_ratio"] == 1.0
     assert tracking["framing_mode"] == "stable_portrait_fallback" and tracking["transitions"] == []
