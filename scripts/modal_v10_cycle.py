@@ -580,8 +580,9 @@ def _rendered_clip_payload(
     scaledown_window=2,
 )
 def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
-    """Render and review only the two explicitly approved replacement finalists."""
+    """Repair only explicitly selected finalists and revalidate every reused clip."""
 
+    from clipper.acceptance import validate_live_run
     from clipper.pipeline import PipelineSettings
     from clipper.providers.factory import vision_provider
     from clipper.qc import run_technical_qc
@@ -608,13 +609,30 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
         for item in reuse_raw
         if isinstance(item, dict)
     )
-    if reused_targeted_keys not in ((), (("c14", "p3"),)):
-        raise ValueError("targeted recovery may reuse only the already-passed c14/p3 canary")
+    if reused_targeted_keys not in (
+        (),
+        (("c14", "p3"),),
+        _TARGETED_RECOVERY_PLANS,
+    ):
+        raise ValueError("targeted recovery may reuse only c14/p3 or both passed canaries")
+    rerender_raw = payload.get("rerender_plan_keys", [])
+    if not isinstance(rerender_raw, list):
+        raise ValueError("targeted recovery rerender_plan_keys must be a list")
+    rerendered_recovered_keys = tuple(
+        (str(item.get("concept_id") or ""), str(item.get("plan_id") or ""))
+        for item in rerender_raw
+        if isinstance(item, dict)
+    )
+    if rerendered_recovered_keys not in ((), _RECOVERED_FINALISTS):
+        raise ValueError("legacy caption repair must rerender exactly all four reused finalists")
     base_run_id = str(payload.get("base_run_id") or "")
     if bool(reused_targeted_keys) != bool(base_run_id):
         raise ValueError("targeted recovery reuse requires a base_run_id and reuse_plan_keys")
-    freshly_rendered_keys = tuple(
-        key for key in _TARGETED_RECOVERY_PLANS if key not in reused_targeted_keys
+    if rerendered_recovered_keys and reused_targeted_keys != _TARGETED_RECOVERY_PLANS:
+        raise ValueError("legacy caption repair must reuse both already-passed canaries")
+    freshly_rendered_keys = (
+        *rerendered_recovered_keys,
+        *(key for key in _TARGETED_RECOVERY_PLANS if key not in reused_targeted_keys),
     )
 
     prior_recovery = payload.get("prior_review_recovery")
@@ -756,6 +774,78 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
     )
     reviewer = vision_provider("balanced")
 
+    def require_current_qc(
+        rendered_path: Path,
+        *,
+        clip: Any,
+        plan: Any,
+        key: tuple[str, str],
+    ) -> dict[str, Any]:
+        qc_payload = run_technical_qc(
+            rendered_path,
+            expected_duration=clip.duration,
+            caption_path=rendered_path.with_suffix(".ass"),
+            tracking_path=rendered_path.with_suffix(".tracking.json"),
+            caption_platform=plan.caption_platform,
+            watermark_required=True,
+            watermark_present=True,
+            caption_audit_path=rendered_path.with_suffix(".caption-audit.json"),
+        )
+        qc_payload["concept_id"] = key[0]
+        qc_payload["plan_id"] = key[1]
+        qc_payload["recovered"] = True
+        captions = qc_payload.get("captions")
+        if (
+            qc_payload.get("status") != "PASS"
+            or not isinstance(captions, dict)
+            or captions.get("simultaneous_narrative_layers_max") != 1
+            or not isinstance(captions.get("hook_overlay_rendered"), bool)
+        ):
+            raise RuntimeError(f"current technical QC failed for {key}: {qc_payload.get('issues')}")
+        return qc_payload
+
+    def review_fresh_render(
+        rendered_path: Path,
+        *,
+        clip: Any,
+        plan: Any,
+        key: tuple[str, str],
+        qc_payload: dict[str, Any],
+        review_scope: str,
+    ) -> dict[str, Any]:
+        tracking_payload = _load_json_object(rendered_path.with_suffix(".tracking.json"))
+        review, review_results = review_rendered_clip(
+            rendered_path,
+            reviewer,
+            duration=clip.duration,
+            output_dir=partial_run_dir / "visual-review" / rendered_path.stem / "frames",
+            context={
+                "plan_id": plan.plan_id,
+                "concept_id": plan.concept_id,
+                "source_start": clip.start,
+                "source_end": clip.end,
+                "hook_mode": plan.hook_mode,
+                "technical_qc": qc_payload,
+                "review_scope": review_scope,
+            },
+            transitions=tracking_transition_sample_times(tracking_payload.get("transitions", [])),
+            escalation=None,
+        )
+        review_payload = review.to_dict()
+        review_payload.update(
+            {
+                "concept_id": key[0],
+                "plan_id": key[1],
+                "models": [item.model.to_dict() for item in review_results],
+                "usage": [asdict(item.usage) for item in review_results],
+                "recovered": True,
+                "recovery_source": review_scope,
+            }
+        )
+        if review.decision != "PASS" or review.issues:
+            raise RuntimeError(f"targeted visual review did not pass for {key}: {review_payload}")
+        return review_payload
+
     try:
         partial_run_dir.mkdir(parents=True, exist_ok=False)
         for directory_name in ("assets", "canonical", "edit-plans"):
@@ -787,6 +877,61 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
 
         for attempt_number, key in enumerate(_RECOVERED_FINALISTS, start=1):
             result = prior_results[key]
+            plan = _edit_plan_from_payload(plan_by_key[key])
+            concept = concept_by_id[key[0]]
+            clip = plan.to_clip_candidate(str(concept.get("text") or ""))
+            if key in rerendered_recovered_keys:
+                rendered_path = renderer.render(
+                    source_path,
+                    partial_run_dir
+                    / "clips"
+                    / f"attempt-{attempt_number:02d}-{key[0]}-{key[1]}-{plan.hook_mode}.mp4",
+                    clip,
+                    segments,
+                    watermark_path,
+                    plan,
+                )
+                qc_payload = require_current_qc(rendered_path, clip=clip, plan=plan, key=key)
+                (partial_run_dir / "qc").mkdir(parents=True, exist_ok=True)
+                (partial_run_dir / "qc" / f"{rendered_path.stem}.json").write_text(
+                    json.dumps(qc_payload, indent=2) + "\n", encoding="utf-8"
+                )
+                technical_qc.append(qc_payload)
+                _copy_clip_evidence(rendered_path, rendered_path, partial_run_dir)
+                review_payload = review_fresh_render(
+                    rendered_path,
+                    clip=clip,
+                    plan=plan,
+                    key=key,
+                    qc_payload=qc_payload,
+                    review_scope="approved_legacy_caption_repair",
+                )
+                editorial_qc.append(review_payload)
+                new_review_payloads.append(review_payload)
+                (partial_run_dir / "visual-review" / f"{rendered_path.stem}.json").write_text(
+                    json.dumps(review_payload, indent=2) + "\n", encoding="utf-8"
+                )
+                rendered_clips.append(
+                    _rendered_clip_payload(
+                        plan=plan,
+                        output_path=rendered_path,
+                        source_url=source_url,
+                        source_hash=_sha256(rendered_path),
+                    )
+                )
+                new_rendered_clips.append(rendered_clips[-1])
+                render_attempts.append(
+                    {
+                        "attempt": attempt_number,
+                        "concept_id": key[0],
+                        "plan_id": key[1],
+                        "queue": "legacy-caption-repair",
+                        "status": "ACCEPTED",
+                        "technical_qc": "PASS",
+                        "editorial_qc": review_payload,
+                    }
+                )
+                continue
             clip_name = str(result.get("clip") or "")
             if Path(clip_name).name != clip_name or not clip_name.endswith(".mp4"):
                 raise RuntimeError(f"invalid prior clip name: {clip_name!r}")
@@ -795,13 +940,8 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                 raise FileNotFoundError(source_clip)
             destination_clip = partial_run_dir / "clips" / clip_name
             _copy_clip_evidence(source_clip, destination_clip, partial_run_dir)
-            qc_source = source_run_dir / "qc" / f"{source_clip.stem}.json"
-            qc_payload = _load_json_object(qc_source)
-            if qc_payload.get("status") != "PASS" or qc_payload.get("issues") not in ([], ()):
-                raise RuntimeError(f"prior technical QC is not PASS: {key}")
-            qc_payload["concept_id"] = key[0]
-            qc_payload["plan_id"] = key[1]
-            qc_payload["recovered"] = True
+            qc_payload = require_current_qc(destination_clip, clip=clip, plan=plan, key=key)
+            qc_payload["reused_from_run_id"] = source_run_id
             video_payload = qc_payload.get("video")
             if isinstance(video_payload, dict):
                 video_payload["path"] = str(destination_clip)
@@ -837,7 +977,6 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                 source_frames,
                 partial_run_dir / "visual-review" / destination_clip.stem / "frames",
             )
-            plan = _edit_plan_from_payload(plan_by_key[key])
             rendered_clips.append(
                 _rendered_clip_payload(
                     plan=plan,
@@ -873,12 +1012,10 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
                 source_clip = base_run_dir / "clips" / clip_name
                 destination_clip = partial_run_dir / "clips" / clip_name
                 _copy_clip_evidence(source_clip, destination_clip, partial_run_dir)
-                qc_payload = _load_json_object(base_run_dir / "qc" / f"{source_clip.stem}.json")
+                qc_payload = require_current_qc(destination_clip, clip=clip, plan=plan, key=key)
                 review_payload = _load_json_object(
                     base_run_dir / "visual-review" / f"{source_clip.stem}.json"
                 )
-                if qc_payload.get("status") != "PASS" or qc_payload.get("issues") not in ([], ()):
-                    raise RuntimeError(f"targeted reuse technical QC is not PASS: {key}")
                 if review_payload.get("decision") != "PASS" or review_payload.get("issues") not in (
                     [],
                     (),
@@ -1031,6 +1168,14 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
         distinct_concepts = {str(item["concept_id"]) for item in rendered_clips}
         if len(rendered_clips) != 6 or len(distinct_concepts) != 6:
             raise RuntimeError("targeted recovery did not produce six distinct finalists")
+        if len(technical_qc) != 6 or any(
+            item.get("status") != "PASS"
+            or not isinstance(item.get("captions"), dict)
+            or item["captions"].get("simultaneous_narrative_layers_max") != 1
+            or not isinstance(item["captions"].get("hook_overlay_rendered"), bool)
+            for item in technical_qc
+        ):
+            raise RuntimeError("targeted recovery has incomplete caption-concurrency QC")
         final_manifest = copy.deepcopy(original_manifest)
         now = datetime.now(UTC).isoformat()
         final_manifest.update(
@@ -1060,7 +1205,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
             {
                 "render_plans": 6,
                 "render_attempts": 6,
-                "replacement_attempts": 2,
+                "replacement_attempts": len(freshly_rendered_keys),
                 "render_success": 6,
                 "render_failures": 0,
                 "technical_qc_pass": 6,
@@ -1097,6 +1242,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
             "reused_passed_plan_keys": [
                 {"concept_id": concept_id, "plan_id": plan_id}
                 for concept_id, plan_id in _RECOVERED_FINALISTS
+                if (concept_id, plan_id) not in rerendered_recovered_keys
             ]
             + [
                 {"concept_id": concept_id, "plan_id": plan_id}
@@ -1181,6 +1327,15 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
         (partial_run_dir / "targeted-recovery.json").write_text(
             json.dumps(recovery_manifest, indent=2) + "\n", encoding="utf-8"
         )
+        target_payload = final_manifest.get("targets")
+        if not isinstance(target_payload, dict):
+            raise RuntimeError("targeted recovery manifest is missing campaign targets")
+        validate_live_run(
+            partial_run_dir,
+            expected_finalists=6,
+            expected_shortlist=6,
+            expected_distinct_finalists=int(target_payload.get("distinct_finalist_concepts") or 0),
+        )
         partial_run_dir.replace(output_run_dir)
         artifact_volume.commit()
     except Exception:
@@ -1205,7 +1360,7 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
         "rendered_finalists": 6,
         "submission_shortlist": 6,
         "distinct_finalist_concepts": 6,
-        "review_status": "PENDING_ACTUAL_MP4_REVIEW",
+        "review_status": "AUTOMATED_MP4_REVIEW_PASS_HUMAN_PENDING",
     }
 
 

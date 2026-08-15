@@ -13,6 +13,12 @@ PLAN_KEYS = (
     {"concept_id": "c14", "plan_id": "p3"},
     {"concept_id": "c5", "plan_id": "p1"},
 )
+LEGACY_FINALIST_KEYS = (
+    {"concept_id": "c3", "plan_id": "p3"},
+    {"concept_id": "c6", "plan_id": "p1"},
+    {"concept_id": "c11", "plan_id": "p1"},
+    {"concept_id": "c2", "plan_id": "p4"},
+)
 _ARTIFACT_PATH_MARKERS = (
     "/clips/",
     "/captions/",
@@ -83,16 +89,25 @@ def normalize_materialized_recovery_paths(run_dir: Path, serialized_root: str) -
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Render c14/p3 and c5/p1 inside Modal, review only their derived frames, "
-            "and materialize the six-finalist recovery run."
+            "Repair explicitly selected finalists inside Modal, review only newly rendered "
+            "frames, revalidate every reused clip, and materialize the six-finalist run."
         )
     )
     parser.add_argument("source_run_id")
     parser.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
     parser.add_argument("--app", default=os.getenv("CLIPPER_V10_MODAL_APP", "clipper-v10-cycle"))
-    parser.add_argument(
+    reuse_group = parser.add_mutually_exclusive_group()
+    reuse_group.add_argument(
         "--reuse-c14-from-run",
         help="Reuse an already-passed c14/p3 result and rerender only c5/p1.",
+    )
+    reuse_group.add_argument(
+        "--repair-legacy-captions-from-run",
+        metavar="RUN_ID",
+        help=(
+            "Reuse clean c14/p3 and c5/p1 from RUN_ID, then rerender and review only "
+            "the four legacy finalists with overlapping opening captions."
+        ),
     )
     args = parser.parse_args()
 
@@ -107,9 +122,11 @@ def main() -> int:
         for item in manifest.get("edit_plans", [])
         if isinstance(item, dict)
     }
-    expected = {(item["concept_id"], item["plan_id"]) for item in PLAN_KEYS}
+    expected = {
+        (item["concept_id"], item["plan_id"]) for item in (*LEGACY_FINALIST_KEYS, *PLAN_KEYS)
+    }
     if not expected.issubset(plan_keys):
-        raise RuntimeError("the source run does not contain c14/p3 and c5/p1")
+        raise RuntimeError("the source run does not contain all six recovery plans")
 
     prior_review = _load_object(source_run / "visual-review-recovery.json")
     recovery_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -122,6 +139,10 @@ def main() -> int:
     if args.reuse_c14_from_run:
         request["base_run_id"] = args.reuse_c14_from_run
         request["reuse_plan_keys"] = [PLAN_KEYS[0]]
+    elif args.repair_legacy_captions_from_run:
+        request["base_run_id"] = args.repair_legacy_captions_from_run
+        request["reuse_plan_keys"] = list(PLAN_KEYS)
+        request["rerender_plan_keys"] = list(LEGACY_FINALIST_KEYS)
     response = _modal_function(args.app, "recover_finalists").remote(request)
     if not isinstance(response, dict) or response.get("status") != "PASS":
         raise RuntimeError(f"targeted Modal recovery returned an invalid response: {response!r}")

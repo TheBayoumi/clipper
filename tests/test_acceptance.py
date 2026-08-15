@@ -17,7 +17,14 @@ def _write_live_run(root: Path, *, finalists: int = 2, shortlist: int = 1) -> No
         clip.write_bytes(b"mp4")
         (root / "captions" / f"{index:02d}.ass").write_text("captions")
         (root / "captions" / f"{index:02d}.caption-audit.json").write_text(
-            json.dumps({"alignment": "PASS"})
+            json.dumps(
+                {
+                    "alignment": "PASS",
+                    "hook_overlay_rendered": False,
+                    "potential_hook_caption_overlap_seconds": 1.2,
+                    "simultaneous_narrative_layers_max": 1,
+                }
+            )
         )
         (root / "tracking" / f"{index:02d}.tracking.json").write_text("{}")
         rendered.append(
@@ -27,7 +34,11 @@ def _write_live_run(root: Path, *, finalists: int = 2, shortlist: int = 1) -> No
             {
                 "plan_id": plan_id,
                 "status": "PASS",
-                "captions": {"alignment": "PASS"},
+                "captions": {
+                    "alignment": "PASS",
+                    "hook_overlay_rendered": False,
+                    "simultaneous_narrative_layers_max": 1,
+                },
                 "framing": {"transition_qc_pass": True},
                 "watermark": {"required": True, "renderer_asset_present": True},
             }
@@ -95,6 +106,29 @@ def test_live_validator_rejects_underproduction_and_caption_mismatch(tmp_path: P
     (tmp_path / "captions" / "00.caption-audit.json").write_text('{"alignment":"FAIL"}')
     with pytest.raises(ValueError, match="first-caption"):
         validate_live_run(tmp_path, expected_finalists=3, expected_shortlist=1)
+
+
+def test_live_validator_rejects_missing_or_overlapping_caption_concurrency(
+    tmp_path: Path,
+) -> None:
+    _write_live_run(tmp_path, finalists=2, shortlist=1)
+    audit_path = tmp_path / "captions" / "00.caption-audit.json"
+    audit = json.loads(audit_path.read_text())
+    audit.pop("simultaneous_narrative_layers_max")
+    audit_path.write_text(json.dumps(audit))
+    with pytest.raises(ValueError, match="concurrency evidence is missing"):
+        validate_live_run(tmp_path, expected_finalists=2, expected_shortlist=1)
+
+    audit["simultaneous_narrative_layers_max"] = 2
+    audit_path.write_text(json.dumps(audit))
+    with pytest.raises(ValueError, match="overlapping narrative captions"):
+        validate_live_run(tmp_path, expected_finalists=2, expected_shortlist=1)
+
+    audit["simultaneous_narrative_layers_max"] = 1
+    audit["hook_overlay_rendered"] = True
+    audit_path.write_text(json.dumps(audit))
+    with pytest.raises(ValueError, match="hook and spoken captions overlap"):
+        validate_live_run(tmp_path, expected_finalists=2, expected_shortlist=1)
 
 
 def test_v10_workflow_targets_current_branch_campaign_and_every_mp4() -> None:

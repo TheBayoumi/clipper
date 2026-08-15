@@ -85,12 +85,29 @@ def validate_live_run(
         audit = _load_object(audit_path)
         if audit.get("alignment") != "PASS":
             raise ValueError(f"first-caption alignment failed: {audit_path.name}")
+        narrative_layers = audit.get("simultaneous_narrative_layers_max")
+        if not isinstance(narrative_layers, int) or isinstance(narrative_layers, bool):
+            raise ValueError(f"caption concurrency evidence is missing: {audit_path.name}")
+        if narrative_layers > 1:
+            raise ValueError(f"overlapping narrative captions detected: {audit_path.name}")
+        hook_rendered = audit.get("hook_overlay_rendered")
+        if not isinstance(hook_rendered, bool):
+            raise ValueError(f"hook-overlay evidence is missing: {audit_path.name}")
+        hook_overlap = audit.get("potential_hook_caption_overlap_seconds")
+        if not isinstance(hook_overlap, (int, float)) or isinstance(hook_overlap, bool):
+            raise ValueError(f"hook-overlap evidence is missing: {audit_path.name}")
+        if hook_rendered and float(hook_overlap) > 0.0:
+            raise ValueError(f"hook and spoken captions overlap: {audit_path.name}")
     for item in qc:
         caption_qc = item.get("captions") or {}
         framing_qc = item.get("framing") or {}
         watermark_qc = item.get("watermark") or {}
         if caption_qc.get("alignment") != "PASS":
             raise ValueError(f"caption alignment QC failed for {item.get('plan_id')}")
+        if caption_qc.get("simultaneous_narrative_layers_max") != 1:
+            raise ValueError(f"caption concurrency QC failed for {item.get('plan_id')}")
+        if not isinstance(caption_qc.get("hook_overlay_rendered"), bool):
+            raise ValueError(f"hook-overlay QC evidence is missing for {item.get('plan_id')}")
         if not framing_qc.get("transition_qc_pass"):
             raise ValueError(f"transition QC failed for {item.get('plan_id')}")
         if watermark_qc.get("required") and not watermark_qc.get("renderer_asset_present"):
