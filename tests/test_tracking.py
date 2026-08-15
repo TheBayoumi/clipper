@@ -25,6 +25,7 @@ from clipper.tracking import (
     _scene_change_score,
     _segment_windows,
     _shot_stable_targets,
+    _shots_without_selected_faces,
     _speaker_change_reverses_soon,
     _speaker_locked_anchors,
     _speaker_score,
@@ -382,6 +383,11 @@ def test_unobserved_source_shot_resets_to_center_instead_of_stale_crop() -> None
     )
     assert filled == ((120.0, 0.0), (120.0, 0.0))
     assert fallback_shots == ()
+
+
+def test_shots_without_selected_faces_includes_shots_without_transcript_windows() -> None:
+    selected = (_obs(0, 0.5, 100.0, 1.0), _obs(0, 2.5, 100.0, 1.0))
+    assert _shots_without_selected_faces((1.0, 2.0), 3.0, selected) == ((1.0, 2.0),)
 
 
 def test_reframe_waits_until_target_face_is_observed_and_uses_hard_speaker_cut() -> None:

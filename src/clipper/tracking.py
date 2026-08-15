@@ -482,6 +482,24 @@ def _safe_shot_targets(
     return tuple(safe), fallback_shots
 
 
+def _shots_without_selected_faces(
+    source_cuts: tuple[float, ...],
+    duration: float,
+    selected_faces: tuple[FaceObservation, ...],
+) -> tuple[tuple[float, float], ...]:
+    """Return every detected source shot lacking selected-face evidence."""
+    boundaries = (0.0, *sorted(cut for cut in source_cuts if 0 < cut < duration), duration)
+    shots: list[tuple[float, float]] = []
+    for index, (start, end) in enumerate(pairwise(boundaries)):
+        observed = any(
+            start <= face.time and (face.time < end or index == len(boundaries) - 2)
+            for face in selected_faces
+        )
+        if not observed:
+            shots.append((start, end))
+    return tuple(shots)
+
+
 def _speaker_score(
     track: _TrackState,
     window: _SpeakerWindow,
@@ -1372,6 +1390,18 @@ def plan_speaker_crop(
         for observation in tracks_by_id[track_id].observations:
             if window.start <= observation.time <= window.end:
                 selected_faces_by_key[(track_id, observation.time)] = observation
+    selected_faces = tuple(
+        selected_faces_by_key[key]
+        for key in sorted(selected_faces_by_key, key=lambda item: item[1])
+    )
+    safe_fallback_shots = tuple(
+        sorted(
+            {
+                *safe_fallback_shots,
+                *_shots_without_selected_faces(tuple(source_cuts), clip.duration, selected_faces),
+            }
+        )
+    )
     return TrackingPlan(
         zoom_factor,
         width,
@@ -1387,9 +1417,6 @@ def plan_speaker_crop(
         reframe_events=reframe_events,
         transitions=transitions,
         source_cuts=tuple(source_cuts),
-        selected_faces=tuple(
-            selected_faces_by_key[key]
-            for key in sorted(selected_faces_by_key, key=lambda item: item[1])
-        ),
+        selected_faces=selected_faces,
         safe_fallback_shots=safe_fallback_shots,
     )
