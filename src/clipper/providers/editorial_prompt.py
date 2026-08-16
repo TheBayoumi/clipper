@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-EDITORIAL_PROMPT_VERSION = "editor-v2"
+EDITORIAL_PROMPT_VERSION = "editor-v3"
 EDITORIAL_SCHEMA_VERSION = "editorial-json-v2"
 
 _BOUNDARY_STATUSES = ["COMPLETE", "NEEDS_CONTEXT", "INCOMPLETE", "UNCERTAIN"]
@@ -263,13 +263,13 @@ def editorial_contract(task: str) -> str:
         "The runtime constrains generation to the task JSON Schema; satisfy its required fields "
         "without adding commentary outside the object. Keep prose fields concise. For range "
         "fields copy the supplied short word_ref values, never reconstruct or abbreviate word_id "
-        "values yourself. The campaign maximum duration is a ceiling, never a target. Never "
-        "invent source wording. Preserve source chronology. The first audible content must be "
-        "understandable without hidden prior context, and the ending must resolve the semantic "
-        "obligation created by the clip. Reject incomplete stories rather than amputating them. "
-        "Generated overlays must not falsify spoken material. Campaign rules are hard constraints; "
-        "exclude sponsor and promo regions when policy forbids them. Lower confidence when required "
-        "evidence is uncertain. "
+        "values yourself. Campaign min_clip_seconds is a hard floor and max_clip_seconds is a "
+        "hard ceiling for final EditPlan source ranges. Never invent source wording. Preserve "
+        "source chronology. The first audible content must be understandable without hidden prior "
+        "context, and the ending must resolve the semantic obligation created by the clip. Reject "
+        "incomplete stories rather than amputating them. Generated overlays must not falsify "
+        "spoken material. Campaign rules are hard constraints; exclude sponsor and promo regions "
+        "when policy forbids them. Lower confidence when required evidence is uncertain. "
     )
     if task == "episode_editorial_profile":
         return common + (
@@ -286,6 +286,8 @@ def editorial_contract(task: str) -> str:
             '"required_followup_context":"<=16 words or empty",'
             '"editorial_reason":"<=20 words","confidence":0.0}]}. '
             "Return at most 8 non-overlapping meaningful moments. Do not copy full word-ID lists. "
+            "Story moments are semantic evidence units and may be shorter than the campaign final "
+            "clip minimum; do not pad them merely to satisfy duration. "
         )
     if task == "clip_concepts":
         return common + (
@@ -296,7 +298,10 @@ def editorial_contract(task: str) -> str:
             '"required_followup_context":"<=16 words or empty",'
             '"narrative_structure":"short label","recommended_duration":20.0,'
             '"visual_dependencies":["short labels"],"confidence":0.0}]}. '
-            "Return at most 12 materially distinct contiguous concepts. "
+            "Return at most 12 materially distinct contiguous concepts. A concept may be a short "
+            "semantic core, but recommended_duration is only editorial guidance and is never proof "
+            "that its current source range already satisfies campaign duration. Downstream "
+            "EditPlans must use timestamped source_context_words to choose the actual final range. "
             "Do not copy full word-ID lists. "
         )
     if task == "global_concept_comparison":
@@ -318,7 +323,17 @@ def editorial_contract(task: str) -> str:
             '"hook_end_word_id":"last hook word_ref",'
             '"overlay_text":null,"strategy_label":"<=8 words",'
             '"caption_platform":"tiktok","confidence":0.0}]}. '
-            "Return at most 4 contiguous chronological plans. Do not copy full word-ID lists. "
+            "Return at most 4 contiguous chronological plans. source_context_words is the "
+            "authoritative timestamped range evidence. Before emitting each plan, locate its "
+            "source_start_word_id and source_end_word_id in source_context_words and calculate "
+            "duration = end.source_end - start.source_start. Emit the plan only when that measured "
+            "duration is >= campaign.min_clip_seconds and <= campaign.max_clip_seconds. The final "
+            "source range may extend before or after the concept start/end when the concept is "
+            "shorter than the campaign minimum, but the extension must remain one coherent story, "
+            "must preserve chronology, and must contain the spoken hook. Never return only the "
+            "hook unless its measured duration already satisfies the campaign bounds. If no "
+            "coherent duration-valid source range exists, omit that plan instead of returning an "
+            "out-of-bounds range. Do not copy full word-ID lists. "
         )
     if task.startswith("source_hazards:"):
         return common + (
