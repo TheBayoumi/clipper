@@ -1,9 +1,8 @@
 name: Temporary guarded contract cleanup patch
 
 on:
-  push:
-    branches:
-      - feat/word-reveal-face-tracking
+  pull_request:
+    types: [synchronize]
 
 permissions:
   contents: write
@@ -28,7 +27,6 @@ jobs:
                   raise SystemExit(f"{label}: expected exactly one match, found {count}")
               return text.replace(old, new, 1)
 
-          # Separate discovery workflow input from production CampaignBrief.
           path = Path("src/clipper/youtube.py")
           text = path.read_text(encoding="utf-8")
           text = once(
@@ -65,7 +63,6 @@ jobs:
               raise SystemExit("youtube.py still references CampaignBrief after discovery separation")
           path.write_text(text, encoding="utf-8")
 
-          # Make CLI discovery an independent workflow rather than campaign execution.
           path = Path("src/clipper/cli.py")
           text = path.read_text(encoding="utf-8")
           text = once(text, "from .youtube import YouTubeClient\n", "from .youtube import DiscoveryRequest, YouTubeClient\n", "cli youtube import")
@@ -83,7 +80,6 @@ jobs:
           )
           path.write_text(text, encoding="utf-8")
 
-          # Quality batch integration/type contract.
           path = Path("src/clipper/quality_batch.py")
           text = path.read_text(encoding="utf-8")
           text = once(text, "    max_words_per_chunk: int,\n    chunk_overlap_words: int,\n", "    max_words_per_chunk: int = 900,\n    chunk_overlap_words: int = 160,\n", "quality batch operational defaults")
@@ -108,7 +104,6 @@ jobs:
           text = once(text, "cast(HookMode, str(raw[\"hook_mode\"]))", "cast(HookMode, raw[\"hook_mode\"])", "hilp hook cast")
           path.write_text(text, encoding="utf-8")
 
-          # Remove obsolete embedding service and podcast-only prompt from deployed Modal worker.
           path = Path("scripts/modal_open_models.py")
           text = path.read_text(encoding="utf-8")
           text = once(text, "    \"sentence-transformers>=5.6,<6\",\n", "", "sentence-transformers dependency")
