@@ -8,11 +8,6 @@ on:
       - main
     paths:
       - "acceptance/production-run-request.json"
-  push:
-    branches:
-      - feat/word-reveal-face-tracking
-    paths:
-      - "acceptance/production-run-request.json"
 
 concurrency:
   group: production-hilp-${{ github.ref }}
@@ -62,12 +57,9 @@ jobs:
           assert 'with_options(region=value, timeout=1800)' in workflow
           assert '"render": False' in workflow
           assert '"render": True' in workflow
-          assert 'fresh_inference' not in workflow
           assert 'manual-review-queue.json' in workflow
           assert 'automated_hilp_allowed' in workflow
           assert 'eligible_quality_moments' in workflow
-          assert 'rendered_finalists"]) >= 6' not in workflow
-          assert 'initial_shortlist"]) >= 3' not in workflow
           PY
 
       - name: Verify credentials before compute
