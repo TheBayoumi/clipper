@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import base64
-import copy
 import hashlib
 import json
 import os
 import shutil
 import subprocess
 import uuid
-from dataclasses import asdict, replace
-from datetime import UTC, datetime
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -116,7 +114,6 @@ def _source_evidence(
     )
     raw_format = payload.get("format")
     fmt = raw_format if isinstance(raw_format, dict) else {}
-    duration = float(fmt.get("duration") or 0.0)
     return {
         "video_id": video_id,
         "source_url": video_url,
@@ -129,7 +126,7 @@ def _source_evidence(
         "authentication": "youtube_cookies" if authenticated else "anonymous",
         "authenticated": authenticated,
         "reused": reused,
-        "duration_seconds": duration,
+        "duration_seconds": float(fmt.get("duration") or 0.0),
         "video": {
             "width": int(video.get("width") or 0),
             "height": int(video.get("height") or 0),
@@ -170,9 +167,7 @@ def _existing_source(video_id: str, video_url: str) -> dict[str, Any] | None:
         authenticated=bool(index.get("authenticated")),
         reused=True,
     )
-    if evidence["sha256"] != expected:
-        return None
-    return evidence
+    return evidence if evidence["sha256"] == expected else None
 
 
 @app.function(
@@ -184,8 +179,7 @@ def _existing_source(video_id: str, video_url: str) -> dict[str, Any] | None:
     scaledown_window=2,
 )
 def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
-    """Acquire the highest available authorized source directly inside Modal."""
-
+    """Acquire one exact authorized target into the content-addressed media volume."""
     video_url = str(payload.get("video_url") or "").strip()
     video_id = str(payload.get("video_id") or "").strip()
     if not video_url.startswith("https://"):
@@ -309,8 +303,8 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
     if completed is None:
         detail = "\n\n".join(acquisition_errors)[-12000:]
         raise RuntimeError(
-            "yt-dlp source acquisition exhausted all public bgutil strategies"
-            + (" and the optional authenticated fallback" if cookies_available else "")
+            "yt-dlp source acquisition exhausted all configured strategies"
+            + (" including authenticated fallback" if cookies_available else "")
             + f":\n{detail}"
         )
 
@@ -357,24 +351,57 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class VolumeSourceClient:
-    def __init__(self, evidence: dict[str, Any], channel_id: str) -> None:
+    """Serve every exact pre-acquired target from the mounted content-addressed volume."""
+
+    def __init__(self, source_items: list[dict[str, Any]]) -> None:
         from clipper.models import VideoCandidate
 
-        self.source_path = Path(str(evidence["mount_path"]))
-        self.source_sha256 = str(evidence["sha256"])
-        self.duration = float(evidence["duration_seconds"])
-        self.video = VideoCandidate(
-            video_id=str(evidence["video_id"]),
-            title="Authorized production source",
-            channel_id=channel_id,
-            channel_title="Authorized source channel",
-            url=str(evidence["source_url"]),
-            duration_seconds=self.duration,
-        )
+        self._records: dict[str, dict[str, Any]] = {}
+        self._videos: list[Any] = []
+        for item in source_items:
+            evidence = item.get("evidence")
+            if not isinstance(evidence, dict):
+                raise ValueError("source item requires evidence")
+            video_id = str(item.get("video_id") or evidence.get("video_id") or "").strip()
+            channel_id = str(item.get("channel_id") or "").strip()
+            canonical_url = str(item.get("canonical_url") or evidence.get("source_url") or "").strip()
+            source_path = Path(str(evidence.get("mount_path") or ""))
+            source_sha256 = str(evidence.get("sha256") or "")
+            duration = float(evidence.get("duration_seconds") or 0.0)
+            if not video_id or not channel_id or not canonical_url.startswith("https://"):
+                raise ValueError("source item requires video_id, channel_id, and canonical_url")
+            if video_id in self._records:
+                raise ValueError(f"duplicate mounted source video_id: {video_id}")
+            if evidence.get("quality_policy") != "highest_available_no_transcode":
+                raise RuntimeError(f"source master violates no-downgrade policy: {video_id}")
+            self._records[video_id] = {
+                "path": source_path,
+                "sha256": source_sha256,
+                "duration": duration,
+                "evidence": evidence,
+            }
+            self._videos.append(
+                VideoCandidate(
+                    video_id=video_id,
+                    title="Authorized production target",
+                    channel_id=channel_id,
+                    channel_title="Authorized target channel",
+                    url=canonical_url,
+                    duration_seconds=duration,
+                )
+            )
+        if not self._videos:
+            raise ValueError("at least one mounted source is required")
+
+    @property
+    def videos(self) -> list[Any]:
+        return list(self._videos)
 
     def discover(self, brief: Any) -> list[Any]:
+        # Transitional protocol method. Production pipeline resolves exact targets and
+        # validates that this list matches them; no discovery occurs here.
         del brief
-        return [self.video]
+        return self.videos
 
     def download_subtitles(self, video: Any, work_dir: Path, language: str) -> None:
         del video, work_dir, language
@@ -382,11 +409,14 @@ class VolumeSourceClient:
 
     def download_media(self, video: Any, work_dir: Path) -> Path:
         del work_dir
-        if video.video_id != self.video.video_id:
-            raise RuntimeError("volume source requested the wrong video")
-        if not self.source_path.is_file() or _sha256(self.source_path) != self.source_sha256:
-            raise RuntimeError("mounted source master failed SHA-256 verification")
-        return self.source_path
+        record = self._records.get(str(video.video_id))
+        if record is None:
+            raise RuntimeError(f"mounted source requested unknown video: {video.video_id}")
+        source_path = Path(record["path"])
+        expected = str(record["sha256"])
+        if not source_path.is_file() or _sha256(source_path) != expected:
+            raise RuntimeError(f"mounted source master failed SHA-256 verification: {video.video_id}")
+        return source_path
 
     def download_media_span(
         self,
@@ -397,1168 +427,20 @@ class VolumeSourceClient:
     ) -> Any:
         from clipper.fixture import SpanMedia
 
-        del work_dir
-        self.download_media(video, Path("."))
-        if start < -1e-6 or end > self.duration + 1e-6:
-            raise RuntimeError(f"requested render span is outside master: {start:.3f}-{end:.3f}")
-        return SpanMedia(self.source_path, 0.0, self.duration, self.source_sha256)
+        source_path = self.download_media(video, work_dir)
+        record = self._records[str(video.video_id)]
+        duration = float(record["duration"])
+        if start < -1e-6 or end > duration + 1e-6:
+            raise RuntimeError(
+                f"requested render span is outside master {video.video_id}: {start:.3f}-{end:.3f}"
+            )
+        return SpanMedia(source_path, 0.0, duration, str(record["sha256"]))
 
-
-_LEGACY_RECOVERY_PROTOCOL = "v8-six-finalist-recovery"
-_TARGETED_RECOVERY_PLANS = (("c14", "p3"), ("c5", "p1"))
-_RECOVERED_FINALISTS = (("c3", "p3"), ("c6", "p1"), ("c11", "p1"), ("c2", "p4"))
-_APPROVED_REPLAY_RESULTS = (*_RECOVERED_FINALISTS, ("c11", "p2"))
-_CLIP_SIDECAR_SUFFIXES = (
-    ".ass",
-    ".caption-audit.json",
-    ".render.json",
-    ".tracking-preflight.json",
-    ".tracking.json",
-)
-
-
-def _direct_volume_child(root: str, child_name: str, *, label: str) -> Path:
-    """Resolve one direct Volume child without permitting path traversal."""
-
-    if not child_name or Path(child_name).name != child_name or child_name in {".", ".."}:
-        raise ValueError(f"invalid {label}: {child_name!r}")
-    resolved_root = Path(root).resolve()
-    resolved = (resolved_root / child_name).resolve()
-    if resolved.parent != resolved_root:
-        raise ValueError(f"{label} must be a direct child of {root}")
-    return resolved
-
-
-def _load_json_object(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"expected a JSON object: {path}")
-    return payload
-
-
-def _replace_path_prefix(value: Any, source_prefix: str, destination_prefix: str) -> Any:
-    if isinstance(value, str):
-        if value == source_prefix:
-            return destination_prefix
-        if value.startswith(source_prefix + "/"):
-            return destination_prefix + value[len(source_prefix) :]
-        return value
-    if isinstance(value, list):
-        return [_replace_path_prefix(item, source_prefix, destination_prefix) for item in value]
-    if isinstance(value, dict):
+    def evidence_by_video(self) -> dict[str, dict[str, Any]]:
         return {
-            key: _replace_path_prefix(item, source_prefix, destination_prefix)
-            for key, item in value.items()
+            video_id: dict(record["evidence"])
+            for video_id, record in self._records.items()
         }
-    return value
-
-
-def _edit_plan_from_payload(payload: dict[str, Any]) -> Any:
-    from clipper.models import EditorialBeat, EditPlan, SourceSpan
-
-    raw_spans = payload.get("source_spans")
-    if not isinstance(raw_spans, list) or len(raw_spans) != 1:
-        raise RuntimeError("targeted recovery requires one contiguous source span")
-    raw_beats = payload.get("beats", [])
-    if not isinstance(raw_beats, list):
-        raise RuntimeError("edit plan beats must be a list")
-    return EditPlan(
-        plan_id=str(payload["plan_id"]),
-        video_id=str(payload["video_id"]),
-        concept_id=str(payload["concept_id"]),
-        variant_id=str(payload["variant_id"]),
-        hook_mode=str(payload["hook_mode"]),  # type: ignore[arg-type]
-        source_spans=tuple(
-            SourceSpan(start=float(item["start"]), end=float(item["end"]))
-            for item in raw_spans
-            if isinstance(item, dict)
-        ),
-        hook_text=str(payload["hook_text"]) if payload.get("hook_text") is not None else None,
-        beats=tuple(
-            EditorialBeat(
-                start=float(item["start"]),
-                end=float(item["end"]),
-                beat_type=str(item["beat_type"]),  # type: ignore[arg-type]
-                strength=float(item.get("strength") or 0.0),
-                text=str(item["text"]) if item.get("text") is not None else None,
-            )
-            for item in raw_beats
-            if isinstance(item, dict)
-        ),
-        caption_platform=str(payload["caption_platform"]),
-        score=float(payload["score"]),
-        transcript_fingerprint=str(payload["transcript_fingerprint"]),
-        caption_start_source_time=(
-            float(payload["caption_start_source_time"])
-            if payload.get("caption_start_source_time") is not None
-            else None
-        ),
-        caption_start_word=(
-            str(payload["caption_start_word"])
-            if payload.get("caption_start_word") is not None
-            else None
-        ),
-    )
-
-
-def _copy_clip_evidence(source_clip: Path, destination_clip: Path, run_dir: Path) -> None:
-    destination_clip.parent.mkdir(parents=True, exist_ok=True)
-    if source_clip.resolve() != destination_clip.resolve():
-        shutil.copy2(source_clip, destination_clip)
-    for suffix in _CLIP_SIDECAR_SUFFIXES:
-        source = source_clip.with_suffix(suffix)
-        if not source.is_file():
-            raise RuntimeError(f"required render evidence is missing: {source}")
-        destination = destination_clip.with_suffix(suffix)
-        if source.resolve() != destination.resolve():
-            shutil.copy2(source, destination)
-        if suffix in {".ass", ".caption-audit.json"}:
-            evidence_dir = run_dir / "captions"
-        elif suffix in {".tracking.json", ".tracking-preflight.json"}:
-            evidence_dir = run_dir / "tracking"
-        else:
-            continue
-        evidence_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(destination, evidence_dir / destination.name)
-
-
-def _rendered_clip_payload(
-    *, plan: Any, output_path: Path, source_url: str, source_hash: str
-) -> dict[str, Any]:
-    from clipper.models import RenderedClip
-
-    clip = plan.to_clip_candidate("")
-    return RenderedClip(
-        video_id=plan.video_id,
-        output_path=str(output_path),
-        start=clip.start,
-        end=clip.end,
-        score=plan.score,
-        source_url=source_url,
-        concept_id=plan.concept_id,
-        plan_id=plan.plan_id,
-        hook_mode=plan.hook_mode,
-        render_sha256=source_hash,
-    ).to_dict()
-
-
-@app.function(
-    image=runner_image,
-    volumes={MEDIA_ROOT: media_cache, ARTIFACT_ROOT: artifact_volume},
-    timeout=7200,
-    memory=8192,
-    scaledown_window=2,
-)
-def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
-    """Run the explicit legacy V8 six-finalist repair protocol only."""
-
-    if str(payload.get("legacy_recovery_protocol") or "") != _LEGACY_RECOVERY_PROTOCOL:
-        raise ValueError(
-            "recover_finalists is restricted to the explicit legacy V8 six-finalist protocol"
-        )
-
-    from clipper.acceptance import validate_live_run
-    from clipper.canonical import CanonicalTimeline, transcript_segments_from_canonical
-    from clipper.pipeline import PipelineSettings
-    from clipper.providers.factory import vision_provider
-    from clipper.qc import run_technical_qc
-    from clipper.render import FFmpegRenderer
-    from clipper.visual_ai import review_rendered_clip, tracking_transition_sample_times
-
-    source_run_id = str(payload.get("source_run_id") or "")
-    recovery_id = str(payload.get("recovery_id") or "")
-    requested_raw = payload.get("plan_keys")
-    if not isinstance(requested_raw, list):
-        raise ValueError("targeted recovery requires plan_keys")
-    requested = tuple(
-        (str(item.get("concept_id") or ""), str(item.get("plan_id") or ""))
-        for item in requested_raw
-        if isinstance(item, dict)
-    )
-    if requested != _TARGETED_RECOVERY_PLANS:
-        raise ValueError("targeted recovery is restricted to c14/p3 and c5/p1 in that order")
-    reuse_raw = payload.get("reuse_plan_keys", [])
-    if not isinstance(reuse_raw, list):
-        raise ValueError("targeted recovery reuse_plan_keys must be a list")
-    reused_targeted_keys = tuple(
-        (str(item.get("concept_id") or ""), str(item.get("plan_id") or ""))
-        for item in reuse_raw
-        if isinstance(item, dict)
-    )
-    if reused_targeted_keys not in (
-        (),
-        (("c14", "p3"),),
-        _TARGETED_RECOVERY_PLANS,
-    ):
-        raise ValueError("targeted recovery may reuse only c14/p3 or both passed canaries")
-    rerender_raw = payload.get("rerender_plan_keys", [])
-    if not isinstance(rerender_raw, list):
-        raise ValueError("targeted recovery rerender_plan_keys must be a list")
-    rerendered_recovered_keys = tuple(
-        (str(item.get("concept_id") or ""), str(item.get("plan_id") or ""))
-        for item in rerender_raw
-        if isinstance(item, dict)
-    )
-    if (
-        len(set(rerendered_recovered_keys)) != len(rerendered_recovered_keys)
-        or any(key not in _RECOVERED_FINALISTS for key in rerendered_recovered_keys)
-        or rerendered_recovered_keys
-        != tuple(key for key in _RECOVERED_FINALISTS if key in rerendered_recovered_keys)
-    ):
-        raise ValueError("recovered finalist rerenders must be a unique ordered subset")
-    base_run_id = str(payload.get("base_run_id") or "")
-    if bool(reused_targeted_keys) != bool(base_run_id):
-        raise ValueError("targeted recovery reuse requires a base_run_id and reuse_plan_keys")
-    if rerendered_recovered_keys and reused_targeted_keys != _TARGETED_RECOVERY_PLANS:
-        raise ValueError("recovered finalist repair must reuse both already-passed canaries")
-    freshly_rendered_keys = (
-        *rerendered_recovered_keys,
-        *(key for key in _TARGETED_RECOVERY_PLANS if key not in reused_targeted_keys),
-    )
-
-    prior_recovery = payload.get("prior_review_recovery")
-    if not isinstance(prior_recovery, dict):
-        raise ValueError("targeted recovery requires the approved prior review evidence")
-    prior_results_raw = prior_recovery.get("results")
-    if not isinstance(prior_results_raw, list):
-        raise ValueError("prior review evidence has no results")
-    prior_results: dict[tuple[str, str], dict[str, Any]] = {}
-    for item in prior_results_raw:
-        if not isinstance(item, dict):
-            raise ValueError("prior review result must be an object")
-        key = (str(item.get("concept_id") or ""), str(item.get("plan_id") or ""))
-        report = item.get("report")
-        if (
-            key not in _APPROVED_REPLAY_RESULTS
-            or not isinstance(report, dict)
-            or report.get("decision") != "PASS"
-            or report.get("issues") not in ([], ())
-        ):
-            raise RuntimeError(f"prior visual review is not an approved PASS: {key}")
-        if key in prior_results:
-            raise RuntimeError(f"duplicate prior visual review result: {key}")
-        prior_results[key] = item
-    if set(prior_results) != set(_APPROVED_REPLAY_RESULTS):
-        raise RuntimeError(
-            "prior review evidence does not contain exactly the five approved replays"
-        )
-
-    media_cache.reload()
-    artifact_volume.reload()
-    source_run_dir = _direct_volume_child(ARTIFACT_ROOT, source_run_id, label="source run ID")
-    if not source_run_dir.is_dir():
-        raise FileNotFoundError(source_run_dir)
-    recovery_suffix = _direct_volume_child("/tmp", recovery_id, label="recovery ID").name
-    output_run_id = f"{source_run_id}-targeted-{recovery_suffix}"
-    output_run_dir = _direct_volume_child(ARTIFACT_ROOT, output_run_id, label="output run ID")
-    partial_run_dir = _direct_volume_child(
-        ARTIFACT_ROOT, f".{output_run_id}.partial", label="partial output run ID"
-    )
-    failed_run_dir = _direct_volume_child(
-        ARTIFACT_ROOT, f"{output_run_id}-failed", label="failed output run ID"
-    )
-    if output_run_dir.exists() or partial_run_dir.exists() or failed_run_dir.exists():
-        raise RuntimeError(f"refusing to overwrite targeted recovery: {output_run_id}")
-
-    original_manifest = _load_json_object(source_run_dir / "manifest.json")
-    if original_manifest.get("status") != "FAILED":
-        raise RuntimeError("targeted recovery requires the expected failed source manifest")
-    edit_plan_payloads = original_manifest.get("edit_plans")
-    concept_payloads = original_manifest.get("clip_concepts")
-    discovered_videos = original_manifest.get("discovered_videos")
-    if not isinstance(edit_plan_payloads, list) or not isinstance(concept_payloads, list):
-        raise RuntimeError("source manifest is missing edit plans or concepts")
-    if not isinstance(discovered_videos, list):
-        raise RuntimeError("source manifest is missing discovered videos")
-    base_run_dir: Path | None = None
-    base_rendered_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-    if base_run_id:
-        base_run_dir = _direct_volume_child(ARTIFACT_ROOT, base_run_id, label="base run ID")
-        base_manifest = _load_json_object(base_run_dir / "manifest.json")
-        if base_manifest.get("status") != "SUCCESS":
-            raise RuntimeError("targeted reuse requires a successful base run")
-        base_rendered = base_manifest.get("rendered_clips")
-        if not isinstance(base_rendered, list):
-            raise RuntimeError("targeted reuse base run has no rendered clips")
-        base_rendered_by_key = {
-            (str(item.get("concept_id") or ""), str(item.get("plan_id") or "")): item
-            for item in base_rendered
-            if isinstance(item, dict)
-        }
-        reused_recovered_keys = (
-            tuple(key for key in _RECOVERED_FINALISTS if key not in rerendered_recovered_keys)
-            if rerendered_recovered_keys
-            else ()
-        )
-        if any(
-            key not in base_rendered_by_key
-            for key in (*reused_targeted_keys, *reused_recovered_keys)
-        ):
-            raise RuntimeError("targeted reuse base run is missing an approved plan")
-    plan_by_key = {
-        (str(item.get("concept_id") or ""), str(item.get("plan_id") or "")): item
-        for item in edit_plan_payloads
-        if isinstance(item, dict)
-    }
-    concept_by_id = {
-        str(item.get("concept_id") or ""): item
-        for item in concept_payloads
-        if isinstance(item, dict)
-    }
-    all_final_keys = (*_RECOVERED_FINALISTS, *_TARGETED_RECOVERY_PLANS)
-    if any(key not in plan_by_key for key in all_final_keys):
-        raise RuntimeError("source manifest is missing a selected edit plan")
-    if any(concept_id not in concept_by_id for concept_id, _ in all_final_keys):
-        raise RuntimeError("source manifest is missing a selected concept")
-
-    selected_video_ids = {str(plan_by_key[key].get("video_id") or "") for key in all_final_keys}
-    if len(selected_video_ids) != 1:
-        raise RuntimeError("targeted recovery requires exactly one source video")
-    video_id = selected_video_ids.pop()
-    source_index = _load_json_object(Path(MEDIA_ROOT) / "source-index" / f"{video_id}.json")
-    source_path = Path(str(source_index.get("mount_path") or ""))
-    source_sha256 = str(source_index.get("sha256") or "")
-    if (
-        not source_path.is_file()
-        or not source_path.as_posix().startswith(f"{MEDIA_ROOT}/inputs/")
-        or len(source_sha256) != 64
-        or _sha256(source_path) != source_sha256
-    ):
-        raise RuntimeError("mounted source master failed targeted recovery verification")
-    source_url = str(source_index.get("source_url") or "")
-    if not source_url:
-        for item in discovered_videos:
-            if isinstance(item, dict) and str(item.get("video_id") or "") == video_id:
-                source_url = str(item.get("url") or "")
-                break
-    if not source_url:
-        raise RuntimeError("source URL evidence is missing")
-
-    canonical = CanonicalTimeline.from_dict(
-        _load_json_object(source_run_dir / "canonical" / f"{video_id}.json")
-    )
-    if canonical.video_id != video_id or canonical.source_hash != source_sha256:
-        raise RuntimeError("canonical timeline failed targeted recovery verification")
-    segments = transcript_segments_from_canonical(canonical)
-    watermark_path = source_run_dir / "assets" / "watermark.png"
-    if not watermark_path.is_file():
-        raise RuntimeError("required campaign watermark is missing")
-
-    os.environ.update(
-        {
-            "CLIPPER_MODAL_APP": MODEL_APP,
-            "CLIPPER_COMPUTE_PROFILE": "balanced",
-            "CLIPPER_VISUAL_REVIEW": "true",
-            "CLIPPER_VISUAL_ESCALATION": "false",
-            "CLIPPER_RENDER_PROFILE": "production",
-        }
-    )
-    settings = PipelineSettings.from_env()
-    renderer = FFmpegRenderer(
-        speaker_focus=settings.speaker_focus,
-        zoom_factor=settings.speaker_zoom,
-        speaker_sample_fps=settings.speaker_sample_fps,
-        speaker_switch_margin=settings.speaker_switch_margin,
-        speaker_min_reframe_seconds=settings.speaker_min_reframe_seconds,
-        speaker_max_reframe_seconds=settings.speaker_max_reframe_seconds,
-        speaker_seconds_per_crop=settings.speaker_seconds_per_crop,
-        speaker_hold_threshold=settings.speaker_hold_threshold,
-        speaker_reversal_guard_seconds=settings.speaker_reversal_guard_seconds,
-        speaker_window_seconds=settings.speaker_window_seconds,
-        speaker_min_detection_coverage=settings.speaker_min_detection_coverage,
-        profile=settings.render_profile,
-    )
-    reviewer = vision_provider("balanced")
-
-    planned_finalists = [
-        {
-            "concept_id": concept_id,
-            "plan_id": plan_id,
-            "mode": (
-                "RERENDER_AND_REVIEW"
-                if (concept_id, plan_id) in freshly_rendered_keys
-                else "REUSE_AND_REVALIDATE"
-            ),
-            "status": "PENDING",
-            "stages": (
-                {
-                    "prepare": "PENDING",
-                    "render": "PENDING",
-                    "technical_qc": "PENDING",
-                    "visual_review": "PENDING",
-                }
-                if (concept_id, plan_id) in freshly_rendered_keys
-                else {
-                    "prepare": "PENDING",
-                    "evidence_reuse": "PENDING",
-                    "technical_qc": "PENDING",
-                    "visual_review": "REUSED",
-                }
-            ),
-        }
-        for concept_id, plan_id in all_final_keys
-    ]
-    recovery_progress: dict[str, Any] = {
-        "schema_version": "clipper-targeted-recovery-progress-v1",
-        "source_run_id": source_run_id,
-        "output_run_id": output_run_id,
-        "status": "PENDING",
-        "completed_finalists": 0,
-        "total_finalists": len(planned_finalists),
-        "expected_remote_visual_reviews": [
-            {"concept_id": concept_id, "plan_id": plan_id}
-            for concept_id, plan_id in freshly_rendered_keys
-        ],
-        "finalists": planned_finalists,
-        "final_acceptance": "PENDING",
-        "active": None,
-        "failure": None,
-    }
-
-    def _progress_item(key: tuple[str, str]) -> dict[str, Any]:
-        return next(
-            item for item in planned_finalists if (item["concept_id"], item["plan_id"]) == key
-        )
-
-    def persist_recovery_progress(event: str) -> None:
-        recovery_progress["updated_at"] = datetime.now(UTC).isoformat()
-        progress_root = (
-            output_run_dir
-            if output_run_dir.is_dir()
-            else failed_run_dir
-            if failed_run_dir.is_dir()
-            else partial_run_dir
-        )
-        progress_root.mkdir(parents=True, exist_ok=True)
-        progress_path = progress_root / "recovery-progress.json"
-        temporary = progress_path.with_name(f".{progress_path.name}.{os.getpid()}.tmp")
-        temporary.write_text(
-            json.dumps(recovery_progress, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, progress_path)
-        print(
-            "clipper targeted recovery event: "
-            + json.dumps(
-                {
-                    "event": event,
-                    "output_run_id": output_run_id,
-                    "status": recovery_progress["status"],
-                    "completed_finalists": recovery_progress["completed_finalists"],
-                    "active": recovery_progress["active"],
-                },
-                sort_keys=True,
-            ),
-            flush=True,
-        )
-        artifact_volume.commit()
-
-    def begin_finalist_stage(key: tuple[str, str], stage: str) -> None:
-        item = _progress_item(key)
-        stages = item["stages"]
-        if not isinstance(stages, dict) or stages.get(stage) != "PENDING":
-            raise RuntimeError(f"invalid recovery stage transition for {key}: {stage}")
-        item["status"] = "RUNNING"
-        stages[stage] = "RUNNING"
-        recovery_progress["active"] = {
-            "concept_id": key[0],
-            "plan_id": key[1],
-            "stage": stage,
-        }
-        persist_recovery_progress("finalist_stage_started")
-
-    def pass_finalist_stage(key: tuple[str, str], stage: str) -> None:
-        item = _progress_item(key)
-        stages = item["stages"]
-        if not isinstance(stages, dict) or stages.get(stage) != "RUNNING":
-            raise RuntimeError(f"invalid recovery stage completion for {key}: {stage}")
-        stages[stage] = "PASS"
-        recovery_progress["active"] = None
-        persist_recovery_progress("finalist_stage_passed")
-
-    def pass_finalist(key: tuple[str, str]) -> None:
-        item = _progress_item(key)
-        stages = item["stages"]
-        if not isinstance(stages, dict) or any(
-            status not in {"PASS", "REUSED"} for status in stages.values()
-        ):
-            raise RuntimeError(f"recovery finalist has incomplete stages: {key}")
-        item["status"] = "PASS"
-        recovery_progress["completed_finalists"] = sum(
-            candidate["status"] == "PASS" for candidate in planned_finalists
-        )
-        persist_recovery_progress("finalist_passed")
-
-    def require_current_qc(
-        rendered_path: Path,
-        *,
-        clip: Any,
-        plan: Any,
-        key: tuple[str, str],
-    ) -> dict[str, Any]:
-        qc_payload = run_technical_qc(
-            rendered_path,
-            expected_duration=clip.duration,
-            caption_path=rendered_path.with_suffix(".ass"),
-            tracking_path=rendered_path.with_suffix(".tracking.json"),
-            caption_platform=plan.caption_platform,
-            watermark_required=True,
-            watermark_present=True,
-            caption_audit_path=rendered_path.with_suffix(".caption-audit.json"),
-        )
-        qc_payload["concept_id"] = key[0]
-        qc_payload["plan_id"] = key[1]
-        qc_payload["recovered"] = True
-        captions = qc_payload.get("captions")
-        if (
-            qc_payload.get("status") != "PASS"
-            or not isinstance(captions, dict)
-            or captions.get("simultaneous_narrative_layers_max") != 1
-            or not isinstance(captions.get("hook_overlay_rendered"), bool)
-        ):
-            raise RuntimeError(f"current technical QC failed for {key}: {qc_payload.get('issues')}")
-        return qc_payload
-
-    def review_fresh_render(
-        rendered_path: Path,
-        *,
-        clip: Any,
-        plan: Any,
-        key: tuple[str, str],
-        qc_payload: dict[str, Any],
-        review_scope: str,
-    ) -> dict[str, Any]:
-        tracking_payload = _load_json_object(rendered_path.with_suffix(".tracking.json"))
-        review, review_results = review_rendered_clip(
-            rendered_path,
-            reviewer,
-            duration=clip.duration,
-            output_dir=partial_run_dir / "visual-review" / rendered_path.stem / "frames",
-            context={
-                "plan_id": plan.plan_id,
-                "concept_id": plan.concept_id,
-                "source_start": clip.start,
-                "source_end": clip.end,
-                "hook_mode": plan.hook_mode,
-                "technical_qc": qc_payload,
-                "review_scope": review_scope,
-            },
-            transitions=tracking_transition_sample_times(tracking_payload.get("transitions", [])),
-            escalation=None,
-        )
-        review_payload = review.to_dict()
-        review_payload.update(
-            {
-                "concept_id": key[0],
-                "plan_id": key[1],
-                "models": [item.model.to_dict() for item in review_results],
-                "usage": [asdict(item.usage) for item in review_results],
-                "recovered": True,
-                "recovery_source": review_scope,
-            }
-        )
-        if review.decision != "PASS" or review.issues:
-            raise RuntimeError(f"targeted visual review did not pass for {key}: {review_payload}")
-        return review_payload
-
-    try:
-        partial_run_dir.mkdir(parents=True, exist_ok=False)
-        recovery_progress["status"] = "RUNNING"
-        persist_recovery_progress("recovery_started")
-        for directory_name in ("assets", "canonical", "edit-plans"):
-            source_directory = source_run_dir / directory_name
-            if source_directory.is_dir():
-                shutil.copytree(
-                    source_directory,
-                    partial_run_dir / directory_name,
-                    dirs_exist_ok=True,
-                )
-        for filename in (
-            "brief.normalized.json",
-            "concept-ranking.json",
-            "coverage.json",
-            "hook-variants.json",
-            "story-moments.json",
-            "transcript.json",
-        ):
-            source_file = source_run_dir / filename
-            if source_file.is_file():
-                shutil.copy2(source_file, partial_run_dir / filename)
-
-        rendered_clips: list[dict[str, Any]] = []
-        technical_qc: list[dict[str, Any]] = []
-        editorial_qc: list[dict[str, Any]] = []
-        render_attempts: list[dict[str, Any]] = []
-        new_review_payloads: list[dict[str, Any]] = []
-        new_rendered_clips: list[dict[str, Any]] = []
-
-        for attempt_number, key in enumerate(_RECOVERED_FINALISTS, start=1):
-            result = prior_results[key]
-            begin_finalist_stage(key, "prepare")
-            plan = _edit_plan_from_payload(plan_by_key[key])
-            concept = concept_by_id[key[0]]
-            clip = plan.to_clip_candidate(str(concept.get("text") or ""))
-            pass_finalist_stage(key, "prepare")
-            if key in rerendered_recovered_keys:
-                begin_finalist_stage(key, "render")
-                rendered_path = renderer.render(
-                    source_path,
-                    partial_run_dir
-                    / "clips"
-                    / f"attempt-{attempt_number:02d}-{key[0]}-{key[1]}-{plan.hook_mode}.mp4",
-                    clip,
-                    segments,
-                    watermark_path,
-                    plan,
-                )
-                pass_finalist_stage(key, "render")
-                begin_finalist_stage(key, "technical_qc")
-                qc_payload = require_current_qc(rendered_path, clip=clip, plan=plan, key=key)
-                pass_finalist_stage(key, "technical_qc")
-                (partial_run_dir / "qc").mkdir(parents=True, exist_ok=True)
-                (partial_run_dir / "qc" / f"{rendered_path.stem}.json").write_text(
-                    json.dumps(qc_payload, indent=2) + "\n", encoding="utf-8"
-                )
-                technical_qc.append(qc_payload)
-                _copy_clip_evidence(rendered_path, rendered_path, partial_run_dir)
-                begin_finalist_stage(key, "visual_review")
-                review_payload = review_fresh_render(
-                    rendered_path,
-                    clip=clip,
-                    plan=plan,
-                    key=key,
-                    qc_payload=qc_payload,
-                    review_scope="approved_legacy_caption_repair",
-                )
-                pass_finalist_stage(key, "visual_review")
-                editorial_qc.append(review_payload)
-                new_review_payloads.append(review_payload)
-                (partial_run_dir / "visual-review" / f"{rendered_path.stem}.json").write_text(
-                    json.dumps(review_payload, indent=2) + "\n", encoding="utf-8"
-                )
-                rendered_clips.append(
-                    _rendered_clip_payload(
-                        plan=plan,
-                        output_path=rendered_path,
-                        source_url=source_url,
-                        source_hash=_sha256(rendered_path),
-                    )
-                )
-                new_rendered_clips.append(rendered_clips[-1])
-                render_attempts.append(
-                    {
-                        "attempt": attempt_number,
-                        "concept_id": key[0],
-                        "plan_id": key[1],
-                        "queue": "legacy-caption-repair",
-                        "status": "ACCEPTED",
-                        "technical_qc": "PASS",
-                        "editorial_qc": review_payload,
-                    }
-                )
-                pass_finalist(key)
-                continue
-            begin_finalist_stage(key, "evidence_reuse")
-            reuse_run_id = source_run_id
-            reuse_run_dir = source_run_dir
-            report = result["report"]
-            review_payload = {
-                **report,
-                "concept_id": key[0],
-                "plan_id": key[1],
-                "models": [result["model"]],
-                "usage": [result["usage"]],
-                "recovered": True,
-                "recovery_source": "approved_visual_review_replay",
-            }
-            clip_name = str(result.get("clip") or "")
-            if rerendered_recovered_keys:
-                if base_run_dir is None:
-                    raise RuntimeError("recovered finalist reuse base run is unavailable")
-                reuse_run_id = base_run_id
-                reuse_run_dir = base_run_dir
-                clip_name = Path(str(base_rendered_by_key[key].get("output_path") or "")).name
-                review_payload = _load_json_object(
-                    base_run_dir / "visual-review" / f"{Path(clip_name).stem}.json"
-                )
-                if review_payload.get("decision") != "PASS" or review_payload.get("issues") not in (
-                    [],
-                    (),
-                ):
-                    raise RuntimeError(f"recovered finalist reuse visual review is not PASS: {key}")
-                review_payload["reused_from_run_id"] = base_run_id
-            if Path(clip_name).name != clip_name or not clip_name.endswith(".mp4"):
-                raise RuntimeError(f"invalid prior clip name: {clip_name!r}")
-            source_clip = reuse_run_dir / "clips" / clip_name
-            if not source_clip.is_file():
-                raise FileNotFoundError(source_clip)
-            destination_clip = partial_run_dir / "clips" / clip_name
-            _copy_clip_evidence(source_clip, destination_clip, partial_run_dir)
-            pass_finalist_stage(key, "evidence_reuse")
-            begin_finalist_stage(key, "technical_qc")
-            qc_payload = require_current_qc(destination_clip, clip=clip, plan=plan, key=key)
-            pass_finalist_stage(key, "technical_qc")
-            qc_payload["reused_from_run_id"] = reuse_run_id
-            video_payload = qc_payload.get("video")
-            if isinstance(video_payload, dict):
-                video_payload["path"] = str(destination_clip)
-            captions_payload = qc_payload.get("captions")
-            if isinstance(captions_payload, dict):
-                captions_payload["audit_path"] = str(
-                    destination_clip.with_suffix(".caption-audit.json")
-                )
-            (partial_run_dir / "qc").mkdir(parents=True, exist_ok=True)
-            (partial_run_dir / "qc" / f"{destination_clip.stem}.json").write_text(
-                json.dumps(qc_payload, indent=2) + "\n", encoding="utf-8"
-            )
-            technical_qc.append(qc_payload)
-            editorial_qc.append(review_payload)
-            (partial_run_dir / "visual-review").mkdir(parents=True, exist_ok=True)
-            (partial_run_dir / "visual-review" / f"{destination_clip.stem}.json").write_text(
-                json.dumps(review_payload, indent=2) + "\n", encoding="utf-8"
-            )
-            source_frames = reuse_run_dir / "visual-review" / source_clip.stem / "frames"
-            if not source_frames.is_dir():
-                raise RuntimeError(f"prior visual review frame set is missing: {source_frames}")
-            shutil.copytree(
-                source_frames,
-                partial_run_dir / "visual-review" / destination_clip.stem / "frames",
-            )
-            rendered_clips.append(
-                _rendered_clip_payload(
-                    plan=plan,
-                    output_path=destination_clip,
-                    source_url=source_url,
-                    source_hash=_sha256(destination_clip),
-                )
-            )
-            render_attempts.append(
-                {
-                    "attempt": attempt_number,
-                    "concept_id": key[0],
-                    "plan_id": key[1],
-                    "queue": "approved-recovery",
-                    "status": "ACCEPTED",
-                    "technical_qc": "PASS",
-                    "editorial_qc": review_payload,
-                }
-            )
-            pass_finalist(key)
-
-        for offset, key in enumerate(_TARGETED_RECOVERY_PLANS, start=1):
-            begin_finalist_stage(key, "prepare")
-            plan = _edit_plan_from_payload(plan_by_key[key])
-            concept = concept_by_id[key[0]]
-            clip = plan.to_clip_candidate(str(concept.get("text") or ""))
-            pass_finalist_stage(key, "prepare")
-            attempt_number = len(_RECOVERED_FINALISTS) + offset
-            if key in reused_targeted_keys:
-                begin_finalist_stage(key, "evidence_reuse")
-                if base_run_dir is None:
-                    raise RuntimeError("targeted reuse base run is unavailable")
-                base_rendered = base_rendered_by_key[key]
-                clip_name = Path(str(base_rendered.get("output_path") or "")).name
-                if not clip_name.endswith(".mp4"):
-                    raise RuntimeError(f"targeted reuse clip path is invalid for {key}")
-                source_clip = base_run_dir / "clips" / clip_name
-                destination_clip = partial_run_dir / "clips" / clip_name
-                _copy_clip_evidence(source_clip, destination_clip, partial_run_dir)
-                pass_finalist_stage(key, "evidence_reuse")
-                begin_finalist_stage(key, "technical_qc")
-                qc_payload = require_current_qc(destination_clip, clip=clip, plan=plan, key=key)
-                pass_finalist_stage(key, "technical_qc")
-                review_payload = _load_json_object(
-                    base_run_dir / "visual-review" / f"{source_clip.stem}.json"
-                )
-                if review_payload.get("decision") != "PASS" or review_payload.get("issues") not in (
-                    [],
-                    (),
-                ):
-                    raise RuntimeError(f"targeted reuse visual review is not PASS: {key}")
-                qc_payload["reused_from_run_id"] = base_run_id
-                review_payload["reused_from_run_id"] = base_run_id
-                (partial_run_dir / "qc" / f"{destination_clip.stem}.json").write_text(
-                    json.dumps(qc_payload, indent=2) + "\n", encoding="utf-8"
-                )
-                (partial_run_dir / "visual-review").mkdir(parents=True, exist_ok=True)
-                (partial_run_dir / "visual-review" / f"{destination_clip.stem}.json").write_text(
-                    json.dumps(review_payload, indent=2) + "\n", encoding="utf-8"
-                )
-                shutil.copytree(
-                    base_run_dir / "visual-review" / source_clip.stem / "frames",
-                    partial_run_dir / "visual-review" / destination_clip.stem / "frames",
-                )
-                rendered_clips.append(
-                    _rendered_clip_payload(
-                        plan=plan,
-                        output_path=destination_clip,
-                        source_url=source_url,
-                        source_hash=_sha256(destination_clip),
-                    )
-                )
-                technical_qc.append(qc_payload)
-                editorial_qc.append(review_payload)
-                render_attempts.append(
-                    {
-                        "attempt": attempt_number,
-                        "concept_id": key[0],
-                        "plan_id": key[1],
-                        "queue": "passed-targeted-reuse",
-                        "status": "ACCEPTED",
-                        "technical_qc": "PASS",
-                        "editorial_qc": review_payload,
-                    }
-                )
-                pass_finalist(key)
-                continue
-            output_path = (
-                partial_run_dir
-                / "clips"
-                / f"attempt-{attempt_number:02d}-{key[0]}-{key[1]}-{plan.hook_mode}.mp4"
-            )
-            begin_finalist_stage(key, "render")
-            rendered_path = renderer.render(
-                source_path,
-                output_path,
-                clip,
-                segments,
-                watermark_path,
-                plan,
-            )
-            pass_finalist_stage(key, "render")
-            begin_finalist_stage(key, "technical_qc")
-            qc_payload = run_technical_qc(
-                rendered_path,
-                expected_duration=clip.duration,
-                caption_path=rendered_path.with_suffix(".ass"),
-                tracking_path=rendered_path.with_suffix(".tracking.json"),
-                caption_platform=plan.caption_platform,
-                watermark_required=True,
-                watermark_present=True,
-                caption_audit_path=rendered_path.with_suffix(".caption-audit.json"),
-            )
-            qc_payload["concept_id"] = key[0]
-            qc_payload["plan_id"] = key[1]
-            qc_payload["recovered"] = True
-            if qc_payload.get("status") != "PASS":
-                raise RuntimeError(
-                    f"targeted technical QC failed for {key}: {qc_payload.get('issues')}"
-                )
-            pass_finalist_stage(key, "technical_qc")
-            (partial_run_dir / "qc").mkdir(parents=True, exist_ok=True)
-            (partial_run_dir / "qc" / f"{rendered_path.stem}.json").write_text(
-                json.dumps(qc_payload, indent=2) + "\n", encoding="utf-8"
-            )
-            technical_qc.append(qc_payload)
-            _copy_clip_evidence(rendered_path, rendered_path, partial_run_dir)
-            tracking_payload = json.loads(
-                rendered_path.with_suffix(".tracking.json").read_text(encoding="utf-8")
-            )
-            if not isinstance(tracking_payload, dict):
-                raise RuntimeError(f"tracking evidence is malformed for {key}")
-            begin_finalist_stage(key, "visual_review")
-            review, review_results = review_rendered_clip(
-                rendered_path,
-                reviewer,
-                duration=clip.duration,
-                output_dir=partial_run_dir / "visual-review" / rendered_path.stem / "frames",
-                context={
-                    "plan_id": plan.plan_id,
-                    "concept_id": plan.concept_id,
-                    "source_start": clip.start,
-                    "source_end": clip.end,
-                    "hook_mode": plan.hook_mode,
-                    "technical_qc": qc_payload,
-                    "review_scope": "user-approved-targeted-recovery",
-                },
-                transitions=tracking_transition_sample_times(
-                    tracking_payload.get("transitions", [])
-                ),
-                escalation=None,
-            )
-            review_payload = review.to_dict()
-            review_payload.update(
-                {
-                    "concept_id": key[0],
-                    "plan_id": key[1],
-                    "models": [item.model.to_dict() for item in review_results],
-                    "usage": [asdict(item.usage) for item in review_results],
-                    "recovered": True,
-                    "recovery_source": "approved_targeted_render_review",
-                }
-            )
-            if review.decision != "PASS" or review.issues:
-                raise RuntimeError(
-                    f"targeted visual review did not pass for {key}: {review_payload}"
-                )
-            pass_finalist_stage(key, "visual_review")
-            editorial_qc.append(review_payload)
-            new_review_payloads.append(review_payload)
-            (partial_run_dir / "visual-review" / f"{rendered_path.stem}.json").write_text(
-                json.dumps(review_payload, indent=2) + "\n", encoding="utf-8"
-            )
-            rendered_clips.append(
-                _rendered_clip_payload(
-                    plan=plan,
-                    output_path=rendered_path,
-                    source_url=source_url,
-                    source_hash=_sha256(rendered_path),
-                )
-            )
-            new_rendered_clips.append(rendered_clips[-1])
-            render_attempts.append(
-                {
-                    "attempt": attempt_number,
-                    "concept_id": key[0],
-                    "plan_id": key[1],
-                    "queue": "user-approved-targeted-recovery",
-                    "status": "ACCEPTED",
-                    "technical_qc": "PASS",
-                    "editorial_qc": review_payload,
-                }
-            )
-            pass_finalist(key)
-
-        physical_prefix = partial_run_dir.as_posix()
-        stable_prefix = f"{ARTIFACT_ROOT}/{output_run_id}"
-        rendered_clips = _replace_path_prefix(rendered_clips, physical_prefix, stable_prefix)
-        technical_qc = _replace_path_prefix(technical_qc, physical_prefix, stable_prefix)
-        for qc_payload, rendered in zip(technical_qc, rendered_clips, strict=True):
-            qc_path = partial_run_dir / "qc" / f"{Path(rendered['output_path']).stem}.json"
-            qc_path.write_text(json.dumps(qc_payload, indent=2) + "\n", encoding="utf-8")
-
-        distinct_concepts = {str(item["concept_id"]) for item in rendered_clips}
-        if len(rendered_clips) != 6 or len(distinct_concepts) != 6:
-            raise RuntimeError("targeted recovery did not produce six distinct finalists")
-        if len(technical_qc) != 6 or any(
-            item.get("status") != "PASS"
-            or not isinstance(item.get("captions"), dict)
-            or item["captions"].get("simultaneous_narrative_layers_max") != 1
-            or not isinstance(item["captions"].get("hook_overlay_rendered"), bool)
-            for item in technical_qc
-        ):
-            raise RuntimeError("targeted recovery has incomplete caption-concurrency QC")
-        final_manifest = copy.deepcopy(original_manifest)
-        now = datetime.now(UTC).isoformat()
-        final_manifest.update(
-            {
-                "created_at": now,
-                "status": "SUCCESS",
-                "status_reason": None,
-                "actual": {
-                    "rendered_finalists": 6,
-                    "submission_shortlist": 6,
-                    "distinct_finalist_concepts": 6,
-                    "distinct_shortlist_concepts": 6,
-                },
-                "render_attempts": render_attempts,
-                "rendered_clips": rendered_clips,
-                "submission_shortlist": list(rendered_clips),
-                "technical_qc": technical_qc,
-                "editorial_qc": editorial_qc,
-                "errors": [],
-            }
-        )
-        funnel = final_manifest.get("funnel")
-        if not isinstance(funnel, dict):
-            funnel = {}
-            final_manifest["funnel"] = funnel
-        funnel.update(
-            {
-                "render_plans": 6,
-                "render_attempts": 6,
-                "replacement_attempts": len(freshly_rendered_keys),
-                "render_success": 6,
-                "render_failures": 0,
-                "technical_qc_pass": 6,
-                "technical_qc_fail": 0,
-                "editorial_qc_pass": 6,
-                "editorial_qc_fail": 0,
-                "visual_review_escalations": 0,
-                "tracking_preflight_pass": 6,
-                "tracking_preflight_fail": 0,
-                "submission_shortlist": 6,
-                "distinct_finalist_concepts": 6,
-                "distinct_shortlist_concepts": 6,
-            }
-        )
-        metadata = final_manifest.get("run_metadata")
-        if not isinstance(metadata, dict):
-            metadata = {}
-            final_manifest["run_metadata"] = metadata
-        new_review_usage = [
-            usage
-            for item in new_review_payloads
-            for usage in item.get("usage", [])
-            if isinstance(usage, dict)
-        ]
-        metadata["targeted_recovery"] = {
-            "source_run_id": source_run_id,
-            "source_manifest_status": original_manifest.get("status"),
-            "source_manifest_status_reason": original_manifest.get("status_reason"),
-            "completed_at": now,
-            "approved_plan_keys": [
-                {"concept_id": concept_id, "plan_id": plan_id}
-                for concept_id, plan_id in _TARGETED_RECOVERY_PLANS
-            ],
-            "reused_passed_plan_keys": [
-                {"concept_id": concept_id, "plan_id": plan_id}
-                for concept_id, plan_id in _RECOVERED_FINALISTS
-                if (concept_id, plan_id) not in rerendered_recovered_keys
-            ]
-            + [
-                {"concept_id": concept_id, "plan_id": plan_id}
-                for concept_id, plan_id in reused_targeted_keys
-            ],
-            "excluded_duplicate_plan_key": {"concept_id": "c11", "plan_id": "p2"},
-            "approved_data_boundary": (
-                "source master remained in clipper-media-cache; only freshly rendered "
-                "derived visual-review frame sets were sent to clipper-open-editor"
-            ),
-            "source_sha256": source_sha256,
-            "vision_frame_set_counts": {
-                item["concept_id"]: len(
-                    list(
-                        (
-                            partial_run_dir
-                            / "visual-review"
-                            / Path(item["output_path"]).stem
-                            / "frames"
-                        ).glob("*.jpg")
-                    )
-                )
-                for item in new_rendered_clips
-            },
-            "new_visual_review_estimated_cost_usd": sum(
-                float(item.get("estimated_cost_usd") or 0.0) for item in new_review_usage
-            ),
-            "new_visual_review_gpu_seconds": sum(
-                float(item.get("gpu_seconds") or 0.0) for item in new_review_usage
-            ),
-        }
-        final_manifest["rejections"] = [
-            item
-            for item in original_manifest.get("rejections", [])
-            if isinstance(item, dict) and str(item.get("stage") or "") != "render"
-        ]
-        review_manifest = {
-            "status": "PENDING_HUMAN_REVIEW",
-            "required": True,
-            "clips": [
-                {
-                    "output_path": item["output_path"],
-                    "plan_id": item["plan_id"],
-                    "concept_id": item["concept_id"],
-                    "technical_qc": "PASS",
-                    "visual_qc": "PASS",
-                    "human_review": "PENDING",
-                }
-                for item in rendered_clips
-            ],
-        }
-        recovery_manifest = {
-            "status": "PASS",
-            "source_run_id": source_run_id,
-            "output_run_id": output_run_id,
-            "rendered_plan_keys": [
-                {"concept_id": concept_id, "plan_id": plan_id}
-                for concept_id, plan_id in freshly_rendered_keys
-            ],
-            "reused_targeted_plan_keys": [
-                {"concept_id": concept_id, "plan_id": plan_id}
-                for concept_id, plan_id in reused_targeted_keys
-            ],
-            "finalist_plan_keys": [
-                {"concept_id": item["concept_id"], "plan_id": item["plan_id"]}
-                for item in rendered_clips
-            ],
-            "manifest_status": "SUCCESS",
-        }
-        (partial_run_dir / "manifest.json").write_text(
-            json.dumps(final_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-        (partial_run_dir / "funnel.json").write_text(
-            json.dumps(funnel, indent=2) + "\n", encoding="utf-8"
-        )
-        (partial_run_dir / "rejections.json").write_text(
-            json.dumps(final_manifest["rejections"], indent=2) + "\n", encoding="utf-8"
-        )
-        (partial_run_dir / "editorial-review.json").write_text(
-            json.dumps(review_manifest, indent=2) + "\n", encoding="utf-8"
-        )
-        (partial_run_dir / "targeted-recovery.json").write_text(
-            json.dumps(recovery_manifest, indent=2) + "\n", encoding="utf-8"
-        )
-        target_payload = final_manifest.get("targets")
-        if not isinstance(target_payload, dict):
-            raise RuntimeError("targeted recovery manifest is missing campaign targets")
-        recovery_progress["final_acceptance"] = "RUNNING"
-        recovery_progress["active"] = {"stage": "final_acceptance"}
-        persist_recovery_progress("final_acceptance_started")
-        validate_live_run(
-            partial_run_dir,
-            expected_finalists=6,
-            expected_shortlist=6,
-            expected_distinct_finalists=int(target_payload.get("distinct_finalist_concepts") or 0),
-        )
-        recovery_progress["final_acceptance"] = "PASS"
-        recovery_progress["active"] = None
-        persist_recovery_progress("final_acceptance_passed")
-        partial_run_dir.replace(output_run_dir)
-        recovery_progress["status"] = "PASS"
-        persist_recovery_progress("recovery_passed")
-    except Exception as exc:
-        error_message = str(exc).strip() or repr(exc)
-        active = recovery_progress.get("active")
-        if isinstance(active, dict) and active.get("concept_id") and active.get("plan_id"):
-            failed_key = (str(active["concept_id"]), str(active["plan_id"]))
-            failed_item = _progress_item(failed_key)
-            failed_item["status"] = "FAIL"
-            failed_stages = failed_item.get("stages")
-            failed_stage = str(active.get("stage") or "")
-            if isinstance(failed_stages, dict) and failed_stage in failed_stages:
-                failed_stages[failed_stage] = "FAIL"
-        if active == {"stage": "final_acceptance"}:
-            recovery_progress["final_acceptance"] = "FAIL"
-        recovery_progress["status"] = "FAIL"
-        recovery_progress["failure"] = {
-            "type": type(exc).__name__,
-            "message": error_message[:4000],
-            "active": active,
-        }
-        try:
-            persist_recovery_progress("recovery_failed")
-            if partial_run_dir.is_dir():
-                partial_run_dir.replace(failed_run_dir)
-                recovery_progress["failure_path"] = failed_run_dir.as_posix()
-                persist_recovery_progress("failure_artifacts_preserved")
-        except Exception as persistence_exc:
-            print(
-                "clipper failed to persist targeted recovery failure evidence: "
-                f"{type(persistence_exc).__name__}: {persistence_exc}",
-                flush=True,
-            )
-        raise
-
-    run_relative = "/" + output_run_id
-    return {
-        "status": "PASS",
-        "run_volume": "clipper-production-artifacts",
-        "run_path": run_relative,
-        "source_run_id": source_run_id,
-        "rendered_plan_keys": [
-            {"concept_id": concept_id, "plan_id": plan_id}
-            for concept_id, plan_id in freshly_rendered_keys
-        ],
-        "reused_targeted_plan_keys": [
-            {"concept_id": concept_id, "plan_id": plan_id}
-            for concept_id, plan_id in reused_targeted_keys
-        ],
-        "rendered_finalists": 6,
-        "submission_shortlist": 6,
-        "distinct_finalist_concepts": 6,
-        "review_status": "AUTOMATED_MP4_REVIEW_PASS_HUMAN_PENDING",
-    }
 
 
 @app.function(
@@ -1569,20 +451,19 @@ def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
     scaledown_window=2,
 )
 def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
-    """Run the canonical clipper pipeline inside Modal against the mounted source master."""
-
+    """Run one autonomous production DAG over all explicitly targeted source masters."""
     from clipper.pipeline import PipelineSettings, run_pipeline
     from clipper.providers.factory import speech_providers
 
-    source_evidence = payload.get("source")
-    if not isinstance(source_evidence, dict):
-        raise ValueError("run_full_cycle requires source evidence")
+    raw_sources = payload.get("sources")
+    if not isinstance(raw_sources, list) or not raw_sources or not all(
+        isinstance(item, dict) for item in raw_sources
+    ):
+        raise ValueError("run_full_cycle requires a non-empty sources array")
+    source_items = [dict(item) for item in raw_sources]
     brief_yaml = str(payload.get("brief_yaml") or "")
-    channel_id = str(payload.get("channel_id") or "")
-    if not brief_yaml.strip() or not channel_id:
-        raise ValueError("run_full_cycle requires campaign brief and channel ID")
-    if source_evidence.get("quality_policy") != "highest_available_no_transcode":
-        raise RuntimeError("source master violates no-downgrade policy")
+    if not brief_yaml.strip():
+        raise ValueError("run_full_cycle requires a campaign brief")
 
     render = bool(payload.get("render", True))
     fresh_inference = bool(payload.get("fresh_inference", False))
@@ -1590,15 +471,13 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
 
     media_cache.reload()
     artifact_volume.reload()
-    source = VolumeSourceClient(source_evidence, channel_id)
-    brief_path = Path("/tmp/clipper-v10-brief.yaml")
+    source = VolumeSourceClient(source_items)
+    brief_path = Path(f"/tmp/clipper-brief-{uuid.uuid4().hex}.yaml")
     brief_path.write_text(brief_yaml, encoding="utf-8")
 
     os.environ.update(
         {
             "CLIPPER_MODAL_APP": MODEL_APP,
-            "CLIPPER_EDITORIAL_ENGINE": "open",
-            "CLIPPER_GROUNDING_ENGINE": "open",
             "CLIPPER_COMPUTE_PROFILE": "balanced",
             "CLIPPER_VISUAL_SCOUT": "true",
             "CLIPPER_VISUAL_REVIEW": "true",
@@ -1614,17 +493,21 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
             settings,
             cache_root=Path(ARTIFACT_ROOT) / "_fresh-cache" / uuid.uuid4().hex,
         )
-    asr, alignment, diarization = speech_providers("balanced")
+    asr, alignment, diarization = speech_providers(settings.compute_profile)
 
-    run_dir = run_pipeline(
-        brief_path,
-        settings=settings,
-        source_client=source,
-        transcription_provider=asr,
-        alignment_provider=alignment,
-        diarization_provider=diarization,
-        render=render,
-    )
+    try:
+        run_dir = run_pipeline(
+            brief_path,
+            settings=settings,
+            source_client=source,
+            transcription_provider=asr,
+            alignment_provider=alignment,
+            diarization_provider=diarization,
+            render=render,
+        )
+    finally:
+        brief_path.unlink(missing_ok=True)
+
     manifest_path = run_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(manifest, dict):
@@ -1642,23 +525,32 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     metadata = manifest.get("run_metadata")
     if not isinstance(metadata, dict):
         raise RuntimeError("production manifest is missing run_metadata")
-    source_meta = metadata.get("source_hashes")
-    if not isinstance(source_meta, dict) or str(source_meta.get(source.video.video_id) or "") != (
-        source.source_sha256
-    ):
-        raise RuntimeError("pipeline did not process the Modal-acquired source master hash")
-    metadata["source_execution"] = {
-        "mode": "modal-native",
-        "local_source_reused": False,
-        "source_volume": "clipper-media-cache",
-        "source_mount_path": source.source_path.as_posix(),
-        "source_sha256": source.source_sha256,
-    }
+    source_hashes = metadata.get("source_hashes")
+    if not isinstance(source_hashes, dict):
+        raise RuntimeError("production manifest is missing source hashes")
+
+    source_execution: list[dict[str, object]] = []
+    for video in source.videos:
+        evidence = source.evidence_by_video()[video.video_id]
+        expected = str(evidence.get("sha256") or "")
+        if str(source_hashes.get(video.video_id) or "") != expected:
+            raise RuntimeError(
+                f"pipeline did not process the Modal-acquired source hash: {video.video_id}"
+            )
+        source_execution.append(
+            {
+                "video_id": video.video_id,
+                "mode": "modal-native",
+                "source_volume": "clipper-media-cache",
+                "source_mount_path": str(evidence.get("mount_path") or ""),
+                "source_sha256": expected,
+            }
+        )
+    metadata["source_execution"] = source_execution
     if resume_from_run_id is not None:
         metadata["resume"] = {
             "from_run_id": resume_from_run_id,
-            "mode": "provenance-only",
-            "local_source_reused": False,
+            "mode": "content-addressed-stage-resume",
         }
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
@@ -1668,9 +560,14 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
         "status": "PASS",
         "run_volume": "clipper-production-artifacts",
         "run_path": run_relative,
-        "source": source_evidence,
+        "sources": source_items,
         "pipeline_status": manifest.get("status"),
-        "rendered_finalists": len(manifest.get("rendered_clips") or []),
-        "initial_shortlist": len(manifest.get("submission_shortlist") or []),
+        "eligible_quality_moments": int(
+            (metadata.get("quality_yield") or {}).get("eligible_quality_moments", 0)
+            if isinstance(metadata.get("quality_yield"), dict)
+            else 0
+        ),
+        "rendered": len(manifest.get("rendered_clips") or []),
+        "reviewable": len(manifest.get("submission_shortlist") or []),
         "review_status": "PENDING_ACTUAL_MP4_REVIEW" if render else "NOT_RENDERED",
     }
