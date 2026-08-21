@@ -74,7 +74,6 @@ def forbidden_spans_for_campaign(
     branding: tuple[BrandingEvidence, ...],
 ) -> tuple[SourceSpan, ...]:
     """Return intervals that cannot produce an automatic PASS for this campaign."""
-
     policy = brief.acceptance_policy
     if not policy.enabled:
         return ()
@@ -82,8 +81,7 @@ def forbidden_spans_for_campaign(
     segment_policy = policy.source_segments
     for hazard in hazards:
         classification = hazard.classification.value
-        allowed = classification in segment_policy.allow
-        if allowed:
+        if classification in segment_policy.allow:
             continue
         buffer = (
             segment_policy.safety_buffer_seconds if classification in segment_policy.forbid else 0.0
@@ -113,19 +111,18 @@ def _merge_spans(spans: tuple[SourceSpan, ...]) -> tuple[SourceSpan, ...]:
     return tuple(merged)
 
 
-def _quality_scores(score: float) -> EditorialScores:
-    value = round(max(0.0, min(1.0, score)) * 10.0, 4)
-    return EditorialScores(*(value for _ in range(12)))
+def _quality_scores(moment: QualityMoment) -> EditorialScores:
+    return EditorialScores(
+        quality=round(max(0.0, min(1.0, moment.assessment.quality_score)) * 10.0, 4),
+        confidence=max(0.0, min(1.0, moment.assessment.confidence)),
+    )
 
 
 def _source_text(timeline: CanonicalTimeline, word_ids: tuple[str, ...]) -> str:
     return " ".join(word.text for word in timeline.require_word_ids(word_ids)).strip()
 
 
-def _boundary_audit(
-    timeline: CanonicalTimeline,
-    moment: QualityMoment,
-) -> BoundaryAudit:
+def _boundary_audit(timeline: CanonicalTimeline, moment: QualityMoment) -> BoundaryAudit:
     window = moment.delivery_window
     words = timeline.require_word_ids(window.source_word_ids)
     positions = {word.word_id: index for index, word in enumerate(timeline.words)}
@@ -161,8 +158,6 @@ def _boundary_audit(
         failure_reasons=(),
         source_word_evidence=window.source_word_ids,
         model_identity={"origin": "quality-moment-graph"},
-        prompt_version="quality-moment-graph-v1",
-        schema_version="boundary-audit-v1",
     )
 
 
@@ -174,8 +169,7 @@ def adapt_quality_moment(
     hazards: tuple[SourceHazardSegment, ...],
     branding: tuple[BrandingEvidence, ...],
 ) -> AdaptedQualityMoment | None:
-    """Compile one accepted QualityMoment into the existing renderer contract."""
-
+    """Compile one accepted QualityMoment into the renderer compatibility contract."""
     if moment.core.video_id != timeline.video_id or moment.core.source_hash != timeline.source_hash:
         raise ValueError("quality moment and canonical timeline reference different sources")
     window = moment.delivery_window
@@ -212,25 +206,31 @@ def adapt_quality_moment(
         payoff=moment.envelope.required_followup_context,
         moment_type="quality_moment",
         recommended_duration=window.duration,
-        scores=_quality_scores(score),
+        scores=_quality_scores(moment),
         score=score10,
         semantic_cluster=moment.core.core_id,
         transcript_fingerprint=transcript_fingerprint,
     )
     span = SourceSpan(window.source_start, window.source_end)
     first_word = timeline.require_word_ids((window.source_word_ids[0],))[0]
-    variant_id = f"{concept_id}:direct"
+    opening_strategy = moment.assessment.opening_strategy.strip()
+    strategy_fingerprint = content_fingerprint(
+        {
+            "quality_moment_id": concept_id,
+            "window_id": window.window_id,
+            "opening_strategy": opening_strategy,
+        }
+    )
+    variant_id = f"{concept_id}:opening:{strategy_fingerprint[:12]}"
     variant = HookVariant(
         variant_id=variant_id,
         concept_id=concept_id,
-        mode="direct",
+        mode=opening_strategy,
         source_spans=(span,),
         overlay_text=None,
         score=score10,
         rationale=moment.assessment.rationale,
-        fingerprint=content_fingerprint(
-            {"quality_moment_id": concept_id, "window_id": window.window_id, "mode": "direct"}
-        ),
+        fingerprint=strategy_fingerprint,
         caption_start_source_time=window.source_start,
         caption_start_word=first_word.text,
     )
@@ -239,11 +239,11 @@ def adapt_quality_moment(
         video_id=timeline.video_id,
         concept_id=concept_id,
         variant_id=variant_id,
-        hook_mode="direct",
+        hook_mode=opening_strategy,
         source_spans=(span,),
         hook_text=None,
         beats=(),
-        caption_platform="tiktok",
+        caption_platform="generic_vertical",
         score=score10,
         transcript_fingerprint=transcript_fingerprint,
         caption_start_source_time=window.source_start,
