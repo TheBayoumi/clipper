@@ -117,13 +117,19 @@ def validate_live_run(
     if len(rendered_plans) != rendered_count:
         raise ValueError("every accepted MP4 must have one unique plan_id")
     if len(rendered_concepts) != rendered_count:
-        raise ValueError("dynamic yield must contain at most one accepted output per quality concept")
+        raise ValueError(
+            "dynamic yield must contain at most one accepted output per quality concept"
+        )
     if shortlist_plans != rendered_plans:
-        raise ValueError("review set must contain every accepted rendered quality moment exactly once")
+        raise ValueError(
+            "review set must contain every accepted rendered quality moment exactly once"
+        )
     if shortlist_concepts != rendered_concepts:
         raise ValueError("review set concept coverage does not match accepted quality moments")
     if shortlist_count != rendered_count:
-        raise ValueError("all accepted quality moments must be reviewable; fixed shortlists are forbidden")
+        raise ValueError(
+            "all accepted quality moments must be reviewable; fixed shortlists are forbidden"
+        )
     if distinct_finalist_count != rendered_count or distinct_shortlist_count != rendered_count:
         raise ValueError("actual distinct-concept counts do not match one-output-per-concept yield")
 
@@ -146,9 +152,15 @@ def validate_live_run(
     )
     if primary_count != eligible:
         raise ValueError("every eligible quality moment must have exactly one primary plan")
-    if _non_negative_int(quality_yield.get("rendered"), label="quality_yield.rendered") != rendered_count:
+    rendered_yield = _non_negative_int(
+        quality_yield.get("rendered"), label="quality_yield.rendered"
+    )
+    if rendered_yield != rendered_count:
         raise ValueError("quality_yield rendered count disagrees with accepted MP4s")
-    if _non_negative_int(quality_yield.get("accepted"), label="quality_yield.accepted") != rendered_count:
+    accepted_yield = _non_negative_int(
+        quality_yield.get("accepted"), label="quality_yield.accepted"
+    )
+    if accepted_yield != rendered_count:
         raise ValueError("quality_yield accepted count disagrees with accepted MP4s")
     if _non_negative_int(
         quality_yield.get("unrendered_or_rejected"),
@@ -203,7 +215,9 @@ def validate_live_run(
             or set(report_plans) != rendered_plans
             or any(item.get(decision_field) != "PASS" for item in matching)
         ):
-            raise ValueError(f"every accepted quality moment must have exactly one PASS {label} report")
+            raise ValueError(
+                f"every accepted quality moment must have exactly one PASS {label} report"
+            )
 
     require_one_pass(qc, decision_field="status", label="technical-QC")
     require_one_pass(boundary_qc, decision_field="decision", label="boundary-QC")
@@ -305,9 +319,18 @@ def validate_live_run(
     missing = sorted(required_funnel - set(funnel))
     if missing:
         raise ValueError(f"funnel ledger is missing fields: {missing}")
-    if _non_negative_int(funnel["quality_moments"], label="funnel.quality_moments") != eligible:
+    quality_moments = _non_negative_int(
+        funnel["quality_moments"], label="funnel.quality_moments"
+    )
+    if quality_moments != eligible:
         raise ValueError("funnel quality_moments does not match evidence-derived yield")
-    for field in ("render_success", "technical_qc_pass", "editorial_qc_pass", "submission_shortlist"):
+    yield_fields = (
+        "render_success",
+        "technical_qc_pass",
+        "editorial_qc_pass",
+        "submission_shortlist",
+    )
+    for field in yield_fields:
         if _non_negative_int(funnel[field], label=f"funnel.{field}") != rendered_count:
             raise ValueError(f"funnel {field} does not match accepted dynamic yield")
 
