@@ -50,7 +50,10 @@ class SourceModalityProfile:
         return self.speaker_identity_dependency >= 0.45
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["requires_visual_evidence"] = self.requires_visual_evidence
+        data["requires_speaker_identity"] = self.requires_speaker_identity
+        return data
 
 
 def _covered_duration(timeline: MultimodalTimeline, predicate: object) -> float:
@@ -62,7 +65,6 @@ def _covered_duration(timeline: MultimodalTimeline, predicate: object) -> float:
 
 def infer_source_modality_profile(timeline: MultimodalTimeline) -> SourceModalityProfile:
     """Infer modality dependence from observed evidence, never from source-type labels."""
-
     duration = timeline.duration
     if duration <= 0:
         return SourceModalityProfile(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
