@@ -82,6 +82,7 @@ class QualityBatchResult:
     source_evidence: dict[str, dict[str, object]]
     stage_cache_hits: int
     stage_executions: int
+    stage_dag_root: Path
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -98,6 +99,7 @@ class QualityBatchResult:
             "source_evidence": self.source_evidence,
             "stage_cache_hits": self.stage_cache_hits,
             "stage_executions": self.stage_executions,
+            "stage_dag_root": str(self.stage_dag_root),
         }
 
 
@@ -262,6 +264,7 @@ def plan_quality_batch(
                 "forbidden_spans": [{"start": item.start, "end": item.end} for item in forbidden],
                 "quality_planning": planning.to_dict(),
                 "adapted_quality_moment_ids": adapted_ids,
+                "semantic_cores": len(planning.cores),
                 "stage_cache_hits": source_cache_hits,
                 "stage_executions": source_executions,
             }
@@ -303,4 +306,5 @@ def plan_quality_batch(
         source_evidence=source_evidence,
         stage_cache_hits=cache_hits,
         stage_executions=executions,
+        stage_dag_root=root,
     )
