@@ -8,45 +8,82 @@ def valid_data() -> dict:
         "campaign_id": "c1",
         "title": "AI clips",
         "objective": "Explain automation",
-        "keywords": ["AI", "automation"],
-        "source_channel_ids": ["UC123"],
+        "allowed_video_ids": ["video-1"],
         "rights_confirmed": True,
     }
 
 
-def test_brief_parses_and_builds_query() -> None:
+def test_brief_parses_explicit_target_runtime_policy() -> None:
     brief = CampaignBrief.from_dict(valid_data())
-    assert brief.search_query == "AI clips AI automation"
+    assert brief.allowed_video_ids == ["video-1"]
+    assert brief.source_channel_ids == []
     assert brief.to_dict()["campaign_id"] == "c1"
 
 
 @pytest.mark.parametrize(
     ("patch", "message"),
     [
-        ({"keywords": []}, "keywords"),
         ({"region_code": "USA"}, "region_code"),
-        ({"clip_count": 0}, "clip_count"),
-        ({"source_limit": 51}, "source_limit"),
-        ({"max_clips_per_source": 0}, "max_clips_per_source"),
-        ({"min_clip_seconds": 5}, "min_clip_seconds"),
+        ({"min_clip_seconds": 0}, "min_clip_seconds"),
         ({"max_clip_seconds": 181}, "max_clip_seconds"),
         ({"min_clip_seconds": 45, "max_clip_seconds": 20}, "less than"),
-        ({"source_channel_ids": [], "allowed_video_ids": []}, "unrestricted"),
+        ({"allowed_video_ids": []}, "explicit target"),
+        ({"watermark_url": "http://example.test/logo.png"}, "https"),
+        (
+            {
+                "allowed_video_ids": ["video-1"],
+                "source_media_urls": {"video-2": "https://example.test/video.mp4"},
+            },
+            "source_media_urls",
+        ),
+        (
+            {
+                "source_media_urls": {"video-1": "http://example.test/video.mp4"},
+            },
+            "https",
+        ),
     ],
 )
-def test_brief_rejects_invalid_values(patch: dict, message: str) -> None:
-    data = valid_data() | patch
+def test_brief_rejects_invalid_runtime_policy_values(patch: dict, message: str) -> None:
     with pytest.raises(BriefValidationError, match=message):
-        CampaignBrief.from_dict(data)
+        CampaignBrief.from_dict(valid_data() | patch)
 
 
-def test_brief_rejects_bad_root_and_missing_fields() -> None:
+@pytest.mark.parametrize(
+    "field",
+    [
+        "keywords",
+        "negative_keywords",
+        "required_phrases",
+        "clip_count",
+        "source_limit",
+        "max_clips_per_source",
+        "published_after",
+        "production",
+        "diversity",
+        "hooks",
+        "editorial",
+    ],
+)
+def test_brief_rejects_obsolete_editorial_discovery_and_quota_fields(field: str) -> None:
+    value: object = ["legacy"]
+    if field in {"clip_count", "source_limit", "max_clips_per_source"}:
+        value = 1
+    elif field in {"production", "diversity", "hooks", "editorial"}:
+        value = {}
+    elif field == "published_after":
+        value = "2026-01-01T00:00:00Z"
+    with pytest.raises(BriefValidationError, match="obsolete editorial/discovery"):
+        CampaignBrief.from_dict(valid_data() | {field: value})
+
+
+def test_brief_rejects_bad_root_missing_fields_and_bad_lists() -> None:
     with pytest.raises(BriefValidationError, match="root"):
         CampaignBrief.from_dict([])  # type: ignore[arg-type]
     with pytest.raises(BriefValidationError, match="missing required"):
         CampaignBrief.from_dict({})
     with pytest.raises(BriefValidationError, match="list of strings"):
-        CampaignBrief.from_dict(valid_data() | {"keywords": "AI"})
+        CampaignBrief.from_dict(valid_data() | {"allowed_video_ids": "video-1"})
 
 
 def test_transcript_segment_validation() -> None:
@@ -66,98 +103,30 @@ def test_transcript_segment_validation() -> None:
         TranscriptWord(0, 1, " ")
 
 
-def test_optional_list_none_becomes_empty_but_requires_other_allowlist() -> None:
-    data = valid_data() | {"source_channel_ids": None, "allowed_video_ids": ["v"]}
+def test_optional_lists_none_become_empty_with_explicit_target_preserved() -> None:
+    data = valid_data() | {"source_channel_ids": None, "required_hashtags": None}
     brief = CampaignBrief.from_dict(data)
     assert brief.source_channel_ids == []
+    assert brief.required_hashtags == []
+    assert brief.allowed_video_ids == ["video-1"]
 
 
-def test_v8_nested_production_config_parses_and_serializes() -> None:
+def test_source_media_urls_require_explicit_target_and_serialize() -> None:
     brief = CampaignBrief.from_dict(
         valid_data()
         | {
-            "production": {
-                "candidate_pool_size": 40,
-                "concept_count": 9,
-                "variants_per_concept": 3,
-                "final_render_budget": 7,
-            },
-            "diversity": {"semantic_similarity_threshold": 0.8, "max_concepts_per_topic": 1},
-            "hooks": {"enabled": ["direct", "number"]},
-            "editorial": {
-                "platform": "instagram_reels",
-                "max_punch_ins_per_clip": 1,
-                "semantic_endings": True,
-                "post_speech_tail_seconds": 0.3,
-                "caption_max_lines": 2,
-            },
+            "source_media_urls": {"video-1": "https://example.test/video.mp4"},
+            "required_hashtags": ["#campaign"],
+            "posting_requirements": ["public account"],
         }
     )
-    assert brief.production.candidate_pool_size == 40
-    assert brief.production.final_render_budget == 7
-    assert brief.diversity.semantic_similarity_threshold == 0.8
-    assert brief.hooks.enabled == ("direct", "number")
-    assert brief.editorial.platform == "instagram_reels"
-    assert brief.to_dict()["production"]["concept_count"] == 9
+    payload = brief.to_dict()
+    assert payload["source_media_urls"] == {"video-1": "https://example.test/video.mp4"}
+    assert payload["required_hashtags"] == ["#campaign"]
+    assert payload["posting_requirements"] == ["public account"]
 
 
-@pytest.mark.parametrize(
-    ("patch", "message"),
-    [
-        ({"production": {"candidate_pool_size": 2}}, "candidate_pool_size"),
-        ({"production": {"concept_count": 0}}, "concept_count"),
-        ({"production": {"variants_per_concept": 7}}, "variants_per_concept"),
-        ({"production": {"final_render_budget": 25}}, "final_render_budget"),
-        ({"diversity": {"semantic_similarity_threshold": 0.1}}, "semantic_similarity_threshold"),
-        ({"diversity": {"max_concepts_per_topic": 0}}, "max_concepts_per_topic"),
-        ({"hooks": {"enabled": ["fake"]}}, "unsupported hook"),
-        ({"editorial": {"platform": "snapchat"}}, "platform"),
-        ({"editorial": {"max_punch_ins_per_clip": 4}}, "max_punch"),
-        ({"editorial": {"post_speech_tail_seconds": 2}}, "post_speech"),
-        ({"editorial": {"caption_max_lines": 3}}, "caption_max_lines"),
-    ],
-)
-def test_v8_nested_config_rejects_invalid_values(patch: dict, message: str) -> None:
-    with pytest.raises(BriefValidationError, match=message):
-        CampaignBrief.from_dict(valid_data() | patch)
-
-
-def test_production_distinct_finalist_concept_validation() -> None:
-    from clipper.models import BriefValidationError, ProductionConfig
-
-    config = ProductionConfig.from_dict(
-        {
-            "candidate_pool_size": 36,
-            "concept_count": 10,
-            "variants_per_concept": 3,
-            "final_render_budget": 6,
-            "minimum_distinct_finalist_concepts": 3,
-        }
-    )
-    assert config.minimum_distinct_finalist_concepts == 3
-    with pytest.raises(BriefValidationError, match="final_render_budget"):
-        ProductionConfig.from_dict(
-            {
-                "candidate_pool_size": 36,
-                "concept_count": 10,
-                "variants_per_concept": 3,
-                "final_render_budget": 2,
-                "minimum_distinct_finalist_concepts": 3,
-            }
-        )
-    with pytest.raises(BriefValidationError, match="concept_count"):
-        ProductionConfig.from_dict(
-            {
-                "candidate_pool_size": 36,
-                "concept_count": 2,
-                "variants_per_concept": 3,
-                "final_render_budget": 6,
-                "minimum_distinct_finalist_concepts": 3,
-            }
-        )
-
-
-def test_v11_structured_acceptance_policy_parses_and_serializes() -> None:
+def test_structured_acceptance_policy_parses_and_serializes() -> None:
     brief = CampaignBrief.from_dict(
         valid_data()
         | {
@@ -223,6 +192,6 @@ def test_v11_structured_acceptance_policy_parses_and_serializes() -> None:
         {"language": {"on_screen_text": "english"}},
     ],
 )
-def test_v11_acceptance_policy_rejects_unknown_or_unsafe_rules(policy: object) -> None:
+def test_acceptance_policy_rejects_unknown_or_unsafe_rules(policy: object) -> None:
     with pytest.raises(BriefValidationError):
         CampaignBrief.from_dict(valid_data() | {"acceptance_policy": policy})
