@@ -26,21 +26,15 @@ jobs:
 
           path = Path("src/clipper/autonomous_editor.py")
           source = path.read_text(encoding="utf-8")
-          old = '''            failures = [
-                item
-                for item in rejections
-                if item.get("stage") in {"hook_generation", "edit_plan"}
-                and "model_completion_failed" in (item.get("reasons") or [])
-            ]'''
-          new = '''            failures = [
-                item
-                for item in rejections
-                if item.get("stage") in {"hook_generation", "edit_plan"}
-                and isinstance((reasons := item.get("reasons")), list)
-                and "model_completion_failed" in reasons
-            ]'''
+          old = '                and "model_completion_failed" in (item.get("reasons") or [])'
+          new = (
+              '                and isinstance((reasons := item.get("reasons")), list)\n'
+              '                and "model_completion_failed" in reasons'
+          )
           if source.count(old) != 1:
-              raise SystemExit(f"expected exactly one autonomous-editor type target, found {source.count(old)}")
+              raise SystemExit(
+                  f"expected exactly one autonomous-editor type target, found {source.count(old)}"
+              )
           path.write_text(source.replace(old, new), encoding="utf-8")
           PY
 
