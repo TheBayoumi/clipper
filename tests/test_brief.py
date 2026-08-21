@@ -104,6 +104,18 @@ def test_explicit_targets_do_not_accept_editorial_quotas(tmp_path: Path) -> None
         load_brief(path)
 
 
+def test_brief_normalization_contains_no_campaign_specific_compatibility_profile() -> None:
+    source = Path("src/clipper/brief.py").read_text(encoding="utf-8")
+
+    assert "historical Double Coverage" not in source
+    assert "_inject_legacy_cache_compatibility" not in source
+    assert '"candidate_pool_size": 36' not in source
+    assert '"concept_count": 10' not in source
+    assert '"variants_per_concept": 3' not in source
+    assert '"final_render_budget": 6' not in source
+    assert '"minimum_distinct_finalist_concepts": 3' not in source
+
+
 def test_explicit_target_placeholders_are_rejected(tmp_path: Path) -> None:
     path = tmp_path / "brief.yaml"
     path.write_text(
