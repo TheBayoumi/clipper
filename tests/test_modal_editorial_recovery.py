@@ -1,14 +1,17 @@
 from pathlib import Path
 from typing import Any
 
-from clipper.cache import model_stage_cache_key
+import pytest
+
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
 from clipper.providers.editorial_prompt import (
     EDITORIAL_IDENTITY,
     EDITORIAL_SCHEMA_IDENTITY,
     editorial_contract,
     editorial_contract_fingerprint,
-    editorial_legacy_cache_compatible,
+    editorial_json_schema,
+    editorial_output_budget,
+    editorial_task_family,
 )
 from clipper.providers.modal import ModalEditorialProvider, ModalRemoteError
 
@@ -38,163 +41,70 @@ def _result(value: dict[str, Any]) -> ProviderResult[dict[str, Any]]:
     )
 
 
-def _success() -> ProviderResult[dict[str, Any]]:
-    return _result({"moments": []})
-
-
-def _edit_plan_payload() -> dict[str, Any]:
-    return {
-        "campaign": {"min_clip_seconds": 20, "max_clip_seconds": 45},
-        "source_context_words": [
-            {"word_ref": "w1", "source_start": 0.0, "source_end": 0.5},
-            {"word_ref": "w2", "source_start": 10.0, "source_end": 10.5},
-            {"word_ref": "w3", "source_start": 21.0, "source_end": 21.5},
-            {"word_ref": "w4", "source_start": 30.0, "source_end": 30.5},
-        ],
-    }
-
-
-def _plan(start_ref: str, end_ref: str, *, plan_id: str = "p1") -> dict[str, Any]:
-    return {
-        "plan_id": plan_id,
-        "video_id": "video",
-        "concept_id": "c1",
-        "variant_id": "v1",
-        "source_start_word_id": start_ref,
-        "source_end_word_id": end_ref,
-        "hook_start_word_id": start_ref,
-        "hook_end_word_id": start_ref,
-        "overlay_text": None,
-        "strategy_label": "direct",
-        "caption_platform": "tiktok",
-        "confidence": 0.9,
-    }
-
-
-def test_editorial_provider_recovers_from_truncation_then_json_error() -> None:
+def test_editorial_provider_recovers_from_strict_json_contract_errors() -> None:
     provider = SequenceEditorialProvider(
         [
             ModalRemoteError(
                 function_name="editorial",
                 error_type="EditorialOutputTruncated",
-                message="task=story_moments:21 attempt=1 exhausted max_new_tokens=1536",
+                message="output exhausted generation budget",
             ),
             ModalRemoteError(
                 function_name="editorial",
                 error_type="JSONDecodeError",
-                message="task=story_moments:21 attempt=2 unterminated string",
+                message="unterminated string",
             ),
-            _success(),
+            _result({"cores": []}),
         ]
     )
-    result = provider.complete_json(task="story_moments:21", payload={"words": []})
-    assert result.value == {"moments": []}
+    result = provider.complete_json(task="semantic_cores:0", payload={"words": []})
+    assert result.value == {"cores": []}
     assert [item.get("generation_recovery_attempt") for item in provider.requests] == [None, 2, 3]
+    assert "strict JSON object" in provider.requests[1]["generation_recovery_instruction"]
 
 
-def test_editorial_provider_replans_when_all_edit_plans_are_outside_duration_bounds() -> None:
+def test_editorial_provider_does_not_retry_unrelated_remote_error() -> None:
     provider = SequenceEditorialProvider(
-        [
-            _result({"plans": [_plan("w1", "w2")]}),
-            _result({"plans": [_plan("w1", "w3")]}),
-        ]
+        [ModalRemoteError(function_name="editorial", error_type="RuntimeError", message="gpu failed")]
     )
-
-    result = provider.complete_json(task="edit_plans:c1", payload=_edit_plan_payload())
-
-    assert result.value["plans"][0]["source_end_word_id"] == "w3"
-    assert len(provider.requests) == 2
-    recovery = provider.requests[1]
-    assert recovery["generation_recovery_attempt"] == 2
-    instruction = str(recovery["generation_recovery_instruction"])
-    assert "duration=10.500s" in instruction
-    assert "requires 20-45 seconds" in instruction
-    assert "may extend outside the short concept start/end" in instruction
-
-
-def test_editorial_provider_keeps_batch_when_at_least_one_edit_plan_has_valid_duration() -> None:
-    first = _result(
-        {
-            "plans": [
-                _plan("w1", "w2", plan_id="short"),
-                _plan("w1", "w3", plan_id="valid"),
-            ]
-        }
-    )
-    provider = SequenceEditorialProvider([first])
-
-    result = provider.complete_json(task="edit_plans:c1", payload=_edit_plan_payload())
-
-    assert result is first
+    with pytest.raises(ModalRemoteError, match="gpu failed"):
+        provider.complete_json(task="semantic_cores:0", payload={"words": []})
     assert len(provider.requests) == 1
 
 
-def test_editorial_contract_uses_stable_identity_and_measured_duration() -> None:
-    contract = editorial_contract("edit_plans:c1")
+def test_editorial_provider_stops_after_bounded_recovery_attempts() -> None:
+    failures = [
+        ModalRemoteError(function_name="editorial", error_type="JSONDecodeError", message="bad json")
+        for _ in range(3)
+    ]
+    provider = SequenceEditorialProvider(failures)
+    with pytest.raises(ModalRemoteError, match="bad json"):
+        provider.complete_json(task="quality_windows:core", payload={})
+    assert len(provider.requests) == 3
 
-    assert EDITORIAL_IDENTITY == "editor"
-    assert EDITORIAL_SCHEMA_IDENTITY == "editorial-json"
-    assert "campaign.min_clip_seconds is a hard floor" in contract
-    assert "duration = end.source_end - start.source_start" in contract
-    assert "may extend before or after the concept start/end" in contract
-    assert "omit that plan instead of returning an out-of-bounds range" in contract
 
-
-def test_content_addressed_cache_reuses_paid_legacy_stages_but_invalidates_edit_plans() -> None:
-    neutral = ModelIdentity(
-        "Qwen/Qwen3-30B-A3B-Instruct-2507",
-        "revision",
-        "bnb-4bit-nf4",
-        "modal-transformers",
-        EDITORIAL_IDENTITY,
-        EDITORIAL_SCHEMA_IDENTITY,
-    )
-    legacy = ModelIdentity(
-        neutral.model_id,
-        neutral.revision,
-        neutral.quantization,
-        neutral.inference_engine,
-        "editor-v2",
-        "editorial-json-v2",
-    )
-    common = {
-        "source_hash": "source",
-        "campaign": {"min_clip_seconds": 20, "max_clip_seconds": 45},
-        "sampling": {"do_sample": False},
+def test_editorial_contract_exposes_only_active_content_addressed_task_families() -> None:
+    tasks = {
+        "source_hazards:0": "source_hazards",
+        "semantic_cores:0": "semantic_cores",
+        "narrative_envelope:core": "narrative_envelope",
+        "quality_windows:core": "quality_windows",
     }
-
-    unchanged_payload = {"words": [{"word_ref": "w1"}]}
-    neutral_story = model_stage_cache_key(
-        "story_moments:0",
-        model=neutral,
-        payload=unchanged_payload,
-        **common,
-    )
-    legacy_story = model_stage_cache_key(
-        "story_moments:0",
-        model=legacy,
-        payload=unchanged_payload,
-        **common,
-    )
-    assert editorial_legacy_cache_compatible("story_moments:0") is True
-    assert neutral_story == legacy_story
-
-    edit_payload = _edit_plan_payload()
-    neutral_edit = model_stage_cache_key(
-        "edit_plans:c1",
-        model=neutral,
-        payload=edit_payload,
-        **common,
-    )
-    legacy_edit = model_stage_cache_key(
-        "edit_plans:c1",
-        model=legacy,
-        payload=edit_payload,
-        **common,
-    )
-    assert editorial_legacy_cache_compatible("edit_plans:c1") is False
-    assert editorial_contract_fingerprint("edit_plans:c1")
-    assert neutral_edit != legacy_edit
+    assert EDITORIAL_IDENTITY == "editor"
+    assert EDITORIAL_SCHEMA_IDENTITY == "structured-json"
+    for task, family in tasks.items():
+        assert editorial_task_family(task) == family
+        schema = editorial_json_schema(task)
+        assert schema["type"] == "object"
+        assert schema["additionalProperties"] is False
+        assert editorial_contract(task)
+        assert len(editorial_contract_fingerprint(task)) == 64
+    assert editorial_output_budget({"task": "source_hazards:0"}) == 2048
+    assert editorial_output_budget({"task": "semantic_cores:0"}) == 2048
+    assert editorial_output_budget({"task": "narrative_envelope:core"}) == 1536
+    assert editorial_output_budget({"task": "quality_windows:core"}) == 1536
+    with pytest.raises(ValueError, match="unsupported production editorial task"):
+        editorial_task_family("edit_plans:legacy")
 
 
 def test_modal_editorial_runtime_has_bounded_expanding_recovery_budget() -> None:
@@ -202,6 +112,4 @@ def test_modal_editorial_runtime_has_bounded_expanding_recovery_budget() -> None
     assert "class EditorialOutputTruncated(ValueError)" in source
     assert "base_budget * _editorial_recovery_attempt(payload)" in source
     assert "return min(4096," in source
-    assert "return fewer valid items with shorter prose" in source
     assert "exhausting the output budget" in source
-    assert "context=f\"task={task or '<missing>'} attempt={recovery_attempt}\"" in source

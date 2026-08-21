@@ -16,8 +16,6 @@ from clipper.models import (
 )
 from clipper.pipeline import (
     PipelineSettings,
-    _localize_render_inputs,
-    _span_media_for_plan,
     run_pipeline,
 )
 
@@ -66,7 +64,6 @@ def _brief() -> CampaignBrief:
         campaign_id="c",
         title="Campaign",
         objective="Clip",
-        keywords=("podcast",),
         source_channel_ids=("UC1",),
         allowed_video_ids=("v1",),
         rights_confirmed=True,
@@ -94,7 +91,6 @@ def test_fixture_source_rejects_unauthorized_identity_and_checksum(tmp_path: Pat
         campaign_id="c",
         title="Campaign",
         objective="Clip",
-        keywords=("podcast",),
         source_channel_ids=("UC2",),
         allowed_video_ids=("v1",),
         rights_confirmed=True,
@@ -120,47 +116,6 @@ def test_fixture_source_rejects_watermark_mismatch_and_path_escape(tmp_path: Pat
     (root / "fixture.json").write_text(json.dumps(payload))
     with pytest.raises(FixtureError, match="escapes"):
         FixtureSourceClient(root)
-
-
-def test_localize_render_inputs_preserves_absolute_edit_as_local_media() -> None:
-    clip = ClipCandidate("v1", 10.0, 14.0, "hello world", 8.0)
-    plan = EditPlan(
-        "p",
-        "v1",
-        "c",
-        "hv",
-        "question",
-        (SourceSpan(10.0, 14.0),),
-        None,
-        (),
-        "tiktok",
-        8.0,
-        "fp",
-        10.2,
-        "hello",
-    )
-    segments = [
-        TranscriptSegment(
-            9.0,
-            12.0,
-            "intro hello",
-            (TranscriptWord(9.2, 9.6, "intro"), TranscriptWord(10.2, 10.6, "hello")),
-        ),
-        TranscriptSegment(12.0, 14.5, "world", (TranscriptWord(12.2, 12.6, "world"),)),
-    ]
-    media = SpanMedia(Path("span.mp4"), 8.0, 16.0, "abc")
-    local_clip, local_plan, local_segments = _localize_render_inputs(clip, plan, segments, media)
-    assert (local_clip.start, local_clip.end) == (2.0, 6.0)
-    assert local_plan.source_spans == (SourceSpan(2.0, 6.0),)
-    assert local_plan.caption_start_source_time == pytest.approx(2.2)
-    assert [word.text for segment in local_segments for word in segment.words] == [
-        "intro",
-        "hello",
-        "world",
-    ]
-    assert local_segments[0].words[1].start == pytest.approx(2.2)
-    with pytest.raises(RuntimeError, match="does not cover"):
-        _localize_render_inputs(clip, plan, segments, SpanMedia(Path("x"), 11, 16, "x"))
 
 
 def test_fixture_manifest_validation_errors(tmp_path: Path) -> None:
@@ -238,21 +193,6 @@ def test_fixture_file_and_request_validation_errors(tmp_path: Path) -> None:
     client_without_mark = FixtureSourceClient(root)
     with pytest.raises(FixtureError, match="does not provide"):
         client_without_mark.campaign_watermark(_brief())
-
-
-def test_span_media_helper_rejects_invalid_protocol_result() -> None:
-    plan = EditPlan(
-        "p", "v1", "c", "v", "direct", (SourceSpan(10, 14),), None, (), "tiktok", 8, "fp"
-    )
-
-    class InvalidSource:
-        def download_media_span(self, *_args):
-            return Path("wrong")
-
-    with pytest.raises(RuntimeError, match="invalid media descriptor"):
-        _span_media_for_plan(
-            InvalidSource(), replace(_brief_video(), video_id="v1"), plan, Path(".")
-        )
 
 
 def _brief_video():

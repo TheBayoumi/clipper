@@ -22,7 +22,6 @@ from clipper.providers.editorial_prompt import (
     editorial_contract,
     editorial_contract_fingerprint,
     editorial_json_schema,
-    editorial_legacy_cache_compatible,
     editorial_output_budget,
     editorial_task_family,
 )
@@ -523,14 +522,7 @@ def test_stage_identity_validates_dependency_material_and_serializes_policy() ->
 
 def test_editorial_prompt_exposes_every_structured_task_family_and_budget() -> None:
     tasks = {
-        "episode_editorial_profile": "episode_editorial_profile",
-        "story_moments:0": "story_moments",
-        "clip_concepts": "clip_concepts",
-        "global_concept_comparison": "global_concept_comparison",
-        "hook_variants:c": "hook_variants",
-        "edit_plans:c": "edit_plans",
         "source_hazards:0": "source_hazards",
-        "boundary_audit:p": "boundary_audit",
         "semantic_cores:0": "semantic_cores",
         "narrative_envelope:core": "narrative_envelope",
         "quality_windows:core": "quality_windows",
@@ -541,23 +533,18 @@ def test_editorial_prompt_exposes_every_structured_task_family_and_budget() -> N
         assert schema["type"] == "object"
         assert schema["additionalProperties"] is False
         assert editorial_contract(task)
-        fingerprint = editorial_contract_fingerprint(task)
-        assert len(fingerprint) == 64
+        assert len(editorial_contract_fingerprint(task)) == 64
 
-    assert editorial_output_budget({"task": "episode_editorial_profile", "payload": {}}) == 1024
-    assert editorial_output_budget({"task": "semantic_cores:0", "payload": {}}) == 2048
-    assert editorial_output_budget({"task": "narrative_envelope:x", "payload": {}}) == 1536
-    assert editorial_output_budget({"task": "other", "payload": {}}) == 2048
-    assert editorial_output_budget({"task": "episode_editorial_profile"}) == 768
-    assert editorial_output_budget({"task": "story_moments:0"}) == 1024
-    assert editorial_output_budget({"task": "other"}) == 1536
-    assert isinstance(editorial_legacy_cache_compatible("episode_editorial_profile"), bool)
-    assert editorial_legacy_cache_compatible("semantic_cores:0") is False
-    with pytest.raises(ValueError, match="unsupported editorial task"):
+    assert editorial_output_budget({"task": "source_hazards:0"}) == 2048
+    assert editorial_output_budget({"task": "semantic_cores:0"}) == 2048
+    assert editorial_output_budget({"task": "narrative_envelope:x"}) == 1536
+    assert editorial_output_budget({"task": "quality_windows:x"}) == 1536
+    with pytest.raises(ValueError, match="unsupported production editorial task"):
+        editorial_output_budget({"task": "other"})
+    with pytest.raises(ValueError, match="unsupported production editorial task"):
         editorial_task_family("unsupported")
-    with pytest.raises(ValueError, match="structured generation"):
+    with pytest.raises(ValueError, match="unsupported production editorial task"):
         editorial_json_schema("unsupported")
-
 
 class _EdgeEditorial:
     identity = ModelIdentity("edge-editor", "rev", "none", "test", "editor", "schema")

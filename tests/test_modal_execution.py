@@ -10,7 +10,7 @@ import pytest
 
 from clipper.modal_execution import (
     _acquire_remote_source,
-    _authorized_candidates,
+    _explicit_candidates,
     _deploy,
     _function,
     _materialize_remote_run,
@@ -29,38 +29,29 @@ class ServiceError(RuntimeError):
     pass
 
 
-def _brief(*, allowed: list[str] | None = None, channels: list[str] | None = None) -> CampaignBrief:
-    return CampaignBrief.from_dict(
-        {
-            "campaign_id": "campaign",
-            "title": "Podcast",
-            "objective": "Find clips",
-            "keywords": ["podcast"],
-            "allowed_video_ids": allowed or [],
-            "source_channel_ids": channels or [],
-            "rights_confirmed": True,
-            "source_limit": 2,
-        }
-    )
-
-
 def _write_brief(path: Path) -> None:
     path.write_text(
         json.dumps(
             {
                 "campaign_id": "campaign",
                 "title": "Podcast",
-                "objective": "Find clips",
-                "keywords": ["podcast"],
-                "allowed_video_ids": ["v1"],
-                "source_channel_ids": ["UC1"],
-                "rights_confirmed": True,
-                "source_limit": 1,
+                "objective": "Find worthwhile complete clips",
+                "targets": {
+                    "mode": "explicit",
+                    "videos": [
+                        {
+                            "video_id": "v1",
+                            "url": "https://www.youtube.com/watch?v=v1",
+                            "channel_id": "UC1",
+                        }
+                    ],
+                },
+                "rights": {"confirmed": True, "authorized_channels": ["UC1"]},
+                "content_constraints": {"min_clip_seconds": 20, "max_clip_seconds": 45},
             }
         ),
         encoding="utf-8",
     )
-
 
 def test_function_hydrates_deployed_handle() -> None:
     handle = Mock()
@@ -246,22 +237,13 @@ def test_validate_model_access_requires_successful_remote_smoke() -> None:
         _validate_model_access("clipper-open-editor")
 
 
-def test_authorized_candidates_build_direct_youtube_requests_without_download() -> None:
-    brief = _brief(allowed=["v1", "v2"], channels=["UC1"])
-    candidates = _authorized_candidates(brief)
-    assert [item.video_id for item in candidates] == ["v1", "v2"]
+def test_explicit_candidates_resolve_only_campaign_targets(tmp_path: Path) -> None:
+    brief_path = tmp_path / "brief.json"
+    _write_brief(brief_path)
+    candidates = _explicit_candidates(brief_path)
+    assert [item.video_id for item in candidates] == ["v1"]
     assert candidates[0].url == "https://www.youtube.com/watch?v=v1"
     assert candidates[0].channel_id == "UC1"
-
-
-def test_authorized_candidates_uses_discovery_only_when_ids_are_absent() -> None:
-    brief = _brief(channels=["UC1"])
-    candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
-    with patch("clipper.modal_execution.YouTubeClient") as client:
-        client.return_value.discover.return_value = [candidate]
-        assert _authorized_candidates(brief) == [candidate]
-    client.return_value.discover.assert_called_once_with(brief)
-
 
 def test_acquire_remote_source_uses_modal_egress_and_validates_quality() -> None:
     function = Mock()
@@ -421,7 +403,7 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
 
     with (
         patch("clipper.modal_execution.ensure_modal_runtime") as ensure,
-        patch("clipper.modal_execution._authorized_candidates", return_value=[candidate]),
+        patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
         patch("clipper.modal_execution._function", side_effect=fake_function),
         patch(
             "clipper.modal_execution._acquire_remote_source",
@@ -454,57 +436,31 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
     )
 
 
-def test_run_modal_pipeline_rejects_missing_or_multi_source_and_bad_runner(tmp_path: Path) -> None:
+def test_run_modal_pipeline_fails_closed_for_runtime_empty_targets_and_bad_runner(tmp_path: Path) -> None:
     brief_path = tmp_path / "brief.json"
     _write_brief(brief_path)
     candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
 
     with (
-        patch(
-            "clipper.modal_execution.ensure_modal_runtime",
-            side_effect=RuntimeError("model access denied"),
-        ),
+        patch("clipper.modal_execution.ensure_modal_runtime", side_effect=RuntimeError("model access denied")),
         patch("clipper.modal_execution._function") as function,
         pytest.raises(RuntimeError, match="model access denied"),
     ):
         run_modal_pipeline(
-            brief_path,
-            artifact_root=tmp_path / "artifacts",
-            resume_from_run_id=None,
-            render=True,
-            fresh_inference=False,
+            brief_path, artifact_root=tmp_path / "artifacts", resume_from_run_id=None,
+            render=True, fresh_inference=False,
         )
     function.assert_not_called()
 
     with (
         patch("clipper.modal_execution.ensure_modal_runtime"),
         patch("clipper.modal_execution._function", return_value=Mock()),
-        patch("clipper.modal_execution._authorized_candidates", return_value=[]),
-        pytest.raises(RuntimeError, match="no authorized source"),
+        patch("clipper.modal_execution._explicit_candidates", return_value=[]),
+        pytest.raises(RuntimeError, match="no explicit authorized targets"),
     ):
         run_modal_pipeline(
-            brief_path,
-            artifact_root=tmp_path / "artifacts",
-            resume_from_run_id=None,
-            render=True,
-            fresh_inference=False,
-        )
-
-    with (
-        patch("clipper.modal_execution.ensure_modal_runtime"),
-        patch("clipper.modal_execution._function", return_value=Mock()),
-        patch(
-            "clipper.modal_execution._authorized_candidates",
-            return_value=[candidate, candidate],
-        ),
-        pytest.raises(RuntimeError, match="source_limit=1"),
-    ):
-        run_modal_pipeline(
-            brief_path,
-            artifact_root=tmp_path / "artifacts",
-            resume_from_run_id=None,
-            render=True,
-            fresh_inference=False,
+            brief_path, artifact_root=tmp_path / "artifacts-empty", resume_from_run_id=None,
+            render=True, fresh_inference=False,
         )
 
     acquire = Mock()
@@ -512,43 +468,26 @@ def test_run_modal_pipeline_rejects_missing_or_multi_source_and_bad_runner(tmp_p
     runner.remote.return_value = "invalid"
     with (
         patch("clipper.modal_execution.ensure_modal_runtime"),
-        patch("clipper.modal_execution._authorized_candidates", return_value=[candidate]),
-        patch(
-            "clipper.modal_execution._function",
-            side_effect=lambda _app, name: acquire if name == "acquire_source" else runner,
-        ),
-        patch(
-            "clipper.modal_execution._acquire_remote_source",
-            return_value={"quality_policy": "highest_available_no_transcode"},
-        ),
+        patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
+        patch("clipper.modal_execution._function", side_effect=lambda _app, name: acquire if name == "acquire_source" else runner),
+        patch("clipper.modal_execution._acquire_remote_source", return_value={"quality_policy": "highest_available_no_transcode"}),
         pytest.raises(RuntimeError, match="invalid response"),
     ):
         run_modal_pipeline(
-            brief_path,
-            artifact_root=tmp_path / "artifacts",
-            resume_from_run_id=None,
-            render=True,
-            fresh_inference=False,
+            brief_path, artifact_root=tmp_path / "artifacts-invalid", resume_from_run_id=None,
+            render=True, fresh_inference=False,
         )
 
     runner.remote.return_value = {"run_path": ""}
     with (
         patch("clipper.modal_execution.ensure_modal_runtime"),
-        patch("clipper.modal_execution._authorized_candidates", return_value=[candidate]),
-        patch(
-            "clipper.modal_execution._function",
-            side_effect=lambda _app, name: acquire if name == "acquire_source" else runner,
-        ),
-        patch(
-            "clipper.modal_execution._acquire_remote_source",
-            return_value={"quality_policy": "highest_available_no_transcode"},
-        ),
+        patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
+        patch("clipper.modal_execution._function", side_effect=lambda _app, name: acquire if name == "acquire_source" else runner),
+        patch("clipper.modal_execution._acquire_remote_source", return_value={"quality_policy": "highest_available_no_transcode"}),
         pytest.raises(RuntimeError, match="no run path"),
     ):
         run_modal_pipeline(
-            brief_path,
-            artifact_root=tmp_path / "artifacts",
-            resume_from_run_id=None,
-            render=True,
-            fresh_inference=False,
+            brief_path, artifact_root=tmp_path / "artifacts-no-path", resume_from_run_id=None,
+            render=True, fresh_inference=False,
         )
+

@@ -18,7 +18,7 @@ from clipper.editorial_integrity import (
     evaluate_campaign_policy,
     evaluate_pre_render_eligibility,
 )
-from clipper.models import AcceptancePolicy, CampaignBrief, ProductionConfig
+from clipper.models import AcceptancePolicy, CampaignBrief
 
 
 def _brief() -> CampaignBrief:
@@ -26,12 +26,10 @@ def _brief() -> CampaignBrief:
         campaign_id="generic-campaign",
         title="Authorized interview clips",
         objective="Select complete, campaign-safe stories.",
-        keywords=["interview"],
         allowed_video_ids=["video"],
         rights_confirmed=True,
         min_clip_seconds=8,
         max_clip_seconds=45,
-        production=ProductionConfig(final_render_budget=6, minimum_distinct_finalist_concepts=3),
         acceptance_policy=AcceptancePolicy.from_dict(
             {
                 "source_segments": {
