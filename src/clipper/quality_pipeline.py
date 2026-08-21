@@ -18,8 +18,8 @@ from .editorial_integrity import (
 from .models import (
     CampaignBrief,
     ClipConcept,
-    EditPlan,
     EditorialScores,
+    EditPlan,
     HookVariant,
     SourceSpan,
 )
@@ -182,7 +182,13 @@ def adapt_quality_moment(
         raise ValueError("quality moment and canonical timeline reference different sources")
     window = moment.delivery_window
     boundary = _boundary_audit(timeline, moment)
-    policy = evaluate_campaign_policy(brief, window.source_start, window.source_end, hazards, branding)
+    policy = evaluate_campaign_policy(
+        brief,
+        window.source_start,
+        window.source_end,
+        hazards,
+        branding,
+    )
     eligibility = evaluate_pre_render_eligibility(brief, boundary, policy, repaired=False)
     if eligibility.decision != GateDecision.PASS:
         return None
