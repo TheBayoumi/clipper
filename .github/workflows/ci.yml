@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   repair-quality-graph-typing:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/word-reveal-face-tracking'
+    if: github.ref == 'refs/heads/feat/word-reveal-face-tracking' || github.head_ref == 'feat/word-reveal-face-tracking'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
