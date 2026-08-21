@@ -404,6 +404,7 @@ class VolumeSourceClient:
         return SpanMedia(self.source_path, 0.0, self.duration, self.source_sha256)
 
 
+_LEGACY_RECOVERY_PROTOCOL = "v8-six-finalist-recovery"
 _TARGETED_RECOVERY_PLANS = (("c14", "p3"), ("c5", "p1"))
 _RECOVERED_FINALISTS = (("c3", "p3"), ("c6", "p1"), ("c11", "p1"), ("c2", "p4"))
 _APPROVED_REPLAY_RESULTS = (*_RECOVERED_FINALISTS, ("c11", "p2"))
@@ -549,7 +550,12 @@ def _rendered_clip_payload(
     scaledown_window=2,
 )
 def recover_finalists(payload: dict[str, Any]) -> dict[str, Any]:
-    """Repair only explicitly selected finalists and revalidate every reused clip."""
+    """Run the explicit legacy V8 six-finalist repair protocol only."""
+
+    if str(payload.get("legacy_recovery_protocol") or "") != _LEGACY_RECOVERY_PROTOCOL:
+        raise ValueError(
+            "recover_finalists is restricted to the explicit legacy V8 six-finalist protocol"
+        )
 
     from clipper.acceptance import validate_live_run
     from clipper.canonical import CanonicalTimeline, transcript_segments_from_canonical
@@ -1623,9 +1629,10 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(manifest, dict):
         raise RuntimeError("production pipeline returned an invalid manifest")
-    if render and manifest.get("status") != "SUCCESS":
+    if render and manifest.get("status") not in {"SUCCESS", "DEGRADED"}:
         raise RuntimeError(
-            f"production pipeline did not reach SUCCESS: {manifest.get('status_reason')}"
+            "production pipeline did not reach SUCCESS or DEGRADED: "
+            f"{manifest.get('status_reason')}"
         )
     if not render and manifest.get("status") == "FAILED":
         raise RuntimeError(
