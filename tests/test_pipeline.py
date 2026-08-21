@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -737,7 +738,54 @@ class FakeOpenEditorialProvider:
         self.calls.append(task)
         self.payloads[task] = payload
         usage = InferenceUsage("test", "2026-08-08T00:00:00Z", 0.01)
-        if task == "episode_editorial_profile":
+        if task.startswith("semantic_cores:"):
+            words = payload["words"]
+            assert isinstance(words, list) and words
+            refs = [item["word_ref"] for item in words if isinstance(item, dict)]
+            value: dict[str, object] = {
+                "cores": [
+                    {
+                        "core_id": "provider-core-id-is-not-authoritative",
+                        "start_word_id": refs[0],
+                        "end_word_id": refs[-1],
+                        "semantic_summary": "A complete explanation of saving time",
+                        "editorial_reason": "The source idea is independently worthwhile",
+                        "confidence": 0.95,
+                    }
+                ]
+            }
+        elif task.startswith("narrative_envelope:"):
+            core = payload["core"]
+            words = payload["source_context_words"]
+            assert isinstance(core, dict)
+            assert isinstance(words, list) and words
+            refs = [item["word_ref"] for item in words if isinstance(item, dict)]
+            value = {
+                "envelope_id": "provider-envelope-id-is-not-authoritative",
+                "core_id": core["core_id"],
+                "start_word_id": refs[0],
+                "end_word_id": refs[-1],
+                "required_prior_context": "",
+                "required_followup_context": "",
+                "setup_resolved": True,
+                "payoff_resolved": True,
+                "reference_resolution": [],
+                "confidence": 0.95,
+            }
+        elif task.startswith("quality_windows:"):
+            core = payload["core"]
+            windows = payload["feasible_windows"]
+            assert isinstance(core, dict)
+            assert isinstance(windows, list) and windows and isinstance(windows[0], dict)
+            value = {
+                "core_id": core["core_id"],
+                "selected_window_id": windows[0]["window_id"],
+                "decision": "PASS",
+                "quality_score": 0.95,
+                "rationale": "Complete, specific, and worth publishing",
+                "confidence": 0.95,
+            }
+        elif task == "episode_editorial_profile":
             value: dict[str, object] = {
                 "summary": "A short explanatory conversation",
                 "valuable_moment_characteristics": ["self-contained explanation"],
@@ -930,16 +978,11 @@ def test_open_editorial_pipeline_bypasses_all_heuristic_entry_points(tmp_path: P
     assert manifest["funnel"]["edit_plans"] == 1
     assert manifest["edit_plans"][0]["caption_start_word"] == "This"
     assert (run_dir / "open-model" / "model-invocations.json").is_file()
-    assert editorial.calls == [
-        "episode_editorial_profile",
-        "story_moments:0",
-        "clip_concepts",
-        "global_concept_comparison",
-        "hook_variants:concept-1",
-        "edit_plans:concept-1",
-        "boundary_audit:plan-1",
-    ]
-    assert embedding.calls == 1
+    assert len(editorial.calls) == 3
+    assert editorial.calls[0] == "semantic_cores:0"
+    assert editorial.calls[1].startswith("narrative_envelope:core-")
+    assert editorial.calls[2].startswith("quality_windows:core-")
+    assert embedding.calls == 0
 
 
 class DummyVisionProvider:
@@ -1328,7 +1371,7 @@ def test_open_editorial_pipeline_consumes_sparse_visual_timeline_when_media_exis
     diarization = _GroundingDiarization()
     visual = VisualTimeline(
         "allowed",
-        "visual-hash",
+        hashlib.sha256(media.read_bytes()).hexdigest(),
         (
             VisualEvent(
                 1.0,
@@ -1372,10 +1415,13 @@ def test_open_editorial_pipeline_consumes_sparse_visual_timeline_when_media_exis
             render=False,
         )
     assert scout.call_count == 1
-    profile_visual = editorial.payloads["episode_editorial_profile"]["visual_evidence"]
-    story_visual = editorial.payloads["story_moments:0"]["visual_evidence"]
-    assert isinstance(profile_visual, list) and profile_visual[0]["scene_id"] == "scene-1"
-    assert isinstance(story_visual, list) and story_visual[0]["event_labels"] == ["demonstration"]
+    semantic_visual = editorial.payloads["semantic_cores:0"]["multimodal_evidence"]
+    assert isinstance(semantic_visual, list)
+    assert any("scene-1" in item["scene_ids"] for item in semantic_visual)
+    assert any(
+        "The guest visibly demonstrates an object while speaking." in item["visual_summaries"]
+        for item in semantic_visual
+    )
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["run_metadata"]["visual_inference"]["scout_runs"][0]["event_count"] == 1
     assert (run_dir / "visual" / "allowed.json").is_file()
