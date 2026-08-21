@@ -217,7 +217,9 @@ def test_hilp_evidence_validation_exercises_every_review_branch() -> None:
             validate_hilp_evidence(payload)
 
 
-def test_proc_rss_fallback_parses_linux_status_and_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_proc_rss_fallback_parses_linux_status_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class FakeStatus:
         def __init__(self, text: str, *, exists: bool = True) -> None:
             self.text = text
@@ -302,7 +304,9 @@ def test_cpu_and_peak_rss_fallbacks_cover_posix_macos_and_windows(
     assert performance.peak_rss_mb() == 0.0
 
 
-def test_gpu_directory_and_run_telemetry_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_gpu_directory_and_run_telemetry_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     assert performance.directory_size_bytes(tmp_path / "missing") == 0
     (tmp_path / "nested").mkdir()
     (tmp_path / "a.bin").write_bytes(b"abc")

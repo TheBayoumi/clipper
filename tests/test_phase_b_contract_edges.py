@@ -442,7 +442,14 @@ def test_quality_contracts_reject_cross_graph_or_nonpassing_state() -> None:
             "only PASS",
         ),
     )
-    for moment_id, candidate_core, candidate_envelope, candidate_window, candidate_assessment, match in cases:
+    for (
+        moment_id,
+        candidate_core,
+        candidate_envelope,
+        candidate_window,
+        candidate_assessment,
+        match,
+    ) in cases:
         with pytest.raises(ValueError, match=match):
             QualityMoment(
                 moment_id,
@@ -703,7 +710,9 @@ def test_autonomous_payload_parsers_fail_closed_on_malformed_model_output() -> N
 
 def test_autonomous_planner_constructor_source_guards_and_rejection_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="at least 200"):
-        AutonomousQualityPlanner(_EdgeEditorial("reject"), DagStore(tmp_path / "small"), max_words_per_chunk=100)
+        AutonomousQualityPlanner(
+            _EdgeEditorial("reject"), DagStore(tmp_path / "small"), max_words_per_chunk=100
+        )
     with pytest.raises(ValueError, match="chunk overlap"):
         AutonomousQualityPlanner(
             _EdgeEditorial("reject"),
