@@ -13,15 +13,28 @@ from .models import (
     TranscriptWord,
 )
 from .providers.base import ModelIdentity
+from .stage_contracts import content_fingerprint
 
-# Frozen compatibility namespace for already-produced cache entries. This is no
-# longer a release/version switch and must not be bumped for prompt edits.
-CACHE_SCHEMA_VERSION = "clipper-v10-analysis-1"
+# Compatibility name retained for callers; the value is a hash of cache semantics,
+# not a release/schema counter and must never be manually bumped.
+CACHE_SCHEMA_VERSION = content_fingerprint(
+    {
+        "storage": "content-addressed-json-files",
+        "key_inputs": [
+            "stage",
+            "source_hash",
+            "model_identity",
+            "task_contract",
+            "campaign_policy",
+            "payload",
+            "sampling",
+        ],
+    }
+)
 
 
 def stable_hash(payload: object) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return content_fingerprint(payload)
 
 
 def file_sha256(path: str | Path) -> str:
@@ -39,7 +52,7 @@ def transcript_cache_key(
 ) -> str:
     return stable_hash(
         {
-            "schema": CACHE_SCHEMA_VERSION,
+            "cache_contract": CACHE_SCHEMA_VERSION,
             "stage": "transcript",
             "video_id": video_id,
             "source_hash": source_hash,
@@ -55,25 +68,10 @@ def analysis_cache_key(
     segments: list[TranscriptSegment],
     brief: CampaignBrief,
 ) -> str:
-    campaign = brief.to_dict()
-    return stable_hash(
-        {
-            "schema": CACHE_SCHEMA_VERSION,
-            "stage": "editorial-analysis",
-            "video_id": video_id,
-            "transcript": [segment.to_dict() for segment in segments],
-            "campaign": {
-                "keywords": campaign["keywords"],
-                "negative_keywords": campaign["negative_keywords"],
-                "required_phrases": campaign["required_phrases"],
-                "min_clip_seconds": campaign["min_clip_seconds"],
-                "max_clip_seconds": campaign["max_clip_seconds"],
-                "production": campaign["production"],
-                "diversity": campaign["diversity"],
-                "hooks": campaign["hooks"],
-                "editorial": campaign["editorial"],
-            },
-        }
+    """Fail closed if obsolete heuristic editorial analysis is requested."""
+    del video_id, segments, brief
+    raise RuntimeError(
+        "heuristic editorial analysis cache was removed; use the autonomous quality graph DAG"
     )
 
 
@@ -83,39 +81,15 @@ def _model_cache_material(
     *,
     sampling: dict[str, object] | None,
 ) -> tuple[dict[str, str], str, str | None]:
-    """Resolve content-addressed editorial cache identity with legacy reuse.
+    """Resolve content-addressed model identity and exact active task contract."""
+    contract_fingerprint: str | None = None
+    if model.prompt_version == "editor":
+        try:
+            from .providers.editorial_prompt import editorial_contract_fingerprint
 
-    The active editorial identity is version-neutral. For task contracts that are
-    byte-for-byte compatible with the historical editor-v2 contract, we generate
-    the exact old cache material so already-paid inference remains reusable.
-    Changed contracts (notably EditPlans) use the active identity plus an exact
-    contract fingerprint, so only those stages are invalidated.
-    """
-
-    if model.prompt_version != "editor":
-        return model.to_dict(), model.cache_fingerprint(sampling=sampling), None
-
-    try:
-        from .providers.editorial_prompt import (
-            editorial_contract_fingerprint,
-            editorial_legacy_cache_compatible,
-        )
-
-        contract_fingerprint = editorial_contract_fingerprint(stage)
-    except ValueError:
-        return model.to_dict(), model.cache_fingerprint(sampling=sampling), None
-
-    if editorial_legacy_cache_compatible(stage):
-        legacy = ModelIdentity(
-            model.model_id,
-            model.revision,
-            model.quantization,
-            model.inference_engine,
-            "editor-v2",
-            "editorial-json-v2",
-        )
-        return legacy.to_dict(), legacy.cache_fingerprint(sampling=sampling), None
-
+            contract_fingerprint = editorial_contract_fingerprint(stage)
+        except ValueError:
+            contract_fingerprint = None
     return (
         model.to_dict(),
         model.cache_fingerprint(sampling=sampling),
@@ -133,14 +107,13 @@ def model_stage_cache_key(
     sampling: dict[str, object] | None = None,
 ) -> str:
     """Cache expensive model output by exact source/model/contract/config inputs."""
-
     model_payload, model_fingerprint, contract_fingerprint = _model_cache_material(
         stage,
         model,
         sampling=sampling,
     )
     key_payload: dict[str, object] = {
-        "schema": CACHE_SCHEMA_VERSION,
+        "cache_contract": CACHE_SCHEMA_VERSION,
         "stage": stage,
         "source_hash": source_hash,
         "model": model_payload,
@@ -210,6 +183,7 @@ def transcript_segments_from_payload(payload: object) -> list[TranscriptSegment]
 
 
 def story_moments_from_payload(payload: object) -> list[StoryMoment]:
+    """Read historical evidence only; production does not generate this legacy shape."""
     if not isinstance(payload, list):
         raise ValueError("cached story moments must be a list")
     moments: list[StoryMoment] = []
@@ -236,6 +210,7 @@ def story_moments_from_payload(payload: object) -> list[StoryMoment]:
 
 
 def clip_concepts_from_payload(payload: object) -> list[ClipConcept]:
+    """Read historical evidence only; production does not generate this legacy shape."""
     if not isinstance(payload, list):
         raise ValueError("cached clip concepts must be a list")
     concepts: list[ClipConcept] = []
