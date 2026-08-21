@@ -9,8 +9,8 @@ from typing import Any
 
 from .base import InferenceUsage, ModelIdentity, ProviderResult
 from .editorial_prompt import (
-    EDITORIAL_PROMPT_VERSION,
-    EDITORIAL_SCHEMA_VERSION,
+    EDITORIAL_IDENTITY,
+    EDITORIAL_SCHEMA_IDENTITY,
     editorial_contract,
     editorial_output_budget,
 )
@@ -85,8 +85,8 @@ class LocalEditorialProvider:
             revision,
             quantization,
             "transformers",
-            EDITORIAL_PROMPT_VERSION,
-            EDITORIAL_SCHEMA_VERSION,
+            EDITORIAL_IDENTITY,
+            EDITORIAL_SCHEMA_IDENTITY,
         )
         self.device_map = device_map
         self._tokenizer: Any | None = None
@@ -118,8 +118,10 @@ class LocalEditorialProvider:
             {
                 "role": "system",
                 "content": (
-                    "You are a source-grounded podcast editor. "
-                    "Never invent spoken words or IDs. " + editorial_contract(task)
+                    "You are a source-grounded multimodal short-form editor. "
+                    "Infer editorial value from the supplied evidence rather than fixed domain "
+                    "templates. Never invent source words, facts, or IDs. "
+                    + editorial_contract(task)
                 ),
             },
             {
@@ -166,7 +168,12 @@ class LocalVisionProvider:
         device_map: str = "auto",
     ) -> None:
         self.identity = ModelIdentity(
-            model_id, revision, "none", "transformers", "vision-v1", "vision-json-v1"
+            model_id,
+            revision,
+            "none",
+            "transformers",
+            "vision",
+            "structured-json",
         )
         self.device_map = device_map
         self._processor: Any | None = None
@@ -203,7 +210,8 @@ class LocalVisionProvider:
             {
                 "type": "text",
                 "text": (
-                    "Return only valid JSON. Do not retranscribe audio. "
+                    "Return only valid JSON. Describe only evidence visible in the supplied "
+                    "frames and do not infer spoken words from pixels. "
                     + json.dumps({"task": task, "context": context}, ensure_ascii=False)
                 ),
             }
