@@ -126,6 +126,7 @@ def editorial_json_schema(task: str) -> dict[str, Any]:
                 "selected_window_id": _string(nullable=True),
                 "decision": {"type": "string", "enum": _QUALITY_DECISIONS},
                 "quality_score": _confidence(),
+                "opening_strategy": _string(),
                 "rationale": _string(),
                 "confidence": _confidence(),
             }
@@ -180,8 +181,11 @@ def editorial_contract(task: str) -> str:
             "Judge only those supplied window IDs and never invent timestamps. PASS only when a "
             "window is independently strong enough to publish based on this source and campaign, "
             "not because it resembles a predefined hook pattern. Select the strongest supplied "
-            "window when PASS. Use REJECT when none deserves a clip and ESCALATE when evidence is "
-            "insufficient for a reliable decision."
+            "window when PASS. opening_strategy must briefly describe, in free-form source-specific "
+            "language, what makes the actual first moments of that selected window work as an "
+            "opening; never choose from or imitate a fixed category list. For REJECT/ESCALATE, "
+            "opening_strategy should briefly explain why no reliable opening can be endorsed. Use "
+            "REJECT when none deserves a clip and ESCALATE when evidence is insufficient."
         )
     raise AssertionError(family)
 
