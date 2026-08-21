@@ -18,6 +18,7 @@ from .pipeline import PipelineSettings, run_pipeline
 from .providers.factory import editorial_and_embedding_providers, speech_providers
 from .rights import RightsError, assert_campaign_authorized, assert_video_allowed
 from .source_cache import PersistentYouTubeClient
+from .stage_contracts import content_fingerprint
 from .youtube import YouTubeClient
 
 LOGGER = logging.getLogger("clipper")
@@ -33,7 +34,7 @@ def _configure_logging(verbose: bool) -> None:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="clipper",
-        description="Rights-gated campaign-to-short-form clipping pipeline.",
+        description="Rights-gated autonomous multimodal short-form clipping pipeline.",
     )
     parser.add_argument("--verbose", action="store_true")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -57,25 +58,19 @@ def _parser() -> argparse.ArgumentParser:
         "--resume",
         metavar="RUN_ID",
         help=(
-            "continue from a previous interrupted run. In the default Modal V10 path the old "
-            "run is provenance only: local source masters are ignored and the canonical source "
-            "is acquired or reused directly inside Modal"
+            "continue from a previous interrupted run. In the default Modal path the old run "
+            "is provenance only; canonical source/model artifacts are reused by content identity"
         ),
     )
     run.add_argument(
         "--no-render",
         action="store_true",
-        help="stop after timestamped clip planning",
+        help="stop after timestamped quality-moment planning",
     )
     run.add_argument(
         "--fresh-inference",
         action="store_true",
-        help="use a new empty cache so model/grounding inference cannot be satisfied by cache hits",
-    )
-    run.add_argument(
-        "--allow-legacy",
-        action="store_true",
-        help="explicitly permit heuristic/legacy compatibility engines",
+        help="use a new empty cache so inference cannot be satisfied by existing cache entries",
     )
     run.add_argument(
         "--allow-local-lite",
@@ -85,25 +80,22 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _v10_settings(artifact_root: Path) -> PipelineSettings:
-    """Use the open-weight V10 path unless the caller explicitly overrides it."""
+def _production_settings(artifact_root: Path) -> PipelineSettings:
+    """Resolve the only supported production architecture: open multimodal grounding/editorial."""
     base = PipelineSettings.from_env()
     return replace(
         base,
         artifact_root=artifact_root,
-        editorial_engine=os.getenv("CLIPPER_EDITORIAL_ENGINE", "open").strip().lower(),
-        grounding_engine=os.getenv("CLIPPER_GROUNDING_ENGINE", "open").strip().lower(),
+        editorial_engine="open",
+        grounding_engine="open",
         compute_profile=os.getenv("CLIPPER_COMPUTE_PROFILE", "balanced").strip().lower(),
     )
 
 
-def _assert_v10_execution(settings: PipelineSettings, args: argparse.Namespace) -> None:
-    if (
-        settings.editorial_engine != "open" or settings.grounding_engine != "open"
-    ) and not args.allow_legacy:
+def _assert_production_execution(settings: PipelineSettings, args: argparse.Namespace) -> None:
+    if settings.editorial_engine != "open" or settings.grounding_engine != "open":
         raise RuntimeError(
-            "refusing non-V10 execution: editorial_engine and grounding_engine must both be open; "
-            "remove legacy CLIPPER_* overrides or pass --allow-legacy explicitly"
+            "production requires autonomous open editorial planning and open canonical grounding"
         )
     if settings.compute_profile == "local-lite" and not args.allow_local_lite:
         raise RuntimeError(
@@ -118,15 +110,13 @@ def _resolved_model_plan(settings: PipelineSettings) -> dict[str, object]:
         "grounding_engine": settings.grounding_engine,
         "compute_profile": settings.compute_profile,
     }
-    if settings.editorial_engine == "open":
-        editorial, embedding = editorial_and_embedding_providers(settings.compute_profile)
-        plan["editorial"] = editorial.identity.to_dict()
-        plan["embedding"] = embedding.identity.to_dict()
-    if settings.grounding_engine == "open":
-        transcription, alignment, diarization = speech_providers(settings.compute_profile)
-        plan["transcription"] = transcription.identity.to_dict()
-        plan["alignment"] = alignment.identity.to_dict()
-        plan["diarization"] = diarization.identity.to_dict()
+    editorial, embedding = editorial_and_embedding_providers(settings.compute_profile)
+    plan["editorial"] = editorial.identity.to_dict()
+    plan["embedding"] = embedding.identity.to_dict()
+    transcription, alignment, diarization = speech_providers(settings.compute_profile)
+    plan["transcription"] = transcription.identity.to_dict()
+    plan["alignment"] = alignment.identity.to_dict()
+    plan["diarization"] = diarization.identity.to_dict()
     return plan
 
 
@@ -139,7 +129,6 @@ def _requires_modal(plan: dict[str, object]) -> bool:
 
 
 def _assert_runtime_dependencies(plan: dict[str, object]) -> None:
-    """Fail before source acquisition when the resolved model backend is not runnable."""
     if not _requires_modal(plan):
         return
     try:
@@ -148,27 +137,25 @@ def _assert_runtime_dependencies(plan: dict[str, object]) -> None:
         modal_spec = None
     if modal_spec is None:
         raise RuntimeError(
-            "resolved V10 model plan requires the Modal Python SDK, but 'modal' is not installed. "
-            "Install the balanced runtime before source acquisition with: "
-            'python -m pip install -e ".[modal]"'
+            "resolved production model plan requires the Modal Python SDK, but 'modal' is not "
+            "installed. Install the balanced runtime with: python -m pip install -e \".[modal]\""
         )
 
 
 def _assert_modal_functions_available(plan: dict[str, object]) -> None:
-    """Hydrate or deploy the complete default Modal runtime before source acquisition."""
     if not _requires_modal(plan):
         return
     try:
         ensure_modal_runtime()
     except Exception as exc:
         raise RuntimeError(
-            "required Modal V10 runtime is unavailable and automatic exact-checkout deployment "
-            "did not recover it"
+            "required Modal production runtime is unavailable and automatic exact-checkout "
+            "deployment did not recover it"
         ) from exc
 
 
 def _source_client_for_run(settings: PipelineSettings) -> PersistentYouTubeClient | None:
-    """Keep authorized YouTube masters in a cache for explicit local/legacy execution only."""
+    """Keep authorized YouTube masters in a content-addressed cache for local execution."""
     if os.getenv("CLIPPER_SOURCE_FIXTURE_DIR"):
         return None
     configured = os.getenv("CLIPPER_SOURCE_MEDIA_CACHE_ROOT")
@@ -195,7 +182,6 @@ def _resolve_resume_run(artifact_root: Path, resume: str) -> Path:
 
 
 def _validate_resume_run(settings: PipelineSettings, resume: str, *, campaign_id: str) -> Path:
-    """Validate continuation provenance without importing any previous source media."""
     run_dir = _resolve_resume_run(settings.artifact_root, resume)
     if not run_dir.name.startswith(f"{campaign_id}-"):
         raise RuntimeError(f"resume run {run_dir.name} does not belong to campaign {campaign_id}")
@@ -211,9 +197,7 @@ def _validate_resume_run(settings: PipelineSettings, resume: str, *, campaign_id
 
 
 def _seed_resume_source_cache(settings: PipelineSettings, resume: str, *, campaign_id: str) -> Path:
-    """Promote source masters only for explicit local/legacy execution."""
     run_dir = _validate_resume_run(settings, resume, campaign_id=campaign_id)
-
     configured = os.getenv("CLIPPER_SOURCE_MEDIA_CACHE_ROOT")
     cache_root = Path(configured) if configured else settings.artifact_root / "_source-media-cache"
     imported: list[Path] = []
@@ -235,12 +219,7 @@ def _seed_resume_source_cache(settings: PipelineSettings, resume: str, *, campai
             except OSError:
                 shutil.copy2(source, target)
                 transfer = "copied"
-            LOGGER.info(
-                "resume source cache %s %s -> %s",
-                transfer,
-                source,
-                target,
-            )
+            LOGGER.info("resume source cache %s %s -> %s", transfer, source, target)
         else:
             LOGGER.info("resume source cache already contains %s", target)
         sidecar = source.with_suffix(".source.json")
@@ -278,89 +257,84 @@ def _audit_model_evidence(
         raise RuntimeError("manifest is missing run_metadata model evidence")
 
     audit: dict[str, object] = {
-        "schema_version": "clipper-model-execution-v1",
+        "contract_hash": content_fingerprint(
+            {
+                "artifact": "model-execution",
+                "required": ["resolved_plan", "editorial", "grounding"],
+            }
+        ),
         "status": "PASS",
         "resolved_plan": plan,
     }
 
-    if settings.editorial_engine == "open":
-        editorial_meta = metadata.get("editorial_inference")
-        invocations = (
-            editorial_meta.get("model_invocations") if isinstance(editorial_meta, dict) else None
+    editorial_meta = metadata.get("editorial_inference")
+    invocations = editorial_meta.get("model_invocations") if isinstance(editorial_meta, dict) else None
+    if not isinstance(invocations, list) or not invocations:
+        raise RuntimeError("open editorial run produced no model invocation evidence; refusing success")
+    expected_editorial = _model_id(plan.get("editorial"))
+    actual_model_ids = {
+        model_id
+        for item in invocations
+        if isinstance(item, dict)
+        for model_id in [_model_id(item.get("model"))]
+        if model_id
+    }
+    if expected_editorial and expected_editorial not in actual_model_ids:
+        raise RuntimeError(
+            "open editorial evidence does not contain the resolved editorial model "
+            f"{expected_editorial}"
         )
-        if not isinstance(invocations, list) or not invocations:
-            raise RuntimeError(
-                "open editorial run produced no model invocation evidence; refusing success"
-            )
-        expected_editorial = _model_id(plan.get("editorial"))
-        actual_model_ids = {
-            model_id
-            for item in invocations
-            if isinstance(item, dict)
-            for model_id in [_model_id(item.get("model"))]
-            if model_id
-        }
-        if expected_editorial and expected_editorial not in actual_model_ids:
-            raise RuntimeError(
-                "open editorial evidence does not contain the resolved editorial model "
-                f"{expected_editorial}"
-            )
-        live = sum(
+    audit["editorial"] = {
+        "expected_model": expected_editorial,
+        "observed_models": sorted(actual_model_ids),
+        "invocations": len(invocations),
+        "live_invocations": sum(
             1 for item in invocations if isinstance(item, dict) and item.get("cache_hit") is False
-        )
-        cached = sum(
+        ),
+        "cache_hits": sum(
             1 for item in invocations if isinstance(item, dict) and item.get("cache_hit") is True
-        )
-        audit["editorial"] = {
-            "expected_model": expected_editorial,
-            "observed_models": sorted(actual_model_ids),
-            "invocations": len(invocations),
-            "live_invocations": live,
-            "cache_hits": cached,
-        }
+        ),
+    }
 
-    if settings.grounding_engine == "open":
-        grounding_meta = metadata.get("grounding_inference")
-        models = grounding_meta.get("models") if isinstance(grounding_meta, dict) else None
-        if not isinstance(models, list) or not models:
-            raise RuntimeError("open grounding run produced no model evidence; refusing success")
-        observed: set[str] = set()
-        live = 0
-        cached = 0
-        evidence_count = 0
-        for source in models:
-            if not isinstance(source, dict):
+    grounding_meta = metadata.get("grounding_inference")
+    models = grounding_meta.get("models") if isinstance(grounding_meta, dict) else None
+    if not isinstance(models, list) or not models:
+        raise RuntimeError("open grounding run produced no model evidence; refusing success")
+    observed: set[str] = set()
+    live = 0
+    cached = 0
+    evidence_count = 0
+    for source in models:
+        if not isinstance(source, dict):
+            continue
+        for key in ("transcription", "alignment", "diarization"):
+            evidence = source.get(key)
+            if not isinstance(evidence, dict):
                 continue
-            for key in ("transcription", "alignment", "diarization"):
-                evidence = source.get(key)
-                if not isinstance(evidence, dict):
-                    continue
-                evidence_count += 1
-                model_id = _model_id(evidence.get("model"))
-                if model_id:
-                    observed.add(model_id)
-                if evidence.get("cache_hit") is True:
-                    cached += 1
-                else:
-                    live += 1
-        expected = {
-            model_id
-            for key in ("transcription", "alignment", "diarization")
-            for model_id in [_model_id(plan.get(key))]
-            if model_id
-        }
-        missing = sorted(expected - observed)
-        if missing:
-            raise RuntimeError(
-                "open grounding evidence is missing resolved models: " + ", ".join(missing)
-            )
-        audit["grounding"] = {
-            "expected_models": sorted(expected),
-            "observed_models": sorted(observed),
-            "evidence_records": evidence_count,
-            "live_invocations": live,
-            "cache_hits": cached,
-        }
+            evidence_count += 1
+            model_id = _model_id(evidence.get("model"))
+            if model_id:
+                observed.add(model_id)
+            if evidence.get("cache_hit") is True:
+                cached += 1
+            else:
+                live += 1
+    expected = {
+        model_id
+        for key in ("transcription", "alignment", "diarization")
+        for model_id in [_model_id(plan.get(key))]
+        if model_id
+    }
+    missing = sorted(expected - observed)
+    if missing:
+        raise RuntimeError("open grounding evidence is missing resolved models: " + ", ".join(missing))
+    audit["grounding"] = {
+        "expected_models": sorted(expected),
+        "observed_models": sorted(observed),
+        "evidence_records": evidence_count,
+        "live_invocations": live,
+        "cache_hits": cached,
+    }
 
     (run_dir / "model-execution.json").write_text(
         json.dumps(audit, indent=2, sort_keys=True) + "\n",
@@ -406,13 +380,13 @@ def main(argv: list[str] | None = None) -> int:
             print(output, end="")
             return 0 if result.status == "PASS" else 1
         if args.command == "run":
-            settings = _v10_settings(args.artifact_root)
+            settings = _production_settings(args.artifact_root)
             if args.fresh_inference:
                 settings = replace(
                     settings,
                     cache_root=args.artifact_root / "_fresh-cache" / uuid.uuid4().hex,
                 )
-            _assert_v10_execution(settings, args)
+            _assert_production_execution(settings, args)
             plan = _resolved_model_plan(settings)
             _log_model_summary(plan)
             _assert_runtime_dependencies(plan)
@@ -430,9 +404,8 @@ def main(argv: list[str] | None = None) -> int:
                         settings, args.resume, campaign_id=brief.campaign_id
                     )
                     LOGGER.info(
-                        "resume provenance accepted from %s; local source masters "
-                        "are intentionally ignored because default V10 execution "
-                        "acquires/reuses canonical media in Modal",
+                        "resume provenance accepted from %s; canonical media and stage artifacts "
+                        "will be acquired or reused in Modal by content identity",
                         resume_run,
                     )
                 run_dir = run_modal_pipeline(
