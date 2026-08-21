@@ -174,6 +174,7 @@ def quality_assessment_from_payload(
         raise AutonomousPlanningError("quality decision is unsupported")
     score = payload.get("quality_score")
     confidence = payload.get("confidence")
+    opening_strategy = str(payload.get("opening_strategy") or "").strip()
     if (
         isinstance(score, bool)
         or not isinstance(score, int | float)
@@ -181,6 +182,8 @@ def quality_assessment_from_payload(
         or not isinstance(confidence, int | float)
     ):
         raise AutonomousPlanningError("quality score and confidence must be numeric")
+    if not opening_strategy:
+        raise AutonomousPlanningError("quality decision requires a source-derived opening strategy")
     selected = payload.get("selected_window_id")
     legal = {window.window_id: window for window in windows}
     if decision != "PASS":
@@ -196,6 +199,7 @@ def quality_assessment_from_payload(
         window_id=selected,
         decision="PASS",
         quality_score=float(score),
+        opening_strategy=opening_strategy,
         rationale=str(payload.get("rationale") or "").strip(),
         confidence=float(confidence),
     )
@@ -495,7 +499,8 @@ class AutonomousQualityPlanner:
                     "instruction": (
                         "Judge whether this complete campaign-legal moment is genuinely worth "
                         "publishing. Select only a supplied feasible window ID; never invent "
-                        "timestamps."
+                        "timestamps. Describe the selected opening from its actual source evidence "
+                        "without assigning it to a predefined hook category."
                     ),
                 },
                 relevant_policy=relevant_policy,
