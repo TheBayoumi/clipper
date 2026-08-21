@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .multimodal_timeline import MultimodalTimeline
+from .stage_contracts import structural_contract_fingerprint
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,14 +17,23 @@ class SourceModalityProfile:
     action_dependency: float
     visual_evidence_coverage: float
     confidence: float
-    schema_version: str = "source-modality-profile-v1"
+    contract_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
-        for field, value in asdict(self).items():
-            if field == "schema_version":
+        object.__setattr__(
+            self,
+            "contract_fingerprint",
+            structural_contract_fingerprint(
+                "source-modality-profile",
+                SourceModalityProfile,
+                exclude_fields=("contract_fingerprint",),
+            ),
+        )
+        for field_name, value in asdict(self).items():
+            if field_name == "contract_fingerprint":
                 continue
             if not isinstance(value, int | float) or not 0 <= float(value) <= 1:
-                raise ValueError(f"source modality {field} must be between 0 and 1")
+                raise ValueError(f"source modality {field_name} must be between 0 and 1")
 
     @property
     def requires_visual_evidence(self) -> bool:
