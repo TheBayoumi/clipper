@@ -597,7 +597,7 @@ class FailFirstRenderer(FakeRenderer):
         return super().render(*args, **kwargs)
 
 
-def test_render_failure_promotes_reserve_until_target_is_reached(tmp_path: Path) -> None:
+def test_render_failure_reduces_quality_yield_without_quota_fill(tmp_path: Path) -> None:
     brief = _yield_brief(tmp_path)
     subtitle = _yield_subtitle(tmp_path)
     media = tmp_path / "yield.mp4"
@@ -614,8 +614,10 @@ def test_render_failure_promotes_reserve_until_target_is_reached(tmp_path: Path)
     assert manifest["status"] == "DEGRADED"
     assert manifest["actual"]["rendered_finalists"] == 2
     assert manifest["funnel"]["render_attempts"] == 3
-    assert manifest["funnel"]["replacement_attempts"] == 1
-    assert len(manifest["submission_shortlist"]) == 1
+    assert manifest["funnel"]["replacement_attempts"] == 0
+    assert manifest["funnel"]["reserve_promotions"] == 0
+    assert manifest["actual"]["eligible_quality_moments"] == 3
+    assert len(manifest["submission_shortlist"]) == 2
     assert all(item["plan_id"] for item in manifest["submission_shortlist"])
 
 
@@ -652,7 +654,7 @@ def test_qc_failure_promotes_reserve_and_shortlist_uses_only_qc_passed_clips(
     assert list((run_dir / "rejected").glob("attempt-01-*.mp4"))
 
 
-def test_pipeline_fails_when_reserve_pool_cannot_reach_render_target(tmp_path: Path) -> None:
+def test_pipeline_fails_when_all_quality_moments_fail_render(tmp_path: Path) -> None:
     brief = _yield_brief(tmp_path)
     subtitle = _yield_subtitle(tmp_path)
     media = tmp_path / "yield-fail.mp4"
@@ -667,8 +669,9 @@ def test_pipeline_fails_when_reserve_pool_cannot_reach_render_target(tmp_path: P
         )
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["status"] == "FAILED"
-    assert manifest["status_reason"] == "render_yield_below_required_target"
+    assert manifest["status_reason"] == "all_eligible_quality_moments_failed_render_or_review"
     assert manifest["actual"] == {
+        "eligible_quality_moments": 3,
         "rendered_finalists": 0,
         "submission_shortlist": 0,
         "distinct_finalist_concepts": 0,
@@ -711,8 +714,8 @@ def test_pipeline_records_tracking_preflight_repair(tmp_path: Path) -> None:
             renderer=RepairedPreflightRenderer(),
         )
     manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["funnel"]["tracking_preflight_pass"] == 2
-    assert manifest["funnel"]["tracking_preflight_repaired"] == 2
+    assert manifest["funnel"]["tracking_preflight_pass"] == 3
+    assert manifest["funnel"]["tracking_preflight_repaired"] == 3
     assert manifest["funnel"]["tracking_preflight_fail"] == 0
     canonical_files = list((run_dir / "canonical").glob("*.json"))
     assert len(canonical_files) == 1
@@ -959,7 +962,7 @@ def _visual_result(report: VisualReviewReport):
     )
 
 
-def test_visual_editorial_qc_repair_promotes_reserve_before_finalist_acceptance(
+def test_visual_editorial_qc_rejection_reduces_quality_yield(
     tmp_path: Path,
 ) -> None:
     brief = _yield_brief(tmp_path)
@@ -1003,11 +1006,13 @@ def test_visual_editorial_qc_repair_promotes_reserve_before_finalist_acceptance(
         )
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["status"] == "DEGRADED"
-    assert manifest["status_reason"] == "recovered_with_replacement_candidates"
+    assert manifest["status_reason"] == "partial_quality_yield_after_candidate_failures"
     assert manifest["funnel"]["editorial_qc_fail"] == 1
     assert manifest["funnel"]["editorial_qc_pass"] == 2
     assert manifest["funnel"]["render_attempts"] == 3
-    assert manifest["funnel"]["replacement_attempts"] == 1
+    assert manifest["funnel"]["replacement_attempts"] == 0
+    assert manifest["actual"]["eligible_quality_moments"] == 3
+    assert manifest["actual"]["rendered_finalists"] == 2
     assert len(manifest["editorial_qc"]) == 3
     assert len(manifest["rendered_clips"]) == 2
     assert all(item["decision"] == "PASS" for item in manifest["editorial_qc"][1:])
@@ -1046,8 +1051,8 @@ def test_visual_review_escalation_is_recorded_in_pipeline_manifest(tmp_path: Pat
             visual_escalation_provider=DummyVisionProvider(),
         )
     manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["funnel"]["visual_review_escalations"] == 2
-    assert manifest["funnel"]["editorial_qc_pass"] == 2
+    assert manifest["funnel"]["visual_review_escalations"] == 3
+    assert manifest["funnel"]["editorial_qc_pass"] == 3
     assert manifest["run_metadata"]["visual_inference"]["primary_model"]["model_id"] == "fake-vlm"
     assert (
         manifest["run_metadata"]["visual_inference"]["escalation_model"]["model_id"] == "fake-vlm"

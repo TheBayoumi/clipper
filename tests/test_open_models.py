@@ -1353,10 +1353,13 @@ def test_open_analysis_rejects_empty_and_unknown_model_references(tmp_path: Path
                 raise AssertionError(task)
             return ProviderResult(value, self.identity, InferenceUsage("test", "now", 0.01))
 
-    with pytest.raises(EditorialGroundingError, match="no grounded StoryMoments"):
-        AutonomousEditorialPlanner(
-            Scripted(), _PlannerEmbeddings(), FileCache(tmp_path / "empty")
-        ).analyze_video(brief, timeline)
+    empty = AutonomousEditorialPlanner(
+        Scripted(), _PlannerEmbeddings(), FileCache(tmp_path / "empty")
+    ).analyze_video(brief, timeline)
+    assert empty.moments == []
+    assert empty.concepts == []
+    assert empty.grounded_moments == {}
+    assert empty.grounded_concepts == {}
 
     class UnknownMoment(Scripted):
         def complete_json(
@@ -1393,10 +1396,16 @@ def test_open_analysis_rejects_empty_and_unknown_model_references(tmp_path: Path
                 return super().complete_json(task=task, payload=payload)
             return ProviderResult(value, self.identity, InferenceUsage("test", "now", 0.01))
 
-    with pytest.raises(EditorialGroundingError, match="unknown StoryMoments"):
-        AutonomousEditorialPlanner(
-            UnknownMoment(), _PlannerEmbeddings([[1.0, 0.0]]), FileCache(tmp_path / "unknown")
-        ).analyze_video(brief, timeline)
+    unknown = AutonomousEditorialPlanner(
+        UnknownMoment(), _PlannerEmbeddings([[1.0, 0.0]]), FileCache(tmp_path / "unknown")
+    ).analyze_video(brief, timeline)
+    assert unknown.concepts == []
+    assert unknown.grounded_concepts == {}
+    grounding_rejections = [
+        item for item in unknown.rejections if item.get("stage") == "concept_grounding"
+    ]
+    assert grounding_rejections
+    assert "unknown StoryMoments" in str(grounding_rejections[0].get("error"))
 
 
 def test_plan_batch_global_selection_and_plan_validation_errors(tmp_path: Path) -> None:
@@ -1460,12 +1469,17 @@ def test_plan_batch_global_selection_and_plan_validation_errors(tmp_path: Path) 
                     self.identity,
                     InferenceUsage("test", "now", 0.01),
                 )
+            if task == "hook_variants:c":
+                return ProviderResult(
+                    {"variants": []},
+                    self.identity,
+                    InferenceUsage("test", "now", 0.01),
+                )
             raise AssertionError(task)
 
     for selection, match in [
         ("bad", "concept_ids"),
         (["missing"], "unknown concept"),
-        ([], "selected no concepts"),
     ]:
         with pytest.raises(EditorialGroundingError, match=match):
             AutonomousEditorialPlanner(
@@ -1473,10 +1487,22 @@ def test_plan_batch_global_selection_and_plan_validation_errors(tmp_path: Path) 
                 _PlannerEmbeddings(),
                 FileCache(tmp_path / str(match).replace(" ", "-")),
             ).plan_batch(_open_brief(), {"video": timeline}, [analysis])
-    with pytest.raises(EditorialGroundingError, match="produced no concepts"):
-        AutonomousEditorialPlanner(
-            Global([]), _PlannerEmbeddings(), FileCache(tmp_path / "none")
-        ).plan_batch(_open_brief(), {"video": timeline}, [])
+    empty_ranked = AutonomousEditorialPlanner(
+        Global([]), _PlannerEmbeddings(), FileCache(tmp_path / "empty-ranking")
+    ).plan_batch(_open_brief(), {"video": timeline}, [analysis])
+    assert [item.concept_id for item in empty_ranked.selected_concepts] == ["c"]
+    assert empty_ranked.plans == []
+    assert any(
+        item.get("reasons") == ["no_grounded_hook_variants"]
+        for item in empty_ranked.rejections
+    )
+
+    no_concepts = AutonomousEditorialPlanner(
+        Global([]), _PlannerEmbeddings(), FileCache(tmp_path / "none")
+    ).plan_batch(_open_brief(), {"video": timeline}, [])
+    assert no_concepts.discovered_concepts == []
+    assert no_concepts.selected_concepts == []
+    assert no_concepts.plans == []
 
 
 def test_managed_modal_endpoint_editorial_provider_uses_proxy_auth_and_json() -> None:
@@ -2242,10 +2268,17 @@ def test_plan_batch_reports_duration_rejections_when_all_model_plans_are_invalid
                 raise AssertionError(task)
             return ProviderResult(value, self.identity, InferenceUsage("test", "now", 0.01))
 
-    with pytest.raises(EditorialGroundingError, match=r"duration_outside_campaign_bounds.*1\.1"):
-        AutonomousEditorialPlanner(
-            InvalidDuration(), _PlannerEmbeddings(), FileCache(tmp_path / "duration")
-        ).plan_batch(_open_brief(), {"video": timeline}, [analysis])
+    batch = AutonomousEditorialPlanner(
+        InvalidDuration(), _PlannerEmbeddings(), FileCache(tmp_path / "duration")
+    ).plan_batch(_open_brief(), {"video": timeline}, [analysis])
+    assert batch.plans == []
+    duration_rejections = [
+        item
+        for item in batch.rejections
+        if item.get("reasons") == ["duration_outside_campaign_bounds_no_grounded_repair"]
+    ]
+    assert len(duration_rejections) == 1
+    assert duration_rejections[0]["duration_seconds"] == pytest.approx(1.1)
 
 
 def test_plan_batch_rejects_oversized_hook_and_keeps_other_valid_plan(tmp_path: Path) -> None:
