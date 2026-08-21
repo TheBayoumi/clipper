@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .providers.base import InferenceUsage
+from .stage_contracts import structural_contract_fingerprint
 
 StageStatus = Literal["PENDING", "RUNNING", "SUCCESS", "FAILED"]
 
@@ -31,6 +32,9 @@ class StageState:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+_PROGRESS_CONTRACT = structural_contract_fingerprint("progress-journal", StageState)
 
 
 class StageJournal:
@@ -75,7 +79,7 @@ class StageJournal:
     def _write(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "schema_version": "clipper-progress-v1",
+            "contract_fingerprint": _PROGRESS_CONTRACT,
             "updated_at": _now(),
             "stages": {name: state.to_dict() for name, state in sorted(self.states.items())},
         }
