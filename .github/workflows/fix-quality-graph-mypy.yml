@@ -77,3 +77,5 @@ jobs:
           git diff --cached --exit-code && exit 0 || true
           git commit -m "fix: type authoritative quality graph integration"
           git push origin HEAD:feat/word-reveal-face-tracking
+
+# synchronized after workflow registration
