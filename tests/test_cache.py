@@ -7,12 +7,14 @@ from clipper.cache import (
     analysis_cache_key,
     clip_concepts_from_payload,
     file_sha256,
+    model_stage_cache_key,
     stable_hash,
     story_moments_from_payload,
     transcript_cache_key,
     transcript_segments_from_payload,
 )
 from clipper.models import CampaignBrief, TranscriptSegment, TranscriptWord
+from clipper.providers.base import ModelIdentity
 
 
 def brief() -> CampaignBrief:
@@ -21,7 +23,6 @@ def brief() -> CampaignBrief:
             "campaign_id": "cache-test",
             "title": "Cache",
             "objective": "test",
-            "keywords": ["creator"],
             "allowed_video_ids": ["v"],
             "rights_confirmed": True,
             "min_clip_seconds": 10,
@@ -41,10 +42,61 @@ def test_cache_keys_change_with_relevant_inputs() -> None:
     one = transcript_cache_key("v", "hash", engine="asr", model="small", language="en")
     two = transcript_cache_key("v", "hash", engine="asr", model="medium", language="en")
     assert one != two
+
+    identity = ModelIdentity(
+        model_id="editor",
+        revision="rev-a",
+        quantization="bf16",
+        inference_engine="test",
+        prompt_version="editor",
+        schema_version="schema-a",
+    )
+    base = model_stage_cache_key(
+        "semantic_cores:1",
+        source_hash="source-a",
+        campaign=brief().to_dict(),
+        model=identity,
+        payload={"timeline": "a"},
+        sampling={"temperature": 0.0},
+    )
+    changed_source = model_stage_cache_key(
+        "semantic_cores:1",
+        source_hash="source-b",
+        campaign=brief().to_dict(),
+        model=identity,
+        payload={"timeline": "a"},
+        sampling={"temperature": 0.0},
+    )
+    changed_payload = model_stage_cache_key(
+        "semantic_cores:1",
+        source_hash="source-a",
+        campaign=brief().to_dict(),
+        model=identity,
+        payload={"timeline": "b"},
+        sampling={"temperature": 0.0},
+    )
+    changed_model = model_stage_cache_key(
+        "semantic_cores:1",
+        source_hash="source-a",
+        campaign=brief().to_dict(),
+        model=ModelIdentity(
+            model_id="editor",
+            revision="rev-b",
+            quantization="bf16",
+            inference_engine="test",
+            prompt_version="editor",
+            schema_version="schema-a",
+        ),
+        payload={"timeline": "a"},
+        sampling={"temperature": 0.0},
+    )
+    assert len({base, changed_source, changed_payload, changed_model}) == 4
+
+
+def test_removed_heuristic_analysis_cache_fails_closed() -> None:
     segments = [TranscriptSegment(0, 2, "creator story")]
-    key = analysis_cache_key("v", segments, brief())
-    changed = CampaignBrief.from_dict(brief().to_dict() | {"keywords": ["money"]})
-    assert key != analysis_cache_key("v", segments, changed)
+    with pytest.raises(RuntimeError, match="autonomous quality graph"):
+        analysis_cache_key("v", segments, brief())
 
 
 def test_file_cache_round_trip_and_corruption(tmp_path: Path) -> None:
@@ -87,21 +139,8 @@ def test_transcript_cache_deserialization_preserves_words() -> None:
         transcript_segments_from_payload([{"start": 0, "end": 1, "text": "x", "words": {}}])
 
 
-def test_story_and_concept_cache_deserialization() -> None:
-    scores = {
-        "hook_strength": 8,
-        "curiosity": 7,
-        "payoff_strength": 8,
-        "standalone_clarity": 9,
-        "emotional_energy": 5,
-        "information_value": 7,
-        "controversy_or_tension": 4,
-        "quoteability": 7,
-        "specificity": 6,
-        "campaign_relevance": 8,
-        "story_completeness": 9,
-        "retention_potential": 8,
-    }
+def test_historical_story_and_concept_cache_deserialization_is_read_only_compatible() -> None:
+    scores = {"quality": 8.0, "confidence": 0.9}
     moment = {
         "moment_id": "m",
         "video_id": "v",
