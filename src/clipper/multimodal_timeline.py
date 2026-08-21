@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from itertools import pairwise
 from typing import Any
 
 from .canonical import CanonicalTimeline
+from .stage_contracts import structural_contract_fingerprint
 from .visual import VisualTimeline
 
 
@@ -70,9 +71,20 @@ class MultimodalTimeline:
     source_hash: str
     duration: float
     events: tuple[MultimodalEvent, ...]
-    schema_version: str = "multimodal-timeline-v1"
+    contract_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "contract_fingerprint",
+            structural_contract_fingerprint(
+                "multimodal-timeline",
+                EvidenceProvenance,
+                MultimodalEvent,
+                MultimodalTimeline,
+                exclude_fields=("contract_fingerprint",),
+            ),
+        )
         if not self.video_id.strip() or not self.source_hash.strip():
             raise ValueError("multimodal timeline requires video_id and source_hash")
         if self.duration < 0:
@@ -89,7 +101,7 @@ class MultimodalTimeline:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": self.schema_version,
+            "contract_fingerprint": self.contract_fingerprint,
             "video_id": self.video_id,
             "source_hash": self.source_hash,
             "duration": self.duration,
