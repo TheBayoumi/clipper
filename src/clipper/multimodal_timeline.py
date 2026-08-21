@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from itertools import pairwise
 from typing import Any
 
 from .canonical import CanonicalTimeline
@@ -76,7 +77,7 @@ class MultimodalTimeline:
             raise ValueError("multimodal timeline requires video_id and source_hash")
         if self.duration < 0:
             raise ValueError("multimodal timeline duration cannot be negative")
-        if any(a.start > b.start for a, b in zip(self.events, self.events[1:], strict=False)):
+        if any(a.start > b.start for a, b in pairwise(self.events)):
             raise ValueError("multimodal timeline events must be source ordered")
         if any(event.end > self.duration + 1e-6 for event in self.events):
             raise ValueError("multimodal event exceeds source duration")
@@ -139,7 +140,7 @@ def build_multimodal_timeline(
     ordered = sorted(value for value in boundaries if 0 <= value <= source_end)
 
     events: list[MultimodalEvent] = []
-    for start, end in zip(ordered, ordered[1:], strict=False):
+    for start, end in pairwise(ordered):
         if end <= start:
             continue
         words = tuple(
