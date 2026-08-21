@@ -26,21 +26,24 @@ jobs:
 
           path = Path('.github/workflows/temporary-mypy-contract-cleanup.yml')
           text = path.read_text(encoding='utf-8')
-          old = '''      - name: Verify exact cleanup
-                  run: |
-                    ruff format src/clipper/youtube.py src/clipper/cli.py src/clipper/hilp.py src/clipper/quality_batch.py src/clipper/pipeline.py
-                    ruff check .
-          '''.replace('          ', '')
-          new = '''      - name: Verify exact cleanup
-                  run: |
-                    python -c 'from pathlib import Path; p=Path("src/clipper/pipeline.py"); t=p.read_text(encoding="utf-8"); n=t.count("quality: BatchQualityPlanningResult,"); assert n == 2, n; p.write_text(t.replace("quality: BatchQualityPlanningResult,", "quality: QualityBatchResult,"), encoding="utf-8")'
-                    ruff check --fix src/clipper/youtube.py
-                    ruff format src/clipper/youtube.py src/clipper/cli.py src/clipper/hilp.py src/clipper/quality_batch.py src/clipper/pipeline.py
-                    ruff check .
-          '''.replace('          ', '')
-          if text.count(old) != 1:
-              raise SystemExit('finalizer verification block guard failed')
-          path.write_text(text.replace(old, new), encoding='utf-8')
+          start_marker = '      - name: Verify exact cleanup\n'
+          end_marker = '      - name: Commit final cleanup\n'
+          if text.count(start_marker) != 1 or text.count(end_marker) != 1:
+              raise SystemExit('finalizer section anchors are not unique')
+          start = text.index(start_marker)
+          end = text.index(end_marker, start)
+          replacement = (
+              '      - name: Verify exact cleanup\n'
+              '        run: |\n'
+              '          python -c \'from pathlib import Path; p=Path("src/clipper/pipeline.py"); t=p.read_text(encoding="utf-8"); n=t.count("quality: BatchQualityPlanningResult,"); assert n == 2, n; p.write_text(t.replace("quality: BatchQualityPlanningResult,", "quality: QualityBatchResult,"), encoding="utf-8")\'\n'
+              '          ruff check --fix src/clipper/youtube.py\n'
+              '          ruff format src/clipper/youtube.py src/clipper/cli.py src/clipper/hilp.py src/clipper/quality_batch.py src/clipper/pipeline.py\n'
+              '          ruff check .\n'
+              '          ruff format --check .\n'
+              '          mypy\n'
+              '          pytest\n'
+          )
+          path.write_text(text[:start] + replacement + text[end:], encoding='utf-8')
           PY
           rm -f .github/workflows/temporary-finalizer-meta-fix.yml
       - name: Commit repaired finalizer
