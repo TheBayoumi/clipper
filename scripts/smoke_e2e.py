@@ -108,7 +108,11 @@ class SmokeTranscription:
             )
             for index, text in enumerate(texts)
         )
-        return ProviderResult(CanonicalTimeline(video_id, source_hash, words), self.identity, _usage())
+        return ProviderResult(
+            CanonicalTimeline(video_id, source_hash, words),
+            self.identity,
+            _usage(),
+        )
 
 
 class SmokeAlignment:
