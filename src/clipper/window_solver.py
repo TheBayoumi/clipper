@@ -175,7 +175,9 @@ def enumerate_feasible_windows(
             )
             windows.append(window)
 
-    windows.sort(key=lambda item: (item.duration, item.source_start, item.source_end, item.window_id))
+    windows.sort(
+        key=lambda item: (item.duration, item.source_start, item.source_end, item.window_id)
+    )
     return tuple(windows)
 
 
