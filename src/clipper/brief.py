@@ -193,6 +193,31 @@ def _reject_modern_editor_quotas(normalized: dict[str, Any]) -> None:
         )
 
 
+def _inject_legacy_cache_compatibility(normalized: dict[str, Any]) -> None:
+    """Preserve existing paid cache keys while Phase B removes quota behavior.
+
+    These values are intentionally not configurable in an explicit-target campaign brief.
+    They reproduce the historical Double Coverage internal planning identity so migration of
+    the external schema does not invalidate already-paid editorial inference. Phase B replaces
+    their behavioral use with evidence-derived yield while retaining cache fallback support.
+    """
+
+    if "targets" not in normalized:
+        return
+    normalized.setdefault("clip_count", 3)
+    normalized.setdefault("max_clips_per_source", 3)
+    normalized.setdefault(
+        "production",
+        {
+            "candidate_pool_size": 36,
+            "concept_count": 10,
+            "variants_per_concept": 3,
+            "final_render_budget": 6,
+            "minimum_distinct_finalist_concepts": 3,
+        },
+    )
+
+
 def _normalize_semantic_brief(data: dict[str, Any]) -> dict[str, Any]:
     """Normalize the modern campaign contract onto legacy runtime fields.
 
@@ -208,6 +233,7 @@ def _normalize_semantic_brief(data: dict[str, Any]) -> dict[str, Any]:
     _normalize_rights(normalized)
     _normalize_content_constraints(normalized)
     _normalize_generated_media_policy(normalized)
+    _inject_legacy_cache_compatibility(normalized)
 
     keywords = normalized.get("keywords")
     if not isinstance(keywords, list) or not any(
