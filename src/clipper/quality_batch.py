@@ -133,8 +133,8 @@ def plan_quality_batch(
     editorial: EditorialProvider,
     *,
     dag_root: str | Path,
-    max_words_per_chunk: int,
-    chunk_overlap_words: int,
+    max_words_per_chunk: int = 900,
+    chunk_overlap_words: int = 160,
     progress_callback: ProgressCallback | None = None,
 ) -> QualityBatchResult:
     """Plan evidence-derived quality yield without any clip-count or render-budget quota."""

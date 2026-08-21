@@ -67,7 +67,6 @@ text_image = base_image.uv_pip_install(
     "torchvision==0.23.0",
     "transformers>=4.57,<5",
     "accelerate>=1.14,<2",
-    "sentence-transformers>=5.6,<6",
     "sentencepiece>=0.2,<1",
     "tiktoken>=0.11,<1",
     "bitsandbytes>=0.47,<1",
@@ -82,7 +81,6 @@ speech_image = base_image.uv_pip_install(
 )
 
 app = modal.App(APP_NAME)
-_embedding_model: Any | None = None
 _editorial_tokenizer: Any | None = None
 _editorial_model: Any | None = None
 _editorial_structured_model: Any | None = None
@@ -433,33 +431,6 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.function(
     image=text_image,
-    gpu="L4",
-    volumes={HF_CACHE: model_cache},
-    secrets=[hf_secret],
-    timeout=1200,
-    memory=16384,
-    scaledown_window=2,
-)
-def embedding(payload: dict[str, Any]) -> dict[str, Any]:
-    global _embedding_model
-    from sentence_transformers import SentenceTransformer
-
-    started = time.perf_counter()
-    texts = payload.get("texts")
-    if not isinstance(texts, list) or not all(isinstance(item, str) for item in texts):
-        raise ValueError("embedding payload requires string texts")
-    if _embedding_model is None:
-        _embedding_model = SentenceTransformer("Qwen/Qwen3-Embedding-0.6B", device="cuda")
-    vectors = _embedding_model.encode(texts, normalize_embeddings=True, convert_to_numpy=True)
-    value = [[float(item) for item in row] for row in vectors]
-    return {
-        "vectors": value,
-        "usage": _usage(started, "L4", input_units=len(texts), output_units=len(value)),
-    }
-
-
-@app.function(
-    image=text_image,
     gpu="L4:2",
     volumes={HF_CACHE: model_cache},
     secrets=[hf_secret],
@@ -508,7 +479,8 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
             )
 
         system_content = (
-            "You are a source-grounded podcast editor. Never invent spoken words or IDs. "
+            "You are a source-grounded multimodal short-form editor. "
+            "Never invent source evidence, spoken words, timestamps, or IDs. "
             + editorial_contract(task)
         )
         if recovery_attempt > 1:

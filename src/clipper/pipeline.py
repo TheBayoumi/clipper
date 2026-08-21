@@ -39,7 +39,7 @@ from .providers.base import (
 from .providers.factory import editorial_provider as build_editorial_provider
 from .providers.factory import speech_providers, vision_provider
 from .qc import run_technical_qc
-from .quality_batch import BatchQualityPlanningResult, plan_quality_batch
+from .quality_batch import QualityBatchResult, plan_quality_batch
 from .render import FFmpegRenderer
 from .rights import assert_campaign_authorized, assert_video_allowed
 from .runtime import StageJournal
@@ -119,12 +119,8 @@ class PipelineSettings:
             speaker_max_reframe_seconds=float(
                 os.getenv("CLIPPER_SPEAKER_MAX_REFRAME_SECONDS", "0.9")
             ),
-            speaker_seconds_per_crop=float(
-                os.getenv("CLIPPER_SPEAKER_SECONDS_PER_CROP", "0.75")
-            ),
-            speaker_hold_threshold=float(
-                os.getenv("CLIPPER_SPEAKER_HOLD_THRESHOLD", "0.28")
-            ),
+            speaker_seconds_per_crop=float(os.getenv("CLIPPER_SPEAKER_SECONDS_PER_CROP", "0.75")),
+            speaker_hold_threshold=float(os.getenv("CLIPPER_SPEAKER_HOLD_THRESHOLD", "0.28")),
             speaker_reversal_guard_seconds=float(
                 os.getenv("CLIPPER_SPEAKER_REVERSAL_GUARD_SECONDS", "2.0")
             ),
@@ -470,7 +466,7 @@ def _visual_timeline(
 
 def _speaker_focus_for_source(
     cfg: PipelineSettings,
-    quality: BatchQualityPlanningResult,
+    quality: QualityBatchResult,
     video_id: str,
 ) -> bool:
     if cfg.speaker_focus_override is not None:
@@ -482,7 +478,7 @@ def _speaker_focus_for_source(
 
 def _renderer_for_source(
     cfg: PipelineSettings,
-    quality: BatchQualityPlanningResult,
+    quality: QualityBatchResult,
     video_id: str,
 ) -> FFmpegRenderer:
     return FFmpegRenderer(
@@ -558,7 +554,7 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _funnel_template() -> dict[str, int]:
+def _funnel_template() -> dict[str, int | float | bool]:
     return {
         "transcript_segments": 0,
         "story_moments": 0,
@@ -620,11 +616,7 @@ def run_pipeline(
         transcription_provider, alignment_provider, diarization_provider = speech_providers(
             cfg.compute_profile
         )
-    if (
-        transcription_provider is None
-        or alignment_provider is None
-        or diarization_provider is None
-    ):
+    if transcription_provider is None or alignment_provider is None or diarization_provider is None:
         raise RuntimeError("canonical grounding provider resolution failed")
 
     run_dir = cfg.artifact_root / _run_id(brief.campaign_id)
@@ -798,9 +790,11 @@ def run_pipeline(
     )
     manifest.run_metadata["quality_yield"] = {
         "semantic_cores_discovered": sum(
-            int(item.get("semantic_cores", 0))
+            value
             for item in quality.source_evidence.values()
             if isinstance(item, dict)
+            for value in (item.get("semantic_cores"),)
+            if isinstance(value, int) and not isinstance(value, bool)
         ),
         "eligible_quality_moments": eligible,
         "primary_plans": eligible,
@@ -884,9 +878,13 @@ def run_pipeline(
         runtime = source_runtimes[plan.video_id]
         clip = plan.to_clip_candidate(concept_text.get(plan.concept_id, ""))
         active_renderer = renderer or _renderer_for_source(cfg, quality, plan.video_id)
-        output = run_dir / "clips" / (
-            f"attempt-{attempt_number:03d}-{_safe_slug(plan.concept_id)}-"
-            f"{_safe_slug(plan.plan_id)}.mp4"
+        output = (
+            run_dir
+            / "clips"
+            / (
+                f"attempt-{attempt_number:03d}-{_safe_slug(plan.concept_id)}-"
+                f"{_safe_slug(plan.plan_id)}.mp4"
+            )
         )
         attempt: dict[str, object] = {
             "attempt": attempt_number,
@@ -1071,9 +1069,7 @@ def _finalize_run_artifacts(run_dir: Path, manifest: PipelineManifest) -> None:
         run_dir / "editorial-review.json",
         {
             "status": (
-                "PENDING_HUMAN_REVIEW"
-                if manifest.submission_shortlist
-                else "NO_ELIGIBLE_OUTPUTS"
+                "PENDING_HUMAN_REVIEW" if manifest.submission_shortlist else "NO_ELIGIBLE_OUTPUTS"
             ),
             "required": bool(manifest.submission_shortlist),
             "clips": [

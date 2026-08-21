@@ -16,10 +16,10 @@ from .brief import load_brief
 from .modal_execution import ensure_modal_runtime, run_modal_pipeline
 from .pipeline import PipelineSettings, run_pipeline
 from .providers.factory import editorial_provider, speech_providers
-from .rights import RightsError, assert_campaign_authorized, assert_video_allowed
+from .rights import assert_campaign_authorized
 from .source_cache import PersistentYouTubeClient
 from .stage_contracts import content_fingerprint
-from .youtube import YouTubeClient
+from .youtube import DiscoveryRequest, YouTubeClient
 
 LOGGER = logging.getLogger("clipper")
 
@@ -42,8 +42,16 @@ def _parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="validate a campaign brief")
     validate.add_argument("--brief", required=True, type=Path)
 
-    discover = subparsers.add_parser("discover", help="inspect authorized source candidates")
-    discover.add_argument("--brief", required=True, type=Path)
+    discover = subparsers.add_parser(
+        "discover", help="discover source candidates outside production execution"
+    )
+    discover.add_argument("--query", default="")
+    discover.add_argument("--channel-id", action="append", default=[])
+    discover.add_argument("--video-id", action="append", default=[])
+    discover.add_argument("--limit", type=int, default=10)
+    discover.add_argument("--language", default="en")
+    discover.add_argument("--region-code", default="US")
+    discover.add_argument("--published-after")
 
     benchmark = subparsers.add_parser(
         "benchmark", help="evaluate a private multi-domain acceptance corpus"
@@ -346,17 +354,17 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(brief.to_dict(), indent=2))
             return 0
         if args.command == "discover":
-            brief = load_brief(args.brief)
-            assert_campaign_authorized(brief)
-            videos = YouTubeClient().discover(brief)
-            allowed = []
-            for video in videos:
-                try:
-                    assert_video_allowed(brief, video)
-                except RightsError:
-                    continue
-                allowed.append(video)
-            print(json.dumps([video.to_dict() for video in allowed], indent=2))
+            request = DiscoveryRequest(
+                query=args.query,
+                channel_ids=tuple(args.channel_id),
+                video_ids=tuple(args.video_id),
+                limit=args.limit,
+                language=args.language,
+                region_code=args.region_code,
+                published_after=args.published_after,
+            )
+            videos = YouTubeClient().discover(request)
+            print(json.dumps([video.to_dict() for video in videos], indent=2))
             return 0
         if args.command == "benchmark":
             result = evaluate_corpus_manifest(args.manifest)

@@ -73,7 +73,7 @@ def _plan(raw: object) -> EditPlan:
         EditorialBeat(
             float(item["start"]),
             float(item["end"]),
-            cast(BeatType, str(item["beat_type"])),
+            cast(BeatType, item["beat_type"]),
             float(item.get("strength") or 0.0),
             str(item["text"]) if item.get("text") is not None else None,
         )
@@ -85,7 +85,7 @@ def _plan(raw: object) -> EditPlan:
         video_id=str(raw["video_id"]),
         concept_id=str(raw["concept_id"]),
         variant_id=str(raw["variant_id"]),
-        hook_mode=cast(HookMode, str(raw["hook_mode"])),
+        hook_mode=cast(HookMode, raw["hook_mode"]),
         source_spans=spans,
         hook_text=str(raw["hook_text"]) if raw.get("hook_text") is not None else None,
         beats=beats,

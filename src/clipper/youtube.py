@@ -11,14 +11,38 @@ import urllib.parse
 import urllib.request
 from collections import deque
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .models import CampaignBrief, VideoCandidate
+from .models import VideoCandidate
 
 
 class YouTubeError(RuntimeError):
     """Raised for YouTube discovery or media acquisition failures."""
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryRequest:
+    """Input for the separate discovery workflow; never used by ``clipper run``."""
+
+    query: str = ""
+    channel_ids: tuple[str, ...] = ()
+    limit: int = 10
+    language: str = "en"
+    region_code: str = "US"
+    published_after: str | None = None
+    video_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.limit <= 50:
+            raise ValueError("discovery limit must be between 1 and 50")
+        if not self.video_ids and not self.channel_ids:
+            raise ValueError("discovery requires at least one channel_id or video_id")
+        if self.channel_ids and not self.query.strip():
+            raise ValueError("channel discovery requires a non-empty query")
+        if not self.language.strip() or not self.region_code.strip():
+            raise ValueError("discovery language and region_code cannot be empty")
 
 
 def _json_object(text: str) -> dict[str, Any]:
@@ -137,10 +161,10 @@ class YouTubeClient:
             raise YouTubeError("max_height must be at least 360 when configured")
         self.max_height = max_height
 
-    def discover(self, brief: CampaignBrief) -> list[VideoCandidate]:
+    def discover(self, request: DiscoveryRequest) -> list[VideoCandidate]:
         if self.api_key:
-            return self._discover_api(brief)
-        return self._discover_ytdlp(brief)
+            return self._discover_api(request)
+        return self._discover_ytdlp(request)
 
     def _api_get(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
         if self.api_key is None:
@@ -156,28 +180,28 @@ class YouTubeClient:
         except Exception as exc:
             raise YouTubeError(f"YouTube API request failed for {endpoint}: {exc}") from exc
 
-    def _discover_api(self, brief: CampaignBrief) -> list[VideoCandidate]:
-        ids: list[str] = list(brief.allowed_video_ids)
-        per_channel = max(1, min(50, brief.source_limit))
-        for channel_id in brief.source_channel_ids:
+    def _discover_api(self, request: DiscoveryRequest) -> list[VideoCandidate]:
+        ids: list[str] = list(request.video_ids)
+        per_channel = max(1, min(50, request.limit))
+        for channel_id in request.channel_ids:
             params: dict[str, Any] = {
                 "part": "snippet",
-                "q": brief.search_query,
+                "q": request.query,
                 "type": "video",
                 "order": "relevance",
                 "maxResults": per_channel,
-                "regionCode": brief.region_code,
-                "relevanceLanguage": brief.language,
+                "regionCode": request.region_code,
+                "relevanceLanguage": request.language,
                 "channelId": channel_id,
             }
-            if brief.published_after:
-                params["publishedAfter"] = brief.published_after
+            if request.published_after:
+                params["publishedAfter"] = request.published_after
             payload = self._api_get("search", params)
             for item in _object_list(payload.get("items")):
                 identifier = _object(item.get("id")).get("videoId")
                 if identifier:
                     ids.append(str(identifier))
-        ids = list(dict.fromkeys(ids))[: brief.source_limit]
+        ids = list(dict.fromkeys(ids))[: request.limit]
         if not ids:
             return []
         details = self._api_get(
@@ -218,11 +242,11 @@ class YouTubeClient:
             view_count=int(entry["view_count"]) if entry.get("view_count") else None,
         )
 
-    def _discover_ytdlp(self, brief: CampaignBrief) -> list[VideoCandidate]:
+    def _discover_ytdlp(self, request: DiscoveryRequest) -> list[VideoCandidate]:
         if not shutil.which("yt-dlp"):
             raise YouTubeError("YOUTUBE_API_KEY is unset and yt-dlp is not installed")
         results: list[VideoCandidate] = []
-        for video_id in brief.allowed_video_ids[: brief.source_limit]:
+        for video_id in request.video_ids[: request.limit]:
             command = [
                 "yt-dlp",
                 "--dump-single-json",
@@ -233,20 +257,20 @@ class YouTubeClient:
             entry = _json_object(_run(command, timeout=180).stdout)
             results.append(self._candidate_from_ytdlp(entry))
 
-        remaining = brief.source_limit - len(results)
-        if remaining > 0 and brief.source_channel_ids:
+        remaining = request.limit - len(results)
+        if remaining > 0 and request.channel_ids:
             command = [
                 "yt-dlp",
                 "--dump-single-json",
                 "--skip-download",
                 "--no-warnings",
-                f"ytsearch{remaining}:{brief.search_query}",
+                f"ytsearch{remaining}:{request.query}",
             ]
             payload = _json_object(_run(command, timeout=180).stdout)
             results.extend(
                 self._candidate_from_ytdlp(entry) for entry in _object_list(payload.get("entries"))
             )
-        return list({item.video_id: item for item in results}.values())[: brief.source_limit]
+        return list({item.video_id: item for item in results}.values())[: request.limit]
 
     def download_subtitles(
         self,
