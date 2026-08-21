@@ -50,6 +50,17 @@ class QualityMoment:
             raise ValueError(
                 "quality moment delivery window references the wrong narrative envelope"
             )
+        if (
+            self.delivery_window.video_id != self.envelope.video_id
+            or self.delivery_window.source_hash != self.envelope.source_hash
+        ):
+            raise ValueError("quality moment delivery window references the wrong source")
+        if self.delivery_window.source_start > self.envelope.source_start + 1e-6:
+            raise ValueError("quality moment delivery window amputates narrative setup")
+        if self.delivery_window.source_end < self.envelope.source_end - 1e-6:
+            raise ValueError("quality moment delivery window amputates narrative payoff")
+        if not set(self.envelope.source_word_ids).issubset(self.delivery_window.source_word_ids):
+            raise ValueError("quality moment delivery window omits narrative-envelope evidence")
         if self.assessment.core_id != self.core.core_id:
             raise ValueError("quality assessment references the wrong semantic core")
         if self.assessment.window_id != self.delivery_window.window_id:
