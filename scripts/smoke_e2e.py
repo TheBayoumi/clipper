@@ -118,9 +118,7 @@ class SmokeTranscription:
 class SmokeAlignment:
     identity = ModelIdentity("smoke-align", "v1", "none", "deterministic", "none", "canonical-v1")
 
-    def align(
-        self, source: Path, timeline: CanonicalTimeline
-    ) -> ProviderResult[CanonicalTimeline]:
+    def align(self, source: Path, timeline: CanonicalTimeline) -> ProviderResult[CanonicalTimeline]:
         if not source.is_file():
             raise FileNotFoundError(source)
         words = tuple(
