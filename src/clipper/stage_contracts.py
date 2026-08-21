@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass, field
-from typing import Any
 
 
 def content_fingerprint(value: object) -> str:
@@ -50,7 +49,11 @@ class StageIdentity:
     relevant_policy_hash: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.stage_name.strip() or not self.source_hash.strip() or not self.contract_hash.strip():
+        if (
+            not self.stage_name.strip()
+            or not self.source_hash.strip()
+            or not self.contract_hash.strip()
+        ):
             raise ValueError("stage identity requires stage, source, and contract hashes")
         if any(not value.strip() for value in self.dependency_output_hashes):
             raise ValueError("dependency output fingerprints cannot be empty")
