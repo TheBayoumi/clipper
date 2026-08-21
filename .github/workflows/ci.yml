@@ -1,94 +1,14 @@
-# Core fast gate: lint, format, typing, and tests only.
-# Production rendering/HILP evidence lives exclusively in v10-production-cycle.yml.
 name: CI
 
 on:
-  workflow_dispatch:
   pull_request:
   push:
-    branches:
-      - main
-      - feat/word-reveal-face-tracking
+    branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  repair-quality-graph-typing:
-    if: github.ref == 'refs/heads/feat/word-reveal-face-tracking' || github.head_ref == 'feat/word-reveal-face-tracking'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feat/word-reveal-face-tracking
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Apply exact typing fixes
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          batch = Path("src/clipper/quality_batch.py")
-          text = batch.read_text(encoding="utf-8")
-          old = '                "forbidden_spans": [item.to_dict() for item in forbidden],\n'
-          if old in text:
-              text = text.replace(
-                  old,
-                  '                "forbidden_spans": [\n                    {"start": item.start, "end": item.end} for item in forbidden\n                ],\n',
-                  1,
-              )
-          old = '''            failure = {
-                "video_id": video_id,
-                "stage": "quality_graph_planning",
-'''
-          if old in text:
-              text = text.replace(
-                  old,
-                  '''            failure: dict[str, object] = {
-                "video_id": video_id,
-                "stage": "quality_graph_planning",
-''',
-                  1,
-              )
-          batch.write_text(text, encoding="utf-8")
-
-          pipeline = Path("src/clipper/pipeline.py")
-          text = pipeline.read_text(encoding="utf-8")
-          marker = '''            telemetry.start(f"editorial_analysis:{video.video_id}")
-            if open_planner is not None:
-'''
-          if marker in text:
-              text = text.replace(
-                  marker,
-                  '''            telemetry.start(f"editorial_analysis:{video.video_id}")
-            moments: list[StoryMoment]
-            concepts: list[ClipConcept]
-            source_rejections: list[dict[str, object]]
-            if open_planner is not None:
-''',
-                  1,
-              )
-          pipeline.write_text(text, encoding="utf-8")
-          PY
-          python -m pip install -e ".[dev]"
-          ruff format src/clipper/quality_batch.py src/clipper/pipeline.py
-          ruff check src/clipper/quality_batch.py src/clipper/pipeline.py
-          mypy
-          git diff --check
-      - name: Commit repair when needed
-        run: |
-          set -euo pipefail
-          git config user.name "clipper-quality-graph-bot"
-          git config user.email "actions@users.noreply.github.com"
-          git add src/clipper/quality_batch.py src/clipper/pipeline.py
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "fix: type authoritative quality graph integration"
-          git push origin HEAD:feat/word-reveal-face-tracking
-
   quality:
     runs-on: ubuntu-latest
     strategy:
