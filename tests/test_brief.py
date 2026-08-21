@@ -44,6 +44,88 @@ def test_load_semantic_brief_without_keywords(tmp_path: Path) -> None:
     assert brief.keywords == ["Find the strongest self-contained moments semantically."]
 
 
+def test_load_explicit_target_brief_without_output_quotas(tmp_path: Path) -> None:
+    path = tmp_path / "brief.yaml"
+    path.write_text(
+        "campaign_id: c1\n"
+        "title: Explicit campaign\n"
+        "objective: Find every independently worthwhile moment.\n"
+        "language: en\n"
+        "region_code: US\n"
+        "targets:\n"
+        "  mode: explicit\n"
+        "  videos:\n"
+        "    - video_id: v1\n"
+        "      url: https://www.youtube.com/watch?v=v1\n"
+        "      channel_id: UC_AUTHORIZED\n"
+        "rights:\n"
+        "  confirmed: true\n"
+        "  authorized_channels: [UC_AUTHORIZED]\n"
+        "content_constraints:\n"
+        "  min_clip_seconds: 20\n"
+        "  max_clip_seconds: 45\n"
+        "acceptance_policy:\n"
+        "  generated_media:\n"
+        "    synthetic_visuals: forbid\n",
+        encoding="utf-8",
+    )
+
+    brief = load_brief(path)
+
+    assert brief.allowed_video_ids == ["v1"]
+    assert brief.source_channel_ids == []
+    assert brief.source_limit == 1
+    assert brief.rights_confirmed is True
+    assert brief.min_clip_seconds == 20
+    assert brief.max_clip_seconds == 45
+    assert brief.acceptance_policy.ai_generated_source_video == "forbid"
+
+
+def test_explicit_targets_do_not_accept_editorial_quotas(tmp_path: Path) -> None:
+    path = tmp_path / "brief.yaml"
+    path.write_text(
+        "campaign_id: c1\n"
+        "title: Explicit campaign\n"
+        "objective: Find every worthwhile moment.\n"
+        "clip_count: 3\n"
+        "targets:\n"
+        "  mode: explicit\n"
+        "  videos:\n"
+        "    - video_id: v1\n"
+        "      url: https://www.youtube.com/watch?v=v1\n"
+        "      channel_id: UC_AUTHORIZED\n"
+        "rights:\n"
+        "  confirmed: true\n"
+        "  authorized_channels: [UC_AUTHORIZED]\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BriefValidationError, match="cannot configure editorial/output quotas"):
+        load_brief(path)
+
+
+def test_explicit_target_placeholders_are_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "brief.yaml"
+    path.write_text(
+        "campaign_id: c1\n"
+        "title: Explicit campaign\n"
+        "objective: Find every worthwhile moment.\n"
+        "targets:\n"
+        "  mode: explicit\n"
+        "  videos:\n"
+        "    - video_id: REPLACE_WITH_AUTHORIZED_VIDEO_ID\n"
+        "      url: https://www.youtube.com/watch?v=REPLACE_WITH_AUTHORIZED_VIDEO_ID\n"
+        "      channel_id: UC_REPLACE_WITH_AUTHORIZED_CHANNEL_ID\n"
+        "rights:\n"
+        "  confirmed: true\n"
+        "  authorized_channels: [UC_REPLACE_WITH_AUTHORIZED_CHANNEL_ID]\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BriefValidationError, match="example placeholder"):
+        load_brief(path)
+
+
 def test_load_unknown_extension_falls_back(tmp_path: Path) -> None:
     path = tmp_path / "brief.txt"
     path.write_text(json.dumps(DATA), encoding="utf-8")
