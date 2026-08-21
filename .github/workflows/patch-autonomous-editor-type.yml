@@ -1,8 +1,8 @@
 name: Exact autonomous editor type patch
 
 on:
-  push:
-    branches: [feat/word-reveal-face-tracking]
+  pull_request:
+    types: [synchronize]
     paths:
       - ".github/workflows/patch-autonomous-editor-type.yml"
 
@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   patch:
+    if: github.head_ref == 'feat/word-reveal-face-tracking'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
