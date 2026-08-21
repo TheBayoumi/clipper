@@ -65,7 +65,11 @@ def test_editorial_provider_recovers_from_strict_json_contract_errors() -> None:
 
 def test_editorial_provider_does_not_retry_unrelated_remote_error() -> None:
     provider = SequenceEditorialProvider(
-        [ModalRemoteError(function_name="editorial", error_type="RuntimeError", message="gpu failed")]
+        [
+            ModalRemoteError(
+                function_name="editorial", error_type="RuntimeError", message="gpu failed"
+            )
+        ]
     )
     with pytest.raises(ModalRemoteError, match="gpu failed"):
         provider.complete_json(task="semantic_cores:0", payload={"words": []})
@@ -74,7 +78,9 @@ def test_editorial_provider_does_not_retry_unrelated_remote_error() -> None:
 
 def test_editorial_provider_stops_after_bounded_recovery_attempts() -> None:
     failures = [
-        ModalRemoteError(function_name="editorial", error_type="JSONDecodeError", message="bad json")
+        ModalRemoteError(
+            function_name="editorial", error_type="JSONDecodeError", message="bad json"
+        )
         for _ in range(3)
     ]
     provider = SequenceEditorialProvider(failures)

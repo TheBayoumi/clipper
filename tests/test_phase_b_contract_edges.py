@@ -546,6 +546,7 @@ def test_editorial_prompt_exposes_every_structured_task_family_and_budget() -> N
     with pytest.raises(ValueError, match="unsupported production editorial task"):
         editorial_json_schema("unsupported")
 
+
 class _EdgeEditorial:
     identity = ModelIdentity("edge-editor", "rev", "none", "test", "editor", "schema")
 
