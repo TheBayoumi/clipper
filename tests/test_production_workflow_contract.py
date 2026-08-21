@@ -23,6 +23,6 @@ def test_production_workflow_is_explicit_marker_triggered_and_quota_free() -> No
     assert '"acceptance/production-run-request.json"' in workflow
     assert 'rendered_finalists"]) >= 6' not in workflow
     assert 'initial_shortlist"]) >= 3' not in workflow
-    assert 'reviewable == rendered' in workflow
-    assert 'eligible_quality_moments' in workflow
+    assert "reviewable == rendered" in workflow
+    assert "eligible_quality_moments" in workflow
     assert '"automated_hilp_allowed": False' in workflow
