@@ -226,8 +226,8 @@ def test_live_validator_rejects_missing_or_overlapping_caption_concurrency(
         validate_live_run(tmp_path, expected_finalists=2, expected_shortlist=1)
 
 
-def test_v10_workflow_targets_current_branch_campaign_and_every_mp4() -> None:
-    workflow = Path(".github/workflows/v10-production-cycle.yml").read_text()
+def test_production_workflow_targets_current_branch_campaign_and_every_mp4() -> None:
+    workflow = Path(".github/workflows/production-pipeline.yml").read_text()
     assert "feat/word-reveal-face-tracking" in workflow
     assert "reach-double-coverage-dedicated.yaml" in workflow
     assert 'assert int(result["rendered_finalists"]) >= 6' in workflow
@@ -237,7 +237,7 @@ def test_v10_workflow_targets_current_branch_campaign_and_every_mp4() -> None:
     assert "manual-review-queue.json" in workflow
     assert "PENDING_ACTUAL_REVIEW" in workflow
     assert '"automated_hilp_allowed": False' in workflow
-    assert "v10-production-review-${{ github.sha }}" in workflow
+    assert "production-review-${{ github.sha }}" in workflow
 
 
 def test_live_validator_rejects_release_gate_failures(tmp_path: Path) -> None:
@@ -420,7 +420,7 @@ def test_live_validator_accepts_more_distinct_finalists_than_minimum(tmp_path: P
 def test_balanced_editor_defaults_to_free_dual_l4_and_keeps_managed_opt_in() -> None:
     worker = Path("scripts/modal_open_models.py").read_text()
     factory = Path("src/clipper/providers/factory.py").read_text()
-    production_workflow = Path(".github/workflows/v10-production-cycle.yml").read_text()
+    production_workflow = Path(".github/workflows/production-pipeline.yml").read_text()
     endpoint_bootstrap = Path("scripts/modal_endpoint_bootstrap.py").read_text()
     assert "def editorial(" in worker
     assert "AutoModelForCausalLM" in worker
@@ -437,10 +437,10 @@ def test_balanced_editor_defaults_to_free_dual_l4_and_keeps_managed_opt_in() -> 
     assert "modal deploy scripts/modal_open_models.py" in production_workflow
 
 
-def test_v10_production_workflow_uses_modal_hf_and_original_quality_master() -> None:
-    workflow = Path(".github/workflows/v10-production-cycle.yml").read_text()
+def test_production_workflow_uses_modal_hf_and_original_quality_master() -> None:
+    workflow = Path(".github/workflows/production-pipeline.yml").read_text()
     deployment_workflow = Path(".github/workflows/modal-workers-deploy.yml").read_text()
-    source_worker = Path("scripts/modal_v10_cycle.py").read_text()
+    source_worker = Path("scripts/modal_pipeline.py").read_text()
     model_worker = Path("scripts/modal_open_models.py").read_text()
     assert "MODAL_TOKEN_ID" in workflow
     assert "MODAL_TOKEN_SECRET" in workflow
@@ -453,8 +453,8 @@ def test_v10_production_workflow_uses_modal_hf_and_original_quality_master() -> 
     assert "hf_access_smoke" in workflow
     assert "hf_access_smoke" in deployment_workflow
     assert "modal deploy scripts/modal_open_models.py" in workflow
-    assert "modal deploy scripts/modal_v10_cycle.py" in workflow
-    assert 'Function.from_name("clipper-v10-cycle", "acquire_source")' in workflow
+    assert "modal deploy scripts/modal_pipeline.py" in workflow
+    assert 'Function.from_name("clipper-production-pipeline", "acquire_source")' in workflow
     assert 'result["quality_policy"] == "highest_available_no_transcode"' in workflow
     assert "source-master.json" in workflow
     assert "with_options(cloud=value, timeout=1800)" in workflow
@@ -462,18 +462,18 @@ def test_v10_production_workflow_uses_modal_hf_and_original_quality_master() -> 
     assert '"cloud:gcp"' in workflow
     assert '"cloud:aws"' in workflow
     assert '"cloud:oci"' in workflow
-    assert 'Function.from_name("clipper-v10-cycle", "run_full_cycle")' in workflow
+    assert 'Function.from_name("clipper-production-pipeline", "run_full_cycle")' in workflow
     assert 'assert result["pipeline_status"] == "SUCCESS"' in workflow
     assert 'assert int(result["rendered_finalists"]) >= 6' in workflow
     assert 'assert int(result["initial_shortlist"]) >= 3' in workflow
-    assert "modal volume get --force clipper-v10-artifacts" in workflow
+    assert "modal volume get --force clipper-production-artifacts" in workflow
     assert "manual-review-queue.json" in workflow
     assert "PENDING_ACTUAL_MP4_REVIEW" in workflow
     assert "PENDING_ACTUAL_REVIEW" in workflow
     assert '"automated_hilp_allowed": False' in workflow
-    assert "v10-production-review-${{ github.sha }}" in workflow
+    assert "production-review-${{ github.sha }}" in workflow
     assert "simulate_hilp_cycle" not in workflow
-    assert 'modal app stop "$CLIPPER_V10_MODAL_APP" --yes' in workflow
+    assert 'modal app stop "$CLIPPER_MODAL_PIPELINE_APP" --yes' in workflow
     assert 'modal app stop "$CLIPPER_MODAL_APP" --yes' in workflow
     assert "def acquire_source(" in source_worker
     assert '"yt-dlp[default]>=2026.7.4,<2027"' in source_worker
