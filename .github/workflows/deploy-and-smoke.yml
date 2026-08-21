@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "acceptance/container-canary-request.json"
   workflow_dispatch:
 
 permissions:
