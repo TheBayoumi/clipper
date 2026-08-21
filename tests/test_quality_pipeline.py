@@ -205,5 +205,10 @@ def test_disabled_structured_policy_produces_no_solver_exclusions() -> None:
     brief = load_brief("campaigns/reach-double-coverage-dedicated.yaml")
     disabled = replace(brief, acceptance_policy=replace(brief.acceptance_policy, enabled=False))
     brand = BrandingEvidence(1.0, 2.0, EvidenceOrigin.SOURCE, "logo", 1.0)
-    assert forbidden_spans_for_campaign(disabled, (_hazard(HazardClassification.SPONSOR_READ),), (brand,)) == ()
+    assert (
+        forbidden_spans_for_campaign(
+            disabled, (_hazard(HazardClassification.SPONSOR_READ),), (brand,)
+        )
+        == ()
+    )
     assert source_branding_evidence(None) == ()
