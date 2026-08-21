@@ -248,7 +248,9 @@ def test_quality_batch_rejects_ineligible_quality_moment_without_quota_fill(tmp_
     assert result.rejections[-1]["decision"] == "REJECT"
 
 
-def test_quality_batch_fails_closed_on_insufficient_required_visual_coverage(tmp_path: Path) -> None:
+def test_quality_batch_fails_closed_on_insufficient_required_visual_coverage(
+    tmp_path: Path,
+) -> None:
     timeline = _timeline(10)
     visual = VisualTimeline("video", "source", ())
     with (
