@@ -5,7 +5,7 @@ import pytest
 from clipper.autonomous_quality_planner import AutonomousQualityPlanner
 from clipper.canonical import CanonicalTimeline, CanonicalWord
 from clipper.dag import DagStore
-from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
+from clipper.providers.base import ModelIdentity, ProviderResult
 from clipper.stage_contracts import StageIdentity
 from clipper.story_graph import NarrativeEnvelope, SemanticCore
 
@@ -13,7 +13,9 @@ from clipper.story_graph import NarrativeEnvelope, SemanticCore
 class _UnusedEditorial:
     identity = ModelIdentity("unused", "rev", "none", "test", "editor", "schema")
 
-    def complete_json(self, *, task: str, payload: dict[str, object]) -> ProviderResult[dict[str, object]]:
+    def complete_json(
+        self, *, task: str, payload: dict[str, object]
+    ) -> ProviderResult[dict[str, object]]:
         raise AssertionError((task, payload))
 
 
