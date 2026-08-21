@@ -16,7 +16,7 @@ from urllib.request import Request, urlopen
 
 import gdown
 
-from .autonomous_editor import AutonomousEditorialPlanner, OpenVideoAnalysis
+from .autonomous_editor import AutonomousEditorialPlanner
 from .brief import load_brief
 from .cache import (
     CACHE_SCHEMA_VERSION,
@@ -73,6 +73,7 @@ from .providers.factory import (
     vision_provider as build_vision_provider,
 )
 from .qc import run_technical_qc
+from .quality_batch import plan_quality_batch
 from .render import FFmpegRenderer
 from .rights import RightsError, assert_campaign_authorized, assert_video_allowed
 from .runtime import ComputeBudget, StageJournal
@@ -868,7 +869,6 @@ def run_pipeline(
     transcripts: dict[str, list[TranscriptSegment]] = {}
     canonical_timelines: dict[str, CanonicalTimeline] = {}
     visual_timelines: dict[str, VisualTimeline] = {}
-    open_analyses: list[OpenVideoAnalysis] = []
     media_paths: dict[str, Path] = {}
     all_moments: list[StoryMoment] = []
     all_concepts: list[ClipConcept] = []
@@ -1121,17 +1121,18 @@ def run_pipeline(
                     )
             telemetry.start(f"editorial_analysis:{video.video_id}")
             if open_planner is not None:
-                analysis = open_planner.analyze_video(brief, canonical, visual_timeline)
-                open_analyses.append(analysis)
-                moments = analysis.moments
-                concepts = analysis.concepts
-                source_rejections = analysis.rejections
+                # Open production defers semantic discovery to the authoritative quality graph
+                # after every source has canonical + visual evidence. No legacy concept planning
+                # is allowed to determine production yield.
+                moments = []
+                concepts = []
+                source_rejections = []
                 source_stats = {
                     "candidate_starts": 0,
                     "eligible_endpoints": 0,
-                    "concepts_after_quality": len(concepts),
-                    "concepts_after_moment_dedup": len(moments),
-                    "semantic_representatives": len(concepts),
+                    "concepts_after_quality": 0,
+                    "concepts_after_moment_dedup": 0,
+                    "semantic_representatives": 0,
                 }
             else:
                 moments, concepts, source_rejections, source_stats = _cached_editorial_analysis(
@@ -1168,13 +1169,13 @@ def run_pipeline(
             message=f"completed {video.video_id}",
         )
 
-    if open_planner is not None and not open_analyses and manifest.errors:
+    if open_planner is not None and not canonical_timelines and manifest.errors:
         source_errors = "; ".join(
             f"{item.get('video_id', 'unknown')}: "
             f"{item.get('error_type', 'Error')}: {item.get('error', '')}"
             for item in manifest.errors
         )
-        reason = f"all authorized source analyses failed: {source_errors}"
+        reason = f"all authorized source processing failed: {source_errors}"
         journal.fail("source_processing", reason)
         raise RuntimeError(reason)
     journal.complete(
@@ -1192,40 +1193,75 @@ def run_pipeline(
     plans: list[EditPlan]
     journal.start("editorial_planning", message="constructing diverse source-grounded plans")
     if open_planner is not None:
-        open_batch = open_planner.plan_batch(brief, canonical_timelines, open_analyses)
-        all_moments = open_batch.discovered_moments
-        all_concepts = open_batch.discovered_concepts
-        selected_concepts = open_batch.selected_concepts
-        variants = open_batch.variants
-        plans = open_batch.plans
-        manifest.rejections.extend(open_batch.rejections)
-        manifest.run_metadata["editorial_inference"]["model_invocations"] = (
-            open_batch.model_invocations
+        if editorial_provider is None:
+            raise RuntimeError("open editorial provider is unavailable for quality graph planning")
+        quality_batch = plan_quality_batch(
+            brief,
+            canonical_timelines,
+            visual_timelines,
+            editorial_provider,
+            dag_root=run_dir / "dag",
+            max_words_per_chunk=cfg.editorial_chunk_words,
+            chunk_overlap_words=cfg.editorial_chunk_overlap_words,
+            progress_callback=_model_progress,
         )
-        manifest.run_metadata["pre_render_boundary_audits"] = open_batch.boundary_audits
-        manifest.run_metadata["pre_render_campaign_policy_audits"] = (
-            open_batch.campaign_policy_audits
+        all_moments = list(quality_batch.story_moments)
+        all_concepts = list(quality_batch.concepts)
+        selected_concepts = list(quality_batch.concepts)
+        variants = list(quality_batch.variants)
+        plans = list(quality_batch.plans)
+        manifest.rejections.extend(quality_batch.rejections)
+        manifest.run_metadata["editorial_inference"]["model_invocations"] = list(
+            quality_batch.model_invocations
         )
-        manifest.run_metadata["source_hazards"] = open_batch.source_hazards
-        for invocation in open_batch.model_invocations:
+        manifest.run_metadata["pre_render_boundary_audits"] = list(quality_batch.boundary_audits)
+        manifest.run_metadata["pre_render_campaign_policy_audits"] = list(
+            quality_batch.campaign_policy_audits
+        )
+        manifest.run_metadata["source_hazards"] = list(quality_batch.source_hazards)
+        manifest.run_metadata["quality_planning"] = {
+            "architecture": "semantic-core-envelope-window-quality-moment",
+            "yield_is_quota_independent": True,
+            "eligible_quality_moments": len(quality_batch.quality_moments),
+            "stage_cache_hits": quality_batch.stage_cache_hits,
+            "stage_executions": quality_batch.stage_executions,
+            "source_evidence": quality_batch.source_evidence,
+        }
+        for invocation in quality_batch.model_invocations:
             compute_budget.record_mapping(invocation.get("usage"))
-        _write_json(run_dir / "open-model" / "model-invocations.json", open_batch.model_invocations)
+        quality_count = len(quality_batch.quality_moments)
+        mining_stats.update(
+            {
+                "candidate_starts": quality_count,
+                "eligible_endpoints": quality_count,
+                "concepts_after_quality": quality_count,
+                "concepts_after_moment_dedup": quality_count,
+                "semantic_representatives": quality_count,
+            }
+        )
+        _write_json(
+            run_dir / "open-model" / "model-invocations.json",
+            list(quality_batch.model_invocations),
+        )
         _write_json(
             run_dir / "open-model" / "discovered-concepts.json",
             [item.to_dict() for item in all_concepts],
         )
         _write_json(
             run_dir / "open-model" / "boundary-audits.json",
-            open_batch.boundary_audits,
+            list(quality_batch.boundary_audits),
         )
         _write_json(
             run_dir / "open-model" / "campaign-policy-audits.json",
-            open_batch.campaign_policy_audits,
+            list(quality_batch.campaign_policy_audits),
         )
         _write_json(
             run_dir / "open-model" / "source-hazards.json",
-            open_batch.source_hazards,
+            list(quality_batch.source_hazards),
         )
+        _write_json(run_dir / "quality-graph" / "batch.json", quality_batch.to_dict())
+        for video_id, evidence in quality_batch.source_evidence.items():
+            _write_json(run_dir / "quality-graph" / f"{video_id}.json", evidence)
     else:
         selected_concepts = select_distinct_concepts(
             brief, all_concepts, rejections=manifest.rejections
@@ -1258,6 +1294,10 @@ def run_pipeline(
         )
     concept_index = {concept.concept_id: concept for concept in selected_concepts}
     quality_groups = group_quality_plans(plans)
+    if open_planner is not None and len(quality_groups) != len(plans):
+        raise RuntimeError(
+            "authoritative quality graph must compile to exactly one render plan per quality moment"
+        )
     primary_plans = [group.primary for group in quality_groups]
     reserve_plans = [plan for group in quality_groups for plan in group.reserves]
 
@@ -1868,9 +1908,7 @@ def run_pipeline(
             "planning_only_no_eligible_moments" if not quality_groups else "planning_only"
         )
         manifest.publication_state = (
-            "COMPLETED_NO_ELIGIBLE_MOMENTS"
-            if not quality_groups
-            else "TECHNICALLY_INCOMPLETE"
+            "COMPLETED_NO_ELIGIBLE_MOMENTS" if not quality_groups else "TECHNICALLY_INCOMPLETE"
         )
 
     manifest.run_metadata["rejection_reason_counts"] = dict(
