@@ -9,7 +9,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
@@ -43,7 +43,6 @@ from .quality_batch import BatchQualityPlanningResult, plan_quality_batch
 from .render import FFmpegRenderer
 from .rights import assert_campaign_authorized, assert_video_allowed
 from .runtime import StageJournal
-from .stage_contracts import content_fingerprint
 from .visual import VisualTimeline
 from .visual_ai import (
     review_rendered_clip,
@@ -413,11 +412,6 @@ def _campaign_watermark(
     if not brief.watermark_url:
         return None
     fixture_watermark = getattr(source, "campaign_watermark", None)
-    if callable(fixture_watermark):
-        supplied = fixture_watermark(brief)
-        if supplied is not None:
-            target = run_dir / "assets" / "watermark" + supplied.suffix
-            # Path does not support +; retain a stable campaign filename below.
     output = run_dir / "assets" / "campaign-watermark.png"
     if callable(fixture_watermark):
         supplied = fixture_watermark(brief)
@@ -535,7 +529,8 @@ def _tracking_transitions(rendered: Path) -> tuple[float, ...]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return ()
-    return tracking_transition_sample_times(payload.get("transitions") if isinstance(payload, dict) else ())
+    transitions = payload.get("transitions") if isinstance(payload, dict) else ()
+    return tracking_transition_sample_times(transitions)
 
 
 def _rendered_clip(
@@ -625,9 +620,12 @@ def run_pipeline(
         transcription_provider, alignment_provider, diarization_provider = speech_providers(
             cfg.compute_profile
         )
-    assert transcription_provider is not None
-    assert alignment_provider is not None
-    assert diarization_provider is not None
+    if (
+        transcription_provider is None
+        or alignment_provider is None
+        or diarization_provider is None
+    ):
+        raise RuntimeError("canonical grounding provider resolution failed")
 
     run_dir = cfg.artifact_root / _run_id(brief.campaign_id)
     if run_dir.exists():
@@ -763,7 +761,11 @@ def run_pipeline(
         manifest.status = "FAILED"
         manifest.status_reason = "autonomous_quality_graph_failed"
         manifest.errors.append(
-            {"stage": "quality_graph", "video_id": "*", "error": f"{type(exc).__name__}: {exc}"}
+            {
+                "stage": "quality_graph",
+                "video_id": "*",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
         )
         manifest.publication_state = "TECHNICALLY_INCOMPLETE"
         _write_json(run_dir / "manifest.json", manifest.to_dict())
@@ -850,7 +852,6 @@ def run_pipeline(
 
     concept_text = {concept.concept_id: concept.text for concept in quality.concepts}
     video_index = {video.video_id: video for video in targets}
-    plan_index = {plan.plan_id: plan for plan in quality.plans}
     manifest.planned_clips = [
         plan.to_clip_candidate(concept_text.get(plan.concept_id, "")).to_dict()
         for plan in quality.plans
