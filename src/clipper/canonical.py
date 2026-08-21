@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, cast
 
 from .models import TranscriptSegment, TranscriptWord
+from .stage_contracts import structural_contract_fingerprint
 
 TimingMode = Literal["word_exact", "aligned", "cue_interpolated"]
 
@@ -39,9 +40,19 @@ class CanonicalTimeline:
     video_id: str
     source_hash: str
     words: tuple[CanonicalWord, ...]
-    schema_version: str = "canonical-timeline-v1"
+    contract_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "contract_fingerprint",
+            structural_contract_fingerprint(
+                "canonical-timeline",
+                CanonicalWord,
+                CanonicalTimeline,
+                exclude_fields=("contract_fingerprint",),
+            ),
+        )
         if not self.video_id.strip() or not self.source_hash.strip():
             raise ValueError("canonical timeline requires video_id and source_hash")
         identifiers = [word.word_id for word in self.words]
@@ -52,6 +63,11 @@ class CanonicalTimeline:
             for a, b in zip(self.words, self.words[1:], strict=False)
         ):
             raise ValueError("canonical timeline words must be source ordered")
+
+    @property
+    def schema_version(self) -> str:
+        """Compatibility alias; value is a structural fingerprint, never a manual version."""
+        return self.contract_fingerprint
 
     @property
     def start(self) -> float:
@@ -109,7 +125,7 @@ class CanonicalTimeline:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": self.schema_version,
+            "contract_fingerprint": self.contract_fingerprint,
             "video_id": self.video_id,
             "source_hash": self.source_hash,
             "words": [word.to_dict() for word in self.words],
@@ -142,12 +158,17 @@ class CanonicalTimeline:
                     transcript_source=str(raw.get("transcript_source") or "unknown"),
                 )
             )
-        return cls(
+        timeline = cls(
             video_id=str(payload.get("video_id") or ""),
             source_hash=str(payload.get("source_hash") or ""),
             words=tuple(words),
-            schema_version=str(payload.get("schema_version") or "canonical-timeline-v1"),
         )
+        supplied = payload.get("contract_fingerprint")
+        if supplied is not None and str(supplied) != timeline.contract_fingerprint:
+            raise ValueError("canonical timeline contract fingerprint does not match runtime contract")
+        # Historical `schema_version` metadata is deliberately ignored. The payload fields
+        # themselves are validated and normalized onto the current structural contract.
+        return timeline
 
 
 def _word_id(video_id: str, source_hash: str, index: int, word: TranscriptWord) -> str:
