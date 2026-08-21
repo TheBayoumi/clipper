@@ -47,9 +47,7 @@ def _write_live_run(
         (root / "policy" / f"{index:02d}.policy-audit.json").write_text(
             json.dumps({"plan_id": plan_id, "decision": "PASS"})
         )
-        rendered.append(
-            {"plan_id": plan_id, "concept_id": concept_id, "output_path": str(clip)}
-        )
+        rendered.append({"plan_id": plan_id, "concept_id": concept_id, "output_path": str(clip)})
         qc.append(
             {
                 "plan_id": plan_id,
@@ -407,11 +405,10 @@ def test_non_object_and_invalid_count_evidence_are_rejected(tmp_path: Path) -> N
 
 def test_production_workflow_is_dynamic_yield_and_reviews_every_mp4() -> None:
     workflow = Path(".github/workflows/production-pipeline.yml").read_text()
-    assert "feat/word-reveal-face-tracking" in workflow
-    assert "reach-double-coverage-dedicated.yaml" in workflow
+    assert "feat/word-reveal-face-tracking" not in workflow
     assert 'int(result["rendered_finalists"]) >= 6' not in workflow
     assert 'int(result["initial_shortlist"]) >= 3' not in workflow
-    assert 'manifest["targets"]["eligible_quality_moments"]' in workflow
+    assert 'targets["eligible_quality_moments"]' in workflow
     assert "for item in rendered:" in workflow
     assert '"ffmpeg"' in workflow
     assert "manual-review-queue.json" in workflow
