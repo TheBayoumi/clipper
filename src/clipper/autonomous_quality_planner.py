@@ -188,7 +188,9 @@ def quality_assessment_from_payload(
             raise AutonomousPlanningError("non-PASS quality decision references an unknown window")
         return None
     if not isinstance(selected, str) or selected not in legal:
-        raise AutonomousPlanningError("PASS quality decision must select a supplied legal window ID")
+        raise AutonomousPlanningError(
+            "PASS quality decision must select a supplied legal window ID"
+        )
     return WindowQualityAssessment(
         core_id=core.core_id,
         window_id=selected,
@@ -364,7 +366,9 @@ class AutonomousQualityPlanner:
             multimodal.video_id != timeline.video_id
             or multimodal.source_hash != timeline.source_hash
         ):
-            raise AutonomousPlanningError("multimodal and canonical timelines reference different sources")
+            raise AutonomousPlanningError(
+                "multimodal and canonical timelines reference different sources"
+            )
         if modality_profile is not None:
             assert_required_modalities_available(modality_profile)
 
@@ -420,7 +424,8 @@ class AutonomousQualityPlanner:
                     ),
                     "instruction": (
                         "Return the minimum complete narrative envelope containing this semantic "
-                        "core. Resolve setup, references, causality and payoff without duration padding."
+                        "core. Resolve setup, references, causality and payoff without duration "
+                        "padding."
                     ),
                 },
                 relevant_policy=relevant_policy,
@@ -489,7 +494,8 @@ class AutonomousQualityPlanner:
                     ),
                     "instruction": (
                         "Judge whether this complete campaign-legal moment is genuinely worth "
-                        "publishing. Select only a supplied feasible window ID; never invent timestamps."
+                        "publishing. Select only a supplied feasible window ID; never invent "
+                        "timestamps."
                     ),
                 },
                 relevant_policy=relevant_policy,
