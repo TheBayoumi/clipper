@@ -27,10 +27,27 @@ def cpu_seconds() -> float:
     return times.user + times.system + times.children_user + times.children_system
 
 
+def _proc_peak_rss_mb() -> float:
+    """Best-effort Linux RSS fallback when the stdlib resource module is unavailable."""
+
+    status = Path("/proc/self/status")
+    if not status.is_file():
+        return 0.0
+    try:
+        for line in status.read_text(encoding="utf-8").splitlines():
+            if line.startswith("VmHWM:") or line.startswith("VmRSS:"):
+                fields = line.split()
+                if len(fields) >= 2:
+                    return round(float(fields[1]) / 1024.0, 2)
+    except (OSError, ValueError):
+        return 0.0
+    return 0.0
+
+
 def peak_rss_mb() -> float:
     if _resource is None:
         if sys.platform != "win32":
-            return 0.0
+            return _proc_peak_rss_mb()
 
         class ProcessMemoryCounters(ctypes.Structure):
             _fields_ = [
