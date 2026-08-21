@@ -259,9 +259,7 @@ def plan_quality_batch(
                 "multimodal_timeline": multimodal.to_dict(),
                 "modality_profile": modality_profile.to_dict(),
                 "source_hazards": hazard_result.to_dict(),
-                "forbidden_spans": [
-                    {"start": item.start, "end": item.end} for item in forbidden
-                ],
+                "forbidden_spans": [{"start": item.start, "end": item.end} for item in forbidden],
                 "quality_planning": planning.to_dict(),
                 "adapted_quality_moment_ids": adapted_ids,
                 "stage_cache_hits": source_cache_hits,
