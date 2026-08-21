@@ -139,17 +139,18 @@ def validate_live_run(
     quality_yield = run_metadata.get("quality_yield")
     if not isinstance(quality_yield, dict):
         raise ValueError("quality_yield evidence is missing")
-    if _non_negative_int(
-        quality_yield.get("eligible_quality_moments"),
-        label="quality_yield.eligible_quality_moments",
-    ) != eligible:
+    if (
+        _non_negative_int(
+            quality_yield.get("eligible_quality_moments"),
+            label="quality_yield.eligible_quality_moments",
+        )
+        != eligible
+    ):
         raise ValueError("quality_yield eligible count disagrees with targets")
     primary_count = _non_negative_int(
         quality_yield.get("primary_plans"), label="quality_yield.primary_plans"
     )
-    _non_negative_int(
-        quality_yield.get("reserve_variants"), label="quality_yield.reserve_variants"
-    )
+    _non_negative_int(quality_yield.get("reserve_variants"), label="quality_yield.reserve_variants")
     if primary_count != eligible:
         raise ValueError("every eligible quality moment must have exactly one primary plan")
     rendered_yield = _non_negative_int(
@@ -162,10 +163,13 @@ def validate_live_run(
     )
     if accepted_yield != rendered_count:
         raise ValueError("quality_yield accepted count disagrees with accepted MP4s")
-    if _non_negative_int(
-        quality_yield.get("unrendered_or_rejected"),
-        label="quality_yield.unrendered_or_rejected",
-    ) != eligible - rendered_count:
+    if (
+        _non_negative_int(
+            quality_yield.get("unrendered_or_rejected"),
+            label="quality_yield.unrendered_or_rejected",
+        )
+        != eligible - rendered_count
+    ):
         raise ValueError("quality_yield attrition ledger is inconsistent")
 
     publication_state = manifest.get("publication_state")
@@ -319,9 +323,7 @@ def validate_live_run(
     missing = sorted(required_funnel - set(funnel))
     if missing:
         raise ValueError(f"funnel ledger is missing fields: {missing}")
-    quality_moments = _non_negative_int(
-        funnel["quality_moments"], label="funnel.quality_moments"
-    )
+    quality_moments = _non_negative_int(funnel["quality_moments"], label="funnel.quality_moments")
     if quality_moments != eligible:
         raise ValueError("funnel quality_moments does not match evidence-derived yield")
     yield_fields = (
