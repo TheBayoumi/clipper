@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
+
+from .stage_contracts import structural_contract_fingerprint
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,17 +36,31 @@ class VisualTimeline:
     video_id: str
     source_hash: str
     events: tuple[VisualEvent, ...]
-    schema_version: str = "visual-timeline-v1"
+    contract_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "contract_fingerprint",
+            structural_contract_fingerprint(
+                "visual-timeline",
+                VisualEvent,
+                VisualTimeline,
+                exclude_fields=("contract_fingerprint",),
+            ),
+        )
         if not self.video_id.strip() or not self.source_hash.strip():
             raise ValueError("visual timeline requires video_id and source_hash")
         if any(a.start > b.start for a, b in zip(self.events, self.events[1:], strict=False)):
             raise ValueError("visual timeline events must be source ordered")
 
+    @property
+    def schema_version(self) -> str:
+        return self.contract_fingerprint
+
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": self.schema_version,
+            "contract_fingerprint": self.contract_fingerprint,
             "video_id": self.video_id,
             "source_hash": self.source_hash,
             "events": [event.to_dict() for event in self.events],
@@ -76,9 +92,12 @@ class VisualTimeline:
                     confidence=float(raw.get("confidence") or 0.0),
                 )
             )
-        return cls(
+        timeline = cls(
             video_id=str(payload.get("video_id") or ""),
             source_hash=str(payload.get("source_hash") or ""),
             events=tuple(events),
-            schema_version=str(payload.get("schema_version") or "visual-timeline-v1"),
         )
+        supplied = payload.get("contract_fingerprint")
+        if supplied is not None and str(supplied) != timeline.contract_fingerprint:
+            raise ValueError("visual timeline contract fingerprint does not match runtime contract")
+        return timeline
