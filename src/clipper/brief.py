@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .models import BriefValidationError, CampaignBrief
+
+
+@dataclass(frozen=True, slots=True)
+class ExplicitTargetSpec:
+    """Validated source identity from a modern explicit-target campaign brief."""
+
+    video_id: str
+    url: str
+    channel_id: str
+    media_url: str | None = None
 
 
 def _mapping(value: object) -> dict[str, Any]:
@@ -27,6 +38,22 @@ def _load_yaml(text: str) -> dict[str, Any]:
 
 def _load_json(text: str) -> dict[str, Any]:
     return _mapping(json.loads(text))
+
+
+def _load_brief_data(path: str | Path) -> dict[str, Any]:
+    brief_path = Path(path)
+    if not brief_path.is_file():
+        raise FileNotFoundError(f"brief not found: {brief_path}")
+    text = brief_path.read_text(encoding="utf-8")
+    suffix = brief_path.suffix.lower()
+    if suffix == ".json":
+        return _load_json(text)
+    if suffix in {".yaml", ".yml"}:
+        return _load_yaml(text)
+    try:
+        return _load_json(text)
+    except json.JSONDecodeError:
+        return _load_yaml(text)
 
 
 def _contains_placeholder(value: str) -> bool:
@@ -52,7 +79,7 @@ def _reject_example_source_placeholders(data: dict[str, Any]) -> None:
             for item in videos:
                 if not isinstance(item, dict):
                     continue
-                for key in ("video_id", "channel_id", "url"):
+                for key in ("video_id", "channel_id", "url", "media_url"):
                     value = item.get(key)
                     if isinstance(value, str) and _contains_placeholder(value):
                         raise BriefValidationError(
@@ -77,10 +104,17 @@ def _string(value: object, field: str) -> str:
     return value.strip()
 
 
-def _normalize_explicit_targets(normalized: dict[str, Any]) -> None:
-    targets = normalized.get("targets")
+def _https_url(value: object, field: str) -> str:
+    url = _string(value, field)
+    if not url.startswith("https://"):
+        raise BriefValidationError(f"{field} must use https")
+    return url
+
+
+def _explicit_target_specs_from_data(data: dict[str, Any]) -> tuple[ExplicitTargetSpec, ...]:
+    targets = data.get("targets")
     if targets is None:
-        return
+        return ()
     if not isinstance(targets, dict):
         raise BriefValidationError("targets must be an object")
     unknown = set(targets) - {"mode", "videos"}
@@ -92,7 +126,7 @@ def _normalize_explicit_targets(normalized: dict[str, Any]) -> None:
     if not isinstance(videos, list) or not videos:
         raise BriefValidationError("targets.videos must contain at least one explicit video")
 
-    ids: list[str] = []
+    specs: list[ExplicitTargetSpec] = []
     for index, item in enumerate(videos):
         if not isinstance(item, dict):
             raise BriefValidationError(f"targets.videos[{index}] must be an object")
@@ -102,20 +136,58 @@ def _normalize_explicit_targets(normalized: dict[str, Any]) -> None:
                 f"unsupported targets.videos rule: {sorted(unknown_video_fields)[0]}"
             )
         video_id = _string(item.get("video_id"), f"targets.videos[{index}].video_id")
-        url = _string(item.get("url"), f"targets.videos[{index}].url")
-        if not url.startswith("https://"):
-            raise BriefValidationError(f"targets.videos[{index}].url must use https")
-        ids.append(video_id)
+        url = _https_url(item.get("url"), f"targets.videos[{index}].url")
+        channel_id = _string(item.get("channel_id"), f"targets.videos[{index}].channel_id")
+        media_value = item.get("media_url")
+        media_url = (
+            _https_url(media_value, f"targets.videos[{index}].media_url")
+            if media_value is not None
+            else None
+        )
+        specs.append(ExplicitTargetSpec(video_id, url, channel_id, media_url))
 
+    ids = [item.video_id for item in specs]
     if len(set(ids)) != len(ids):
         raise BriefValidationError("targets.videos contains duplicate video IDs")
 
+    rights = data.get("rights")
+    if isinstance(rights, dict):
+        raw_channels = rights.get("authorized_channels", [])
+        if isinstance(raw_channels, list) and all(isinstance(item, str) for item in raw_channels):
+            authorized = {item.strip() for item in raw_channels if item.strip()}
+            unauthorized = sorted(
+                {item.channel_id for item in specs if item.channel_id not in authorized}
+            )
+            if unauthorized:
+                raise BriefValidationError(
+                    "targets.videos contains channel IDs outside rights.authorized_channels: "
+                    + ", ".join(unauthorized)
+                )
+    return tuple(specs)
+
+
+def load_explicit_targets(path: str | Path) -> tuple[ExplicitTargetSpec, ...]:
+    """Load validated modern target identities without converting them to discovery fields."""
+
+    data = _load_brief_data(path)
+    _reject_example_source_placeholders(data)
+    return _explicit_target_specs_from_data(data)
+
+
+def _normalize_explicit_targets(normalized: dict[str, Any]) -> None:
+    specs = _explicit_target_specs_from_data(normalized)
+    if not specs:
+        return
+
     # The legacy CampaignBrief still exposes discovery fields internally. Explicit-target
     # production populates only allowed_video_ids; authorized channels remain rights data and
-    # must never become implicit discovery inputs.
-    normalized["allowed_video_ids"] = ids
+    # must never become implicit discovery inputs. Direct media URLs are preserved losslessly.
+    normalized["allowed_video_ids"] = [item.video_id for item in specs]
     normalized["source_channel_ids"] = []
-    normalized["source_limit"] = len(ids)
+    normalized["source_limit"] = len(specs)
+    media_urls = {item.video_id: item.media_url for item in specs if item.media_url is not None}
+    if media_urls:
+        normalized["source_media_urls"] = media_urls
 
 
 def _normalize_rights(normalized: dict[str, Any]) -> None:
@@ -216,19 +288,6 @@ def _normalize_semantic_brief(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_brief(path: str | Path) -> CampaignBrief:
-    brief_path = Path(path)
-    if not brief_path.is_file():
-        raise FileNotFoundError(f"brief not found: {brief_path}")
-    text = brief_path.read_text(encoding="utf-8")
-    suffix = brief_path.suffix.lower()
-    if suffix == ".json":
-        data = _load_json(text)
-    elif suffix in {".yaml", ".yml"}:
-        data = _load_yaml(text)
-    else:
-        try:
-            data = _load_json(text)
-        except json.JSONDecodeError:
-            data = _load_yaml(text)
+    data = _load_brief_data(path)
     _reject_example_source_placeholders(data)
     return CampaignBrief.from_dict(_normalize_semantic_brief(data))
