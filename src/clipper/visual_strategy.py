@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from itertools import pairwise
 from typing import Any, Literal
 
 from .multimodal_timeline import MultimodalEvent, MultimodalTimeline
@@ -49,7 +50,7 @@ class VisualStrategy:
             raise ValueError("visual strategy requires quality_moment_id")
         if not self.beats:
             raise ValueError("visual strategy requires at least one beat")
-        if any(a.end > b.start + 1e-6 for a, b in zip(self.beats, self.beats[1:], strict=False)):
+        if any(a.end > b.start + 1e-6 for a, b in pairwise(self.beats)):
             raise ValueError("visual strategy beats must be chronological and non-overlapping")
 
     def to_dict(self) -> dict[str, Any]:
