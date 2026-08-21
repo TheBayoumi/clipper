@@ -160,7 +160,7 @@ def transcribe_with_faster_whisper(
     language: str | None = None,
 ) -> list[TranscriptSegment]:
     try:
-        from faster_whisper import WhisperModel  # type: ignore[import-untyped]
+        from faster_whisper import WhisperModel  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover - optional dependency guard
         raise RuntimeError(
             "no subtitles were available and faster-whisper is not installed; "
