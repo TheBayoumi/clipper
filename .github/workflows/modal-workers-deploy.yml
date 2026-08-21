@@ -8,6 +8,7 @@ on:
     paths:
       - ".github/workflows/modal-workers-deploy.yml"
       - "scripts/modal_open_models.py"
+      - "scripts/modal_pipeline.py"
 
 permissions:
   contents: read
@@ -20,11 +21,12 @@ env:
   MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
   MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
   CLIPPER_MODAL_APP: clipper-open-editor
+  CLIPPER_MODAL_PIPELINE_APP: clipper-production-pipeline
 
 jobs:
   deploy-modal-workers:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -53,12 +55,42 @@ jobs:
           set -euo pipefail
           modal deploy scripts/modal_open_models.py
 
-      - name: Verify deployed app exists
+      - name: Deploy exact-HEAD production pipeline worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          modal deploy scripts/modal_pipeline.py
+
+      - name: Verify both deployed apps exist
         shell: bash
         run: |
           set -euo pipefail
           modal app list | tee modal-apps.txt
           grep -F "$CLIPPER_MODAL_APP" modal-apps.txt
+          grep -F "$CLIPPER_MODAL_PIPELINE_APP" modal-apps.txt
+
+      - name: Verify all structured editorial task schemas
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import modal
+
+          result = modal.Function.from_name(
+              os.environ["CLIPPER_MODAL_APP"], "editorial_schema_smoke"
+          ).remote()
+          assert isinstance(result, dict) and result.get("ok") is True, result
+          assert result.get("task_families") == 11, result
+          Path("modal-editorial-schema-smoke.json").write_text(
+              json.dumps(result, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(result, indent=2))
+          PY
 
       - name: Verify named Hugging Face secret access
         shell: bash
@@ -82,6 +114,33 @@ jobs:
           print(json.dumps(result, indent=2))
           PY
 
+      - name: Verify production endpoint resolves without invoking paid work
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import modal
+
+          function = modal.Function.from_name(
+              os.environ["CLIPPER_MODAL_PIPELINE_APP"], "run_full_cycle"
+          )
+          evidence = {
+              "status": "RESOLVED",
+              "app": os.environ["CLIPPER_MODAL_PIPELINE_APP"],
+              "function": "run_full_cycle",
+              "handle_type": type(function).__name__,
+          }
+          Path("modal-pipeline-endpoint.json").write_text(
+              json.dumps(evidence, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(evidence, indent=2))
+          PY
+
       - name: Record deployment evidence
         shell: bash
         run: |
@@ -95,9 +154,10 @@ jobs:
               json.dumps(
                   {
                       "status": "DEPLOYED",
-                      "app": os.environ["CLIPPER_MODAL_APP"],
+                      "model_app": os.environ["CLIPPER_MODAL_APP"],
+                      "pipeline_app": os.environ["CLIPPER_MODAL_PIPELINE_APP"],
                       "git_sha": os.environ["GITHUB_SHA"],
-                      "functions_expected": [
+                      "model_functions_expected": [
                           "transcribe",
                           "align",
                           "diarize",
@@ -105,8 +165,11 @@ jobs:
                           "embedding",
                           "vision",
                           "vision_large",
+                          "editorial_schema_smoke",
                           "hf_access_smoke",
                       ],
+                      "pipeline_functions_expected": ["run_full_cycle"],
+                      "editorial_task_families_expected": 11,
                   },
                   indent=2,
               )
@@ -122,7 +185,9 @@ jobs:
           name: modal-workers-${{ github.sha }}
           path: |
             modal-apps.txt
+            modal-editorial-schema-smoke.json
             modal-hf-access.json
+            modal-pipeline-endpoint.json
             modal-worker-deployment.json
           if-no-files-found: warn
           retention-days: 14
