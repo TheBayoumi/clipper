@@ -110,9 +110,9 @@ def _normalize_explicit_targets(normalized: dict[str, Any]) -> None:
     if len(set(ids)) != len(ids):
         raise BriefValidationError("targets.videos contains duplicate video IDs")
 
-    # The current CampaignBrief still exposes legacy discovery fields internally. For the
-    # explicit-target production contract only `allowed_video_ids` is populated. Authorized
-    # channels belong to rights validation and must not become search/discovery inputs.
+    # The legacy CampaignBrief still exposes discovery fields internally. Explicit-target
+    # production populates only allowed_video_ids; authorized channels remain rights data and
+    # must never become implicit discovery inputs.
     normalized["allowed_video_ids"] = ids
     normalized["source_channel_ids"] = []
     normalized["source_limit"] = len(ids)
@@ -188,38 +188,13 @@ def _reject_modern_editor_quotas(normalized: dict[str, Any]) -> None:
         )
 
 
-def _inject_legacy_cache_compatibility(normalized: dict[str, Any]) -> None:
-    """Preserve existing paid cache keys while Phase B removes quota behavior.
-
-    These values are intentionally not configurable in an explicit-target campaign brief.
-    They reproduce the historical Double Coverage internal planning identity so migration of
-    the external schema does not invalidate already-paid editorial inference. Phase B replaces
-    their behavioral use with evidence-derived yield while retaining cache fallback support.
-    """
-
-    if "targets" not in normalized:
-        return
-    normalized.setdefault("clip_count", 3)
-    normalized.setdefault("max_clips_per_source", 3)
-    normalized.setdefault(
-        "production",
-        {
-            "candidate_pool_size": 36,
-            "concept_count": 10,
-            "variants_per_concept": 3,
-            "final_render_budget": 6,
-            "minimum_distinct_finalist_concepts": 3,
-        },
-    )
-
-
 def _normalize_semantic_brief(data: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the modern campaign contract onto legacy runtime fields.
+    """Normalize the modern campaign contract onto the current runtime boundary.
 
-    New production briefs are explicit-target and quota-free. The current runtime still
-    carries several legacy CampaignBrief fields, so this boundary adapter supplies only the
-    compatibility values required to execute the modern contract. It intentionally does not
-    turn authorized channels into discovery inputs.
+    Modern production briefs are explicit-target and quota-free. This adapter maps only source,
+    rights, duration, and policy fields required by the current CampaignBrief. It intentionally
+    does not inject campaign-specific cache identities, output counts, concept budgets, render
+    budgets, hook counts, or diversity quotas.
     """
 
     normalized = dict(data)
@@ -228,7 +203,6 @@ def _normalize_semantic_brief(data: dict[str, Any]) -> dict[str, Any]:
     _normalize_rights(normalized)
     _normalize_content_constraints(normalized)
     _normalize_generated_media_policy(normalized)
-    _inject_legacy_cache_compatibility(normalized)
 
     keywords = normalized.get("keywords")
     if not isinstance(keywords, list) or not any(
