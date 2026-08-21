@@ -6,6 +6,7 @@ extend = "pyproject.toml"
 "tests/**/*.py" = ["S101", "E501"]
 "scripts/modal_open_models.py" = ["I001"]
 "scripts/modal_pipeline.py" = ["RUF001", "S108"]
+"src/clipper/pipeline.py" = ["I001"]
 "src/clipper/providers/editorial_prompt.py" = ["E501"]
 "src/clipper/hilp.py" = ["I001"]
 
