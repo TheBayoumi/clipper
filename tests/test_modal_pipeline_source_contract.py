@@ -160,20 +160,23 @@ def test_modal_schema_smoke_covers_all_active_editorial_task_families() -> None:
     source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
     smoke = source.split("def editorial_schema_smoke(", 1)[1].split("def hf_access_smoke(", 1)[0]
     expected = (
+        "source_hazards:smoke",
+        "semantic_cores:smoke",
+        "narrative_envelope:smoke",
+        "quality_windows:smoke",
+    )
+    assert len(expected) == 4
+    assert all(f'"{task}"' in smoke for task in expected)
+    retired = (
         "episode_editorial_profile",
         "story_moments:smoke",
         "clip_concepts",
         "global_concept_comparison",
         "hook_variants:smoke",
         "edit_plans:smoke",
-        "source_hazards:smoke",
         "boundary_audit:smoke",
-        "semantic_cores:smoke",
-        "narrative_envelope:smoke",
-        "quality_windows:smoke",
     )
-    assert len(expected) == 11
-    assert all(f'"{task}"' in smoke for task in expected)
+    assert all(f'"{task}"' not in smoke for task in retired)
 
 
 def test_modal_full_cycle_accepts_dynamic_degraded_yield_but_rejects_failed() -> None:
