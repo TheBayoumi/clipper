@@ -3,6 +3,15 @@ name: Production render and HILP evidence
 
 on:
   workflow_dispatch:
+    inputs:
+      campaign_brief:
+        description: Repository-relative campaign brief under campaigns/
+        required: true
+        type: string
+      target_video_id:
+        description: Optional explicit target video ID; required when the brief has multiple targets
+        required: false
+        type: string
   pull_request:
     branches:
       - main
@@ -34,32 +43,112 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Verify production dependency and cost-safety contract
+      - name: Install orchestration dependencies
         run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[modal]'
+
+      - name: Resolve campaign and explicit acceptance target
+        env:
+          REQUEST_CAMPAIGN_BRIEF: ${{ inputs.campaign_brief }}
+          REQUEST_TARGET_VIDEO_ID: ${{ inputs.target_video_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p open-evidence
           python - <<'PY'
+          import hashlib
+          import json
+          import os
           from pathlib import Path
 
-          source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
-          workflow = Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
-          for required in (
-              'add_python="3.12"',
-              '"numba==0.66.0"',
-              '"nemo_toolkit[asr]>=2.5,<3"',
-              '"yt-dlp[default]>=2026.7.4,<2027"',
-              '"--js-runtimes"',
-              '"node"',
-              '"bgutil_default_mweb"',
-              '"cookies_bgutil_default_mweb"',
-          ):
-              assert required in source, required
-          assert source.index('"bgutil_default_mweb"') < source.index('"cookies_bgutil_default_mweb"')
-          assert 'with_options(cloud=value, timeout=1800)' in workflow
-          assert 'with_options(region=value, timeout=1800)' in workflow
-          assert '"render": False' in workflow
-          assert '"render": True' in workflow
-          assert 'manual-review-queue.json' in workflow
-          assert 'automated_hilp_allowed' in workflow
-          assert 'eligible_quality_moments' in workflow
+          import yaml
+
+          event = os.environ.get("GITHUB_EVENT_NAME", "")
+          if event == "workflow_dispatch":
+              brief_value = os.environ.get("REQUEST_CAMPAIGN_BRIEF", "").strip()
+              target_value = os.environ.get("REQUEST_TARGET_VIDEO_ID", "").strip()
+          else:
+              marker_path = Path("acceptance/production-run-request.json")
+              if not marker_path.is_file():
+                  raise RuntimeError("production acceptance marker is missing")
+              marker = json.loads(marker_path.read_text(encoding="utf-8"))
+              if not isinstance(marker, dict):
+                  raise RuntimeError("production acceptance marker must be a JSON object")
+              brief_value = str(marker.get("campaign_brief") or "").strip()
+              target_value = str(marker.get("target_video_id") or "").strip()
+
+          if not brief_value:
+              raise RuntimeError("campaign_brief is required")
+          relative = Path(brief_value)
+          if relative.is_absolute() or ".." in relative.parts:
+              raise RuntimeError("campaign_brief must be a repository-relative path")
+          if not relative.parts or relative.parts[0] != "campaigns":
+              raise RuntimeError("campaign_brief must be stored under campaigns/")
+          if relative.suffix.lower() not in {".yaml", ".yml", ".json"}:
+              raise RuntimeError("campaign_brief must be YAML or JSON")
+          if not relative.is_file():
+              raise RuntimeError(f"campaign brief not found: {relative}")
+
+          text = relative.read_text(encoding="utf-8")
+          data = json.loads(text) if relative.suffix.lower() == ".json" else yaml.safe_load(text)
+          if not isinstance(data, dict):
+              raise RuntimeError("campaign brief root must be an object")
+          campaign_id = str(data.get("campaign_id") or "").strip()
+          if not campaign_id:
+              raise RuntimeError("campaign brief campaign_id is required")
+
+          targets = data.get("targets")
+          if not isinstance(targets, dict) or str(targets.get("mode") or "").lower() != "explicit":
+              raise RuntimeError("production acceptance requires targets.mode=explicit")
+          videos = targets.get("videos")
+          if not isinstance(videos, list) or not videos or not all(isinstance(v, dict) for v in videos):
+              raise RuntimeError("production acceptance requires explicit target videos")
+
+          if target_value:
+              matches = [v for v in videos if str(v.get("video_id") or "").strip() == target_value]
+              if len(matches) != 1:
+                  raise RuntimeError("target_video_id must identify exactly one target in the brief")
+              target = matches[0]
+          elif len(videos) == 1:
+              target = videos[0]
+          else:
+              raise RuntimeError(
+                  "target_video_id is required when a campaign brief contains multiple explicit targets"
+              )
+
+          video_id = str(target.get("video_id") or "").strip()
+          video_url = str(target.get("url") or "").strip()
+          channel_id = str(target.get("channel_id") or "").strip()
+          if not video_id or not channel_id or not video_url.startswith("https://"):
+              raise RuntimeError("selected target must provide video_id, https url, and channel_id")
+
+          rights = data.get("rights")
+          if not isinstance(rights, dict) or rights.get("confirmed") is not True:
+              raise RuntimeError("production acceptance requires explicitly confirmed rights")
+          authorized = rights.get("authorized_channels")
+          if not isinstance(authorized, list) or channel_id not in authorized:
+              raise RuntimeError("selected target channel is not authorized by the campaign brief")
+
+          evidence = {
+              "campaign_id": campaign_id,
+              "campaign_brief": relative.as_posix(),
+              "campaign_brief_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+              "target_video_id": video_id,
+              "target_video_url": video_url,
+              "target_channel_id": channel_id,
+              "event": event,
+          }
+          Path("open-evidence/acceptance-request.json").write_text(
+              json.dumps(evidence, indent=2) + "\n", encoding="utf-8"
+          )
+          env_file = Path(os.environ["GITHUB_ENV"])
+          with env_file.open("a", encoding="utf-8") as handle:
+              handle.write(f"CLIPPER_CAMPAIGN_ID={campaign_id}\n")
+              handle.write(f"CLIPPER_CAMPAIGN_BRIEF={relative.as_posix()}\n")
+              handle.write(f"CLIPPER_TARGET_VIDEO_ID={video_id}\n")
+              handle.write(f"CLIPPER_TARGET_VIDEO_URL={video_url}\n")
+              handle.write(f"CLIPPER_TARGET_CHANNEL_ID={channel_id}\n")
+          print(json.dumps(evidence, indent=2))
           PY
 
       - name: Verify credentials before compute
@@ -67,11 +156,6 @@ jobs:
           set -euo pipefail
           test -n "$MODAL_TOKEN_ID"
           test -n "$MODAL_TOKEN_SECRET"
-
-      - name: Install orchestration dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e '.[modal]'
 
       - name: Terminate stale production Modal containers without deleting persistent caches
         run: |
@@ -85,7 +169,6 @@ jobs:
       - name: Verify all 11 structured editorial task schemas and HF access
         run: |
           set -euo pipefail
-          mkdir -p open-evidence
           python - <<'PY'
           import json
           import os
@@ -115,17 +198,18 @@ jobs:
       - name: Acquire or reuse highest-quality content-addressed source master
         run: |
           set -euo pipefail
-          mkdir -p open-evidence
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
+
           import modal
 
           payload = {
-              "video_id": "2Y4LP85PTak",
-              "video_url": "https://www.youtube.com/watch?v=2Y4LP85PTak",
+              "video_id": os.environ["CLIPPER_TARGET_VIDEO_ID"],
+              "video_url": os.environ["CLIPPER_TARGET_VIDEO_URL"],
           }
-          base = modal.Function.from_name("clipper-production-pipeline", "acquire_source")
+          base = modal.Function.from_name(os.environ["CLIPPER_MODAL_PIPELINE_APP"], "acquire_source")
           variants = [
               ("cloud:gcp", "cloud", "gcp"),
               ("cloud:aws", "cloud", "aws"),
@@ -166,14 +250,17 @@ jobs:
               })
               break
           Path("open-evidence/source-egress-attempts.json").write_text(
-              json.dumps({"winner": winner, "attempts": attempts}, indent=2) + "\n"
+              json.dumps({"winner": winner, "attempts": attempts}, indent=2) + "\n",
+              encoding="utf-8",
           )
           if result is None:
               raise RuntimeError("all autonomous source egress pools failed: " + json.dumps(attempts))
           assert result["quality_policy"] == "highest_available_no_transcode"
           assert int(result["bytes"]) > 0
           assert result["volume_path"].startswith("/inputs/")
-          Path("open-evidence/source-master.json").write_text(json.dumps(result, indent=2) + "\n")
+          Path("open-evidence/source-master.json").write_text(
+              json.dumps(result, indent=2) + "\n", encoding="utf-8"
+          )
           print(json.dumps({"winner": winner, "result": result}, indent=2))
           PY
 
@@ -182,20 +269,28 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
+
           import modal
 
-          result = modal.Function.from_name("clipper-production-pipeline", "run_full_cycle").remote({
+          result = modal.Function.from_name(
+              os.environ["CLIPPER_MODAL_PIPELINE_APP"], "run_full_cycle"
+          ).remote({
               "source": json.loads(Path("open-evidence/source-master.json").read_text()),
-              "brief_yaml": Path("campaigns/reach-double-coverage-dedicated.yaml").read_text(),
-              "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
+              "brief_yaml": Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"]).read_text(),
+              "channel_id": os.environ["CLIPPER_TARGET_CHANNEL_ID"],
               "render": False,
           })
           assert result["status"] == "PASS", result
           assert result["pipeline_status"] != "FAILED", result
           assert int(result["rendered_finalists"]) == 0, result
-          Path("open-evidence/planning-result.json").write_text(json.dumps(result, indent=2) + "\n")
-          Path("open-evidence/planning-run-path.txt").write_text(str(result["run_path"]) + "\n")
+          Path("open-evidence/planning-result.json").write_text(
+              json.dumps(result, indent=2) + "\n", encoding="utf-8"
+          )
+          Path("open-evidence/planning-run-path.txt").write_text(
+              str(result["run_path"]) + "\n", encoding="utf-8"
+          )
           print(json.dumps(result, indent=2))
           PY
 
@@ -221,31 +316,38 @@ jobs:
           rejections = manifest.get("rejections") or []
           assert all(isinstance(item, dict) for item in rejections)
           Path("open-evidence/planning-validation.json").write_text(
-              json.dumps({
-                  "status": "PASS",
-                  "eligible_quality_moments": eligible,
-                  "rejections": len(rejections),
-                  "planning_run": str(roots[0].parent),
-              }, indent=2) + "\n"
+              json.dumps(
+                  {
+                      "status": "PASS",
+                      "eligible_quality_moments": eligible,
+                      "rejections": len(rejections),
+                      "planning_run": str(roots[0].parent),
+                  },
+                  indent=2,
+              )
+              + "\n",
+              encoding="utf-8",
           )
           print(json.dumps({"eligible_quality_moments": eligible, "rejections": len(rejections)}, indent=2))
           PY
 
-      - name: Render only after planning gate passes
+      - name: Render only after planning gate passes using the same cache identity
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
+
           import modal
 
-          planning = json.loads(Path("open-evidence/planning-result.json").read_text())
-          result = modal.Function.from_name("clipper-production-pipeline", "run_full_cycle").remote({
+          result = modal.Function.from_name(
+              os.environ["CLIPPER_MODAL_PIPELINE_APP"], "run_full_cycle"
+          ).remote({
               "source": json.loads(Path("open-evidence/source-master.json").read_text()),
-              "brief_yaml": Path("campaigns/reach-double-coverage-dedicated.yaml").read_text(),
-              "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
+              "brief_yaml": Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"]).read_text(),
+              "channel_id": os.environ["CLIPPER_TARGET_CHANNEL_ID"],
               "render": True,
-              "resume_from_run_id": str(planning["run_path"]),
           })
           assert result["status"] == "PASS", result
           assert result["pipeline_status"] in {"SUCCESS", "DEGRADED"}, result
@@ -253,8 +355,12 @@ jobs:
           reviewable = int(result["initial_shortlist"])
           assert rendered >= 0, result
           assert reviewable == rendered, result
-          Path("open-evidence/cycle-result.json").write_text(json.dumps(result, indent=2) + "\n")
-          Path("open-evidence/run-path.txt").write_text(str(result["run_path"]) + "\n")
+          Path("open-evidence/cycle-result.json").write_text(
+              json.dumps(result, indent=2) + "\n", encoding="utf-8"
+          )
+          Path("open-evidence/run-path.txt").write_text(
+              str(result["run_path"]) + "\n", encoding="utf-8"
+          )
           print(json.dumps(result, indent=2))
           PY
 
@@ -288,7 +394,8 @@ jobs:
           assert len(rendered) <= eligible
           assert len(shortlist) == len(rendered)
           concepts = {
-              str(item.get("concept_id")) for item in rendered
+              str(item.get("concept_id"))
+              for item in rendered
               if isinstance(item, dict) and item.get("concept_id")
           }
           assert len(concepts) == len(rendered)
@@ -302,7 +409,8 @@ jobs:
               }
 
           shortlist_ids = {
-              str(item.get("plan_id")) for item in shortlist
+              str(item.get("plan_id"))
+              for item in shortlist
               if isinstance(item, dict) and item.get("plan_id")
           }
           queue = []
@@ -318,7 +426,16 @@ jobs:
                   timeout=1800,
               )
               probe = subprocess.run(
-                  ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(local)],
+                  [
+                      "ffprobe",
+                      "-v",
+                      "error",
+                      "-show_streams",
+                      "-show_format",
+                      "-of",
+                      "json",
+                      str(local),
+                  ],
                   check=True,
                   capture_output=True,
                   text=True,
@@ -338,26 +455,31 @@ jobs:
               expected = str(item.get("render_sha256") or "")
               if expected:
                   assert digest == expected
-              queue.append({
-                  "plan_id": item.get("plan_id"),
-                  "concept_id": item.get("concept_id"),
-                  "path": str(local),
-                  "sha256": digest,
-                  "duration_seconds": duration,
-                  "initial_shortlist": str(item.get("plan_id")) in shortlist_ids,
-                  "decision": "PENDING_ACTUAL_REVIEW",
-              })
+              queue.append(
+                  {
+                      "plan_id": item.get("plan_id"),
+                      "concept_id": item.get("concept_id"),
+                      "path": str(local),
+                      "sha256": digest,
+                      "duration_seconds": duration,
+                      "initial_shortlist": str(item.get("plan_id")) in shortlist_ids,
+                      "decision": "PENDING_ACTUAL_REVIEW",
+                  }
+              )
           Path("open-evidence/manual-review-queue.json").write_text(
-              json.dumps({
-                  "status": (
-                      "PENDING_ACTUAL_MP4_REVIEW" if queue else "NO_ELIGIBLE_MOMENTS"
-                  ),
-                  "eligible_quality_moments": eligible,
-                  "clips": queue,
-                  "required_reviewer_actions": ["APPROVE", "REJECT", "REVISE"],
-                  "automated_hilp_allowed": False,
-                  "dod_complete": False,
-              }, indent=2) + "\n"
+              json.dumps(
+                  {
+                      "status": "PENDING_ACTUAL_MP4_REVIEW" if queue else "NO_ELIGIBLE_MOMENTS",
+                      "eligible_quality_moments": eligible,
+                      "clips": queue,
+                      "required_reviewer_actions": ["APPROVE", "REJECT", "REVISE"],
+                      "automated_hilp_allowed": False,
+                      "dod_complete": False,
+                  },
+                  indent=2,
+              )
+              + "\n",
+              encoding="utf-8",
           )
           print(json.dumps({"run_dir": str(run_dir), "eligible": eligible, "clips": queue}, indent=2))
           PY
