@@ -1,0 +1,68 @@
+name: Temporary source-only contract finalizer
+
+on:
+  pull_request:
+    branches: [main]
+    types: [synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  finalize-source:
+    if: github.head_ref == 'feat/word-reveal-face-tracking'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/word-reveal-face-tracking
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Apply guarded source cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/temporary-mypy-contract-cleanup.yml').read_text(encoding='utf-8')
+          marker = "          python - <<'PY'\n"
+          start = workflow.index(marker) + len(marker)
+          end = workflow.index("          PY\n", start)
+          script = textwrap.dedent(workflow[start:end])
+          exec(compile(script, '<guarded-source-cleanup>', 'exec'), {})
+
+          pipeline = Path('src/clipper/pipeline.py')
+          text = pipeline.read_text(encoding='utf-8')
+          old = 'quality: BatchQualityPlanningResult,'
+          count = text.count(old)
+          if count != 2:
+              raise SystemExit(f'expected exactly two stale quality type annotations, found {count}')
+          pipeline.write_text(text.replace(old, 'quality: QualityBatchResult,'), encoding='utf-8')
+          PY
+          rm -f src/clipper/_temporary_cleanup_trigger.py
+          rm -f acceptance/temporary-contract-cleanup-trigger.json
+      - name: Install quality tools
+        run: python -m pip install -e '.[dev]'
+      - name: Verify source cleanup
+        run: |
+          ruff check --fix src/clipper/youtube.py
+          ruff format src/clipper/youtube.py src/clipper/cli.py src/clipper/hilp.py src/clipper/quality_batch.py src/clipper/pipeline.py
+          ruff check .
+          ruff format --check .
+          mypy
+          pytest
+      - name: Commit source cleanup only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "clipper-contract-bot"
+          git config user.email "107598562+TheBayoumi@users.noreply.github.com"
+          git add src/clipper/youtube.py src/clipper/cli.py src/clipper/hilp.py src/clipper/quality_batch.py src/clipper/pipeline.py
+          git add -u src/clipper/_temporary_cleanup_trigger.py acceptance/temporary-contract-cleanup-trigger.json || true
+          git diff --cached --check
+          git commit -m "refactor: finalize autonomous editor contract cleanup"
+          git push origin HEAD:feat/word-reveal-face-tracking
