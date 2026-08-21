@@ -3,22 +3,6 @@ name: Production render and HILP evidence
 
 on:
   workflow_dispatch:
-  push:
-    branches: [feat/word-reveal-face-tracking]
-    paths:
-      - ".github/workflows/production-pipeline.yml"
-      - "scripts/modal_pipeline.py"
-      - "scripts/modal_open_models.py"
-      - "src/clipper/pipeline.py"
-      - "src/clipper/autonomous_editor.py"
-      - "src/clipper/acceptance.py"
-      - "src/clipper/yield_policy.py"
-      - "src/clipper/render.py"
-      - "src/clipper/providers/**"
-      - "campaigns/reach-double-coverage-dedicated.yaml"
-      - "Dockerfile"
-      - "pyproject.toml"
-      - ".ruff.toml"
 
 concurrency:
   group: production-hilp-${{ github.ref }}
