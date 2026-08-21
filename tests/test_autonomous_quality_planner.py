@@ -306,7 +306,9 @@ def test_zero_worthwhile_cores_is_valid_zero_yield_without_downstream_calls(tmp_
     assert provider.calls == ["semantic_cores:0"]
 
 
-def test_dag_replay_reuses_paid_editorial_outputs_without_new_provider_calls(tmp_path: Path) -> None:
+def test_dag_replay_reuses_paid_editorial_outputs_without_new_provider_calls(
+    tmp_path: Path,
+) -> None:
     timeline = _timeline()
     provider = FakeEditorial()
     first = _plan(_planner(tmp_path, provider), timeline)
@@ -326,10 +328,13 @@ def test_overlong_complete_envelope_stops_before_quality_model_call(tmp_path: Pa
 
     assert result.quality_moments == ()
     assert all(not task.startswith("quality_windows:") for task in provider.calls)
-    assert sum(
-        rejection.get("reasons") == ["no_campaign_legal_complete_window"]
-        for rejection in result.rejections
-    ) == 2
+    assert (
+        sum(
+            rejection.get("reasons") == ["no_campaign_legal_complete_window"]
+            for rejection in result.rejections
+        )
+        == 2
+    )
 
 
 def test_required_visual_evidence_blocks_before_any_editorial_inference(tmp_path: Path) -> None:
