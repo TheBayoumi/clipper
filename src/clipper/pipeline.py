@@ -5,9 +5,8 @@ import logging
 import os
 import shutil
 import subprocess
-from collections import Counter
-from collections.abc import Sequence
-from dataclasses import asdict, dataclass, replace
+import time
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -16,91 +15,49 @@ from urllib.request import Request, urlopen
 
 import gdown
 
-from .autonomous_editor import AutonomousEditorialPlanner
-from .brief import load_brief
-from .cache import (
-    CACHE_SCHEMA_VERSION,
-    FileCache,
-    analysis_cache_key,
-    clip_concepts_from_payload,
-    file_sha256,
-    model_stage_cache_key,
-    stable_hash,
-    story_moments_from_payload,
-    transcript_cache_key,
-    transcript_segments_from_payload,
-)
-from .canonical import (
-    CanonicalTimeline,
-    canonical_timeline_from_segments,
-    transcript_segments_from_canonical,
-)
-from .editorial import (
-    build_edit_plan,
-    discover_story_moments,
-    generate_hook_variants,
-    mine_clip_concepts,
-    select_distinct_concepts,
-)
-from .fixture import FixtureSourceClient, SpanMedia
+from .brief import load_brief, load_explicit_targets
+from .cache import FileCache, file_sha256, model_stage_cache_key, stable_hash
+from .canonical import CanonicalTimeline, transcript_segments_from_canonical
+from .fixture import FixtureSourceClient
 from .models import (
     CampaignBrief,
     ClipCandidate,
-    ClipConcept,
     EditPlan,
     PipelineManifest,
     RenderedClip,
-    SourceSpan,
-    StoryMoment,
     TranscriptSegment,
-    TranscriptWord,
     VideoCandidate,
 )
-from .performance import RunTelemetry
+from .multimodal_timeline import EvidenceProvenance, build_multimodal_timeline
 from .providers.base import (
     AlignmentProvider,
     DiarizationProvider,
     EditorialProvider,
-    EmbeddingProvider,
     TranscriptionProvider,
     VisionProvider,
 )
-from .providers.factory import (
-    editorial_and_embedding_providers,
-    speech_providers,
-)
-from .providers.factory import (
-    vision_provider as build_vision_provider,
-)
+from .providers.factory import editorial_provider as build_editorial_provider
+from .providers.factory import speech_providers, vision_provider
 from .qc import run_technical_qc
-from .quality_batch import plan_quality_batch
+from .quality_batch import BatchQualityPlanningResult, plan_quality_batch
 from .render import FFmpegRenderer
-from .rights import RightsError, assert_campaign_authorized, assert_video_allowed
-from .runtime import ComputeBudget, StageJournal
-from .transcript import load_vtt, transcribe_with_faster_whisper
+from .rights import assert_campaign_authorized, assert_video_allowed
+from .runtime import StageJournal
+from .stage_contracts import content_fingerprint
 from .visual import VisualTimeline
 from .visual_ai import (
-    repair_stage,
     review_rendered_clip,
     scout_visual_timeline,
     tracking_transition_sample_times,
 )
+from .visual_strategy import derive_visual_strategy
 from .youtube import YouTubeClient
-from .yield_policy import group_quality_plans, quality_render_queue
+from .yield_policy import accepted_quality_plans, group_quality_plans, quality_render_queue
 
 LOGGER = logging.getLogger("clipper")
 
 
 class SourceClient(Protocol):
-    def discover(self, brief: CampaignBrief) -> list[VideoCandidate]: ...
-
-    def download_subtitles(
-        self,
-        video: VideoCandidate,
-        work_dir: Path,
-        language: str,
-    ) -> Path | None: ...
-
     def download_media(self, video: VideoCandidate, work_dir: Path) -> Path: ...
 
 
@@ -110,105 +67,22 @@ class Renderer(Protocol):
         source_path: Path,
         output_path: Path,
         clip: ClipCandidate,
-        segments: Sequence[TranscriptSegment],
+        segments: list[TranscriptSegment],
         watermark_path: Path | None = None,
         edit_plan: EditPlan | None = None,
     ) -> Path: ...
 
 
-def _span_media_for_plan(
-    source: SourceClient,
-    video: VideoCandidate,
-    plan: EditPlan,
-    work_dir: Path,
-) -> SpanMedia | None:
-    acquire = getattr(source, "download_media_span", None)
-    if not callable(acquire) or not plan.source_spans:
-        return None
-    start = min(span.start for span in plan.source_spans)
-    end = max(span.end for span in plan.source_spans)
-    result = acquire(video, start, end, work_dir)
-    if not isinstance(result, SpanMedia):
-        raise RuntimeError("span-aware source returned an invalid media descriptor")
-    return result
-
-
-def _localize_render_inputs(
-    clip: ClipCandidate,
-    plan: EditPlan,
-    segments: Sequence[TranscriptSegment],
-    span_media: SpanMedia,
-) -> tuple[ClipCandidate, EditPlan, list[TranscriptSegment]]:
-    origin = span_media.source_origin
-    end = span_media.source_end
-    if clip.start < origin - 1e-6 or clip.end > end + 1e-6:
-        raise RuntimeError(
-            "source span "
-            f"{origin:.3f}-{end:.3f} does not cover clip {clip.start:.3f}-{clip.end:.3f}"
-        )
-    local_clip = replace(clip, start=clip.start - origin, end=clip.end - origin)
-    local_spans = tuple(
-        SourceSpan(span.start - origin, span.end - origin) for span in plan.source_spans
-    )
-    local_anchor = (
-        plan.caption_start_source_time - origin
-        if plan.caption_start_source_time is not None
-        else None
-    )
-    local_plan = replace(plan, source_spans=local_spans, caption_start_source_time=local_anchor)
-    localized: list[TranscriptSegment] = []
-    for segment in segments:
-        if segment.end <= origin or segment.start >= end:
-            continue
-        if segment.words:
-            words = tuple(
-                TranscriptWord(word.start - origin, word.end - origin, word.text)
-                for word in segment.words
-                if word.start >= origin and word.end <= end
-            )
-            if not words:
-                continue
-            localized.append(
-                TranscriptSegment(
-                    max(0.0, max(segment.start, origin) - origin),
-                    min(segment.end, end) - origin,
-                    segment.text,
-                    words,
-                    segment.speaker_id,
-                )
-            )
-            continue
-        if segment.start < origin or segment.end > end:
-            continue
-        localized.append(
-            TranscriptSegment(
-                segment.start - origin,
-                segment.end - origin,
-                segment.text,
-                speaker_id=segment.speaker_id,
-            )
-        )
-    if not localized:
-        raise RuntimeError("span-aware source produced no transcript context for the render")
-    return local_clip, local_plan, localized
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() not in {"0", "false", "no", "off"}
-
-
 @dataclass(frozen=True, slots=True)
 class PipelineSettings:
+    """Technical execution settings only; editorial policy belongs to the campaign/model graph."""
+
     artifact_root: Path = Path("artifacts")
-    whisper_model: str = "small"
-    whisper_device: str = "auto"
-    whisper_compute_type: str = "int8"
-    source_max_height: int = 1080
+    cache_root: Path | None = None
+    compute_profile: str = "balanced"
+    source_max_height: int = 2160
     render_profile: str = "production"
-    speaker_focus: bool = True
+    speaker_focus_override: bool | None = None
     speaker_zoom: float = 1.0
     speaker_sample_fps: float = 4.0
     speaker_switch_margin: float = 1.35
@@ -219,37 +93,26 @@ class PipelineSettings:
     speaker_reversal_guard_seconds: float = 2.0
     speaker_window_seconds: float = 0.8
     speaker_min_detection_coverage: float = 0.35
-    editorial_engine: str = "heuristic"
-    grounding_engine: str = "legacy"
-    compute_profile: str = "balanced"
-    editorial_chunk_words: int = 500
-    editorial_chunk_overlap_words: int = 80
-    semantic_duplicate_threshold: float = 0.9
-    visual_scout_enabled: bool = False
-    visual_review_enabled: bool = False
-    visual_escalation_enabled: bool = True
+    visual_escalation_enabled: bool = False
     visual_escalation_threshold: float = 0.75
-    compute_budget_usd: float = 1.0
-    cache_root: Path | None = None
 
     @classmethod
     def from_env(cls) -> PipelineSettings:
+        artifact_root = Path(os.getenv("CLIPPER_ARTIFACT_ROOT", "artifacts"))
+        cache_root_value = os.getenv("CLIPPER_CACHE_ROOT")
+        raw_focus = os.getenv("CLIPPER_SPEAKER_FOCUS")
+        speaker_focus_override = (
+            None if raw_focus is None else raw_focus.strip().lower() in {"1", "true", "yes"}
+        )
         return cls(
-            artifact_root=Path(os.getenv("CLIPPER_ARTIFACT_ROOT", "artifacts")),
-            whisper_model=os.getenv("CLIPPER_WHISPER_MODEL", "small"),
-            whisper_device=os.getenv("CLIPPER_WHISPER_DEVICE", "auto"),
-            whisper_compute_type=os.getenv("CLIPPER_WHISPER_COMPUTE_TYPE", "int8"),
-            source_max_height=int(os.getenv("CLIPPER_SOURCE_MAX_HEIGHT", "1080")),
+            artifact_root=artifact_root,
+            cache_root=Path(cache_root_value) if cache_root_value else artifact_root / "_cache",
+            compute_profile=os.getenv("CLIPPER_COMPUTE_PROFILE", "balanced").strip().lower(),
+            source_max_height=int(os.getenv("CLIPPER_SOURCE_MAX_HEIGHT", "2160")),
             render_profile=os.getenv("CLIPPER_RENDER_PROFILE", "production").strip().lower(),
-            speaker_focus=_env_bool(
-                "CLIPPER_SPEAKER_FOCUS", _env_bool("CLIPPER_FACE_TRACKING", True)
-            ),
-            speaker_zoom=float(
-                os.getenv("CLIPPER_SPEAKER_ZOOM", os.getenv("CLIPPER_FACE_ZOOM", "1.0"))
-            ),
-            speaker_sample_fps=float(
-                os.getenv("CLIPPER_SPEAKER_SAMPLE_FPS", os.getenv("CLIPPER_FACE_SAMPLE_FPS", "4.0"))
-            ),
+            speaker_focus_override=speaker_focus_override,
+            speaker_zoom=float(os.getenv("CLIPPER_SPEAKER_ZOOM", "1.0")),
+            speaker_sample_fps=float(os.getenv("CLIPPER_SPEAKER_SAMPLE_FPS", "4.0")),
             speaker_switch_margin=float(os.getenv("CLIPPER_SPEAKER_SWITCH_MARGIN", "1.35")),
             speaker_min_reframe_seconds=float(
                 os.getenv("CLIPPER_SPEAKER_MIN_REFRAME_SECONDS", "0.35")
@@ -257,8 +120,12 @@ class PipelineSettings:
             speaker_max_reframe_seconds=float(
                 os.getenv("CLIPPER_SPEAKER_MAX_REFRAME_SECONDS", "0.9")
             ),
-            speaker_seconds_per_crop=float(os.getenv("CLIPPER_SPEAKER_SECONDS_PER_CROP", "0.75")),
-            speaker_hold_threshold=float(os.getenv("CLIPPER_SPEAKER_HOLD_THRESHOLD", "0.28")),
+            speaker_seconds_per_crop=float(
+                os.getenv("CLIPPER_SPEAKER_SECONDS_PER_CROP", "0.75")
+            ),
+            speaker_hold_threshold=float(
+                os.getenv("CLIPPER_SPEAKER_HOLD_THRESHOLD", "0.28")
+            ),
             speaker_reversal_guard_seconds=float(
                 os.getenv("CLIPPER_SPEAKER_REVERSAL_GUARD_SECONDS", "2.0")
             ),
@@ -266,49 +133,41 @@ class PipelineSettings:
             speaker_min_detection_coverage=float(
                 os.getenv("CLIPPER_SPEAKER_MIN_DETECTION_COVERAGE", "0.35")
             ),
-            editorial_engine=os.getenv("CLIPPER_EDITORIAL_ENGINE", "heuristic").strip().lower(),
-            grounding_engine=os.getenv("CLIPPER_GROUNDING_ENGINE", "legacy").strip().lower(),
-            compute_profile=os.getenv("CLIPPER_COMPUTE_PROFILE", "balanced").strip().lower(),
-            editorial_chunk_words=int(os.getenv("CLIPPER_EDITORIAL_CHUNK_WORDS", "500")),
-            editorial_chunk_overlap_words=int(
-                os.getenv("CLIPPER_EDITORIAL_CHUNK_OVERLAP_WORDS", "80")
-            ),
-            semantic_duplicate_threshold=float(
-                os.getenv("CLIPPER_SEMANTIC_DUPLICATE_THRESHOLD", "0.9")
-            ),
-            visual_scout_enabled=_env_bool("CLIPPER_VISUAL_SCOUT", False),
-            visual_review_enabled=_env_bool("CLIPPER_VISUAL_REVIEW", False),
-            visual_escalation_enabled=_env_bool("CLIPPER_VISUAL_ESCALATION", True),
+            visual_escalation_enabled=os.getenv("CLIPPER_VISUAL_ESCALATION", "false")
+            .strip()
+            .lower()
+            in {"1", "true", "yes"},
             visual_escalation_threshold=float(
                 os.getenv("CLIPPER_VISUAL_ESCALATION_THRESHOLD", "0.75")
-            ),
-            compute_budget_usd=float(os.getenv("CLIPPER_COMPUTE_BUDGET_USD", "1.0")),
-            cache_root=(
-                Path(os.environ["CLIPPER_CACHE_ROOT"]) if os.getenv("CLIPPER_CACHE_ROOT") else None
             ),
         )
 
 
-def _write_json(path: Path, payload: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+@dataclass(frozen=True, slots=True)
+class SourceRuntime:
+    video: VideoCandidate
+    media_path: Path
+    source_hash: str
+    timeline: CanonicalTimeline
+    segments: tuple[TranscriptSegment, ...]
+    visual_timeline: VisualTimeline
 
 
-def _sha256_file(path: Path) -> str:
-    return file_sha256(path)
+def _client(cfg: PipelineSettings) -> SourceClient:
+    fixture_dir = os.getenv("CLIPPER_SOURCE_FIXTURE_DIR")
+    if fixture_dir:
+        return FixtureSourceClient(fixture_dir)
+    return YouTubeClient(max_height=cfg.source_max_height)
 
 
-def _record_source_media_metadata(
-    manifest: PipelineManifest, video_id: str, media_path: Path
-) -> None:
-    metadata_path = media_path.with_suffix(".source.json")
-    if not metadata_path.is_file():
-        return
-    try:
-        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-    manifest.run_metadata.setdefault("source_media", {})[video_id] = payload
+def _run_id(campaign_id: str) -> str:
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return f"{campaign_id}-{timestamp}"
+
+
+def _safe_slug(value: str) -> str:
+    slug = "".join(character.lower() if character.isalnum() else "-" for character in value)
+    return "-".join(part for part in slug.split("-") if part)[:64] or "clip"
 
 
 def _git_sha() -> str | None:
@@ -349,7 +208,7 @@ def _grounding_cache_key(stage: str, source_hash: str, provider: object, payload
     )
 
 
-def _cached_open_transcription(
+def _cached_transcription(
     cache: FileCache,
     manifest: PipelineManifest,
     provider: TranscriptionProvider,
@@ -380,7 +239,7 @@ def _cached_open_transcription(
     }
 
 
-def _cached_open_alignment(
+def _cached_alignment(
     cache: FileCache,
     manifest: PipelineManifest,
     provider: AlignmentProvider,
@@ -413,7 +272,7 @@ def _cached_open_alignment(
     }
 
 
-def _cached_open_diarization(
+def _cached_diarization(
     cache: FileCache,
     manifest: PipelineManifest,
     provider: DiarizationProvider,
@@ -446,125 +305,6 @@ def _cached_open_diarization(
     }
 
 
-def _cached_vtt_transcript(
-    cache: FileCache,
-    manifest: PipelineManifest,
-    video_id: str,
-    subtitle_path: Path,
-    language: str,
-) -> tuple[list[TranscriptSegment], str]:
-    source_hash = file_sha256(subtitle_path)
-    key = transcript_cache_key(
-        video_id, source_hash, engine="youtube-vtt-word-parser-v2", language=language
-    )
-    cached = cache.read(key, "transcript")
-    if cached is not None:
-        try:
-            segments = transcript_segments_from_payload(cached)
-        except (KeyError, TypeError, ValueError):
-            segments = []
-        if segments:
-            _cache_event(manifest, "transcript", key, True)
-            return segments, source_hash
-    segments = load_vtt(subtitle_path)
-    cache.write(key, "transcript", [segment.to_dict() for segment in segments])
-    _cache_event(manifest, "transcript", key, False)
-    return segments, source_hash
-
-
-def _cached_asr_transcript(
-    cache: FileCache,
-    manifest: PipelineManifest,
-    video_id: str,
-    media_path: Path,
-    brief: CampaignBrief,
-    cfg: PipelineSettings,
-) -> tuple[list[TranscriptSegment], str]:
-    source_hash = file_sha256(media_path)
-    model_identity = f"{cfg.whisper_model}:{cfg.whisper_device}:{cfg.whisper_compute_type}"
-    key = transcript_cache_key(
-        video_id,
-        source_hash,
-        engine="faster-whisper-word-v1",
-        model=model_identity,
-        language=brief.language,
-    )
-    cached = cache.read(key, "transcript")
-    if cached is not None:
-        try:
-            segments = transcript_segments_from_payload(cached)
-        except (KeyError, TypeError, ValueError):
-            segments = []
-        if segments:
-            _cache_event(manifest, "transcript", key, True)
-            return segments, source_hash
-    segments = transcribe_with_faster_whisper(
-        media_path,
-        model_name=cfg.whisper_model,
-        device=cfg.whisper_device,
-        compute_type=cfg.whisper_compute_type,
-        language=brief.language,
-    )
-    cache.write(key, "transcript", [segment.to_dict() for segment in segments])
-    _cache_event(manifest, "transcript", key, False)
-    return segments, source_hash
-
-
-def _cached_editorial_analysis(
-    cache: FileCache,
-    manifest: PipelineManifest,
-    brief: CampaignBrief,
-    video_id: str,
-    segments: list[TranscriptSegment],
-) -> tuple[list[StoryMoment], list[ClipConcept], list[dict[str, object]], dict[str, int]]:
-    key = analysis_cache_key(video_id, segments, brief)
-    cached_moments = cache.read(key, "story-moments")
-    cached_concepts = cache.read(key, "clip-candidates")
-    cached_rejections = cache.read(key, "editorial-rejections")
-    cached_stats = cache.read(key, "editorial-stats")
-    if cached_moments is not None and cached_concepts is not None:
-        try:
-            moments = story_moments_from_payload(cached_moments)
-            concepts = clip_concepts_from_payload(cached_concepts)
-            cached_rejection_items = (
-                [item for item in cached_rejections if isinstance(item, dict)]
-                if isinstance(cached_rejections, list)
-                else []
-            )
-            cached_analysis_stats = (
-                {str(k): int(v) for k, v in cached_stats.items() if isinstance(v, int)}
-                if isinstance(cached_stats, dict)
-                else {}
-            )
-        except (KeyError, TypeError, ValueError):
-            moments, concepts, cached_rejection_items, cached_analysis_stats = [], [], [], {}
-        if moments and concepts:
-            _cache_event(manifest, "editorial-analysis", key, True)
-            return moments, concepts, cached_rejection_items, cached_analysis_stats
-    rejections: list[dict[str, object]] = []
-    analysis_stats: dict[str, int] = {}
-    moments = discover_story_moments(brief, video_id, segments)
-    concepts = mine_clip_concepts(
-        brief, video_id, segments, moments, rejections=rejections, stats=analysis_stats
-    )
-    cache.write(key, "story-moments", [item.to_dict() for item in moments])
-    cache.write(key, "clip-candidates", [item.to_dict() for item in concepts])
-    cache.write(key, "editorial-rejections", rejections)
-    cache.write(key, "editorial-stats", analysis_stats)
-    _cache_event(manifest, "editorial-analysis", key, False)
-    return moments, concepts, rejections, analysis_stats
-
-
-def _safe_slug(value: str) -> str:
-    slug = "".join(character.lower() if character.isalnum() else "-" for character in value)
-    return "-".join(part for part in slug.split("-") if part)[:48] or "clip"
-
-
-def _run_id(campaign_id: str) -> str:
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return f"{campaign_id}-{timestamp}"
-
-
 def _normalize_asset_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme != "https":
@@ -585,9 +325,7 @@ def _download_google_drive_media(url: str, output_path: Path, *, max_bytes: int)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(output_path.suffix + ".part")
     try:
-        downloaded = gdown.download(  # type: ignore[attr-defined]
-            url=url, output=str(temporary), quiet=True
-        )
+        downloaded = gdown.download(url=url, output=str(temporary), quiet=True)  # type: ignore[attr-defined]
         if not downloaded or not temporary.is_file():
             raise RuntimeError("Google Drive media download did not create a file")
         size = temporary.stat().st_size
@@ -612,9 +350,7 @@ def _download_asset(
     if expected_kind == "media" and urlparse(url).netloc == "drive.google.com":
         return _download_google_drive_media(url, output_path, max_bytes=max_bytes)
     normalized = _normalize_asset_url(url)
-    request = Request(  # noqa: S310 -- _normalize_asset_url enforces HTTPS.
-        normalized, headers={"User-Agent": "whop-clipper/0.1"}
-    )
+    request = Request(normalized, headers={"User-Agent": "clipper/production"})  # noqa: S310
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(output_path.suffix + ".part")
     size = 0
@@ -639,19 +375,216 @@ def _download_asset(
         raise
 
 
-def _campaign_media_candidates(brief: CampaignBrief) -> list[VideoCandidate]:
-    channel_id = brief.source_channel_ids[0] if brief.source_channel_ids else ""
-    return [
+def _record_source_media_metadata(
+    manifest: PipelineManifest, video_id: str, media_path: Path
+) -> None:
+    metadata_path = media_path.with_suffix(".source.json")
+    if not metadata_path.is_file():
+        return
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    manifest.run_metadata.setdefault("source_media", {})[video_id] = payload
+
+
+def _target_candidates(brief_path: str | Path, brief: CampaignBrief) -> list[VideoCandidate]:
+    specs = load_explicit_targets(brief_path)
+    candidates = [
         VideoCandidate(
-            video_id=video_id,
-            title=f"{brief.title} campaign source",
-            channel_id=channel_id,
-            channel_title="Campaign-provided source",
-            url=f"https://www.youtube.com/watch?v={video_id}",
+            video_id=spec.video_id,
+            title=f"{brief.title} explicit target",
+            channel_id=spec.channel_id,
+            channel_title="Authorized explicit target",
+            url=spec.url,
         )
-        for video_id in brief.allowed_video_ids
-        if video_id in brief.source_media_urls
+        for spec in specs
     ]
+    for candidate in candidates:
+        assert_video_allowed(brief, candidate)
+    return candidates
+
+
+def _campaign_watermark(
+    brief: CampaignBrief,
+    source: SourceClient,
+    run_dir: Path,
+) -> Path | None:
+    if not brief.watermark_url:
+        return None
+    fixture_watermark = getattr(source, "campaign_watermark", None)
+    if callable(fixture_watermark):
+        supplied = fixture_watermark(brief)
+        if supplied is not None:
+            target = run_dir / "assets" / "watermark" + supplied.suffix
+            # Path does not support +; retain a stable campaign filename below.
+    output = run_dir / "assets" / "campaign-watermark.png"
+    if callable(fixture_watermark):
+        supplied = fixture_watermark(brief)
+        if supplied is not None:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(supplied, output)
+            return output
+    return _download_asset(brief.watermark_url, output, expected_kind="image")
+
+
+def _source_media(
+    brief: CampaignBrief,
+    source: SourceClient,
+    video: VideoCandidate,
+    work_dir: Path,
+) -> Path:
+    direct_url = brief.source_media_urls.get(video.video_id)
+    if direct_url:
+        return _download_asset(
+            direct_url,
+            work_dir / f"{video.video_id}.source",
+            max_bytes=10_000_000_000,
+            expected_kind="media",
+        )
+    return source.download_media(video, work_dir)
+
+
+def _visual_timeline(
+    media_path: Path,
+    video: VideoCandidate,
+    timeline: CanonicalTimeline,
+    provider: VisionProvider,
+    run_dir: Path,
+) -> tuple[VisualTimeline, dict[str, object]]:
+    if not timeline.words:
+        raise RuntimeError("canonical grounding produced no source words")
+    duration = max(timeline.end, float(video.duration_seconds or 0.0))
+    visual, result = scout_visual_timeline(
+        media_path,
+        provider,
+        video_id=video.video_id,
+        source_hash=timeline.source_hash,
+        duration=duration,
+        output_dir=run_dir / "visual-scout" / video.video_id / "frames",
+    )
+    (run_dir / "visual-scout" / f"{video.video_id}.json").write_text(
+        json.dumps(visual.to_dict(), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return visual, {
+        "model": result.model.to_dict(),
+        "usage": asdict(result.usage),
+        "degraded": result.degraded,
+    }
+
+
+def _speaker_focus_for_source(
+    cfg: PipelineSettings,
+    quality: BatchQualityPlanningResult,
+    video_id: str,
+) -> bool:
+    if cfg.speaker_focus_override is not None:
+        return cfg.speaker_focus_override
+    evidence = quality.source_evidence.get(video_id)
+    profile = evidence.get("modality_profile") if isinstance(evidence, dict) else None
+    return bool(profile.get("requires_speaker_identity")) if isinstance(profile, dict) else False
+
+
+def _renderer_for_source(
+    cfg: PipelineSettings,
+    quality: BatchQualityPlanningResult,
+    video_id: str,
+) -> FFmpegRenderer:
+    return FFmpegRenderer(
+        speaker_focus=_speaker_focus_for_source(cfg, quality, video_id),
+        zoom_factor=cfg.speaker_zoom,
+        speaker_sample_fps=cfg.speaker_sample_fps,
+        speaker_switch_margin=cfg.speaker_switch_margin,
+        speaker_min_reframe_seconds=cfg.speaker_min_reframe_seconds,
+        speaker_max_reframe_seconds=cfg.speaker_max_reframe_seconds,
+        speaker_seconds_per_crop=cfg.speaker_seconds_per_crop,
+        speaker_hold_threshold=cfg.speaker_hold_threshold,
+        speaker_reversal_guard_seconds=cfg.speaker_reversal_guard_seconds,
+        speaker_window_seconds=cfg.speaker_window_seconds,
+        speaker_min_detection_coverage=cfg.speaker_min_detection_coverage,
+        profile=cfg.render_profile,
+    )
+
+
+def _copy_render_sidecars(rendered: Path, run_dir: Path, plan: EditPlan) -> None:
+    slug = _safe_slug(plan.plan_id)
+    copies = (
+        (rendered.with_suffix(".ass"), run_dir / "captions" / f"{slug}.ass"),
+        (
+            rendered.with_suffix(".caption-audit.json"),
+            run_dir / "captions" / f"{slug}.caption-audit.json",
+        ),
+        (
+            rendered.with_suffix(".tracking.json"),
+            run_dir / "tracking" / f"{slug}.tracking.json",
+        ),
+    )
+    for source, target in copies:
+        if not source.is_file():
+            raise RuntimeError(f"renderer omitted required evidence: {source.name}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
+def _tracking_transitions(rendered: Path) -> tuple[float, ...]:
+    path = rendered.with_suffix(".tracking.json")
+    if not path.is_file():
+        return ()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ()
+    return tracking_transition_sample_times(payload.get("transitions") if isinstance(payload, dict) else ())
+
+
+def _rendered_clip(
+    plan: EditPlan,
+    rendered: Path,
+    video: VideoCandidate,
+) -> dict[str, object]:
+    span = plan.source_spans[0]
+    return RenderedClip(
+        video_id=plan.video_id,
+        output_path=str(rendered),
+        start=span.start,
+        end=span.end,
+        score=plan.score,
+        source_url=video.url,
+        concept_id=plan.concept_id,
+        plan_id=plan.plan_id,
+        hook_mode=plan.hook_mode,
+        render_sha256=file_sha256(rendered),
+    ).to_dict()
+
+
+def _write_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _funnel_template() -> dict[str, int]:
+    return {
+        "transcript_segments": 0,
+        "story_moments": 0,
+        "raw_concepts": 0,
+        "selected_concepts": 0,
+        "quality_moments": 0,
+        "hook_variants": 0,
+        "edit_plans": 0,
+        "render_plans": 0,
+        "render_attempts": 0,
+        "technical_qc_pass": 0,
+        "boundary_reject_count": 0,
+        "boundary_repair_count": 0,
+        "policy_reject_count": 0,
+        "hazard_reject_count": 0,
+        "editorial_qc_pass": 0,
+        "editorial_review_reject_count": 0,
+        "reserve_promotions": 0,
+        "render_success": 0,
+        "submission_shortlist": 0,
+    }
 
 
 def run_pipeline(
@@ -661,7 +594,6 @@ def run_pipeline(
     source_client: SourceClient | None = None,
     renderer: Renderer | None = None,
     editorial_provider: EditorialProvider | None = None,
-    embedding_provider: EmbeddingProvider | None = None,
     visual_scout_provider: VisionProvider | None = None,
     visual_review_provider: VisionProvider | None = None,
     visual_escalation_provider: VisionProvider | None = None,
@@ -670,1276 +602,489 @@ def run_pipeline(
     diarization_provider: DiarizationProvider | None = None,
     render: bool = True,
 ) -> Path:
+    """Execute the single supported production architecture over exact campaign targets."""
     brief = load_brief(brief_path)
     assert_campaign_authorized(brief)
     cfg = settings or PipelineSettings.from_env()
-    telemetry = RunTelemetry()
-    cache = FileCache(cfg.cache_root or (cfg.artifact_root / "_cache"))
-    if cfg.editorial_engine not in {"heuristic", "open"}:
-        raise ValueError("CLIPPER_EDITORIAL_ENGINE must be heuristic or open")
-    if cfg.grounding_engine not in {"legacy", "open"}:
-        raise ValueError("CLIPPER_GROUNDING_ENGINE must be legacy or open")
-    grounding_providers = (transcription_provider, alignment_provider, diarization_provider)
-    if cfg.grounding_engine == "open":
-        supplied = [provider is not None for provider in grounding_providers]
-        if any(supplied) and not all(supplied):
-            raise ValueError(
-                "open grounding requires transcription, alignment, and diarization providers"
-            )
-        if not all(supplied):
-            transcription_provider, alignment_provider, diarization_provider = speech_providers(
-                cfg.compute_profile
-            )
-    open_planner: AutonomousEditorialPlanner | None = None
-    if cfg.editorial_engine == "open":
-        if (editorial_provider is None) != (embedding_provider is None):
-            raise ValueError("open editorial mode requires both editorial and embedding providers")
-        if editorial_provider is None or embedding_provider is None:
-            editorial_provider, embedding_provider = editorial_and_embedding_providers(
-                cfg.compute_profile
-            )
-        open_planner = AutonomousEditorialPlanner(
-            editorial_provider,
-            embedding_provider,
-            cache,
-            max_words_per_chunk=cfg.editorial_chunk_words,
-            chunk_overlap_words=cfg.editorial_chunk_overlap_words,
-            semantic_duplicate_threshold=cfg.semantic_duplicate_threshold,
+    source = source_client or _client(cfg)
+    editor = editorial_provider or build_editorial_provider(cfg.compute_profile)
+    scout = visual_scout_provider or vision_provider(cfg.compute_profile)
+    reviewer = visual_review_provider or scout
+    escalation = visual_escalation_provider
+    if cfg.visual_escalation_enabled and escalation is None:
+        try:
+            escalation = vision_provider(cfg.compute_profile, large=True)
+        except ValueError:
+            escalation = None
+
+    grounding = (transcription_provider, alignment_provider, diarization_provider)
+    supplied = tuple(provider is not None for provider in grounding)
+    if any(supplied) and not all(supplied):
+        raise ValueError("canonical grounding requires transcription, alignment, and diarization")
+    if not all(supplied):
+        transcription_provider, alignment_provider, diarization_provider = speech_providers(
+            cfg.compute_profile
         )
-    if cfg.visual_scout_enabled and visual_scout_provider is None:
-        visual_scout_provider = build_vision_provider(cfg.compute_profile)
-    if cfg.visual_review_enabled and visual_review_provider is None:
-        visual_review_provider = build_vision_provider(cfg.compute_profile)
-    if (
-        cfg.visual_review_enabled
-        and cfg.visual_escalation_enabled
-        and cfg.compute_profile == "quality"
-        and visual_escalation_provider is None
-    ):
-        visual_escalation_provider = build_vision_provider(cfg.compute_profile, large=True)
-    if source_client is not None:
-        source: SourceClient = source_client
-    elif os.getenv("CLIPPER_SOURCE_FIXTURE_DIR"):
-        source = FixtureSourceClient(os.environ["CLIPPER_SOURCE_FIXTURE_DIR"])
-    else:
-        source = YouTubeClient(max_height=cfg.source_max_height)
-    active_renderer = renderer or (
-        FFmpegRenderer(
-            speaker_focus=cfg.speaker_focus,
-            zoom_factor=cfg.speaker_zoom,
-            speaker_sample_fps=cfg.speaker_sample_fps,
-            speaker_switch_margin=cfg.speaker_switch_margin,
-            speaker_min_reframe_seconds=cfg.speaker_min_reframe_seconds,
-            speaker_max_reframe_seconds=cfg.speaker_max_reframe_seconds,
-            speaker_seconds_per_crop=cfg.speaker_seconds_per_crop,
-            speaker_hold_threshold=cfg.speaker_hold_threshold,
-            speaker_reversal_guard_seconds=cfg.speaker_reversal_guard_seconds,
-            speaker_window_seconds=cfg.speaker_window_seconds,
-            speaker_min_detection_coverage=cfg.speaker_min_detection_coverage,
-            profile=cfg.render_profile,
-        )
-        if render
-        else None
-    )
+    assert transcription_provider is not None
+    assert alignment_provider is not None
+    assert diarization_provider is not None
 
     run_dir = cfg.artifact_root / _run_id(brief.campaign_id)
-    work_dir = run_dir / "work"
-    clips_dir = run_dir / "clips"
+    if run_dir.exists():
+        run_dir = cfg.artifact_root / f"{_run_id(brief.campaign_id)}-{os.getpid()}"
     run_dir.mkdir(parents=True, exist_ok=False)
     journal = StageJournal(run_dir / "progress.json")
-    journal.start("pipeline", message="pipeline initialized")
-    compute_budget = ComputeBudget(cfg.compute_budget_usd)
-    model_progress_count = [0]
-
-    def _model_progress(stage: str, event: str) -> None:
-        if event in {"success", "cache_hit"}:
-            model_progress_count[0] += 1
-        journal.progress(
-            "model_inference",
-            model_progress_count[0],
-            checkpoint=stage,
-            message=f"{event}:{stage}",
-        )
-
-    if open_planner is not None:
-        journal.start("model_inference", message="awaiting open-model inference")
-        open_planner.progress_callback = _model_progress
-    manifest = PipelineManifest(campaign_id=brief.campaign_id)
+    cache = FileCache(cfg.cache_root or (cfg.artifact_root / "_cache"))
+    manifest = PipelineManifest(brief.campaign_id)
+    manifest.funnel = _funnel_template()
     manifest.run_metadata = {
-        "git_commit_sha": _git_sha(),
-        "cache_schema_version": CACHE_SCHEMA_VERSION,
-        "transcription": {
-            "engine": (
-                "canonical-open-asr-alignment-diarization"
-                if cfg.grounding_engine == "open"
-                else "faster-whisper-or-youtube-vtt"
-            ),
-            "model": cfg.whisper_model,
-            "device": cfg.whisper_device,
-            "compute_type": cfg.whisper_compute_type,
-        },
+        "architecture": "autonomous-multimodal-quality-graph",
+        "git_sha": _git_sha(),
+        "compute_profile": cfg.compute_profile,
         "source_hashes": {},
-        "source_span_hashes": {},
-        "source_media": {},
-        "source_mode": "private-fixture" if isinstance(source, FixtureSourceClient) else "live",
-        "transcript_hashes": {},
-        "transcript_sources": {},
-        "canonical_timelines": {},
-        "grounding_inference": {
-            "engine": cfg.grounding_engine,
-            "compute_profile": cfg.compute_profile,
-            "degraded": False,
-            "models": [],
-        },
+        "grounding_inference": {"models": []},
         "editorial_inference": {
-            "engine": cfg.editorial_engine,
-            "compute_profile": cfg.compute_profile,
-            "degraded": cfg.editorial_engine == "heuristic",
+            "model": editor.identity.to_dict(),
+            "model_invocations": [],
         },
-        "visual_inference": {
-            "scout_enabled": cfg.visual_scout_enabled,
-            "review_enabled": cfg.visual_review_enabled,
-            "escalation_enabled": cfg.visual_escalation_enabled,
-            "escalation_threshold": cfg.visual_escalation_threshold,
-            "scout_model": (
-                visual_scout_provider.identity.to_dict()
-                if visual_scout_provider is not None
-                else None
-            ),
-            "primary_model": (
-                visual_review_provider.identity.to_dict()
-                if visual_review_provider is not None
-                else None
-            ),
-            "escalation_model": (
-                visual_escalation_provider.identity.to_dict()
-                if visual_escalation_provider is not None
-                else None
-            ),
-        },
-        "compute_budget": compute_budget.to_dict(),
-        "render": {
-            "profile": cfg.render_profile,
-            "source_max_height": cfg.source_max_height,
-            "speaker_zoom": cfg.speaker_zoom,
-        },
+        "visual_inference": {"scout": [], "review": []},
     }
-    manifest.cache = {"root": str(cache.root), "hits": 0, "misses": 0, "events": []}
     _write_json(run_dir / "brief.normalized.json", brief.to_dict())
-    watermark_path: Path | None = None
-    if brief.watermark_url:
-        fixture_watermark = getattr(source, "campaign_watermark", None)
-        telemetry.start("watermark_download")
-        if callable(fixture_watermark):
-            watermark_path = fixture_watermark(brief)
-        else:
-            watermark_path = _download_asset(
-                brief.watermark_url, run_dir / "assets" / "watermark.png"
-            )
-        telemetry.stop("watermark_download")
 
-    journal.start("source_discovery", message="resolving explicitly authorized sources")
-    telemetry.start("source_discovery")
-    direct_candidates = _campaign_media_candidates(brief)
-    direct_ids = {video.video_id for video in direct_candidates}
-    if brief.allowed_video_ids and set(brief.allowed_video_ids).issubset(direct_ids):
-        discovered = direct_candidates
-    else:
-        discovered = source.discover(brief)
-        discovered_ids = {video.video_id for video in discovered}
-        discovered.extend(
-            video for video in direct_candidates if video.video_id not in discovered_ids
-        )
-    telemetry.stop("source_discovery")
-    allowed: list[VideoCandidate] = []
-    for video in discovered:
-        try:
-            assert_video_allowed(brief, video)
-        except RightsError as exc:
-            manifest.errors.append({"video_id": video.video_id, "error": str(exc)})
-            continue
-        allowed.append(video)
-    allowed = allowed[: brief.source_limit]
-    manifest.discovered_videos = [video.to_dict() for video in allowed]
-    journal.complete("source_discovery", message=f"{len(allowed)} authorized sources")
-    journal.start(
-        "source_processing", total=len(allowed), message="building canonical source evidence"
-    )
-
-    transcripts: dict[str, list[TranscriptSegment]] = {}
+    started = time.perf_counter()
+    targets = _target_candidates(brief_path, brief)
+    manifest.discovered_videos = [video.to_dict() for video in targets]
+    source_runtimes: dict[str, SourceRuntime] = {}
     canonical_timelines: dict[str, CanonicalTimeline] = {}
     visual_timelines: dict[str, VisualTimeline] = {}
-    media_paths: dict[str, Path] = {}
-    all_moments: list[StoryMoment] = []
-    all_concepts: list[ClipConcept] = []
-    mining_stats: Counter[str] = Counter()
-    video_index = {video.video_id: video for video in allowed}
 
-    for source_index, video in enumerate(allowed, start=1):
-        journal.progress(
-            "source_processing",
-            source_index - 1,
-            checkpoint=video.video_id,
-            message=f"processing {video.video_id}",
-        )
-        video_work = work_dir / video.video_id
+    journal.start("source_grounding", total=len(targets))
+    for index, video in enumerate(targets, start=1):
+        work_dir = run_dir / "work" / video.video_id
+        work_dir.mkdir(parents=True, exist_ok=True)
         try:
-            direct_media_url = brief.source_media_urls.get(video.video_id)
-            if cfg.grounding_engine == "open":
-                if (
-                    transcription_provider is None
-                    or alignment_provider is None
-                    or diarization_provider is None
-                ):
-                    raise RuntimeError("open grounding providers are not configured")
-                telemetry.start(f"source_acquisition:{video.video_id}")
-                if direct_media_url:
-                    media_path = _download_asset(
-                        direct_media_url,
-                        video_work / "source.mp4",
-                        max_bytes=4_000_000_000,
-                        expected_kind="media",
-                    )
-                else:
-                    media_path = source.download_media(video, video_work)
-                telemetry.stop(f"source_acquisition:{video.video_id}")
-                media_paths[video.video_id] = media_path
-                _record_source_media_metadata(manifest, video.video_id, media_path)
-                source_hash = file_sha256(media_path)
-                manifest.run_metadata["source_hashes"][video.video_id] = source_hash
+            media_path = _source_media(brief, source, video, work_dir)
+            if not media_path.is_file() or media_path.stat().st_size <= 0:
+                raise RuntimeError("source client returned an invalid media master")
+            source_hash = file_sha256(media_path)
+            manifest.run_metadata["source_hashes"][video.video_id] = source_hash
+            _record_source_media_metadata(manifest, video.video_id, media_path)
 
-                telemetry.start(f"canonical_transcription:{video.video_id}")
-                canonical, transcription_evidence = _cached_open_transcription(
-                    cache,
-                    manifest,
-                    transcription_provider,
-                    media_path,
-                    video.video_id,
-                    source_hash,
-                )
-                compute_budget.record_mapping(transcription_evidence.get("usage"))
-                telemetry.stop(f"canonical_transcription:{video.video_id}")
-                telemetry.start(f"canonical_alignment:{video.video_id}")
-                canonical, alignment_evidence = _cached_open_alignment(
-                    cache, manifest, alignment_provider, media_path, canonical
-                )
-                compute_budget.record_mapping(alignment_evidence.get("usage"))
-                telemetry.stop(f"canonical_alignment:{video.video_id}")
-                telemetry.start(f"canonical_diarization:{video.video_id}")
-                canonical, diarization_evidence = _cached_open_diarization(
-                    cache, manifest, diarization_provider, media_path, canonical
-                )
-                compute_budget.record_mapping(diarization_evidence.get("usage"))
-                telemetry.stop(f"canonical_diarization:{video.video_id}")
-                segments = transcript_segments_from_canonical(canonical)
-                manifest.run_metadata["transcript_sources"][video.video_id] = {
-                    "kind": "canonical-open",
-                    "source_sha256": source_hash,
-                }
-                grounding_inference = manifest.run_metadata.get("grounding_inference")
-                if isinstance(grounding_inference, dict):
-                    models = grounding_inference.get("models")
-                    if isinstance(models, list):
-                        models.append(
-                            {
-                                "video_id": video.video_id,
-                                "transcription": transcription_evidence,
-                                "alignment": alignment_evidence,
-                                "diarization": diarization_evidence,
-                            }
-                        )
-                    grounding_inference["degraded"] = bool(
-                        grounding_inference.get("degraded") or diarization_evidence.get("degraded")
-                    )
-            else:
-                if direct_media_url:
-                    telemetry.start(f"source_acquisition:{video.video_id}")
-                    media_path = _download_asset(
-                        direct_media_url,
-                        video_work / "source.mp4",
-                        max_bytes=4_000_000_000,
-                        expected_kind="media",
-                    )
-                    telemetry.stop(f"source_acquisition:{video.video_id}")
-                    media_paths[video.video_id] = media_path
-                    telemetry.start(f"transcription:{video.video_id}")
-                    segments, source_hash = _cached_asr_transcript(
-                        cache, manifest, video.video_id, media_path, brief, cfg
-                    )
-                    telemetry.stop(f"transcription:{video.video_id}")
-                    manifest.run_metadata["source_hashes"][video.video_id] = source_hash
-                    manifest.run_metadata["transcript_sources"][video.video_id] = {
-                        "kind": "faster-whisper",
-                        "source_sha256": source_hash,
-                    }
-                else:
-                    telemetry.start(f"subtitle_acquisition:{video.video_id}")
-                    subtitle_path = source.download_subtitles(video, video_work, brief.language)
-                    telemetry.stop(f"subtitle_acquisition:{video.video_id}")
-                    if subtitle_path:
-                        telemetry.start(f"transcription:{video.video_id}")
-                        segments, subtitle_hash = _cached_vtt_transcript(
-                            cache, manifest, video.video_id, subtitle_path, brief.language
-                        )
-                        telemetry.stop(f"transcription:{video.video_id}")
-                        manifest.run_metadata["transcript_sources"][video.video_id] = {
-                            "kind": "youtube-vtt",
-                            "source_sha256": subtitle_hash,
-                        }
-                    else:
-                        telemetry.start(f"source_acquisition:{video.video_id}")
-                        media_path = source.download_media(video, video_work)
-                        telemetry.stop(f"source_acquisition:{video.video_id}")
-                        media_paths[video.video_id] = media_path
-                        _record_source_media_metadata(manifest, video.video_id, media_path)
-                        telemetry.start(f"transcription:{video.video_id}")
-                        segments, source_hash = _cached_asr_transcript(
-                            cache, manifest, video.video_id, media_path, brief, cfg
-                        )
-                        telemetry.stop(f"transcription:{video.video_id}")
-                        manifest.run_metadata["source_hashes"][video.video_id] = source_hash
-                        manifest.run_metadata["transcript_sources"][video.video_id] = {
-                            "kind": "faster-whisper",
-                            "source_sha256": source_hash,
-                        }
-                if not segments:
-                    raise RuntimeError("transcription produced no timestamped segments")
-                transcript_hash = stable_hash([segment.to_dict() for segment in segments])
-                transcript_source = manifest.run_metadata["transcript_sources"][video.video_id]
-                grounding_hash = str(
-                    manifest.run_metadata["source_hashes"].get(video.video_id)
-                    or transcript_source.get("source_sha256")
-                    or transcript_hash
-                )
-                canonical = canonical_timeline_from_segments(
-                    video.video_id,
-                    grounding_hash,
-                    segments,
-                    transcript_source=str(transcript_source.get("kind") or "unknown"),
-                )
-
+            transcribed, transcription_meta = _cached_transcription(
+                cache,
+                manifest,
+                transcription_provider,
+                media_path,
+                video.video_id,
+                source_hash,
+            )
+            aligned, alignment_meta = _cached_alignment(
+                cache,
+                manifest,
+                alignment_provider,
+                media_path,
+                transcribed,
+            )
+            timeline, diarization_meta = _cached_diarization(
+                cache,
+                manifest,
+                diarization_provider,
+                media_path,
+                aligned,
+            )
+            if not timeline.words:
+                raise RuntimeError("canonical grounding produced no timestamped source evidence")
+            segments = tuple(transcript_segments_from_canonical(timeline))
             if not segments:
-                raise RuntimeError("transcription produced no timestamped segments")
-            transcripts[video.video_id] = segments
-            transcript_hash = stable_hash([segment.to_dict() for segment in segments])
-            manifest.run_metadata["transcript_hashes"][video.video_id] = transcript_hash
-            canonical_payload = canonical.to_dict()
-            canonical_hash = stable_hash(canonical_payload)
-            _write_json(run_dir / "canonical" / f"{video.video_id}.json", canonical_payload)
-            manifest.run_metadata["canonical_timelines"][video.video_id] = {
-                "schema_version": canonical.schema_version,
-                "sha256": canonical_hash,
-                "source_hash": canonical.source_hash,
-                "word_count": len(canonical.words),
-                "timing_modes": sorted({word.timing_mode for word in canonical.words}),
-                "speaker_count": len(
-                    {word.speaker_id for word in canonical.words if word.speaker_id is not None}
-                ),
-            }
-            canonical_timelines[video.video_id] = canonical
-            visual_timeline: VisualTimeline | None = None
-            media_for_visual = media_paths.get(video.video_id)
-            if cfg.visual_scout_enabled and media_for_visual is None:
-                try:
-                    telemetry.start(f"visual_source_acquisition:{video.video_id}")
-                    media_for_visual = source.download_media(video, video_work / "visual-source")
-                    telemetry.stop(f"visual_source_acquisition:{video.video_id}")
-                    media_paths[video.video_id] = media_for_visual
-                    _record_source_media_metadata(manifest, video.video_id, media_for_visual)
-                except Exception as exc:
-                    LOGGER.warning(
-                        "visual scouting media acquisition unavailable",
-                        extra={"video_id": video.video_id, "error": str(exc)},
-                    )
-                    media_for_visual = None
-            if cfg.visual_scout_enabled and visual_scout_provider is not None and media_for_visual:
-                telemetry.start(f"visual_scout:{video.video_id}")
-                visual_media_hash = file_sha256(media_for_visual)
-                visual_cache_key = stable_hash(
-                    {
-                        "schema": CACHE_SCHEMA_VERSION,
-                        "stage": "visual-timeline-scout-v1",
-                        "video_id": video.video_id,
-                        "media_sha256": visual_media_hash,
-                        "duration": round(max(canonical.end, 0.05), 3),
-                        "model": visual_scout_provider.identity.to_dict(),
-                    }
-                )
-                try:
-                    cached_visual = cache.read(visual_cache_key, "visual-timeline")
-                    if isinstance(cached_visual, dict):
-                        visual_timeline = VisualTimeline.from_dict(cached_visual)
-                        visual_result = None
-                    else:
-                        visual_timeline, visual_result = scout_visual_timeline(
-                            media_for_visual,
-                            visual_scout_provider,
-                            video_id=video.video_id,
-                            source_hash=visual_media_hash,
-                            duration=max(canonical.end, 0.05),
-                            output_dir=video_work / "visual-scout-frames",
-                        )
-                        cache.write(visual_cache_key, "visual-timeline", visual_timeline.to_dict())
-                except Exception as exc:
-                    LOGGER.warning(
-                        "visual scouting failed; continuing with canonical text evidence",
-                        extra={"video_id": video.video_id, "error": str(exc)},
-                    )
-                    visual_meta = manifest.run_metadata.get("visual_inference")
-                    if isinstance(visual_meta, dict):
-                        visual_meta.setdefault("scout_errors", []).append(
-                            {"video_id": video.video_id, "error": str(exc)}
-                        )
-                else:
-                    if visual_result is not None:
-                        compute_budget.record(visual_result.usage)
-                    visual_timelines[video.video_id] = visual_timeline
-                    _write_json(video_work / "visual-timeline.json", visual_timeline.to_dict())
-                    _write_json(
-                        run_dir / "visual" / f"{video.video_id}.json", visual_timeline.to_dict()
-                    )
-                    visual_meta = manifest.run_metadata.get("visual_inference")
-                    if isinstance(visual_meta, dict):
-                        run_entry: dict[str, object] = {
-                            "video_id": video.video_id,
-                            "model": visual_scout_provider.identity.to_dict(),
-                            "event_count": len(visual_timeline.events),
-                            "cache_key": visual_cache_key,
-                            "cache_hit": visual_result is None,
-                        }
-                        if visual_result is not None:
-                            run_entry["usage"] = asdict(visual_result.usage)
-                            run_entry["degraded"] = visual_result.degraded
-                        visual_meta.setdefault("scout_runs", []).append(run_entry)
-                finally:
-                    telemetry.stop(f"visual_scout:{video.video_id}")
-            elif cfg.visual_scout_enabled:
-                visual_meta = manifest.run_metadata.get("visual_inference")
-                if isinstance(visual_meta, dict):
-                    visual_meta.setdefault("scout_skipped", []).append(
-                        {"video_id": video.video_id, "reason": "full_visual_media_unavailable"}
-                    )
-            telemetry.start(f"editorial_analysis:{video.video_id}")
-            moments: list[StoryMoment]
-            concepts: list[ClipConcept]
-            source_rejections: list[dict[str, object]]
-            if open_planner is not None:
-                # Open production defers semantic discovery to the authoritative quality graph
-                # after every source has canonical + visual evidence. No legacy concept planning
-                # is allowed to determine production yield.
-                moments = []
-                concepts = []
-                source_rejections = []
-                source_stats = {
-                    "candidate_starts": 0,
-                    "eligible_endpoints": 0,
-                    "concepts_after_quality": 0,
-                    "concepts_after_moment_dedup": 0,
-                    "semantic_representatives": 0,
-                }
-            else:
-                moments, concepts, source_rejections, source_stats = _cached_editorial_analysis(
-                    cache, manifest, brief, video.video_id, segments
-                )
-            telemetry.stop(f"editorial_analysis:{video.video_id}")
-            all_moments.extend(moments)
-            all_concepts.extend(concepts)
-            manifest.rejections.extend(source_rejections)
-            mining_stats.update(source_stats)
-            _write_json(video_work / "transcript.json", [segment.to_dict() for segment in segments])
-            _write_json(video_work / "story-moments.json", [item.to_dict() for item in moments])
-            _write_json(video_work / "clip-candidates.json", [item.to_dict() for item in concepts])
-        except Exception as exc:
-            LOGGER.exception("source processing failed", extra={"video_id": video.video_id})
-            manifest.errors.append(
+                raise RuntimeError("canonical timeline produced no transcript segments")
+            visual, visual_meta = _visual_timeline(media_path, video, timeline, scout, run_dir)
+
+            source_runtimes[video.video_id] = SourceRuntime(
+                video=video,
+                media_path=media_path,
+                source_hash=source_hash,
+                timeline=timeline,
+                segments=segments,
+                visual_timeline=visual,
+            )
+            canonical_timelines[video.video_id] = timeline
+            visual_timelines[video.video_id] = visual
+            manifest.run_metadata["grounding_inference"]["models"].append(
                 {
                     "video_id": video.video_id,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
+                    "transcription": transcription_meta,
+                    "alignment": alignment_meta,
+                    "diarization": diarization_meta,
                 }
             )
-            journal.progress(
-                "source_processing",
-                source_index,
-                checkpoint=video.video_id,
-                message=f"failed {video.video_id}: {type(exc).__name__}",
+            manifest.run_metadata["visual_inference"]["scout"].append(
+                {"video_id": video.video_id, **visual_meta}
             )
-            continue
-        journal.progress(
-            "source_processing",
-            source_index,
-            checkpoint=video.video_id,
-            message=f"completed {video.video_id}",
-        )
+            _write_json(run_dir / "canonical" / f"{video.video_id}.json", timeline.to_dict())
+            journal.progress("source_grounding", index, total=len(targets))
+        except Exception as exc:
+            manifest.errors.append(
+                {
+                    "stage": "source_grounding",
+                    "video_id": video.video_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            journal.fail("source_grounding", str(exc), checkpoint=video.video_id)
+            manifest.status = "FAILED"
+            manifest.status_reason = "explicit_target_grounding_failed"
+            manifest.publication_state = "TECHNICALLY_INCOMPLETE"
+            _write_json(run_dir / "manifest.json", manifest.to_dict())
+            return run_dir
+    journal.complete("source_grounding")
 
-    if open_planner is not None and not canonical_timelines and manifest.errors:
-        source_errors = "; ".join(
-            f"{item.get('video_id', 'unknown')}: "
-            f"{item.get('error_type', 'Error')}: {item.get('error', '')}"
-            for item in manifest.errors
-        )
-        reason = f"all authorized source processing failed: {source_errors}"
-        journal.fail("source_processing", reason)
-        raise RuntimeError(reason)
-    journal.complete(
-        "source_processing",
-        message=f"processed {len(allowed) - len(manifest.errors)} sources; "
-        f"failed {len(manifest.errors)}",
+    manifest.funnel["transcript_segments"] = sum(
+        len(runtime.segments) for runtime in source_runtimes.values()
     )
     _write_json(
         run_dir / "transcript.json",
         {
-            video_id: [segment.to_dict() for segment in segments]
-            for video_id, segments in transcripts.items()
+            video_id: [segment.to_dict() for segment in runtime.segments]
+            for video_id, runtime in source_runtimes.items()
         },
     )
-    plans: list[EditPlan]
-    journal.start("editorial_planning", message="constructing diverse source-grounded plans")
-    if open_planner is not None:
-        if editorial_provider is None:
-            raise RuntimeError("open editorial provider is unavailable for quality graph planning")
-        quality_batch = plan_quality_batch(
+
+    journal.start("quality_graph")
+    try:
+        quality = plan_quality_batch(
             brief,
             canonical_timelines,
-            visual_timelines,
-            editorial_provider,
-            dag_root=run_dir / "dag",
-            max_words_per_chunk=cfg.editorial_chunk_words,
-            chunk_overlap_words=cfg.editorial_chunk_overlap_words,
-            progress_callback=_model_progress,
+            editorial=editor,
+            dag_root=cfg.cache_root or (cfg.artifact_root / "_cache"),
+            visual_timelines=visual_timelines,
         )
-        all_moments = list(quality_batch.story_moments)
-        all_concepts = list(quality_batch.concepts)
-        selected_concepts = list(quality_batch.concepts)
-        variants = list(quality_batch.variants)
-        plans = list(quality_batch.plans)
-        manifest.rejections.extend(quality_batch.rejections)
-        manifest.run_metadata["editorial_inference"]["model_invocations"] = list(
-            quality_batch.model_invocations
+    except Exception as exc:
+        journal.fail("quality_graph", str(exc))
+        manifest.status = "FAILED"
+        manifest.status_reason = "autonomous_quality_graph_failed"
+        manifest.errors.append(
+            {"stage": "quality_graph", "video_id": "*", "error": f"{type(exc).__name__}: {exc}"}
         )
-        manifest.run_metadata["pre_render_boundary_audits"] = list(quality_batch.boundary_audits)
-        manifest.run_metadata["pre_render_campaign_policy_audits"] = list(
-            quality_batch.campaign_policy_audits
-        )
-        manifest.run_metadata["source_hazards"] = list(quality_batch.source_hazards)
-        manifest.run_metadata["quality_planning"] = {
-            "architecture": "semantic-core-envelope-window-quality-moment",
-            "yield_is_quota_independent": True,
-            "eligible_quality_moments": len(quality_batch.quality_moments),
-            "stage_cache_hits": quality_batch.stage_cache_hits,
-            "stage_executions": quality_batch.stage_executions,
-            "source_evidence": quality_batch.source_evidence,
-        }
-        for invocation in quality_batch.model_invocations:
-            compute_budget.record_mapping(invocation.get("usage"))
-        quality_count = len(quality_batch.quality_moments)
-        mining_stats.update(
-            {
-                "candidate_starts": quality_count,
-                "eligible_endpoints": quality_count,
-                "concepts_after_quality": quality_count,
-                "concepts_after_moment_dedup": quality_count,
-                "semantic_representatives": quality_count,
-            }
-        )
-        _write_json(
-            run_dir / "open-model" / "model-invocations.json",
-            list(quality_batch.model_invocations),
-        )
-        _write_json(
-            run_dir / "open-model" / "discovered-concepts.json",
-            [item.to_dict() for item in all_concepts],
-        )
-        _write_json(
-            run_dir / "open-model" / "boundary-audits.json",
-            list(quality_batch.boundary_audits),
-        )
-        _write_json(
-            run_dir / "open-model" / "campaign-policy-audits.json",
-            list(quality_batch.campaign_policy_audits),
-        )
-        _write_json(
-            run_dir / "open-model" / "source-hazards.json",
-            list(quality_batch.source_hazards),
-        )
-        _write_json(run_dir / "quality-graph" / "batch.json", quality_batch.to_dict())
-        for video_id, evidence in quality_batch.source_evidence.items():
-            _write_json(run_dir / "quality-graph" / f"{video_id}.json", evidence)
-    else:
-        selected_concepts = select_distinct_concepts(
-            brief, all_concepts, rejections=manifest.rejections
-        )
-        variants = []
-        plans = []
-        for concept in selected_concepts:
-            concept_variants = generate_hook_variants(brief, concept, transcripts[concept.video_id])
-            if not concept_variants:
-                manifest.rejections.append(
-                    {
-                        "concept_id": concept.concept_id,
-                        "video_id": concept.video_id,
-                        "stage": "hook_generation",
-                        "decision": "REJECT",
-                        "reasons": ["no_legitimate_hook_variants"],
-                        "scores": concept.scores.to_dict(),
-                    }
-                )
-                continue
-            variants.extend(concept_variants)
-            plans.extend(
-                build_edit_plan(brief, concept, variant, transcripts[concept.video_id])
-                for variant in concept_variants
-            )
-    journal.complete("editorial_planning", message=f"planned {len(plans)} edit plans")
-    if "model_inference" in journal.states:
-        journal.complete(
-            "model_inference", message=f"completed {model_progress_count[0]} model stages"
-        )
-    concept_index = {concept.concept_id: concept for concept in selected_concepts}
-    quality_groups = group_quality_plans(plans)
-    if open_planner is not None and len(quality_groups) != len(plans):
-        raise RuntimeError(
-            "authoritative quality graph must compile to exactly one render plan per quality moment"
-        )
-    primary_plans = [group.primary for group in quality_groups]
-    reserve_plans = [plan for group in quality_groups for plan in group.reserves]
+        manifest.publication_state = "TECHNICALLY_INCOMPLETE"
+        _write_json(run_dir / "manifest.json", manifest.to_dict())
+        return run_dir
+    journal.complete("quality_graph")
 
-    # Targets describe evidence-derived work, never externally required clip quotas.
-    manifest.targets = {"eligible_quality_moments": len(quality_groups)}
-    manifest.story_moments = [item.to_dict() for item in all_moments]
-    manifest.clip_concepts = [item.to_dict() for item in selected_concepts]
-    manifest.hook_variants = [item.to_dict() for item in variants]
-    manifest.edit_plans = [item.to_dict() for item in plans]
-    manifest.planned_clips = [item.to_dict() for item in primary_plans]
-    manifest.reserve_plans = [item.to_dict() for item in reserve_plans]
-    manifest.submission_shortlist = []
-    transcript_segment_count = sum(len(items) for items in transcripts.values())
-    raw_count = len(all_concepts)
-    selected_count = len(selected_concepts)
-    manifest.funnel = {
-        "transcript_segments": transcript_segment_count,
-        "story_moments": len(all_moments),
-        "candidate_starts": mining_stats["candidate_starts"],
-        "eligible_endpoints": mining_stats["eligible_endpoints"],
-        "concepts_after_quality": mining_stats["concepts_after_quality"],
-        "concepts_after_moment_dedup": mining_stats["concepts_after_moment_dedup"],
-        "concepts_after_semantic_dedupe": mining_stats["semantic_representatives"],
-        "raw_concepts": raw_count,
-        "selected_concepts": selected_count,
-        "quality_moments": len(quality_groups),
-        "hook_variants": len(variants),
-        "edit_plans": len(plans),
-        "render_plans": len(primary_plans),
-        "reserve_plans": len(reserve_plans),
-        "render_attempts": 0,
-        "render_failures": 0,
-        "replacement_attempts": 0,
-        "tracking_preflight_pass": 0,
-        "tracking_preflight_repaired": 0,
-        "tracking_preflight_fail": 0,
-        "technical_qc_pass": 0,
-        "technical_qc_fail": 0,
-        "boundary_reject_count": sum(
-            1
-            for item in manifest.rejections
-            if item.get("stage") == "pre_render_editorial_integrity"
-            and any(
-                str(reason).startswith(("start_", "end_", "unresolved_", "open_"))
-                or str(reason) in {"partial_number_or_unit", "followup_context_required"}
-                for reason in (item.get("reasons") or [])
-            )
-        ),
-        "boundary_repair_count": sum(
-            1
-            for item in manifest.run_metadata.get("pre_render_boundary_audits", [])
-            if isinstance(item, dict) and item.get("attempt") == "repair-1"
-        ),
-        "policy_reject_count": sum(
-            1
-            for item in manifest.rejections
-            if item.get("stage") == "pre_render_editorial_integrity"
-            and any(
-                str(reason) in {"forbidden_source_segment", "foreign_branding"}
-                for reason in (item.get("reasons") or [])
-            )
-        ),
-        "hazard_reject_count": sum(
-            1
-            for item in manifest.rejections
-            if "forbidden_source_segment" in (item.get("reasons") or [])
-        ),
-        "editorial_qc_pass": 0,
-        "editorial_qc_fail": 0,
-        "editorial_review_reject_count": 0,
-        "reserve_promotions": 0,
-        "visual_review_escalations": 0,
-        "render_success": 0,
-        "distinct_finalist_concepts": 0,
-        "submission_shortlist": 0,
-        "distinct_shortlist_concepts": 0,
-        "concept_selection_retention_ratio": (
-            round(selected_count / raw_count, 4) if raw_count else 0.0
-        ),
-        "attrition_flag": bool(raw_count >= 8 and selected_count / max(raw_count, 1) < 0.2),
-    }
+    manifest.story_moments = [item.to_dict() for item in quality.story_moments]
+    manifest.clip_concepts = [item.to_dict() for item in quality.concepts]
+    manifest.hook_variants = [item.to_dict() for item in quality.variants]
+    manifest.edit_plans = [item.to_dict() for item in quality.plans]
+    manifest.rejections.extend(quality.rejections)
+    quality_groups = group_quality_plans(quality.plans)
+    eligible = len(quality_groups)
+    manifest.targets = {"eligible_quality_moments": eligible}
+    manifest.funnel.update(
+        {
+            "story_moments": len(quality.story_moments),
+            "raw_concepts": len(quality.concepts),
+            "selected_concepts": len(quality.concepts),
+            "quality_moments": eligible,
+            "hook_variants": len(quality.variants),
+            "edit_plans": len(quality.plans),
+            "render_plans": eligible,
+            "hazard_reject_count": sum(
+                1
+                for item in quality.rejections
+                if isinstance(item, dict) and item.get("stage") == "source_hazards"
+            ),
+        }
+    )
     manifest.run_metadata["quality_yield"] = {
-        "eligible_quality_moments": len(quality_groups),
-        "primary_plans": len(primary_plans),
-        "reserve_variants": len(reserve_plans),
+        "semantic_cores_discovered": sum(
+            int(item.get("semantic_cores", 0))
+            for item in quality.source_evidence.values()
+            if isinstance(item, dict)
+        ),
+        "eligible_quality_moments": eligible,
+        "primary_plans": eligible,
+        "reserve_variants": max(0, len(quality.plans) - eligible),
         "rendered": 0,
         "accepted": 0,
-        "unrendered_or_rejected": 0,
+        "unrendered_or_rejected": eligible,
     }
-    source_coverage: dict[str, object] = {}
-    for video_id, source_segments in transcripts.items():
-        duration = max((segment.end for segment in source_segments), default=0.0)
-        third = duration / 3 if duration else 0.0
-
-        def _period(start: float, period_size: float = third) -> str:
-            if not period_size or start < period_size:
-                return "early"
-            if start < period_size * 2:
-                return "middle"
-            return "late"
-
-        raw_periods = Counter(
-            _period(item.source_start) for item in all_concepts if item.video_id == video_id
-        )
-        selected_periods = Counter(
-            _period(item.source_start) for item in selected_concepts if item.video_id == video_id
-        )
-        render_periods = Counter(
-            _period(plan.source_spans[0].start)
-            for plan in primary_plans
-            if plan.video_id == video_id and plan.source_spans
-        )
-        render_count = sum(render_periods.values())
-        source_coverage[video_id] = {
-            "duration_seconds": duration,
-            "raw_concepts_by_period": dict(raw_periods),
-            "selected_concepts_by_period": dict(selected_periods),
-            "render_plans_by_period": dict(render_periods),
-            "suspicious_concentration": bool(
-                len(raw_periods) >= 2 and len(selected_periods) == 1 and len(selected_concepts) >= 4
-            ),
-            "render_suspicious_concentration": bool(
-                render_count >= 4
-                and render_periods
-                and max(render_periods.values()) > render_count / 2
-            ),
+    manifest.run_metadata["editorial_inference"]["model_invocations"] = [
+        {
+            "model": editor.identity.to_dict(),
+            "cache_hit": quality.stage_executions == 0,
+            "stage_cache_hits": quality.stage_cache_hits,
+            "stage_executions": quality.stage_executions,
         }
-    manifest.run_metadata["source_coverage"] = source_coverage
-    rejection_counts = Counter(
-        str(reason) for item in manifest.rejections for reason in (item.get("reasons") or [])
-    )
-    manifest.run_metadata["rejection_reason_counts"] = dict(rejection_counts)
-    _write_json(run_dir / "coverage.json", source_coverage)
+    ]
+    manifest.cache["quality_graph"] = {
+        "stage_cache_hits": quality.stage_cache_hits,
+        "stage_executions": quality.stage_executions,
+        "dag_root": str(quality.stage_dag_root),
+    }
+
     _write_json(run_dir / "story-moments.json", manifest.story_moments)
     _write_json(run_dir / "concept-ranking.json", manifest.clip_concepts)
     _write_json(run_dir / "hook-variants.json", manifest.hook_variants)
-    for plan in plans:
-        _write_json(run_dir / "edit-plans" / f"{_safe_slug(plan.plan_id)}.json", plan.to_dict())
+    _write_json(run_dir / "edit-plans.json", manifest.edit_plans)
 
-    if render and active_renderer:
-        queue = list(quality_render_queue(quality_groups))
-        accepted_plans: list[EditPlan] = []
-        accepted_concepts: set[str] = set()
-        journal.start("render", total=len(queue), message="rendering eligible quality moments")
-        for queue_index, (queue_kind, plan) in enumerate(queue, start=1):
-            if plan.concept_id in accepted_concepts:
-                continue
-            journal.progress(
-                "render",
-                queue_index - 1,
-                checkpoint=plan.plan_id,
-                message=f"attempting {queue_kind} plan {plan.plan_id}",
-            )
-            concept = concept_index[plan.concept_id]
-            video = video_index[plan.video_id]
-            clip = plan.to_clip_candidate(concept.text)
-            attempt = {
-                "attempt": queue_index,
-                "plan_id": plan.plan_id,
-                "concept_id": plan.concept_id,
-                "queue": queue_kind,
-                "status": "STARTED",
-            }
-            manifest.render_attempts.append(attempt)
-            manifest.funnel["render_attempts"] = int(manifest.funnel["render_attempts"]) + 1
-            if queue_kind == "reserve":
-                manifest.funnel["replacement_attempts"] = (
-                    int(manifest.funnel["replacement_attempts"]) + 1
-                )
-                manifest.funnel["reserve_promotions"] = (
-                    int(manifest.funnel["reserve_promotions"]) + 1
-                )
-            if brief.acceptance_policy.enabled and (
-                not plan.boundary_audit
-                or not plan.campaign_policy_audit
-                or not plan.pre_render_eligibility
-                or plan.pre_render_eligibility.get("decision") != "PASS"
-            ):
-                attempt["status"] = "PRE_RENDER_EDITORIAL_INTEGRITY_FAILED"
-                reasons = ["missing_or_failed_pre_render_editorial_integrity"]
-                manifest.rejections.append(
-                    {
-                        "concept_id": plan.concept_id,
-                        "video_id": plan.video_id,
-                        "stage": "pre_render_editorial_integrity",
-                        "decision": "REJECT",
-                        "reasons": reasons,
-                        "plan_id": plan.plan_id,
-                    }
-                )
-                continue
-            try:
-                telemetry.start(f"source_acquisition:{video.video_id}")
-                span_media = _span_media_for_plan(source, video, plan, work_dir / video.video_id)
-                if span_media is not None:
-                    render_media_path = span_media.path
-                    render_clip, render_plan, render_segments = _localize_render_inputs(
-                        clip, plan, transcripts[video.video_id], span_media
-                    )
-                    span_hashes = manifest.run_metadata["source_span_hashes"].setdefault(
-                        video.video_id, {}
-                    )
-                    span_hashes[plan.plan_id] = {
-                        "sha256": span_media.sha256,
-                        "source_origin": span_media.source_origin,
-                        "source_end": span_media.source_end,
-                    }
-                else:
-                    cached_media_path = media_paths.get(video.video_id)
-                    if cached_media_path is None:
-                        cached_media_path = source.download_media(video, work_dir / video.video_id)
-                        media_paths[video.video_id] = cached_media_path
-                        _record_source_media_metadata(manifest, video.video_id, cached_media_path)
-                        manifest.run_metadata["source_hashes"][video.video_id] = file_sha256(
-                            cached_media_path
-                        )
-                    render_media_path = cached_media_path
-                    render_clip, render_plan, render_segments = (
-                        clip,
-                        plan,
-                        transcripts[video.video_id],
-                    )
-                telemetry.stop(f"source_acquisition:{video.video_id}")
-                if render_media_path is None:
-                    raise RuntimeError("source acquisition returned no media path")
-                filename = (
-                    f"attempt-{queue_index:02d}-{_safe_slug(concept.topic)}-"
-                    f"{_safe_slug(plan.hook_mode)}.mp4"
-                )
-                output_path = clips_dir / filename
-                telemetry.start(f"render:{plan.plan_id}")
-                rendered_path = active_renderer.render(
-                    render_media_path,
-                    output_path,
-                    render_clip,
-                    render_segments,
-                    watermark_path,
-                    render_plan,
-                )
-                telemetry.stop(f"render:{plan.plan_id}")
-                telemetry.sample_gpu()
-                preflight_path = rendered_path.with_suffix(".tracking-preflight.json")
-                if preflight_path.is_file():
-                    preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
-                    attempt["tracking_preflight"] = preflight
-                    if preflight.get("status") == "PASS":
-                        manifest.funnel["tracking_preflight_pass"] = (
-                            int(manifest.funnel["tracking_preflight_pass"]) + 1
-                        )
-                    else:
-                        manifest.funnel["tracking_preflight_fail"] = (
-                            int(manifest.funnel["tracking_preflight_fail"]) + 1
-                        )
-                    if preflight.get("repaired_with_stable_fallback"):
-                        manifest.funnel["tracking_preflight_repaired"] = (
-                            int(manifest.funnel["tracking_preflight_repaired"]) + 1
-                        )
-                telemetry.start(f"technical_qc:{plan.plan_id}")
-                qc_report = run_technical_qc(
-                    rendered_path,
-                    expected_duration=clip.duration,
-                    caption_path=rendered_path.with_suffix(".ass"),
-                    tracking_path=rendered_path.with_suffix(".tracking.json"),
-                    caption_platform=plan.caption_platform,
-                    watermark_required=bool(brief.watermark_url),
-                    watermark_present=watermark_path is not None and watermark_path.is_file(),
-                    caption_audit_path=rendered_path.with_suffix(".caption-audit.json"),
-                )
-                telemetry.stop(f"technical_qc:{plan.plan_id}")
-                qc_report["plan_id"] = plan.plan_id
-                manifest.technical_qc.append(qc_report)
-                _write_json(run_dir / "qc" / f"{rendered_path.stem}.json", qc_report)
-                if qc_report.get("status") != "PASS":
-                    manifest.funnel["technical_qc_fail"] = (
-                        int(manifest.funnel["technical_qc_fail"]) + 1
-                    )
-                    attempt["status"] = "QC_FAILED"
-                    attempt["issues"] = list(qc_report.get("issues") or [])
-                    manifest.rejections.append(
-                        {
-                            "concept_id": plan.concept_id,
-                            "video_id": plan.video_id,
-                            "stage": "technical_qc",
-                            "decision": "REJECT",
-                            "reasons": list(qc_report.get("issues") or ["technical_qc_failed"]),
-                            "scores": {"plan_score": plan.score},
-                            "plan_id": plan.plan_id,
-                        }
-                    )
-                    rejected_dir = run_dir / "rejected"
-                    rejected_dir.mkdir(parents=True, exist_ok=True)
-                    for candidate_path in [
-                        rendered_path,
-                        rendered_path.with_suffix(".ass"),
-                        rendered_path.with_suffix(".tracking.json"),
-                        rendered_path.with_suffix(".tracking-preflight.json"),
-                        rendered_path.with_suffix(".render.json"),
-                        rendered_path.with_suffix(".caption-audit.json"),
-                    ]:
-                        if candidate_path.exists():
-                            candidate_path.replace(rejected_dir / candidate_path.name)
-                    continue
-                manifest.funnel["technical_qc_pass"] = int(manifest.funnel["technical_qc_pass"]) + 1
-                if cfg.visual_review_enabled:
-                    if visual_review_provider is None:
-                        raise RuntimeError("visual review is enabled without a VisionProvider")
-                    tracking_payload: dict[str, object] = {}
-                    tracking_file = rendered_path.with_suffix(".tracking.json")
-                    if tracking_file.is_file():
-                        loaded_tracking = json.loads(tracking_file.read_text(encoding="utf-8"))
-                        if isinstance(loaded_tracking, dict):
-                            tracking_payload = loaded_tracking
-                    raw_transitions = tracking_payload.get("transitions", [])
-                    transition_items = raw_transitions if isinstance(raw_transitions, list) else []
-                    transition_times = tracking_transition_sample_times(transition_items)
-                    telemetry.start(f"editorial_qc:{plan.plan_id}")
-                    boundary_context = plan.boundary_audit or {}
-                    raw_word_ids = boundary_context.get("source_word_evidence", [])
-                    clip_word_ids = (
-                        tuple(str(item) for item in raw_word_ids)
-                        if isinstance(raw_word_ids, list)
-                        else ()
-                    )
-                    canonical_clip_text = (
-                        " ".join(
-                            word.text
-                            for word in canonical_timelines[plan.video_id].require_word_ids(
-                                clip_word_ids
-                            )
-                        )
-                        if clip_word_ids
-                        else concept.text
-                    )
-                    review, review_results = review_rendered_clip(
-                        rendered_path,
-                        visual_review_provider,
-                        duration=clip.duration,
-                        output_dir=run_dir / "visual-review" / rendered_path.stem / "frames",
-                        context={
-                            "plan_id": plan.plan_id,
-                            "concept_id": plan.concept_id,
-                            "source_start": clip.start,
-                            "source_end": clip.end,
-                            "hook_mode": plan.hook_mode,
-                            "technical_qc": qc_report,
-                            "canonical_clip_transcript": canonical_clip_text,
-                            "first_complete_audible_words": boundary_context.get(
-                                "first_source_word"
-                            ),
-                            "last_complete_audible_words": boundary_context.get("last_source_word"),
-                            "pre_start_source_context": boundary_context.get("pre_start_context"),
-                            "post_end_source_context": boundary_context.get("post_end_context"),
-                            "narrative_structure": boundary_context.get("narrative_structure"),
-                            "boundary_audit": boundary_context,
-                            "source_hazard_and_policy_audit": (plan.campaign_policy_audit or {}),
-                            "campaign_acceptance_policy": asdict(brief.acceptance_policy),
-                            "expected_campaign_watermark": {
-                                "required": bool(brief.watermark_url),
-                                "renderer_asset_present": watermark_path is not None
-                                and watermark_path.is_file(),
-                                "origin": "campaign_overlay",
-                            },
-                            "edit_plan_provenance": plan.to_dict(),
-                        },
-                        transitions=transition_times,
-                        escalation=(
-                            visual_escalation_provider if compute_budget.allow_large_vlm() else None
-                        ),
-                        escalation_threshold=cfg.visual_escalation_threshold,
-                    )
-                    telemetry.stop(f"editorial_qc:{plan.plan_id}")
-                    for result in review_results:
-                        compute_budget.record(result.usage)
-                    review_payload = review.to_dict()
-                    review_payload["plan_id"] = plan.plan_id
-                    review_payload["models"] = [result.model.to_dict() for result in review_results]
-                    review_payload["usage"] = [asdict(result.usage) for result in review_results]
-                    manifest.editorial_qc.append(review_payload)
-                    _write_json(
-                        run_dir / "visual-review" / f"{rendered_path.stem}.json",
-                        review_payload,
-                    )
-                    if review.escalated:
-                        manifest.funnel["visual_review_escalations"] = (
-                            int(manifest.funnel["visual_review_escalations"]) + 1
-                        )
-                    if review.decision != "PASS":
-                        manifest.funnel["editorial_qc_fail"] = (
-                            int(manifest.funnel["editorial_qc_fail"]) + 1
-                        )
-                        manifest.funnel["editorial_review_reject_count"] = (
-                            int(manifest.funnel["editorial_review_reject_count"]) + 1
-                        )
-                        attempt["status"] = "EDITORIAL_QC_FAILED"
-                        attempt["editorial_qc"] = review_payload
-                        issue_types = [issue.issue_type for issue in review.issues]
-                        manifest.rejections.append(
-                            {
-                                "concept_id": plan.concept_id,
-                                "video_id": plan.video_id,
-                                "stage": "editorial_qc",
-                                "decision": "REJECT",
-                                "reasons": issue_types or ["open_vlm_editorial_qc_failed"],
-                                "repair_stages": sorted(
-                                    {repair_stage(issue) for issue in issue_types}
-                                ),
-                                "scores": {"plan_score": plan.score},
-                                "plan_id": plan.plan_id,
-                            }
-                        )
-                        rejected_dir = run_dir / "rejected"
-                        rejected_dir.mkdir(parents=True, exist_ok=True)
-                        for candidate_path in [
-                            rendered_path,
-                            rendered_path.with_suffix(".ass"),
-                            rendered_path.with_suffix(".tracking.json"),
-                            rendered_path.with_suffix(".tracking-preflight.json"),
-                            rendered_path.with_suffix(".render.json"),
-                            rendered_path.with_suffix(".caption-audit.json"),
-                        ]:
-                            if candidate_path.exists():
-                                candidate_path.replace(rejected_dir / candidate_path.name)
-                        continue
-                    manifest.funnel["editorial_qc_pass"] = (
-                        int(manifest.funnel["editorial_qc_pass"]) + 1
-                    )
-                    attempt["editorial_qc"] = review_payload
-                raw_editorial_qc = attempt.get("editorial_qc")
-                multimodal_decision = (
-                    raw_editorial_qc.get("decision")
-                    if isinstance(raw_editorial_qc, dict)
-                    else "SKIPPED"
-                )
-                if plan.boundary_audit is not None:
-                    boundary_qc = {
-                        **plan.boundary_audit,
-                        "plan_id": plan.plan_id,
-                        "multimodal_editorial_review_decision": multimodal_decision,
-                    }
-                    manifest.boundary_qc.append(boundary_qc)
-                    _write_json(
-                        run_dir / "boundary" / f"{rendered_path.stem}.boundary-audit.json",
-                        boundary_qc,
-                    )
-                if plan.campaign_policy_audit is not None:
-                    campaign_policy_qc = {
-                        **plan.campaign_policy_audit,
-                        "plan_id": plan.plan_id,
-                        "pre_render_decision": plan.campaign_policy_audit.get("decision"),
-                        "multimodal_policy_review_decision": multimodal_decision,
-                    }
-                    manifest.campaign_policy_qc.append(campaign_policy_qc)
-                    _write_json(
-                        run_dir / "policy" / f"{rendered_path.stem}.policy-audit.json",
-                        campaign_policy_qc,
-                    )
-                rendered = RenderedClip(
-                    video_id=video.video_id,
-                    output_path=str(rendered_path),
-                    start=clip.start,
-                    end=clip.end,
-                    score=plan.score,
-                    source_url=video.url,
-                    concept_id=plan.concept_id,
-                    plan_id=plan.plan_id,
-                    hook_mode=plan.hook_mode,
-                    render_sha256=_sha256_file(rendered_path),
-                )
-                manifest.rendered_clips.append(rendered.to_dict())
-                accepted_plans.append(plan)
-                accepted_concepts.add(plan.concept_id)
-                for evidence_dir, suffix in (
-                    ("captions", ".ass"),
-                    ("captions", ".caption-audit.json"),
-                    ("tracking", ".tracking.json"),
-                    ("tracking", ".tracking-preflight.json"),
-                ):
-                    source_evidence = rendered_path.with_suffix(suffix)
-                    if source_evidence.is_file():
-                        destination = run_dir / evidence_dir / source_evidence.name
-                        destination.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(source_evidence, destination)
-                attempt["status"] = "ACCEPTED"
-            except Exception as exc:
-                manifest.funnel["render_failures"] = int(manifest.funnel["render_failures"]) + 1
-                attempt["status"] = "RENDER_FAILED"
-                attempt["error"] = str(exc)
-                manifest.errors.append(
-                    {"video_id": video.video_id, "plan_id": plan.plan_id, "error": str(exc)}
-                )
-                manifest.rejections.append(
-                    {
-                        "concept_id": plan.concept_id,
-                        "video_id": plan.video_id,
-                        "stage": "render",
-                        "decision": "REJECT",
-                        "reasons": ["render_exception"],
-                        "error": str(exc),
-                        "scores": {"plan_score": plan.score},
-                        "plan_id": plan.plan_id,
-                    }
-                )
-
-        journal.complete(
-            "render",
-            message=(
-                f"accepted {len(accepted_plans)} of {len(quality_groups)} eligible quality moments"
+    visual_strategy_payloads: list[dict[str, object]] = []
+    for moment in quality.quality_moments:
+        runtime = source_runtimes[moment.core.video_id]
+        multimodal = build_multimodal_timeline(
+            runtime.timeline,
+            runtime.visual_timeline,
+            visual_provenance=EvidenceProvenance(
+                provider="vision",
+                model_id=scout.identity.model_id,
+                revision=scout.identity.revision,
+                contract=scout.identity.schema_version,
             ),
         )
-        rendered_by_plan = {
-            str(item.get("plan_id")): item
-            for item in manifest.rendered_clips
-            if item.get("plan_id")
-        }
-        # Every accepted quality moment is reviewable; there is no fixed shortlist quota.
-        manifest.submission_shortlist = [
-            rendered_by_plan[plan.plan_id]
-            for plan in accepted_plans
-            if plan.plan_id in rendered_by_plan
-        ]
-        finalist_concepts = {
-            str(item.get("concept_id"))
-            for item in manifest.rendered_clips
-            if item.get("concept_id")
-        }
-        shortlist_concepts = {
-            str(item.get("concept_id"))
-            for item in manifest.submission_shortlist
-            if item.get("concept_id")
-        }
-        manifest.funnel["render_success"] = len(manifest.rendered_clips)
-        manifest.funnel["distinct_finalist_concepts"] = len(finalist_concepts)
-        manifest.funnel["submission_shortlist"] = len(manifest.submission_shortlist)
-        manifest.funnel["distinct_shortlist_concepts"] = len(shortlist_concepts)
-        manifest.actual = {
-            "eligible_quality_moments": len(quality_groups),
-            "rendered_finalists": len(manifest.rendered_clips),
-            "submission_shortlist": len(manifest.submission_shortlist),
-            "distinct_finalist_concepts": len(finalist_concepts),
-            "distinct_shortlist_concepts": len(shortlist_concepts),
-        }
-        quality_yield = manifest.run_metadata["quality_yield"]
-        if isinstance(quality_yield, dict):
-            quality_yield["rendered"] = len(manifest.rendered_clips)
-            quality_yield["accepted"] = len(accepted_concepts)
-            quality_yield["unrendered_or_rejected"] = max(
-                0, len(quality_groups) - len(accepted_concepts)
-            )
-        if not quality_groups:
-            manifest.status = "SUCCESS"
-            manifest.status_reason = "completed_no_eligible_moments"
-            manifest.publication_state = "COMPLETED_NO_ELIGIBLE_MOMENTS"
-        elif not accepted_concepts:
-            manifest.status = "FAILED"
-            manifest.status_reason = "all_eligible_quality_moments_failed_render_or_review"
-        elif len(accepted_concepts) < len(quality_groups):
-            manifest.status = "DEGRADED"
-            manifest.status_reason = "partial_quality_yield_after_candidate_failures"
-        elif any(item.get("status") != "ACCEPTED" for item in manifest.render_attempts):
-            manifest.status = "DEGRADED"
-            manifest.status_reason = "quality_moments_recovered_with_local_reserve_variants"
-        else:
-            manifest.status = "SUCCESS"
-            manifest.status_reason = None
-        evidence_count = len(manifest.rendered_clips)
-        rendered_plan_ids = {
-            str(item["plan_id"])
-            for item in manifest.rendered_clips
-            if item.get("plan_id") is not None
-        }
+        strategy = derive_visual_strategy(moment, multimodal)
+        payload = strategy.to_dict()
+        visual_strategy_payloads.append(payload)
+        _write_json(
+            run_dir / "visual-strategy" / f"{_safe_slug(moment.quality_moment_id)}.json",
+            payload,
+        )
+    manifest.run_metadata["visual_strategies"] = visual_strategy_payloads
 
-        def _complete_plan_evidence(reports: list[dict[str, Any]], verdict_field: str) -> bool:
-            passed = [
-                str(item["plan_id"])
-                for item in reports
-                if item.get("plan_id") in rendered_plan_ids and item.get(verdict_field) == "PASS"
-            ]
-            return len(passed) == evidence_count and set(passed) == rendered_plan_ids
+    concept_text = {concept.concept_id: concept.text for concept in quality.concepts}
+    video_index = {video.video_id: video for video in targets}
+    plan_index = {plan.plan_id: plan for plan in quality.plans}
+    manifest.planned_clips = [
+        plan.to_clip_candidate(concept_text.get(plan.concept_id, "")).to_dict()
+        for plan in quality.plans
+    ]
 
-        technical_complete = _complete_plan_evidence(manifest.technical_qc, "status")
-        boundary_complete = not brief.acceptance_policy.enabled or _complete_plan_evidence(
-            manifest.boundary_qc, "decision"
-        )
-        policy_complete = not brief.acceptance_policy.enabled or _complete_plan_evidence(
-            manifest.campaign_policy_qc, "decision"
-        )
-        editorial_complete = cfg.visual_review_enabled and _complete_plan_evidence(
-            manifest.editorial_qc, "decision"
-        )
-        if manifest.status == "FAILED":
-            manifest.publication_state = "FAILED"
-        elif not quality_groups:
-            manifest.publication_state = "COMPLETED_NO_ELIGIBLE_MOMENTS"
-        elif technical_complete and boundary_complete and policy_complete and editorial_complete:
-            manifest.publication_state = "READY_FOR_HUMAN_REVIEW"
-        else:
-            manifest.publication_state = "REVIEW_REQUIRED"
-    else:
+    if not render:
+        manifest.status = "SUCCESS"
+        manifest.status_reason = "planning_complete"
+        manifest.publication_state = "PLANNED_NOT_RENDERED"
         manifest.actual = {
-            "eligible_quality_moments": len(quality_groups),
+            "eligible_quality_moments": eligible,
             "rendered_finalists": 0,
             "submission_shortlist": 0,
             "distinct_finalist_concepts": 0,
             "distinct_shortlist_concepts": 0,
         }
-        manifest.status = "SUCCESS"
-        manifest.status_reason = (
-            "planning_only_no_eligible_moments" if not quality_groups else "planning_only"
+        manifest.performance = {"elapsed_seconds": round(time.perf_counter() - started, 3)}
+        _finalize_run_artifacts(run_dir, manifest)
+        return run_dir
+
+    watermark_path = _campaign_watermark(brief, source, run_dir)
+    accepted_plans: list[EditPlan] = []
+    accepted_concepts: set[str] = set()
+    render_queue = quality_render_queue(quality_groups)
+    journal.start("render_and_review", total=len(render_queue))
+
+    for attempt_number, (queue_type, plan) in enumerate(render_queue, start=1):
+        if plan.concept_id in accepted_concepts:
+            continue
+        runtime = source_runtimes[plan.video_id]
+        clip = plan.to_clip_candidate(concept_text.get(plan.concept_id, ""))
+        active_renderer = renderer or _renderer_for_source(cfg, quality, plan.video_id)
+        output = run_dir / "clips" / (
+            f"attempt-{attempt_number:03d}-{_safe_slug(plan.concept_id)}-"
+            f"{_safe_slug(plan.plan_id)}.mp4"
         )
-        manifest.publication_state = (
-            "COMPLETED_NO_ELIGIBLE_MOMENTS" if not quality_groups else "TECHNICALLY_INCOMPLETE"
+        attempt: dict[str, object] = {
+            "attempt": attempt_number,
+            "queue": queue_type,
+            "concept_id": plan.concept_id,
+            "plan_id": plan.plan_id,
+        }
+        try:
+            rendered = active_renderer.render(
+                runtime.media_path,
+                output,
+                clip,
+                list(runtime.segments),
+                watermark_path,
+                plan,
+            )
+            manifest.funnel["render_attempts"] += 1
+            qc = run_technical_qc(
+                rendered,
+                expected_duration=clip.duration,
+                caption_path=rendered.with_suffix(".ass"),
+                tracking_path=rendered.with_suffix(".tracking.json"),
+                caption_platform=plan.caption_platform,
+                watermark_required=bool(brief.watermark_url),
+                watermark_present=watermark_path is not None,
+                caption_audit_path=rendered.with_suffix(".caption-audit.json"),
+            )
+            qc["concept_id"] = plan.concept_id
+            qc["plan_id"] = plan.plan_id
+            manifest.technical_qc.append(qc)
+            if qc.get("status") != "PASS":
+                attempt.update({"status": "REJECTED", "reason": "technical_qc_failed"})
+                manifest.render_attempts.append(attempt)
+                continue
+            manifest.funnel["technical_qc_pass"] += 1
+
+            boundary = dict(plan.boundary_audit or {})
+            policy = dict(plan.campaign_policy_audit or {})
+            boundary.update({"concept_id": plan.concept_id, "plan_id": plan.plan_id})
+            policy.update({"concept_id": plan.concept_id, "plan_id": plan.plan_id})
+
+            review, review_results = review_rendered_clip(
+                rendered,
+                reviewer,
+                duration=clip.duration,
+                output_dir=run_dir / "visual-review" / rendered.stem / "frames",
+                context={
+                    "plan_id": plan.plan_id,
+                    "concept_id": plan.concept_id,
+                    "opening_strategy": plan.hook_mode,
+                    "source_start": clip.start,
+                    "source_end": clip.end,
+                    "canonical_text": concept_text.get(plan.concept_id, ""),
+                    "technical_qc": qc,
+                    "boundary_audit": boundary,
+                    "campaign_policy_audit": policy,
+                    "visual_strategy": next(
+                        (
+                            item
+                            for item in visual_strategy_payloads
+                            if item.get("quality_moment_id") == plan.concept_id
+                        ),
+                        None,
+                    ),
+                },
+                transitions=_tracking_transitions(rendered),
+                escalation=escalation,
+                escalation_threshold=cfg.visual_escalation_threshold,
+            )
+            review_payload = review.to_dict()
+            review_payload.update(
+                {
+                    "concept_id": plan.concept_id,
+                    "plan_id": plan.plan_id,
+                    "models": [result.model.to_dict() for result in review_results],
+                    "usage": [asdict(result.usage) for result in review_results],
+                }
+            )
+            manifest.editorial_qc.append(review_payload)
+            manifest.run_metadata["visual_inference"]["review"].append(review_payload)
+            boundary["multimodal_editorial_review_decision"] = review.decision
+            policy["multimodal_policy_review_decision"] = review.decision
+            manifest.boundary_qc.append(boundary)
+            manifest.campaign_policy_qc.append(policy)
+            if review.decision != "PASS" or review.issues:
+                manifest.funnel["editorial_review_reject_count"] += 1
+                attempt.update({"status": "REJECTED", "reason": "multimodal_review_failed"})
+                manifest.render_attempts.append(attempt)
+                continue
+
+            _copy_render_sidecars(rendered, run_dir, plan)
+            slug = _safe_slug(plan.plan_id)
+            _write_json(run_dir / "boundary" / f"{slug}.boundary-audit.json", boundary)
+            _write_json(run_dir / "policy" / f"{slug}.policy-audit.json", policy)
+            rendered_payload = _rendered_clip(plan, rendered, video_index[plan.video_id])
+            manifest.rendered_clips.append(rendered_payload)
+            accepted_plans.append(plan)
+            accepted_concepts.add(plan.concept_id)
+            manifest.funnel["render_success"] += 1
+            manifest.funnel["editorial_qc_pass"] += 1
+            if queue_type == "reserve":
+                manifest.funnel["reserve_promotions"] += 1
+            attempt.update({"status": "ACCEPTED"})
+            manifest.render_attempts.append(attempt)
+        except Exception as exc:
+            manifest.errors.append(
+                {
+                    "stage": "render",
+                    "video_id": plan.video_id,
+                    "concept_id": plan.concept_id,
+                    "plan_id": plan.plan_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            attempt.update({"status": "FAILED", "reason": str(exc)})
+            manifest.render_attempts.append(attempt)
+        journal.progress("render_and_review", attempt_number, total=len(render_queue))
+    journal.complete("render_and_review")
+
+    accepted = accepted_quality_plans(accepted_plans)
+    accepted_plan_ids = {item.plan_id for item in accepted}
+    manifest.submission_shortlist = [
+        item
+        for item in manifest.rendered_clips
+        if isinstance(item, dict) and str(item.get("plan_id")) in accepted_plan_ids
+    ]
+    rendered_count = len(manifest.submission_shortlist)
+    manifest.funnel["submission_shortlist"] = rendered_count
+    manifest.actual = {
+        "eligible_quality_moments": eligible,
+        "rendered_finalists": rendered_count,
+        "submission_shortlist": rendered_count,
+        "distinct_finalist_concepts": rendered_count,
+        "distinct_shortlist_concepts": rendered_count,
+    }
+    quality_yield = manifest.run_metadata["quality_yield"]
+    if isinstance(quality_yield, dict):
+        quality_yield.update(
+            {
+                "rendered": rendered_count,
+                "accepted": rendered_count,
+                "unrendered_or_rejected": eligible - rendered_count,
+            }
         )
 
-    manifest.run_metadata["rejection_reason_counts"] = dict(
-        Counter(
-            str(reason) for item in manifest.rejections for reason in (item.get("reasons") or [])
-        )
+    if eligible == 0:
+        manifest.status = "SUCCESS"
+        manifest.status_reason = "no_quality_moments"
+        manifest.publication_state = "COMPLETED_NO_ELIGIBLE_MOMENTS"
+    elif rendered_count == eligible:
+        manifest.status = "SUCCESS"
+        manifest.status_reason = None
+        manifest.publication_state = "READY_FOR_HUMAN_REVIEW"
+    elif rendered_count > 0:
+        manifest.status = "DEGRADED"
+        manifest.status_reason = "partial_quality_yield"
+        manifest.publication_state = "READY_FOR_HUMAN_REVIEW"
+    else:
+        manifest.status = "FAILED"
+        manifest.status_reason = "eligible_quality_moments_not_rendered"
+        manifest.publication_state = "TECHNICALLY_INCOMPLETE"
+
+    manifest.performance = {"elapsed_seconds": round(time.perf_counter() - started, 3)}
+    _finalize_run_artifacts(run_dir, manifest)
+    return run_dir
+
+
+def _finalize_run_artifacts(run_dir: Path, manifest: PipelineManifest) -> None:
+    _write_json(run_dir / "manifest.json", manifest.to_dict())
+    _write_json(run_dir / "funnel.json", manifest.funnel)
+    _write_json(run_dir / "rejections.json", manifest.rejections)
+    _write_json(
+        run_dir / "coverage.json",
+        {
+            "explicit_targets": len(manifest.discovered_videos),
+            "grounded_targets": len(manifest.run_metadata.get("source_hashes", {})),
+            "eligible_quality_moments": int(manifest.targets.get("eligible_quality_moments", 0)),
+            "accepted_quality_moments": len(manifest.submission_shortlist),
+        },
     )
     _write_json(
         run_dir / "editorial-review.json",
         {
-            "status": "PENDING_HUMAN_REVIEW" if render else "NOT_APPLICABLE_PLANNING_ONLY",
-            "required": bool(render and manifest.rendered_clips),
+            "status": (
+                "PENDING_HUMAN_REVIEW"
+                if manifest.submission_shortlist
+                else "NO_ELIGIBLE_OUTPUTS"
+            ),
+            "required": bool(manifest.submission_shortlist),
             "clips": [
                 {
                     "output_path": item.get("output_path"),
                     "plan_id": item.get("plan_id"),
                     "concept_id": item.get("concept_id"),
-                    "technical_qc": "PASS",
                     "human_review": "PENDING",
                 }
-                for item in manifest.rendered_clips
+                for item in manifest.submission_shortlist
+                if isinstance(item, dict)
             ],
         },
     )
-    manifest.run_metadata["compute_budget"] = compute_budget.to_dict()
-    journal.complete("pipeline", checkpoint="manifest.json", message=manifest.status)
-    manifest.performance = telemetry.finish(run_dir)
-    _write_json(run_dir / "funnel.json", manifest.funnel)
-    _write_json(run_dir / "rejections.json", manifest.rejections)
-    _write_json(run_dir / "manifest.json", manifest.to_dict())
-    return run_dir
+    _write_json(run_dir / "performance.json", manifest.performance)
