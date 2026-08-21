@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
-EDITORIAL_PROMPT_VERSION = "editor-v3"
-EDITORIAL_SCHEMA_VERSION = "editorial-json-v2"
+# Stable semantic identifiers. Cache invalidation is content-addressed per task family,
+# not tied to manually incremented release numbers.
+EDITORIAL_PROMPT_VERSION = "editor"
+EDITORIAL_SCHEMA_VERSION = "editorial-json"
 
 _BOUNDARY_STATUSES = ["COMPLETE", "NEEDS_CONTEXT", "INCOMPLETE", "UNCERTAIN"]
 _BOUNDARY_FAILURE_REASONS = [
@@ -72,12 +76,28 @@ def _strict_object(
     }
 
 
-def editorial_json_schema(task: str) -> dict[str, Any]:
-    """Return the machine-enforced JSON Schema for a V11 editorial task.
+def editorial_task_family(task: str) -> str:
+    if task == "episode_editorial_profile":
+        return "episode_editorial_profile"
+    if task.startswith("story_moments:"):
+        return "story_moments"
+    if task == "clip_concepts":
+        return "clip_concepts"
+    if task == "global_concept_comparison":
+        return "global_concept_comparison"
+    if task.startswith("hook_variants:"):
+        return "hook_variants"
+    if task.startswith("edit_plans:"):
+        return "edit_plans"
+    if task.startswith("source_hazards:"):
+        return "source_hazards"
+    if task.startswith("boundary_audit:"):
+        return "boundary_audit"
+    raise ValueError(f"unsupported editorial task: {task!r}")
 
-    This deliberately covers only the eight V11 task families. Unknown tasks fail
-    closed instead of silently falling back to unconstrained text generation.
-    """
+
+def editorial_json_schema(task: str) -> dict[str, Any]:
+    """Return the machine-enforced JSON Schema for a production editorial task."""
 
     if task == "episode_editorial_profile":
         return _strict_object(
@@ -254,22 +274,25 @@ def editorial_json_schema(task: str) -> dict[str, Any]:
             }
         )
 
-    raise ValueError(f"unsupported V11 editorial task for structured generation: {task!r}")
+    raise ValueError(f"unsupported editorial task for structured generation: {task!r}")
 
 
 def editorial_contract(task: str) -> str:
+    # Keep the historical contract unchanged for every task family except EditPlans.
+    # That lets already-paid production inference be reused safely during the one-time
+    # migration away from numbered prompt identifiers.
     common = (
         "Output exactly one compact JSON object, no markdown and no extra keys. "
         "The runtime constrains generation to the task JSON Schema; satisfy its required fields "
         "without adding commentary outside the object. Keep prose fields concise. For range "
         "fields copy the supplied short word_ref values, never reconstruct or abbreviate word_id "
-        "values yourself. Campaign min_clip_seconds is a hard floor and max_clip_seconds is a "
-        "hard ceiling for final EditPlan source ranges. Never invent source wording. Preserve "
-        "source chronology. The first audible content must be understandable without hidden prior "
-        "context, and the ending must resolve the semantic obligation created by the clip. Reject "
-        "incomplete stories rather than amputating them. Generated overlays must not falsify "
-        "spoken material. Campaign rules are hard constraints; exclude sponsor and promo regions "
-        "when policy forbids them. Lower confidence when required evidence is uncertain. "
+        "values yourself. The campaign maximum duration is a ceiling, never a target. Never "
+        "invent source wording. Preserve source chronology. The first audible content must be "
+        "understandable without hidden prior context, and the ending must resolve the semantic "
+        "obligation created by the clip. Reject incomplete stories rather than amputating them. "
+        "Generated overlays must not falsify spoken material. Campaign rules are hard constraints; "
+        "exclude sponsor and promo regions when policy forbids them. Lower confidence when required "
+        "evidence is uncertain. "
     )
     if task == "episode_editorial_profile":
         return common + (
@@ -286,8 +309,6 @@ def editorial_contract(task: str) -> str:
             '"required_followup_context":"<=16 words or empty",'
             '"editorial_reason":"<=20 words","confidence":0.0}]}. '
             "Return at most 8 non-overlapping meaningful moments. Do not copy full word-ID lists. "
-            "Story moments are semantic evidence units and may be shorter than the campaign final "
-            "clip minimum; do not pad them merely to satisfy duration. "
         )
     if task == "clip_concepts":
         return common + (
@@ -298,10 +319,7 @@ def editorial_contract(task: str) -> str:
             '"required_followup_context":"<=16 words or empty",'
             '"narrative_structure":"short label","recommended_duration":20.0,'
             '"visual_dependencies":["short labels"],"confidence":0.0}]}. '
-            "Return at most 12 materially distinct contiguous concepts. A concept may be a short "
-            "semantic core, but recommended_duration is only editorial guidance and is never proof "
-            "that its current source range already satisfies campaign duration. Downstream "
-            "EditPlans must use timestamped source_context_words to choose the actual final range. "
+            "Return at most 12 materially distinct contiguous concepts. "
             "Do not copy full word-ID lists. "
         )
     if task == "global_concept_comparison":
@@ -324,15 +342,16 @@ def editorial_contract(task: str) -> str:
             '"overlay_text":null,"strategy_label":"<=8 words",'
             '"caption_platform":"tiktok","confidence":0.0}]}. '
             "Return at most 4 contiguous chronological plans. source_context_words is the "
-            "authoritative timestamped range evidence. Before emitting each plan, locate its "
-            "source_start_word_id and source_end_word_id in source_context_words and calculate "
-            "duration = end.source_end - start.source_start. Emit the plan only when that measured "
-            "duration is >= campaign.min_clip_seconds and <= campaign.max_clip_seconds. The final "
-            "source range may extend before or after the concept start/end when the concept is "
-            "shorter than the campaign minimum, but the extension must remain one coherent story, "
-            "must preserve chronology, and must contain the spoken hook. Never return only the "
-            "hook unless its measured duration already satisfies the campaign bounds. If no "
-            "coherent duration-valid source range exists, omit that plan instead of returning an "
+            "authoritative timestamped range evidence. campaign.min_clip_seconds is a hard floor "
+            "and campaign.max_clip_seconds is a hard ceiling for each final EditPlan. Before "
+            "emitting each plan, locate source_start_word_id and source_end_word_id in "
+            "source_context_words and calculate duration = end.source_end - start.source_start. "
+            "Emit the plan only when that measured duration is within the campaign bounds. The "
+            "final source range may extend before or after the concept start/end when the concept "
+            "is shorter than the campaign minimum, but the extension must remain one coherent "
+            "story, preserve chronology, and contain the spoken hook. Never return only the hook "
+            "unless its measured duration already satisfies the campaign bounds. If no coherent "
+            "duration-valid source range exists, omit that plan instead of returning an "
             "out-of-bounds range. Do not copy full word-ID lists. "
         )
     if task.startswith("source_hazards:"):
@@ -359,4 +378,37 @@ def editorial_contract(task: str) -> str:
             "end_incomplete, open_question, unresolved_setup, unresolved_payoff, "
             "partial_number_or_unit, followup_context_required, or boundary_uncertain. "
         )
-    raise ValueError(f"unsupported V11 editorial task: {task!r}")
+    raise ValueError(f"unsupported editorial task: {task!r}")
+
+
+def editorial_contract_fingerprint(task: str) -> str:
+    """Content-address the exact contract and schema used for one task family."""
+
+    payload = {
+        "family": editorial_task_family(task),
+        "contract": editorial_contract(task),
+        "schema": editorial_json_schema(task),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+# These hashes represent the historical editor-v2 contracts that are byte-for-byte
+# unchanged here. They allow already-paid cached inference to remain addressable
+# without keeping release numbers as the active identity. EditPlans are intentionally
+# excluded because their contract changed to fix duration-invalid planning.
+_LEGACY_COMPATIBLE_CONTRACT_FINGERPRINTS: dict[str, str] = {
+    "episode_editorial_profile": "6d2b75c7780d60b9678b78f857dd7bf3f134ec3db91cf944daa38283df421b9e",
+    "story_moments": "0104455ca1e1c638dbbde9f63d1cb0d28f04b98155746be5b495b1bbb02e7277",
+    "clip_concepts": "e9c12b30f91eca6b6b06ea88b4084d3a3ed1928dbf4ed10e01f71777b7e2cadc",
+    "global_concept_comparison": "83298dcfaa23766b97e845ead41f547a405bebcf098f247aa234749180506f2d",
+    "hook_variants": "00d567676ed48efda96324dff7e640b0ce0bd16aa6240f831b73a91b55d21c70",
+    "source_hazards": "89f114f0bf756e4677758d24b1b3914da9c143bdeb6401c7d2ee90b6b9f35349",
+    "boundary_audit": "bc01dcb1bd1806abd3df405b85c4c3f4215b6dd38d72084a60c8e6f3a6ac7469",
+}
+
+
+def editorial_legacy_cache_compatible(task: str) -> bool:
+    family = editorial_task_family(task)
+    expected = _LEGACY_COMPATIBLE_CONTRACT_FINGERPRINTS.get(family)
+    return expected is not None and editorial_contract_fingerprint(task) == expected
