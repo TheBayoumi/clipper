@@ -41,8 +41,6 @@ from .editorial import (
     generate_hook_variants,
     mine_clip_concepts,
     select_distinct_concepts,
-    select_render_plan_queue,
-    select_submission_shortlist,
 )
 from .fixture import FixtureSourceClient, SpanMedia
 from .models import (
@@ -87,6 +85,7 @@ from .visual_ai import (
     tracking_transition_sample_times,
 )
 from .youtube import YouTubeClient
+from .yield_policy import group_quality_plans, quality_render_queue
 
 LOGGER = logging.getLogger("clipper")
 
@@ -838,7 +837,7 @@ def run_pipeline(
             )
         telemetry.stop("watermark_download")
 
-    journal.start("source_discovery", message="discovering authorized sources")
+    journal.start("source_discovery", message="resolving explicitly authorized sources")
     telemetry.start("source_discovery")
     direct_candidates = _campaign_media_candidates(brief)
     direct_ids = {video.video_id for video in direct_candidates}
@@ -1258,15 +1257,12 @@ def run_pipeline(
             "model_inference", message=f"completed {model_progress_count[0]} model stages"
         )
     concept_index = {concept.concept_id: concept for concept in selected_concepts}
-    target_finalists = brief.production.final_render_budget
-    primary_plans, reserve_plans = select_render_plan_queue(plans, budget=target_finalists)
+    quality_groups = group_quality_plans(plans)
+    primary_plans = [group.primary for group in quality_groups]
+    reserve_plans = [plan for group in quality_groups for plan in group.reserves]
 
-    manifest.targets = {
-        "rendered_finalists": target_finalists,
-        "submission_shortlist": brief.clip_count,
-        "distinct_finalist_concepts": brief.production.minimum_distinct_finalist_concepts,
-        "distinct_shortlist_concepts": brief.clip_count,
-    }
+    # Targets describe evidence-derived work, never externally required clip quotas.
+    manifest.targets = {"eligible_quality_moments": len(quality_groups)}
     manifest.story_moments = [item.to_dict() for item in all_moments]
     manifest.clip_concepts = [item.to_dict() for item in selected_concepts]
     manifest.hook_variants = [item.to_dict() for item in variants]
@@ -1287,6 +1283,7 @@ def run_pipeline(
         "concepts_after_semantic_dedupe": mining_stats["semantic_representatives"],
         "raw_concepts": raw_count,
         "selected_concepts": selected_count,
+        "quality_moments": len(quality_groups),
         "hook_variants": len(variants),
         "edit_plans": len(plans),
         "render_plans": len(primary_plans),
@@ -1342,6 +1339,14 @@ def run_pipeline(
         ),
         "attrition_flag": bool(raw_count >= 8 and selected_count / max(raw_count, 1) < 0.2),
     }
+    manifest.run_metadata["quality_yield"] = {
+        "eligible_quality_moments": len(quality_groups),
+        "primary_plans": len(primary_plans),
+        "reserve_variants": len(reserve_plans),
+        "rendered": 0,
+        "accepted": 0,
+        "unrendered_or_rejected": 0,
+    }
     source_coverage: dict[str, object] = {}
     for video_id, source_segments in transcripts.items():
         duration = max((segment.end for segment in source_segments), default=0.0)
@@ -1393,20 +1398,19 @@ def run_pipeline(
         _write_json(run_dir / "edit-plans" / f"{_safe_slug(plan.plan_id)}.json", plan.to_dict())
 
     if render and active_renderer:
-        queue = [("primary", plan) for plan in primary_plans] + [
-            ("reserve", plan) for plan in reserve_plans
-        ]
+        queue = list(quality_render_queue(quality_groups))
         accepted_plans: list[EditPlan] = []
-        journal.start("render", total=len(queue), message="rendering preflight-approved finalists")
+        accepted_concepts: set[str] = set()
+        journal.start("render", total=len(queue), message="rendering eligible quality moments")
         for queue_index, (queue_kind, plan) in enumerate(queue, start=1):
+            if plan.concept_id in accepted_concepts:
+                continue
             journal.progress(
                 "render",
                 queue_index - 1,
                 checkpoint=plan.plan_id,
                 message=f"attempting {queue_kind} plan {plan.plan_id}",
             )
-            if len(accepted_plans) >= target_finalists:
-                break
             concept = concept_index[plan.concept_id]
             video = video_index[plan.video_id]
             clip = plan.to_clip_candidate(concept.text)
@@ -1724,6 +1728,7 @@ def run_pipeline(
                 )
                 manifest.rendered_clips.append(rendered.to_dict())
                 accepted_plans.append(plan)
+                accepted_concepts.add(plan.concept_id)
                 for evidence_dir, suffix in (
                     ("captions", ".ass"),
                     ("captions", ".caption-audit.json"),
@@ -1758,21 +1763,19 @@ def run_pipeline(
 
         journal.complete(
             "render",
-            message=f"accepted {len(accepted_plans)} of {target_finalists} target finalists",
-        )
-        shortlist_plans = select_submission_shortlist(
-            accepted_plans,
-            clip_count=brief.clip_count,
-            max_per_source=brief.max_clips_per_source,
+            message=(
+                f"accepted {len(accepted_plans)} of {len(quality_groups)} eligible quality moments"
+            ),
         )
         rendered_by_plan = {
             str(item.get("plan_id")): item
             for item in manifest.rendered_clips
             if item.get("plan_id")
         }
+        # Every accepted quality moment is reviewable; there is no fixed shortlist quota.
         manifest.submission_shortlist = [
             rendered_by_plan[plan.plan_id]
-            for plan in shortlist_plans
+            for plan in accepted_plans
             if plan.plan_id in rendered_by_plan
         ]
         finalist_concepts = {
@@ -1790,26 +1793,32 @@ def run_pipeline(
         manifest.funnel["submission_shortlist"] = len(manifest.submission_shortlist)
         manifest.funnel["distinct_shortlist_concepts"] = len(shortlist_concepts)
         manifest.actual = {
+            "eligible_quality_moments": len(quality_groups),
             "rendered_finalists": len(manifest.rendered_clips),
             "submission_shortlist": len(manifest.submission_shortlist),
             "distinct_finalist_concepts": len(finalist_concepts),
             "distinct_shortlist_concepts": len(shortlist_concepts),
         }
-        if len(manifest.rendered_clips) < target_finalists:
+        quality_yield = manifest.run_metadata["quality_yield"]
+        if isinstance(quality_yield, dict):
+            quality_yield["rendered"] = len(manifest.rendered_clips)
+            quality_yield["accepted"] = len(accepted_concepts)
+            quality_yield["unrendered_or_rejected"] = max(
+                0, len(quality_groups) - len(accepted_concepts)
+            )
+        if not quality_groups:
+            manifest.status = "SUCCESS"
+            manifest.status_reason = "completed_no_eligible_moments"
+            manifest.publication_state = "COMPLETED_NO_ELIGIBLE_MOMENTS"
+        elif not accepted_concepts:
             manifest.status = "FAILED"
-            manifest.status_reason = "render_yield_below_required_target"
-        elif len(finalist_concepts) < brief.production.minimum_distinct_finalist_concepts:
-            manifest.status = "FAILED"
-            manifest.status_reason = "distinct_finalist_concepts_below_required_target"
-        elif len(manifest.submission_shortlist) < brief.clip_count:
-            manifest.status = "FAILED"
-            manifest.status_reason = "submission_shortlist_below_required_target"
-        elif len(shortlist_concepts) < brief.clip_count:
-            manifest.status = "FAILED"
-            manifest.status_reason = "distinct_shortlist_concepts_below_required_target"
+            manifest.status_reason = "all_eligible_quality_moments_failed_render_or_review"
+        elif len(accepted_concepts) < len(quality_groups):
+            manifest.status = "DEGRADED"
+            manifest.status_reason = "partial_quality_yield_after_candidate_failures"
         elif any(item.get("status") != "ACCEPTED" for item in manifest.render_attempts):
             manifest.status = "DEGRADED"
-            manifest.status_reason = "recovered_with_replacement_candidates"
+            manifest.status_reason = "quality_moments_recovered_with_local_reserve_variants"
         else:
             manifest.status = "SUCCESS"
             manifest.status_reason = None
@@ -1840,20 +1849,29 @@ def run_pipeline(
         )
         if manifest.status == "FAILED":
             manifest.publication_state = "FAILED"
+        elif not quality_groups:
+            manifest.publication_state = "COMPLETED_NO_ELIGIBLE_MOMENTS"
         elif technical_complete and boundary_complete and policy_complete and editorial_complete:
             manifest.publication_state = "READY_FOR_HUMAN_REVIEW"
         else:
             manifest.publication_state = "REVIEW_REQUIRED"
     else:
         manifest.actual = {
+            "eligible_quality_moments": len(quality_groups),
             "rendered_finalists": 0,
             "submission_shortlist": 0,
             "distinct_finalist_concepts": 0,
             "distinct_shortlist_concepts": 0,
         }
         manifest.status = "SUCCESS"
-        manifest.status_reason = "planning_only"
-        manifest.publication_state = "TECHNICALLY_INCOMPLETE"
+        manifest.status_reason = (
+            "planning_only_no_eligible_moments" if not quality_groups else "planning_only"
+        )
+        manifest.publication_state = (
+            "COMPLETED_NO_ELIGIBLE_MOMENTS"
+            if not quality_groups
+            else "TECHNICALLY_INCOMPLETE"
+        )
 
     manifest.run_metadata["rejection_reason_counts"] = dict(
         Counter(
@@ -1864,7 +1882,7 @@ def run_pipeline(
         run_dir / "editorial-review.json",
         {
             "status": "PENDING_HUMAN_REVIEW" if render else "NOT_APPLICABLE_PLANNING_ONLY",
-            "required": bool(render),
+            "required": bool(render and manifest.rendered_clips),
             "clips": [
                 {
                     "output_path": item.get("output_path"),
