@@ -14,6 +14,8 @@ from .models import (
 )
 from .providers.base import ModelIdentity
 
+# Frozen compatibility namespace for already-produced cache entries. This is no
+# longer a release/version switch and must not be bumped for prompt edits.
 CACHE_SCHEMA_VERSION = "clipper-v10-analysis-1"
 
 
@@ -75,6 +77,52 @@ def analysis_cache_key(
     )
 
 
+def _model_cache_material(
+    stage: str,
+    model: ModelIdentity,
+    *,
+    sampling: dict[str, object] | None,
+) -> tuple[dict[str, str], str, str | None]:
+    """Resolve content-addressed editorial cache identity with legacy reuse.
+
+    The active editorial identity is version-neutral. For task contracts that are
+    byte-for-byte compatible with the historical editor-v2 contract, we generate
+    the exact old cache material so already-paid inference remains reusable.
+    Changed contracts (notably EditPlans) use the active identity plus an exact
+    contract fingerprint, so only those stages are invalidated.
+    """
+
+    if model.prompt_version != "editor":
+        return model.to_dict(), model.cache_fingerprint(sampling=sampling), None
+
+    try:
+        from .providers.editorial_prompt import (
+            editorial_contract_fingerprint,
+            editorial_legacy_cache_compatible,
+        )
+
+        contract_fingerprint = editorial_contract_fingerprint(stage)
+    except ValueError:
+        return model.to_dict(), model.cache_fingerprint(sampling=sampling), None
+
+    if editorial_legacy_cache_compatible(stage):
+        legacy = ModelIdentity(
+            model.model_id,
+            model.revision,
+            model.quantization,
+            model.inference_engine,
+            "editor-v2",
+            "editorial-json-v2",
+        )
+        return legacy.to_dict(), legacy.cache_fingerprint(sampling=sampling), None
+
+    return (
+        model.to_dict(),
+        model.cache_fingerprint(sampling=sampling),
+        contract_fingerprint,
+    )
+
+
 def model_stage_cache_key(
     stage: str,
     *,
@@ -84,19 +132,26 @@ def model_stage_cache_key(
     payload: object,
     sampling: dict[str, object] | None = None,
 ) -> str:
-    """Cache expensive model output by exact source/model/prompt/schema/config inputs."""
-    return stable_hash(
-        {
-            "schema": CACHE_SCHEMA_VERSION,
-            "stage": stage,
-            "source_hash": source_hash,
-            "model": model.to_dict(),
-            "model_fingerprint": model.cache_fingerprint(sampling=sampling),
-            "campaign": campaign,
-            "payload": payload,
-            "sampling": sampling or {},
-        }
+    """Cache expensive model output by exact source/model/contract/config inputs."""
+
+    model_payload, model_fingerprint, contract_fingerprint = _model_cache_material(
+        stage,
+        model,
+        sampling=sampling,
     )
+    key_payload: dict[str, object] = {
+        "schema": CACHE_SCHEMA_VERSION,
+        "stage": stage,
+        "source_hash": source_hash,
+        "model": model_payload,
+        "model_fingerprint": model_fingerprint,
+        "campaign": campaign,
+        "payload": payload,
+        "sampling": sampling or {},
+    }
+    if contract_fingerprint is not None:
+        key_payload["contract_fingerprint"] = contract_fingerprint
+    return stable_hash(key_payload)
 
 
 class FileCache:
