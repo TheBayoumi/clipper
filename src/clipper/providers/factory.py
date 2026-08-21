@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 
+from ..canonical import CanonicalTimeline, CanonicalWord
+from ..stage_contracts import structural_contract_fingerprint
 from .base import (
     AlignmentProvider,
     DiarizationProvider,
@@ -28,6 +30,15 @@ from .speech import (
     PyannoteDiarizationProvider,
     WhisperXAlignmentProvider,
 )
+
+
+def _canonical_contract() -> str:
+    return structural_contract_fingerprint(
+        "canonical-timeline",
+        CanonicalWord,
+        CanonicalTimeline,
+        exclude_fields=("contract_fingerprint",),
+    )
 
 
 def editorial_and_embedding_providers(
@@ -82,7 +93,7 @@ def editorial_and_embedding_providers(
             "none",
             "modal-sentence-transformers",
             "none",
-            "embedding-v1",
+            "embedding-vector",
         ),
     )
     return editorial, embedding
@@ -105,8 +116,8 @@ def vision_provider(profile_name: str, *, large: bool = False) -> VisionProvider
             os.getenv("CLIPPER_VISION_MODEL_REVISION", "main"),
             os.getenv("CLIPPER_VISION_QUANTIZATION", "none"),
             "modal-transformers",
-            "vision-v2",
-            "vision-json-v1",
+            "vision",
+            "structured-json",
         ),
     )
 
@@ -129,6 +140,7 @@ def speech_providers(
         )
     app = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
     bridge = ModalMediaBridge(os.getenv("CLIPPER_MODAL_MEDIA_VOLUME", "clipper-media-cache"))
+    canonical_contract = _canonical_contract()
     return (
         ModalTranscriptionProvider(
             app_name=app,
@@ -139,7 +151,7 @@ def speech_providers(
                 "int8_float16",
                 "modal-faster-whisper",
                 "none",
-                "canonical-timeline-v1",
+                canonical_contract,
             ),
             media_bridge=bridge,
         ),
@@ -152,7 +164,7 @@ def speech_providers(
                 "none",
                 "modal-whisperx",
                 "none",
-                "canonical-timeline-v1",
+                canonical_contract,
             ),
             media_bridge=bridge,
         ),
@@ -167,7 +179,7 @@ def speech_providers(
                 "none",
                 "modal-pyannote",
                 "none",
-                "canonical-timeline-v1",
+                canonical_contract,
             ),
             media_bridge=bridge,
         ),
