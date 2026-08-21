@@ -41,18 +41,18 @@ def test_modal_editorial_recovers_from_malformed_json_generation() -> None:
     function = Mock()
     function.remote.side_effect = [
         {"error": {"type": "JSONDecodeError", "message": "Expecting ',' delimiter"}},
-        {"value": {"moments": []}, "usage": {}},
+        {"value": {"cores": []}, "usage": {}},
     ]
     payload = {"source": "canonical words"}
 
     with patch.object(provider, "_function", return_value=function):
-        result = provider.complete_json(task="story_moments:3", payload=payload)
+        result = provider.complete_json(task="semantic_cores:3", payload=payload)
 
-    assert result.value == {"moments": []}
+    assert result.value == {"cores": []}
     assert function.remote.call_count == 2
     first_request, second_request = [call.args[0] for call in function.remote.call_args_list]
-    assert first_request == {"task": "story_moments:3", "payload": payload}
-    assert second_request["task"] == "story_moments:3"
+    assert first_request == {"task": "semantic_cores:3", "payload": payload}
+    assert second_request["task"] == "semantic_cores:3"
     assert second_request["payload"] is payload
     assert second_request["generation_recovery_attempt"] == 2
     assert "strict JSON object" in second_request["generation_recovery_instruction"]
@@ -68,7 +68,7 @@ def test_modal_editorial_recovery_is_bounded_and_does_not_retry_runtime_failures
         patch.object(provider, "_function", return_value=function),
         pytest.raises(RuntimeError, match="JSONDecodeError"),
     ):
-        provider.complete_json(task="story_moments:3", payload={})
+        provider.complete_json(task="semantic_cores:3", payload={})
     assert function.remote.call_count == 3
 
     function.reset_mock()
@@ -80,5 +80,5 @@ def test_modal_editorial_recovery_is_bounded_and_does_not_retry_runtime_failures
         patch.object(provider, "_function", return_value=function),
         pytest.raises(RuntimeError, match="OutOfMemoryError"),
     ):
-        provider.complete_json(task="story_moments:3", payload={})
+        provider.complete_json(task="semantic_cores:3", payload={})
     assert function.remote.call_count == 1
