@@ -63,9 +63,7 @@ def _build_window(
     start_index: int,
     end_index: int,
 ) -> FeasibleDeliveryWindow:
-    source_word_ids = tuple(
-        word.word_id for word in timeline.words[start_index : end_index + 1]
-    )
+    source_word_ids = tuple(word.word_id for word in timeline.words[start_index : end_index + 1])
     first = timeline.words[start_index]
     last = timeline.words[end_index]
     return FeasibleDeliveryWindow(
