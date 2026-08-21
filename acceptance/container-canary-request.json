@@ -1,5 +1,0 @@
-{
-  "requested_for": "autonomous-multimodal-editor-final-acceptance",
-  "reason": "Verify exact architecture image, deterministic smoke, GHCR round trip, and deployment evidence before Modal production acceptance.",
-  "requested_after_head": "db71c8246d16951221e69a108c19d67f79f6c401"
-}
