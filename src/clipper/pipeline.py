@@ -1120,6 +1120,9 @@ def run_pipeline(
                         {"video_id": video.video_id, "reason": "full_visual_media_unavailable"}
                     )
             telemetry.start(f"editorial_analysis:{video.video_id}")
+            moments: list[StoryMoment]
+            concepts: list[ClipConcept]
+            source_rejections: list[dict[str, object]]
             if open_planner is not None:
                 # Open production defers semantic discovery to the authoritative quality graph
                 # after every source has canonical + visual evidence. No legacy concept planning
