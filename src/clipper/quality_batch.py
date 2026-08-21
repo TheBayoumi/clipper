@@ -249,9 +249,7 @@ def plan_quality_batch(
                     }
                 )
 
-            source_hazards.extend(
-                {"video_id": video_id, **hazard.to_dict()} for hazard in hazards
-            )
+            source_hazards.extend({"video_id": video_id, **hazard.to_dict()} for hazard in hazards)
             source_cache_hits = hazard_result.stage_cache_hits + planning.stage_cache_hits
             source_executions = hazard_result.stage_executions + planning.stage_executions
             cache_hits += source_cache_hits
@@ -282,8 +280,7 @@ def plan_quality_batch(
 
     if timelines and successful_sources == 0:
         diagnostics = "; ".join(
-            f"{item['video_id']}: {item['error_type']}: {item['error']}"
-            for item in source_failures
+            f"{item['video_id']}: {item['error_type']}: {item['error']}" for item in source_failures
         )
         raise RuntimeError(f"quality graph planning failed for every source: {diagnostics}")
 

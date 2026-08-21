@@ -236,7 +236,6 @@ def test_forbidden_sponsor_source_produces_legitimate_zero_quality_yield(tmp_pat
     assert result.quality_moments == ()
     assert result.source_evidence[timeline.video_id]["status"] == "PASS"
     assert any(
-        item.get("reasons") == ["no_campaign_legal_complete_window"]
-        for item in result.rejections
+        item.get("reasons") == ["no_campaign_legal_complete_window"] for item in result.rejections
     )
     assert not any(task.startswith("quality_windows:") for task in provider.tasks)
