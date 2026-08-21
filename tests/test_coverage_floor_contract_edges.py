@@ -140,7 +140,9 @@ def test_source_hazard_classifier_rejects_bad_configuration_and_mismatched_evide
     tmp_path: Path,
 ) -> None:
     with pytest.raises(ValueError, match="at least 200"):
-        SourceHazardClassifier(_UnusedEditorial(), DagStore(tmp_path / "small"), max_words_per_chunk=199)
+        SourceHazardClassifier(
+            _UnusedEditorial(), DagStore(tmp_path / "small"), max_words_per_chunk=199
+        )
     with pytest.raises(ValueError, match="overlap must be smaller"):
         SourceHazardClassifier(
             _UnusedEditorial(),
