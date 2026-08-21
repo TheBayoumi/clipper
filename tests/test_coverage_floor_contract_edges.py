@@ -1,4 +1,7 @@
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -7,11 +10,12 @@ from clipper.canonical import CanonicalTimeline, CanonicalWord
 from clipper.dag import DagStore
 from clipper.models import CampaignBrief
 from clipper.multimodal_timeline import MultimodalTimeline
-from clipper.providers.base import ModelIdentity, ProviderResult
-from clipper.quality_batch import RecordingEditorialProvider
+from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
+from clipper.quality_batch import RecordingEditorialProvider, plan_quality_batch
 from clipper.source_hazards import SourceHazardClassifier
 from clipper.stage_contracts import StageIdentity
 from clipper.story_graph import NarrativeEnvelope, SemanticCore
+from clipper.visual import VisualTimeline
 
 
 class _UnusedEditorial:
@@ -21,6 +25,17 @@ class _UnusedEditorial:
         self, *, task: str, payload: dict[str, object]
     ) -> ProviderResult[dict[str, object]]:
         raise AssertionError((task, payload))
+
+
+class _StaticEditorial:
+    identity = ModelIdentity("static", "rev", "none", "test", "editor", "schema")
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+    def complete_json(self, *, task: str, payload: dict[str, object]) -> ProviderResult[Any]:
+        del task, payload
+        return ProviderResult(self.value, self.identity, InferenceUsage("test", "now", 0.0))
 
 
 def _timeline(count: int = 220) -> CanonicalTimeline:
@@ -178,3 +193,74 @@ def test_source_hazard_classifier_fails_closed_when_model_inference_errors(tmp_p
     assert all(item.evidence == ("source_hazard_classification_failed",) for item in result.hazards)
     assert all(item["decision"] == "ESCALATE" for item in result.rejections)
     assert all(item["reasons"] == ["policy_uncertain"] for item in result.rejections)
+
+
+@pytest.mark.parametrize("value", [[], {"segments": "not-a-list"}])
+def test_source_hazard_classifier_fails_closed_on_invalid_model_shapes(
+    tmp_path: Path, value: Any
+) -> None:
+    classifier = SourceHazardClassifier(
+        _StaticEditorial(value),
+        DagStore(tmp_path / f"invalid-{type(value).__name__}"),
+        max_words_per_chunk=200,
+        chunk_overlap_words=20,
+    )
+    result = classifier.classify(_acceptance_brief(), _timeline(10), multimodal=None)
+    assert len(result.hazards) == 1
+    assert result.hazards[0].classification.value == "unknown"
+    assert result.rejections[0]["decision"] == "ESCALATE"
+
+
+def test_quality_batch_rejects_ineligible_quality_moment_without_quota_fill(tmp_path: Path) -> None:
+    hazard_result = SimpleNamespace(
+        rejections=(),
+        hazards=(),
+        stage_cache_hits=0,
+        stage_executions=0,
+        to_dict=lambda: {},
+    )
+    planning = SimpleNamespace(
+        rejections=(),
+        quality_moments=(SimpleNamespace(quality_moment_id="qm-1"),),
+        stage_cache_hits=0,
+        stage_executions=0,
+        to_dict=lambda: {},
+    )
+    with (
+        patch("clipper.quality_batch._requires_source_visual_policy", return_value=False),
+        patch("clipper.quality_batch.SourceHazardClassifier.classify", return_value=hazard_result),
+        patch("clipper.quality_batch.AutonomousQualityPlanner.plan", return_value=planning),
+        patch("clipper.quality_batch.adapt_quality_moment", return_value=None),
+    ):
+        result = plan_quality_batch(
+            _acceptance_brief(),
+            {"video": _timeline(10)},
+            {},
+            _UnusedEditorial(),
+            dag_root=tmp_path / "batch",
+            max_words_per_chunk=200,
+            chunk_overlap_words=20,
+        )
+
+    assert result.plans == ()
+    assert result.quality_moments == ()
+    assert result.rejections[-1]["stage"] == "quality_moment_pre_render_eligibility"
+    assert result.rejections[-1]["decision"] == "REJECT"
+
+
+def test_quality_batch_fails_closed_on_insufficient_required_visual_coverage(tmp_path: Path) -> None:
+    timeline = _timeline(10)
+    visual = VisualTimeline("video", "source", ())
+    with (
+        patch("clipper.quality_batch._requires_source_visual_policy", return_value=True),
+        pytest.raises(RuntimeError, match="broader source visual evidence coverage"),
+    ):
+        plan_quality_batch(
+            _acceptance_brief(),
+            {"video": timeline},
+            {"video": visual},
+            _UnusedEditorial(),
+            dag_root=tmp_path / "visual-policy",
+            max_words_per_chunk=200,
+            chunk_overlap_words=20,
+        )
