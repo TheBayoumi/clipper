@@ -1,5 +1,12 @@
+import pytest
+
 from clipper.models import EditPlan, SourceSpan
-from clipper.yield_policy import accepted_quality_plans, group_quality_plans, quality_render_queue
+from clipper.yield_policy import (
+    QualityPlanGroup,
+    accepted_quality_plans,
+    group_quality_plans,
+    quality_render_queue,
+)
 
 
 def _plan(concept: str, plan_id: str, score: float) -> EditPlan:
@@ -67,3 +74,12 @@ def test_accepted_quality_plans_never_count_two_variants_as_two_moments() -> Non
     )
 
     assert [plan.plan_id for plan in accepted] == ["c1-b", "c2"]
+
+
+def test_quality_plan_group_rejects_invalid_identity_and_cross_concept_plans() -> None:
+    with pytest.raises(ValueError, match="requires a concept_id"):
+        QualityPlanGroup("", (_plan("c1", "p1", 1.0),))
+    with pytest.raises(ValueError, match="at least one plan"):
+        QualityPlanGroup("c1", ())
+    with pytest.raises(ValueError, match="another concept"):
+        QualityPlanGroup("c1", (_plan("c2", "p2", 1.0),))
