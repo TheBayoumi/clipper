@@ -1,10 +1,10 @@
-# retry: 2
+# retry: 3
 name: Temporary guarded mypy contract cleanup
 
 on:
-  push:
-    branches: [feat/word-reveal-face-tracking]
-    paths: [".github/workflows/temporary-mypy-contract-cleanup.yml"]
+  pull_request:
+    branches: [main]
+    types: [synchronize]
 
 permissions:
   contents: write
@@ -102,16 +102,26 @@ class DiscoveryQuery:
         ids = list(dict.fromkeys(ids))[: request.limit]
         if not ids:
             return []
-        details = self._api_get("videos", {"part": "snippet,statistics,contentDetails", "id": ",".join(ids)})
+        details = self._api_get(
+            "videos", {"part": "snippet,statistics,contentDetails", "id": ",".join(ids)}
+        )
         return [self._candidate_from_api(item) for item in _object_list(details.get("items"))]
 
 ''')
           replace_block("src/clipper/youtube.py", "    def _discover_ytdlp(self, brief: CampaignBrief) -> list[VideoCandidate]:\n", "    def download_subtitles(\n", '''    def _discover_ytdlp(self, request: DiscoveryQuery) -> list[VideoCandidate]:
         if not shutil.which("yt-dlp"):
             raise YouTubeError("YOUTUBE_API_KEY is unset and yt-dlp is not installed")
-        command = ["yt-dlp", "--dump-single-json", "--skip-download", "--no-warnings", f"ytsearch{request.limit}:{request.query}"]
+        command = [
+            "yt-dlp",
+            "--dump-single-json",
+            "--skip-download",
+            "--no-warnings",
+            f"ytsearch{request.limit}:{request.query}",
+        ]
         payload = _json_object(_run(command, timeout=180).stdout)
-        candidates = [self._candidate_from_ytdlp(entry) for entry in _object_list(payload.get("entries"))]
+        candidates = [
+            self._candidate_from_ytdlp(entry) for entry in _object_list(payload.get("entries"))
+        ]
         if request.channel_ids:
             allowed_channels = set(request.channel_ids)
             candidates = [item for item in candidates if item.channel_id in allowed_channels]
@@ -123,7 +133,9 @@ class DiscoveryQuery:
           replace_once("src/clipper/cli.py", "from .youtube import YouTubeClient\n", "from .youtube import DiscoveryQuery, YouTubeClient\n")
           replace_once("src/clipper/cli.py", '''    discover = subparsers.add_parser("discover", help="inspect authorized source candidates")
     discover.add_argument("--brief", required=True, type=Path)
-''', '''    discover = subparsers.add_parser("discover", help="search candidates without changing production targets")
+''', '''    discover = subparsers.add_parser(
+        "discover", help="search candidates without changing production targets"
+    )
     discover.add_argument("--query", required=True)
     discover.add_argument("--channel-id", action="append", default=[])
     discover.add_argument("--limit", type=int, default=20)
@@ -175,7 +187,9 @@ class DiscoveryQuery:
                 os.getenv("CLIPPER_VISUAL_ESCALATION_THRESHOLD", "0.75")
             ),
             quality_chunk_words=int(os.getenv("CLIPPER_QUALITY_CHUNK_WORDS", "900")),
-            quality_chunk_overlap_words=int(os.getenv("CLIPPER_QUALITY_CHUNK_OVERLAP_WORDS", "120")),
+            quality_chunk_overlap_words=int(
+                os.getenv("CLIPPER_QUALITY_CHUNK_OVERLAP_WORDS", "120")
+            ),
 ''')
           replace_once("src/clipper/pipeline.py", "def _funnel_template() -> dict[str, int]:\n", "def _funnel_template() -> dict[str, int | float | bool]:\n")
           replace_once("src/clipper/pipeline.py", '''            visual_timelines=visual_timelines,
