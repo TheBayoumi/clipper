@@ -34,28 +34,10 @@ def _string_map(data: dict[str, Any], key: str) -> dict[str, str]:
     }
 
 
-HookMode = Literal[
-    "direct",
-    "payoff_first",
-    "curiosity_text",
-    "question",
-    "number",
-    "conflict",
-    "strong_opinion",
-]
-BeatType = Literal[
-    "hold",
-    "punch_in",
-    "punch_out",
-    "speaker_switch",
-    "reaction",
-    "source_cut",
-    "text_emphasis",
-    "broll",
-    "screenshot",
-    "graphic",
-    "payoff_hold",
-]
+# Editorial/opening/beat labels are intentionally free-form. Their meaning is inferred
+# from source evidence by the model/VLM; Python never enumerates desirable hook categories.
+HookMode = str
+BeatType = str
 PolicyAction = Literal["allow", "forbid", "escalate"]
 ForeignLogoPolicy = Literal["allow", "forbid", "escalate"]
 
@@ -320,198 +302,19 @@ class AcceptancePolicy:
 
 
 @dataclass(frozen=True, slots=True)
-class ProductionConfig:
-    candidate_pool_size: int = 36
-    concept_count: int = 10
-    variants_per_concept: int = 1
-    final_render_budget: int = 1
-    minimum_distinct_finalist_concepts: int = 1
-
-    @classmethod
-    def from_dict(cls, value: object) -> ProductionConfig:
-        if value is None:
-            return cls()
-        if not isinstance(value, dict):
-            raise BriefValidationError("production must be an object")
-        config = cls(
-            candidate_pool_size=int(value.get("candidate_pool_size", 36)),
-            concept_count=int(value.get("concept_count", 10)),
-            variants_per_concept=int(value.get("variants_per_concept", 1)),
-            final_render_budget=int(value.get("final_render_budget", 1)),
-            minimum_distinct_finalist_concepts=int(
-                value.get("minimum_distinct_finalist_concepts", 1)
-            ),
-        )
-        if not 10 <= config.candidate_pool_size <= 100:
-            raise BriefValidationError("production.candidate_pool_size must be between 10 and 100")
-        if not 1 <= config.concept_count <= 30:
-            raise BriefValidationError("production.concept_count must be between 1 and 30")
-        if not 1 <= config.variants_per_concept <= 6:
-            raise BriefValidationError("production.variants_per_concept must be between 1 and 6")
-        if not 1 <= config.final_render_budget <= 24:
-            raise BriefValidationError("production.final_render_budget must be between 1 and 24")
-        if not 1 <= config.minimum_distinct_finalist_concepts <= config.final_render_budget:
-            raise BriefValidationError(
-                "production.minimum_distinct_finalist_concepts must be between 1 "
-                "and final_render_budget"
-            )
-        if config.minimum_distinct_finalist_concepts > config.concept_count:
-            raise BriefValidationError(
-                "production.minimum_distinct_finalist_concepts cannot exceed concept_count"
-            )
-        return config
-
-
-@dataclass(frozen=True, slots=True)
-class DiversityConfig:
-    semantic_similarity_threshold: float = 0.72
-    max_concepts_per_topic: int = 2
-
-    @classmethod
-    def from_dict(cls, value: object) -> DiversityConfig:
-        if value is None:
-            return cls()
-        if not isinstance(value, dict):
-            raise BriefValidationError("diversity must be an object")
-        config = cls(
-            semantic_similarity_threshold=float(value.get("semantic_similarity_threshold", 0.72)),
-            max_concepts_per_topic=int(value.get("max_concepts_per_topic", 2)),
-        )
-        if not 0.3 <= config.semantic_similarity_threshold <= 0.95:
-            raise BriefValidationError(
-                "diversity.semantic_similarity_threshold must be between 0.3 and 0.95"
-            )
-        if not 1 <= config.max_concepts_per_topic <= 5:
-            raise BriefValidationError("diversity.max_concepts_per_topic must be between 1 and 5")
-        return config
-
-
-@dataclass(frozen=True, slots=True)
-class HooksConfig:
-    enabled: tuple[HookMode, ...] = (
-        "direct",
-        "curiosity_text",
-        "question",
-        "number",
-        "conflict",
-        "strong_opinion",
-    )
-
-    @classmethod
-    def from_dict(cls, value: object) -> HooksConfig:
-        if value is None:
-            return cls()
-        if not isinstance(value, dict):
-            raise BriefValidationError("hooks must be an object")
-        raw = value.get("enabled", list(cls().enabled))
-        if not isinstance(raw, (list, tuple)) or not all(isinstance(item, str) for item in raw):
-            raise BriefValidationError("hooks.enabled must be a list or tuple of strings")
-        allowed = set(cls().enabled) | {"payoff_first"}
-        enabled: list[HookMode] = []
-        for item in raw:
-            normalized = item.strip().lower()
-            if normalized not in allowed:
-                raise BriefValidationError(f"unsupported hook mode: {normalized}")
-            enabled.append(cast(HookMode, normalized))
-        if not enabled:
-            raise BriefValidationError("hooks.enabled must contain at least one mode")
-        return cls(tuple(dict.fromkeys(enabled)))
-
-
-@dataclass(frozen=True, slots=True)
-class EditorialScoreWeights:
-    hook_strength: float = 1.2
-    curiosity: float = 0.95
-    payoff_strength: float = 1.15
-    standalone_clarity: float = 1.05
-    emotional_energy: float = 0.55
-    information_value: float = 0.75
-    controversy_or_tension: float = 0.45
-    quoteability: float = 0.65
-    specificity: float = 0.7
-    campaign_relevance: float = 1.25
-    story_completeness: float = 1.1
-    retention_potential: float = 1.2
-
-    @classmethod
-    def from_dict(cls, value: object) -> EditorialScoreWeights:
-        if value is None:
-            return cls()
-        if not isinstance(value, dict):
-            raise BriefValidationError("editorial.score_weights must be an object")
-        defaults = asdict(cls())
-        unknown = set(value) - set(defaults)
-        if unknown:
-            raise BriefValidationError(f"unsupported editorial score weight: {sorted(unknown)[0]}")
-        values = {key: float(value.get(key, default)) for key, default in defaults.items()}
-        if any(weight <= 0 or weight > 5 for weight in values.values()):
-            raise BriefValidationError("editorial score weights must be between 0 and 5")
-        return cls(**values)
-
-    def to_dict(self) -> dict[str, float]:
-        return asdict(self)
-
-
-@dataclass(frozen=True, slots=True)
-class EditorialConfig:
-    platform: str = "tiktok"
-    punch_ins_enabled: bool = False
-    max_punch_ins_per_clip: int = 0
-    semantic_endings: bool = True
-    post_speech_tail_seconds: float = 0.25
-    caption_max_lines: int = 2
-    score_weights: EditorialScoreWeights = field(default_factory=EditorialScoreWeights)
-
-    @classmethod
-    def from_dict(cls, value: object) -> EditorialConfig:
-        if value is None:
-            return cls()
-        if not isinstance(value, dict):
-            raise BriefValidationError("editorial must be an object")
-        config = cls(
-            platform=str(value.get("platform", "tiktok")).strip().lower(),
-            punch_ins_enabled=bool(value.get("punch_ins_enabled", False)),
-            max_punch_ins_per_clip=int(value.get("max_punch_ins_per_clip", 0)),
-            semantic_endings=bool(value.get("semantic_endings", True)),
-            post_speech_tail_seconds=float(value.get("post_speech_tail_seconds", 0.25)),
-            caption_max_lines=int(value.get("caption_max_lines", 2)),
-            score_weights=EditorialScoreWeights.from_dict(value.get("score_weights")),
-        )
-        if config.platform not in {
-            "tiktok",
-            "instagram_reels",
-            "youtube_shorts",
-            "generic_vertical",
-        }:
-            raise BriefValidationError("editorial.platform is unsupported")
-        if not 0 <= config.max_punch_ins_per_clip <= 3:
-            raise BriefValidationError("editorial.max_punch_ins_per_clip must be between 0 and 3")
-        if not 0.0 <= config.post_speech_tail_seconds <= 1.0:
-            raise BriefValidationError("editorial.post_speech_tail_seconds must be between 0 and 1")
-        if config.caption_max_lines not in {1, 2}:
-            raise BriefValidationError("editorial.caption_max_lines must be 1 or 2")
-        return config
-
-
-@dataclass(frozen=True, slots=True)
 class CampaignBrief:
+    """Runtime campaign policy. Editorial algorithms and output quotas do not belong here."""
+
     campaign_id: str
     title: str
     objective: str
-    keywords: list[str]
-    source_channel_ids: list[str] = field(default_factory=list)
     allowed_video_ids: list[str] = field(default_factory=list)
+    source_channel_ids: list[str] = field(default_factory=list)
     source_media_urls: dict[str, str] = field(default_factory=dict)
-    negative_keywords: list[str] = field(default_factory=list)
-    required_phrases: list[str] = field(default_factory=list)
     language: str = "en"
     region_code: str = "US"
-    clip_count: int = 3
     min_clip_seconds: float = 20.0
     max_clip_seconds: float = 45.0
-    source_limit: int = 8
-    max_clips_per_source: int = 1
-    published_after: str | None = None
     rights_confirmed: bool = False
     attribution_required: bool = True
     watermark_text: str | None = None
@@ -519,39 +322,45 @@ class CampaignBrief:
     required_hashtags: list[str] = field(default_factory=list)
     posting_requirements: list[str] = field(default_factory=list)
     acceptance_policy: AcceptancePolicy = field(default_factory=AcceptancePolicy)
-    production: ProductionConfig = field(default_factory=ProductionConfig)
-    diversity: DiversityConfig = field(default_factory=DiversityConfig)
-    hooks: HooksConfig = field(default_factory=HooksConfig)
-    editorial: EditorialConfig = field(default_factory=EditorialConfig)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CampaignBrief:
         if not isinstance(data, dict):
             raise BriefValidationError("brief root must be an object")
-        required = ("campaign_id", "title", "objective", "keywords")
+        required = ("campaign_id", "title", "objective")
         missing = [key for key in required if not data.get(key)]
         if missing:
             raise BriefValidationError(f"missing required fields: {', '.join(missing)}")
+        obsolete = {
+            "keywords",
+            "negative_keywords",
+            "required_phrases",
+            "clip_count",
+            "source_limit",
+            "max_clips_per_source",
+            "published_after",
+            "production",
+            "diversity",
+            "hooks",
+            "editorial",
+        }
+        present = sorted(obsolete & set(data))
+        if present:
+            raise BriefValidationError(
+                "obsolete editorial/discovery fields are not accepted by the production brief: "
+                + ", ".join(present)
+            )
         brief = cls(
             campaign_id=str(data["campaign_id"]).strip(),
             title=str(data["title"]).strip(),
             objective=str(data["objective"]).strip(),
-            keywords=_string_list(data, "keywords"),
             source_channel_ids=_string_list(data, "source_channel_ids"),
             allowed_video_ids=_string_list(data, "allowed_video_ids"),
             source_media_urls=_string_map(data, "source_media_urls"),
-            negative_keywords=_string_list(data, "negative_keywords"),
-            required_phrases=_string_list(data, "required_phrases"),
             language=str(data.get("language", "en")).strip() or "en",
             region_code=str(data.get("region_code", "US")).strip().upper() or "US",
-            clip_count=int(data.get("clip_count", 3)),
             min_clip_seconds=float(data.get("min_clip_seconds", 20.0)),
             max_clip_seconds=float(data.get("max_clip_seconds", 45.0)),
-            source_limit=int(data.get("source_limit", 8)),
-            max_clips_per_source=int(data.get("max_clips_per_source", 1)),
-            published_after=(
-                str(data["published_after"]).strip() if data.get("published_after") else None
-            ),
             rights_confirmed=bool(data.get("rights_confirmed", False)),
             attribution_required=bool(data.get("attribution_required", True)),
             watermark_text=(
@@ -563,27 +372,15 @@ class CampaignBrief:
             required_hashtags=_string_list(data, "required_hashtags"),
             posting_requirements=_string_list(data, "posting_requirements"),
             acceptance_policy=AcceptancePolicy.from_dict(data.get("acceptance_policy")),
-            production=ProductionConfig.from_dict(data.get("production")),
-            diversity=DiversityConfig.from_dict(data.get("diversity")),
-            hooks=HooksConfig.from_dict(data.get("hooks")),
-            editorial=EditorialConfig.from_dict(data.get("editorial")),
         )
         brief.validate()
         return brief
 
     def validate(self) -> None:
-        if not self.keywords:
-            raise BriefValidationError("keywords must contain at least one value")
         if len(self.region_code) != 2:
             raise BriefValidationError("region_code must be a two-letter ISO country code")
-        if self.clip_count < 1 or self.clip_count > 20:
-            raise BriefValidationError("clip_count must be between 1 and 20")
-        if self.source_limit < 1 or self.source_limit > 50:
-            raise BriefValidationError("source_limit must be between 1 and 50")
-        if self.max_clips_per_source < 1:
-            raise BriefValidationError("max_clips_per_source must be at least 1")
-        if self.min_clip_seconds < 8:
-            raise BriefValidationError("min_clip_seconds must be at least 8")
+        if self.min_clip_seconds <= 0:
+            raise BriefValidationError("min_clip_seconds must be positive")
         if self.max_clip_seconds > 180:
             raise BriefValidationError("max_clip_seconds must be at most 180")
         if self.min_clip_seconds >= self.max_clip_seconds:
@@ -597,19 +394,13 @@ class CampaignBrief:
                 )
             if not media_url.startswith("https://"):
                 raise BriefValidationError("source_media_urls values must use https")
-        if not self.source_channel_ids and not self.allowed_video_ids:
-            raise BriefValidationError(
-                "provide source_channel_ids or allowed_video_ids; unrestricted scraping is disabled"
-            )
+        if not self.allowed_video_ids:
+            raise BriefValidationError("production requires at least one explicit target video")
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["acceptance_policy"] = self.acceptance_policy.to_dict()
         return data
-
-    @property
-    def search_query(self) -> str:
-        return " ".join([self.title, *self.keywords]).strip()
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,18 +482,16 @@ class ClipCandidate:
 
 @dataclass(frozen=True, slots=True)
 class EditorialScores:
-    hook_strength: float
-    curiosity: float
-    payoff_strength: float
-    standalone_clarity: float
-    emotional_energy: float
-    information_value: float
-    controversy_or_tension: float
-    quoteability: float
-    specificity: float
-    campaign_relevance: float
-    story_completeness: float
-    retention_potential: float
+    """Compatibility quality evidence with no predefined editorial dimensions."""
+
+    quality: float
+    confidence: float
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.quality <= 10.0:
+            raise ValueError("editorial quality must be between 0 and 10")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("editorial confidence must be between 0 and 1")
 
     def to_dict(self) -> dict[str, float]:
         return asdict(self)
@@ -772,9 +561,11 @@ class SourceSpan:
 
 @dataclass(frozen=True, slots=True)
 class HookVariant:
+    """Renderer compatibility object; mode is a free-form model-derived opening rationale."""
+
     variant_id: str
     concept_id: str
-    mode: HookMode
+    mode: str
     source_spans: tuple[SourceSpan, ...]
     overlay_text: str | None
     score: float
@@ -797,15 +588,17 @@ class HookVariant:
 class EditorialBeat:
     start: float
     end: float
-    beat_type: BeatType
+    beat_type: str
     strength: float = 0.0
     text: str | None = None
 
     def __post_init__(self) -> None:
         if self.start < 0 or self.end <= self.start:
             raise ValueError("editorial beat timestamps are invalid")
-        if not 0.0 <= self.strength <= 0.2:
-            raise ValueError("editorial beat strength must be between 0 and 0.2")
+        if not 0.0 <= self.strength <= 1.0:
+            raise ValueError("editorial beat strength must be between 0 and 1")
+        if not self.beat_type.strip():
+            raise ValueError("editorial beat requires a model-derived type/rationale")
 
 
 @dataclass(frozen=True, slots=True)
@@ -814,7 +607,7 @@ class EditPlan:
     video_id: str
     concept_id: str
     variant_id: str
-    hook_mode: HookMode
+    hook_mode: str
     source_spans: tuple[SourceSpan, ...]
     hook_text: str | None
     beats: tuple[EditorialBeat, ...]
@@ -847,7 +640,7 @@ class EditPlan:
             end=span.end,
             text=text,
             score=self.score,
-            reasons=(f"concept={self.concept_id}", f"hook={self.hook_mode}"),
+            reasons=(f"concept={self.concept_id}", f"opening={self.hook_mode}"),
         )
 
 
