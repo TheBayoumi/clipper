@@ -11,4 +11,4 @@ extend = "pyproject.toml"
 "src/clipper/hilp.py" = ["I001"]
 
 [format]
-exclude = ["tests/test_modal_execution.py"]
+exclude = ["tests/test_modal_execution.py", "src/clipper/pipeline.py"]
