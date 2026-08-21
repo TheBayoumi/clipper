@@ -25,6 +25,12 @@ class FakeGenerator:
         return output_path
 
 
+class BrokenGenerator(FakeGenerator):
+    def generate(self, request: GeneratedMediaRequest, output_path: Path) -> Path:
+        self.calls += 1
+        return output_path.with_name("wrong.mp4")
+
+
 def _brief(policy: str) -> CampaignBrief:
     return CampaignBrief.from_dict(
         {
@@ -32,6 +38,7 @@ def _brief(policy: str) -> CampaignBrief:
             "title": "Campaign",
             "objective": "Test",
             "keywords": ["test"],
+            "allowed_video_ids": ["video"],
             "rights_confirmed": True,
             "acceptance_policy": {
                 "generated_media": {"ai_generated_source_video": policy},
@@ -69,11 +76,26 @@ def test_allow_policy_records_generated_asset_provenance(tmp_path: Path) -> None
     assert provider.calls == 1
     assert asset.path == output
     assert asset.sha256
-    assert asset.to_dict()["provider"] == "fake"
+    serialized = asset.to_dict()
+    assert serialized["provider"] == "fake"
+    assert serialized["path"] == str(output)
 
 
 def test_generated_media_request_must_be_silent_and_source_grounded() -> None:
+    with pytest.raises(ValueError, match="moment identity and prompt"):
+        GeneratedMediaRequest("", "prompt", ("evidence",))
+    with pytest.raises(ValueError, match="moment identity and prompt"):
+        GeneratedMediaRequest("quality:1", "", ("evidence",))
     with pytest.raises(ValueError, match="source evidence"):
         GeneratedMediaRequest("quality:1", "prompt", ())
     with pytest.raises(ValueError, match="silent"):
         GeneratedMediaRequest("quality:1", "prompt", ("evidence",), silent=False)
+
+
+def test_allow_policy_fails_closed_when_provider_does_not_return_requested_artifact(
+    tmp_path: Path,
+) -> None:
+    provider = BrokenGenerator()
+    with pytest.raises(RuntimeError, match="did not produce"):
+        generate_policy_gated_media(_brief("allow"), provider, _request(), tmp_path / "asset.mp4")
+    assert provider.calls == 1
