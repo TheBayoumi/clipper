@@ -4,5 +4,7 @@ extend = "pyproject.toml"
 # Keep this trigger aligned with liveness, visual-runtime, grounded-editorial, and JSON-recovery acceptance.
 [lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "E501"]
+"scripts/modal_open_models.py" = ["I001"]
 "scripts/modal_pipeline.py" = ["RUF001", "S108"]
+"src/clipper/providers/editorial_prompt.py" = ["E501"]
 "src/clipper/hilp.py" = ["I001"]
