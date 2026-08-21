@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from itertools import pairwise
 from typing import Any, Literal
 
 from .multimodal_timeline import MultimodalEvent, MultimodalTimeline
 from .quality_moments import QualityMoment
+from .stage_contracts import structural_contract_fingerprint
 
 VisualSource = Literal[
     "original_source",
@@ -43,9 +44,19 @@ class VisualStrategy:
     quality_moment_id: str
     beats: tuple[VisualBeat, ...]
     source_first: bool = True
-    schema_version: str = "visual-strategy-v1"
+    contract_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "contract_fingerprint",
+            structural_contract_fingerprint(
+                "visual-strategy",
+                VisualBeat,
+                VisualStrategy,
+                exclude_fields=("contract_fingerprint",),
+            ),
+        )
         if not self.quality_moment_id.strip():
             raise ValueError("visual strategy requires quality_moment_id")
         if not self.beats:
@@ -57,7 +68,7 @@ class VisualStrategy:
         return {
             "quality_moment_id": self.quality_moment_id,
             "source_first": self.source_first,
-            "schema_version": self.schema_version,
+            "contract_fingerprint": self.contract_fingerprint,
             "beats": [beat.to_dict() for beat in self.beats],
         }
 
@@ -75,7 +86,6 @@ def derive_visual_strategy(
     timeline: MultimodalTimeline,
 ) -> VisualStrategy:
     """Prefer truthful original-source evidence before any enrichment mechanism."""
-
     window = moment.delivery_window
     if timeline.video_id != window.video_id or timeline.source_hash != window.source_hash:
         raise ValueError("quality moment and multimodal timeline reference different sources")
