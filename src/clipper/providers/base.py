@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Generic, Literal, Protocol, TypeVar
 
 from ..canonical import CanonicalTimeline
+from ..stage_contracts import content_fingerprint
 
 T = TypeVar("T")
 ProfileName = Literal["local-lite", "balanced", "quality"]
@@ -19,12 +18,11 @@ class ModelIdentity:
     quantization: str
     inference_engine: str
     prompt_version: str = "none"
-    schema_version: str = "v1"
+    schema_version: str = "none"
 
     def cache_fingerprint(self, *, sampling: dict[str, Any] | None = None) -> str:
-        payload = {**asdict(self), "sampling": sampling or {}}
-        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode()).hexdigest()
+        """Fingerprint exact execution identity and contracts without release counters."""
+        return content_fingerprint({**asdict(self), "sampling": sampling or {}})
 
     def to_dict(self) -> dict[str, str]:
         return asdict(self)
