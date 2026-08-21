@@ -85,6 +85,8 @@ def _source_text(timeline: CanonicalTimeline, word_ids: tuple[str, ...]) -> str:
 
 
 def _compact_campaign(brief: CampaignBrief) -> dict[str, object]:
+    # Keep the historical cache material while the external campaign schema migrates away
+    # from output quotas. These compatibility values are not production yield targets.
     return {
         "campaign_id": brief.campaign_id,
         "title": brief.title,
@@ -598,13 +600,7 @@ class AutonomousEditorialPlanner:
         concept: GroundedClipConcept,
         grounded_moments: dict[str, GroundedStoryMoment],
     ) -> str | None:
-        """Resolve model-local moment aliases using grounded source-word evidence.
-
-        Story-moment generation is chunked, so local IDs such as ``m1`` may be reused
-        by several chunks. Exact namespaced IDs remain authoritative. A local alias is
-        accepted only when it has one suffix match, or when the concept's grounded
-        source words select a unique best-overlap suffix match. Ties remain rejected.
-        """
+        """Resolve model-local moment aliases using grounded source-word evidence."""
         if requested_id in grounded_moments:
             return requested_id
         candidates = sorted(
@@ -637,8 +633,6 @@ class AutonomousEditorialPlanner:
     def _profile_evidence(self, timeline: CanonicalTimeline) -> list[dict[str, object]]:
         if len(timeline.words) <= 1800:
             return self._word_payload(timeline, 0, len(timeline.words))
-        # A global episode profile needs representative coverage, not a second full transcript.
-        # Keep the sample stratified across the entire episode while bounding attention memory.
         window = 60
         windows = 8
         maximum_start = max(0, len(timeline.words) - window)
@@ -681,6 +675,29 @@ class AutonomousEditorialPlanner:
             for event in events
         ]
 
+    def _empty_video_analysis(
+        self,
+        brief: CampaignBrief,
+        timeline: CanonicalTimeline,
+        visual_timeline: VisualTimeline | None,
+        profile: EpisodeEditorialProfile,
+        grounded_moments: dict[str, GroundedStoryMoment],
+        rejections: list[dict[str, object]],
+    ) -> OpenVideoAnalysis:
+        source_hazards, hazard_rejections = self._classify_source_hazards(
+            brief, timeline, visual_timeline
+        )
+        rejections.extend(hazard_rejections)
+        return OpenVideoAnalysis(
+            profile=profile,
+            moments=[self._compat_moment(timeline, item) for item in grounded_moments.values()],
+            concepts=[],
+            grounded_moments=grounded_moments,
+            grounded_concepts={},
+            rejections=rejections,
+            source_hazards=source_hazards,
+        )
+
     def analyze_video(
         self,
         brief: CampaignBrief,
@@ -704,7 +721,9 @@ class AutonomousEditorialPlanner:
         profile = EpisodeEditorialProfile.from_payload(profile_payload)
         grounded_moments: dict[str, GroundedStoryMoment] = {}
         rejections: list[dict[str, object]] = []
-        for chunk_index, words in enumerate(self._chunks(timeline)):
+        successful_story_chunks = 0
+        chunks = self._chunks(timeline)
+        for chunk_index, words in enumerate(chunks):
             first_start = words[0].get("source_start") if words else None
             last_end = words[-1].get("source_end") if words else None
             chunk_start = float(first_start) if isinstance(first_start, int | float | str) else 0.0
@@ -729,6 +748,7 @@ class AutonomousEditorialPlanner:
                         ),
                     },
                 )
+                successful_story_chunks += 1
             except Exception as exc:
                 rejections.append(
                     {
@@ -761,10 +781,19 @@ class AutonomousEditorialPlanner:
                 moment = replace(moment, moment_id=namespaced_id)
                 grounded_moments[namespaced_id] = moment
         if not grounded_moments:
-            diagnostics = [item.get("error") for item in rejections[-8:] if item.get("error")]
-            raise EditorialGroundingError(
-                "open editorial model returned no grounded StoryMoments; "
-                f"rejected={len(rejections)}; diagnostics={diagnostics}"
+            if chunks and successful_story_chunks == 0:
+                diagnostics = [item.get("error") for item in rejections[-8:] if item.get("error")]
+                raise EditorialGroundingError(
+                    "open editorial model failed every StoryMoment chunk; "
+                    f"rejected={len(rejections)}; diagnostics={diagnostics}"
+                )
+            return self._empty_video_analysis(
+                brief,
+                timeline,
+                visual_timeline,
+                profile,
+                grounded_moments,
+                rejections,
             )
 
         moment_payloads = [
@@ -855,10 +884,13 @@ class AutonomousEditorialPlanner:
             if existing is None or concept.confidence > existing.confidence:
                 grounded_concepts[concept.concept_id] = concept
         if not grounded_concepts:
-            diagnostics = [item.get("error") for item in rejections[-8:] if item.get("error")]
-            raise EditorialGroundingError(
-                "open editorial model returned no grounded ClipConcepts; "
-                f"rejected={len(rejections)}; diagnostics={diagnostics}"
+            return self._empty_video_analysis(
+                brief,
+                timeline,
+                visual_timeline,
+                profile,
+                grounded_moments,
+                rejections,
             )
 
         representatives, clusters, duplicate_rejections = self._semantic_dedupe(
@@ -930,6 +962,30 @@ class AutonomousEditorialPlanner:
             )
         return kept, clusters, rejections
 
+    def _empty_batch(
+        self,
+        discovered_moments: list[StoryMoment],
+        discovered_concepts: list[ClipConcept],
+        selected: list[ClipConcept],
+        variants: list[HookVariant],
+        rejections: list[dict[str, object]],
+        boundary_audits: list[dict[str, object]],
+        campaign_policy_audits: list[dict[str, object]],
+        source_hazard_evidence: list[dict[str, object]],
+    ) -> OpenEditorialBatch:
+        return OpenEditorialBatch(
+            discovered_moments=discovered_moments,
+            discovered_concepts=discovered_concepts,
+            selected_concepts=selected,
+            variants=variants,
+            plans=[],
+            rejections=rejections,
+            model_invocations=list(self.invocations),
+            boundary_audits=boundary_audits,
+            campaign_policy_audits=campaign_policy_audits,
+            source_hazards=source_hazard_evidence,
+        )
+
     def plan_batch(
         self,
         brief: CampaignBrief,
@@ -945,18 +1001,25 @@ class AutonomousEditorialPlanner:
         for analysis in analyses:
             grounded.update(analysis.grounded_concepts)
             if analysis.source_hazards:
-                if not analysis.concepts:
-                    raise EditorialGroundingError(
-                        "source hazard evidence has no associated grounded video"
+                hazard_video_ids = {concept.video_id for concept in analysis.concepts}
+                if len(hazard_video_ids) == 1:
+                    hazard_video_id = next(iter(hazard_video_ids))
+                    hazards_by_video.setdefault(hazard_video_id, []).extend(analysis.source_hazards)
+                    source_hazard_evidence.extend(
+                        {**hazard.to_dict(), "video_id": hazard_video_id}
+                        for hazard in analysis.source_hazards
                     )
-                hazard_video_id = analysis.concepts[0].video_id
-                hazards_by_video.setdefault(hazard_video_id, []).extend(analysis.source_hazards)
-                source_hazard_evidence.extend(
-                    {**hazard.to_dict(), "video_id": hazard_video_id}
-                    for hazard in analysis.source_hazards
-                )
         if not discovered_concepts:
-            raise EditorialGroundingError("open editorial analysis produced no concepts")
+            return self._empty_batch(
+                discovered_moments,
+                discovered_concepts,
+                [],
+                [],
+                rejections,
+                [],
+                [],
+                source_hazard_evidence,
+            )
 
         selection_timeline = timelines[discovered_concepts[0].video_id]
         selection = self._complete(
@@ -979,6 +1042,8 @@ class AutonomousEditorialPlanner:
                     }
                     for item in discovered_concepts
                 ],
+                # Frozen compatibility hint retained in the cached request. It no longer limits
+                # production yield; every remaining grounded concept is evaluated below.
                 "planning_budget": brief.production.concept_count,
             },
         )
@@ -994,16 +1059,23 @@ class AutonomousEditorialPlanner:
                 )
             if concept_id not in selected_ids:
                 selected_ids.append(concept_id)
-            if len(selected_ids) >= brief.production.concept_count:
-                break
-        if not selected_ids:
-            raise EditorialGroundingError("global comparison selected no concepts")
+
+        # Global comparison is a ranking aid, not an output quota. Append every remaining
+        # grounded distinct concept so quality is decided by eligibility rather than count.
+        for concept in sorted(
+            discovered_concepts,
+            key=lambda item: (-item.score, item.video_id, item.source_start, item.concept_id),
+        ):
+            if concept.concept_id not in selected_ids:
+                selected_ids.append(concept.concept_id)
         selected = [concept_index[concept_id] for concept_id in selected_ids]
 
         variants: list[HookVariant] = []
         plans: list[EditPlan] = []
         boundary_audits: list[dict[str, object]] = []
         campaign_policy_audits: list[dict[str, object]] = []
+        planning_model_successes = 0
+        planning_model_failures = 0
         for concept in selected:
             timeline = timelines[concept.video_id]
             grounded_concept = grounded[concept.concept_id]
@@ -1032,7 +1104,9 @@ class AutonomousEditorialPlanner:
                         },
                     },
                 )
+                planning_model_successes += 1
             except Exception as exc:
+                planning_model_failures += 1
                 rejections.append(
                     {
                         "concept_id": concept.concept_id,
@@ -1116,7 +1190,9 @@ class AutonomousEditorialPlanner:
                         ),
                     },
                 )
+                planning_model_successes += 1
             except Exception as exc:
+                planning_model_failures += 1
                 rejections.append(
                     {
                         "concept_id": concept.concept_id,
@@ -1238,40 +1314,16 @@ class AutonomousEditorialPlanner:
                 if repair_evidence:
                     rejections.append(repair_evidence)
                 plans.append(plan)
-        if not plans:
-            reason_counts: dict[str, int] = {}
-            rejected_durations: list[float] = []
+        if not plans and planning_model_successes == 0 and planning_model_failures > 0:
             failures = [
                 item
                 for item in rejections
-                if item.get("stage")
-                in {"hook_generation", "edit_plan", "pre_render_editorial_integrity"}
-            ]
-            for rejection in failures:
-                raw_reasons = rejection.get("reasons")
-                if isinstance(raw_reasons, list):
-                    for reason in raw_reasons:
-                        if isinstance(reason, str):
-                            reason_counts[reason] = reason_counts.get(reason, 0) + 1
-                duration = rejection.get("original_duration", rejection.get("duration_seconds"))
-                if isinstance(duration, int | float):
-                    rejected_durations.append(float(duration))
-            summary = [
-                {
-                    "concept_id": item.get("concept_id"),
-                    "plan_id": item.get("plan_id"),
-                    "reasons": item.get("reasons"),
-                    "original_duration": item.get(
-                        "original_duration", item.get("duration_seconds")
-                    ),
-                    "grounded_context_duration": item.get("grounded_context_duration"),
-                }
-                for item in failures[-12:]
+                if item.get("stage") in {"hook_generation", "edit_plan"}
+                and "model_completion_failed" in (item.get("reasons") or [])
             ]
             raise EditorialGroundingError(
-                "open editorial planner produced no valid EditPlans; "
-                f"rejections={reason_counts}; durations={rejected_durations[:20]}; "
-                f"diagnostics={summary}"
+                "open editorial planner could not evaluate quality because every planning "
+                f"model call failed; failures={failures[-8:]}"
             )
         return OpenEditorialBatch(
             discovered_moments=discovered_moments,
