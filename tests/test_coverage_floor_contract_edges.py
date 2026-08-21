@@ -8,12 +8,13 @@ import pytest
 from clipper.autonomous_quality_planner import AutonomousQualityPlanner
 from clipper.canonical import CanonicalTimeline, CanonicalWord
 from clipper.dag import DagStore
+from clipper.modality_profile import _covered_duration
 from clipper.models import CampaignBrief
 from clipper.multimodal_timeline import MultimodalTimeline
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
 from clipper.quality_batch import RecordingEditorialProvider, plan_quality_batch
 from clipper.source_hazards import SourceHazardClassifier
-from clipper.stage_contracts import StageIdentity
+from clipper.stage_contracts import StageContract, StageIdentity
 from clipper.story_graph import NarrativeEnvelope, SemanticCore
 from clipper.visual import VisualTimeline
 
@@ -82,6 +83,26 @@ def test_stage_identity_rejects_each_missing_required_identity_component() -> No
         StageIdentity("stage", "", "contract")
     with pytest.raises(ValueError, match="stage, source, and contract hashes"):
         StageIdentity("stage", "source", "")
+
+
+def test_stage_contract_serializes_fingerprint_and_rejects_empty_dependencies() -> None:
+    contract = StageContract("quality", {"instruction": "rank legal windows"}, {"policy": "safe"})
+    payload = contract.to_dict()
+    assert payload["name"] == "quality"
+    assert payload["contract_hash"] == contract.contract_hash
+    with pytest.raises(ValueError, match="dependency output fingerprints cannot be empty"):
+        StageIdentity(
+            "quality",
+            "source",
+            contract.contract_hash,
+            dependency_output_hashes=("",),
+        )
+
+
+def test_modality_coverage_requires_a_callable_predicate() -> None:
+    timeline = MultimodalTimeline("video", "source", 1.0, ())
+    with pytest.raises(TypeError, match="predicate must be callable"):
+        _covered_duration(timeline, object())
 
 
 def test_story_graph_factories_reject_empty_word_provenance() -> None:
@@ -207,6 +228,22 @@ def test_source_hazard_classifier_fails_closed_on_invalid_model_shapes(
     )
     result = classifier.classify(_acceptance_brief(), _timeline(10), multimodal=None)
     assert len(result.hazards) == 1
+    assert result.hazards[0].classification.value == "unknown"
+    assert result.rejections[0]["decision"] == "ESCALATE"
+
+
+def test_source_hazard_classifier_fails_closed_when_segment_escapes_chunk(tmp_path: Path) -> None:
+    classifier = SourceHazardClassifier(
+        _StaticEditorial({"segments": [{}]}),
+        DagStore(tmp_path / "escaped"),
+        max_words_per_chunk=200,
+        chunk_overlap_words=20,
+    )
+    with patch(
+        "clipper.source_hazards.SourceHazardSegment.from_payload",
+        return_value=SimpleNamespace(source_word_ids=("outside-chunk",)),
+    ):
+        result = classifier.classify(_acceptance_brief(), _timeline(10), multimodal=None)
     assert result.hazards[0].classification.value == "unknown"
     assert result.rejections[0]["decision"] == "ESCALATE"
 
