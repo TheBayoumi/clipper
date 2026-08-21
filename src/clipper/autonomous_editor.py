@@ -1319,7 +1319,8 @@ class AutonomousEditorialPlanner:
                 item
                 for item in rejections
                 if item.get("stage") in {"hook_generation", "edit_plan"}
-                and "model_completion_failed" in (item.get("reasons") or [])
+                and isinstance((reasons := item.get("reasons")), list)
+                and "model_completion_failed" in reasons
             ]
             raise EditorialGroundingError(
                 "open editorial planner could not evaluate quality because every planning "
