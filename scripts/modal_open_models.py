@@ -891,6 +891,9 @@ def editorial_schema_smoke() -> dict[str, Any]:
         "edit_plans:smoke",
         "source_hazards:smoke",
         "boundary_audit:smoke",
+        "semantic_cores:smoke",
+        "narrative_envelope:smoke",
+        "quality_windows:smoke",
     ]
     for task in tasks:
         JsonSchema(editorial_json_schema(task))
