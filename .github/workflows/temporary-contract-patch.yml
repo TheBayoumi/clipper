@@ -1,0 +1,139 @@
+name: Temporary guarded contract cleanup patch
+
+on:
+  push:
+    branches:
+      - feat/word-reveal-face-tracking
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/word-reveal-face-tracking
+          fetch-depth: 0
+      - name: Apply exact guarded cleanup
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, found {count}")
+              return text.replace(old, new, 1)
+
+          # Separate discovery workflow input from production CampaignBrief.
+          path = Path("src/clipper/youtube.py")
+          text = path.read_text(encoding="utf-8")
+          text = once(
+              text,
+              "from collections.abc import Sequence\nfrom pathlib import Path\nfrom typing import Any\n\nfrom .models import CampaignBrief, VideoCandidate\n",
+              "from collections.abc import Sequence\nfrom dataclasses import dataclass\nfrom pathlib import Path\nfrom typing import Any\n\nfrom .models import VideoCandidate\n",
+              "youtube imports",
+          )
+          text = once(
+              text,
+              "class YouTubeError(RuntimeError):\n    \"\"\"Raised for YouTube discovery or media acquisition failures.\"\"\"\n\n\n",
+              "class YouTubeError(RuntimeError):\n    \"\"\"Raised for YouTube discovery or media acquisition failures.\"\"\"\n\n\n@dataclass(frozen=True, slots=True)\nclass DiscoveryRequest:\n    \"\"\"Input for the separate discovery workflow; never used by ``clipper run``.\"\"\"\n\n    query: str = \"\"\n    channel_ids: tuple[str, ...] = ()\n    limit: int = 10\n    language: str = \"en\"\n    region_code: str = \"US\"\n    published_after: str | None = None\n    video_ids: tuple[str, ...] = ()\n\n    def __post_init__(self) -> None:\n        if not 1 <= self.limit <= 50:\n            raise ValueError(\"discovery limit must be between 1 and 50\")\n        if not self.video_ids and not self.channel_ids:\n            raise ValueError(\"discovery requires at least one channel_id or video_id\")\n        if self.channel_ids and not self.query.strip():\n            raise ValueError(\"channel discovery requires a non-empty query\")\n        if not self.language.strip() or not self.region_code.strip():\n            raise ValueError(\"discovery language and region_code cannot be empty\")\n\n\n",
+              "DiscoveryRequest insertion",
+          )
+          text = text.replace("def discover(self, brief: CampaignBrief)", "def discover(self, request: DiscoveryRequest)")
+          text = text.replace("def _discover_api(self, brief: CampaignBrief)", "def _discover_api(self, request: DiscoveryRequest)")
+          text = text.replace("def _discover_ytdlp(self, brief: CampaignBrief)", "def _discover_ytdlp(self, request: DiscoveryRequest)")
+          text = text.replace("self._discover_api(brief)", "self._discover_api(request)")
+          text = text.replace("self._discover_ytdlp(brief)", "self._discover_ytdlp(request)")
+          replacements = {
+              "brief.allowed_video_ids": "request.video_ids",
+              "brief.source_limit": "request.limit",
+              "brief.source_channel_ids": "request.channel_ids",
+              "brief.search_query": "request.query",
+              "brief.region_code": "request.region_code",
+              "brief.language": "request.language",
+              "brief.published_after": "request.published_after",
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f"youtube discovery replacement missing: {old}")
+              text = text.replace(old, new)
+          if "CampaignBrief" in text:
+              raise SystemExit("youtube.py still references CampaignBrief after discovery separation")
+          path.write_text(text, encoding="utf-8")
+
+          # Make CLI discovery an independent workflow rather than campaign execution.
+          path = Path("src/clipper/cli.py")
+          text = path.read_text(encoding="utf-8")
+          text = once(text, "from .youtube import YouTubeClient\n", "from .youtube import DiscoveryRequest, YouTubeClient\n", "cli youtube import")
+          text = once(
+              text,
+              "    discover = subparsers.add_parser(\"discover\", help=\"inspect authorized source candidates\")\n    discover.add_argument(\"--brief\", required=True, type=Path)\n",
+              "    discover = subparsers.add_parser(\n        \"discover\", help=\"discover source candidates outside production execution\"\n    )\n    discover.add_argument(\"--query\", default=\"\")\n    discover.add_argument(\"--channel-id\", action=\"append\", default=[])\n    discover.add_argument(\"--video-id\", action=\"append\", default=[])\n    discover.add_argument(\"--limit\", type=int, default=10)\n    discover.add_argument(\"--language\", default=\"en\")\n    discover.add_argument(\"--region-code\", default=\"US\")\n    discover.add_argument(\"--published-after\")\n",
+              "cli discover parser",
+          )
+          text = once(
+              text,
+              "        if args.command == \"discover\":\n            brief = load_brief(args.brief)\n            assert_campaign_authorized(brief)\n            videos = YouTubeClient().discover(brief)\n            allowed = []\n            for video in videos:\n                try:\n                    assert_video_allowed(brief, video)\n                except RightsError:\n                    continue\n                allowed.append(video)\n            print(json.dumps([video.to_dict() for video in allowed], indent=2))\n            return 0\n",
+              "        if args.command == \"discover\":\n            request = DiscoveryRequest(\n                query=args.query,\n                channel_ids=tuple(args.channel_id),\n                video_ids=tuple(args.video_id),\n                limit=args.limit,\n                language=args.language,\n                region_code=args.region_code,\n                published_after=args.published_after,\n            )\n            videos = YouTubeClient().discover(request)\n            print(json.dumps([video.to_dict() for video in videos], indent=2))\n            return 0\n",
+              "cli discover execution",
+          )
+          path.write_text(text, encoding="utf-8")
+
+          # Quality batch integration/type contract.
+          path = Path("src/clipper/quality_batch.py")
+          text = path.read_text(encoding="utf-8")
+          text = once(text, "    max_words_per_chunk: int,\n    chunk_overlap_words: int,\n", "    max_words_per_chunk: int = 900,\n    chunk_overlap_words: int = 160,\n", "quality batch operational defaults")
+          path.write_text(text, encoding="utf-8")
+
+          path = Path("src/clipper/pipeline.py")
+          text = path.read_text(encoding="utf-8")
+          text = once(text, "from .quality_batch import BatchQualityPlanningResult, plan_quality_batch\n", "from .quality_batch import QualityBatchResult, plan_quality_batch\n", "pipeline quality result import")
+          text = once(text, "def _funnel_template() -> dict[str, int]:\n", "def _funnel_template() -> dict[str, int | float | bool]:\n", "funnel type")
+          text = once(
+              text,
+              "        \"semantic_cores_discovered\": sum(\n            int(item.get(\"semantic_cores\", 0))\n            for item in quality.source_evidence.values()\n            if isinstance(item, dict)\n        ),\n",
+              "        \"semantic_cores_discovered\": sum(\n            value\n            for item in quality.source_evidence.values()\n            if isinstance(item, dict)\n            for value in (item.get(\"semantic_cores\"),)\n            if isinstance(value, int) and not isinstance(value, bool)\n        ),\n",
+              "semantic core count typing",
+          )
+          text = text.replace("BatchQualityPlanningResult", "QualityBatchResult")
+          path.write_text(text, encoding="utf-8")
+
+          path = Path("src/clipper/hilp.py")
+          text = path.read_text(encoding="utf-8")
+          text = once(text, "cast(BeatType, str(item[\"beat_type\"]))", "cast(BeatType, item[\"beat_type\"])", "hilp beat cast")
+          text = once(text, "cast(HookMode, str(raw[\"hook_mode\"]))", "cast(HookMode, raw[\"hook_mode\"])", "hilp hook cast")
+          path.write_text(text, encoding="utf-8")
+
+          # Remove obsolete embedding service and podcast-only prompt from deployed Modal worker.
+          path = Path("scripts/modal_open_models.py")
+          text = path.read_text(encoding="utf-8")
+          text = once(text, "    \"sentence-transformers>=5.6,<6\",\n", "", "sentence-transformers dependency")
+          text = once(text, "_embedding_model: Any | None = None\n", "", "embedding global")
+          embedding_block = '''@app.function(\n    image=text_image,\n    gpu="L4",\n    volumes={HF_CACHE: model_cache},\n    secrets=[hf_secret],\n    timeout=1200,\n    memory=16384,\n    scaledown_window=2,\n)\ndef embedding(payload: dict[str, Any]) -> dict[str, Any]:\n    global _embedding_model\n    from sentence_transformers import SentenceTransformer\n\n    started = time.perf_counter()\n    texts = payload.get("texts")\n    if not isinstance(texts, list) or not all(isinstance(item, str) for item in texts):\n        raise ValueError("embedding payload requires string texts")\n    if _embedding_model is None:\n        _embedding_model = SentenceTransformer("Qwen/Qwen3-Embedding-0.6B", device="cuda")\n    vectors = _embedding_model.encode(texts, normalize_embeddings=True, convert_to_numpy=True)\n    value = [[float(item) for item in row] for row in vectors]\n    return {\n        "vectors": value,\n        "usage": _usage(started, "L4", input_units=len(texts), output_units=len(value)),\n    }\n\n\n'''
+          text = once(text, embedding_block, "", "embedding function")
+          text = once(
+              text,
+              '            "You are a source-grounded podcast editor. Never invent spoken words or IDs. "\n',
+              '            "You are a source-grounded multimodal short-form editor. "\n            "Never invent source evidence, spoken words, timestamps, or IDs. "\n',
+              "editorial system role",
+          )
+          if "sentence_transformers" in text or "def embedding(" in text or "_embedding_model" in text:
+              raise SystemExit("obsolete embedding service still present")
+          path.write_text(text, encoding="utf-8")
+      - name: Format and validate patch
+        run: |
+          python -m pip install 'ruff>=0.15.22,<1'
+          ruff format src/clipper/youtube.py src/clipper/cli.py src/clipper/quality_batch.py src/clipper/pipeline.py src/clipper/hilp.py scripts/modal_open_models.py
+          ruff check src/clipper/youtube.py src/clipper/cli.py src/clipper/quality_batch.py src/clipper/pipeline.py src/clipper/hilp.py scripts/modal_open_models.py
+      - name: Commit patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/clipper/youtube.py src/clipper/cli.py src/clipper/quality_batch.py src/clipper/pipeline.py src/clipper/hilp.py scripts/modal_open_models.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'refactor: separate discovery and remove embedding baggage'
+          git push origin HEAD:feat/word-reveal-face-tracking
