@@ -56,7 +56,9 @@ def test_double_coverage_forbid_policy_results_in_zero_generator_calls(tmp_path:
 def test_escalate_policy_also_blocks_before_provider_invocation(tmp_path: Path) -> None:
     provider = FakeGenerator()
     with pytest.raises(GeneratedMediaBlocked, match="escalation"):
-        generate_policy_gated_media(_brief("escalate"), provider, _request(), tmp_path / "asset.mp4")
+        generate_policy_gated_media(
+            _brief("escalate"), provider, _request(), tmp_path / "asset.mp4"
+        )
     assert provider.calls == 0
 
 
