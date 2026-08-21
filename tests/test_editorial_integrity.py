@@ -104,8 +104,6 @@ def _boundary(
         repair_start_word_id=repair_start_word_id,
         repair_end_word_id=repair_end_word_id,
         model_identity={"model_id": "semantic-boundary-test", "revision": "fixed"},
-        prompt_version="editor-v2",
-        schema_version="boundary-audit-v1",
     )
 
 
@@ -511,8 +509,6 @@ def test_existing_required_context_cannot_be_cleared_by_boundary_model_payload()
         post_end_context="",
         source_word_evidence=("w10", "w37"),
         model_identity={"model_id": "boundary-test", "revision": "fixed"},
-        prompt_version="editor-v2",
-        schema_version="boundary-audit-v1",
         required_prior_context="the question being answered",
     )
     assert audit.required_prior_context == "the question being answered"
@@ -556,8 +552,6 @@ def test_boundary_and_hazard_payload_validation_is_fail_closed() -> None:
         "post_end_context": "",
         "source_word_evidence": ("w0", "w1"),
         "model_identity": {"model_id": "m"},
-        "prompt_version": "editor-v2",
-        "schema_version": "boundary-audit-v1",
     }
     with pytest.raises(ValueError, match="boundary status"):
         BoundaryAudit.from_payload(payload, **kwargs)  # type: ignore[arg-type]
