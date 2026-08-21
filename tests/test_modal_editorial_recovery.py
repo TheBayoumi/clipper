@@ -1,8 +1,15 @@
 from pathlib import Path
 from typing import Any
 
+from clipper.cache import model_stage_cache_key
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
-from clipper.providers.editorial_prompt import EDITORIAL_PROMPT_VERSION, editorial_contract
+from clipper.providers.editorial_prompt import (
+    EDITORIAL_PROMPT_VERSION,
+    EDITORIAL_SCHEMA_VERSION,
+    editorial_contract,
+    editorial_contract_fingerprint,
+    editorial_legacy_cache_compatible,
+)
 from clipper.providers.modal import ModalEditorialProvider, ModalRemoteError
 
 
@@ -122,14 +129,72 @@ def test_editorial_provider_keeps_batch_when_at_least_one_edit_plan_has_valid_du
     assert len(provider.requests) == 1
 
 
-def test_editor_v3_contract_requires_measured_duration_from_timestamped_context() -> None:
+def test_editorial_contract_uses_stable_identity_and_measured_duration() -> None:
     contract = editorial_contract("edit_plans:c1")
 
-    assert EDITORIAL_PROMPT_VERSION == "editor-v3"
-    assert "Campaign min_clip_seconds is a hard floor" in contract
+    assert EDITORIAL_PROMPT_VERSION == "editor"
+    assert EDITORIAL_SCHEMA_VERSION == "editorial-json"
+    assert "campaign.min_clip_seconds is a hard floor" in contract
     assert "duration = end.source_end - start.source_start" in contract
     assert "may extend before or after the concept start/end" in contract
     assert "omit that plan instead of returning an out-of-bounds range" in contract
+
+
+def test_content_addressed_cache_reuses_paid_legacy_stages_but_invalidates_edit_plans() -> None:
+    neutral = ModelIdentity(
+        "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "revision",
+        "bnb-4bit-nf4",
+        "modal-transformers",
+        EDITORIAL_PROMPT_VERSION,
+        EDITORIAL_SCHEMA_VERSION,
+    )
+    legacy = ModelIdentity(
+        neutral.model_id,
+        neutral.revision,
+        neutral.quantization,
+        neutral.inference_engine,
+        "editor-v2",
+        "editorial-json-v2",
+    )
+    common = {
+        "source_hash": "source",
+        "campaign": {"min_clip_seconds": 20, "max_clip_seconds": 45},
+        "sampling": {"do_sample": False},
+    }
+
+    unchanged_payload = {"words": [{"word_ref": "w1"}]}
+    neutral_story = model_stage_cache_key(
+        "story_moments:0",
+        model=neutral,
+        payload=unchanged_payload,
+        **common,
+    )
+    legacy_story = model_stage_cache_key(
+        "story_moments:0",
+        model=legacy,
+        payload=unchanged_payload,
+        **common,
+    )
+    assert editorial_legacy_cache_compatible("story_moments:0") is True
+    assert neutral_story == legacy_story
+
+    edit_payload = _edit_plan_payload()
+    neutral_edit = model_stage_cache_key(
+        "edit_plans:c1",
+        model=neutral,
+        payload=edit_payload,
+        **common,
+    )
+    legacy_edit = model_stage_cache_key(
+        "edit_plans:c1",
+        model=legacy,
+        payload=edit_payload,
+        **common,
+    )
+    assert editorial_legacy_cache_compatible("edit_plans:c1") is False
+    assert editorial_contract_fingerprint("edit_plans:c1")
+    assert neutral_edit != legacy_edit
 
 
 def test_modal_editorial_runtime_has_bounded_expanding_recovery_budget() -> None:
