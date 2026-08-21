@@ -3,11 +3,32 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass, field
+from typing import Any
 
 
 def content_fingerprint(value: object) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def structural_contract_fingerprint(
+    name: str,
+    *types: type[Any],
+    exclude_fields: tuple[str, ...] = (),
+) -> str:
+    """Fingerprint a serialized contract from its annotated structure, not a release number."""
+    if not name.strip() or not types:
+        raise ValueError("structural contract requires a name and at least one type")
+    excluded = set(exclude_fields)
+    structures: dict[str, dict[str, str]] = {}
+    for value_type in types:
+        annotations = getattr(value_type, "__annotations__", {})
+        structures[value_type.__qualname__] = {
+            str(field_name): str(annotation)
+            for field_name, annotation in annotations.items()
+            if field_name not in excluded
+        }
+    return content_fingerprint({"name": name, "types": structures})
 
 
 @dataclass(frozen=True, slots=True)
