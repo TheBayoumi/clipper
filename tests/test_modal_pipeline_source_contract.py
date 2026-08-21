@@ -154,3 +154,43 @@ def test_targeted_recovery_launcher_sends_evidence_not_local_frames() -> None:
     assert '"expected_failure_evidence_path": failed_run_path' in source
     assert '"c14", "plan_id": "p3"' in source
     assert '"c5", "plan_id": "p1"' in source
+
+
+def test_modal_schema_smoke_covers_all_active_editorial_task_families() -> None:
+    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+    smoke = source.split("def editorial_schema_smoke(", 1)[1].split("def hf_access_smoke(", 1)[0]
+    expected = (
+        "episode_editorial_profile",
+        "story_moments:smoke",
+        "clip_concepts",
+        "global_concept_comparison",
+        "hook_variants:smoke",
+        "edit_plans:smoke",
+        "source_hazards:smoke",
+        "boundary_audit:smoke",
+        "semantic_cores:smoke",
+        "narrative_envelope:smoke",
+        "quality_windows:smoke",
+    )
+    assert len(expected) == 11
+    assert all(f'"{task}"' in smoke for task in expected)
+
+
+def test_modal_full_cycle_accepts_dynamic_degraded_yield_but_rejects_failed() -> None:
+    source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+    cycle = source.split("def run_full_cycle(", 1)[1]
+    assert 'manifest.get("status") not in {"SUCCESS", "DEGRADED"}' in cycle
+    assert 'if not render and manifest.get("status") == "FAILED"' in cycle
+
+
+def test_targeted_finalist_recovery_is_explicit_legacy_protocol_only() -> None:
+    pipeline_source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+    launcher_source = Path("scripts/run_modal_finalist_recovery.py").read_text(encoding="utf-8")
+    recovery = pipeline_source.split("def recover_finalists(", 1)[1].split(
+        "def run_full_cycle(", 1
+    )[0]
+    assert '_LEGACY_RECOVERY_PROTOCOL = "v8-six-finalist-recovery"' in pipeline_source
+    assert 'payload.get("legacy_recovery_protocol")' in recovery
+    assert "restricted to the explicit legacy V8 six-finalist protocol" in recovery
+    assert 'LEGACY_RECOVERY_PROTOCOL = "v8-six-finalist-recovery"' in launcher_source
+    assert '"legacy_recovery_protocol": LEGACY_RECOVERY_PROTOCOL' in launcher_source
