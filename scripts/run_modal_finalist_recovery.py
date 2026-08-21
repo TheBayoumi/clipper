@@ -9,6 +9,8 @@ from typing import Any
 
 from clipper.modal_execution import _materialize_remote_run
 
+LEGACY_RECOVERY_PROTOCOL = "v8-six-finalist-recovery"
+
 PLAN_KEYS = (
     {"concept_id": "c14", "plan_id": "p3"},
     {"concept_id": "c5", "plan_id": "p1"},
@@ -90,8 +92,9 @@ def normalize_materialized_recovery_paths(run_dir: Path, serialized_root: str) -
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Repair explicitly selected finalists inside Modal, review only newly rendered "
-            "frames, revalidate every reused clip, and materialize the six-finalist run."
+            "Legacy V8 recovery only: repair explicitly selected finalists inside Modal, "
+            "review newly rendered frames, revalidate every reused clip, and materialize "
+            "the historical six-finalist run."
         )
     )
     parser.add_argument("source_run_id")
@@ -143,6 +146,7 @@ def main() -> int:
     prior_review = _load_object(source_run / "visual-review-recovery.json")
     recovery_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     request = {
+        "legacy_recovery_protocol": LEGACY_RECOVERY_PROTOCOL,
         "source_run_id": args.source_run_id,
         "recovery_id": recovery_id,
         "plan_keys": list(PLAN_KEYS),
