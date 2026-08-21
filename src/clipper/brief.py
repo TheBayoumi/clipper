@@ -144,9 +144,7 @@ def _normalize_content_constraints(normalized: dict[str, Any]) -> None:
         raise BriefValidationError("content_constraints must be an object")
     unknown = set(constraints) - {"min_clip_seconds", "max_clip_seconds"}
     if unknown:
-        raise BriefValidationError(
-            f"unsupported content_constraints rule: {sorted(unknown)[0]}"
-        )
+        raise BriefValidationError(f"unsupported content_constraints rule: {sorted(unknown)[0]}")
     if "min_clip_seconds" in constraints:
         normalized["min_clip_seconds"] = constraints["min_clip_seconds"]
     if "max_clip_seconds" in constraints:
@@ -163,13 +161,10 @@ def _normalize_generated_media_policy(normalized: dict[str, Any]) -> None:
     unknown = set(generated) - {"synthetic_visuals"}
     if unknown:
         raise BriefValidationError(
-            "unsupported acceptance_policy.generated_media rule: "
-            f"{sorted(unknown)[0]}"
+            f"unsupported acceptance_policy.generated_media rule: {sorted(unknown)[0]}"
         )
     migrated = dict(policy)
-    migrated["generated_media"] = {
-        "ai_generated_source_video": generated["synthetic_visuals"]
-    }
+    migrated["generated_media"] = {"ai_generated_source_video": generated["synthetic_visuals"]}
     normalized["acceptance_policy"] = migrated
 
 
