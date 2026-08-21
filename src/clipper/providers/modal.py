@@ -158,9 +158,7 @@ class ModalEditorialProvider(ModalJSONProvider):
             start_timing = timings.get(start_ref)
             end_timing = timings.get(end_ref)
             if start_timing is None or end_timing is None:
-                violations.append(
-                    f"plan[{index}] references a range outside source_context_words"
-                )
+                violations.append(f"plan[{index}] references a range outside source_context_words")
                 continue
             duration = end_timing[1] - start_timing[0]
             if minimum <= duration <= maximum:
