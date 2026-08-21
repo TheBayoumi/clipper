@@ -47,7 +47,9 @@ class QualityMoment:
         if self.delivery_window.core_id != self.core.core_id:
             raise ValueError("quality moment delivery window references the wrong semantic core")
         if self.delivery_window.envelope_id != self.envelope.envelope_id:
-            raise ValueError("quality moment delivery window references the wrong narrative envelope")
+            raise ValueError(
+                "quality moment delivery window references the wrong narrative envelope"
+            )
         if self.assessment.core_id != self.core.core_id:
             raise ValueError("quality assessment references the wrong semantic core")
         if self.assessment.window_id != self.delivery_window.window_id:
