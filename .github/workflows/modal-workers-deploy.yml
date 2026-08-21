@@ -87,7 +87,7 @@ jobs:
               os.environ["CLIPPER_MODAL_APP"], "editorial_schema_smoke"
           ).remote()
           assert isinstance(result, dict) and result.get("ok") is True, result
-          assert result.get("task_families") == 11, result
+          assert result.get("task_families") == 4, result
           Path("modal-editorial-schema-smoke.json").write_text(
               json.dumps(result, indent=2) + "\n",
               encoding="utf-8",
@@ -165,14 +165,13 @@ jobs:
                           "align",
                           "diarize",
                           "editorial",
-                          "embedding",
                           "vision",
                           "vision_large",
                           "editorial_schema_smoke",
                           "hf_access_smoke",
                       ],
                       "pipeline_functions_expected": ["run_full_cycle"],
-                      "editorial_task_families_expected": 11,
+                      "editorial_task_families_expected": 4,
                   },
                   indent=2,
               )

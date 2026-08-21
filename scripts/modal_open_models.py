@@ -855,14 +855,7 @@ def editorial_schema_smoke() -> dict[str, Any]:
     from outlines.types import JsonSchema
 
     tasks = [
-        "episode_editorial_profile",
-        "story_moments:smoke",
-        "clip_concepts",
-        "global_concept_comparison",
-        "hook_variants:smoke",
-        "edit_plans:smoke",
         "source_hazards:smoke",
-        "boundary_audit:smoke",
         "semantic_cores:smoke",
         "narrative_envelope:smoke",
         "quality_windows:smoke",

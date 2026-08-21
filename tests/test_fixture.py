@@ -6,18 +6,8 @@ from pathlib import Path
 import pytest
 
 from clipper.fixture import FixtureError, FixtureSourceClient, SpanMedia
-from clipper.models import (
-    CampaignBrief,
-    ClipCandidate,
-    EditPlan,
-    SourceSpan,
-    TranscriptSegment,
-    TranscriptWord,
-)
-from clipper.pipeline import (
-    PipelineSettings,
-    run_pipeline,
-)
+from clipper.models import CampaignBrief
+from clipper.pipeline import PipelineSettings, run_pipeline
 
 
 def _hash(path: Path) -> str:

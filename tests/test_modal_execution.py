@@ -10,15 +10,15 @@ import pytest
 
 from clipper.modal_execution import (
     _acquire_remote_source,
-    _explicit_candidates,
     _deploy,
+    _explicit_candidates,
     _function,
     _materialize_remote_run,
     _validate_model_access,
     ensure_modal_runtime,
     run_modal_pipeline,
 )
-from clipper.models import CampaignBrief, VideoCandidate
+from clipper.models import VideoCandidate
 
 
 class NotFoundError(RuntimeError):

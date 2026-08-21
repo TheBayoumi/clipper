@@ -1,260 +1,219 @@
 # Clipper
 
-A rights-gated short-form production engine for Whop clipping campaigns. Clipper mines authorized long-form creator content, ranks distinct stories, plans legitimate hook variants, renders true 9:16 edits, and persists technical evidence for every production run.
+Clipper is a rights-gated autonomous multimodal editor for producing short-form clips from explicitly authorized long-form video. Production execution is quality-derived: the system may emit many clips, one clip, or zero clips. It does not fill a requested quota with weaker content.
 
-## Production funnel
+## Production architecture
 
 ```text
-Campaign brief + authorized source
+explicit authorized target video(s)
         ↓
-Full timed transcript
+highest-available source media
         ↓
-StoryMoment discovery
+canonical grounding
+(transcription → alignment → diarization)
         ↓
-Multidimensional editorial scoring
+visual timeline / VLM evidence
         ↓
-ClipConcept mining
+MultimodalEvent
         ↓
-Semantic clustering / topic diversity
+SemanticCore
         ↓
-HookVariant planning
+NarrativeEnvelope
         ↓
-EditPlan + editorial beats
+deterministic FeasibleDeliveryWindow[]
         ↓
-Internal render budget
+QualityMoment
         ↓
-1080x1920 speaker-aware MP4 batch
+VisualStrategy
         ↓
-Per-clip technical QC
+EditPlan
         ↓
-Submission shortlist
+1080x1920 render
+        ↓
+technical QC + multimodal editorial QC
+        ↓
+accepted production artifacts
 ```
 
-The campaign's final `clip_count` is **not** the analysis budget. A long podcast can produce dozens of raw moments and concepts while the campaign still requests only the best three submissions.
+The production graph has no editorial output quota, fixed shortlist count, fixed concept count, fixed variant count, hard-coded hook menu, or campaign scoring-weight table. A candidate reaches rendering only when the source evidence supports a complete, feasible, policy-compliant moment.
 
-## Source and rights policy
+## Source targeting and rights
 
-The pipeline refuses unrestricted acquisition. Every brief must contain `source_channel_ids` or `allowed_video_ids`, and `rights_confirmed` must be `true`. Set that flag only after the campaign authorizes the exact source. Clipper does not bypass DRM, private-video access, paywalls, authentication, or platform permissions.
-
-For public campaign-authorized YouTube sources, Clipper requests available captions/media with `yt-dlp`; a YouTube Data API key is preferred for discovery. The user remains responsible for campaign terms, attribution, copyright permissions, and platform rules.
-
-Before production media download, Clipper inventories the authorized video's available streams and selects the highest practical MP4 video at or below `CLIPPER_SOURCE_MAX_HEIGHT` (default `1080`). The selected format ID, resolution, codec, bitrate, FPS and available alternatives are persisted beside the source media.
-
-## V10 editorial and production model
-
-V10 preserves the V8/V9 full-podcast editorial funnel while making the final edit, caption timeline, and batch yield explicit release contracts:
-
-- `StoryMoment` — a conversational/story unit discovered from the full transcript.
-- `ClipConcept` — a self-contained source story with setup, payoff, topic, duration, fingerprint, and editorial scores.
-- `HookVariant` — a legitimate source-derived opening strategy. Supported modes include direct, curiosity text, question, number, conflict, and strong opinion. `payoff_first` is intentionally not emitted until a multi-span reorder renderer can preserve continuity safely.
-- `EditPlan` — the authoritative source span(s), hook/caption start-word anchor, caption platform, ranking score, and meaning-driven visual beats sent to the renderer.
-
-### Editorial scoring
-
-Each concept records configurable 0–10 judgments for:
-
-`hook_strength`, `curiosity`, `payoff_strength`, `standalone_clarity`, `emotional_energy`, `information_value`, `controversy_or_tension`, `quoteability`, `specificity`, `campaign_relevance`, `story_completeness`, and `retention_potential`.
-
-Weights live under `editorial.score_weights` in the campaign brief. Start and end boundaries are separately scored; incomplete endings, filler openings, generic podcast housekeeping, and weak semantic closure are penalized.
-
-### Semantic diversity
-
-When no embedding service is configured, V9 uses a deterministic lexical-semantic fallback combining token-frequency cosine similarity and Jaccard overlap. The selected concept library enforces both semantic-cluster diversity and a configurable per-topic cap. This fallback is deterministic and intentionally does not pretend to be a learned embedding model.
-
-## Rendering and editorial behavior
-
-- True full-frame `1080x1920` output; no blurred duplicate background.
-- Speaker-aware portrait framing starts from the maximum-resolution `9:16` source crop (`zoom_factor=1.0`) rather than globally enlarging faces.
-- Camera changes are classified before rendering: source-camera cuts and large same-shot speaker switches are hard cuts, acceptable two-person/small-displacement compositions hold, and only genuine same-speaker subject movement may use an eased displacement-aware reframe.
-- Source camera cuts are detected from the original footage and never receive a sliding crop transition. Transition evidence records reason, mode, distance, duration and source-cut timing for QC.
-- Word-synchronized ASS captions are built from one flattened clip-local word stream owned by the final `EditPlan`. Words already in progress at an editorial cut are dropped rather than clamped into a fake 0.0-second subtitle. Exact source timestamps are preserved when available; fallback timing is explicitly marked `TimingMode: cue_interpolated`.
-- Every render writes a caption audit recording the first complete audible words, first caption phrase/time, partial words dropped, and a PASS/FAIL first-caption alignment invariant. QC fails a mismatch.
-- Hook overlays are suppressed when they duplicate the opening spoken caption instead of stacking the same sentence twice.
-- Platform-safe caption presets for TikTok, Instagram Reels, YouTube Shorts, and generic vertical output. Presets are conservative margins rather than claims about permanent app UI coordinates.
-- Source-derived hook text can appear briefly above the dialogue.
-- Digital punch-ins are disabled by default. The renderer rejects legacy post-upscale punch beats because they resample already-upscaled pixels and visibly soften podcast footage.
-- Dialogue is normalized with FFmpeg loudness processing.
-- Required campaign watermark assets are applied when configured.
-
-## Production configuration
+`clipper run` never performs implicit source discovery. Every production brief must use `targets.mode: explicit` and provide the exact authorized videos. Rights authorization is a separate gate and every target channel must be authorized.
 
 Example:
 
 ```yaml
-production:
-  candidate_pool_size: 36
-  concept_count: 10
-  variants_per_concept: 3
-  final_render_budget: 6
+campaign_id: example-campaign
+title: Example clipping campaign
+objective: Find every genuinely worthwhile, self-contained short-form moment.
+language: en
+region_code: US
 
-diversity:
-  semantic_similarity_threshold: 0.72
-  max_concepts_per_topic: 2
+targets:
+  mode: explicit
+  videos:
+    - video_id: REPLACE_WITH_AUTHORIZED_VIDEO_ID
+      url: https://www.youtube.com/watch?v=REPLACE_WITH_AUTHORIZED_VIDEO_ID
+      channel_id: UC_REPLACE_WITH_AUTHORIZED_CHANNEL_ID
 
-hooks:
-  enabled:
-    - direct
-    - curiosity_text
-    - question
-    - number
-    - conflict
-    - strong_opinion
+rights:
+  confirmed: false
+  authorized_channels:
+    - UC_REPLACE_WITH_AUTHORIZED_CHANNEL_ID
 
-editorial:
-  platform: tiktok
-  punch_ins_enabled: false
-  max_punch_ins_per_clip: 0
-  semantic_endings: true
-  post_speech_tail_seconds: 0.25
-  caption_max_lines: 2
-  score_weights:
-    hook_strength: 1.3
-    payoff_strength: 1.2
-    campaign_relevance: 1.6
-    retention_potential: 1.3
+content_constraints:
+  min_clip_seconds: 20
+  max_clip_seconds: 45
+
+attribution_required: true
+watermark_text: null
+watermark_url: null
+required_hashtags: []
+posting_requirements: []
+
+acceptance_policy:
+  source_segments:
+    allow: [editorial_content]
+    forbid: [advertisement, sponsor_read, promo, intro, outro, housekeeping]
+    unknown: escalate
+    safety_buffer_seconds: 0.25
+  branding:
+    supplied_campaign_assets_allowed: true
+    foreign_logos: forbid
+    minimum_confidence: 0.75
+  generated_media:
+    synthetic_visuals: escalate
+  portrayal:
+    negative_creator_portrayal: escalate
+  language:
+    on_screen_text: en
+  editorial:
+    require_standalone_context: true
+    require_resolved_ending: true
+    minimum_boundary_confidence: 0.75
 ```
 
-Generic defaults remain intentionally cheap for CI/smoke runs. Real campaign YAML can opt into a larger internal production budget without changing the campaign's final submission target.
+Set `rights.confirmed: true` only after the source is actually authorized. Clipper does not bypass DRM, authentication, paywalls, private-video permissions, or platform restrictions.
 
+A separate `clipper discover` command exists only for source research outside production execution. Discovery output is not automatically promoted into a production run; selected videos must be written explicitly into the brief and authorized first.
 
-### Batch yield and release status
+## Autonomous editorial contract
 
-`final_render_budget` is a required production yield, not a best-effort maximum. V10 separates the highest-ranked primary render plans from a reserve queue. A render exception or technical-QC failure promotes the next reserve plan until the target is reached or the reserve pool is exhausted. The submission shortlist is created **after** render and QC and can only reference accepted MP4s.
+The structured editorial model has four production task families:
 
-Every production manifest records `SUCCESS`, `DEGRADED`, or `FAILED`, explicit render/shortlist targets and actual counts, a full funnel ledger, per-attempt render outcomes, and a rejection ledger explaining attrition by stage/reason. A run that targets six finalists but produces two is `FAILED`; the CLI exits non-zero for a failed production run.
+- `source_hazards` — identify sponsor/promo/branding/policy hazards from source evidence.
+- `semantic_cores` — identify independent semantic cores without a predetermined topic or vocabulary list.
+- `narrative_envelope` — determine the context and resolution required for a core to stand alone.
+- `quality_windows` — rank feasible delivery windows that preserve the required narrative envelope.
 
-The dedicated Double Coverage acceptance configuration intentionally distinguishes the six-clip review batch from the three-clip campaign submission shortlist.
+The prompt/schema contract prohibits predeclared topic, hook, emotion, numeric, or domain-specific lexical templates. Unknown production task families fail closed.
 
-## Render profiles and image quality
+Duration feasibility is deterministic. The solver constructs valid delivery windows before editorial ranking, so an `EditPlan` cannot be accepted merely because a model asked for an under-duration span.
 
-Clipper separates encode speed from release quality:
+## Multimodal editing and rendering
 
-- `smoke`: `libx264`, `ultrafast`, CRF 23 — CI/container smoke only.
-- `review`: `libx264`, `medium`, CRF 18 — editorial review artifacts.
-- `production`: `libx264`, `veryfast`, CRF 17 — default production master; selected from full-length 1080 acceptance tests to stay within the release runner memory envelope while preserving source pixels and one-generation rendering.
+- Full-frame `1080x1920` output with no blurred duplicate background.
+- Source-resolution-first portrait crop; no unnecessary digital zoom.
+- Speaker-aware framing uses face/speaker evidence rather than generic motion, so gestures and hands do not drive the crop.
+- Source-camera cuts remain hard composition boundaries; virtual-camera movement is deliberately stabilized.
+- Word-synchronized ASS reveal captions use the final clip-local word timeline.
+- First-caption alignment is audited and fails QC on mismatch.
+- Campaign watermark/branding policy is applied before release.
+- Synthetic or generated visual media is policy-gated; campaigns may forbid it entirely.
+- Technical QC validates decode, geometry, audio, captions, tracking evidence, and required sidecars.
+- Final editorial QC is multimodal and can reject an otherwise technically valid render.
 
-Production composition performs one source crop followed by one Lanczos scale to `1080x1920`; there is no scale-then-zoom-then-crop path. Render/tracking sidecars record source resolution, crop resolution, effective scale, resampling-stage count, digital-zoom usage, profile, preset and CRF.
+## Models and execution
 
-## Caching and reproducibility
+The production model plan is resolved explicitly and recorded in run evidence. The open-model Modal runtime provides:
 
-Transcript and editorial-analysis caches are schema-versioned and keyed from relevant inputs including source identity/hash, transcript/model identity, normalized production configuration, and cache schema version. A changed source or relevant config invalidates downstream analysis rather than silently reusing stale output.
+- transcription
+- alignment
+- diarization
+- structured editorial inference
+- vision / large-vision review
+- schema and Hugging Face access smoke tests
 
-Run manifests persist:
+Default production execution uses the deployed Modal pipeline when the resolved plan requires Modal. `--allow-local-lite` is an explicit opt-in to the smaller local profile; it is not silently substituted for production models.
 
-- Git commit SHA
-- source hashes when media is acquired
-- transcript hashes and transcript source
-- normalized campaign configuration
-- story moments, concept rankings, semantic clusters
-- hook variants and edit plans
-- source ranges and transcript fingerprints
-- render hashes
-- cache hit/miss events
-- technical QC
-- wall/CPU time, peak RAM, artifact disk use, and optional GPU-utilization samples
+## Content-addressed execution
 
-Set `CLIPPER_CACHE_ROOT` to keep reusable analysis outside the per-run artifact directory.
+Grounding and editorial stages are keyed from source/model/contract inputs. A changed source, model identity, schema contract, or relevant stage input invalidates the affected cache rather than reusing stale output.
 
-## Output
+`--resume RUN_ID` reuses matching content-addressed artifacts from an interrupted run. `--fresh-inference` creates an empty cache root so live model evidence cannot be satisfied by an existing cache entry.
 
-```text
-artifacts/<campaign-id>-<UTC timestamp>/
-├── brief.normalized.json
-├── transcript.json
-├── story-moments.json
-├── concept-ranking.json
-├── hook-variants.json
-├── funnel.json
-├── rejections.json
-├── coverage.json
-├── editorial-review.json
-├── edit-plans/
-├── clips/                 # accepted QC-passed review finalists only
-│   ├── *.mp4
-│   ├── *.ass
-│   ├── *.caption-audit.json
-│   ├── *.tracking.json
-│   └── *.render.json
-├── captions/              # copied accepted ASS + caption-audit evidence
-├── tracking/              # copied accepted tracking evidence
-├── qc/
-├── rejected/              # failed-QC attempts retained for diagnosis
-├── work/
-└── manifest.json
-```
+Each run persists model identities, source hashes, cache events, funnel/yield evidence, rejections, render attempts, QC evidence, and output hashes in its artifact directory.
 
-## Automated technical QC
-
-Each production render is checked for:
-
-- valid FFmpeg/ffprobe decode
-- 1080x1920 geometry and ~30 fps
-- H.264 video + AAC audio
-- edit-plan duration agreement
-- objective loudness / true peak / long silence
-- caption safe-region margin, timing provenance, first-caption word/text timing alignment, and partial-boundary-word audit
-- tracking evidence confirming no filler and a valid 9:16 source crop
-- transition QC rejecting source-cut sliding, excessive eased velocity, premature target reframes and short-window oscillation
-- source/crop resolution, effective upscale factor, resampling-stage count and digital-zoom evidence
-- render profile, encoder preset, CRF and output bitrate
-- required watermark asset presence
-
-Technical PASS does not imply editorial PASS. Actual final MP4 review remains a separate production gate.
-
-## Environment
-
-| Variable | Default | Purpose |
-|---|---:|---|
-| `YOUTUBE_API_KEY` | unset | Official YouTube search/metadata |
-| `CLIPPER_ARTIFACT_ROOT` | `artifacts` | Per-run output root |
-| `CLIPPER_CACHE_ROOT` | `<artifact-root>/_cache` | Persistent transcript/editorial cache |
-| `CLIPPER_WHISPER_MODEL` | `small` | Faster-Whisper fallback model |
-| `CLIPPER_WHISPER_DEVICE` | `auto` | `cpu`, `cuda`, or `auto` |
-| `CLIPPER_WHISPER_COMPUTE_TYPE` | `int8` | ASR precision/performance |
-| `CLIPPER_SOURCE_MAX_HEIGHT` | `1080` | Practical default source height; raise explicitly on higher-memory production runners |
-| `CLIPPER_RENDER_PROFILE` | `production` | `smoke`, `review`, or `production` encoder profile |
-| `CLIPPER_SPEAKER_FOCUS` | `true` | Enable speaker-aware portrait framing |
-| `CLIPPER_SPEAKER_ZOOM` | `1.0` | Base portrait zoom; production default preserves maximum source pixels |
-| `CLIPPER_SPEAKER_SAMPLE_FPS` | `4.0` | Face/mouth analysis rate |
-| `CLIPPER_SPEAKER_SWITCH_MARGIN` | `1.35` | Speaker-switch hysteresis |
-| `CLIPPER_SPEAKER_MIN_REFRAME_SECONDS` | `0.35` | Minimum eased same-speaker subject reframe duration |
-| `CLIPPER_SPEAKER_MAX_REFRAME_SECONDS` | `0.9` | Maximum eased same-speaker subject reframe duration |
-| `CLIPPER_SPEAKER_SECONDS_PER_CROP` | `0.75` | Additional ease duration per crop-width of movement |
-| `CLIPPER_SPEAKER_HOLD_THRESHOLD` | `0.28` | Small same-shot speaker displacement that should hold instead of moving |
-| `CLIPPER_SPEAKER_REVERSAL_GUARD_SECONDS` | `1.25` | Suppress short-lived speaker switches that would immediately reverse |
-| `CLIPPER_SPEAKER_WINDOW_SECONDS` | `0.8` | Active-speaker decision window |
-| `CLIPPER_SPEAKER_MIN_DETECTION_COVERAGE` | `0.35` | Reject sparse cut/graphic detections |
-
-## Setup and commands
+## Setup
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev,asr]"
+python -m pip install -e ".[dev]"
 cp campaign.example.yaml campaign.yaml
+```
 
+Install only the inference extras required by the execution environment, or install `.[open-models]` for the complete open-model worker dependency set. Modal orchestration uses `.[modal]`.
+
+## Commands
+
+Validate an explicit production brief:
+
+```bash
 clipper validate --brief campaign.yaml
-clipper discover --brief campaign.yaml
+```
+
+Run production:
+
+```bash
 clipper run --brief campaign.yaml --artifact-root artifacts
 ```
 
-Analysis-only mode:
+Plan without rendering:
 
 ```bash
 clipper run --brief campaign.yaml --artifact-root artifacts --no-render
 ```
 
-Quality gate:
+Force fresh inference:
 
 ```bash
-make check
+clipper run --brief campaign.yaml --artifact-root artifacts --fresh-inference
 ```
 
-Standard CI runs Ruff, strict mypy, pytest with a 95% coverage floor on Python 3.11/3.12, and a bounded container smoke render. The separate `live-campaign.yml` release workflow targets the active production branch (or explicit workflow dispatch), runs `campaigns/reach-double-coverage-dedicated.yaml`, requires the complete six-finalist/three-shortlist batch, validates every MP4 and sidecar, and uploads `reach-live-<HEAD_SHA>` acceptance evidence.
+Resume a compatible interrupted run:
 
-GitHub-hosted runners can be rate-limited or bot-challenged by YouTube independently of Clipper. The live release workflow therefore supports a private `CLIPPER_SOURCE_FIXTURE_DIR`: a checksum-verified mirror of the authorized full timed transcript, required campaign watermark, and high-resolution source windows covering the current planned/reserve edit ranges. The fixture is stored as a private GitHub Actions artifact and is never committed to the public repository. It does **not** change normal production behavior: without `CLIPPER_SOURCE_FIXTURE_DIR`, Clipper continues to discover and acquire authorized sources through `YouTubeClient`. Fixture spans preserve their original source-keyframe origin so absolute podcast EditPlans and word timestamps are deterministically remapped to local media without source re-encoding.
+```bash
+clipper run --brief campaign.yaml --artifact-root artifacts --resume RUN_ID
+```
+
+Optional non-production source research:
+
+```bash
+clipper discover --query "podcast topic" --channel-id UC_CHANNEL --limit 10
+```
+
+Evaluate a private cross-domain acceptance corpus:
+
+```bash
+clipper benchmark --manifest acceptance/corpus.yaml --output benchmark.json
+```
+
+## Software quality gates
+
+```bash
+ruff check .
+ruff format --check .
+mypy
+pytest
+```
+
+Pytest enforces a repository-wide coverage floor of **95%**. CI runs the quality gates on Python 3.11 and 3.12.
+
+Production acceptance additionally requires exact-head deployment evidence, current model/schema smoke tests, a current end-to-end render, technical QC, multimodal final QC, and review of the actual MP4. Historical renders do not prove the current head.
 
 ## Publication boundary
 
-Clipper stops at production artifacts, QC evidence, and a submission shortlist. It does not automatically upload to TikTok, Instagram, YouTube Shorts, or Whop. Publishing must remain a separate explicitly authorized action after actual video review and account/campaign checks.
+Clipper stops at production artifacts and QC evidence. It does not automatically upload to TikTok, Instagram, YouTube Shorts, Whop, or another campaign platform. Publishing/submission is a separate explicitly authorized action after the final media and campaign/account requirements are reviewed.
