@@ -1493,8 +1493,7 @@ def test_plan_batch_global_selection_and_plan_validation_errors(tmp_path: Path) 
     assert [item.concept_id for item in empty_ranked.selected_concepts] == ["c"]
     assert empty_ranked.plans == []
     assert any(
-        item.get("reasons") == ["no_grounded_hook_variants"]
-        for item in empty_ranked.rejections
+        item.get("reasons") == ["no_grounded_hook_variants"] for item in empty_ranked.rejections
     )
 
     no_concepts = AutonomousEditorialPlanner(
