@@ -15,6 +15,7 @@ class WindowQualityAssessment:
     window_id: str
     decision: QualityDecision
     quality_score: float
+    opening_strategy: str
     rationale: str
     confidence: float
 
@@ -25,6 +26,8 @@ class WindowQualityAssessment:
             raise ValueError("unsupported quality assessment decision")
         if not 0 <= self.quality_score <= 1 or not 0 <= self.confidence <= 1:
             raise ValueError("quality score and confidence must be between 0 and 1")
+        if not self.opening_strategy.strip():
+            raise ValueError("quality assessment requires a source-derived opening strategy")
         if not self.rationale.strip():
             raise ValueError("quality assessment requires rationale")
 
