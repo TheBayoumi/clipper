@@ -165,7 +165,9 @@ class CanonicalTimeline:
         )
         supplied = payload.get("contract_fingerprint")
         if supplied is not None and str(supplied) != timeline.contract_fingerprint:
-            raise ValueError("canonical timeline contract fingerprint does not match runtime contract")
+            raise ValueError(
+                "canonical timeline contract fingerprint does not match runtime contract"
+            )
         # Historical `schema_version` metadata is deliberately ignored. The payload fields
         # themselves are validated and normalized onto the current structural contract.
         return timeline

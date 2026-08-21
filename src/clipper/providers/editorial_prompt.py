@@ -176,7 +176,7 @@ def editorial_contract(task: str) -> str:
             "self-contained narrative."
         )
     if family == "quality_windows":
-        return common + (
+        return common + (  # noqa: S608 - editorial prose, not SQL
             "All supplied feasible_windows have already been deterministically proven legal. "
             "Judge only those supplied window IDs and never invent timestamps. PASS only when a "
             "window is independently strong enough to publish based on this source and campaign, "

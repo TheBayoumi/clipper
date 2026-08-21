@@ -107,9 +107,9 @@ def test_explicit_target_channel_must_be_authorized(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(BriefValidationError, match="outside rights.authorized_channels"):
+    with pytest.raises(BriefValidationError, match=r"outside rights\.authorized_channels"):
         load_explicit_targets(path)
-    with pytest.raises(BriefValidationError, match="outside rights.authorized_channels"):
+    with pytest.raises(BriefValidationError, match=r"outside rights\.authorized_channels"):
         load_brief(path)
 
 

@@ -364,7 +364,9 @@ class VolumeSourceClient:
                 raise ValueError("source item requires evidence")
             video_id = str(item.get("video_id") or evidence.get("video_id") or "").strip()
             channel_id = str(item.get("channel_id") or "").strip()
-            canonical_url = str(item.get("canonical_url") or evidence.get("source_url") or "").strip()
+            canonical_url = str(
+                item.get("canonical_url") or evidence.get("source_url") or ""
+            ).strip()
             source_path = Path(str(evidence.get("mount_path") or ""))
             source_sha256 = str(evidence.get("sha256") or "")
             duration = float(evidence.get("duration_seconds") or 0.0)
@@ -415,7 +417,9 @@ class VolumeSourceClient:
         source_path = Path(record["path"])
         expected = str(record["sha256"])
         if not source_path.is_file() or _sha256(source_path) != expected:
-            raise RuntimeError(f"mounted source master failed SHA-256 verification: {video.video_id}")
+            raise RuntimeError(
+                f"mounted source master failed SHA-256 verification: {video.video_id}"
+            )
         return source_path
 
     def download_media_span(
@@ -437,10 +441,7 @@ class VolumeSourceClient:
         return SpanMedia(source_path, 0.0, duration, str(record["sha256"]))
 
     def evidence_by_video(self) -> dict[str, dict[str, Any]]:
-        return {
-            video_id: dict(record["evidence"])
-            for video_id, record in self._records.items()
-        }
+        return {video_id: dict(record["evidence"]) for video_id, record in self._records.items()}
 
 
 @app.function(
@@ -456,8 +457,10 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     from clipper.providers.factory import speech_providers
 
     raw_sources = payload.get("sources")
-    if not isinstance(raw_sources, list) or not raw_sources or not all(
-        isinstance(item, dict) for item in raw_sources
+    if (
+        not isinstance(raw_sources, list)
+        or not raw_sources
+        or not all(isinstance(item, dict) for item in raw_sources)
     ):
         raise ValueError("run_full_cycle requires a non-empty sources array")
     source_items = [dict(item) for item in raw_sources]

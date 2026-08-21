@@ -142,7 +142,9 @@ def _explicit_target_specs_from_data(data: dict[str, Any]) -> tuple[ExplicitTarg
     if not isinstance(rights, dict):
         raise BriefValidationError("production brief requires a rights object")
     raw_channels = rights.get("authorized_channels", [])
-    if not isinstance(raw_channels, list) or not all(isinstance(item, str) for item in raw_channels):
+    if not isinstance(raw_channels, list) or not all(
+        isinstance(item, str) for item in raw_channels
+    ):
         raise BriefValidationError("rights.authorized_channels must be a list of strings")
     authorized = {item.strip() for item in raw_channels if item.strip()}
     unauthorized = sorted({item.channel_id for item in specs if item.channel_id not in authorized})

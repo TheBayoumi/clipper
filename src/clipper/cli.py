@@ -126,7 +126,7 @@ def _assert_runtime_dependencies(plan: dict[str, object]) -> None:
     if modal_spec is None:
         raise RuntimeError(
             "resolved production model plan requires the Modal Python SDK, but 'modal' is not "
-            "installed. Install the balanced runtime with: python -m pip install -e \".[modal]\""
+            'installed. Install the balanced runtime with: python -m pip install -e ".[modal]"'
         )
 
 
@@ -252,7 +252,9 @@ def _audit_model_evidence(
     }
 
     editorial_meta = metadata.get("editorial_inference")
-    invocations = editorial_meta.get("model_invocations") if isinstance(editorial_meta, dict) else None
+    invocations = (
+        editorial_meta.get("model_invocations") if isinstance(editorial_meta, dict) else None
+    )
     if not isinstance(invocations, list) or not invocations:
         raise RuntimeError("autonomous editorial run produced no model invocation evidence")
     expected_editorial = _model_id(plan.get("editorial"))
@@ -265,8 +267,7 @@ def _audit_model_evidence(
     }
     if expected_editorial and expected_editorial not in actual_model_ids:
         raise RuntimeError(
-            "editorial evidence does not contain the resolved editorial model "
-            f"{expected_editorial}"
+            f"editorial evidence does not contain the resolved editorial model {expected_editorial}"
         )
     audit["editorial"] = {
         "expected_model": expected_editorial,
@@ -311,7 +312,9 @@ def _audit_model_evidence(
     }
     missing = sorted(expected - observed)
     if missing:
-        raise RuntimeError("canonical grounding evidence is missing resolved models: " + ", ".join(missing))
+        raise RuntimeError(
+            "canonical grounding evidence is missing resolved models: " + ", ".join(missing)
+        )
     audit["grounding"] = {
         "expected_models": sorted(expected),
         "observed_models": sorted(observed),
