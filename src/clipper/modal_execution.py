@@ -11,10 +11,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .brief import load_brief
-from .models import CampaignBrief, VideoCandidate
+from .brief import load_brief, load_explicit_targets
+from .models import VideoCandidate
 from .rights import assert_campaign_authorized, assert_video_allowed
-from .youtube import YouTubeClient
 
 LOGGER = logging.getLogger("clipper")
 DEFAULT_MODEL_APP = "clipper-open-editor"
@@ -24,7 +23,6 @@ _REQUIRED_MODEL_FUNCTIONS = (
     "transcribe",
     "align",
     "diarize",
-    "embedding",
     "editorial",
     "vision",
     "hf_access_smoke",
@@ -55,7 +53,6 @@ def _retry_delay(attempt: int) -> float:
 
 def _function(app_name: str, function_name: str) -> Any:
     """Hydrate a deployed Modal Function with bounded retries for control-plane flakes."""
-
     modal = importlib.import_module("modal")
     for attempt in range(1, _CONTROL_PLANE_ATTEMPTS + 1):
         handle = modal.Function.from_name(app_name, function_name)
@@ -91,8 +88,6 @@ def _repo_script(name: str) -> Path:
 
 
 def _deploy(script: Path) -> None:
-    """Deploy a missing Modal app, retrying bounded CLI/control-plane failures."""
-
     executable = shutil.which("modal")
     if executable is None:
         raise RuntimeError("Modal CLI is required to deploy a missing production runtime")
@@ -100,7 +95,6 @@ def _deploy(script: Path) -> None:
         raise RuntimeError(
             f"Modal runtime is not deployed and deployment source is unavailable: {script}"
         )
-
     command = [executable, "deploy", str(script)]
     for attempt in range(1, _DEPLOY_ATTEMPTS + 1):
         LOGGER.info(
@@ -110,12 +104,7 @@ def _deploy(script: Path) -> None:
             _DEPLOY_ATTEMPTS,
         )
         try:
-            subprocess.run(
-                command,
-                check=True,
-                timeout=1800,
-                cwd=_repo_root(),
-            )
+            subprocess.run(command, check=True, timeout=1800, cwd=_repo_root())
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             if attempt >= _DEPLOY_ATTEMPTS:
                 raise
@@ -137,11 +126,10 @@ def _hydrate_required(app_name: str, functions: tuple[str, ...]) -> None:
         try:
             _function(app_name, function_name)
         except Exception as exc:
-            message = (
+            raise RuntimeError(
                 f"required Modal function {app_name}/{function_name} is unavailable after runtime "
                 f"repair ({type(exc).__name__}: {exc})"
-            )
-            raise RuntimeError(message) from exc
+            ) from exc
 
 
 def _ensure_deployed_runtime(
@@ -150,8 +138,6 @@ def _ensure_deployed_runtime(
     functions: tuple[str, ...],
     deployment_script: str,
 ) -> None:
-    """Attach to an existing Modal app; deploy it only when Modal reports NotFoundError."""
-
     missing_function: str | None = None
     for function_name in functions:
         try:
@@ -165,11 +151,9 @@ def _ensure_deployed_runtime(
                 f"{app_name}/{function_name} ({type(exc).__name__}: {exc}); "
                 "refusing to misclassify this as a missing deployment"
             ) from exc
-
     if missing_function is None:
         LOGGER.info("attached to deployed Modal runtime %s", app_name)
         return
-
     LOGGER.info(
         "Modal runtime %s/%s is not deployed; repairing from local checkout",
         app_name,
@@ -180,8 +164,6 @@ def _ensure_deployed_runtime(
 
 
 def _validate_model_access(app_name: str) -> None:
-    """Fail before production compute when the deployed Hugging Face secret is unusable."""
-
     smoke = _function(app_name, "hf_access_smoke")
     try:
         result = smoke.remote()
@@ -202,18 +184,9 @@ def _validate_model_access(app_name: str) -> None:
 
 
 def ensure_modal_runtime() -> None:
-    """Attach to deployed Modal runtimes and repair only genuinely missing apps/functions.
-
-    Normal `clipper run` execution performs no deployment. Both the model workers and the
-    production pipeline worker are reused from their existing Modal deployments. A local deploy
-    is attempted only when Modal explicitly reports NotFoundError for a required function.
-    Connectivity, authentication, quota, and other service failures fail closed and are never
-    misclassified as a missing deployment.
-    """
-
+    """Attach to deployed runtimes; redeploy only genuinely missing functions."""
     model_app = os.getenv("CLIPPER_MODAL_APP", DEFAULT_MODEL_APP)
     pipeline_app = os.getenv("CLIPPER_MODAL_PIPELINE_APP", DEFAULT_PIPELINE_APP)
-
     _ensure_deployed_runtime(
         app_name=model_app,
         functions=_REQUIRED_MODEL_FUNCTIONS,
@@ -227,35 +200,27 @@ def ensure_modal_runtime() -> None:
     _validate_model_access(model_app)
 
 
-def _authorized_candidates(brief: CampaignBrief) -> list[VideoCandidate]:
-    if brief.allowed_video_ids:
-        channel_id = brief.source_channel_ids[0] if len(brief.source_channel_ids) == 1 else ""
-        candidates = [
-            VideoCandidate(
-                video_id=video_id,
-                title=f"{brief.title} authorized source",
-                channel_id=channel_id,
-                channel_title="Authorized campaign source",
-                url=brief.source_media_urls.get(video_id)
-                or f"https://www.youtube.com/watch?v={video_id}",
-            )
-            for video_id in brief.allowed_video_ids[: brief.source_limit]
-        ]
-    else:
-        candidates = YouTubeClient().discover(brief)
-
-    allowed: list[VideoCandidate] = []
+def _explicit_candidates(brief_path: Path) -> list[VideoCandidate]:
+    """Resolve exactly the campaign's explicit targets; production never performs discovery."""
+    brief = load_brief(brief_path)
+    specs = load_explicit_targets(brief_path)
+    candidates = [
+        VideoCandidate(
+            video_id=spec.video_id,
+            title=f"{brief.title} explicit target",
+            channel_id=spec.channel_id,
+            channel_title="Authorized explicit target",
+            url=spec.media_url or spec.url,
+        )
+        for spec in specs
+    ]
     for candidate in candidates:
         assert_video_allowed(brief, candidate)
-        allowed.append(candidate)
-    return allowed[: brief.source_limit]
+    return candidates
 
 
 def _acquire_remote_source(function: Any, candidate: VideoCandidate) -> dict[str, Any]:
-    payload = {
-        "video_id": candidate.video_id,
-        "video_url": candidate.url,
-    }
+    payload = {"video_id": candidate.video_id, "video_url": candidate.url}
     variants = (
         ("cloud:gcp", "cloud", "gcp"),
         ("cloud:aws", "cloud", "aws"),
@@ -370,12 +335,7 @@ def run_modal_pipeline(
     render: bool,
     fresh_inference: bool,
 ) -> Path:
-    """Execute the canonical production pipeline entirely inside Modal.
-
-    Large source media is acquired directly by Modal and remains in the Modal media Volume.
-    Only the completed run artifacts are materialized to the caller's artifact root.
-    """
-
+    """Execute every explicit campaign target inside one content-addressed Modal run."""
     brief = load_brief(brief_path)
     assert_campaign_authorized(brief)
     ensure_modal_runtime()
@@ -383,24 +343,24 @@ def run_modal_pipeline(
     pipeline_app = os.getenv("CLIPPER_MODAL_PIPELINE_APP", DEFAULT_PIPELINE_APP)
     acquire = _function(pipeline_app, "acquire_source")
     runner = _function(pipeline_app, "run_full_cycle")
-    candidates = _authorized_candidates(brief)
+    candidates = _explicit_candidates(brief_path)
     if not candidates:
-        raise RuntimeError("campaign contains no authorized source candidates")
-    if len(candidates) != 1:
-        raise RuntimeError(
-            "default Modal production execution currently requires source_limit=1; "
-            "split multi-source campaigns before execution"
-        )
+        raise RuntimeError("campaign contains no explicit authorized targets")
 
-    source = _acquire_remote_source(acquire, candidates[0])
-    channel_id = candidates[0].channel_id or (
-        brief.source_channel_ids[0] if brief.source_channel_ids else "authorized-source"
-    )
+    sources = [_acquire_remote_source(acquire, candidate) for candidate in candidates]
+    source_payloads = [
+        {
+            "evidence": evidence,
+            "video_id": candidate.video_id,
+            "channel_id": candidate.channel_id,
+            "canonical_url": candidate.url,
+        }
+        for candidate, evidence in zip(candidates, sources, strict=True)
+    ]
     response = runner.remote(
         {
-            "source": source,
+            "sources": source_payloads,
             "brief_yaml": brief_path.read_text(encoding="utf-8"),
-            "channel_id": channel_id,
             "render": render,
             "fresh_inference": fresh_inference,
             "resume_from_run_id": resume_from_run_id,
