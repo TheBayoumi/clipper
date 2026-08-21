@@ -16,10 +16,18 @@ def make_brief(tmp_path: Path) -> Path:
             {
                 "campaign_id": "c",
                 "title": "AI",
-                "objective": "Goal",
-                "keywords": ["automation"],
-                "allowed_video_ids": ["v1"],
-                "rights_confirmed": True,
+                "objective": "Find every independently worthwhile moment.",
+                "targets": {
+                    "mode": "explicit",
+                    "videos": [
+                        {
+                            "video_id": "v1",
+                            "url": "https://www.youtube.com/watch?v=v1",
+                            "channel_id": "UC1",
+                        }
+                    ],
+                },
+                "rights": {"confirmed": True, "authorized_channels": ["UC1"]},
             }
         ),
         encoding="utf-8",
@@ -27,20 +35,38 @@ def make_brief(tmp_path: Path) -> Path:
     return path
 
 
-def open_plan() -> dict[str, object]:
+def local_plan(*, profile: str = "balanced") -> dict[str, object]:
     return {
-        "editorial_engine": "open",
-        "grounding_engine": "open",
-        "compute_profile": "balanced",
-        "editorial": {"model_id": "editorial-test"},
-        "embedding": {"model_id": "embedding-test"},
-        "transcription": {"model_id": "asr-test"},
-        "alignment": {"model_id": "alignment-test"},
-        "diarization": {"model_id": "diarization-test"},
+        "architecture": "autonomous-multimodal-quality-graph",
+        "compute_profile": profile,
+        "editorial": {
+            "model_id": "editorial-test",
+            "revision": "r1",
+            "quantization": "test",
+            "inference_engine": "local-test",
+        },
+        "transcription": {
+            "model_id": "asr-test",
+            "revision": "r1",
+            "quantization": "test",
+            "inference_engine": "local-test",
+        },
+        "alignment": {
+            "model_id": "alignment-test",
+            "revision": "r1",
+            "quantization": "test",
+            "inference_engine": "local-test",
+        },
+        "diarization": {
+            "model_id": "diarization-test",
+            "revision": "r1",
+            "quantization": "test",
+            "inference_engine": "local-test",
+        },
     }
 
 
-def write_open_manifest(run_dir: Path, *, status: str = "SUCCESS") -> None:
+def write_model_manifest(run_dir: Path, *, status: str = "SUCCESS") -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "status": status,
@@ -48,14 +74,14 @@ def write_open_manifest(run_dir: Path, *, status: str = "SUCCESS") -> None:
             "editorial_inference": {
                 "model_invocations": [
                     {
-                        "stage": "episode_editorial_profile",
+                        "stage": "semantic_cores:v1",
                         "cache_hit": False,
                         "model": {"model_id": "editorial-test"},
                     },
                     {
-                        "stage": "semantic_embeddings",
+                        "stage": "quality_windows:core-1",
                         "cache_hit": True,
-                        "model": {"model_id": "embedding-test"},
+                        "model": {"model_id": "editorial-test"},
                     },
                 ]
             },
@@ -83,40 +109,47 @@ def write_open_manifest(run_dir: Path, *, status: str = "SUCCESS") -> None:
     (run_dir / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_cli_validate(tmp_path: Path, capsys) -> None:
+def test_cli_validate_explicit_target_brief(tmp_path: Path, capsys) -> None:
     path = make_brief(tmp_path)
     assert main(["--verbose", "validate", "--brief", str(path)]) == 0
-    assert '"campaign_id": "c"' in capsys.readouterr().out
+    output = json.loads(capsys.readouterr().out)
+    assert output["campaign_id"] == "c"
+    assert output["allowed_video_ids"] == ["v1"]
+    assert "keywords" not in output
 
 
-def test_cli_discover(tmp_path: Path, capsys) -> None:
-    path = make_brief(tmp_path)
-    video = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
+def test_cli_discover_is_separate_from_production_brief(tmp_path: Path, capsys) -> None:
+    del tmp_path
+    video = VideoCandidate("v2", "Title", "UC2", "Channel", "https://youtu.be/v2")
     with patch("clipper.cli.YouTubeClient") as client_cls:
         client_cls.return_value.discover.return_value = [video]
-        assert main(["discover", "--brief", str(path)]) == 0
-    assert '"video_id": "v1"' in capsys.readouterr().out
+        assert (
+            main(
+                [
+                    "discover",
+                    "--query",
+                    "podcast",
+                    "--channel-id",
+                    "UC2",
+                    "--limit",
+                    "4",
+                ]
+            )
+            == 0
+        )
+    request = client_cls.return_value.discover.call_args.args[0]
+    assert request.query == "podcast"
+    assert request.channel_ids == ("UC2",)
+    assert request.limit == 4
+    assert json.loads(capsys.readouterr().out)[0]["video_id"] == "v2"
 
 
-def test_cli_discover_filters_video_outside_allow_list(tmp_path: Path, capsys) -> None:
-    path = make_brief(tmp_path)
-    video = VideoCandidate("v2", "Other", "UC2", "Other Channel", "https://youtu.be/v2")
-    with patch("clipper.cli.YouTubeClient") as client_cls:
-        client_cls.return_value.discover.return_value = [video]
-        assert main(["discover", "--brief", str(path)]) == 0
-    assert json.loads(capsys.readouterr().out) == []
-
-
-def test_cli_run_defaults_to_audited_open_v10(tmp_path: Path, capsys, monkeypatch) -> None:
+def test_cli_run_uses_autonomous_quality_graph_and_fresh_cache(tmp_path: Path, capsys) -> None:
     path = make_brief(tmp_path)
     run_dir = tmp_path / "run"
-    write_open_manifest(run_dir)
-    monkeypatch.setenv("CLIPPER_WHISPER_MODEL", "base.en")
-    monkeypatch.delenv("CLIPPER_EDITORIAL_ENGINE", raising=False)
-    monkeypatch.delenv("CLIPPER_GROUNDING_ENGINE", raising=False)
-    monkeypatch.delenv("CLIPPER_COMPUTE_PROFILE", raising=False)
+    write_model_manifest(run_dir)
     with (
-        patch("clipper.cli._resolved_model_plan", return_value=open_plan()),
+        patch("clipper.cli._resolved_model_plan", return_value=local_plan()),
         patch("clipper.cli.run_pipeline", return_value=run_dir) as run,
     ):
         assert (
@@ -133,17 +166,15 @@ def test_cli_run_defaults_to_audited_open_v10(tmp_path: Path, capsys, monkeypatc
             )
             == 0
         )
-        settings = run.call_args.kwargs["settings"]
-        assert run.call_args.kwargs["render"] is False
-        assert settings.whisper_model == "base.en"
-        assert settings.editorial_engine == "open"
-        assert settings.grounding_engine == "open"
-        assert settings.compute_profile == "balanced"
-        assert settings.cache_root is not None
-        assert "_fresh-cache" in str(settings.cache_root)
+    settings = run.call_args.kwargs["settings"]
+    assert run.call_args.kwargs["render"] is False
+    assert settings.compute_profile == "balanced"
+    assert settings.cache_root is not None
+    assert "_fresh-cache" in str(settings.cache_root)
     assert str(run_dir) in capsys.readouterr().out
     audit = json.loads((run_dir / "model-execution.json").read_text())
     assert audit["status"] == "PASS"
+    assert audit["resolved_plan"]["architecture"] == "autonomous-multimodal-quality-graph"
     assert audit["editorial"]["live_invocations"] == 1
     assert audit["editorial"]["cache_hits"] == 1
     assert audit["grounding"]["live_invocations"] == 2
@@ -168,7 +199,7 @@ def test_resume_reuses_interrupted_source_master(tmp_path: Path) -> None:
     assert json.loads(cached.with_suffix(".source.json").read_text()) == {"quality": "source"}
 
 
-def test_cli_resume_accepts_run_id_and_seeds_before_pipeline(tmp_path: Path) -> None:
+def test_cli_resume_accepts_run_id_and_seeds_before_local_pipeline(tmp_path: Path) -> None:
     path = make_brief(tmp_path)
     artifact_root = tmp_path / "artifacts"
     previous = artifact_root / "c-20260814T102639Z"
@@ -177,9 +208,9 @@ def test_cli_resume_accepts_run_id_and_seeds_before_pipeline(tmp_path: Path) -> 
     (source_dir / "v1.mkv").write_bytes(b"source-master")
 
     run_dir = tmp_path / "continued-run"
-    write_open_manifest(run_dir)
+    write_model_manifest(run_dir)
     with (
-        patch("clipper.cli._resolved_model_plan", return_value=open_plan()),
+        patch("clipper.cli._resolved_model_plan", return_value=local_plan()),
         patch("clipper.cli.run_pipeline", return_value=run_dir) as run,
     ):
         assert (
@@ -207,26 +238,28 @@ def test_resume_rejects_invalid_or_completed_run(tmp_path: Path) -> None:
         _seed_resume_source_cache(settings, "../escape", campaign_id="c")
 
     completed = settings.artifact_root / "c-20260814T102639Z"
-    write_open_manifest(completed, status="SUCCESS")
+    write_model_manifest(completed, status="SUCCESS")
     with pytest.raises(RuntimeError, match="already completed successfully"):
         _seed_resume_source_cache(settings, completed.name, campaign_id="c")
 
 
-def test_cli_refuses_accidental_legacy_and_local_lite(tmp_path: Path, monkeypatch) -> None:
+def test_cli_refuses_local_lite_without_explicit_opt_in(tmp_path: Path, monkeypatch) -> None:
     path = make_brief(tmp_path)
-    monkeypatch.setenv("CLIPPER_EDITORIAL_ENGINE", "heuristic")
-    monkeypatch.setenv("CLIPPER_GROUNDING_ENGINE", "legacy")
     monkeypatch.setenv("CLIPPER_COMPUTE_PROFILE", "local-lite")
     with patch("clipper.cli.run_pipeline") as run:
         assert main(["run", "--brief", str(path), "--no-render"]) == 1
         run.assert_not_called()
 
-    run_dir = tmp_path / "legacy-run"
-    run_dir.mkdir()
-    (run_dir / "manifest.json").write_text(
-        json.dumps({"status": "SUCCESS", "run_metadata": {}}), encoding="utf-8"
-    )
-    with patch("clipper.cli.run_pipeline", return_value=run_dir) as run:
+
+def test_cli_allows_local_lite_only_with_explicit_opt_in(tmp_path: Path, monkeypatch) -> None:
+    path = make_brief(tmp_path)
+    monkeypatch.setenv("CLIPPER_COMPUTE_PROFILE", "local-lite")
+    run_dir = tmp_path / "local-lite"
+    write_model_manifest(run_dir)
+    with (
+        patch("clipper.cli._resolved_model_plan", return_value=local_plan(profile="local-lite")),
+        patch("clipper.cli.run_pipeline", return_value=run_dir) as run,
+    ):
         assert (
             main(
                 [
@@ -234,36 +267,19 @@ def test_cli_refuses_accidental_legacy_and_local_lite(tmp_path: Path, monkeypatc
                     "--brief",
                     str(path),
                     "--no-render",
-                    "--allow-legacy",
                     "--allow-local-lite",
                 ]
             )
             == 0
         )
-    settings = run.call_args.kwargs["settings"]
-    assert settings.editorial_engine == "heuristic"
-    assert settings.grounding_engine == "legacy"
-    assert settings.compute_profile == "local-lite"
-
-
-def test_cli_refuses_local_lite_open_without_explicit_opt_in(tmp_path: Path, monkeypatch) -> None:
-    path = make_brief(tmp_path)
-    monkeypatch.delenv("CLIPPER_EDITORIAL_ENGINE", raising=False)
-    monkeypatch.delenv("CLIPPER_GROUNDING_ENGINE", raising=False)
-    monkeypatch.setenv("CLIPPER_COMPUTE_PROFILE", "local-lite")
-    with patch("clipper.cli.run_pipeline") as run:
-        assert main(["run", "--brief", str(path), "--no-render"]) == 1
-        run.assert_not_called()
+    assert run.call_args.kwargs["settings"].compute_profile == "local-lite"
 
 
 def test_model_evidence_is_fail_closed_and_auditable(tmp_path: Path) -> None:
-    settings = PipelineSettings(
-        editorial_engine="open", grounding_engine="open", compute_profile="balanced"
-    )
     run_dir = tmp_path / "evidence"
-    write_open_manifest(run_dir)
-    audit = _audit_model_evidence(run_dir, settings, open_plan())
-    assert audit["editorial"]["observed_models"] == ["editorial-test", "embedding-test"]
+    write_model_manifest(run_dir)
+    audit = _audit_model_evidence(run_dir, local_plan())
+    assert audit["editorial"]["observed_models"] == ["editorial-test"]
     assert audit["grounding"]["observed_models"] == [
         "alignment-test",
         "asr-test",
@@ -276,32 +292,29 @@ def test_model_evidence_is_fail_closed_and_auditable(tmp_path: Path) -> None:
         json.dumps({"status": "SUCCESS", "run_metadata": {}}), encoding="utf-8"
     )
     with pytest.raises(RuntimeError, match="no model invocation evidence"):
-        _audit_model_evidence(missing, settings, open_plan())
+        _audit_model_evidence(missing, local_plan())
 
     no_manifest = tmp_path / "no-manifest"
     no_manifest.mkdir()
     with pytest.raises(RuntimeError, match=r"manifest\.json"):
-        _audit_model_evidence(no_manifest, settings, open_plan())
+        _audit_model_evidence(no_manifest, local_plan())
 
 
 def test_model_evidence_rejects_wrong_model_identity(tmp_path: Path) -> None:
-    settings = PipelineSettings(
-        editorial_engine="open", grounding_engine="open", compute_profile="balanced"
-    )
     run_dir = tmp_path / "wrong-model"
-    write_open_manifest(run_dir)
-    plan = open_plan()
+    write_model_manifest(run_dir)
+    plan = local_plan()
     plan["editorial"] = {"model_id": "different-editorial"}
     with pytest.raises(RuntimeError, match="does not contain"):
-        _audit_model_evidence(run_dir, settings, plan)
+        _audit_model_evidence(run_dir, plan)
 
 
 def test_cli_run_returns_failure_for_failed_production_manifest(tmp_path: Path) -> None:
     path = make_brief(tmp_path)
     run_dir = tmp_path / "failed-run"
-    write_open_manifest(run_dir, status="FAILED")
+    write_model_manifest(run_dir, status="FAILED")
     with (
-        patch("clipper.cli._resolved_model_plan", return_value=open_plan()),
+        patch("clipper.cli._resolved_model_plan", return_value=local_plan()),
         patch("clipper.cli.run_pipeline", return_value=run_dir),
     ):
         assert main(["run", "--brief", str(path), "--artifact-root", str(tmp_path / "out")]) == 1
