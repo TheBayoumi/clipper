@@ -10,9 +10,17 @@ DATA = {
     "campaign_id": "c1",
     "title": "Title",
     "objective": "Goal",
-    "keywords": ["one"],
-    "allowed_video_ids": ["abc"],
-    "rights_confirmed": True,
+    "targets": {
+        "mode": "explicit",
+        "videos": [
+            {
+                "video_id": "abc",
+                "url": "https://www.youtube.com/watch?v=abc",
+                "channel_id": "UC123",
+            }
+        ],
+    },
+    "rights": {"confirmed": True, "authorized_channels": ["UC123"]},
 }
 
 
@@ -23,25 +31,45 @@ def test_load_json_and_yaml(tmp_path: Path) -> None:
 
     yaml_path = tmp_path / "brief.yaml"
     yaml_path.write_text(
-        "\n".join(f"{key}: {json.dumps(value)}" for key, value in DATA.items()),
+        "campaign_id: c1\n"
+        "title: Title\n"
+        "objective: Goal\n"
+        "targets:\n"
+        "  mode: explicit\n"
+        "  videos:\n"
+        "    - video_id: abc\n"
+        "      url: https://www.youtube.com/watch?v=abc\n"
+        "      channel_id: UC123\n"
+        "rights:\n"
+        "  confirmed: true\n"
+        "  authorized_channels: [UC123]\n",
         encoding="utf-8",
     )
     assert load_brief(yaml_path).title == "Title"
 
 
-def test_load_semantic_brief_without_keywords(tmp_path: Path) -> None:
+def test_load_semantic_brief_has_no_keyword_or_quota_state(tmp_path: Path) -> None:
     path = tmp_path / "brief.yaml"
     path.write_text(
         "campaign_id: c1\n"
         "title: General podcast\n"
         "objective: Find the strongest self-contained moments semantically.\n"
-        "allowed_video_ids: [v]\n"
-        "rights_confirmed: true\n",
+        "targets:\n"
+        "  mode: explicit\n"
+        "  videos:\n"
+        "    - video_id: v\n"
+        "      url: https://www.youtube.com/watch?v=v\n"
+        "      channel_id: UC_AUTHORIZED\n"
+        "rights:\n"
+        "  confirmed: true\n"
+        "  authorized_channels: [UC_AUTHORIZED]\n",
         encoding="utf-8",
     )
     brief = load_brief(path)
     assert brief.campaign_id == "c1"
-    assert brief.keywords == ["Find the strongest self-contained moments semantically."]
+    assert brief.objective == "Find the strongest self-contained moments semantically."
+    assert not hasattr(brief, "keywords")
+    assert not hasattr(brief, "clip_count")
 
 
 def test_load_explicit_target_brief_without_output_quotas(tmp_path: Path) -> None:
@@ -76,7 +104,6 @@ def test_load_explicit_target_brief_without_output_quotas(tmp_path: Path) -> Non
 
     assert brief.allowed_video_ids == ["v1"]
     assert brief.source_channel_ids == []
-    assert brief.source_limit == 1
     assert brief.source_media_urls == {"v1": "https://media.example.test/v1.mkv"}
     assert brief.rights_confirmed is True
     assert brief.min_clip_seconds == 20
@@ -113,26 +140,30 @@ def test_explicit_target_channel_must_be_authorized(tmp_path: Path) -> None:
         load_brief(path)
 
 
-def test_explicit_targets_do_not_accept_editorial_quotas(tmp_path: Path) -> None:
-    path = tmp_path / "brief.yaml"
-    path.write_text(
-        "campaign_id: c1\n"
-        "title: Explicit campaign\n"
-        "objective: Find every worthwhile moment.\n"
-        "clip_count: 3\n"
-        "targets:\n"
-        "  mode: explicit\n"
-        "  videos:\n"
-        "    - video_id: v1\n"
-        "      url: https://www.youtube.com/watch?v=v1\n"
-        "      channel_id: UC_AUTHORIZED\n"
-        "rights:\n"
-        "  confirmed: true\n"
-        "  authorized_channels: [UC_AUTHORIZED]\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(BriefValidationError, match="cannot configure editorial/output quotas"):
+@pytest.mark.parametrize(
+    "field",
+    [
+        "keywords",
+        "negative_keywords",
+        "required_phrases",
+        "clip_count",
+        "source_limit",
+        "max_clips_per_source",
+        "published_after",
+        "production",
+        "diversity",
+        "hooks",
+        "editorial",
+    ],
+)
+def test_explicit_targets_reject_obsolete_editorial_discovery_and_quota_fields(
+    tmp_path: Path, field: str
+) -> None:
+    data = dict(DATA)
+    data[field] = {} if field in {"production", "diversity", "hooks", "editorial"} else 1
+    path = tmp_path / "brief.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(BriefValidationError, match="legacy editorial/discovery"):
         load_brief(path)
 
 
@@ -170,10 +201,28 @@ def test_explicit_target_placeholders_are_rejected(tmp_path: Path) -> None:
         load_brief(path)
 
 
-def test_load_unknown_extension_falls_back(tmp_path: Path) -> None:
-    path = tmp_path / "brief.txt"
-    path.write_text(json.dumps(DATA), encoding="utf-8")
-    assert load_brief(path).objective == "Goal"
+def test_load_unknown_extension_falls_back_to_json_or_yaml(tmp_path: Path) -> None:
+    json_path = tmp_path / "brief.txt"
+    json_path.write_text(json.dumps(DATA), encoding="utf-8")
+    assert load_brief(json_path).objective == "Goal"
+
+    yaml_path = tmp_path / "brief.conf"
+    yaml_path.write_text(
+        "campaign_id: c1\n"
+        "title: T\n"
+        "objective: G\n"
+        "targets:\n"
+        "  mode: explicit\n"
+        "  videos:\n"
+        "    - video_id: v\n"
+        "      url: https://www.youtube.com/watch?v=v\n"
+        "      channel_id: UC1\n"
+        "rights:\n"
+        "  confirmed: true\n"
+        "  authorized_channels: [UC1]\n",
+        encoding="utf-8",
+    )
+    assert load_brief(yaml_path).campaign_id == "c1"
 
 
 def test_missing_file() -> None:
@@ -181,34 +230,28 @@ def test_missing_file() -> None:
         load_brief("does-not-exist.json")
 
 
-def test_unknown_extension_yaml_and_bad_yaml_root(tmp_path: Path) -> None:
-    path = tmp_path / "brief.conf"
-    path.write_text(
-        "campaign_id: c1\n"
-        "title: T\n"
-        "objective: G\n"
-        "keywords: [one]\n"
-        "allowed_video_ids: [v]\n"
-        "rights_confirmed: true\n",
-        encoding="utf-8",
-    )
-    assert load_brief(path).campaign_id == "c1"
-
+def test_bad_yaml_root(tmp_path: Path) -> None:
     bad = tmp_path / "bad.yaml"
     bad.write_text("- not\n- an\n- object\n", encoding="utf-8")
     with pytest.raises(BriefValidationError, match="root"):
         load_brief(bad)
 
 
-def test_template_source_id_is_rejected(tmp_path: Path) -> None:
+def test_nested_template_source_id_is_rejected(tmp_path: Path) -> None:
     path = tmp_path / "brief.yaml"
     path.write_text(
         "campaign_id: c1\n"
         "title: T\n"
         "objective: G\n"
-        "keywords: [one]\n"
-        "source_channel_ids: [UC_REPLACE_WITH_AUTHORIZED_CHANNEL_ID]\n"
-        "rights_confirmed: true\n",
+        "targets:\n"
+        "  mode: explicit\n"
+        "  videos:\n"
+        "    - video_id: v\n"
+        "      url: https://www.youtube.com/watch?v=v\n"
+        "      channel_id: UC_REPLACE_WITH_AUTHORIZED_CHANNEL_ID\n"
+        "rights:\n"
+        "  confirmed: true\n"
+        "  authorized_channels: [UC_REPLACE_WITH_AUTHORIZED_CHANNEL_ID]\n",
         encoding="utf-8",
     )
     with pytest.raises(BriefValidationError, match="example placeholder"):
