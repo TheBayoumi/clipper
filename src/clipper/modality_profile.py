@@ -100,5 +100,6 @@ def infer_source_modality_profile(timeline: MultimodalTimeline) -> SourceModalit
 def assert_required_modalities_available(profile: SourceModalityProfile) -> None:
     if profile.requires_visual_evidence and profile.visual_evidence_coverage < 0.5:
         raise RuntimeError(
-            "source modality profile requires visual evidence but visual perception coverage is insufficient"
+            "source modality profile requires visual evidence but visual perception "
+            "coverage is insufficient"
         )
