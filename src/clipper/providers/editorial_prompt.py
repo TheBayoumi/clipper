@@ -38,6 +38,7 @@ _HAZARD_CLASSIFICATIONS = [
     "graphic_heavy",
     "unknown",
 ]
+_QUALITY_DECISIONS = ["PASS", "REJECT", "ESCALATE"]
 
 
 def editorial_output_budget(payload: dict[str, Any]) -> int:
@@ -52,7 +53,15 @@ def editorial_output_budget(payload: dict[str, Any]) -> int:
     if isinstance(payload.get("payload"), dict):
         if task in {"episode_editorial_profile", "global_concept_comparison"}:
             return 1024
-        if task.startswith(("story_moments:", "hook_variants:", "boundary_audit:")):
+        if task.startswith(
+            (
+                "story_moments:",
+                "hook_variants:",
+                "boundary_audit:",
+                "narrative_envelope:",
+                "quality_windows:",
+            )
+        ):
             return 1536
         return 2048
 
@@ -110,6 +119,12 @@ def editorial_task_family(task: str) -> str:
         return "source_hazards"
     if task.startswith("boundary_audit:"):
         return "boundary_audit"
+    if task.startswith("semantic_cores:"):
+        return "semantic_cores"
+    if task.startswith("narrative_envelope:"):
+        return "narrative_envelope"
+    if task.startswith("quality_windows:"):
+        return "quality_windows"
     raise ValueError(f"unsupported editorial task: {task!r}")
 
 
@@ -241,6 +256,47 @@ def editorial_json_schema(task: str) -> dict[str, Any]:
             }
         )
 
+    if task.startswith("semantic_cores:"):
+        core = _strict_object(
+            {
+                "core_id": _string(),
+                "start_word_id": _string(),
+                "end_word_id": _string(),
+                "semantic_summary": _string(),
+                "editorial_reason": _string(),
+                "confidence": _confidence(),
+            }
+        )
+        return _strict_object({"cores": {"type": "array", "items": core}})
+
+    if task.startswith("narrative_envelope:"):
+        return _strict_object(
+            {
+                "envelope_id": _string(),
+                "core_id": _string(),
+                "start_word_id": _string(),
+                "end_word_id": _string(),
+                "required_prior_context": _string(),
+                "required_followup_context": _string(),
+                "setup_resolved": {"type": "boolean"},
+                "payoff_resolved": {"type": "boolean"},
+                "reference_resolution": _string_array(),
+                "confidence": _confidence(),
+            }
+        )
+
+    if task.startswith("quality_windows:"):
+        return _strict_object(
+            {
+                "core_id": _string(),
+                "selected_window_id": _string(nullable=True),
+                "decision": {"type": "string", "enum": _QUALITY_DECISIONS},
+                "quality_score": _confidence(),
+                "rationale": _string(),
+                "confidence": _confidence(),
+            }
+        )
+
     raise ValueError(f"unsupported editorial task for structured generation: {task!r}")
 
 
@@ -344,6 +400,41 @@ def editorial_contract(task: str) -> str:
             "end_incomplete, open_question, unresolved_setup, unresolved_payoff, "
             "partial_number_or_unit, followup_context_required, or boundary_uncertain. "
         )
+    if task.startswith("semantic_cores:"):
+        return common + (
+            'Schema: {"cores":[{"core_id":"unique","start_word_id":"first word_ref",'
+            '"end_word_id":"last word_ref","semantic_summary":"<=24 words",'
+            '"editorial_reason":"<=20 words","confidence":0.0}]}. '
+            "Return every independently worthwhile semantic nucleus supported by the supplied "
+            "multimodal evidence. A SemanticCore is the smallest contiguous source-grounded "
+            "interval containing the interesting idea or event; do not pad it to campaign "
+            "duration. Return an empty cores array when nothing in the evidence is worthwhile. "
+        )
+    if task.startswith("narrative_envelope:"):
+        return common + (
+            'Schema: {"envelope_id":"unique","core_id":"supplied core ID",'
+            '"start_word_id":"first envelope word_ref","end_word_id":"last envelope word_ref",'
+            '"required_prior_context":"short description or empty",'
+            '"required_followup_context":"short description or empty",'
+            '"setup_resolved":true,"payoff_resolved":true,'
+            '"reference_resolution":["short resolved-reference evidence"],"confidence":0.0}. '
+            "Choose the smallest contiguous source interval that contains the supplied SemanticCore "
+            "and all source context needed to resolve setup, references, causality, and payoff. "
+            "Do not expand merely to satisfy campaign duration. If the source evidence cannot form "
+            "a complete narrative, mark the unresolved setup/payoff booleans false. "
+        )
+    if task.startswith("quality_windows:"):
+        return common + (
+            'Schema: {"core_id":"supplied core ID","selected_window_id":null,'
+            '"decision":"PASS","quality_score":0.0,"rationale":"short reason",'
+            '"confidence":0.0}. '
+            "The supplied feasible_windows were deterministically proven legal before this task. "
+            "Rank only those supplied window IDs; never return timestamps or new boundaries. "
+            "PASS only when the best legal window is a genuinely worthwhile complete short-form "
+            "moment. Set selected_window_id to that supplied ID. For REJECT or ESCALATE, use null "
+            "when no legal window should be selected. Quality determines yield; there is no target "
+            "clip count. "
+        )
     return common + "Follow the task payload and return one complete valid JSON object. "
 
 
@@ -360,7 +451,7 @@ def editorial_contract_fingerprint(task: str) -> str:
 
 
 # Historical editor-v2 fingerprints for contracts that remain byte-for-byte unchanged.
-# EditPlans are intentionally excluded because their duration contract changed.
+# EditPlans and new autonomous task families are intentionally excluded.
 _LEGACY_COMPATIBLE_CONTRACT_FINGERPRINTS: dict[str, str] = {
     "episode_editorial_profile": "6d2b75c7780d60b9678b78f857dd7bf3f134ec3db91cf944daa38283df421b9e",
     "story_moments": "0104455ca1e1c638dbbde9f63d1cb0d28f04b98155746be5b495b1bbb02e7277",
