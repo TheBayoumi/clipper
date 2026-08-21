@@ -1,3 +1,4 @@
+# registered one-shot migration
 name: Migrate quality graph pipeline tests
 
 on:
