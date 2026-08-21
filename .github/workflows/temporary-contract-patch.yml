@@ -123,6 +123,7 @@ jobs:
         run: |
           python -m pip install 'ruff>=0.15.22,<1'
           ruff format src/clipper/youtube.py src/clipper/cli.py src/clipper/quality_batch.py src/clipper/pipeline.py src/clipper/hilp.py scripts/modal_open_models.py
+          ruff check --fix src/clipper/youtube.py src/clipper/cli.py src/clipper/quality_batch.py src/clipper/pipeline.py src/clipper/hilp.py scripts/modal_open_models.py
           ruff check src/clipper/youtube.py src/clipper/cli.py src/clipper/quality_batch.py src/clipper/pipeline.py src/clipper/hilp.py scripts/modal_open_models.py
       - name: Commit patch
         run: |
