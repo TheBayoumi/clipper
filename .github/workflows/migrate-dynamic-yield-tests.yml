@@ -1,0 +1,133 @@
+name: Exact dynamic-yield test migration
+
+on:
+  pull_request:
+    types: [synchronize]
+    paths:
+      - ".github/workflows/migrate-dynamic-yield-tests.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: github.head_ref == 'feat/word-reveal-face-tracking'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/word-reveal-face-tracking
+          fetch-depth: 0
+
+      - name: Apply exact contract-aligned test replacements
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str, label: str) -> None:
+              source = path.read_text(encoding="utf-8")
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one target, found {count}")
+              path.write_text(source.replace(old, new), encoding="utf-8")
+
+          open_tests = Path("tests/test_open_models.py")
+          pipeline_tests = Path("tests/test_pipeline.py")
+
+          replace_once(
+              open_tests,
+              '''    with pytest.raises(EditorialGroundingError, match="no grounded StoryMoments"):\n        AutonomousEditorialPlanner(\n            Scripted(), _PlannerEmbeddings(), FileCache(tmp_path / "empty")\n        ).analyze_video(brief, timeline)''',
+              '''    empty = AutonomousEditorialPlanner(\n        Scripted(), _PlannerEmbeddings(), FileCache(tmp_path / "empty")\n    ).analyze_video(brief, timeline)\n    assert empty.moments == []\n    assert empty.concepts == []\n    assert empty.grounded_moments == {}\n    assert empty.grounded_concepts == {}''',
+              "empty story discovery",
+          )
+          replace_once(
+              open_tests,
+              '''    with pytest.raises(EditorialGroundingError, match="unknown StoryMoments"):\n        AutonomousEditorialPlanner(\n            UnknownMoment(), _PlannerEmbeddings([[1.0, 0.0]]), FileCache(tmp_path / "unknown")\n        ).analyze_video(brief, timeline)''',
+              '''    unknown = AutonomousEditorialPlanner(\n        UnknownMoment(), _PlannerEmbeddings([[1.0, 0.0]]), FileCache(tmp_path / "unknown")\n    ).analyze_video(brief, timeline)\n    assert unknown.concepts == []\n    assert unknown.grounded_concepts == {}\n    grounding_rejections = [\n        item for item in unknown.rejections if item.get("stage") == "concept_grounding"\n    ]\n    assert grounding_rejections\n    assert "unknown StoryMoments" in str(grounding_rejections[0].get("error"))''',
+              "unknown story reference",
+          )
+          replace_once(
+              open_tests,
+              '''            if task == "global_concept_comparison":\n                return ProviderResult(\n                    {"concept_ids": self.selection},\n                    self.identity,\n                    InferenceUsage("test", "now", 0.01),\n                )\n            raise AssertionError(task)''',
+              '''            if task == "global_concept_comparison":\n                return ProviderResult(\n                    {"concept_ids": self.selection},\n                    self.identity,\n                    InferenceUsage("test", "now", 0.01),\n                )\n            if task == "hook_variants:c":\n                return ProviderResult(\n                    {"variants": []},\n                    self.identity,\n                    InferenceUsage("test", "now", 0.01),\n                )\n            raise AssertionError(task)''',
+              "global ranking provider",
+          )
+          replace_once(
+              open_tests,
+              '''    for selection, match in [\n        ("bad", "concept_ids"),\n        (["missing"], "unknown concept"),\n        ([], "selected no concepts"),\n    ]:''',
+              '''    for selection, match in [\n        ("bad", "concept_ids"),\n        (["missing"], "unknown concept"),\n    ]:''',
+              "global ranking invalid cases",
+          )
+          replace_once(
+              open_tests,
+              '''    with pytest.raises(EditorialGroundingError, match="produced no concepts"):\n        AutonomousEditorialPlanner(\n            Global([]), _PlannerEmbeddings(), FileCache(tmp_path / "none")\n        ).plan_batch(_open_brief(), {"video": timeline}, [])''',
+              '''    empty_ranked = AutonomousEditorialPlanner(\n        Global([]), _PlannerEmbeddings(), FileCache(tmp_path / "empty-ranking")\n    ).plan_batch(_open_brief(), {"video": timeline}, [analysis])\n    assert [item.concept_id for item in empty_ranked.selected_concepts] == ["c"]\n    assert empty_ranked.plans == []\n    assert any(\n        item.get("reasons") == ["no_grounded_hook_variants"]\n        for item in empty_ranked.rejections\n    )\n\n    no_concepts = AutonomousEditorialPlanner(\n        Global([]), _PlannerEmbeddings(), FileCache(tmp_path / "none")\n    ).plan_batch(_open_brief(), {"video": timeline}, [])\n    assert no_concepts.discovered_concepts == []\n    assert no_concepts.selected_concepts == []\n    assert no_concepts.plans == []''',
+              "empty global ranking and corpus",
+          )
+          replace_once(
+              open_tests,
+              '''    with pytest.raises(EditorialGroundingError, match=r"duration_outside_campaign_bounds.*1\\.1"):\n        AutonomousEditorialPlanner(\n            InvalidDuration(), _PlannerEmbeddings(), FileCache(tmp_path / "duration")\n        ).plan_batch(_open_brief(), {"video": timeline}, [analysis])''',
+              '''    batch = AutonomousEditorialPlanner(\n        InvalidDuration(), _PlannerEmbeddings(), FileCache(tmp_path / "duration")\n    ).plan_batch(_open_brief(), {"video": timeline}, [analysis])\n    assert batch.plans == []\n    duration_rejections = [\n        item\n        for item in batch.rejections\n        if item.get("reasons") == ["duration_outside_campaign_bounds_no_grounded_repair"]\n    ]\n    assert len(duration_rejections) == 1\n    assert duration_rejections[0]["duration_seconds"] == pytest.approx(1.1)''',
+              "duration zero-yield rejection",
+          )
+
+          replace_once(
+              pipeline_tests,
+              '''def test_render_failure_promotes_reserve_until_target_is_reached(tmp_path: Path) -> None:''',
+              '''def test_render_failure_reduces_quality_yield_without_quota_fill(tmp_path: Path) -> None:''',
+              "render failure test name",
+          )
+          replace_once(
+              pipeline_tests,
+              '''    assert manifest["funnel"]["replacement_attempts"] == 1\n    assert len(manifest["submission_shortlist"]) == 1''',
+              '''    assert manifest["funnel"]["replacement_attempts"] == 0\n    assert manifest["funnel"]["reserve_promotions"] == 0\n    assert manifest["actual"]["eligible_quality_moments"] == 3\n    assert len(manifest["submission_shortlist"]) == 2''',
+              "render failure dynamic yield assertions",
+          )
+          replace_once(
+              pipeline_tests,
+              '''def test_pipeline_fails_when_reserve_pool_cannot_reach_render_target(tmp_path: Path) -> None:''',
+              '''def test_pipeline_fails_when_all_quality_moments_fail_render(tmp_path: Path) -> None:''',
+              "all render failure test name",
+          )
+          replace_once(
+              pipeline_tests,
+              '''    assert manifest["status_reason"] == "render_yield_below_required_target"\n    assert manifest["actual"] == {\n        "rendered_finalists": 0,''',
+              '''    assert manifest["status_reason"] == "all_eligible_quality_moments_failed_render_or_review"\n    assert manifest["actual"] == {\n        "eligible_quality_moments": 3,\n        "rendered_finalists": 0,''',
+              "all render failure status",
+          )
+          replace_once(
+              pipeline_tests,
+              '''    assert manifest["funnel"]["tracking_preflight_pass"] == 2\n    assert manifest["funnel"]["tracking_preflight_repaired"] == 2''',
+              '''    assert manifest["funnel"]["tracking_preflight_pass"] == 3\n    assert manifest["funnel"]["tracking_preflight_repaired"] == 3''',
+              "tracking preflight dynamic yield",
+          )
+          replace_once(
+              pipeline_tests,
+              '''def test_visual_editorial_qc_repair_promotes_reserve_before_finalist_acceptance(\n    tmp_path: Path,\n) -> None:''',
+              '''def test_visual_editorial_qc_rejection_reduces_quality_yield(\n    tmp_path: Path,\n) -> None:''',
+              "visual rejection test name",
+          )
+          replace_once(
+              pipeline_tests,
+              '''    assert manifest["status_reason"] == "recovered_with_replacement_candidates"\n    assert manifest["funnel"]["editorial_qc_fail"] == 1\n    assert manifest["funnel"]["editorial_qc_pass"] == 2\n    assert manifest["funnel"]["render_attempts"] == 3\n    assert manifest["funnel"]["replacement_attempts"] == 1''',
+              '''    assert manifest["status_reason"] == "partial_quality_yield_after_candidate_failures"\n    assert manifest["funnel"]["editorial_qc_fail"] == 1\n    assert manifest["funnel"]["editorial_qc_pass"] == 2\n    assert manifest["funnel"]["render_attempts"] == 3\n    assert manifest["funnel"]["replacement_attempts"] == 0\n    assert manifest["actual"]["eligible_quality_moments"] == 3\n    assert manifest["actual"]["rendered_finalists"] == 2''',
+              "visual rejection dynamic yield assertions",
+          )
+          replace_once(
+              pipeline_tests,
+              '''    assert manifest["funnel"]["visual_review_escalations"] == 2\n    assert manifest["funnel"]["editorial_qc_pass"] == 2''',
+              '''    assert manifest["funnel"]["visual_review_escalations"] == 3\n    assert manifest["funnel"]["editorial_qc_pass"] == 3''',
+              "visual escalation dynamic yield",
+          )
+          PY
+
+      - name: Commit exact migration
+        run: |
+          set -euo pipefail
+          git config user.name "clipper-contract-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add tests/test_open_models.py tests/test_pipeline.py
+          git diff --cached --check
+          git diff --cached --exit-code && exit 0 || true
+          git commit -m "test: align regressions with dynamic quality yield"
+          git push origin HEAD:feat/word-reveal-face-tracking
