@@ -86,9 +86,7 @@ def forbidden_spans_for_campaign(
         if allowed:
             continue
         buffer = (
-            segment_policy.safety_buffer_seconds
-            if classification in segment_policy.forbid
-            else 0.0
+            segment_policy.safety_buffer_seconds if classification in segment_policy.forbid else 0.0
         )
         spans.append(SourceSpan(max(0.0, hazard.start - buffer), hazard.end + buffer))
 
