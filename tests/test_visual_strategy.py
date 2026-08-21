@@ -35,7 +35,7 @@ def _quality_moment() -> QualityMoment:
         timeline,
         core,
         envelope_id="envelope",
-        source_word_ids=tuple(word.word_id for word in words),
+        source_word_ids=tuple(word.word_id for word in words[5:25]),
         setup_resolved=True,
         payoff_resolved=True,
         confidence=0.9,
@@ -86,6 +86,7 @@ def test_visual_strategy_prefers_relevant_original_source_evidence() -> None:
         window.source_start,
         window.source_end,
     )
+    assert strategy.to_dict()["quality_moment_id"] == "quality:core"
 
 
 def test_visual_strategy_stays_on_original_source_when_enrichment_is_unnecessary() -> None:
@@ -104,6 +105,10 @@ def test_visual_strategy_rejects_source_mismatch() -> None:
 
 
 def test_visual_beat_synthetic_contract_is_explicit_and_fail_closed() -> None:
+    with pytest.raises(ValueError, match="timestamps"):
+        VisualBeat(1.0, 1.0, "original_source", "bad")
+    with pytest.raises(ValueError, match="rationale"):
+        VisualBeat(0.0, 1.0, "original_source", "")
     with pytest.raises(ValueError, match="illustration request"):
         VisualBeat(0.0, 1.0, "synthetic_illustration", "illustrate")
     with pytest.raises(ValueError, match="cannot carry"):
@@ -123,3 +128,5 @@ def test_visual_strategy_requires_non_overlapping_chronological_beats() -> None:
         VisualStrategy("quality:core", (first, second))
     with pytest.raises(ValueError, match="at least one beat"):
         VisualStrategy("quality:core", ())
+    with pytest.raises(ValueError, match="quality_moment_id"):
+        VisualStrategy("", (first,))
