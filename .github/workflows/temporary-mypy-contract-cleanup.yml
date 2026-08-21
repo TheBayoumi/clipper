@@ -1,3 +1,4 @@
+# retry: 2
 name: Temporary guarded mypy contract cleanup
 
 on:
@@ -43,21 +44,9 @@ jobs:
               finish = text.index(end, begin)
               path.write_text(text[:begin] + replacement + text[finish:], encoding="utf-8")
 
-          # Discovery is a separate request model, never a CampaignBrief production concern.
-          replace_once(
-              "src/clipper/youtube.py",
-              "import urllib.request\nfrom collections import deque\n",
-              "import urllib.request\nfrom collections import deque\nfrom dataclasses import dataclass\n",
-          )
-          replace_once(
-              "src/clipper/youtube.py",
-              "from .models import CampaignBrief, VideoCandidate\n\n\nclass YouTubeError(RuntimeError):\n",
-              "from .models import VideoCandidate\n\n\nclass YouTubeError(RuntimeError):\n",
-          )
-          replace_once(
-              "src/clipper/youtube.py",
-              'class YouTubeError(RuntimeError):\n    """Raised for YouTube discovery or media acquisition failures."""\n\n\n',
-              '''class YouTubeError(RuntimeError):
+          replace_once("src/clipper/youtube.py", "import urllib.request\nfrom collections import deque\n", "import urllib.request\nfrom collections import deque\nfrom dataclasses import dataclass\n")
+          replace_once("src/clipper/youtube.py", "from .models import CampaignBrief, VideoCandidate\n\n\nclass YouTubeError(RuntimeError):\n", "from .models import VideoCandidate\n\n\nclass YouTubeError(RuntimeError):\n")
+          replace_once("src/clipper/youtube.py", 'class YouTubeError(RuntimeError):\n    """Raised for YouTube discovery or media acquisition failures."""\n\n\n', '''class YouTubeError(RuntimeError):
     """Raised for YouTube discovery or media acquisition failures."""
 
 
@@ -81,24 +70,14 @@ class DiscoveryQuery:
             raise YouTubeError("discovery channel IDs cannot be empty")
 
 
-''',
-          )
-          replace_block(
-              "src/clipper/youtube.py",
-              "    def discover(self, brief: CampaignBrief) -> list[VideoCandidate]:\n",
-              "    def _api_get(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:\n",
-              '''    def discover(self, request: DiscoveryQuery) -> list[VideoCandidate]:
+''')
+          replace_block("src/clipper/youtube.py", "    def discover(self, brief: CampaignBrief) -> list[VideoCandidate]:\n", "    def _api_get(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:\n", '''    def discover(self, request: DiscoveryQuery) -> list[VideoCandidate]:
         if self.api_key:
             return self._discover_api(request)
         return self._discover_ytdlp(request)
 
-''',
-          )
-          replace_block(
-              "src/clipper/youtube.py",
-              "    def _discover_api(self, brief: CampaignBrief) -> list[VideoCandidate]:\n",
-              "    @staticmethod\n    def _candidate_from_api(item: dict[str, Any]) -> VideoCandidate:\n",
-              '''    def _discover_api(self, request: DiscoveryQuery) -> list[VideoCandidate]:
+''')
+          replace_block("src/clipper/youtube.py", "    def _discover_api(self, brief: CampaignBrief) -> list[VideoCandidate]:\n", "    @staticmethod\n    def _candidate_from_api(item: dict[str, Any]) -> VideoCandidate:\n", '''    def _discover_api(self, request: DiscoveryQuery) -> list[VideoCandidate]:
         ids: list[str] = []
         channels = request.channel_ids or (None,)
         for channel_id in channels:
@@ -123,70 +102,36 @@ class DiscoveryQuery:
         ids = list(dict.fromkeys(ids))[: request.limit]
         if not ids:
             return []
-        details = self._api_get(
-            "videos",
-            {"part": "snippet,statistics,contentDetails", "id": ",".join(ids)},
-        )
+        details = self._api_get("videos", {"part": "snippet,statistics,contentDetails", "id": ",".join(ids)})
         return [self._candidate_from_api(item) for item in _object_list(details.get("items"))]
 
-''',
-          )
-          replace_block(
-              "src/clipper/youtube.py",
-              "    def _discover_ytdlp(self, brief: CampaignBrief) -> list[VideoCandidate]:\n",
-              "    def download_subtitles(\n",
-              '''    def _discover_ytdlp(self, request: DiscoveryQuery) -> list[VideoCandidate]:
+''')
+          replace_block("src/clipper/youtube.py", "    def _discover_ytdlp(self, brief: CampaignBrief) -> list[VideoCandidate]:\n", "    def download_subtitles(\n", '''    def _discover_ytdlp(self, request: DiscoveryQuery) -> list[VideoCandidate]:
         if not shutil.which("yt-dlp"):
             raise YouTubeError("YOUTUBE_API_KEY is unset and yt-dlp is not installed")
-        command = [
-            "yt-dlp",
-            "--dump-single-json",
-            "--skip-download",
-            "--no-warnings",
-            f"ytsearch{request.limit}:{request.query}",
-        ]
+        command = ["yt-dlp", "--dump-single-json", "--skip-download", "--no-warnings", f"ytsearch{request.limit}:{request.query}"]
         payload = _json_object(_run(command, timeout=180).stdout)
-        candidates = [
-            self._candidate_from_ytdlp(entry) for entry in _object_list(payload.get("entries"))
-        ]
+        candidates = [self._candidate_from_ytdlp(entry) for entry in _object_list(payload.get("entries"))]
         if request.channel_ids:
             allowed_channels = set(request.channel_ids)
             candidates = [item for item in candidates if item.channel_id in allowed_channels]
         return list({item.video_id: item for item in candidates}.values())[: request.limit]
 
-''',
-          )
+''')
 
-          # CLI discovery consumes only DiscoveryQuery; production briefs remain explicit-target only.
-          replace_once(
-              "src/clipper/cli.py",
-              "from .rights import RightsError, assert_campaign_authorized, assert_video_allowed\n",
-              "from .rights import assert_campaign_authorized\n",
-          )
-          replace_once(
-              "src/clipper/cli.py",
-              "from .youtube import YouTubeClient\n",
-              "from .youtube import DiscoveryQuery, YouTubeClient\n",
-          )
-          replace_once(
-              "src/clipper/cli.py",
-              '''    discover = subparsers.add_parser("discover", help="inspect authorized source candidates")
+          replace_once("src/clipper/cli.py", "from .rights import RightsError, assert_campaign_authorized, assert_video_allowed\n", "from .rights import assert_campaign_authorized\n")
+          replace_once("src/clipper/cli.py", "from .youtube import YouTubeClient\n", "from .youtube import DiscoveryQuery, YouTubeClient\n")
+          replace_once("src/clipper/cli.py", '''    discover = subparsers.add_parser("discover", help="inspect authorized source candidates")
     discover.add_argument("--brief", required=True, type=Path)
-''',
-              '''    discover = subparsers.add_parser(
-        "discover", help="search source candidates without changing production targets"
-    )
+''', '''    discover = subparsers.add_parser("discover", help="search candidates without changing production targets")
     discover.add_argument("--query", required=True)
     discover.add_argument("--channel-id", action="append", default=[])
     discover.add_argument("--limit", type=int, default=20)
     discover.add_argument("--published-after")
     discover.add_argument("--region", default="US")
     discover.add_argument("--language", default="en")
-''',
-          )
-          replace_once(
-              "src/clipper/cli.py",
-              '''        if args.command == "discover":
+''')
+          replace_once("src/clipper/cli.py", '''        if args.command == "discover":
             brief = load_brief(args.brief)
             assert_campaign_authorized(brief)
             videos = YouTubeClient().discover(brief)
@@ -199,8 +144,7 @@ class DiscoveryQuery:
                 allowed.append(video)
             print(json.dumps([video.to_dict() for video in allowed], indent=2))
             return 0
-''',
-              '''        if args.command == "discover":
+''', '''        if args.command == "discover":
             request = DiscoveryQuery(
                 query=args.query,
                 channel_ids=tuple(args.channel_id),
@@ -212,109 +156,49 @@ class DiscoveryQuery:
             videos = YouTubeClient().discover(request)
             print(json.dumps([video.to_dict() for video in videos], indent=2))
             return 0
-''',
-          )
+''')
 
-          # Strict typing cleanup in HILP parser without suppressions.
-          replace_once(
-              "src/clipper/hilp.py",
-              '            cast(BeatType, str(item["beat_type"])),\n',
-              '            cast(BeatType, item["beat_type"]),\n',
-          )
-          replace_once(
-              "src/clipper/hilp.py",
-              '        hook_mode=cast(HookMode, str(raw["hook_mode"])),\n',
-              '        hook_mode=cast(HookMode, raw["hook_mode"]),\n',
-          )
+          replace_once("src/clipper/hilp.py", '            cast(BeatType, str(item["beat_type"])),\n', '            cast(BeatType, item["beat_type"]),\n')
+          replace_once("src/clipper/hilp.py", '        hook_mode=cast(HookMode, str(raw["hook_mode"])),\n', '        hook_mode=cast(HookMode, raw["hook_mode"]),\n')
 
-          # Quality batch exposes its durable DAG root and core counts as first-class evidence.
-          replace_once(
-              "src/clipper/quality_batch.py",
-              "    stage_cache_hits: int\n    stage_executions: int\n",
-              "    stage_cache_hits: int\n    stage_executions: int\n    stage_dag_root: Path\n",
-          )
-          replace_once(
-              "src/clipper/quality_batch.py",
-              '            "stage_executions": self.stage_executions,\n',
-              '            "stage_executions": self.stage_executions,\n            "stage_dag_root": str(self.stage_dag_root),\n',
-          )
-          replace_once(
-              "src/clipper/quality_batch.py",
-              '                "adapted_quality_moment_ids": adapted_ids,\n',
-              '                "adapted_quality_moment_ids": adapted_ids,\n                "semantic_cores": len(planning.cores),\n',
-          )
-          replace_once(
-              "src/clipper/quality_batch.py",
-              "        stage_executions=executions,\n    )\n",
-              "        stage_executions=executions,\n        stage_dag_root=root,\n    )\n",
-          )
+          replace_once("src/clipper/quality_batch.py", "    stage_cache_hits: int\n    stage_executions: int\n", "    stage_cache_hits: int\n    stage_executions: int\n    stage_dag_root: Path\n")
+          replace_once("src/clipper/quality_batch.py", '            "stage_executions": self.stage_executions,\n', '            "stage_executions": self.stage_executions,\n            "stage_dag_root": str(self.stage_dag_root),\n')
+          replace_once("src/clipper/quality_batch.py", '                "adapted_quality_moment_ids": adapted_ids,\n', '                "adapted_quality_moment_ids": adapted_ids,\n                "semantic_cores": len(planning.cores),\n')
+          replace_once("src/clipper/quality_batch.py", "        stage_executions=executions,\n    )\n", "        stage_executions=executions,\n        stage_dag_root=root,\n    )\n")
 
-          # Pipeline operational chunking is execution plumbing, never an editorial/yield quota.
-          replace_once(
-              "src/clipper/pipeline.py",
-              "from .quality_batch import BatchQualityPlanningResult, plan_quality_batch\n",
-              "from .quality_batch import QualityBatchResult, plan_quality_batch\n",
-          )
-          replace_once(
-              "src/clipper/pipeline.py",
-              "    visual_escalation_enabled: bool = False\n    visual_escalation_threshold: float = 0.75\n",
-              "    visual_escalation_enabled: bool = False\n    visual_escalation_threshold: float = 0.75\n    quality_chunk_words: int = 900\n    quality_chunk_overlap_words: int = 120\n",
-          )
-          replace_once(
-              "src/clipper/pipeline.py",
-              '''            visual_escalation_threshold=float(
+          replace_once("src/clipper/pipeline.py", "from .quality_batch import BatchQualityPlanningResult, plan_quality_batch\n", "from .quality_batch import QualityBatchResult, plan_quality_batch\n")
+          replace_once("src/clipper/pipeline.py", "    visual_escalation_enabled: bool = False\n    visual_escalation_threshold: float = 0.75\n", "    visual_escalation_enabled: bool = False\n    visual_escalation_threshold: float = 0.75\n    quality_chunk_words: int = 900\n    quality_chunk_overlap_words: int = 120\n")
+          replace_once("src/clipper/pipeline.py", '''            visual_escalation_threshold=float(
                 os.getenv("CLIPPER_VISUAL_ESCALATION_THRESHOLD", "0.75")
             ),
-''',
-              '''            visual_escalation_threshold=float(
+''', '''            visual_escalation_threshold=float(
                 os.getenv("CLIPPER_VISUAL_ESCALATION_THRESHOLD", "0.75")
             ),
             quality_chunk_words=int(os.getenv("CLIPPER_QUALITY_CHUNK_WORDS", "900")),
-            quality_chunk_overlap_words=int(
-                os.getenv("CLIPPER_QUALITY_CHUNK_OVERLAP_WORDS", "120")
-            ),
-''',
-          )
-          replace_once(
-              "src/clipper/pipeline.py",
-              "def _funnel_template() -> dict[str, int]:\n",
-              "def _funnel_template() -> dict[str, int | float | bool]:\n",
-          )
-          replace_once(
-              "src/clipper/pipeline.py",
-              '''            visual_timelines=visual_timelines,
+            quality_chunk_overlap_words=int(os.getenv("CLIPPER_QUALITY_CHUNK_OVERLAP_WORDS", "120")),
+''')
+          replace_once("src/clipper/pipeline.py", "def _funnel_template() -> dict[str, int]:\n", "def _funnel_template() -> dict[str, int | float | bool]:\n")
+          replace_once("src/clipper/pipeline.py", '''            visual_timelines=visual_timelines,
         )
-''',
-              '''            visual_timelines=visual_timelines,
+''', '''            visual_timelines=visual_timelines,
             max_words_per_chunk=cfg.quality_chunk_words,
             chunk_overlap_words=cfg.quality_chunk_overlap_words,
         )
-''',
-          )
-          replace_once(
-              "src/clipper/pipeline.py",
-              '''        "semantic_cores_discovered": sum(
+''')
+          replace_once("src/clipper/pipeline.py", '''        "semantic_cores_discovered": sum(
             int(item.get("semantic_cores", 0))
             for item in quality.source_evidence.values()
             if isinstance(item, dict)
         ),
-''',
-              '''        "semantic_cores_discovered": sum(
+''', '''        "semantic_cores_discovered": sum(
             value
             for item in quality.source_evidence.values()
             if isinstance(item, dict)
             for value in [item.get("semantic_cores")]
             if isinstance(value, int) and not isinstance(value, bool)
         ),
-''',
-          )
-
-          # Ensure the imported result type is actually used and documents the runtime contract.
-          replace_once(
-              "src/clipper/pipeline.py",
-              "        quality = plan_quality_batch(\n",
-              "        quality: QualityBatchResult = plan_quality_batch(\n",
-          )
+''')
+          replace_once("src/clipper/pipeline.py", "        quality = plan_quality_batch(\n", "        quality: QualityBatchResult = plan_quality_batch(\n")
           PY
       - name: Install quality tools
         run: python -m pip install -e '.[dev]'
