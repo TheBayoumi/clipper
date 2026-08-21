@@ -8,3 +8,6 @@ extend = "pyproject.toml"
 "scripts/modal_pipeline.py" = ["RUF001", "S108"]
 "src/clipper/providers/editorial_prompt.py" = ["E501"]
 "src/clipper/hilp.py" = ["I001"]
+
+[format]
+exclude = ["tests/test_modal_execution.py"]
