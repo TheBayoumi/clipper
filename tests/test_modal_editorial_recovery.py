@@ -4,8 +4,8 @@ from typing import Any
 from clipper.cache import model_stage_cache_key
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
 from clipper.providers.editorial_prompt import (
-    EDITORIAL_PROMPT_VERSION,
-    EDITORIAL_SCHEMA_VERSION,
+    EDITORIAL_IDENTITY,
+    EDITORIAL_SCHEMA_IDENTITY,
     editorial_contract,
     editorial_contract_fingerprint,
     editorial_legacy_cache_compatible,
@@ -132,8 +132,8 @@ def test_editorial_provider_keeps_batch_when_at_least_one_edit_plan_has_valid_du
 def test_editorial_contract_uses_stable_identity_and_measured_duration() -> None:
     contract = editorial_contract("edit_plans:c1")
 
-    assert EDITORIAL_PROMPT_VERSION == "editor"
-    assert EDITORIAL_SCHEMA_VERSION == "editorial-json"
+    assert EDITORIAL_IDENTITY == "editor"
+    assert EDITORIAL_SCHEMA_IDENTITY == "editorial-json"
     assert "campaign.min_clip_seconds is a hard floor" in contract
     assert "duration = end.source_end - start.source_start" in contract
     assert "may extend before or after the concept start/end" in contract
@@ -146,8 +146,8 @@ def test_content_addressed_cache_reuses_paid_legacy_stages_but_invalidates_edit_
         "revision",
         "bnb-4bit-nf4",
         "modal-transformers",
-        EDITORIAL_PROMPT_VERSION,
-        EDITORIAL_SCHEMA_VERSION,
+        EDITORIAL_IDENTITY,
+        EDITORIAL_SCHEMA_IDENTITY,
     )
     legacy = ModelIdentity(
         neutral.model_id,
@@ -202,5 +202,6 @@ def test_modal_editorial_runtime_has_bounded_expanding_recovery_budget() -> None
     assert "class EditorialOutputTruncated(ValueError)" in source
     assert "base_budget * _editorial_recovery_attempt(payload)" in source
     assert "return min(4096," in source
-    assert "return fewer valid items with shorter prose rather than truncating" in source
+    assert "return fewer valid items with shorter prose" in source
+    assert "exhausting the output budget" in source
     assert "context=f\"task={task or '<missing>'} attempt={recovery_attempt}\"" in source
