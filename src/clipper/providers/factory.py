@@ -41,16 +41,15 @@ def _canonical_contract() -> str:
     )
 
 
-def editorial_and_embedding_providers(
-    profile_name: str,
-) -> tuple[EditorialProvider, EmbeddingProvider]:
+def editorial_provider(profile_name: str) -> EditorialProvider:
+    """Build the autonomous production editor without an embedding sidecar."""
     profile = compute_profile(profile_name)  # type: ignore[arg-type]
     if profile.editorial_location == "local":
-        return LocalEditorialProvider(), LocalEmbeddingProvider()
+        return LocalEditorialProvider()
     app = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
     backend = os.getenv("CLIPPER_MODAL_EDITORIAL_BACKEND", "function").strip().lower()
     if backend in {"function", "self-hosted", "modal-function"}:
-        editorial: EditorialProvider = ModalEditorialProvider(
+        return ModalEditorialProvider(
             app_name=app,
             function_name="editorial",
             identity=ModelIdentity(
@@ -65,16 +64,14 @@ def editorial_and_embedding_providers(
                 EDITORIAL_SCHEMA_IDENTITY,
             ),
         )
-    elif backend in {"managed", "endpoint"}:
-        default_editorial_model = (
-            "Qwen/Qwen3.6-27B-FP8" if profile.name == "quality" else "Qwen/Qwen3.5-4B"
-        )
-        editorial = ModalEndpointEditorialProvider(
+    if backend in {"managed", "endpoint"}:
+        default_model = "Qwen/Qwen3.6-27B-FP8" if profile.name == "quality" else "Qwen/Qwen3.5-4B"
+        return ModalEndpointEditorialProvider(
             endpoint_url=os.getenv("CLIPPER_MODAL_EDITORIAL_ENDPOINT_URL", ""),
             proxy_token_id=os.getenv("MODAL_PROXY_TOKEN_ID", ""),
             proxy_token_secret=os.getenv("MODAL_PROXY_TOKEN_SECRET", ""),
             identity=ModelIdentity(
-                os.getenv("CLIPPER_EDITORIAL_MODEL_ID", default_editorial_model),
+                os.getenv("CLIPPER_EDITORIAL_MODEL_ID", default_model),
                 os.getenv("CLIPPER_EDITORIAL_MODEL_REVISION", "modal-managed"),
                 "modal-managed",
                 "modal-managed-endpoint",
@@ -82,10 +79,16 @@ def editorial_and_embedding_providers(
                 EDITORIAL_SCHEMA_IDENTITY,
             ),
         )
-    else:
-        raise ValueError(f"unsupported Modal editorial backend: {backend}")
-    embedding = ModalEmbeddingProvider(
-        app_name=app,
+    raise ValueError(f"unsupported Modal editorial backend: {backend}")
+
+
+def embedding_provider(profile_name: str) -> EmbeddingProvider:
+    """Build embeddings for non-production utilities that explicitly need them."""
+    profile = compute_profile(profile_name)  # type: ignore[arg-type]
+    if profile.embedding_location == "local":
+        return LocalEmbeddingProvider()
+    return ModalEmbeddingProvider(
+        app_name=os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor"),
         function_name="embedding",
         identity=ModelIdentity(
             "Qwen/Qwen3-Embedding-0.6B",
@@ -96,7 +99,13 @@ def editorial_and_embedding_providers(
             "embedding-vector",
         ),
     )
-    return editorial, embedding
+
+
+def editorial_and_embedding_providers(
+    profile_name: str,
+) -> tuple[EditorialProvider, EmbeddingProvider]:
+    """Compatibility helper for non-production callers; production uses editorial_provider()."""
+    return editorial_provider(profile_name), embedding_provider(profile_name)
 
 
 def vision_provider(profile_name: str, *, large: bool = False) -> VisionProvider:
