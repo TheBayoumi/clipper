@@ -1,8 +1,18 @@
-# Exact-head production acceptance trigger after human-HILP runtime repair
+# Exact-head autonomous multimodal production acceptance.
 name: Production render and HILP evidence
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "acceptance/production-run-request.json"
+  push:
+    branches:
+      - feat/word-reveal-face-tracking
+    paths:
+      - "acceptance/production-run-request.json"
 
 concurrency:
   group: production-hilp-${{ github.ref }}
@@ -21,6 +31,7 @@ env:
 jobs:
   production-render-evidence:
     runs-on: ubuntu-24.04
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,10 +39,11 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Verify production dependency and ingestion contract
+      - name: Verify production dependency and cost-safety contract
         run: |
           python - <<'PY'
           from pathlib import Path
+
           source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
           workflow = Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
           for required in (
@@ -48,6 +60,9 @@ jobs:
           assert source.index('"bgutil_default_mweb"') < source.index('"cookies_bgutil_default_mweb"')
           assert 'with_options(cloud=value, timeout=1800)' in workflow
           assert 'with_options(region=value, timeout=1800)' in workflow
+          assert '"render": False' in workflow
+          assert '"render": True' in workflow
+          assert 'fresh_inference' not in workflow
           assert 'manual-review-queue.json' in workflow
           assert 'automated_hilp_allowed' in workflow
           assert 'eligible_quality_moments' in workflow
@@ -66,7 +81,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e '.[modal]'
 
-      - name: Terminate stale production Modal containers
+      - name: Terminate stale production Modal containers without deleting persistent caches
         run: |
           modal app stop "$CLIPPER_MODAL_PIPELINE_APP" --yes || true
           modal app stop "$CLIPPER_MODAL_APP" --yes || true
@@ -75,7 +90,7 @@ jobs:
       - name: Deploy exact-HEAD open-model workers
         run: modal deploy scripts/modal_open_models.py
 
-      - name: Verify named Hugging Face secret access
+      - name: Verify all 11 structured editorial task schemas and HF access
         run: |
           set -euo pipefail
           mkdir -p open-evidence
@@ -86,21 +101,26 @@ jobs:
 
           import modal
 
-          result = modal.Function.from_name(
-              os.environ["CLIPPER_MODAL_APP"], "hf_access_smoke"
-          ).remote()
-          assert isinstance(result, dict) and result.get("ok") is True, result
-          Path("open-evidence/modal-hf-access.json").write_text(
-              json.dumps(result, indent=2) + "\n",
-              encoding="utf-8",
+          app = os.environ["CLIPPER_MODAL_APP"]
+          schema = modal.Function.from_name(app, "editorial_schema_smoke").remote()
+          assert isinstance(schema, dict) and schema.get("ok") is True, schema
+          assert schema.get("task_families") == 11, schema
+          Path("open-evidence/modal-editorial-schema-smoke.json").write_text(
+              json.dumps(schema, indent=2) + "\n", encoding="utf-8"
           )
-          print(json.dumps(result, indent=2))
+
+          access = modal.Function.from_name(app, "hf_access_smoke").remote()
+          assert isinstance(access, dict) and access.get("ok") is True, access
+          Path("open-evidence/modal-hf-access.json").write_text(
+              json.dumps(access, indent=2) + "\n", encoding="utf-8"
+          )
+          print(json.dumps({"schema": schema, "hf_access": access}, indent=2))
           PY
 
-      - name: Deploy exact-HEAD source, Sortformer and pipeline workers
+      - name: Deploy exact-HEAD source and production pipeline workers
         run: modal deploy scripts/modal_pipeline.py
 
-      - name: Acquire highest-quality master across autonomous Modal egress pools
+      - name: Acquire or reuse highest-quality content-addressed source master
         run: |
           set -euo pipefail
           mkdir -p open-evidence
@@ -165,7 +185,7 @@ jobs:
           print(json.dumps({"winner": winner, "result": result}, indent=2))
           PY
 
-      - name: Run entire podcast with evidence-derived quality yield
+      - name: Planning-only pass using persistent paid cache
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -177,6 +197,63 @@ jobs:
               "source": json.loads(Path("open-evidence/source-master.json").read_text()),
               "brief_yaml": Path("campaigns/reach-double-coverage-dedicated.yaml").read_text(),
               "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
+              "render": False,
+          })
+          assert result["status"] == "PASS", result
+          assert result["pipeline_status"] != "FAILED", result
+          assert int(result["rendered_finalists"]) == 0, result
+          Path("open-evidence/planning-result.json").write_text(json.dumps(result, indent=2) + "\n")
+          Path("open-evidence/planning-run-path.txt").write_text(str(result["run_path"]) + "\n")
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Download and validate planning evidence before rendering
+        run: |
+          set -euo pipefail
+          planning_path="$(tr -d '\n' < open-evidence/planning-run-path.txt)"
+          rm -rf planning-evidence
+          modal volume get --force clipper-production-artifacts "$planning_path" planning-evidence
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          roots = list(Path("planning-evidence").rglob("manifest.json"))
+          assert len(roots) == 1, roots
+          manifest = json.loads(roots[0].read_text())
+          assert manifest["status"] != "FAILED", manifest.get("status_reason")
+          targets = manifest.get("targets") or {}
+          eligible = int(targets.get("eligible_quality_moments") or 0)
+          assert eligible >= 0
+          assert not (manifest.get("rendered_clips") or [])
+          assert not (manifest.get("submission_shortlist") or [])
+          rejections = manifest.get("rejections") or []
+          assert all(isinstance(item, dict) for item in rejections)
+          Path("open-evidence/planning-validation.json").write_text(
+              json.dumps({
+                  "status": "PASS",
+                  "eligible_quality_moments": eligible,
+                  "rejections": len(rejections),
+                  "planning_run": str(roots[0].parent),
+              }, indent=2) + "\n"
+          )
+          print(json.dumps({"eligible_quality_moments": eligible, "rejections": len(rejections)}, indent=2))
+          PY
+
+      - name: Render only after planning gate passes
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import modal
+
+          planning = json.loads(Path("open-evidence/planning-result.json").read_text())
+          result = modal.Function.from_name("clipper-production-pipeline", "run_full_cycle").remote({
+              "source": json.loads(Path("open-evidence/source-master.json").read_text()),
+              "brief_yaml": Path("campaigns/reach-double-coverage-dedicated.yaml").read_text(),
+              "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
+              "render": True,
+              "resume_from_run_id": str(planning["run_path"]),
           })
           assert result["status"] == "PASS", result
           assert result["pipeline_status"] in {"SUCCESS", "DEGRADED"}, result
@@ -300,6 +377,7 @@ jobs:
           name: production-review-${{ github.sha }}
           path: |
             open-evidence/
+            planning-evidence/
             cycle-evidence/
           retention-days: 14
           compression-level: 0
