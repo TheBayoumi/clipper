@@ -10,7 +10,7 @@ from .models import BriefValidationError, CampaignBrief
 
 @dataclass(frozen=True, slots=True)
 class ExplicitTargetSpec:
-    """Validated source identity from a modern explicit-target campaign brief."""
+    """Validated source identity from an explicit-target campaign brief."""
 
     video_id: str
     url: str
@@ -62,16 +62,6 @@ def _contains_placeholder(value: str) -> bool:
 
 
 def _reject_example_source_placeholders(data: dict[str, Any]) -> None:
-    for key in ("source_channel_ids", "allowed_video_ids"):
-        values = data.get(key)
-        if not isinstance(values, list):
-            continue
-        for value in values:
-            if isinstance(value, str) and _contains_placeholder(value):
-                raise BriefValidationError(
-                    f"{key} contains an example placeholder; replace it with a real source ID"
-                )
-
     targets = data.get("targets")
     if isinstance(targets, dict):
         videos = targets.get("videos")
@@ -113,10 +103,8 @@ def _https_url(value: object, field: str) -> str:
 
 def _explicit_target_specs_from_data(data: dict[str, Any]) -> tuple[ExplicitTargetSpec, ...]:
     targets = data.get("targets")
-    if targets is None:
-        return ()
     if not isinstance(targets, dict):
-        raise BriefValidationError("targets must be an object")
+        raise BriefValidationError("production brief requires targets.mode=explicit")
     unknown = set(targets) - {"mode", "videos"}
     if unknown:
         raise BriefValidationError(f"unsupported targets rule: {sorted(unknown)[0]}")
@@ -151,24 +139,22 @@ def _explicit_target_specs_from_data(data: dict[str, Any]) -> tuple[ExplicitTarg
         raise BriefValidationError("targets.videos contains duplicate video IDs")
 
     rights = data.get("rights")
-    if isinstance(rights, dict):
-        raw_channels = rights.get("authorized_channels", [])
-        if isinstance(raw_channels, list) and all(isinstance(item, str) for item in raw_channels):
-            authorized = {item.strip() for item in raw_channels if item.strip()}
-            unauthorized = sorted(
-                {item.channel_id for item in specs if item.channel_id not in authorized}
-            )
-            if unauthorized:
-                raise BriefValidationError(
-                    "targets.videos contains channel IDs outside rights.authorized_channels: "
-                    + ", ".join(unauthorized)
-                )
+    if not isinstance(rights, dict):
+        raise BriefValidationError("production brief requires a rights object")
+    raw_channels = rights.get("authorized_channels", [])
+    if not isinstance(raw_channels, list) or not all(isinstance(item, str) for item in raw_channels):
+        raise BriefValidationError("rights.authorized_channels must be a list of strings")
+    authorized = {item.strip() for item in raw_channels if item.strip()}
+    unauthorized = sorted({item.channel_id for item in specs if item.channel_id not in authorized})
+    if unauthorized:
+        raise BriefValidationError(
+            "targets.videos contains channel IDs outside rights.authorized_channels: "
+            + ", ".join(unauthorized)
+        )
     return tuple(specs)
 
 
 def load_explicit_targets(path: str | Path) -> tuple[ExplicitTargetSpec, ...]:
-    """Load validated modern target identities without converting them to discovery fields."""
-
     data = _load_brief_data(path)
     _reject_example_source_placeholders(data)
     return _explicit_target_specs_from_data(data)
@@ -176,15 +162,9 @@ def load_explicit_targets(path: str | Path) -> tuple[ExplicitTargetSpec, ...]:
 
 def _normalize_explicit_targets(normalized: dict[str, Any]) -> None:
     specs = _explicit_target_specs_from_data(normalized)
-    if not specs:
-        return
-
-    # The legacy CampaignBrief still exposes discovery fields internally. Explicit-target
-    # production populates only allowed_video_ids; authorized channels remain rights data and
-    # must never become implicit discovery inputs. Direct media URLs are preserved losslessly.
     normalized["allowed_video_ids"] = [item.video_id for item in specs]
+    # Authorized channels are rights constraints only; they are never discovery inputs.
     normalized["source_channel_ids"] = []
-    normalized["source_limit"] = len(specs)
     media_urls = {item.video_id: item.media_url for item in specs if item.media_url is not None}
     if media_urls:
         normalized["source_media_urls"] = media_urls
@@ -192,8 +172,6 @@ def _normalize_explicit_targets(normalized: dict[str, Any]) -> None:
 
 def _normalize_rights(normalized: dict[str, Any]) -> None:
     rights = normalized.get("rights")
-    if rights is None:
-        return
     if not isinstance(rights, dict):
         raise BriefValidationError("rights must be an object")
     unknown = set(rights) - {"confirmed", "authorized_channels"}
@@ -240,10 +218,11 @@ def _normalize_generated_media_policy(normalized: dict[str, Any]) -> None:
     normalized["acceptance_policy"] = migrated
 
 
-def _reject_modern_editor_quotas(normalized: dict[str, Any]) -> None:
-    if "targets" not in normalized:
-        return
-    forbidden = {
+def _reject_obsolete_fields(data: dict[str, Any]) -> None:
+    obsolete = {
+        "keywords",
+        "negative_keywords",
+        "required_phrases",
         "clip_count",
         "max_clips_per_source",
         "source_limit",
@@ -251,39 +230,24 @@ def _reject_modern_editor_quotas(normalized: dict[str, Any]) -> None:
         "production",
         "diversity",
         "hooks",
+        "editorial",
     }
-    present = sorted(forbidden & set(normalized))
+    present = sorted(obsolete & set(data))
     if present:
         raise BriefValidationError(
-            "explicit-target campaign briefs cannot configure editorial/output quotas: "
+            "production campaign briefs cannot configure legacy editorial/discovery behavior: "
             + ", ".join(present)
         )
 
 
 def _normalize_semantic_brief(data: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the modern campaign contract onto the current runtime boundary.
-
-    Modern production briefs are explicit-target and quota-free. This adapter maps only source,
-    rights, duration, and policy fields required by the current CampaignBrief. It intentionally
-    does not inject campaign-specific cache identities, output counts, concept budgets, render
-    budgets, hook counts, or diversity quotas.
-    """
-
+    """Map campaign source/rights/policy only; editorial behavior remains autonomous."""
     normalized = dict(data)
-    _reject_modern_editor_quotas(normalized)
+    _reject_obsolete_fields(normalized)
     _normalize_explicit_targets(normalized)
     _normalize_rights(normalized)
     _normalize_content_constraints(normalized)
     _normalize_generated_media_policy(normalized)
-
-    keywords = normalized.get("keywords")
-    if not isinstance(keywords, list) or not any(
-        isinstance(item, str) and item.strip() for item in keywords
-    ):
-        objective = str(
-            normalized.get("objective") or normalized.get("title") or "campaign"
-        ).strip()
-        normalized["keywords"] = [objective]
     return normalized
 
 
