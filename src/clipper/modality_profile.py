@@ -58,16 +58,22 @@ def infer_source_modality_profile(timeline: MultimodalTimeline) -> SourceModalit
         return SourceModalityProfile(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     speech = _covered_duration(timeline, lambda event: bool(event.transcript_word_ids)) / duration
-    visual = _covered_duration(
-        timeline,
-        lambda event: bool(event.scene_ids or event.visual_summaries or event.visible_people),
-    ) / duration
+    visual = (
+        _covered_duration(
+            timeline,
+            lambda event: bool(event.scene_ids or event.visual_summaries or event.visible_people),
+        )
+        / duration
+    )
     motion = _covered_duration(timeline, lambda event: event.motion_salience > 0) / duration
     screen_text = _covered_duration(timeline, lambda event: bool(event.ocr_text)) / duration
-    speakers = _covered_duration(
-        timeline,
-        lambda event: bool(event.speaker_ids and event.visible_people),
-    ) / duration
+    speakers = (
+        _covered_duration(
+            timeline,
+            lambda event: bool(event.speaker_ids and event.visible_people),
+        )
+        / duration
+    )
     actions = _covered_duration(timeline, lambda event: bool(event.actions)) / duration
 
     visual_richness = min(1.0, 0.45 * visual + 0.25 * motion + 0.15 * screen_text + 0.15 * actions)
@@ -79,9 +85,7 @@ def infer_source_modality_profile(timeline: MultimodalTimeline) -> SourceModalit
     action_dependency = min(1.0, actions * (0.7 + 0.3 * motion))
 
     signal_count = sum(
-        1
-        for value in (speech, visual, motion, screen_text, speakers, actions)
-        if value > 0
+        1 for value in (speech, visual, motion, screen_text, speakers, actions) if value > 0
     )
     confidence = min(1.0, 0.25 + 0.1 * signal_count + 0.45 * max(speech, visual))
 
