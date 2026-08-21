@@ -259,14 +259,16 @@ def plan_quality_batch(
                 "multimodal_timeline": multimodal.to_dict(),
                 "modality_profile": modality_profile.to_dict(),
                 "source_hazards": hazard_result.to_dict(),
-                "forbidden_spans": [item.to_dict() for item in forbidden],
+                "forbidden_spans": [
+                    {"start": item.start, "end": item.end} for item in forbidden
+                ],
                 "quality_planning": planning.to_dict(),
                 "adapted_quality_moment_ids": adapted_ids,
                 "stage_cache_hits": source_cache_hits,
                 "stage_executions": source_executions,
             }
         except Exception as exc:
-            failure = {
+            failure: dict[str, object] = {
                 "video_id": video_id,
                 "stage": "quality_graph_planning",
                 "decision": "FAILED",
