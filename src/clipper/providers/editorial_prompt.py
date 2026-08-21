@@ -145,9 +145,7 @@ def editorial_json_schema(task: str) -> dict[str, Any]:
                 "confidence": _confidence(),
             }
         )
-        return _strict_object(
-            {"moments": {"type": "array", "items": moment, "maxItems": 8}}
-        )
+        return _strict_object({"moments": {"type": "array", "items": moment, "maxItems": 8}})
 
     if task == "clip_concepts":
         concept = _strict_object(
@@ -166,9 +164,7 @@ def editorial_json_schema(task: str) -> dict[str, Any]:
                 "confidence": _confidence(),
             }
         )
-        return _strict_object(
-            {"concepts": {"type": "array", "items": concept, "maxItems": 12}}
-        )
+        return _strict_object({"concepts": {"type": "array", "items": concept, "maxItems": 12}})
 
     if task == "global_concept_comparison":
         return _strict_object({"concept_ids": _string_array(max_items=12)})
@@ -185,9 +181,7 @@ def editorial_json_schema(task: str) -> dict[str, Any]:
                 "confidence": _confidence(),
             }
         )
-        return _strict_object(
-            {"variants": {"type": "array", "items": variant, "maxItems": 4}}
-        )
+        return _strict_object({"variants": {"type": "array", "items": variant, "maxItems": 4}})
 
     if task.startswith("edit_plans:"):
         plan = _strict_object(
@@ -218,9 +212,7 @@ def editorial_json_schema(task: str) -> dict[str, Any]:
                 "evidence": _string_array(max_items=8),
             }
         )
-        return _strict_object(
-            {"segments": {"type": "array", "items": segment, "maxItems": 64}}
-        )
+        return _strict_object({"segments": {"type": "array", "items": segment, "maxItems": 64}})
 
     if task.startswith("boundary_audit:"):
         return _strict_object(
