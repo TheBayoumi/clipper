@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
 from .canonical import CanonicalTimeline
 from .models import AcceptancePolicy, CampaignBrief
+from .stage_contracts import structural_contract_fingerprint
 
 
 class BoundaryStatus(StrEnum):
@@ -69,6 +70,18 @@ def _strings(value: object, field_name: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value if item.strip())
 
 
+def _set_contract(instance: object, name: str, *types: type[Any]) -> None:
+    object.__setattr__(
+        instance,
+        "contract_fingerprint",
+        structural_contract_fingerprint(
+            name,
+            *types,
+            exclude_fields=("contract_fingerprint",),
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class BoundaryAudit:
     source_start: float
@@ -95,10 +108,10 @@ class BoundaryAudit:
     repair_start_word_id: str | None = None
     repair_end_word_id: str | None = None
     model_identity: dict[str, object] | None = None
-    prompt_version: str = "editor-v2"
-    schema_version: str = "boundary-audit-v1"
+    contract_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
+        _set_contract(self, "boundary-audit", BoundaryAudit)
         if self.source_start < 0 or self.source_end <= self.source_start:
             raise ValueError("boundary audit source timestamps are invalid")
         if not self.first_source_word.strip() or not self.last_source_word.strip():
@@ -123,8 +136,6 @@ class BoundaryAudit:
         post_end_context: str,
         source_word_evidence: tuple[str, ...],
         model_identity: dict[str, object],
-        prompt_version: str,
-        schema_version: str,
         required_prior_context: str = "",
         required_followup_context: str = "",
     ) -> BoundaryAudit:
@@ -165,8 +176,6 @@ class BoundaryAudit:
             repair_start_word_id=repair_start,
             repair_end_word_id=repair_end,
             model_identity=dict(model_identity),
-            prompt_version=prompt_version,
-            schema_version=schema_version,
         )
 
     def effective_reasons(self) -> tuple[str, ...]:
@@ -240,9 +249,10 @@ class SourceHazardSegment:
     evidence: tuple[str, ...]
     model_identity: dict[str, object]
     source_word_ids: tuple[str, ...] = ()
-    schema_version: str = "source-hazard-v1"
+    contract_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
+        _set_contract(self, "source-hazard", SourceHazardSegment)
         if self.start < 0 or self.end <= self.start:
             raise ValueError("source hazard timestamps are invalid")
         if not 0.0 <= self.confidence <= 1.0:
@@ -327,7 +337,10 @@ class PolicyAudit:
     hazard_intersections: tuple[dict[str, object], ...]
     branding_evidence: tuple[dict[str, object], ...]
     campaign_policy_checks: dict[str, object]
-    policy_version: str = "campaign-policy-v1"
+    contract_fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        _set_contract(self, "campaign-policy-audit", PolicyAudit)
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
@@ -345,7 +358,10 @@ class PreRenderEligibility:
     revalidated_after_repair: bool
     boundary_audit: dict[str, object]
     policy_audit: dict[str, object]
-    schema_version: str = "pre-render-eligibility-v1"
+    contract_fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        _set_contract(self, "pre-render-eligibility", PreRenderEligibility)
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
@@ -440,12 +456,7 @@ def evaluate_campaign_policy(
     for brand in branding:
         if not brand.overlaps(source_start, source_end):
             continue
-        branding_items.append(
-            {
-                **asdict(brand),
-                "origin": brand.origin.value,
-            }
-        )
+        branding_items.append({**asdict(brand), "origin": brand.origin.value})
         if brand.origin == EvidenceOrigin.CAMPAIGN_OVERLAY:
             if not policy.branding.supplied_campaign_assets_allowed:
                 decisions.append(GateDecision.REJECT)
