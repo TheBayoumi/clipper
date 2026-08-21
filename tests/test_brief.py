@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from clipper.brief import load_brief
+from clipper.brief import load_brief, load_explicit_targets
 from clipper.models import BriefValidationError
 
 DATA = {
@@ -58,6 +58,7 @@ def test_load_explicit_target_brief_without_output_quotas(tmp_path: Path) -> Non
         "    - video_id: v1\n"
         "      url: https://www.youtube.com/watch?v=v1\n"
         "      channel_id: UC_AUTHORIZED\n"
+        "      media_url: https://media.example.test/v1.mkv\n"
         "rights:\n"
         "  confirmed: true\n"
         "  authorized_channels: [UC_AUTHORIZED]\n"
@@ -71,14 +72,45 @@ def test_load_explicit_target_brief_without_output_quotas(tmp_path: Path) -> Non
     )
 
     brief = load_brief(path)
+    targets = load_explicit_targets(path)
 
     assert brief.allowed_video_ids == ["v1"]
     assert brief.source_channel_ids == []
     assert brief.source_limit == 1
+    assert brief.source_media_urls == {"v1": "https://media.example.test/v1.mkv"}
     assert brief.rights_confirmed is True
     assert brief.min_clip_seconds == 20
     assert brief.max_clip_seconds == 45
     assert brief.acceptance_policy.ai_generated_source_video == "forbid"
+    assert len(targets) == 1
+    assert targets[0].video_id == "v1"
+    assert targets[0].url == "https://www.youtube.com/watch?v=v1"
+    assert targets[0].channel_id == "UC_AUTHORIZED"
+    assert targets[0].media_url == "https://media.example.test/v1.mkv"
+
+
+def test_explicit_target_channel_must_be_authorized(tmp_path: Path) -> None:
+    path = tmp_path / "brief.yaml"
+    path.write_text(
+        "campaign_id: c1\n"
+        "title: Explicit campaign\n"
+        "objective: Find worthwhile moments.\n"
+        "targets:\n"
+        "  mode: explicit\n"
+        "  videos:\n"
+        "    - video_id: v1\n"
+        "      url: https://www.youtube.com/watch?v=v1\n"
+        "      channel_id: UC_WRONG\n"
+        "rights:\n"
+        "  confirmed: true\n"
+        "  authorized_channels: [UC_AUTHORIZED]\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BriefValidationError, match="outside rights.authorized_channels"):
+        load_explicit_targets(path)
+    with pytest.raises(BriefValidationError, match="outside rights.authorized_channels"):
+        load_brief(path)
 
 
 def test_explicit_targets_do_not_accept_editorial_quotas(tmp_path: Path) -> None:
