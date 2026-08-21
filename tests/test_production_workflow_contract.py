@@ -10,7 +10,9 @@ def test_production_workflow_is_planning_first_and_cache_preserving() -> None:
 
     planning = workflow.index("Planning-only pass using persistent paid cache")
     validation = workflow.index("Download and validate planning evidence before rendering")
-    rendering = workflow.index("Render only after planning gate passes using the same cache identity")
+    rendering = workflow.index(
+        "Render only after planning gate passes using the same cache identity"
+    )
 
     assert planning < validation < rendering
     assert '"render": False' in workflow
