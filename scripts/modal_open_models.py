@@ -468,10 +468,7 @@ def embedding(payload: dict[str, Any]) -> dict[str, Any]:
     scaledown_window=2,
 )
 def editorial(payload: dict[str, Any]) -> dict[str, Any]:
-    from clipper.providers.editorial_prompt import (
-        editorial_contract,
-        editorial_json_schema,
-    )
+    from clipper.providers.editorial_prompt import editorial_contract, editorial_json_schema
 
     global _editorial_model, _editorial_structured_model, _editorial_tokenizer
     task = str(payload.get("task") or "")
