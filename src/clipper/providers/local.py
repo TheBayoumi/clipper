@@ -36,41 +36,6 @@ def _usage(
     )
 
 
-class LocalEmbeddingProvider:
-    def __init__(
-        self,
-        model_id: str = "Qwen/Qwen3-Embedding-0.6B",
-        revision: str = "main",
-        *,
-        device: str | None = None,
-    ) -> None:
-        self.identity = ModelIdentity(model_id, revision, "none", "sentence-transformers")
-        self.device = device
-        self._model: Any | None = None
-
-    def _load(self) -> Any:
-        if self._model is None:
-            try:
-                module = importlib.import_module("sentence_transformers")
-            except ImportError as exc:
-                raise ProviderUnavailable("install clipper[embedding]") from exc
-            kwargs: dict[str, Any] = {"revision": self.identity.revision}
-            if self.device:
-                kwargs["device"] = self.device
-            self._model = module.SentenceTransformer(self.identity.model_id, **kwargs)
-        return self._model
-
-    def embed(self, texts: list[str]) -> ProviderResult[list[list[float]]]:
-        started_at, started = _started()
-        vectors = self._load().encode(texts, normalize_embeddings=True, convert_to_numpy=True)
-        value = [[float(item) for item in row] for row in vectors]
-        return ProviderResult(
-            value,
-            self.identity,
-            _usage(started_at, started, provider="local", input_units=len(texts)),
-        )
-
-
 class LocalEditorialProvider:
     def __init__(
         self,

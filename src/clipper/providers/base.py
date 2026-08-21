@@ -54,17 +54,16 @@ class ComputeProfile:
     name: ProfileName
     editorial_location: Literal["local", "modal"]
     vision_location: Literal["local", "modal"]
-    embedding_location: Literal["local", "modal"]
     allow_large_vlm_escalation: bool
 
 
 def compute_profile(name: ProfileName) -> ComputeProfile:
     if name == "local-lite":
-        return ComputeProfile(name, "local", "local", "local", False)
+        return ComputeProfile(name, "local", "local", False)
     if name == "balanced":
-        return ComputeProfile(name, "modal", "modal", "modal", False)
+        return ComputeProfile(name, "modal", "modal", False)
     if name == "quality":
-        return ComputeProfile(name, "modal", "modal", "modal", True)
+        return ComputeProfile(name, "modal", "modal", True)
     raise ValueError(f"unsupported compute profile: {name}")
 
 
@@ -90,12 +89,6 @@ class DiarizationProvider(Protocol):
     def diarize(
         self, source: Path, timeline: CanonicalTimeline
     ) -> ProviderResult[CanonicalTimeline]: ...
-
-
-class EmbeddingProvider(Protocol):
-    identity: ModelIdentity
-
-    def embed(self, texts: list[str]) -> ProviderResult[list[list[float]]]: ...
 
 
 class EditorialProvider(Protocol):

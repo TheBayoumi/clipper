@@ -97,91 +97,6 @@ class ModalEditorialProvider(ModalJSONProvider):
             and "model output must be a JSON object" in exc.remote_message
         )
 
-    @staticmethod
-    def _edit_plan_duration_feedback(
-        task: str,
-        value: dict[str, Any],
-        payload: dict[str, Any],
-    ) -> str | None:
-        """Return recovery feedback when every proposed EditPlan violates duration bounds."""
-
-        if not task.startswith("edit_plans:"):
-            return None
-        raw_plans = value.get("plans")
-        campaign = payload.get("campaign")
-        context_words = payload.get("source_context_words")
-        if (
-            not isinstance(raw_plans, list)
-            or not raw_plans
-            or not isinstance(campaign, dict)
-            or not isinstance(context_words, list)
-        ):
-            return None
-
-        try:
-            minimum = float(campaign["min_clip_seconds"])
-            maximum = float(campaign["max_clip_seconds"])
-        except (KeyError, TypeError, ValueError):
-            return None
-        if minimum <= 0 or maximum < minimum:
-            return None
-
-        timings: dict[str, tuple[float, float]] = {}
-        for item in context_words:
-            if not isinstance(item, dict):
-                continue
-            word_ref = item.get("word_ref")
-            source_start = item.get("source_start")
-            source_end = item.get("source_end")
-            if (
-                isinstance(word_ref, str)
-                and word_ref
-                and isinstance(source_start, int | float)
-                and isinstance(source_end, int | float)
-            ):
-                timings[word_ref] = (float(source_start), float(source_end))
-
-        if not timings:
-            return None
-
-        violations: list[str] = []
-        valid_count = 0
-        for index, raw_plan in enumerate(raw_plans):
-            if not isinstance(raw_plan, dict):
-                violations.append(f"plan[{index}] is not an object")
-                continue
-            start_ref = raw_plan.get("source_start_word_id")
-            end_ref = raw_plan.get("source_end_word_id")
-            if not isinstance(start_ref, str) or not isinstance(end_ref, str):
-                violations.append(f"plan[{index}] is missing source range references")
-                continue
-            start_timing = timings.get(start_ref)
-            end_timing = timings.get(end_ref)
-            if start_timing is None or end_timing is None:
-                violations.append(f"plan[{index}] references a range outside source_context_words")
-                continue
-            duration = end_timing[1] - start_timing[0]
-            if minimum <= duration <= maximum:
-                valid_count += 1
-                continue
-            violations.append(f"plan[{index}] duration={duration:.3f}s")
-
-        if valid_count > 0 or not violations:
-            return None
-
-        observed = "; ".join(violations[:8])
-        return (
-            "Every proposed EditPlan violated the campaign duration contract. "
-            f"The campaign requires {minimum:g}-{maximum:g} seconds. {observed}. "
-            "Regenerate from the original task. For each plan, locate "
-            "source_start_word_id and source_end_word_id in source_context_words and compute "
-            "duration = end.source_end - start.source_start before emitting the plan. "
-            "The selected source range may extend outside the short concept start/end when "
-            "needed, but it must remain one coherent chronological source story, contain its "
-            "spoken hook, and stay within the campaign bounds. If no coherent range satisfies "
-            "the bounds, return an empty plans array instead of an invalid plan."
-        )
-
     def complete_json(
         self, *, task: str, payload: dict[str, Any]
     ) -> ProviderResult[dict[str, Any]]:
@@ -208,15 +123,7 @@ class ModalEditorialProvider(ModalJSONProvider):
                 }
                 continue
 
-            duration_feedback = self._edit_plan_duration_feedback(task, result.value, payload)
-            if duration_feedback is None or attempt >= self._MAX_OUTPUT_RECOVERY_ATTEMPTS:
-                return result
-            request = {
-                "task": task,
-                "payload": payload,
-                "generation_recovery_attempt": attempt + 1,
-                "generation_recovery_instruction": duration_feedback,
-            }
+            return result
         raise AssertionError("unreachable editorial recovery loop")
 
 
@@ -226,48 +133,3 @@ class ModalVisionProvider(ModalJSONProvider):
     ) -> ProviderResult[dict[str, Any]]:
         encoded_frames = [base64.b64encode(frame.read_bytes()).decode("ascii") for frame in frames]
         return self.invoke({"task": task, "frames_base64": encoded_frames, "context": context})
-
-
-class ModalEmbeddingProvider(ModalJSONProvider):
-    def embed(self, texts: list[str]) -> ProviderResult[list[list[float]]]:
-        response = self._function().remote({"texts": texts})
-        if not isinstance(response, dict):
-            raise ValueError("Modal embedding provider returned an invalid response")
-        self._raise_remote_error(response)
-        if not isinstance(response.get("vectors"), list):
-            raise ValueError("Modal embedding provider returned an invalid response")
-        vectors: list[list[float]] = []
-        for row in response["vectors"]:
-            if not isinstance(row, list):
-                raise ValueError("Modal embedding vector must be a list")
-            vectors.append([float(value) for value in row])
-        raw_usage = response.get("usage")
-        usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
-        raw_model = response.get("model")
-        identity = self.identity
-        if isinstance(raw_model, dict):
-            identity = ModelIdentity(
-                str(raw_model.get("model_id") or self.identity.model_id),
-                str(raw_model.get("revision") or self.identity.revision),
-                self.identity.quantization,
-                self.identity.inference_engine,
-                self.identity.prompt_version,
-                self.identity.schema_version,
-            )
-        return ProviderResult(
-            vectors,
-            identity,
-            InferenceUsage(
-                provider="modal",
-                started_at=str(usage.get("started_at") or "unknown"),
-                duration_seconds=float(usage.get("duration_seconds") or 0.0),
-                gpu_type=str(usage["gpu_type"]) if usage.get("gpu_type") else None,
-                gpu_seconds=float(usage.get("gpu_seconds") or 0.0),
-                peak_vram_mb=(
-                    float(usage["peak_vram_mb"]) if usage.get("peak_vram_mb") is not None else None
-                ),
-                input_units=int(usage.get("input_units") or len(texts)),
-                output_units=int(usage.get("output_units") or len(vectors)),
-                estimated_cost_usd=float(usage.get("estimated_cost_usd") or 0.0),
-            ),
-        )

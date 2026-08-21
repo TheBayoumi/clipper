@@ -8,15 +8,14 @@ from .base import (
     AlignmentProvider,
     DiarizationProvider,
     EditorialProvider,
-    EmbeddingProvider,
     ModelIdentity,
     TranscriptionProvider,
     VisionProvider,
     compute_profile,
 )
 from .editorial_prompt import EDITORIAL_IDENTITY, EDITORIAL_SCHEMA_IDENTITY
-from .local import LocalEditorialProvider, LocalEmbeddingProvider, LocalVisionProvider
-from .modal import ModalEditorialProvider, ModalEmbeddingProvider, ModalVisionProvider
+from .local import LocalEditorialProvider, LocalVisionProvider
+from .modal import ModalEditorialProvider, ModalVisionProvider
 from .modal_endpoint import ModalEndpointEditorialProvider
 from .modal_speech import (
     ModalAlignmentProvider,
@@ -80,32 +79,6 @@ def editorial_provider(profile_name: str) -> EditorialProvider:
             ),
         )
     raise ValueError(f"unsupported Modal editorial backend: {backend}")
-
-
-def embedding_provider(profile_name: str) -> EmbeddingProvider:
-    """Build embeddings for non-production utilities that explicitly need them."""
-    profile = compute_profile(profile_name)  # type: ignore[arg-type]
-    if profile.embedding_location == "local":
-        return LocalEmbeddingProvider()
-    return ModalEmbeddingProvider(
-        app_name=os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor"),
-        function_name="embedding",
-        identity=ModelIdentity(
-            "Qwen/Qwen3-Embedding-0.6B",
-            os.getenv("CLIPPER_EMBEDDING_MODEL_REVISION", "main"),
-            "none",
-            "modal-sentence-transformers",
-            "none",
-            "embedding-vector",
-        ),
-    )
-
-
-def editorial_and_embedding_providers(
-    profile_name: str,
-) -> tuple[EditorialProvider, EmbeddingProvider]:
-    """Compatibility helper for non-production callers; production uses editorial_provider()."""
-    return editorial_provider(profile_name), embedding_provider(profile_name)
 
 
 def vision_provider(profile_name: str, *, large: bool = False) -> VisionProvider:
