@@ -146,9 +146,7 @@ def build_multimodal_timeline(
         words = tuple(
             word for word in speech.words if word.source_end > start and word.source_start < end
         )
-        visuals = tuple(
-            event for event in visual_events if event.end > start and event.start < end
-        )
+        visuals = tuple(event for event in visual_events if event.end > start and event.start < end)
         if not words and not visuals:
             continue
 
@@ -156,9 +154,7 @@ def build_multimodal_timeline(
         visible_people = [speaker for event in visuals for speaker in event.visible_speakers]
         summaries = [event.summary for event in visuals]
         visual_confidences = [event.confidence for event in visuals]
-        speech_confidences = [
-            word.confidence for word in words if word.confidence is not None
-        ]
+        speech_confidences = [word.confidence for word in words if word.confidence is not None]
         confidence_values = [*visual_confidences, *speech_confidences]
         confidence = sum(confidence_values) / len(confidence_values) if confidence_values else 0.0
         visual_salience = max(visual_confidences, default=0.0)
