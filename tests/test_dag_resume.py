@@ -38,16 +38,22 @@ def test_stage_contract_identity_changes_only_for_relevant_material() -> None:
     identity = stage_identity(first, source_hash="source", dependency_output_hashes=("dep",))
     same_identity = stage_identity(same, source_hash="source", dependency_output_hashes=("dep",))
     assert identity.cache_key == same_identity.cache_key
-    assert identity.cache_key != stage_identity(
-        changed_policy,
-        source_hash="source",
-        dependency_output_hashes=("dep",),
-    ).cache_key
-    assert identity.cache_key != stage_identity(
-        first,
-        source_hash="source",
-        dependency_output_hashes=("other",),
-    ).cache_key
+    assert (
+        identity.cache_key
+        != stage_identity(
+            changed_policy,
+            source_hash="source",
+            dependency_output_hashes=("dep",),
+        ).cache_key
+    )
+    assert (
+        identity.cache_key
+        != stage_identity(
+            first,
+            source_hash="source",
+            dependency_output_hashes=("other",),
+        ).cache_key
+    )
 
 
 def test_completed_stage_is_reused_without_invoking_operation_again(tmp_path: Path) -> None:
@@ -74,7 +80,9 @@ def test_completed_stage_is_reused_without_invoking_operation_again(tmp_path: Pa
     assert record["cost_usd"] == 0.01
 
 
-def test_downstream_contract_change_does_not_rerun_unrelated_upstream_stages(tmp_path: Path) -> None:
+def test_downstream_contract_change_does_not_rerun_unrelated_upstream_stages(
+    tmp_path: Path,
+) -> None:
     store = DagStore(tmp_path)
     calls = {"source": 0, "asr": 0, "align": 0, "multimodal": 0, "planning": 0}
 
