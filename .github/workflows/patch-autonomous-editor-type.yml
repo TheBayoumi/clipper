@@ -1,0 +1,55 @@
+name: Exact autonomous editor type patch
+
+on:
+  push:
+    branches: [feat/word-reveal-face-tracking]
+    paths:
+      - ".github/workflows/patch-autonomous-editor-type.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/word-reveal-face-tracking
+          fetch-depth: 0
+
+      - name: Apply exact mypy-safe replacement
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/clipper/autonomous_editor.py")
+          source = path.read_text(encoding="utf-8")
+          old = '''            failures = [
+                item
+                for item in rejections
+                if item.get("stage") in {"hook_generation", "edit_plan"}
+                and "model_completion_failed" in (item.get("reasons") or [])
+            ]'''
+          new = '''            failures = [
+                item
+                for item in rejections
+                if item.get("stage") in {"hook_generation", "edit_plan"}
+                and isinstance((reasons := item.get("reasons")), list)
+                and "model_completion_failed" in reasons
+            ]'''
+          if source.count(old) != 1:
+              raise SystemExit(f"expected exactly one autonomous-editor type target, found {source.count(old)}")
+          path.write_text(source.replace(old, new), encoding="utf-8")
+          PY
+
+      - name: Commit exact patch
+        run: |
+          set -euo pipefail
+          git config user.name "clipper-contract-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/clipper/autonomous_editor.py
+          git diff --cached --check
+          git diff --cached --exit-code && exit 0 || true
+          git commit -m "fix: narrow editorial failure reasons for mypy"
+          git push origin HEAD:feat/word-reveal-face-tracking
