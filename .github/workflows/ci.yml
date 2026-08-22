@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   quality:
@@ -34,65 +34,3 @@ jobs:
       - run: ruff format --check .
       - run: mypy
       - run: pytest
-
-      - name: Apply runtime evidence migration after all quality gates pass
-        if: github.event_name == 'pull_request' && matrix.python-version == '3.12'
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-
-          pipeline = Path("src/clipper/pipeline.py")
-          text = pipeline.read_text(encoding="utf-8")
-          start_marker = '    manifest.run_metadata["editorial_inference"]["model_invocations"] = [\n'
-          end_marker = '    manifest.cache["quality_graph"] = {\n'
-          if start_marker in text:
-              start = text.index(start_marker)
-              end = text.index(end_marker, start)
-              replacement = (
-                  '    manifest.run_metadata["editorial_inference"]["model_invocations"] = list(\n'
-                  '        quality.model_invocations\n'
-                  '    )\n'
-                  '    manifest.run_metadata["editorial_inference"]["cache_summary"] = {\n'
-                  '        "stage_cache_hits": quality.stage_cache_hits,\n'
-                  '        "stage_executions": quality.stage_executions,\n'
-                  '    }\n'
-              )
-              text = text[:start] + replacement + text[end:]
-              pipeline.write_text(text, encoding="utf-8")
-          elif 'manifest.run_metadata["editorial_inference"]["cache_summary"]' not in text:
-              raise SystemExit("editorial inference evidence markers not found")
-
-          modal_pipeline = Path("scripts/modal_pipeline.py")
-          text = modal_pipeline.read_text(encoding="utf-8")
-          sha_anchor = '    resume_from_run_id = str(payload.get("resume_from_run_id") or "").strip() or None\n'
-          if 'requested_git_sha = str(payload.get("git_sha") or "").strip()' not in text:
-              if sha_anchor not in text:
-                  raise SystemExit("modal exact-SHA anchor not found")
-              insertion = (
-                  '    requested_git_sha = str(payload.get("git_sha") or "").strip()\n'
-                  '    if requested_git_sha:\n'
-                  '        if len(requested_git_sha) != 40 or any(\n'
-                  '            character not in "0123456789abcdef"\n'
-                  '            for character in requested_git_sha.lower()\n'
-                  '        ):\n'
-                  '            raise ValueError(\n'
-                  '                "run_full_cycle git_sha must be a full hexadecimal commit SHA"\n'
-                  '            )\n'
-                  '        os.environ["GITHUB_SHA"] = requested_git_sha.lower()\n'
-              )
-              text = text.replace(sha_anchor, sha_anchor + insertion, 1)
-              modal_pipeline.write_text(text, encoding="utf-8")
-          PY
-          if git diff --quiet -- src/clipper/pipeline.py scripts/modal_pipeline.py; then
-            echo "runtime evidence migration already applied"
-            exit 0
-          fi
-          ruff format src/clipper/pipeline.py scripts/modal_pipeline.py
-          ruff check src/clipper/pipeline.py scripts/modal_pipeline.py
-          git config user.name "clipper-contract-bot"
-          git config user.email "actions@users.noreply.github.com"
-          git add src/clipper/pipeline.py scripts/modal_pipeline.py
-          git diff --cached --check
-          git commit -m "fix: preserve exact-head inference evidence"
-          git push origin HEAD:feat/word-reveal-face-tracking
