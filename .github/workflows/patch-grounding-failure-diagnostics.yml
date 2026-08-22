@@ -1,0 +1,78 @@
+name: Patch grounding failure diagnostics
+
+on:
+  push:
+    branches:
+      - feat/word-reveal-face-tracking
+    paths:
+      - ".github/workflows/patch-grounding-failure-diagnostics.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/word-reveal-face-tracking
+          fetch-depth: 0
+
+      - name: Preserve failed run and surface grounding error
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/modal_pipeline.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''    if render and manifest.get("status") not in {"SUCCESS", "DEGRADED"}:
+        raise RuntimeError(
+            "production pipeline did not reach SUCCESS or DEGRADED: "
+            f"{manifest.get('status_reason')}"
+        )
+    if not render and manifest.get("status") == "FAILED":
+        raise RuntimeError(
+            f"planning pipeline failed before render: {manifest.get('status_reason')}"
+        )
+'''
+          new = '''    if render and manifest.get("status") not in {"SUCCESS", "DEGRADED"}:
+        errors = manifest.get("errors")
+        details: list[str] = []
+        if isinstance(errors, list):
+            for item in errors[-3:]:
+                if isinstance(item, dict):
+                    stage = str(item.get("stage") or "unknown")
+                    message = str(item.get("message") or "unknown error")
+                    details.append(f"{stage}: {message}")
+        artifact_volume.commit()
+        run_relative = "/" + str(run_dir.relative_to(Path(ARTIFACT_ROOT))).replace(os.sep, "/")
+        suffix = f"; errors={' | '.join(details)}" if details else ""
+        raise RuntimeError(
+            "production pipeline did not reach SUCCESS or DEGRADED: "
+            f"{manifest.get('status_reason')}; failed_run_path={run_relative}{suffix}"
+        )
+    if not render and manifest.get("status") == "FAILED":
+        artifact_volume.commit()
+        run_relative = "/" + str(run_dir.relative_to(Path(ARTIFACT_ROOT))).replace(os.sep, "/")
+        raise RuntimeError(
+            f"planning pipeline failed before render: {manifest.get('status_reason')}; "
+            f"failed_run_path={run_relative}"
+        )
+'''
+          if old not in text:
+              raise SystemExit("expected run_full_cycle failure block not found")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          test_path = Path("tests/test_modal_pipeline_failure_diagnostics.py")
+          test_path.write_text(
+              '''from pathlib import Path\n\n\ndef test_modal_pipeline_persists_and_surfaces_failed_grounding_details() -> None:\n    source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")\n\n    assert 'errors = manifest.get("errors")' in source\n    assert 'artifact_volume.commit()' in source\n    assert 'failed_run_path=' in source\n    assert 'details.append(f"{stage}: {message}")' in source\n''',
+              encoding="utf-8",
+          )
+          PY
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add scripts/modal_pipeline.py tests/test_modal_pipeline_failure_diagnostics.py
+          git commit -m "fix: preserve grounding failure diagnostics"
+          git push origin HEAD:feat/word-reveal-face-tracking
