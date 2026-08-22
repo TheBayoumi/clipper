@@ -1,0 +1,55 @@
+name: One-shot runtime evidence patch
+
+on:
+  push:
+    branches:
+      - feat/word-reveal-face-tracking
+    paths:
+      - .github/workflows/one-shot-runtime-evidence-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/word-reveal-face-tracking
+          fetch-depth: 0
+      - name: Preserve real editorial inference usage
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("src/clipper/pipeline.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''    manifest.run_metadata["editorial_inference"]["model_invocations"] = [
+              {
+                  "model": editor.identity.to_dict(),
+                  "cache_hit": quality.stage_executions == 0,
+                  "stage_cache_hits": quality.stage_cache_hits,
+                  "stage_executions": quality.stage_executions,
+              }
+          ]
+          '''
+          new = '''    manifest.run_metadata["editorial_inference"]["model_invocations"] = list(
+              quality.model_invocations
+          )
+          manifest.run_metadata["editorial_inference"]["cache_summary"] = {
+              "stage_cache_hits": quality.stage_cache_hits,
+              "stage_executions": quality.stage_executions,
+          }
+          '''
+          if old not in text:
+              raise SystemExit("editorial inference evidence anchor not found")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+      - name: Commit runtime evidence fix
+        run: |
+          git config user.name "clipper-contract-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/clipper/pipeline.py
+          git diff --cached --check
+          git commit -m "fix: preserve real editorial inference usage evidence"
+          git push origin HEAD:feat/word-reveal-face-tracking
