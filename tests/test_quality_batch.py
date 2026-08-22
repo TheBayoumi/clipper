@@ -86,6 +86,7 @@ class _QualityEditorial:
                 "decision": "PASS",
                 "quality_score": 0.94,
                 "rationale": "worth publishing",
+                "opening_strategy": "open on the first complete source-grounded statement",
                 "confidence": 0.96,
             }
         else:
@@ -159,7 +160,7 @@ def test_quality_batch_yield_is_quality_derived_not_campaign_quota(tmp_path: Pat
     assert len(result.variants) == 1
     assert len(result.plans) == 1
     assert len(result.story_moments) == 1
-    assert len(result.plans) != brief.clip_count
+    assert len(result.plans) == len(result.quality_moments)
     assert result.plans[0].concept_id == result.quality_moments[0].quality_moment_id
     assert result.plans[0].pre_render_eligibility["decision"] == "PASS"
     assert result.source_evidence[timeline.video_id]["status"] == "PASS"
