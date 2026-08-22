@@ -1,0 +1,7 @@
+{
+  "confirm_production": true,
+  "campaign_brief": "campaigns/reach-double-coverage-clix.yaml",
+  "target_video_id": "2Y4LP85PTak",
+  "max_gpu_seconds": 21600,
+  "max_estimated_usd": 10.0
+}
