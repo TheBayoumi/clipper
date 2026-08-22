@@ -142,7 +142,7 @@ def test_modal_schema_smoke_covers_only_active_editorial_task_families() -> None
 def test_modal_full_cycle_is_quality_derived_and_exact_source_verified() -> None:
     source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     cycle = source.split("def run_full_cycle(", 1)[1]
-    assert 'not isinstance(raw_sources, list)' in cycle
+    assert "not isinstance(raw_sources, list)" in cycle
     assert "run_full_cycle requires a non-empty sources array" in cycle
     assert '"CLIPPER_COMPUTE_PROFILE": "balanced"' in cycle
     assert '"CLIPPER_VISUAL_SCOUT": "true"' in cycle
