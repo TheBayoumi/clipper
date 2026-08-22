@@ -168,6 +168,24 @@ def tracking_transition_sample_times(transitions: object) -> tuple[float, ...]:
     return tuple(sorted(round(value, 3) for value in samples))
 
 
+def _opencv_media_duration_seconds(video_path: Path) -> float:
+    try:
+        import cv2
+    except ImportError as exc:  # pragma: no cover - base dependency in production image
+        raise RuntimeError("opencv-python-headless is required for visual media fallback") from exc
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"unable to open video for duration probing: {video_path}")
+    try:
+        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        frames = float(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)
+    finally:
+        capture.release()
+    if fps <= 0 or frames <= 0:
+        raise RuntimeError(f"unable to determine media duration: {video_path}")
+    return frames / fps
+
+
 def media_duration_seconds(video_path: Path) -> float:
     if not video_path.is_file():
         raise FileNotFoundError(video_path)
@@ -181,6 +199,7 @@ def media_duration_seconds(video_path: Path) -> float:
         "default=noprint_wrappers=1:nokey=1",
         str(video_path),
     ]
+    ffprobe_error: str | None = None
     try:
         completed = subprocess.run(
             command,
@@ -189,20 +208,57 @@ def media_duration_seconds(video_path: Path) -> float:
             text=True,
             timeout=120,
         )
+        try:
+            duration = float(completed.stdout.strip())
+        except ValueError as exc:
+            raise RuntimeError(
+                "unable to determine media duration from ffprobe output: "
+                f"{completed.stdout.strip()!r}"
+            ) from exc
+        if not math.isfinite(duration) or duration <= 0:
+            raise RuntimeError(f"unable to determine media duration: {video_path}")
+        return duration
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or "ffprobe returned no diagnostic output").strip()
-        raise RuntimeError(f"unable to probe visual media duration: {detail[-4000:]}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("visual media duration probe timed out") from exc
+        ffprobe_error = f"unable to probe visual media duration: {detail[-4000:]}"
+    except subprocess.TimeoutExpired:
+        ffprobe_error = "visual media duration probe timed out"
+    except OSError as exc:
+        ffprobe_error = f"visual media duration probe unavailable: {exc}"
+    except RuntimeError as exc:
+        ffprobe_error = str(exc)
     try:
-        duration = float(completed.stdout.strip())
-    except ValueError as exc:
-        raise RuntimeError(
-            f"unable to determine media duration from ffprobe output: {completed.stdout.strip()!r}"
-        ) from exc
-    if not math.isfinite(duration) or duration <= 0:
-        raise RuntimeError(f"unable to determine media duration: {video_path}")
-    return duration
+        return _opencv_media_duration_seconds(video_path)
+    except Exception as exc:
+        raise RuntimeError(f"{ffprobe_error}; OpenCV fallback failed: {exc}") from exc
+
+
+def _opencv_extract_video_frames(
+    video_path: Path,
+    times: tuple[float, ...],
+    output_dir: Path,
+) -> list[Path]:
+    try:
+        import cv2
+    except ImportError as exc:  # pragma: no cover - base dependency in production image
+        raise RuntimeError("opencv-python-headless is required for visual frame fallback") from exc
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"unable to open video for visual sampling: {video_path}")
+    frames: list[Path] = []
+    try:
+        for index, timestamp in enumerate(times):
+            capture.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
+            ok, image = capture.read()
+            if not ok or image is None:
+                raise RuntimeError(f"unable to decode visual sample at {timestamp:.3f}s")
+            path = output_dir / f"frame-{index:04d}-{timestamp:010.3f}.jpg"
+            if not cv2.imwrite(str(path), image):
+                raise RuntimeError(f"unable to write visual sample: {path}")
+            frames.append(path)
+    finally:
+        capture.release()
+    return frames
 
 
 def extract_video_frames(
@@ -219,52 +275,65 @@ def extract_video_frames(
         f"h='min({VISUAL_SAMPLE_MAX_EDGE},ih)':"
         "force_original_aspect_ratio=decrease:force_divisible_by=2"
     )
-    for index, timestamp in enumerate(times):
-        path = output_dir / f"frame-{index:04d}-{timestamp:010.3f}.jpg"
-        path.unlink(missing_ok=True)
-        command = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-nostdin",
-            "-y",
-            "-ss",
-            f"{timestamp:.3f}",
-            "-i",
-            str(video_path),
-            "-map",
-            "0:v:0",
-            "-frames:v",
-            "1",
-            "-vf",
-            scale_filter,
-            "-q:v",
-            "3",
-            str(path),
-        ]
-        try:
-            subprocess.run(
-                command,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=180,
-            )
-        except subprocess.CalledProcessError as exc:
+    ffmpeg_error: str | None = None
+    try:
+        for index, timestamp in enumerate(times):
+            path = output_dir / f"frame-{index:04d}-{timestamp:010.3f}.jpg"
             path.unlink(missing_ok=True)
-            detail = (exc.stderr or exc.stdout or "ffmpeg returned no diagnostic output").strip()
-            raise RuntimeError(
-                f"unable to decode visual sample at {timestamp:.3f}s: {detail[-4000:]}"
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            path.unlink(missing_ok=True)
-            raise RuntimeError(f"visual sample extraction timed out at {timestamp:.3f}s") from exc
-        if not path.is_file() or path.stat().st_size <= 0:
-            path.unlink(missing_ok=True)
-            raise RuntimeError(f"ffmpeg produced no visual sample at {timestamp:.3f}s")
-        frames.append(path)
-    return frames
+            command = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-y",
+                "-ss",
+                f"{timestamp:.3f}",
+                "-i",
+                str(video_path),
+                "-map",
+                "0:v:0",
+                "-frames:v",
+                "1",
+                "-vf",
+                scale_filter,
+                "-q:v",
+                "3",
+                str(path),
+            ]
+            try:
+                subprocess.run(
+                    command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                )
+            except subprocess.CalledProcessError as exc:
+                detail = (exc.stderr or exc.stdout or "ffmpeg returned no diagnostic output").strip()
+                raise RuntimeError(
+                    f"unable to decode visual sample at {timestamp:.3f}s: {detail[-4000:]}"
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(
+                    f"visual sample extraction timed out at {timestamp:.3f}s"
+                ) from exc
+            if not path.is_file() or path.stat().st_size <= 0:
+                raise RuntimeError(f"ffmpeg produced no visual sample at {timestamp:.3f}s")
+            frames.append(path)
+        return frames
+    except OSError as exc:
+        ffmpeg_error = f"ffmpeg visual sampling unavailable: {exc}"
+    except RuntimeError as exc:
+        ffmpeg_error = str(exc)
+    finally:
+        if ffmpeg_error is not None:
+            for frame in frames:
+                frame.unlink(missing_ok=True)
+    try:
+        return _opencv_extract_video_frames(video_path, times, output_dir)
+    except Exception as exc:
+        raise RuntimeError(f"{ffmpeg_error}; OpenCV fallback failed: {exc}") from exc
 
 
 def parse_visual_timeline(
