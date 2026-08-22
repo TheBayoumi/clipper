@@ -5,23 +5,26 @@ def _workflow() -> str:
     return Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
 
 
-def test_production_workflow_is_planning_first_and_cache_preserving() -> None:
+def test_production_workflow_is_single_pass_fresh_and_exact_head() -> None:
     workflow = _workflow()
 
-    planning = workflow.index("Planning-only pass using persistent paid cache")
-    validation = workflow.index("Download and validate planning evidence before rendering")
-    rendering = workflow.index(
-        "Render only after planning gate passes using the same cache identity"
-    )
+    deploy_models = workflow.index("Deploy exact-head open-model workers")
+    deploy_pipeline = workflow.index("Deploy exact-head production pipeline worker")
+    rendering = workflow.index("Run one fresh-inference current-model production render")
+    validation = workflow.index("Validate dynamic yield, fresh inference, cost bounds, and actual media")
 
-    assert planning < validation < rendering
-    assert '"render": False' in workflow
+    assert deploy_models < deploy_pipeline < rendering < validation
+    assert '"render": False' not in workflow
     assert '"render": True' in workflow
-    assert "fresh_inference" not in workflow
+    assert '"fresh_inference": True' in workflow
     assert "resume_from_run_id" not in workflow
-    assert "clipper-production-artifacts" in workflow
-    assert "planning-evidence/" in workflow
-    assert "cycle-evidence/" in workflow
+    assert '"sources": [source]' in workflow
+    assert '"git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"]' in workflow
+    assert "PENDING_ACTUAL_MP4_REVIEW" in workflow
+    assert "READY_FOR_HUMAN_REVIEW" in workflow
+    assert "READY_TO_PUBLISH" in workflow
+    assert "cycle-evidence" in workflow
+    assert "hilp-review" in workflow
 
 
 def test_production_workflow_resolves_campaign_and_target_from_request_data() -> None:
@@ -37,7 +40,7 @@ def test_production_workflow_resolves_campaign_and_target_from_request_data() ->
     assert 'os.environ["CLIPPER_TARGET_VIDEO_ID"]' in workflow
     assert 'os.environ["CLIPPER_TARGET_VIDEO_URL"]' in workflow
     assert 'os.environ["CLIPPER_TARGET_CHANNEL_ID"]' in workflow
-    assert 'Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"]).read_text()' in workflow
+    assert 'Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"]).read_text(encoding="utf-8")' in workflow
 
 
 def test_production_acceptance_contains_no_campaign_specific_identity() -> None:
@@ -58,7 +61,22 @@ def test_production_workflow_is_dynamic_yield_and_human_review_gated() -> None:
 
     assert 'int(result["rendered_finalists"]) >= 6' not in workflow
     assert 'int(result["initial_shortlist"]) >= 3' not in workflow
-    assert "reviewable == rendered" in workflow
     assert "eligible_quality_moments" in workflow
-    assert '"automated_hilp_allowed": False' in workflow
-    assert "PENDING_ACTUAL_REVIEW" in workflow
+    assert 'int(result.get("reviewable") or 0) != int(result.get("rendered") or 0)' in workflow
+    assert "contract permits zero quality yield" in workflow
+    assert "PENDING_ACTUAL_MP4_REVIEW" in workflow
+    assert '"human_review": "PENDING"' in workflow
+    assert 'modal deploy scripts/modal_open_models.py' in workflow
+    assert 'modal deploy scripts/modal_pipeline.py' in workflow
+
+
+def test_production_workflow_enforces_current_model_and_budget_evidence() -> None:
+    workflow = _workflow()
+
+    assert 'int(schema.get("task_families", 0)) != 4' in workflow
+    assert 'int(cache.get("hits") or 0) != 0' in workflow
+    assert 'int(cache_summary.get("stage_cache_hits") or 0) != 0' in workflow
+    assert 'editorial.get("model_invocations")' in workflow
+    assert '"semantic_cores", "narrative_envelope", "quality_windows"' in workflow
+    assert 'gpu_seconds > gpu_limit' in workflow
+    assert 'estimated_usd > cost_limit' in workflow
