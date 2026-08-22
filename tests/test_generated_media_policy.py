@@ -37,7 +37,6 @@ def _brief(policy: str) -> CampaignBrief:
             "campaign_id": "campaign",
             "title": "Campaign",
             "objective": "Test",
-            "keywords": ["test"],
             "allowed_video_ids": ["video"],
             "rights_confirmed": True,
             "acceptance_policy": {
