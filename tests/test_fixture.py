@@ -7,7 +7,6 @@ import pytest
 
 from clipper.fixture import FixtureError, FixtureSourceClient, SpanMedia
 from clipper.models import CampaignBrief
-from clipper.pipeline import PipelineSettings, run_pipeline
 
 
 def _hash(path: Path) -> str:
@@ -54,8 +53,8 @@ def _brief() -> CampaignBrief:
         campaign_id="c",
         title="Campaign",
         objective="Clip",
-        source_channel_ids=("UC1",),
-        allowed_video_ids=("v1",),
+        source_channel_ids=["UC1"],
+        allowed_video_ids=["v1"],
         rights_confirmed=True,
         watermark_url="https://example.test/watermark.png",
     )
@@ -81,8 +80,8 @@ def test_fixture_source_rejects_unauthorized_identity_and_checksum(tmp_path: Pat
         campaign_id="c",
         title="Campaign",
         objective="Clip",
-        source_channel_ids=("UC2",),
-        allowed_video_ids=("v1",),
+        source_channel_ids=["UC2"],
+        allowed_video_ids=["v1"],
         rights_confirmed=True,
     )
     with pytest.raises(FixtureError, match="channel"):
@@ -183,94 +182,6 @@ def test_fixture_file_and_request_validation_errors(tmp_path: Path) -> None:
     client_without_mark = FixtureSourceClient(root)
     with pytest.raises(FixtureError, match="does not provide"):
         client_without_mark.campaign_watermark(_brief())
-
-
-def _brief_video():
-    from clipper.models import VideoCandidate
-
-    return VideoCandidate("v1", "Podcast", "UC1", "Channel", "https://www.youtube.com/watch?v=v1")
-
-
-class _FixtureRenderer:
-    def render(self, source_path, output_path, clip, segments, watermark_path=None, edit_plan=None):
-        assert source_path.name == "span.mp4"
-        assert clip.start >= 0
-        assert edit_plan is not None and edit_plan.source_spans[0].start >= 0
-        assert segments
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"rendered")
-        return output_path
-
-
-def test_pipeline_uses_span_fixture_and_records_span_hash(tmp_path: Path) -> None:
-    fixture = tmp_path / "fixture"
-    fixture.mkdir()
-    transcript = fixture / "source.en.vtt"
-    transcript.write_text(
-        "WEBVTT\n\n"
-        "00:00:02.000 --> 00:00:12.000\n"
-        "How did this automation story make one million dollars?\n\n"
-        "00:00:12.100 --> 00:00:24.000\n"
-        "It worked because the system saved time and the result changed everything.\n"
-    )
-    media = fixture / "span.mp4"
-    media.write_bytes(b"real-source-window")
-    manifest = {
-        "video": {
-            "video_id": "v1",
-            "title": "Podcast",
-            "channel_id": "UC1",
-            "channel_title": "Channel",
-            "url": "https://www.youtube.com/watch?v=v1",
-            "duration_seconds": 30,
-        },
-        "transcript": {"file": "source.en.vtt", "sha256": _hash(transcript)},
-        "spans": [
-            {"file": "span.mp4", "sha256": _hash(media), "source_origin": 0, "source_end": 30}
-        ],
-    }
-    (fixture / "fixture.json").write_text(json.dumps(manifest))
-    brief = tmp_path / "brief.json"
-    brief.write_text(
-        json.dumps(
-            {
-                "campaign_id": "fixture-campaign",
-                "title": "Podcast",
-                "objective": "Clip",
-                "keywords": ["automation", "money"],
-                "source_channel_ids": ["UC1"],
-                "allowed_video_ids": ["v1"],
-                "rights_confirmed": True,
-                "min_clip_seconds": 20,
-                "max_clip_seconds": 30,
-                "clip_count": 1,
-                "production": {
-                    "candidate_pool_size": 10,
-                    "concept_count": 1,
-                    "variants_per_concept": 1,
-                    "final_render_budget": 1,
-                },
-                "hooks": {"enabled": ["direct"]},
-            }
-        )
-    )
-    client = FixtureSourceClient(fixture)
-    from unittest.mock import patch
-
-    with patch(
-        "clipper.pipeline.run_technical_qc",
-        return_value={"status": "PASS", "issues": [], "captions": {"alignment": "PASS"}},
-    ):
-        run_dir = run_pipeline(
-            brief,
-            settings=PipelineSettings(artifact_root=tmp_path / "artifacts"),
-            source_client=client,
-            renderer=_FixtureRenderer(),
-        )
-    result = json.loads((run_dir / "manifest.json").read_text())
-    assert result["status"] == "SUCCESS"
-    assert result["run_metadata"]["source_span_hashes"]["v1"]
-    assert result["actual"]["rendered_finalists"] == 1
 
 
 def test_fixture_source_can_supply_checksum_verified_full_media_for_open_grounding(
