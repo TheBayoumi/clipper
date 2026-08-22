@@ -44,16 +44,12 @@ jobs:
 
           pipeline = Path("src/clipper/pipeline.py")
           text = pipeline.read_text(encoding="utf-8")
-          old = '''    manifest.run_metadata["editorial_inference"]["model_invocations"] = [
-              {
-                  "model": editor.identity.to_dict(),
-                  "cache_hit": quality.stage_executions == 0,
-                  "stage_cache_hits": quality.stage_cache_hits,
-                  "stage_executions": quality.stage_executions,
-              }
-          ]
-          '''
-          new = '''    manifest.run_metadata["editorial_inference"]["model_invocations"] = list(
+          start_marker = '    manifest.run_metadata["editorial_inference"]["model_invocations"] = [\n'
+          end_marker = '    manifest.cache["quality_graph"] = {\n'
+          if start_marker in text:
+              start = text.index(start_marker)
+              end = text.index(end_marker, start)
+              replacement = '''    manifest.run_metadata["editorial_inference"]["model_invocations"] = list(
               quality.model_invocations
           )
           manifest.run_metadata["editorial_inference"]["cache_summary"] = {
@@ -61,35 +57,34 @@ jobs:
               "stage_executions": quality.stage_executions,
           }
           '''
-          if old not in text:
-              raise SystemExit("editorial inference evidence anchor not found")
-          pipeline.write_text(text.replace(old, new, 1), encoding="utf-8")
+              text = text[:start] + replacement + text[end:]
+              pipeline.write_text(text, encoding="utf-8")
+          elif 'manifest.run_metadata["editorial_inference"]["cache_summary"]' not in text:
+              raise SystemExit("editorial inference evidence markers not found")
 
           modal_pipeline = Path("scripts/modal_pipeline.py")
           text = modal_pipeline.read_text(encoding="utf-8")
-          old = '''    resume_from_run_id = str(payload.get("resume_from_run_id") or "").strip() or None
-
-          media_cache.reload()
-          '''
-          new = '''    resume_from_run_id = str(payload.get("resume_from_run_id") or "").strip() or None
-          requested_git_sha = str(payload.get("git_sha") or "").strip()
+          sha_anchor = '    resume_from_run_id = str(payload.get("resume_from_run_id") or "").strip() or None\n'
+          if 'requested_git_sha = str(payload.get("git_sha") or "").strip()' not in text:
+              if sha_anchor not in text:
+                  raise SystemExit("modal exact-SHA anchor not found")
+              insertion = '''    requested_git_sha = str(payload.get("git_sha") or "").strip()
           if requested_git_sha:
               if len(requested_git_sha) != 40 or any(
                   character not in "0123456789abcdef" for character in requested_git_sha.lower()
               ):
                   raise ValueError("run_full_cycle git_sha must be a full hexadecimal commit SHA")
               os.environ["GITHUB_SHA"] = requested_git_sha.lower()
-
-          media_cache.reload()
           '''
-          if old not in text:
-              raise SystemExit("modal exact-SHA anchor not found")
-          modal_pipeline.write_text(text.replace(old, new, 1), encoding="utf-8")
+              text = text.replace(sha_anchor, sha_anchor + insertion, 1)
+              modal_pipeline.write_text(text, encoding="utf-8")
           PY
           if git diff --quiet -- src/clipper/pipeline.py scripts/modal_pipeline.py; then
             echo "runtime evidence migration already applied"
             exit 0
           fi
+          ruff check src/clipper/pipeline.py scripts/modal_pipeline.py
+          ruff format --check src/clipper/pipeline.py scripts/modal_pipeline.py
           git config user.name "clipper-contract-bot"
           git config user.email "actions@users.noreply.github.com"
           git add src/clipper/pipeline.py scripts/modal_pipeline.py
