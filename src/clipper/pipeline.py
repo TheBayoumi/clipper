@@ -423,7 +423,11 @@ def _source_media(
     source: SourceClient,
     video: VideoCandidate,
     work_dir: Path,
+    *,
+    source_is_authoritative: bool = False,
 ) -> Path:
+    if source_is_authoritative:
+        return source.download_media(video, work_dir)
     direct_url = brief.source_media_urls.get(video.video_id)
     if direct_url:
         return _download_asset(
@@ -598,6 +602,7 @@ def run_pipeline(
     assert_campaign_authorized(brief)
     cfg = settings or PipelineSettings.from_env()
     source = source_client or _client(cfg)
+    source_is_authoritative = source_client is not None
     editor = editorial_provider or build_editorial_provider(cfg.compute_profile)
     scout = visual_scout_provider or vision_provider(cfg.compute_profile)
     reviewer = visual_review_provider or scout
@@ -653,7 +658,13 @@ def run_pipeline(
         work_dir = run_dir / "work" / video.video_id
         work_dir.mkdir(parents=True, exist_ok=True)
         try:
-            media_path = _source_media(brief, source, video, work_dir)
+            media_path = _source_media(
+                brief,
+                source,
+                video,
+                work_dir,
+                source_is_authoritative=source_is_authoritative,
+            )
             if not media_path.is_file() or media_path.stat().st_size <= 0:
                 raise RuntimeError("source client returned an invalid media master")
             source_hash = file_sha256(media_path)
