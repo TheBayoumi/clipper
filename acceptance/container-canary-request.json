@@ -1,0 +1,11 @@
+{
+  "requested_for_sha": "3503e9e67eb9623cbaca8ad3811a812ec116eee8",
+  "reason": "CLIPPER autonomous multimodal editor exact-head acceptance",
+  "requirements": [
+    "build deployment image",
+    "run current end-to-end smoke inside image",
+    "publish tested image",
+    "verify registry round trip",
+    "upload deployment evidence"
+  ]
+}
