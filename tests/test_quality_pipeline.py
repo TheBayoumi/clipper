@@ -22,6 +22,8 @@ from clipper.quality_pipeline import (
 from clipper.story_graph import NarrativeEnvelope, SemanticCore
 from clipper.window_solver import enumerate_feasible_windows
 
+OPENING = "open on the first complete source-grounded statement"
+
 
 def _timeline() -> CanonicalTimeline:
     return CanonicalTimeline(
@@ -75,6 +77,7 @@ def _moment(timeline: CanonicalTimeline, *, confidence: float = 0.95) -> Quality
         window.window_id,
         "PASS",
         0.93,
+        OPENING,
         "complete and worth publishing",
         confidence,
     )
@@ -116,7 +119,7 @@ def test_clean_quality_moment_compiles_to_one_renderer_compatible_plan() -> None
     assert adapted.plan.pre_render_eligibility["decision"] == "PASS"
     assert adapted.plan.boundary_audit["decision"] == "PASS"
     assert adapted.plan.campaign_policy_audit["decision"] == "PASS"
-    assert adapted.variant.mode == "direct"
+    assert adapted.variant.mode == OPENING
     assert adapted.variant.caption_start_source_time == moment.delivery_window.source_start
     assert adapted.to_dict()["quality_moment"]["quality_moment_id"] == "quality:core"
 
