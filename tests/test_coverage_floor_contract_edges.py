@@ -65,12 +65,10 @@ def _acceptance_brief() -> CampaignBrief:
             "campaign_id": "hazard-contract",
             "title": "Hazard contract",
             "objective": "Exercise fail-closed source policy",
-            "keywords": ["policy"],
-            "source_channel_ids": ["UC1"],
+            "allowed_video_ids": ["video"],
             "rights_confirmed": True,
             "min_clip_seconds": 8,
             "max_clip_seconds": 20,
-            "clip_count": 1,
             "acceptance_policy": {"enabled": True},
         }
     )
