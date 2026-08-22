@@ -471,6 +471,13 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     render = bool(payload.get("render", True))
     fresh_inference = bool(payload.get("fresh_inference", False))
     resume_from_run_id = str(payload.get("resume_from_run_id") or "").strip() or None
+    requested_git_sha = str(payload.get("git_sha") or "").strip()
+    if requested_git_sha:
+        if len(requested_git_sha) != 40 or any(
+            character not in "0123456789abcdef" for character in requested_git_sha.lower()
+        ):
+            raise ValueError("run_full_cycle git_sha must be a full hexadecimal commit SHA")
+        os.environ["GITHUB_SHA"] = requested_git_sha.lower()
 
     media_cache.reload()
     artifact_volume.reload()

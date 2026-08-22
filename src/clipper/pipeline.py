@@ -803,14 +803,13 @@ def run_pipeline(
         "accepted": 0,
         "unrendered_or_rejected": eligible,
     }
-    manifest.run_metadata["editorial_inference"]["model_invocations"] = [
-        {
-            "model": editor.identity.to_dict(),
-            "cache_hit": quality.stage_executions == 0,
-            "stage_cache_hits": quality.stage_cache_hits,
-            "stage_executions": quality.stage_executions,
-        }
-    ]
+    manifest.run_metadata["editorial_inference"]["model_invocations"] = list(
+        quality.model_invocations
+    )
+    manifest.run_metadata["editorial_inference"]["cache_summary"] = {
+        "stage_cache_hits": quality.stage_cache_hits,
+        "stage_executions": quality.stage_executions,
+    }
     manifest.cache["quality_graph"] = {
         "stage_cache_hits": quality.stage_cache_hits,
         "stage_executions": quality.stage_executions,
