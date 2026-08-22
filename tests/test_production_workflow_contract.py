@@ -64,7 +64,9 @@ def test_production_workflow_is_dynamic_yield_and_human_review_gated() -> None:
     assert 'int(result["rendered_finalists"]) >= 6' not in workflow
     assert 'int(result["initial_shortlist"]) >= 3' not in workflow
     assert "eligible_quality_moments" in workflow
-    assert 'int(result.get("reviewable") or 0) != int(result.get("rendered") or 0)' in workflow
+    assert 'rendered = int(result.get("rendered") or 0)' in workflow
+    assert 'reviewable = int(result.get("reviewable") or 0)' in workflow
+    assert "if reviewable != rendered:" in workflow
     assert "contract permits zero quality yield" in workflow
     assert "PENDING_ACTUAL_MP4_REVIEW" in workflow
     assert '"human_review": "PENDING"' in workflow
