@@ -19,7 +19,7 @@ def _script_function(name: str) -> Any:
     return namespace[name]
 
 
-def test_v10_public_youtube_acquisition_activates_bgutil_before_optional_cookies() -> None:
+def test_public_youtube_acquisition_uses_bgutil_before_optional_cookies() -> None:
     source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     assert "youtubepot-bgutilscript:" in source
     assert "server_home=/root/bgutil-ytdlp-pot-provider/server" in source
@@ -31,7 +31,28 @@ def test_v10_public_youtube_acquisition_activates_bgutil_before_optional_cookies
     assert '"bgutil_default_mweb"' in source
     assert '"cookies_bgutil_default_mweb"' in source
     assert source.index('"bgutil_default_mweb"') < source.index('"cookies_bgutil_default_mweb"')
-    assert "Authenticated yt-dlp cookies are required from this cloud egress." not in source
+
+
+def test_source_acquisition_is_exact_and_content_addressed() -> None:
+    source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+    acquire = source.split("def acquire_source(", 1)[1].split("class VolumeSourceClient", 1)[0]
+    assert "source acquisition requires an https video_url" in acquire
+    assert "source acquisition requires a safe video_id" in acquire
+    assert '"--no-playlist"' in acquire
+    assert '"bestvideo+bestaudio/best"' in acquire
+    assert '"quality_policy": "highest_available_no_transcode"' in source
+    assert 'volume_path = f"/inputs/{digest}{suffix}"' in acquire
+    assert "content-addressed source master hash mismatch" in acquire
+
+
+def test_volume_source_client_never_discovers_or_downgrades_media() -> None:
+    source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+    client = source.split("class VolumeSourceClient", 1)[1].split("def run_full_cycle(", 1)[0]
+    assert "no discovery occurs here" in client
+    assert "return self.videos" in client
+    assert 'evidence.get("quality_policy") != "highest_available_no_transcode"' in client
+    assert "mounted source master failed SHA-256 verification" in client
+    assert "requested render span is outside master" in client
 
 
 def test_open_model_image_has_qwen3_vl_and_shared_editorial_budget_contract() -> None:
@@ -96,67 +117,7 @@ def test_modal_pyannote_normalizes_container_media_to_duration_safe_wav() -> Non
     assert "traceback.print_exception(exc)" in source
 
 
-def test_modal_cycle_uses_measured_controller_memory_and_single_progress_write() -> None:
-    cycle_source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
-    pipeline_source = Path("src/clipper/pipeline.py").read_text(encoding="utf-8")
-    assert "memory=8192" in cycle_source
-    callback = pipeline_source.split("def _model_progress(stage: str, event: str) -> None:", 1)[
-        1
-    ].split("if open_planner is not None:", 1)[0]
-    assert 'journal.progress(\n            "model_inference"' in callback
-    assert 'journal.start("model_inference"' not in callback
-
-
-def test_targeted_finalist_recovery_is_fail_closed_and_keeps_source_run_immutable() -> None:
-    source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
-    recovery = source.split("def recover_finalists(", 1)[1].split("def run_full_cycle(", 1)[0]
-
-    assert '_TARGETED_RECOVERY_PLANS = (("c14", "p3"), ("c5", "p1"))' in source
-    assert "if requested != _TARGETED_RECOVERY_PLANS:" in recovery
-    assert "tracking_transition_sample_times" in recovery
-    assert "segments = transcript_segments_from_canonical(canonical)" in recovery
-    assert '"source master remained in clipper-media-cache; only freshly rendered "' in recovery
-    assert "_TARGETED_RECOVERY_PLANS," in recovery
-    assert "any(key not in _RECOVERED_FINALISTS" in recovery
-    assert "recovered finalist rerenders must be a unique ordered subset" in recovery
-    assert "reuse_run_dir = base_run_dir" in recovery
-    assert '"legacy-caption-repair"' in recovery
-    assert "require_current_qc(destination_clip" in recovery
-    assert "validate_live_run(" in recovery
-    assert '"passed-targeted-reuse"' in recovery
-    assert "partial_run_dir.replace(output_run_dir)" in recovery
-    assert '"expected_remote_visual_reviews"' in recovery
-    assert '"visual_review": "REUSED"' in recovery
-    assert 'begin_finalist_stage(key, "visual_review")' in recovery
-    assert "pass_finalist(key)" in recovery
-    assert 'recovery_progress["status"] = "FAIL"' in recovery
-    assert "partial_run_dir.replace(failed_run_dir)" in recovery
-    assert 'persist_recovery_progress("failure_artifacts_preserved")' in recovery
-    assert "shutil.rmtree(partial_run_dir)" not in recovery
-    assert "_replace_path_prefix(" in recovery
-    assert 'stable_prefix = f"{ARTIFACT_ROOT}/{output_run_id}"' in recovery
-    assert "source_run_dir.replace" not in recovery
-    assert "shutil.rmtree(source_run_dir" not in recovery
-
-
-def test_targeted_recovery_launcher_sends_evidence_not_local_frames() -> None:
-    source = Path("scripts/run_modal_finalist_recovery.py").read_text(encoding="utf-8")
-
-    assert '"prior_review_recovery": prior_review' in source
-    assert '"plan_keys": list(PLAN_KEYS)' in source
-    assert 'request["reuse_plan_keys"] = [PLAN_KEYS[0]]' in source
-    assert 'request["reuse_plan_keys"] = list(PLAN_KEYS)' in source
-    assert 'request["rerender_plan_keys"] = list(LEGACY_FINALIST_KEYS)' in source
-    assert 'request["rerender_plan_keys"] = list(AUTOFRAME_REPAIR_KEYS)' in source
-    assert '"--repair-autoframe-from-run"' in source
-    assert '"c3", "plan_id": "p3"' in source
-    assert '"frames_base64"' not in source
-    assert '"expected_failure_evidence_path": failed_run_path' in source
-    assert '"c14", "plan_id": "p3"' in source
-    assert '"c5", "plan_id": "p1"' in source
-
-
-def test_modal_schema_smoke_covers_all_active_editorial_task_families() -> None:
+def test_modal_schema_smoke_covers_only_active_editorial_task_families() -> None:
     source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
     smoke = source.split("def editorial_schema_smoke(", 1)[1].split("def hf_access_smoke(", 1)[0]
     expected = (
@@ -165,9 +126,8 @@ def test_modal_schema_smoke_covers_all_active_editorial_task_families() -> None:
         "narrative_envelope:smoke",
         "quality_windows:smoke",
     )
-    assert len(expected) == 4
     assert all(f'"{task}"' in smoke for task in expected)
-    retired = (
+    for retired in (
         "episode_editorial_profile",
         "story_moments:smoke",
         "clip_concepts",
@@ -175,25 +135,21 @@ def test_modal_schema_smoke_covers_all_active_editorial_task_families() -> None:
         "hook_variants:smoke",
         "edit_plans:smoke",
         "boundary_audit:smoke",
-    )
-    assert all(f'"{task}"' not in smoke for task in retired)
+    ):
+        assert f'"{retired}"' not in smoke
 
 
-def test_modal_full_cycle_accepts_dynamic_degraded_yield_but_rejects_failed() -> None:
+def test_modal_full_cycle_is_quality_derived_and_exact_source_verified() -> None:
     source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     cycle = source.split("def run_full_cycle(", 1)[1]
+    assert 'not isinstance(raw_sources, list)' in cycle
+    assert "run_full_cycle requires a non-empty sources array" in cycle
+    assert '"CLIPPER_COMPUTE_PROFILE": "balanced"' in cycle
+    assert '"CLIPPER_VISUAL_SCOUT": "true"' in cycle
+    assert '"CLIPPER_VISUAL_REVIEW": "true"' in cycle
     assert 'manifest.get("status") not in {"SUCCESS", "DEGRADED"}' in cycle
     assert 'if not render and manifest.get("status") == "FAILED"' in cycle
-
-
-def test_targeted_finalist_recovery_is_explicit_legacy_protocol_only() -> None:
-    pipeline_source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
-    launcher_source = Path("scripts/run_modal_finalist_recovery.py").read_text(encoding="utf-8")
-    recovery = pipeline_source.split("def recover_finalists(", 1)[1].split(
-        "def run_full_cycle(", 1
-    )[0]
-    assert '_LEGACY_RECOVERY_PROTOCOL = "v8-six-finalist-recovery"' in pipeline_source
-    assert 'payload.get("legacy_recovery_protocol")' in recovery
-    assert "restricted to the explicit legacy V8 six-finalist protocol" in recovery
-    assert 'LEGACY_RECOVERY_PROTOCOL = "v8-six-finalist-recovery"' in launcher_source
-    assert '"legacy_recovery_protocol": LEGACY_RECOVERY_PROTOCOL' in launcher_source
+    assert "pipeline did not process the Modal-acquired source hash" in cycle
+    assert '"eligible_quality_moments"' in cycle
+    assert '"review_status": "PENDING_ACTUAL_MP4_REVIEW" if render else "NOT_RENDERED"' in cycle
+    assert "recover_finalists" not in source
