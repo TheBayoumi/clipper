@@ -522,15 +522,34 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(manifest, dict):
         raise RuntimeError("production pipeline returned an invalid manifest")
-    if render and manifest.get("status") not in {"SUCCESS", "DEGRADED"}:
-        raise RuntimeError(
-            "production pipeline did not reach SUCCESS or DEGRADED: "
-            f"{manifest.get('status_reason')}"
+
+    run_relative = "/" + str(run_dir.relative_to(Path(ARTIFACT_ROOT))).replace(os.sep, "/")
+    failed = (render and manifest.get("status") not in {"SUCCESS", "DEGRADED"}) or (
+        not render and manifest.get("status") == "FAILED"
+    )
+    if failed:
+        raw_errors = manifest.get("errors")
+        errors = (
+            [dict(item) for item in raw_errors if isinstance(item, dict)]
+            if isinstance(raw_errors, list)
+            else []
         )
-    if not render and manifest.get("status") == "FAILED":
-        raise RuntimeError(
-            f"planning pipeline failed before render: {manifest.get('status_reason')}"
-        )
+        metadata = manifest.get("run_metadata")
+        git_sha = metadata.get("git_sha") if isinstance(metadata, dict) else requested_git_sha
+        artifact_volume.commit()
+        return {
+            "status": "FAIL",
+            "run_volume": "clipper-production-artifacts",
+            "run_path": run_relative,
+            "sources": source_items,
+            "pipeline_status": manifest.get("status"),
+            "status_reason": manifest.get("status_reason"),
+            "errors": errors,
+            "git_sha": git_sha,
+            "rendered": len(manifest.get("rendered_clips") or []),
+            "reviewable": len(manifest.get("submission_shortlist") or []),
+            "review_status": "NOT_REVIEWABLE",
+        }
 
     metadata = manifest.get("run_metadata")
     if not isinstance(metadata, dict):
@@ -565,7 +584,6 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     artifact_volume.commit()
-    run_relative = "/" + str(run_dir.relative_to(Path(ARTIFACT_ROOT))).replace(os.sep, "/")
     return {
         "status": "PASS",
         "run_volume": "clipper-production-artifacts",

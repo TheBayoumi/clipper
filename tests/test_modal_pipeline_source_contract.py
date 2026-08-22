@@ -148,7 +148,14 @@ def test_modal_full_cycle_is_quality_derived_and_exact_source_verified() -> None
     assert '"CLIPPER_VISUAL_SCOUT": "true"' in cycle
     assert '"CLIPPER_VISUAL_REVIEW": "true"' in cycle
     assert 'manifest.get("status") not in {"SUCCESS", "DEGRADED"}' in cycle
-    assert 'if not render and manifest.get("status") == "FAILED"' in cycle
+    assert 'not render and manifest.get("status") == "FAILED"' in cycle
+    assert '"status": "FAIL"' in cycle
+    assert '"status_reason": manifest.get("status_reason")' in cycle
+    assert '"errors": errors' in cycle
+    assert '"run_path": run_relative' in cycle
+    assert '"git_sha": git_sha' in cycle
+    failure_return = cycle.index('"status": "FAIL"')
+    assert cycle.rfind("artifact_volume.commit()", 0, failure_return) != -1
     assert "pipeline did not process the Modal-acquired source hash" in cycle
     assert '"eligible_quality_moments"' in cycle
     assert '"review_status": "PENDING_ACTUAL_MP4_REVIEW" if render else "NOT_RENDERED"' in cycle
