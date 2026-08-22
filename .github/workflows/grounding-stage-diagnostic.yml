@@ -14,7 +14,6 @@ env:
   MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
   MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
   CLIPPER_MODAL_APP: clipper-open-editor
-  CLIPPER_MODAL_PIPELINE_APP: clipper-production-pipeline
 
 jobs:
   probe:
@@ -39,9 +38,13 @@ jobs:
         run: |
           python - <<'PY'
           import json
+          import subprocess
+          import time
           from pathlib import Path
+
           import modal
           import yaml
+          from modal.exception import NotFoundError
 
           marker = json.loads(Path("acceptance/production-run-request.json").read_text(encoding="utf-8"))
           brief_path = Path(str(marker["campaign_brief"]))
@@ -53,15 +56,45 @@ jobs:
               raise RuntimeError(f"diagnostic expected one explicit target, got {len(targets)}")
           target = targets[0]
 
-          acquire = modal.Function.from_name("clipper-production-pipeline", "acquire_source")
-          evidence = acquire.remote({"video_id": target["video_id"], "video_url": target["url"]})
-          source_path = str(evidence["mount_path"])
+          index_path = Path("source-index.json")
+          index_path.unlink(missing_ok=True)
+          subprocess.run(
+              [
+                  "modal",
+                  "volume",
+                  "get",
+                  "--force",
+                  "clipper-media-cache",
+                  f"/source-index/{target['video_id']}.json",
+                  str(index_path),
+              ],
+              check=True,
+              timeout=180,
+          )
+          evidence = json.loads(index_path.read_text(encoding="utf-8"))
+          source_path = f"/media{evidence['volume_path']}"
           source_hash = str(evidence["sha256"])
           result = {"source_path": source_path, "source_sha256": source_hash, "stages": {}}
 
-          transcribe = modal.Function.from_name("clipper-open-editor", "transcribe")
+          functions = None
+          for attempt in range(90):
+              try:
+                  candidate = {
+                      name: modal.Function.from_name("clipper-open-editor", name)
+                      for name in ("transcribe", "align", "diarize")
+                  }
+                  for function in candidate.values():
+                      function.hydrate()
+                  functions = candidate
+                  break
+              except NotFoundError:
+                  if attempt == 89:
+                      raise
+                  time.sleep(10)
+          assert functions is not None
+
           try:
-              transcript = transcribe.remote(
+              transcript = functions["transcribe"].remote(
                   {"source_path": source_path, "video_id": target["video_id"], "source_hash": source_hash}
               )
               words = transcript.get("words") if isinstance(transcript, dict) else None
@@ -91,9 +124,8 @@ jobs:
                           "transcript_source": "modal-faster-whisper-large-v3-turbo",
                       }
                   )
-              align = modal.Function.from_name("clipper-open-editor", "align")
               try:
-                  aligned = align.remote(
+                  aligned = functions["align"].remote(
                       {
                           "source_path": source_path,
                           "timeline": {
@@ -116,9 +148,8 @@ jobs:
           else:
               result["stages"]["alignment"] = {"status": "SKIP", "reason": "transcription failed"}
 
-          diarize = modal.Function.from_name("clipper-open-editor", "diarize")
           try:
-              diarized = diarize.remote({"source_path": source_path})
+              diarized = functions["diarize"].remote({"source_path": source_path})
               if isinstance(diarized, dict) and isinstance(diarized.get("error"), dict):
                   error = diarized["error"]
                   raise RuntimeError(f"{error.get('type')}: {error.get('message')}")
@@ -139,7 +170,9 @@ jobs:
           )
           failed = [name for name, item in result["stages"].items() if item["status"] == "FAIL"]
           if failed:
-              raise RuntimeError(f"grounding stage failures: {failed}; diagnostics={json.dumps(result['stages'])}")
+              raise RuntimeError(
+                  f"grounding stage failures: {failed}; diagnostics={json.dumps(result['stages'])}"
+              )
           PY
 
       - uses: actions/upload-artifact@v4
