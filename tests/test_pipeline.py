@@ -1,296 +1,660 @@
-import hashlib
+from __future__ import annotations
+
 import json
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
 
+from clipper.brief import load_brief
 from clipper.canonical import CanonicalTimeline, CanonicalWord
-from clipper.models import (
-    CampaignBrief,
-    ClipCandidate,
-    ClipConcept,
-    EditorialScores,
-    PipelineManifest,
-    TranscriptSegment,
-    VideoCandidate,
-)
+from clipper.models import ClipCandidate, EditPlan, PipelineManifest, TranscriptSegment, VideoCandidate
 from clipper.pipeline import (
     PipelineSettings,
+    _campaign_watermark,
+    _copy_render_sidecars,
     _download_asset,
     _normalize_asset_url,
     _record_source_media_metadata,
+    _rendered_clip,
+    _renderer_for_source,
+    _source_media,
+    _speaker_focus_for_source,
+    _target_candidates,
+    _tracking_transitions,
+    _visual_timeline,
     run_pipeline,
 )
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
-from clipper.providers.speech import PassthroughDiarizationProvider
+from clipper.quality_batch import QualityBatchResult
+from clipper.quality_moments import QualityMoment, WindowQualityAssessment
+from clipper.quality_pipeline import adapt_quality_moment
+from clipper.story_graph import NarrativeEnvelope, SemanticCore
 from clipper.visual import VisualEvent, VisualTimeline
 from clipper.visual_ai import VisualReviewIssue, VisualReviewReport
-
-
-@pytest.fixture(autouse=True)
-def _pipeline_qc_pass():
-    with patch(
-        "clipper.pipeline.run_technical_qc",
-        return_value={"status": "PASS", "issues": [], "captions": {"alignment": "PASS"}},
-    ):
-        yield
+from clipper.window_solver import enumerate_feasible_windows
 
 
 class FakeSource:
-    def __init__(self, subtitle: Path, media: Path) -> None:
-        self.subtitle = subtitle
+    def __init__(self, media: Path, *, watermark: Path | None = None) -> None:
         self.media = media
+        self.watermark = watermark
+        self.downloads = 0
 
-    def discover(self, _brief: CampaignBrief) -> list[VideoCandidate]:
-        return [
-            VideoCandidate("allowed", "Good", "UC1", "Channel", "https://youtu.be/allowed"),
-            VideoCandidate("blocked", "Bad", "UC2", "Other", "https://youtu.be/blocked"),
-        ]
-
-    def download_subtitles(self, _video: VideoCandidate, _work_dir: Path, _language: str) -> Path:
-        return self.subtitle
-
-    def download_media(self, _video: VideoCandidate, _work_dir: Path) -> Path:
+    def download_media(self, video: VideoCandidate, work_dir: Path) -> Path:
+        del video, work_dir
+        self.downloads += 1
         return self.media
+
+    def campaign_watermark(self, brief) -> Path | None:
+        del brief
+        return self.watermark
+
+
+class FakeTranscription:
+    identity = ModelIdentity("fake-asr", "r1", "none", "test", "none", "canonical-v1")
+
+    def __init__(self, *, empty: bool = False) -> None:
+        self.calls = 0
+        self.empty = empty
+
+    def transcribe(self, source: Path, *, video_id: str, source_hash: str):
+        self.calls += 1
+        assert source.is_file()
+        words = () if self.empty else _words(video_id, 60)
+        timeline = CanonicalTimeline(video_id, source_hash, words)
+        return ProviderResult(timeline, self.identity, _usage())
+
+
+class FakeAlignment:
+    identity = ModelIdentity("fake-align", "r1", "none", "test", "none", "canonical-v1")
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def align(self, source: Path, timeline: CanonicalTimeline):
+        self.calls += 1
+        assert source.is_file()
+        return ProviderResult(timeline, self.identity, _usage())
+
+
+class FakeDiarization:
+    identity = ModelIdentity("fake-diarize", "r1", "none", "test", "none", "canonical-v1")
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def diarize(self, source: Path, timeline: CanonicalTimeline):
+        self.calls += 1
+        assert source.is_file()
+        return ProviderResult(timeline, self.identity, _usage())
+
+
+class FakeEditorial:
+    identity = ModelIdentity("fake-editor", "r1", "none", "test", "editor", "editorial-json")
+
+    def complete_json(self, *, task: str, payload: dict[str, object]):
+        raise AssertionError((task, payload))
+
+
+class FakeVision:
+    identity = ModelIdentity("fake-vlm", "r1", "none", "test", "visual", "visual-json")
+
+    def inspect(self, *, task: str, frames: list[Path], context: dict[str, object]):
+        raise AssertionError((task, frames, context))
 
 
 class FakeRenderer:
-    def __init__(self) -> None:
-        self.watermark_path: Path | None = None
+    def __init__(self, *, fail_calls: set[int] | None = None, omit_sidecars: bool = False) -> None:
+        self.calls = 0
+        self.fail_calls = fail_calls or set()
+        self.omit_sidecars = omit_sidecars
+        self.watermarks: list[Path | None] = []
 
     def render(
         self,
-        _source_path: Path,
+        source_path: Path,
         output_path: Path,
-        _clip: ClipCandidate,
-        _segments: list[TranscriptSegment],
+        clip: ClipCandidate,
+        segments: list[TranscriptSegment],
         watermark_path: Path | None = None,
-        edit_plan: object | None = None,
+        edit_plan: EditPlan | None = None,
     ) -> Path:
-        self.watermark_path = watermark_path
+        self.calls += 1
+        assert source_path.is_file()
+        assert clip.duration > 0
+        assert segments
+        assert edit_plan is not None
+        self.watermarks.append(watermark_path)
+        if self.calls in self.fail_calls:
+            raise RuntimeError(f"render failure {self.calls}")
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"mp4")
-        output_path.with_suffix(".tracking-preflight.json").write_text(
-            json.dumps(
-                {
-                    "status": "PASS",
-                    "initial_issues": [],
-                    "repaired_with_stable_fallback": False,
-                    "final_issues": [],
-                    "final_framing_mode": "speaker_locked_portrait",
-                }
+        output_path.write_bytes(f"mp4-{edit_plan.plan_id}".encode())
+        if not self.omit_sidecars:
+            output_path.with_suffix(".ass").write_text("{\\ko10}word", encoding="utf-8")
+            output_path.with_suffix(".caption-audit.json").write_text(
+                json.dumps({"status": "PASS"}), encoding="utf-8"
             )
-        )
+            output_path.with_suffix(".tracking.json").write_text(
+                json.dumps({"transitions": []}), encoding="utf-8"
+            )
         return output_path
 
 
-def test_pipeline_writes_manifest_and_filters_sources(tmp_path: Path) -> None:
-    brief = tmp_path / "brief.json"
-    brief.write_text(
-        json.dumps(
-            {
-                "campaign_id": "campaign",
-                "title": "Automation",
-                "objective": "Explain AI",
-                "keywords": ["automation", "business"],
-                "source_channel_ids": ["UC1"],
-                "rights_confirmed": True,
-                "min_clip_seconds": 8,
-                "max_clip_seconds": 20,
-                "clip_count": 1,
+def _usage() -> InferenceUsage:
+    return InferenceUsage("test", "2026-08-22T00:00:00Z", 0.01)
+
+
+def _words(video_id: str, count: int) -> tuple[CanonicalWord, ...]:
+    return tuple(
+        CanonicalWord(
+            f"{video_id}:w{index:07d}:x",
+            f"word-{index}",
+            float(index),
+            float(index + 1),
+            "speaker-a",
+            0.99,
+            "word_exact",
+            "test",
+        )
+        for index in range(count)
+    )
+
+
+def _write_brief(
+    path: Path,
+    *,
+    watermark_url: str | None = None,
+    media_url: str | None = None,
+    acceptance_policy: dict[str, object] | None = None,
+) -> Path:
+    target: dict[str, object] = {
+        "video_id": "v1",
+        "url": "https://www.youtube.com/watch?v=v1",
+        "channel_id": "UC1",
+    }
+    if media_url is not None:
+        target["media_url"] = media_url
+    payload: dict[str, object] = {
+        "campaign_id": "pipeline-contract",
+        "title": "Podcast",
+        "objective": "Find independently worthwhile complete moments",
+        "targets": {"mode": "explicit", "videos": [target]},
+        "rights": {"confirmed": True, "authorized_channels": ["UC1"]},
+        "content_constraints": {"min_clip_seconds": 20, "max_clip_seconds": 25},
+    }
+    if watermark_url is not None:
+        payload["watermark_url"] = watermark_url
+    if acceptance_policy is not None:
+        payload["acceptance_policy"] = acceptance_policy
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _fake_visual(
+    media_path: Path,
+    video: VideoCandidate,
+    timeline: CanonicalTimeline,
+    provider: FakeVision,
+    run_dir: Path,
+):
+    del media_path, provider, run_dir
+    visual = VisualTimeline(
+        video.video_id,
+        timeline.source_hash,
+        (VisualEvent(0.0, timeline.end, "scene-1", "source footage", ("speaker-a",), (), 0.99),),
+    )
+    return visual, {"model": FakeVision.identity.to_dict(), "usage": {}, "degraded": False}
+
+
+def _quality_result(
+    timelines: dict[str, CanonicalTimeline],
+    root: Path,
+    *,
+    count: int = 1,
+    reserve: bool = False,
+) -> QualityBatchResult:
+    timeline = timelines["v1"]
+    brief = load_brief(root / "brief.json")
+    moments: list[QualityMoment] = []
+    concepts = []
+    variants = []
+    plans: list[EditPlan] = []
+    for index in range(count):
+        start = 5 + index * 30
+        core = SemanticCore.from_word_ids(
+            timeline,
+            core_id=f"core-{index}",
+            source_word_ids=tuple(word.word_id for word in timeline.words[start + 5 : start + 8]),
+            semantic_summary=f"worthwhile idea {index}",
+            editorial_reason="independently publishable",
+            confidence=0.95,
+        )
+        envelope = NarrativeEnvelope.from_word_ids(
+            timeline,
+            core,
+            envelope_id=f"envelope-{index}",
+            source_word_ids=tuple(word.word_id for word in timeline.words[start : start + 20]),
+            setup_resolved=True,
+            payoff_resolved=True,
+            confidence=0.95,
+        )
+        window = enumerate_feasible_windows(
+            timeline,
+            core,
+            envelope,
+            min_seconds=brief.min_clip_seconds,
+            max_seconds=brief.max_clip_seconds,
+        )[0]
+        assessment = WindowQualityAssessment(
+            core.core_id,
+            window.window_id,
+            "PASS",
+            0.94,
+            "open on the first complete source-grounded statement",
+            "complete and worth publishing",
+            0.96,
+        )
+        moment = QualityMoment(f"quality:{core.core_id}", core, envelope, window, assessment)
+        adapted = adapt_quality_moment(brief, timeline, moment, hazards=(), branding=())
+        assert adapted is not None
+        moments.append(moment)
+        concepts.append(adapted.concept)
+        variants.append(adapted.variant)
+        plans.append(adapted.plan)
+        if reserve:
+            reserve_plan = replace(
+                adapted.plan,
+                plan_id=f"{adapted.plan.plan_id}:reserve",
+                variant_id=f"{adapted.variant.variant_id}:reserve",
+            )
+            plans.append(reserve_plan)
+    return QualityBatchResult(
+        story_moments=(),
+        concepts=tuple(concepts),
+        variants=tuple(variants),
+        plans=tuple(plans),
+        quality_moments=tuple(moments),
+        rejections=(),
+        model_invocations=(),
+        boundary_audits=(),
+        campaign_policy_audits=(),
+        source_hazards=(),
+        source_evidence={
+            "v1": {
+                "semantic_cores": count,
+                "modality_profile": {"requires_speaker_identity": True},
             }
-        ),
-        encoding="utf-8",
+        },
+        stage_cache_hits=0,
+        stage_executions=max(1, count * 3),
+        stage_dag_root=root / "dag",
     )
-    subtitle = tmp_path / "captions.vtt"
-    subtitle.write_text(
-        "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\nAutomation can save time for a business.\n",
-        encoding="utf-8",
+
+
+def _empty_quality(root: Path) -> QualityBatchResult:
+    return QualityBatchResult(
+        (), (), (), (), (), (), (), (), (), (), {}, 0, 1, root / "dag"
     )
-    media = tmp_path / "source.mp4"
-    media.write_bytes(b"source")
-
-    run_dir = run_pipeline(
-        brief,
-        settings=PipelineSettings(artifact_root=tmp_path / "artifacts"),
-        source_client=FakeSource(subtitle, media),
-        renderer=FakeRenderer(),
-    )
-    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert len(manifest["discovered_videos"]) == 1
-    assert len(manifest["planned_clips"]) == 1
-    assert len(manifest["rendered_clips"]) == 1
-    assert manifest["errors"][0]["video_id"] == "blocked"
 
 
-class NoSubtitleSource(FakeSource):
-    def download_subtitles(self, _video: VideoCandidate, _work_dir: Path, _language: str):
-        return None
+def _review_result(decision: str = "PASS", *, issues=()):
+    report = VisualReviewReport(decision, "review", 0.99, tuple(issues))
+    result = ProviderResult({"decision": decision}, FakeVision.identity, _usage())
+    return report, [result]
 
 
-class BrokenSubtitleSource(FakeSource):
-    def download_subtitles(self, _video: VideoCandidate, _work_dir: Path, _language: str):
-        raise RuntimeError("caption failure")
+def _run_with_quality(
+    tmp_path: Path,
+    quality_factory,
+    *,
+    renderer: FakeRenderer | None = None,
+    render: bool = True,
+    qc=None,
+    review=None,
+    source: FakeSource | None = None,
+):
+    brief_path = _write_brief(tmp_path / "brief.json")
+    media = tmp_path / "source.mkv"
+    media.write_bytes(b"authorized-source-master")
+    source = source or FakeSource(media)
+    transcription = FakeTranscription()
+    alignment = FakeAlignment()
+    diarization = FakeDiarization()
+    editor = FakeEditorial()
+    vision = FakeVision()
 
+    def quality_side_effect(brief, timelines, visual_timelines, editorial, *, dag_root):
+        del brief, visual_timelines, editorial, dag_root
+        return quality_factory(timelines, tmp_path)
 
-class BrokenRenderer(FakeRenderer):
-    def render(self, *_args, **_kwargs):
-        raise RuntimeError("render failure")
-
-
-def _write_pipeline_brief(tmp_path: Path) -> Path:
-    brief = tmp_path / "brief-extra.json"
-    brief.write_text(
-        json.dumps(
-            {
-                "campaign_id": "extra",
-                "title": "Automation",
-                "objective": "Explain AI",
-                "keywords": ["automation"],
-                "source_channel_ids": ["UC1"],
-                "rights_confirmed": True,
-                "min_clip_seconds": 8,
-                "max_clip_seconds": 20,
-                "clip_count": 1,
-            }
-        ),
-        encoding="utf-8",
-    )
-    return brief
-
-
-def test_pipeline_asr_no_render_and_environment(tmp_path: Path, monkeypatch) -> None:
-    brief = _write_pipeline_brief(tmp_path)
-    subtitle = tmp_path / "unused.vtt"
-    media = tmp_path / "source-extra.mp4"
-    media.write_bytes(b"source")
-    monkeypatch.setenv("CLIPPER_ARTIFACT_ROOT", str(tmp_path / "env-artifacts"))
-    monkeypatch.setenv("CLIPPER_WHISPER_MODEL", "tiny")
-    monkeypatch.setenv("CLIPPER_WHISPER_DEVICE", "cpu")
-    monkeypatch.setenv("CLIPPER_WHISPER_COMPUTE_TYPE", "int8")
-    monkeypatch.setenv("CLIPPER_SPEAKER_FOCUS", "false")
-    monkeypatch.setenv("CLIPPER_SPEAKER_ZOOM", "1.18")
-    monkeypatch.setenv("CLIPPER_SPEAKER_SAMPLE_FPS", "6")
-    monkeypatch.setenv("CLIPPER_SPEAKER_SWITCH_MARGIN", "1.5")
-    monkeypatch.setenv("CLIPPER_SOURCE_MAX_HEIGHT", "1440")
-    monkeypatch.setenv("CLIPPER_RENDER_PROFILE", "review")
-    monkeypatch.setenv("CLIPPER_SPEAKER_MIN_REFRAME_SECONDS", "0.3")
-    monkeypatch.setenv("CLIPPER_SPEAKER_MAX_REFRAME_SECONDS", "0.8")
-    monkeypatch.setenv("CLIPPER_SPEAKER_SECONDS_PER_CROP", "0.7")
-    monkeypatch.setenv("CLIPPER_SPEAKER_HOLD_THRESHOLD", "0.25")
-    monkeypatch.setenv("CLIPPER_SPEAKER_REVERSAL_GUARD_SECONDS", "1.4")
-    monkeypatch.setenv("CLIPPER_SPEAKER_WINDOW_SECONDS", "0.9")
-    monkeypatch.setenv("CLIPPER_SPEAKER_MIN_DETECTION_COVERAGE", "0.4")
-
-    settings = PipelineSettings.from_env()
-    assert settings.whisper_model == "tiny"
-    assert settings.speaker_focus is False
-    assert settings.speaker_zoom == 1.18
-    assert settings.speaker_sample_fps == 6.0
-    assert settings.speaker_switch_margin == 1.5
-    assert settings.source_max_height == 1440
-    assert settings.render_profile == "review"
-    assert settings.speaker_min_reframe_seconds == 0.3
-    assert settings.speaker_max_reframe_seconds == 0.8
-    assert settings.speaker_seconds_per_crop == 0.7
-    assert settings.speaker_hold_threshold == 0.25
-    assert settings.speaker_reversal_guard_seconds == 1.4
-    assert settings.speaker_window_seconds == 0.9
-    assert settings.speaker_min_detection_coverage == 0.4
-    with patch(
-        "clipper.pipeline.transcribe_with_faster_whisper",
-        return_value=[TranscriptSegment(0, 9, "automation saves time.")],
-    ) as transcribe:
+    qc_value = qc or {"status": "PASS", "issues": [], "captions": {"alignment": "PASS"}}
+    review_value = review or _review_result()
+    with (
+        patch("clipper.pipeline._visual_timeline", side_effect=_fake_visual),
+        patch("clipper.pipeline.plan_quality_batch", side_effect=quality_side_effect),
+        patch("clipper.pipeline.run_technical_qc", side_effect=qc_value if callable(qc_value) else None, return_value=None if callable(qc_value) else qc_value),
+        patch("clipper.pipeline.review_rendered_clip", side_effect=review_value if callable(review_value) else None, return_value=None if callable(review_value) else review_value),
+    ):
         run_dir = run_pipeline(
+            brief_path,
+            settings=PipelineSettings(
+                artifact_root=tmp_path / "artifacts",
+                cache_root=tmp_path / "cache",
+            ),
+            source_client=source,
+            renderer=renderer or FakeRenderer(),
+            editorial_provider=editor,
+            visual_scout_provider=vision,
+            visual_review_provider=vision,
+            transcription_provider=transcription,
+            alignment_provider=alignment,
+            diarization_provider=diarization,
+            render=render,
+        )
+    return run_dir, transcription, alignment, diarization
+
+
+def test_pipeline_planning_uses_only_explicit_target_and_writes_contract_artifacts(
+    tmp_path: Path,
+) -> None:
+    run_dir, *_ = _run_with_quality(
+        tmp_path,
+        lambda timelines, root: _quality_result(timelines, root),
+        render=False,
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "SUCCESS"
+    assert manifest["status_reason"] == "planning_complete"
+    assert manifest["publication_state"] == "PLANNED_NOT_RENDERED"
+    assert [item["video_id"] for item in manifest["discovered_videos"]] == ["v1"]
+    assert manifest["run_metadata"]["architecture"] == "autonomous-multimodal-quality-graph"
+    assert manifest["targets"] == {"eligible_quality_moments": 1}
+    assert len(manifest["planned_clips"]) == 1
+    assert (run_dir / "canonical" / "v1.json").is_file()
+    assert (run_dir / "visual-strategy").is_dir()
+    assert json.loads((run_dir / "coverage.json").read_text()) == {
+        "explicit_targets": 1,
+        "grounded_targets": 1,
+        "eligible_quality_moments": 1,
+        "accepted_quality_moments": 0,
+    }
+
+
+def test_grounding_cache_reuses_exact_model_and_source_identity(tmp_path: Path) -> None:
+    brief_path = _write_brief(tmp_path / "brief.json")
+    media = tmp_path / "source.mkv"
+    media.write_bytes(b"same-source")
+    source = FakeSource(media)
+    t = FakeTranscription()
+    a = FakeAlignment()
+    d = FakeDiarization()
+    settings = PipelineSettings(artifact_root=tmp_path / "runs", cache_root=tmp_path / "cache")
+    quality = lambda *_args, **_kwargs: _empty_quality(tmp_path)
+    with (
+        patch("clipper.pipeline._visual_timeline", side_effect=_fake_visual),
+        patch("clipper.pipeline.plan_quality_batch", side_effect=quality),
+        patch("clipper.pipeline._run_id", side_effect=["first", "second"]),
+    ):
+        for _ in range(2):
+            run_pipeline(
+                brief_path,
+                settings=settings,
+                source_client=source,
+                editorial_provider=FakeEditorial(),
+                visual_scout_provider=FakeVision(),
+                transcription_provider=t,
+                alignment_provider=a,
+                diarization_provider=d,
+                render=False,
+            )
+    assert (t.calls, a.calls, d.calls) == (1, 1, 1)
+    second_manifest = json.loads((settings.artifact_root / "second" / "manifest.json").read_text())
+    assert second_manifest["cache"]["hits"] == 3
+
+
+def test_pipeline_rejects_partial_grounding_provider_override(tmp_path: Path) -> None:
+    brief = _write_brief(tmp_path / "brief.json")
+    with pytest.raises(ValueError, match="requires transcription, alignment, and diarization"):
+        run_pipeline(
             brief,
-            settings=settings,
-            source_client=NoSubtitleSource(subtitle, media),
+            settings=PipelineSettings(artifact_root=tmp_path / "artifacts"),
+            source_client=FakeSource(tmp_path / "missing"),
+            editorial_provider=FakeEditorial(),
+            visual_scout_provider=FakeVision(),
+            transcription_provider=FakeTranscription(),
             render=False,
         )
-    assert transcribe.called
-    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert len(manifest["planned_clips"]) == 1
+
+
+def test_grounding_failure_fails_closed_for_explicit_target(tmp_path: Path) -> None:
+    brief = _write_brief(tmp_path / "brief.json")
+    media = tmp_path / "source.mkv"
+    media.write_bytes(b"source")
+    with patch("clipper.pipeline._visual_timeline", side_effect=_fake_visual):
+        run_dir = run_pipeline(
+            brief,
+            settings=PipelineSettings(artifact_root=tmp_path / "artifacts"),
+            source_client=FakeSource(media),
+            editorial_provider=FakeEditorial(),
+            visual_scout_provider=FakeVision(),
+            transcription_provider=FakeTranscription(empty=True),
+            alignment_provider=FakeAlignment(),
+            diarization_provider=FakeDiarization(),
+            render=False,
+        )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "FAILED"
+    assert manifest["status_reason"] == "explicit_target_grounding_failed"
+    assert manifest["errors"][0]["stage"] == "source_grounding"
+
+
+def test_quality_graph_failure_fails_closed(tmp_path: Path) -> None:
+    brief = _write_brief(tmp_path / "brief.json")
+    media = tmp_path / "source.mkv"
+    media.write_bytes(b"source")
+    with (
+        patch("clipper.pipeline._visual_timeline", side_effect=_fake_visual),
+        patch("clipper.pipeline.plan_quality_batch", side_effect=RuntimeError("planner failed")),
+    ):
+        run_dir = run_pipeline(
+            brief,
+            settings=PipelineSettings(artifact_root=tmp_path / "artifacts"),
+            source_client=FakeSource(media),
+            editorial_provider=FakeEditorial(),
+            visual_scout_provider=FakeVision(),
+            transcription_provider=FakeTranscription(),
+            alignment_provider=FakeAlignment(),
+            diarization_provider=FakeDiarization(),
+            render=False,
+        )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "FAILED"
+    assert manifest["status_reason"] == "autonomous_quality_graph_failed"
+
+
+def test_zero_quality_yield_is_success_not_quota_failure(tmp_path: Path) -> None:
+    run_dir, *_ = _run_with_quality(
+        tmp_path,
+        lambda _timelines, root: _empty_quality(root),
+        render=True,
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "SUCCESS"
+    assert manifest["status_reason"] == "no_quality_moments"
+    assert manifest["actual"]["eligible_quality_moments"] == 0
     assert manifest["rendered_clips"] == []
 
 
-def test_pipeline_records_processing_and_render_errors(tmp_path: Path) -> None:
-    brief = _write_pipeline_brief(tmp_path)
-    subtitle = tmp_path / "captions-extra.vtt"
-    subtitle.write_text(
-        "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\nautomation works.\n",
-        encoding="utf-8",
+def test_full_quality_yield_requires_technical_and_multimodal_pass(tmp_path: Path) -> None:
+    renderer = FakeRenderer()
+    run_dir, *_ = _run_with_quality(
+        tmp_path,
+        lambda timelines, root: _quality_result(timelines, root),
+        renderer=renderer,
     )
-    media = tmp_path / "source-extra.mp4"
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "SUCCESS"
+    assert manifest["status_reason"] is None
+    assert manifest["publication_state"] == "READY_FOR_HUMAN_REVIEW"
+    assert manifest["actual"]["rendered_finalists"] == 1
+    assert manifest["funnel"]["technical_qc_pass"] == 1
+    assert manifest["funnel"]["editorial_qc_pass"] == 1
+    assert len(manifest["submission_shortlist"]) == 1
+    assert list((run_dir / "captions").glob("*.ass"))
+    assert list((run_dir / "tracking").glob("*.tracking.json"))
+    review = json.loads((run_dir / "editorial-review.json").read_text())
+    assert review["status"] == "PENDING_HUMAN_REVIEW"
+    assert review["required"] is True
+
+
+def test_technical_qc_rejection_reduces_quality_yield_without_replacement_quota(
+    tmp_path: Path,
+) -> None:
+    run_dir, *_ = _run_with_quality(
+        tmp_path,
+        lambda timelines, root: _quality_result(timelines, root),
+        qc={"status": "FAIL", "issues": ["bad caption"]},
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "FAILED"
+    assert manifest["status_reason"] == "eligible_quality_moments_not_rendered"
+    assert manifest["funnel"]["render_attempts"] == 1
+    assert manifest["funnel"]["technical_qc_pass"] == 0
+    assert manifest["submission_shortlist"] == []
+
+
+def test_multimodal_review_rejection_reduces_quality_yield(tmp_path: Path) -> None:
+    issue = VisualReviewIssue(
+        "crop_oscillation",
+        1.0,
+        2.0,
+        "HIGH",
+        0.95,
+        "TRACKING",
+        "camera reverses",
+    )
+    run_dir, *_ = _run_with_quality(
+        tmp_path,
+        lambda timelines, root: _quality_result(timelines, root),
+        review=_review_result("REPAIR", issues=(issue,)),
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "FAILED"
+    assert manifest["funnel"]["editorial_review_reject_count"] == 1
+    assert manifest["editorial_qc"][0]["decision"] == "REPAIR"
+
+
+def test_partial_quality_yield_is_degraded_not_backfilled(tmp_path: Path) -> None:
+    renderer = FakeRenderer(fail_calls={2})
+    run_dir, *_ = _run_with_quality(
+        tmp_path,
+        lambda timelines, root: _quality_result(timelines, root, count=2),
+        renderer=renderer,
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "DEGRADED"
+    assert manifest["status_reason"] == "partial_quality_yield"
+    assert manifest["actual"]["eligible_quality_moments"] == 2
+    assert manifest["actual"]["rendered_finalists"] == 1
+    assert manifest["funnel"]["render_attempts"] == 1
+    assert manifest["funnel"]["reserve_promotions"] == 0
+
+
+def test_reserve_variant_can_recover_same_quality_moment_after_primary_failure(
+    tmp_path: Path,
+) -> None:
+    renderer = FakeRenderer(fail_calls={1})
+    run_dir, *_ = _run_with_quality(
+        tmp_path,
+        lambda timelines, root: _quality_result(timelines, root, reserve=True),
+        renderer=renderer,
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "SUCCESS"
+    assert manifest["actual"]["eligible_quality_moments"] == 1
+    assert manifest["actual"]["rendered_finalists"] == 1
+    assert renderer.calls == 2
+    assert manifest["funnel"]["reserve_promotions"] == 1
+
+
+def test_missing_renderer_sidecar_fails_render_acceptance(tmp_path: Path) -> None:
+    run_dir, *_ = _run_with_quality(
+        tmp_path,
+        lambda timelines, root: _quality_result(timelines, root),
+        renderer=FakeRenderer(omit_sidecars=True),
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "FAILED"
+    assert any("renderer omitted required evidence" in item["error"] for item in manifest["errors"])
+
+
+def test_campaign_watermark_is_copied_before_render(tmp_path: Path) -> None:
+    brief_path = _write_brief(
+        tmp_path / "brief.json", watermark_url="https://example.test/watermark.png"
+    )
+    media = tmp_path / "source.mkv"
     media.write_bytes(b"source")
-
-    broken_source_dir = run_pipeline(
-        brief,
-        settings=PipelineSettings(artifact_root=tmp_path / "broken-source"),
-        source_client=BrokenSubtitleSource(subtitle, media),
-        renderer=FakeRenderer(),
-    )
-    source_manifest = json.loads((broken_source_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert any("caption failure" in item["error"] for item in source_manifest["errors"])
-
-    broken_render_dir = run_pipeline(
-        brief,
-        settings=PipelineSettings(artifact_root=tmp_path / "broken-render"),
-        source_client=FakeSource(subtitle, media),
-        renderer=BrokenRenderer(),
-    )
-    render_manifest = json.loads((broken_render_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert any("render failure" in item["error"] for item in render_manifest["errors"])
-
-
-def test_pipeline_records_empty_transcript(tmp_path: Path) -> None:
-    brief = _write_pipeline_brief(tmp_path)
-    subtitle = tmp_path / "empty.vtt"
-    subtitle.write_text("WEBVTT\n", encoding="utf-8")
-    media = tmp_path / "source-empty.mp4"
-    media.write_bytes(b"source")
-    run_dir = run_pipeline(
-        brief,
-        settings=PipelineSettings(artifact_root=tmp_path / "empty-run"),
-        source_client=FakeSource(subtitle, media),
-        renderer=FakeRenderer(),
-    )
-    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert any("no timestamped segments" in item["error"] for item in manifest["errors"])
-
-
-def test_pipeline_downloads_required_watermark(tmp_path: Path) -> None:
-    brief = _write_pipeline_brief(tmp_path)
-    payload = json.loads(brief.read_text(encoding="utf-8"))
-    payload["watermark_url"] = "https://drive.google.com/file/d/example/view"
-    payload["required_hashtags"] = ["#DoubleCoverage"]
-    payload["posting_requirements"] = ["Use a dedicated Double Coverage account"]
-    brief.write_text(json.dumps(payload), encoding="utf-8")
-    subtitle = tmp_path / "captions-watermark.vtt"
-    subtitle.write_text(
-        "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\nautomation works.\n",
-        encoding="utf-8",
-    )
-    media = tmp_path / "source-watermark.mp4"
-    media.write_bytes(b"source")
+    watermark = tmp_path / "watermark.png"
+    watermark.write_bytes(b"png")
+    source = FakeSource(media, watermark=watermark)
     renderer = FakeRenderer()
 
-    def fake_download(_url: str, output_path: Path, **_kwargs) -> Path:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"png")
-        return output_path
+    def quality_side_effect(_brief, timelines, _visual, _editorial, *, dag_root):
+        del dag_root
+        return _quality_result(timelines, tmp_path)
 
-    with patch("clipper.pipeline._download_asset", side_effect=fake_download):
+    with (
+        patch("clipper.pipeline._visual_timeline", side_effect=_fake_visual),
+        patch("clipper.pipeline.plan_quality_batch", side_effect=quality_side_effect),
+        patch("clipper.pipeline.run_technical_qc", return_value={"status": "PASS"}),
+        patch("clipper.pipeline.review_rendered_clip", return_value=_review_result()),
+    ):
         run_dir = run_pipeline(
-            brief,
-            settings=PipelineSettings(artifact_root=tmp_path / "watermark-run"),
-            source_client=FakeSource(subtitle, media),
+            brief_path,
+            settings=PipelineSettings(artifact_root=tmp_path / "artifacts"),
+            source_client=source,
             renderer=renderer,
+            editorial_provider=FakeEditorial(),
+            visual_scout_provider=FakeVision(),
+            visual_review_provider=FakeVision(),
+            transcription_provider=FakeTranscription(),
+            alignment_provider=FakeAlignment(),
+            diarization_provider=FakeDiarization(),
         )
-    assert renderer.watermark_path == run_dir / "assets" / "watermark.png"
-    normalized = json.loads((run_dir / "brief.normalized.json").read_text(encoding="utf-8"))
-    assert normalized["required_hashtags"] == ["#DoubleCoverage"]
-    assert normalized["posting_requirements"]
+    expected = run_dir / "assets" / "campaign-watermark.png"
+    assert renderer.watermarks == [expected]
+    assert expected.read_bytes() == b"png"
+
+
+def test_target_candidates_are_exact_and_channel_is_not_a_discovery_fallback(tmp_path: Path) -> None:
+    brief_path = _write_brief(tmp_path / "brief.json")
+    brief = load_brief(brief_path)
+    candidates = _target_candidates(brief_path, brief)
+    assert [(item.video_id, item.channel_id) for item in candidates] == [("v1", "UC1")]
+    assert brief.source_channel_ids == []
+
+
+def test_source_media_prefers_explicit_media_url(tmp_path: Path) -> None:
+    brief_path = _write_brief(
+        tmp_path / "brief.json", media_url="https://media.example.test/source.mkv"
+    )
+    brief = load_brief(brief_path)
+    source = Mock()
+    expected = tmp_path / "downloaded.source"
+    expected.write_bytes(b"source")
+    with patch("clipper.pipeline._download_asset", return_value=expected) as download:
+        result = _source_media(
+            brief,
+            source,
+            _target_candidates(brief_path, brief)[0],
+            tmp_path,
+        )
+    assert result == expected
+    source.download_media.assert_not_called()
+    assert download.call_args.kwargs["expected_kind"] == "media"
 
 
 def test_campaign_asset_url_normalization_and_validation() -> None:
@@ -307,1200 +671,132 @@ def test_campaign_asset_url_normalization_and_validation() -> None:
         _normalize_asset_url("http://example.com/watermark.png")
 
 
-def test_download_asset_accepts_images_and_rejects_bad_payloads(tmp_path: Path) -> None:
-    def response(content_type: str, chunks: list[bytes]) -> Mock:
-        body = Mock()
-        body.headers.get_content_type.return_value = content_type
-        body.read.side_effect = chunks
-        context = Mock()
-        context.__enter__ = Mock(return_value=body)
-        context.__exit__ = Mock(return_value=False)
-        return context
+def _response(content_type: str, chunks: list[bytes]) -> Mock:
+    body = Mock()
+    body.headers.get_content_type.return_value = content_type
+    body.read.side_effect = chunks
+    context = Mock()
+    context.__enter__ = Mock(return_value=body)
+    context.__exit__ = Mock(return_value=False)
+    return context
 
+
+def test_download_asset_accepts_images_and_rejects_bad_payloads(tmp_path: Path) -> None:
     output = tmp_path / "watermark.png"
-    with patch(
-        "clipper.pipeline.urlopen",
-        return_value=response("image/png", [b"png-data", b""]),
-    ):
+    with patch("clipper.pipeline.urlopen", return_value=_response("image/png", [b"png", b""])):
         assert _download_asset("https://example.com/watermark.png", output) == output
-    assert output.read_bytes() == b"png-data"
+    assert output.read_bytes() == b"png"
 
     with (
-        patch(
-            "clipper.pipeline.urlopen",
-            return_value=response("text/html", [b"not-an-image", b""]),
-        ),
+        patch("clipper.pipeline.urlopen", return_value=_response("text/html", [b"bad", b""])),
         pytest.raises(RuntimeError, match="not an image"),
     ):
         _download_asset("https://example.com/bad", tmp_path / "bad.png")
 
     with (
-        patch(
-            "clipper.pipeline.urlopen",
-            return_value=response("image/png", [b"123", b""]),
-        ),
+        patch("clipper.pipeline.urlopen", return_value=_response("image/png", [b"123", b""])),
         pytest.raises(RuntimeError, match="exceeds"),
     ):
-        _download_asset(
-            "https://example.com/large.png",
-            tmp_path / "large.png",
-            max_bytes=2,
-        )
+        _download_asset("https://example.com/large", tmp_path / "large.png", max_bytes=2)
 
 
-def test_download_asset_accepts_binary_media(tmp_path: Path) -> None:
-    body = Mock()
-    body.headers.get_content_type.return_value = "application/octet-stream"
-    body.read.side_effect = [b"media", b""]
-    context = Mock()
-    context.__enter__ = Mock(return_value=body)
-    context.__exit__ = Mock(return_value=False)
-    output = tmp_path / "source.mp4"
-    with patch("clipper.pipeline.urlopen", return_value=context):
-        assert (
-            _download_asset(
-                "https://example.com/source.mp4",
-                output,
-                expected_kind="media",
-            )
-            == output
-        )
+def test_download_asset_accepts_binary_media_and_drive_path(tmp_path: Path) -> None:
+    output = tmp_path / "source.mkv"
+    with patch(
+        "clipper.pipeline.urlopen",
+        return_value=_response("application/octet-stream", [b"media", b""]),
+    ):
+        assert _download_asset(
+            "https://example.com/source.mkv", output, expected_kind="media"
+        ) == output
     assert output.read_bytes() == b"media"
 
-    html_body = Mock()
-    html_body.headers.get_content_type.return_value = "text/html"
-    html_body.read.side_effect = [b"login", b""]
-    html_context = Mock()
-    html_context.__enter__ = Mock(return_value=html_body)
-    html_context.__exit__ = Mock(return_value=False)
-    with (
-        patch("clipper.pipeline.urlopen", return_value=html_context),
-        pytest.raises(RuntimeError, match="not binary media"),
-    ):
-        _download_asset(
-            "https://example.com/source.mp4",
-            tmp_path / "bad-media.mp4",
-            expected_kind="media",
-        )
+    drive = tmp_path / "drive.mkv"
 
-
-def test_download_asset_uses_gdown_for_google_drive_media(tmp_path: Path) -> None:
-    output = tmp_path / "drive-source.mp4"
-
-    def fake_download(*, url: str, output: str, quiet: bool) -> str:
-        assert url.startswith("https://drive.google.com/file/d/")
+    def fake_drive(*, url: str, output: str, quiet: bool):
+        assert url.startswith("https://drive.google.com/")
         assert quiet is True
-        Path(output).write_bytes(b"drive-media")
+        Path(output).write_bytes(b"drive")
         return output
 
-    with patch("clipper.pipeline.gdown.download", side_effect=fake_download) as download:
-        assert (
-            _download_asset(
-                "https://drive.google.com/file/d/source-id/view",
-                output,
-                expected_kind="media",
-            )
-            == output
-        )
-    assert download.call_count == 1
-    assert output.read_bytes() == b"drive-media"
-
-    def oversized_download(*, url: str, output: str, quiet: bool) -> str:
-        del url, quiet
-        Path(output).write_bytes(b"123")
-        return output
-
-    with (
-        patch("clipper.pipeline.gdown.download", side_effect=oversized_download),
-        pytest.raises(RuntimeError, match="exceeds"),
-    ):
-        _download_asset(
-            "https://drive.google.com/file/d/source-id/view",
-            tmp_path / "too-large.mp4",
-            max_bytes=2,
-            expected_kind="media",
-        )
+    with patch("clipper.pipeline.gdown.download", side_effect=fake_drive):
+        assert _download_asset(
+            "https://drive.google.com/file/d/source/view", drive, expected_kind="media"
+        ) == drive
+    assert drive.read_bytes() == b"drive"
 
 
-def test_pipeline_reuses_transcript_and_editorial_cache(tmp_path: Path) -> None:
-    brief_path = _write_pipeline_brief(tmp_path)
-    subtitle = tmp_path / "cache.vtt"
-    subtitle.write_text(
-        "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\nautomation saves creator time.\n",
-        encoding="utf-8",
-    )
-    media = tmp_path / "cache.mp4"
+def test_source_media_metadata_is_recorded_only_from_valid_sidecar(tmp_path: Path) -> None:
+    media = tmp_path / "source.mkv"
     media.write_bytes(b"source")
-    settings = PipelineSettings(
-        artifact_root=tmp_path / "runs", cache_root=tmp_path / "persistent-cache"
-    )
-    with patch("clipper.pipeline._run_id", side_effect=["first", "second"]):
-        run_pipeline(
-            brief_path, settings=settings, source_client=FakeSource(subtitle, media), render=False
-        )
-        second = run_pipeline(
-            brief_path, settings=settings, source_client=FakeSource(subtitle, media), render=False
-        )
-    manifest = json.loads((second / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["cache"]["hits"] >= 2
-    assert manifest["performance"]["wall_seconds"] >= 0
-    assert manifest["run_metadata"]["git_commit_sha"]
-    assert manifest["run_metadata"]["transcript_hashes"]["allowed"]
-
-
-def test_pipeline_records_selected_source_format_metadata(tmp_path: Path) -> None:
-    media = tmp_path / "source.mp4"
-    media.write_bytes(b"video")
-    metadata = media.with_suffix(".source.json")
-    metadata.write_text(
-        json.dumps({"selected": {"format_id": "401", "height": 2160}, "max_height": 2160}),
-        encoding="utf-8",
-    )
     manifest = PipelineManifest("campaign")
-    _record_source_media_metadata(manifest, "video", media)
-    assert manifest.run_metadata["source_media"]["video"]["selected"]["height"] == 2160
-
-    metadata.write_text("not-json", encoding="utf-8")
+    _record_source_media_metadata(manifest, "v1", media)
+    assert "source_media" not in manifest.run_metadata
+    sidecar = media.with_suffix(".source.json")
+    sidecar.write_text(json.dumps({"selected": {"height": 2160}}), encoding="utf-8")
+    _record_source_media_metadata(manifest, "v1", media)
+    assert manifest.run_metadata["source_media"]["v1"]["selected"]["height"] == 2160
+    sidecar.write_text("bad-json", encoding="utf-8")
     before = dict(manifest.run_metadata["source_media"])
-    _record_source_media_metadata(manifest, "broken", media)
+    _record_source_media_metadata(manifest, "v2", media)
     assert manifest.run_metadata["source_media"] == before
 
 
-def _scores() -> EditorialScores:
-    return EditorialScores(8, 8, 8, 8, 5, 7, 4, 7, 8, 9, 8, 8)
-
-
-def _concept(index: int) -> ClipConcept:
-    start = float((index - 1) * 10)
-    return ClipConcept(
-        f"concept-{index}",
-        "allowed",
-        start,
-        start + 9.0,
-        f"automation story {index} made {index * 100} dollars and ended successfully.",
-        f"topic-{index}",
-        f"automation story {index}",
-        "ended successfully.",
-        "money_story",
-        9.0,
-        _scores(),
-        8.0 - index * 0.1,
-        f"cluster-{index}",
-        f"fingerprint-{index}",
+def test_speaker_focus_comes_from_override_or_source_modality() -> None:
+    quality = SimpleNamespace(
+        source_evidence={"v1": {"modality_profile": {"requires_speaker_identity": True}}}
     )
+    assert _speaker_focus_for_source(PipelineSettings(), quality, "v1") is True
+    assert _speaker_focus_for_source(
+        PipelineSettings(speaker_focus_override=False), quality, "v1"
+    ) is False
+    renderer = _renderer_for_source(PipelineSettings(), quality, "v1")
+    assert renderer.speaker_focus is True
 
 
-def _yield_brief(tmp_path: Path) -> Path:
-    path = tmp_path / "yield-brief.json"
-    path.write_text(
-        json.dumps(
-            {
-                "campaign_id": "yield",
-                "title": "Automation",
-                "objective": "Produce a resilient batch",
-                "keywords": ["automation", "money"],
-                "source_channel_ids": ["UC1"],
-                "rights_confirmed": True,
-                "min_clip_seconds": 8,
-                "max_clip_seconds": 20,
-                "clip_count": 1,
-                "max_clips_per_source": 3,
-                "production": {
-                    "candidate_pool_size": 36,
-                    "concept_count": 3,
-                    "variants_per_concept": 1,
-                    "final_render_budget": 2,
-                },
-                "hooks": {"enabled": ["direct"]},
-            }
-        )
-    )
-    return path
-
-
-def _yield_subtitle(tmp_path: Path) -> Path:
-    path = tmp_path / "yield.vtt"
-    path.write_text(
-        "WEBVTT\n\n"
-        "00:00:00.000 --> 00:00:09.000\n"
-        "automation story one made 100 dollars and ended successfully.\n\n"
-        "00:00:10.000 --> 00:00:19.000\n"
-        "automation story two made 200 dollars and ended successfully.\n\n"
-        "00:00:20.000 --> 00:00:29.000\n"
-        "automation story three made 300 dollars and ended successfully.\n"
-    )
-    return path
-
-
-class FailFirstRenderer(FakeRenderer):
-    def __init__(self) -> None:
-        super().__init__()
-        self.calls = 0
-
-    def render(self, *args, **kwargs):
-        self.calls += 1
-        if self.calls == 1:
-            raise RuntimeError("first render failed")
-        return super().render(*args, **kwargs)
-
-
-def test_render_failure_reduces_quality_yield_without_quota_fill(tmp_path: Path) -> None:
-    brief = _yield_brief(tmp_path)
-    subtitle = _yield_subtitle(tmp_path)
-    media = tmp_path / "yield.mp4"
+def test_visual_timeline_requires_grounding_and_records_scout_result(tmp_path: Path) -> None:
+    media = tmp_path / "source.mkv"
     media.write_bytes(b"source")
-    concepts = [_concept(1), _concept(2), _concept(3)]
-    with patch("clipper.pipeline.select_distinct_concepts", return_value=concepts):
-        run_dir = run_pipeline(
-            brief,
-            settings=PipelineSettings(artifact_root=tmp_path / "render-replace"),
-            source_client=FakeSource(subtitle, media),
-            renderer=FailFirstRenderer(),
-        )
-    manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["status"] == "DEGRADED"
-    assert manifest["actual"]["rendered_finalists"] == 2
-    assert manifest["funnel"]["render_attempts"] == 3
-    assert manifest["funnel"]["replacement_attempts"] == 0
-    assert manifest["funnel"]["reserve_promotions"] == 0
-    assert manifest["actual"]["eligible_quality_moments"] == 3
-    assert len(manifest["submission_shortlist"]) == 2
-    assert all(item["plan_id"] for item in manifest["submission_shortlist"])
+    video = VideoCandidate("v1", "T", "UC1", "C", "https://youtube.test/v1", duration_seconds=30)
+    empty = CanonicalTimeline("v1", "hash", ())
+    with pytest.raises(RuntimeError, match="no source words"):
+        _visual_timeline(media, video, empty, FakeVision(), tmp_path)
+
+    timeline = CanonicalTimeline("v1", "hash", _words("v1", 30))
+    visual = VisualTimeline("v1", "hash", (VisualEvent(0, 30, "scene", "source", (), (), 0.9),))
+    result = ProviderResult({"events": []}, FakeVision.identity, _usage())
+    with patch("clipper.pipeline.scout_visual_timeline", return_value=(visual, result)):
+        observed, meta = _visual_timeline(media, video, timeline, FakeVision(), tmp_path)
+    assert observed == visual
+    assert meta["model"]["model_id"] == "fake-vlm"
+    assert (tmp_path / "visual-scout" / "v1.json").is_file()
 
 
-def test_qc_failure_promotes_reserve_and_shortlist_uses_only_qc_passed_clips(
-    tmp_path: Path,
-) -> None:
-    brief = _yield_brief(tmp_path)
-    subtitle = _yield_subtitle(tmp_path)
-    media = tmp_path / "yield-qc.mp4"
-    media.write_bytes(b"source")
-    concepts = [_concept(1), _concept(2), _concept(3)]
-    qc_results = [
-        {"status": "FAIL", "issues": ["first caption mismatch"]},
-        {"status": "PASS", "issues": []},
-        {"status": "PASS", "issues": []},
-    ]
-    with (
-        patch("clipper.pipeline.select_distinct_concepts", return_value=concepts),
-        patch("clipper.pipeline.run_technical_qc", side_effect=qc_results),
-    ):
-        run_dir = run_pipeline(
-            brief,
-            settings=PipelineSettings(artifact_root=tmp_path / "qc-replace"),
-            source_client=FakeSource(subtitle, media),
-            renderer=FakeRenderer(),
-        )
-    manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["status"] == "DEGRADED"
-    assert manifest["funnel"]["technical_qc_fail"] == 1
-    assert manifest["funnel"]["technical_qc_pass"] == 2
-    accepted = {item["plan_id"] for item in manifest["rendered_clips"]}
-    assert {item["plan_id"] for item in manifest["submission_shortlist"]} <= accepted
-    assert not list((run_dir / "clips").glob("attempt-01-*.mp4"))
-    assert list((run_dir / "rejected").glob("attempt-01-*.mp4"))
+def test_required_render_evidence_and_tracking_helpers_fail_closed(tmp_path: Path) -> None:
+    rendered = tmp_path / "clip.mp4"
+    rendered.write_bytes(b"clip")
+    plan = SimpleNamespace(plan_id="plan")
+    with pytest.raises(RuntimeError, match="renderer omitted required evidence"):
+        _copy_render_sidecars(rendered, tmp_path / "run", plan)
+    assert _tracking_transitions(rendered) == ()
+    rendered.with_suffix(".tracking.json").write_text("bad", encoding="utf-8")
+    assert _tracking_transitions(rendered) == ()
 
 
-def test_pipeline_fails_when_all_quality_moments_fail_render(tmp_path: Path) -> None:
-    brief = _yield_brief(tmp_path)
-    subtitle = _yield_subtitle(tmp_path)
-    media = tmp_path / "yield-fail.mp4"
-    media.write_bytes(b"source")
-    concepts = [_concept(1), _concept(2), _concept(3)]
-    with patch("clipper.pipeline.select_distinct_concepts", return_value=concepts):
-        run_dir = run_pipeline(
-            brief,
-            settings=PipelineSettings(artifact_root=tmp_path / "yield-fail"),
-            source_client=FakeSource(subtitle, media),
-            renderer=BrokenRenderer(),
-        )
-    manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["status"] == "FAILED"
-    assert manifest["status_reason"] == "all_eligible_quality_moments_failed_render_or_review"
-    assert manifest["actual"] == {
-        "eligible_quality_moments": 3,
-        "rendered_finalists": 0,
-        "submission_shortlist": 0,
-        "distinct_finalist_concepts": 0,
-        "distinct_shortlist_concepts": 0,
-    }
-    assert manifest["funnel"]["render_attempts"] == 3
-    assert manifest["funnel"]["render_failures"] == 3
-    assert (run_dir / "funnel.json").is_file()
-    assert (run_dir / "rejections.json").is_file()
+def test_rendered_clip_records_exact_output_hash(tmp_path: Path) -> None:
+    brief_path = _write_brief(tmp_path / "brief.json")
+    brief = load_brief(brief_path)
+    timeline = CanonicalTimeline("v1", "hash", _words("v1", 60))
+    quality = _quality_result({"v1": timeline}, tmp_path)
+    plan = quality.plans[0]
+    output = tmp_path / "clip.mp4"
+    output.write_bytes(b"final")
+    video = _target_candidates(brief_path, brief)[0]
+    payload = _rendered_clip(plan, output, video)
+    assert payload["render_sha256"]
+    assert payload["plan_id"] == plan.plan_id
 
 
-class RepairedPreflightRenderer(FakeRenderer):
-    def render(self, *args, **kwargs):
-        output_path = super().render(*args, **kwargs)
-        output_path.with_suffix(".tracking-preflight.json").write_text(
-            json.dumps(
-                {
-                    "status": "PASS",
-                    "initial_issues": ["back-and-forth crop oscillation detected"],
-                    "repaired_with_stable_fallback": True,
-                    "final_issues": [],
-                    "final_framing_mode": "stable_portrait_fallback",
-                }
-            )
-        )
-        return output_path
-
-
-def test_pipeline_records_tracking_preflight_repair(tmp_path: Path) -> None:
-    brief = _yield_brief(tmp_path)
-    subtitle = _yield_subtitle(tmp_path)
-    media = tmp_path / "yield-preflight.mp4"
-    media.write_bytes(b"source")
-    concepts = [_concept(1), _concept(2), _concept(3)]
-    with patch("clipper.pipeline.select_distinct_concepts", return_value=concepts):
-        run_dir = run_pipeline(
-            brief,
-            settings=PipelineSettings(artifact_root=tmp_path / "preflight"),
-            source_client=FakeSource(subtitle, media),
-            renderer=RepairedPreflightRenderer(),
-        )
-    manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["funnel"]["tracking_preflight_pass"] == 3
-    assert manifest["funnel"]["tracking_preflight_repaired"] == 3
-    assert manifest["funnel"]["tracking_preflight_fail"] == 0
-    canonical_files = list((run_dir / "canonical").glob("*.json"))
-    assert len(canonical_files) == 1
-    canonical = json.loads(canonical_files[0].read_text())
-    assert canonical["schema_version"] == "canonical-timeline-v1"
-    assert manifest["run_metadata"]["canonical_timelines"]
-
-
-class FakeOpenEditorialProvider:
-    identity = ModelIdentity("fake-editor", "rev1", "none", "test", "prompt1", "schema1")
-
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-        self.payloads: dict[str, dict[str, object]] = {}
-
-    def complete_json(
-        self, *, task: str, payload: dict[str, object]
-    ) -> ProviderResult[dict[str, object]]:
-        self.calls.append(task)
-        self.payloads[task] = payload
-        usage = InferenceUsage("test", "2026-08-08T00:00:00Z", 0.01)
-        if task.startswith("semantic_cores:"):
-            words = payload["words"]
-            assert isinstance(words, list) and words
-            refs = [item["word_ref"] for item in words if isinstance(item, dict)]
-            value: dict[str, object] = {
-                "cores": [
-                    {
-                        "core_id": "provider-core-id-is-not-authoritative",
-                        "start_word_id": refs[0],
-                        "end_word_id": refs[-1],
-                        "semantic_summary": "A complete explanation of saving time",
-                        "editorial_reason": "The source idea is independently worthwhile",
-                        "confidence": 0.95,
-                    }
-                ]
-            }
-        elif task.startswith("narrative_envelope:"):
-            core = payload["core"]
-            words = payload["source_context_words"]
-            assert isinstance(core, dict)
-            assert isinstance(words, list) and words
-            refs = [item["word_ref"] for item in words if isinstance(item, dict)]
-            value = {
-                "envelope_id": "provider-envelope-id-is-not-authoritative",
-                "core_id": core["core_id"],
-                "start_word_id": refs[0],
-                "end_word_id": refs[-1],
-                "required_prior_context": "",
-                "required_followup_context": "",
-                "setup_resolved": True,
-                "payoff_resolved": True,
-                "reference_resolution": [],
-                "confidence": 0.95,
-            }
-        elif task.startswith("quality_windows:"):
-            core = payload["core"]
-            windows = payload["feasible_windows"]
-            assert isinstance(core, dict)
-            assert isinstance(windows, list) and windows and isinstance(windows[0], dict)
-            value = {
-                "core_id": core["core_id"],
-                "selected_window_id": windows[0]["window_id"],
-                "decision": "PASS",
-                "quality_score": 0.95,
-                "rationale": "Complete, specific, and worth publishing",
-                "confidence": 0.95,
-            }
-        elif task == "episode_editorial_profile":
-            value: dict[str, object] = {
-                "summary": "A short explanatory conversation",
-                "valuable_moment_characteristics": ["self-contained explanation"],
-                "avoid_characteristics": ["unsupported context"],
-                "confidence": 0.95,
-            }
-        elif task.startswith("story_moments:"):
-            words = payload["words"]
-            assert isinstance(words, list)
-            word_ids = [item["word_id"] for item in words if isinstance(item, dict)]
-            value = {
-                "moments": [
-                    {
-                        "moment_id": "moment-1",
-                        "supporting_word_ids": word_ids,
-                        "semantic_summary": "An explanation of saving time",
-                        "narrative_structure": "explanation",
-                        "required_prior_context": "",
-                        "required_followup_context": "",
-                        "editorial_reason": "It stands alone as a complete explanation",
-                        "confidence": 0.92,
-                    }
-                ]
-            }
-        elif task == "clip_concepts":
-            moments = payload["moments"]
-            assert isinstance(moments, list) and isinstance(moments[0], dict)
-            start_word_id = moments[0]["start_word_id"]
-            end_word_id = moments[0]["end_word_id"]
-            value = {
-                "concepts": [
-                    {
-                        "concept_id": "concept-1",
-                        "story_moment_ids": ["moment-1"],
-                        "start_word_id": start_word_id,
-                        "end_word_id": end_word_id,
-                        "semantic_summary": "Complete source-grounded explanation",
-                        "standalone_context": "",
-                        "narrative_structure": "explanation",
-                        "recommended_duration": 9.0,
-                        "visual_dependencies": [],
-                        "confidence": 0.91,
-                    }
-                ]
-            }
-        elif task == "global_concept_comparison":
-            value = {"concept_ids": ["concept-1"]}
-        elif task.startswith("hook_variants:"):
-            concept = payload["concept"]
-            assert isinstance(concept, dict)
-            start_word_id = concept["start_word_id"]
-            end_word_id = concept["end_word_id"]
-            value = {
-                "variants": [
-                    {
-                        "variant_id": "hook-1",
-                        "strategy_label": "start on the source explanation",
-                        "source_start_word_id": start_word_id,
-                        "source_end_word_id": end_word_id,
-                        "overlay_text": None,
-                        "rationale": "The source opening is already clear",
-                        "confidence": 0.9,
-                    }
-                ]
-            }
-        elif task.startswith("edit_plans:"):
-            concept = payload["concept"]
-            assert isinstance(concept, dict)
-            start_word_id = concept["start_word_id"]
-            end_word_id = concept["end_word_id"]
-            value = {
-                "plans": [
-                    {
-                        "plan_id": "plan-1",
-                        "video_id": "allowed",
-                        "concept_id": "concept-1",
-                        "variant_id": "hook-1",
-                        "source_start_word_id": start_word_id,
-                        "source_end_word_id": end_word_id,
-                        "hook_start_word_id": start_word_id,
-                        "hook_end_word_id": end_word_id,
-                        "overlay_text": None,
-                        "strategy_label": "source explanation",
-                        "caption_platform": "tiktok",
-                        "confidence": 0.9,
-                    }
-                ]
-            }
-        elif task.startswith("boundary_audit:"):
-            value = {
-                "start_status": "COMPLETE",
-                "end_status": "COMPLETE",
-                "standalone_status": "COMPLETE",
-                "required_prior_context": "",
-                "required_followup_context": "",
-                "prior_context_included": True,
-                "followup_context_included": True,
-                "setup_resolved": True,
-                "payoff_resolved": True,
-                "open_questions": [],
-                "open_references": [],
-                "narrative_structure": "complete explanation",
-                "boundary_confidence": 0.95,
-                "failure_reasons": [],
-                "repair_start_word_id": None,
-                "repair_end_word_id": None,
-            }
-        else:
-            raise AssertionError(f"unexpected task {task}")
-        return ProviderResult(value, self.identity, usage)
-
-
-class FakeOpenEmbeddingProvider:
-    identity = ModelIdentity("fake-embedding", "rev1", "none", "test", "none", "embedding1")
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def embed(self, texts: list[str]) -> ProviderResult[list[list[float]]]:
-        self.calls += 1
-        vectors = [[1.0, float(index + 1)] for index, _ in enumerate(texts)]
-        return ProviderResult(
-            vectors,
-            self.identity,
-            InferenceUsage("test", "2026-08-08T00:00:00Z", 0.01, input_units=len(texts)),
-        )
-
-
-def test_open_editorial_pipeline_bypasses_all_heuristic_entry_points(tmp_path: Path) -> None:
-    brief = tmp_path / "open-brief.json"
-    brief.write_text(
-        json.dumps(
-            {
-                "campaign_id": "open-campaign",
-                "title": "Any domain",
-                "objective": "Find useful standalone moments",
-                "keywords": ["required-by-current-brief-schema"],
-                "source_channel_ids": ["UC1"],
-                "rights_confirmed": True,
-                "min_clip_seconds": 8,
-                "max_clip_seconds": 20,
-                "clip_count": 1,
-                "production": {
-                    "candidate_pool_size": 10,
-                    "concept_count": 1,
-                    "variants_per_concept": 1,
-                    "final_render_budget": 1,
-                    "minimum_distinct_finalist_concepts": 1,
-                },
-            }
-        )
-    )
-    subtitle = tmp_path / "open.vtt"
-    subtitle.write_text(
-        "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\n"
-        "This explanation stands alone and clearly saves people time today.\n"
-    )
-    media = tmp_path / "source.mp4"
-    media.write_bytes(b"source")
-    editorial = FakeOpenEditorialProvider()
-    embedding = FakeOpenEmbeddingProvider()
-    forbidden = RuntimeError("heuristic path must not run")
-    with (
-        patch("clipper.pipeline._cached_editorial_analysis", side_effect=forbidden),
-        patch("clipper.pipeline.select_distinct_concepts", side_effect=forbidden),
-        patch("clipper.pipeline.generate_hook_variants", side_effect=forbidden),
-        patch("clipper.pipeline.build_edit_plan", side_effect=forbidden),
-    ):
-        run_dir = run_pipeline(
-            brief,
-            settings=PipelineSettings(
-                artifact_root=tmp_path / "open-artifacts",
-                cache_root=tmp_path / "open-cache",
-                editorial_engine="open",
-                compute_profile="local-lite",
-                editorial_chunk_words=200,
-                editorial_chunk_overlap_words=20,
-            ),
-            source_client=FakeSource(subtitle, media),
-            editorial_provider=editorial,
-            embedding_provider=embedding,
-            render=False,
-        )
-    manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["run_metadata"]["editorial_inference"]["engine"] == "open"
-    assert manifest["run_metadata"]["editorial_inference"]["degraded"] is False
-    assert manifest["funnel"]["story_moments"] == 1
-    assert manifest["funnel"]["raw_concepts"] == 1
-    assert manifest["funnel"]["hook_variants"] == 1
-    assert manifest["funnel"]["edit_plans"] == 1
-    assert manifest["edit_plans"][0]["caption_start_word"] == "This"
-    assert (run_dir / "open-model" / "model-invocations.json").is_file()
-    assert len(editorial.calls) == 3
-    assert editorial.calls[0] == "semantic_cores:0"
-    assert editorial.calls[1].startswith("narrative_envelope:core-")
-    assert editorial.calls[2].startswith("quality_windows:core-")
-    assert embedding.calls == 0
-
-
-class DummyVisionProvider:
-    identity = ModelIdentity("fake-vlm", "rev", "none", "test", "visual", "v1")
-
-    def inspect(self, *, task: str, frames: list[Path], context: dict[str, object]):
-        raise AssertionError("pipeline visual review is patched in this test")
-
-
-def _visual_result(report: VisualReviewReport):
-    return (
-        report,
-        [
-            ProviderResult(
-                {"decision": report.decision},
-                DummyVisionProvider.identity,
-                InferenceUsage("test", "now", 0.01, input_units=4),
-            )
-        ],
-    )
-
-
-def test_visual_editorial_qc_rejection_reduces_quality_yield(
-    tmp_path: Path,
-) -> None:
-    brief = _yield_brief(tmp_path)
-    subtitle = _yield_subtitle(tmp_path)
-    media = tmp_path / "yield-visual.mp4"
-    media.write_bytes(b"source")
-    concepts = [_concept(1), _concept(2), _concept(3)]
-    repair = VisualReviewReport(
-        "REPAIR",
-        "The crop reverses while the same speaker continues.",
-        0.95,
-        (
-            VisualReviewIssue(
-                "crop_oscillation",
-                1.0,
-                1.8,
-                "HIGH",
-                0.95,
-                "TRACKING",
-                "The virtual camera jumps away and back.",
-            ),
-        ),
-    )
-    passed = VisualReviewReport("PASS", "The clip is visually coherent.", 0.95)
-    with (
-        patch("clipper.pipeline.select_distinct_concepts", return_value=concepts),
-        patch(
-            "clipper.pipeline.review_rendered_clip",
-            side_effect=[_visual_result(repair), _visual_result(passed), _visual_result(passed)],
-        ) as review_mock,
-    ):
-        run_dir = run_pipeline(
-            brief,
-            settings=PipelineSettings(
-                artifact_root=tmp_path / "visual-replace",
-                visual_review_enabled=True,
-            ),
-            source_client=FakeSource(subtitle, media),
-            renderer=FakeRenderer(),
-            visual_review_provider=DummyVisionProvider(),
-        )
-    manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["status"] == "DEGRADED"
-    assert manifest["status_reason"] == "partial_quality_yield_after_candidate_failures"
-    assert manifest["funnel"]["editorial_qc_fail"] == 1
-    assert manifest["funnel"]["editorial_qc_pass"] == 2
-    assert manifest["funnel"]["render_attempts"] == 3
-    assert manifest["funnel"]["replacement_attempts"] == 0
-    assert manifest["actual"]["eligible_quality_moments"] == 3
-    assert manifest["actual"]["rendered_finalists"] == 2
-    assert len(manifest["editorial_qc"]) == 3
-    assert len(manifest["rendered_clips"]) == 2
-    assert all(item["decision"] == "PASS" for item in manifest["editorial_qc"][1:])
-    rejected = [item for item in manifest["rejections"] if item.get("stage") == "editorial_qc"]
-    assert rejected[0]["reasons"] == ["crop_oscillation"]
-    assert rejected[0]["repair_stages"] == ["TRACKING"]
-    assert list((run_dir / "rejected").glob("attempt-01-*.mp4"))
-    assert review_mock.call_count == 3
-
-
-def test_visual_review_escalation_is_recorded_in_pipeline_manifest(tmp_path: Path) -> None:
-    brief = _yield_brief(tmp_path)
-    subtitle = _yield_subtitle(tmp_path)
-    media = tmp_path / "yield-visual-escalation.mp4"
-    media.write_bytes(b"source")
-    concepts = [_concept(1), _concept(2), _concept(3)]
-    passed = VisualReviewReport("PASS", "Escalated review agrees.", 0.95, escalated=True)
-    with (
-        patch("clipper.pipeline.select_distinct_concepts", return_value=concepts),
-        patch(
-            "clipper.pipeline.review_rendered_clip",
-            return_value=_visual_result(passed),
-        ),
-    ):
-        run_dir = run_pipeline(
-            brief,
-            settings=PipelineSettings(
-                artifact_root=tmp_path / "visual-escalation",
-                visual_review_enabled=True,
-                visual_escalation_enabled=True,
-                compute_profile="quality",
-            ),
-            source_client=FakeSource(subtitle, media),
-            renderer=FakeRenderer(),
-            visual_review_provider=DummyVisionProvider(),
-            visual_escalation_provider=DummyVisionProvider(),
-        )
-    manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["funnel"]["visual_review_escalations"] == 3
-    assert manifest["funnel"]["editorial_qc_pass"] == 3
-    assert manifest["run_metadata"]["visual_inference"]["primary_model"]["model_id"] == "fake-vlm"
-    assert (
-        manifest["run_metadata"]["visual_inference"]["escalation_model"]["model_id"] == "fake-vlm"
-    )
-
-
-class _OpenGroundingSource(FakeSource):
-    def download_subtitles(self, _video: VideoCandidate, _work_dir: Path, _language: str) -> Path:
-        raise AssertionError("open grounding must not acquire subtitles")
-
-
-class _GroundingTranscription:
-    identity = ModelIdentity("asr", "rev", "none", "test", "none", "canonical-v1")
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def transcribe(
-        self, source: Path, *, video_id: str, source_hash: str
-    ) -> ProviderResult[CanonicalTimeline]:
-        self.calls += 1
-        assert source.is_file()
-        words = tuple(
-            CanonicalWord(
-                f"{video_id}:w{index:07d}",
-                text,
-                float(index),
-                float(index) + 0.8,
-                None,
-                0.95,
-                "word_exact",
-                "fake-asr",
-            )
-            for index, text in enumerate(
-                [
-                    "This",
-                    "explanation",
-                    "stands",
-                    "alone",
-                    "and",
-                    "clearly",
-                    "saves",
-                    "people",
-                    "time",
-                    "today",
-                ]
-            )
-        )
-        return ProviderResult(
-            CanonicalTimeline(video_id, source_hash, words),
-            self.identity,
-            InferenceUsage("test", "now", 0.01),
-        )
-
-
-class _GroundingAlignment:
-    identity = ModelIdentity("align", "rev", "none", "test", "none", "canonical-v1")
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def align(self, source: Path, timeline: CanonicalTimeline) -> ProviderResult[CanonicalTimeline]:
-        self.calls += 1
-        assert source.is_file()
-        words = tuple(
-            CanonicalWord(
-                word.word_id,
-                word.text,
-                word.source_start,
-                word.source_end,
-                word.speaker_id,
-                word.confidence,
-                "aligned",
-                "fake-asr+alignment",
-            )
-            for word in timeline.words
-        )
-        return ProviderResult(
-            CanonicalTimeline(timeline.video_id, timeline.source_hash, words),
-            self.identity,
-            InferenceUsage("test", "now", 0.01),
-        )
-
-
-class _GroundingDiarization:
-    identity = ModelIdentity("diar", "rev", "none", "test", "none", "canonical-v1")
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def diarize(
-        self, source: Path, timeline: CanonicalTimeline
-    ) -> ProviderResult[CanonicalTimeline]:
-        self.calls += 1
-        assert source.is_file()
-        words = tuple(
-            CanonicalWord(
-                word.word_id,
-                word.text,
-                word.source_start,
-                word.source_end,
-                "SPEAKER_00",
-                word.confidence,
-                word.timing_mode,
-                word.transcript_source,
-            )
-            for word in timeline.words
-        )
-        return ProviderResult(
-            CanonicalTimeline(timeline.video_id, timeline.source_hash, words),
-            self.identity,
-            InferenceUsage("test", "now", 0.01),
-        )
-
-
-def test_open_grounding_owns_canonical_timeline_and_bypasses_subtitles(tmp_path: Path) -> None:
-    brief = tmp_path / "grounded-open.json"
-    brief.write_text(
-        json.dumps(
-            {
-                "campaign_id": "open-grounding",
-                "title": "Any domain",
-                "objective": "Find useful standalone moments",
-                "keywords": ["schema-required"],
-                "source_channel_ids": ["UC1"],
-                "rights_confirmed": True,
-                "min_clip_seconds": 8,
-                "max_clip_seconds": 20,
-                "clip_count": 1,
-                "production": {
-                    "candidate_pool_size": 10,
-                    "concept_count": 1,
-                    "variants_per_concept": 1,
-                    "final_render_budget": 1,
-                    "minimum_distinct_finalist_concepts": 1,
-                },
-            }
-        )
-    )
-    subtitle = tmp_path / "must-not-read.vtt"
-    subtitle.write_text("WEBVTT\n")
-    media = tmp_path / "grounding-source.mp4"
-    media.write_bytes(b"grounding-source")
-    asr = _GroundingTranscription()
-    alignment = _GroundingAlignment()
-    diarization = _GroundingDiarization()
-    run_dir = run_pipeline(
-        brief,
-        settings=PipelineSettings(
-            artifact_root=tmp_path / "grounded-artifacts",
-            cache_root=tmp_path / "grounded-cache",
-            editorial_engine="open",
-            grounding_engine="open",
-            compute_profile="local-lite",
-            editorial_chunk_words=200,
-            editorial_chunk_overlap_words=20,
-        ),
-        source_client=_OpenGroundingSource(subtitle, media),
-        editorial_provider=FakeOpenEditorialProvider(),
-        embedding_provider=FakeOpenEmbeddingProvider(),
-        transcription_provider=asr,
-        alignment_provider=alignment,
-        diarization_provider=diarization,
-        render=False,
-    )
-    manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert asr.calls == alignment.calls == diarization.calls == 1
-    assert manifest["run_metadata"]["grounding_inference"]["engine"] == "open"
-    assert manifest["run_metadata"]["grounding_inference"]["degraded"] is False
-    assert manifest["run_metadata"]["transcript_sources"]["allowed"]["kind"] == "canonical-open"
-    assert manifest["run_metadata"]["canonical_timelines"]["allowed"]["speaker_count"] == 1
-    assert manifest["run_metadata"]["canonical_timelines"]["allowed"]["timing_modes"] == ["aligned"]
-    assert manifest["edit_plans"][0]["caption_start_word"] == "This"
-    transcript = json.loads((run_dir / "transcript.json").read_text())
-    assert transcript["allowed"][0]["words"][0]["text"] == "This"
-
-    second = run_pipeline(
-        brief,
-        settings=PipelineSettings(
-            artifact_root=tmp_path / "grounded-artifacts-second",
-            cache_root=tmp_path / "grounded-cache",
-            editorial_engine="open",
-            grounding_engine="open",
-            compute_profile="local-lite",
-            editorial_chunk_words=200,
-            editorial_chunk_overlap_words=20,
-        ),
-        source_client=_OpenGroundingSource(subtitle, media),
-        editorial_provider=FakeOpenEditorialProvider(),
-        embedding_provider=FakeOpenEmbeddingProvider(),
-        transcription_provider=asr,
-        alignment_provider=alignment,
-        diarization_provider=diarization,
-        render=False,
-    )
-    assert second.is_dir()
-    assert asr.calls == alignment.calls == diarization.calls == 1
-
-    degraded_run = run_pipeline(
-        brief,
-        settings=PipelineSettings(
-            artifact_root=tmp_path / "grounded-artifacts-degraded",
-            cache_root=tmp_path / "grounded-cache-degraded",
-            editorial_engine="open",
-            grounding_engine="open",
-            compute_profile="local-lite",
-            editorial_chunk_words=200,
-            editorial_chunk_overlap_words=20,
-        ),
-        source_client=_OpenGroundingSource(subtitle, media),
-        editorial_provider=FakeOpenEditorialProvider(),
-        embedding_provider=FakeOpenEmbeddingProvider(),
-        transcription_provider=_GroundingTranscription(),
-        alignment_provider=_GroundingAlignment(),
-        diarization_provider=PassthroughDiarizationProvider(),
-        render=False,
-    )
-    degraded_manifest = json.loads((degraded_run / "manifest.json").read_text())
-    grounding = degraded_manifest["run_metadata"]["grounding_inference"]
-    assert grounding["degraded"] is True
-    assert grounding["models"][0]["diarization"]["degraded"] is True
-    assert degraded_manifest["run_metadata"]["canonical_timelines"]["allowed"]["speaker_count"] == 0
-
-
-def test_open_grounding_requires_complete_provider_set(tmp_path: Path) -> None:
-    brief = _write_pipeline_brief(tmp_path)
-    with pytest.raises(ValueError, match="transcription, alignment, and diarization"):
-        run_pipeline(
-            brief,
-            settings=PipelineSettings(
-                artifact_root=tmp_path / "bad-grounding",
-                grounding_engine="open",
-            ),
-            transcription_provider=_GroundingTranscription(),
-            render=False,
-        )
-
-
-def test_open_editorial_pipeline_consumes_sparse_visual_timeline_when_media_exists(
-    tmp_path: Path,
-) -> None:
-    brief = tmp_path / "visual-open.json"
-    brief.write_text(
-        json.dumps(
-            {
-                "campaign_id": "visual-open",
-                "title": "Any visual domain",
-                "objective": "Find source-grounded stories",
-                "keywords": ["schema-required"],
-                "source_channel_ids": ["UC1"],
-                "rights_confirmed": True,
-                "min_clip_seconds": 8,
-                "max_clip_seconds": 20,
-                "clip_count": 1,
-                "production": {
-                    "candidate_pool_size": 10,
-                    "concept_count": 1,
-                    "variants_per_concept": 1,
-                    "final_render_budget": 1,
-                    "minimum_distinct_finalist_concepts": 1,
-                },
-            }
-        )
-    )
-    subtitle = tmp_path / "visual-open.vtt"
-    subtitle.write_text("WEBVTT\n")
-    media = tmp_path / "visual-open.mp4"
-    media.write_bytes(b"visual-source")
-    editorial = FakeOpenEditorialProvider()
-    embedding = FakeOpenEmbeddingProvider()
-    asr = _GroundingTranscription()
-    alignment = _GroundingAlignment()
-    diarization = _GroundingDiarization()
-    visual = VisualTimeline(
-        "allowed",
-        hashlib.sha256(media.read_bytes()).hexdigest(),
-        (
-            VisualEvent(
-                1.0,
-                2.0,
-                "scene-1",
-                "The guest visibly demonstrates an object while speaking.",
-                ("SPEAKER_00",),
-                ("demonstration",),
-                0.95,
-            ),
-        ),
-    )
-    visual_result = ProviderResult(
-        {"events": []},
-        DummyVisionProvider.identity,
-        InferenceUsage("test", "now", 0.01, input_units=1),
-    )
-    with patch(
-        "clipper.pipeline.scout_visual_timeline",
-        return_value=(visual, visual_result),
-    ) as scout:
-        run_dir = run_pipeline(
-            brief,
-            settings=PipelineSettings(
-                artifact_root=tmp_path / "visual-open-artifacts",
-                cache_root=tmp_path / "visual-open-cache",
-                editorial_engine="open",
-                grounding_engine="open",
-                compute_profile="local-lite",
-                visual_scout_enabled=True,
-                editorial_chunk_words=200,
-                editorial_chunk_overlap_words=20,
-            ),
-            source_client=_OpenGroundingSource(subtitle, media),
-            editorial_provider=editorial,
-            embedding_provider=embedding,
-            visual_scout_provider=DummyVisionProvider(),
-            transcription_provider=asr,
-            alignment_provider=alignment,
-            diarization_provider=diarization,
-            render=False,
-        )
-    assert scout.call_count == 1
-    semantic_visual = editorial.payloads["semantic_cores:0"]["multimodal_evidence"]
-    assert isinstance(semantic_visual, list)
-    assert any("scene-1" in item["scene_ids"] for item in semantic_visual)
-    assert any(
-        "The guest visibly demonstrates an object while speaking." in item["visual_summaries"]
-        for item in semantic_visual
-    )
-    manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["run_metadata"]["visual_inference"]["scout_runs"][0]["event_count"] == 1
-    assert (run_dir / "visual" / "allowed.json").is_file()
-
-
-def test_visual_scout_acquires_full_media_after_vtt_transcript(tmp_path: Path) -> None:
-    brief = _write_pipeline_brief(tmp_path)
-    subtitle = tmp_path / "visual-scout.vtt"
-    subtitle.write_text(
-        "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\nAutomation can save time for a business.\n",
-        encoding="utf-8",
-    )
-    media = tmp_path / "visual-source.mp4"
-    media.write_bytes(b"visual-source")
-
-    class CountingSource(FakeSource):
-        def __init__(self, subtitle_path: Path, media_path: Path) -> None:
-            super().__init__(subtitle_path, media_path)
-            self.media_downloads = 0
-
-        def download_media(self, video: VideoCandidate, work_dir: Path) -> Path:
-            self.media_downloads += 1
-            return super().download_media(video, work_dir)
-
-    source = CountingSource(subtitle, media)
-    timeline = VisualTimeline(
-        "allowed",
-        "visual-source-hash",
-        (VisualEvent(0.5, 1.5, "scene-1", "visible reaction", (), ("reaction",), 0.9),),
-    )
-    result = ProviderResult(
-        {"events": []},
-        DummyVisionProvider.identity,
-        InferenceUsage("test", "now", 0.01, input_units=1),
-    )
-    with patch(
-        "clipper.pipeline.scout_visual_timeline",
-        return_value=(timeline, result),
-    ):
-        run_dir = run_pipeline(
-            brief,
-            settings=PipelineSettings(
-                artifact_root=tmp_path / "visual-vtt-artifacts",
-                visual_scout_enabled=True,
-            ),
-            source_client=source,
-            visual_scout_provider=DummyVisionProvider(),
-            render=False,
-        )
-    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert source.media_downloads == 1
-    assert manifest["run_metadata"]["transcript_sources"]["allowed"]["kind"] == "youtube-vtt"
-    assert manifest["run_metadata"]["visual_inference"]["scout_runs"][0]["event_count"] == 1
-
-
-def test_visual_scout_failure_degrades_without_dropping_source_analysis(tmp_path: Path) -> None:
-    brief = _write_pipeline_brief(tmp_path)
-    subtitle = tmp_path / "visual-fail.vtt"
-    subtitle.write_text(
-        "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\nAutomation can save time for a business.\n",
-        encoding="utf-8",
-    )
-    media = tmp_path / "visual-fail.mp4"
-    media.write_bytes(b"visual-source")
-    with patch("clipper.pipeline.scout_visual_timeline", side_effect=RuntimeError("tail decode")):
-        run_dir = run_pipeline(
-            brief,
-            settings=PipelineSettings(
-                artifact_root=tmp_path / "visual-fail-artifacts",
-                visual_scout_enabled=True,
-            ),
-            source_client=FakeSource(subtitle, media),
-            visual_scout_provider=DummyVisionProvider(),
-            render=False,
-        )
-    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["funnel"]["story_moments"] > 0
-    assert manifest["run_metadata"]["visual_inference"]["scout_errors"][0]["error"] == "tail decode"
-
-
-def test_visual_scout_reuses_source_and_model_keyed_cache(tmp_path: Path) -> None:
-    brief = _write_pipeline_brief(tmp_path)
-    subtitle = tmp_path / "visual-cache.vtt"
-    subtitle.write_text(
-        "WEBVTT\n\n00:00:00.000 --> 00:00:09.000\nAutomation can save time for a business.\n",
-        encoding="utf-8",
-    )
-    media = tmp_path / "visual-cache.mp4"
-    media.write_bytes(b"visual-source-cache")
-    timeline = VisualTimeline(
-        "allowed",
-        "visual-source-hash",
-        (VisualEvent(0.5, 1.5, "scene-1", "visible reaction", (), ("reaction",), 0.9),),
-    )
-    result = ProviderResult(
-        {"events": []},
-        DummyVisionProvider.identity,
-        InferenceUsage("test", "now", 0.01, input_units=1),
-    )
-    cache_root = tmp_path / "visual-cache-root"
-    with patch(
-        "clipper.pipeline.scout_visual_timeline",
-        return_value=(timeline, result),
-    ) as scout:
-        first = run_pipeline(
-            brief,
-            settings=PipelineSettings(
-                artifact_root=tmp_path / "visual-cache-first",
-                cache_root=cache_root,
-                visual_scout_enabled=True,
-            ),
-            source_client=FakeSource(subtitle, media),
-            visual_scout_provider=DummyVisionProvider(),
-            render=False,
-        )
-    assert scout.call_count == 1
-    first_manifest = json.loads((first / "manifest.json").read_text(encoding="utf-8"))
-    assert first_manifest["run_metadata"]["visual_inference"]["scout_runs"][0]["cache_hit"] is False
-
-    with patch("clipper.pipeline.scout_visual_timeline") as scout:
-        second = run_pipeline(
-            brief,
-            settings=PipelineSettings(
-                artifact_root=tmp_path / "visual-cache-second",
-                cache_root=cache_root,
-                visual_scout_enabled=True,
-            ),
-            source_client=FakeSource(subtitle, media),
-            visual_scout_provider=DummyVisionProvider(),
-            render=False,
-        )
-    scout.assert_not_called()
-    second_manifest = json.loads((second / "manifest.json").read_text(encoding="utf-8"))
-    scout_run = second_manifest["run_metadata"]["visual_inference"]["scout_runs"][0]
-    assert scout_run["cache_hit"] is True
-    assert scout_run["event_count"] == 1
+def test_campaign_watermark_no_policy_returns_none(tmp_path: Path) -> None:
+    brief = load_brief(_write_brief(tmp_path / "brief.json"))
+    assert _campaign_watermark(brief, Mock(), tmp_path) is None
