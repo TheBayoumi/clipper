@@ -1,0 +1,85 @@
+name: One-shot contract patch
+
+on:
+  push:
+    branches:
+      - feat/word-reveal-face-tracking
+    paths:
+      - .github/workflows/one-shot-contract-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/word-reveal-face-tracking
+          fetch-depth: 0
+      - name: Apply exact contract migrations
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              if old not in text:
+                  raise SystemExit(f"expected patch anchor not found in {path}: {old!r}")
+              file.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          phase = Path("tests/test_phase_b_contract_edges.py")
+          text = phase.read_text(encoding="utf-8")
+          old = '''        "PASS",\n        0.9,\n        "complete and worthwhile",\n        0.9,\n'''
+          new = '''        "PASS",\n        0.9,\n        "open on the first complete source-grounded statement",\n        "complete and worthwhile",\n        0.9,\n'''
+          if old not in text:
+              raise SystemExit("phase-b WindowQualityAssessment anchor not found")
+          text = text.replace(old, new, 1)
+          text, substitutions = re.subn(
+              r'(?m)^(\s*)"quality_score": ([^\n]+),\n(\s*)"rationale":',
+              lambda match: (
+                  f'{match.group(1)}"quality_score": {match.group(2)},\n'
+                  f'{match.group(3)}"opening_strategy": '
+                  f'"open on the first complete source-grounded statement",\n'
+                  f'{match.group(3)}"rationale":'
+              ),
+              text,
+          )
+          if substitutions < 1:
+              raise SystemExit("phase-b quality payload anchors not found")
+          phase.write_text(text, encoding="utf-8")
+
+          replace_once(
+              "tests/test_coverage_floor_contract_edges.py",
+              '''    planning = SimpleNamespace(\n        rejections=(),\n''',
+              '''    planning = SimpleNamespace(\n        rejections=(),\n        cores=(),\n''',
+          )
+          replace_once(
+              "tests/test_modal_execution.py",
+              "    assert function.call_count == 9\n",
+              "    assert function.call_count == 8\n",
+          )
+
+          pipeline = Path("tests/test_pipeline.py")
+          text = pipeline.read_text(encoding="utf-8")
+          old = '''    renderer = _renderer_for_source(PipelineSettings(), quality, "v1")\n    assert renderer.speaker_focus is True\n'''
+          new = '''    with patch("clipper.pipeline.FFmpegRenderer") as renderer_cls:\n        _renderer_for_source(PipelineSettings(), quality, "v1")\n    assert renderer_cls.call_args.kwargs["speaker_focus"] is True\n'''
+          if old not in text:
+              raise SystemExit("pipeline renderer anchor not found")
+          text = text.replace(old, new, 1)
+          old = '''    result = ProviderResult({"events": []}, FakeVision.identity, _usage())\n    with patch("clipper.pipeline.scout_visual_timeline", return_value=(visual, result)):\n'''
+          new = '''    result = ProviderResult({"events": []}, FakeVision.identity, _usage())\n    (tmp_path / "visual-scout").mkdir()\n    with patch("clipper.pipeline.scout_visual_timeline", return_value=(visual, result)):\n'''
+          if old not in text:
+              raise SystemExit("pipeline visual-scout anchor not found")
+          pipeline.write_text(text.replace(old, new, 1), encoding="utf-8")
+      - name: Commit patch
+        run: |
+          git config user.name "clipper-contract-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add tests/test_phase_b_contract_edges.py tests/test_coverage_floor_contract_edges.py tests/test_modal_execution.py tests/test_pipeline.py
+          git diff --cached --check
+          git commit -m "test: finish autonomous contract edge migration"
+          git push origin HEAD:feat/word-reveal-face-tracking
