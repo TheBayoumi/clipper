@@ -1,0 +1,150 @@
+name: Grounding stage diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "acceptance/production-run-request.json"
+      - ".github/workflows/grounding-stage-diagnostic.yml"
+
+permissions:
+  contents: read
+
+env:
+  MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+  MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+  CLIPPER_MODAL_APP: clipper-open-editor
+  CLIPPER_MODAL_PIPELINE_APP: clipper-production-pipeline
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install probe dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[modal]'
+
+      - name: Probe transcription alignment and diarization independently
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import modal
+          import yaml
+
+          marker = json.loads(Path("acceptance/production-run-request.json").read_text(encoding="utf-8"))
+          brief_path = Path(str(marker["campaign_brief"]))
+          brief = yaml.safe_load(brief_path.read_text(encoding="utf-8"))
+          videos = brief["targets"]["videos"]
+          requested = str(marker.get("target_video_id") or "").strip()
+          targets = [item for item in videos if not requested or str(item["video_id"]) == requested]
+          if len(targets) != 1:
+              raise RuntimeError(f"diagnostic expected one explicit target, got {len(targets)}")
+          target = targets[0]
+
+          acquire = modal.Function.from_name("clipper-production-pipeline", "acquire_source")
+          evidence = acquire.remote({"video_id": target["video_id"], "video_url": target["url"]})
+          source_path = str(evidence["mount_path"])
+          source_hash = str(evidence["sha256"])
+          result = {"source_path": source_path, "source_sha256": source_hash, "stages": {}}
+
+          transcribe = modal.Function.from_name("clipper-open-editor", "transcribe")
+          try:
+              transcript = transcribe.remote(
+                  {"source_path": source_path, "video_id": target["video_id"], "source_hash": source_hash}
+              )
+              words = transcript.get("words") if isinstance(transcript, dict) else None
+              if not isinstance(words, list) or not words:
+                  raise RuntimeError(f"invalid transcription response: {transcript}")
+              result["stages"]["transcription"] = {"status": "PASS", "words": len(words)}
+          except Exception as exc:
+              result["stages"]["transcription"] = {
+                  "status": "FAIL",
+                  "type": type(exc).__name__,
+                  "error": str(exc),
+              }
+              transcript = None
+
+          if isinstance(transcript, dict) and isinstance(transcript.get("words"), list):
+              canonical_words = []
+              for index, word in enumerate(transcript["words"]):
+                  canonical_words.append(
+                      {
+                          "word_id": f"probe:w{index:07d}",
+                          "text": str(word["text"]),
+                          "source_start": float(word["start"]),
+                          "source_end": float(word["end"]),
+                          "speaker_id": None,
+                          "confidence": word.get("confidence"),
+                          "timing_mode": "word_exact",
+                          "transcript_source": "modal-faster-whisper-large-v3-turbo",
+                      }
+                  )
+              align = modal.Function.from_name("clipper-open-editor", "align")
+              try:
+                  aligned = align.remote(
+                      {
+                          "source_path": source_path,
+                          "timeline": {
+                              "video_id": target["video_id"],
+                              "source_hash": source_hash,
+                              "words": canonical_words,
+                          },
+                      }
+                  )
+                  segments = aligned.get("segments") if isinstance(aligned, dict) else None
+                  if not isinstance(segments, list) or not segments:
+                      raise RuntimeError(f"invalid alignment response: {aligned}")
+                  result["stages"]["alignment"] = {"status": "PASS", "segments": len(segments)}
+              except Exception as exc:
+                  result["stages"]["alignment"] = {
+                      "status": "FAIL",
+                      "type": type(exc).__name__,
+                      "error": str(exc),
+                  }
+          else:
+              result["stages"]["alignment"] = {"status": "SKIP", "reason": "transcription failed"}
+
+          diarize = modal.Function.from_name("clipper-open-editor", "diarize")
+          try:
+              diarized = diarize.remote({"source_path": source_path})
+              if isinstance(diarized, dict) and isinstance(diarized.get("error"), dict):
+                  error = diarized["error"]
+                  raise RuntimeError(f"{error.get('type')}: {error.get('message')}")
+              turns = diarized.get("turns") if isinstance(diarized, dict) else None
+              if not isinstance(turns, list) or not turns:
+                  raise RuntimeError(f"invalid diarization response: {diarized}")
+              result["stages"]["diarization"] = {"status": "PASS", "turns": len(turns)}
+          except Exception as exc:
+              result["stages"]["diarization"] = {
+                  "status": "FAIL",
+                  "type": type(exc).__name__,
+                  "error": str(exc),
+              }
+
+          print(json.dumps(result, indent=2))
+          Path("grounding-stage-diagnostic.json").write_text(
+              json.dumps(result, indent=2) + "\n", encoding="utf-8"
+          )
+          failed = [name for name, item in result["stages"].items() if item["status"] == "FAIL"]
+          if failed:
+              raise RuntimeError(f"grounding stage failures: {failed}; diagnostics={json.dumps(result['stages'])}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: grounding-stage-diagnostic-${{ github.event.pull_request.head.sha }}
+          path: grounding-stage-diagnostic.json
+          if-no-files-found: warn
