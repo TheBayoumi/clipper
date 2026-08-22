@@ -1,6 +1,6 @@
 {
-  "requested_for_sha": "3503e9e67eb9623cbaca8ad3811a812ec116eee8",
-  "reason": "CLIPPER autonomous multimodal editor exact-head acceptance",
+  "requested_for_sha": "4b089454ec638f168d9d542ea90a3fc5c0afcded",
+  "reason": "Rerun exact-head canary after aligning deterministic quality-window opening strategy",
   "requirements": [
     "build deployment image",
     "run current end-to-end smoke inside image",
