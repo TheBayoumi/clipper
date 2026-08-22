@@ -69,18 +69,18 @@ jobs:
           text = modal_pipeline.read_text(encoding="utf-8")
           old = '''    resume_from_run_id = str(payload.get("resume_from_run_id") or "").strip() or None
 
-              media_cache.reload()
+          media_cache.reload()
           '''
           new = '''    resume_from_run_id = str(payload.get("resume_from_run_id") or "").strip() or None
-              requested_git_sha = str(payload.get("git_sha") or "").strip()
-              if requested_git_sha:
-                  if len(requested_git_sha) != 40 or any(
-                      character not in "0123456789abcdef" for character in requested_git_sha.lower()
-                  ):
-                      raise ValueError("run_full_cycle git_sha must be a full hexadecimal commit SHA")
-                  os.environ["GITHUB_SHA"] = requested_git_sha.lower()
+          requested_git_sha = str(payload.get("git_sha") or "").strip()
+          if requested_git_sha:
+              if len(requested_git_sha) != 40 or any(
+                  character not in "0123456789abcdef" for character in requested_git_sha.lower()
+              ):
+                  raise ValueError("run_full_cycle git_sha must be a full hexadecimal commit SHA")
+              os.environ["GITHUB_SHA"] = requested_git_sha.lower()
 
-              media_cache.reload()
+          media_cache.reload()
           '''
           if old not in text:
               raise SystemExit("modal exact-SHA anchor not found")
