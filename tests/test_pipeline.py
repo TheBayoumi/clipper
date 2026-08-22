@@ -301,9 +301,7 @@ def _quality_result(
 
 
 def _empty_quality(root: Path) -> QualityBatchResult:
-    return QualityBatchResult(
-        (), (), (), (), (), (), (), (), (), (), {}, 0, 1, root / "dag"
-    )
+    return QualityBatchResult((), (), (), (), (), (), (), (), (), (), {}, 0, 1, root / "dag")
 
 
 def _review_result(decision: str = "PASS", *, issues=()):
@@ -646,7 +644,9 @@ def test_campaign_watermark_is_copied_before_render(tmp_path: Path) -> None:
     assert expected.read_bytes() == b"png"
 
 
-def test_target_candidates_are_exact_and_channel_is_not_a_discovery_fallback(tmp_path: Path) -> None:
+def test_target_candidates_are_exact_and_channel_is_not_a_discovery_fallback(
+    tmp_path: Path,
+) -> None:
     brief_path = _write_brief(tmp_path / "brief.json")
     brief = load_brief(brief_path)
     candidates = _target_candidates(brief_path, brief)
@@ -723,9 +723,10 @@ def test_download_asset_accepts_binary_media_and_drive_path(tmp_path: Path) -> N
         "clipper.pipeline.urlopen",
         return_value=_response("application/octet-stream", [b"media", b""]),
     ):
-        assert _download_asset(
-            "https://example.com/source.mkv", output, expected_kind="media"
-        ) == output
+        assert (
+            _download_asset("https://example.com/source.mkv", output, expected_kind="media")
+            == output
+        )
     assert output.read_bytes() == b"media"
 
     drive = tmp_path / "drive.mkv"
@@ -737,9 +738,12 @@ def test_download_asset_accepts_binary_media_and_drive_path(tmp_path: Path) -> N
         return output
 
     with patch("clipper.pipeline.gdown.download", side_effect=fake_drive):
-        assert _download_asset(
-            "https://drive.google.com/file/d/source/view", drive, expected_kind="media"
-        ) == drive
+        assert (
+            _download_asset(
+                "https://drive.google.com/file/d/source/view", drive, expected_kind="media"
+            )
+            == drive
+        )
     assert drive.read_bytes() == b"drive"
 
 
@@ -764,9 +768,10 @@ def test_speaker_focus_comes_from_override_or_source_modality() -> None:
         source_evidence={"v1": {"modality_profile": {"requires_speaker_identity": True}}}
     )
     assert _speaker_focus_for_source(PipelineSettings(), quality, "v1") is True
-    assert _speaker_focus_for_source(
-        PipelineSettings(speaker_focus_override=False), quality, "v1"
-    ) is False
+    assert (
+        _speaker_focus_for_source(PipelineSettings(speaker_focus_override=False), quality, "v1")
+        is False
+    )
     renderer = _renderer_for_source(PipelineSettings(), quality, "v1")
     assert renderer.speaker_focus is True
 
@@ -780,9 +785,7 @@ def test_visual_timeline_requires_grounding_and_records_scout_result(tmp_path: P
         _visual_timeline(media, video, empty, FakeVision(), tmp_path)
 
     timeline = CanonicalTimeline("v1", "hash", _words("v1", 30))
-    visual = VisualTimeline(
-        "v1", "hash", (VisualEvent(0, 30, "scene", "source", (), (), 0.9),)
-    )
+    visual = VisualTimeline("v1", "hash", (VisualEvent(0, 30, "scene", "source", (), (), 0.9),))
     result = ProviderResult({"events": []}, FakeVision.identity, _usage())
     with patch("clipper.pipeline.scout_visual_timeline", return_value=(visual, result)):
         observed, meta = _visual_timeline(media, video, timeline, FakeVision(), tmp_path)
