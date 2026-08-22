@@ -69,7 +69,7 @@ def test_production_workflow_is_dynamic_yield_and_human_review_gated() -> None:
     assert "if reviewable != rendered:" in workflow
     assert "contract permits zero quality yield" in workflow
     assert "PENDING_ACTUAL_MP4_REVIEW" in workflow
-    assert '"human_review": "PENDING"' in workflow
+    assert '"human_review": "PENDING_ACTUAL_REVIEW"' in workflow
     assert "modal deploy scripts/modal_open_models.py" in workflow
     assert "modal deploy scripts/modal_pipeline.py" in workflow
 
