@@ -8,8 +8,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from clipper.models import CampaignBrief, VideoCandidate
+from clipper.models import VideoCandidate
 from clipper.youtube import (
+    DiscoveryRequest,
     YouTubeClient,
     YouTubeError,
     _is_http_403,
@@ -115,18 +116,8 @@ def test_visible_run_flushes_incomplete_utf8_tail(capsys) -> None:
     assert "\ufffd" in capsys.readouterr().err
 
 
-def test_direct_allowed_video_discovery_uses_metadata_path() -> None:
-    brief = CampaignBrief.from_dict(
-        {
-            "campaign_id": "c",
-            "title": "T",
-            "objective": "O",
-            "keywords": ["neutral"],
-            "allowed_video_ids": ["v1"],
-            "rights_confirmed": True,
-            "source_limit": 1,
-        }
-    )
+def test_direct_video_discovery_uses_metadata_path() -> None:
+    request = DiscoveryRequest(video_ids=("v1",), limit=1)
     payload = {
         "id": "v1",
         "title": "Allowed",
@@ -140,31 +131,25 @@ def test_direct_allowed_video_discovery_uses_metadata_path() -> None:
         patch("clipper.youtube.shutil.which", return_value="yt-dlp"),
         patch("clipper.youtube._run", return_value=Mock(stdout=json.dumps(payload))) as run,
     ):
-        videos = client.discover(brief)
+        videos = client.discover(request)
     assert [video.video_id for video in videos] == ["v1"]
     assert "https://www.youtube.com/watch?v=v1" in run.call_args.args[0]
 
 
 def test_api_discovery_forwards_published_after() -> None:
-    brief = CampaignBrief.from_dict(
-        {
-            "campaign_id": "c",
-            "title": "T",
-            "objective": "O",
-            "keywords": ["neutral"],
-            "source_channel_ids": ["UC1"],
-            "rights_confirmed": True,
-            "published_after": "2026-01-01T00:00:00Z",
-            "source_limit": 1,
-        }
+    request = DiscoveryRequest(
+        query="neutral",
+        channel_ids=("UC1",),
+        published_after="2026-01-01T00:00:00Z",
+        limit=1,
     )
     client = YouTubeClient("key")
     with patch.object(
         client,
         "_api_get",
-        side_effect=[{"items": []}, {"items": []}],
+        side_effect=[{"items": []}],
     ) as api_get:
-        assert client.discover(brief) == []
+        assert client.discover(request) == []
     search_params = api_get.call_args_list[0].args[1]
     assert search_params["publishedAfter"] == "2026-01-01T00:00:00Z"
 
