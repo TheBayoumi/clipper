@@ -8,7 +8,9 @@ import pytest
 import clipper.visual_ai as visual_ai
 
 
-def test_media_duration_seconds_uses_ffprobe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_media_duration_seconds_uses_ffprobe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     source = tmp_path / "source.mkv"
     source.write_bytes(b"media")
     calls: list[list[str]] = []
