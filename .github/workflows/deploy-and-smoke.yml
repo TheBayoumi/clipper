@@ -16,7 +16,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: clipper-deploy-${{ github.ref }}
+  group: clipper-deploy-${{ github.event.pull_request.head.ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -25,15 +25,22 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
 
-      - name: Resolve image tags
+      - name: Resolve exact source and image tags
         id: image
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         shell: bash
         run: |
           set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          test "$source_sha" = "$EXPECTED_SOURCE_SHA"
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           image="ghcr.io/${owner}/clipper"
-          tag="sha-${GITHUB_SHA::12}"
+          tag="sha-${source_sha::12}"
           alias="canary"
           if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
             alias="latest"
@@ -41,6 +48,7 @@ jobs:
           echo "image=${image}" >> "${GITHUB_OUTPUT}"
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
           echo "alias=${alias}" >> "${GITHUB_OUTPUT}"
+          echo "source_sha=${source_sha}" >> "${GITHUB_OUTPUT}"
 
       - name: Build deployment image
         shell: bash
@@ -48,10 +56,11 @@ jobs:
           set -euo pipefail
           image="${{ steps.image.outputs.image }}"
           tag="${{ steps.image.outputs.tag }}"
+          source_sha="${{ steps.image.outputs.source_sha }}"
           docker build \
             --pull \
             --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.revision=${source_sha}" \
             --tag "${image}:${tag}" \
             .
 
@@ -61,10 +70,11 @@ jobs:
           set -euo pipefail
           image="${{ steps.image.outputs.image }}"
           tag="${{ steps.image.outputs.tag }}"
+          source_sha="${{ steps.image.outputs.source_sha }}"
           mkdir -p smoke-artifacts
           docker run --rm \
             --env "CLIPPER_IMAGE_REF=${image}:${tag}" \
-            --env "GITHUB_SHA=${GITHUB_SHA}" \
+            --env "GITHUB_SHA=${source_sha}" \
             --volume "${PWD}/smoke-artifacts:/artifacts" \
             --entrypoint python \
             "${image}:${tag}" \
@@ -91,11 +101,14 @@ jobs:
           image="${{ steps.image.outputs.image }}"
           tag="${{ steps.image.outputs.tag }}"
           image_ref="${image}:${tag}"
+          source_sha="${{ steps.image.outputs.source_sha }}"
           docker image rm "${image_ref}"
           docker pull "${image_ref}"
           docker run --rm "${image_ref}" --help
           digest="$(docker image inspect "${image_ref}" --format '{{index .RepoDigests 0}}')"
-          python - "${image_ref}" "${digest}" <<'PY'
+          revision="$(docker image inspect "${image_ref}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+          test "$revision" = "$source_sha"
+          python - "${image_ref}" "${digest}" "${source_sha}" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -103,7 +116,12 @@ jobs:
           path = Path("smoke-artifacts/deployment.json")
           path.write_text(
               json.dumps(
-                  {"status": "deployed", "image_ref": sys.argv[1], "digest": sys.argv[2]},
+                  {
+                      "status": "deployed",
+                      "image_ref": sys.argv[1],
+                      "digest": sys.argv[2],
+                      "source_sha": sys.argv[3],
+                  },
                   indent=2,
               )
               + "\n",
@@ -115,7 +133,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: clipper-deployment-${{ github.sha }}
+          name: clipper-deployment-${{ steps.image.outputs.source_sha || github.sha }}
           path: smoke-artifacts
           if-no-files-found: warn
           retention-days: 14
