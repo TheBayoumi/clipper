@@ -772,8 +772,9 @@ def test_speaker_focus_comes_from_override_or_source_modality() -> None:
         _speaker_focus_for_source(PipelineSettings(speaker_focus_override=False), quality, "v1")
         is False
     )
-    renderer = _renderer_for_source(PipelineSettings(), quality, "v1")
-    assert renderer.speaker_focus is True
+    with patch("clipper.pipeline.FFmpegRenderer") as renderer_cls:
+        _renderer_for_source(PipelineSettings(), quality, "v1")
+    assert renderer_cls.call_args.kwargs["speaker_focus"] is True
 
 
 def test_visual_timeline_requires_grounding_and_records_scout_result(tmp_path: Path) -> None:
@@ -787,6 +788,7 @@ def test_visual_timeline_requires_grounding_and_records_scout_result(tmp_path: P
     timeline = CanonicalTimeline("v1", "hash", _words("v1", 30))
     visual = VisualTimeline("v1", "hash", (VisualEvent(0, 30, "scene", "source", (), (), 0.9),))
     result = ProviderResult({"events": []}, FakeVision.identity, _usage())
+    (tmp_path / "visual-scout").mkdir()
     with patch("clipper.pipeline.scout_visual_timeline", return_value=(visual, result)):
         observed, meta = _visual_timeline(media, video, timeline, FakeVision(), tmp_path)
     assert observed == visual

@@ -129,7 +129,7 @@ def test_ensure_modal_runtime_attaches_without_deploying_when_apps_exist() -> No
         patch("clipper.modal_execution._validate_model_access") as validate,
     ):
         ensure_modal_runtime()
-    assert function.call_count == 9
+    assert function.call_count == 8
     deploy.assert_not_called()
     validate.assert_called_once_with("clipper-open-editor")
 

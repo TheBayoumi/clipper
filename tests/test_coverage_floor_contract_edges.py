@@ -256,6 +256,7 @@ def test_quality_batch_rejects_ineligible_quality_moment_without_quota_fill(tmp_
     )
     planning = SimpleNamespace(
         rejections=(),
+        cores=(),
         quality_moments=(SimpleNamespace(quality_moment_id="qm-1"),),
         stage_cache_hits=0,
         stage_executions=0,

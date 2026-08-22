@@ -96,6 +96,7 @@ def _graph() -> tuple[
         window.window_id,
         "PASS",
         0.9,
+        "open on the first complete source-grounded statement",
         "complete and worthwhile",
         0.9,
     )
@@ -352,6 +353,7 @@ def test_quality_contracts_reject_cross_graph_or_nonpassing_state() -> None:
         "window_id": window.window_id,
         "decision": "PASS",
         "quality_score": 0.9,
+        "opening_strategy": "open on the first complete source-grounded statement",
         "rationale": "good",
         "confidence": 0.9,
     }
@@ -594,6 +596,7 @@ class _EdgeEditorial:
                 "selected_window_id": None,
                 "decision": "REJECT",
                 "quality_score": 0.4,
+                "opening_strategy": "open on the first complete source-grounded statement",
                 "rationale": "not strong enough",
                 "confidence": 0.9,
             }
@@ -678,6 +681,7 @@ def test_autonomous_payload_parsers_fail_closed_on_malformed_model_output() -> N
         "selected_window_id": None,
         "decision": "REJECT",
         "quality_score": 0.4,
+        "opening_strategy": "open on the first complete source-grounded statement",
         "rationale": "reject",
         "confidence": 0.8,
     }
