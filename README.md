@@ -39,7 +39,7 @@ The production graph has no editorial output quota, fixed shortlist count, fixed
 
 ## Source targeting and rights
 
-`clipper run` never performs implicit source discovery. Every production brief must use `targets.mode: explicit` and provide the exact authorized videos. Rights authorization is a separate gate and every target channel must be authorized.
+`clipper run` never performs implicit source discovery. Every production brief must use `targets.mode: explicit` and provide the exact authorized videos. Rights authorization is a separate gate and every target channel must be authorized. Production authorization is enforced by exact video ID; channel authorization constrains rights but never serves as a fallback that admits unlisted videos.
 
 Example:
 
