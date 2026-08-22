@@ -35,42 +35,46 @@ def _write_manifest(run_dir: Path, run_metadata: object) -> None:
     )
 
 
-def test_resolved_model_plan_reads_all_open_provider_identities() -> None:
-    settings = PipelineSettings(
-        editorial_engine="open", grounding_engine="open", compute_profile="balanced"
-    )
+def _editorial_evidence(model_id: str = "editor") -> dict[str, object]:
+    return {
+        "editorial_inference": {
+            "model_invocations": [{"cache_hit": False, "model": {"model_id": model_id}}]
+        }
+    }
+
+
+def test_resolved_model_plan_reads_all_required_provider_identities() -> None:
+    settings = PipelineSettings(compute_profile="balanced")
     with (
-        patch(
-            "clipper.cli.editorial_and_embedding_providers",
-            return_value=(_provider("editor"), _provider("embed")),
-        ),
+        patch("clipper.cli.editorial_provider", return_value=_provider("editor")),
         patch(
             "clipper.cli.speech_providers",
             return_value=(_provider("asr"), _provider("align"), _provider("diarize")),
         ),
     ):
         plan = _resolved_model_plan(settings)
+    assert plan["architecture"] == "autonomous-multimodal-quality-graph"
+    assert plan["compute_profile"] == "balanced"
     assert plan["editorial"] == {"model_id": "editor"}
-    assert plan["embedding"] == {"model_id": "embed"}
     assert plan["transcription"] == {"model_id": "asr"}
     assert plan["alignment"] == {"model_id": "align"}
     assert plan["diarization"] == {"model_id": "diarize"}
+    assert "embedding" not in plan
 
 
-def test_resolved_model_plan_skips_disabled_provider_families() -> None:
-    settings = PipelineSettings(editorial_engine="heuristic", grounding_engine="legacy")
+def test_resolved_model_plan_has_no_legacy_provider_disable_switches() -> None:
+    settings = PipelineSettings(compute_profile="local-lite")
     with (
-        patch("clipper.cli.editorial_and_embedding_providers") as editorial,
-        patch("clipper.cli.speech_providers") as speech,
+        patch("clipper.cli.editorial_provider", return_value=_provider("editor")) as editorial,
+        patch(
+            "clipper.cli.speech_providers",
+            return_value=(_provider("asr"), _provider("align"), _provider("diarize")),
+        ) as speech,
     ):
         plan = _resolved_model_plan(settings)
-    editorial.assert_not_called()
-    speech.assert_not_called()
-    assert plan == {
-        "editorial_engine": "heuristic",
-        "grounding_engine": "legacy",
-        "compute_profile": "balanced",
-    }
+    editorial.assert_called_once_with("local-lite")
+    speech.assert_called_once_with("local-lite")
+    assert plan["architecture"] == "autonomous-multimodal-quality-graph"
 
 
 def test_runtime_dependency_preflight_skips_non_modal_plans() -> None:
@@ -95,7 +99,7 @@ def test_runtime_dependency_preflight_rejects_missing_modal_sdk() -> None:
     }
     with (
         patch("clipper.cli.importlib.util.find_spec", return_value=None),
-        pytest.raises(RuntimeError, match="before source acquisition") as captured,
+        pytest.raises(RuntimeError, match="requires the Modal Python SDK") as captured,
     ):
         _assert_runtime_dependencies(plan)
     assert 'pip install -e ".[modal]"' in str(captured.value)
@@ -120,9 +124,8 @@ def test_model_id_rejects_non_mapping_and_empty_identity() -> None:
 def test_model_audit_rejects_non_mapping_run_metadata(tmp_path: Path) -> None:
     run_dir = tmp_path / "bad-metadata"
     _write_manifest(run_dir, [])
-    settings = PipelineSettings(editorial_engine="open", grounding_engine="open")
     with pytest.raises(RuntimeError, match="missing run_metadata"):
-        _audit_model_evidence(run_dir, settings, {})
+        _audit_model_evidence(run_dir, {})
 
 
 def test_model_audit_rejects_missing_grounding_records(tmp_path: Path) -> None:
@@ -130,16 +133,13 @@ def test_model_audit_rejects_missing_grounding_records(tmp_path: Path) -> None:
     _write_manifest(
         run_dir,
         {
-            "editorial_inference": {
-                "model_invocations": [{"cache_hit": False, "model": {"model_id": "editor"}}]
-            },
+            **_editorial_evidence(),
             "grounding_inference": {"models": []},
         },
     )
-    settings = PipelineSettings(editorial_engine="open", grounding_engine="open")
     plan = {"editorial": {"model_id": "editor"}}
     with pytest.raises(RuntimeError, match="no model evidence"):
-        _audit_model_evidence(run_dir, settings, plan)
+        _audit_model_evidence(run_dir, plan)
 
 
 def test_model_audit_ignores_malformed_grounding_items_but_records_valid_ones(
@@ -149,6 +149,7 @@ def test_model_audit_ignores_malformed_grounding_items_but_records_valid_ones(
     _write_manifest(
         run_dir,
         {
+            **_editorial_evidence(),
             "grounding_inference": {
                 "models": [
                     "not-a-source",
@@ -164,20 +165,20 @@ def test_model_audit_ignores_malformed_grounding_items_but_records_valid_ones(
                         },
                     },
                 ]
-            }
+            },
         },
     )
-    settings = PipelineSettings(editorial_engine="heuristic", grounding_engine="open")
     audit = _audit_model_evidence(
         run_dir,
-        settings,
         {
+            "editorial": {"model_id": "editor"},
             "alignment": {},
             "transcription": {},
             "diarization": {},
         },
     )
     grounding = audit["grounding"]
+    assert isinstance(grounding, dict)
     assert grounding["observed_models"] == ["align"]
     assert grounding["evidence_records"] == 2
     assert grounding["cache_hits"] == 1
@@ -189,6 +190,7 @@ def test_model_audit_rejects_missing_expected_grounding_identity(tmp_path: Path)
     _write_manifest(
         run_dir,
         {
+            **_editorial_evidence(),
             "grounding_inference": {
                 "models": [
                     {
@@ -198,16 +200,16 @@ def test_model_audit_rejects_missing_expected_grounding_identity(tmp_path: Path)
                         }
                     }
                 ]
-            }
+            },
         },
     )
-    settings = PipelineSettings(editorial_engine="heuristic", grounding_engine="open")
     plan = {
+        "editorial": {"model_id": "editor"},
         "transcription": {"model_id": "asr"},
         "alignment": {"model_id": "align"},
         "diarization": {"model_id": "diarize"},
     }
     with pytest.raises(RuntimeError, match="missing resolved models") as captured:
-        _audit_model_evidence(run_dir, settings, plan)
+        _audit_model_evidence(run_dir, plan)
     assert "align" in str(captured.value)
     assert "diarize" in str(captured.value)
