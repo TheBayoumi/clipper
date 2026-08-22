@@ -241,6 +241,10 @@ class SmokeEditorial:
                 "selected_window_id": window["window_id"],
                 "decision": "PASS",
                 "quality_score": 0.99,
+                "opening_strategy": (
+                    "Open on the complete source-grounded statement that proves the current "
+                    "multimodal render path"
+                ),
                 "rationale": "Deterministic fixture has one complete feasible moment",
                 "confidence": 0.99,
             }
