@@ -310,7 +310,9 @@ def extract_video_frames(
                     timeout=180,
                 )
             except subprocess.CalledProcessError as exc:
-                detail = (exc.stderr or exc.stdout or "ffmpeg returned no diagnostic output").strip()
+                detail = (
+                    exc.stderr or exc.stdout or "ffmpeg returned no diagnostic output"
+                ).strip()
                 raise RuntimeError(
                     f"unable to decode visual sample at {timestamp:.3f}s: {detail[-4000:]}"
                 ) from exc
