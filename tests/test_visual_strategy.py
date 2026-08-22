@@ -52,6 +52,7 @@ def _quality_moment() -> QualityMoment:
         window.window_id,
         "PASS",
         0.9,
+        "open on the first complete source-grounded statement",
         "strong complete moment",
         0.9,
     )
