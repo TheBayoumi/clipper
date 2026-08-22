@@ -5,6 +5,8 @@ from clipper.quality_moments import WindowQualityAssessment, choose_quality_mome
 from clipper.story_graph import NarrativeEnvelope, SemanticCore
 from clipper.window_solver import FeasibleDeliveryWindow
 
+OPENING = "open on the first complete source-grounded statement"
+
 
 def _graph(
     core_id: str,
@@ -71,7 +73,9 @@ def test_quality_yield_equals_number_of_independent_passing_cores(count: int) ->
     envelopes = tuple(item[2] for item in graph)
     windows = tuple(_window(timeline, core, envelope, "a") for timeline, core, envelope in graph)
     assessments = tuple(
-        WindowQualityAssessment(core.core_id, window.window_id, "PASS", 0.8, "worthwhile", 0.9)
+        WindowQualityAssessment(
+            core.core_id, window.window_id, "PASS", 0.8, OPENING, "worthwhile", 0.9
+        )
         for core, window in zip(cores, windows, strict=True)
     )
     moments = choose_quality_moments(cores, envelopes, windows, assessments)
@@ -88,8 +92,12 @@ def test_multiple_passing_windows_for_one_core_still_produce_one_quality_moment(
         (envelope,),
         (first, second),
         (
-            WindowQualityAssessment(core.core_id, first.window_id, "PASS", 0.7, "good", 0.8),
-            WindowQualityAssessment(core.core_id, second.window_id, "PASS", 0.9, "better", 0.9),
+            WindowQualityAssessment(
+                core.core_id, first.window_id, "PASS", 0.7, OPENING, "good", 0.8
+            ),
+            WindowQualityAssessment(
+                core.core_id, second.window_id, "PASS", 0.9, OPENING, "better", 0.9
+            ),
         ),
     )
     assert len(moments) == 1
@@ -105,6 +113,7 @@ def test_rejected_or_escalated_windows_do_not_become_quality_moments() -> None:
             window.window_id,
             decision,
             0.9,
+            OPENING,
             "not publishable",
             0.9,
         )
@@ -114,11 +123,11 @@ def test_rejected_or_escalated_windows_do_not_become_quality_moments() -> None:
 def test_quality_assessment_cannot_reference_illegal_or_wrong_core_window() -> None:
     timeline, core, envelope = _graph("core")
     window = _window(timeline, core, envelope, "a")
-    unknown = WindowQualityAssessment(core.core_id, "missing", "PASS", 0.9, "good", 0.9)
+    unknown = WindowQualityAssessment(core.core_id, "missing", "PASS", 0.9, OPENING, "good", 0.9)
     with pytest.raises(ValueError, match="unknown window"):
         choose_quality_moments((core,), (envelope,), (window,), (unknown,))
 
-    wrong = WindowQualityAssessment("other", window.window_id, "PASS", 0.9, "good", 0.9)
+    wrong = WindowQualityAssessment("other", window.window_id, "PASS", 0.9, OPENING, "good", 0.9)
     with pytest.raises(ValueError, match="identity mismatch"):
         choose_quality_moments((core,), (envelope,), (window,), (wrong,))
 
@@ -141,6 +150,7 @@ def test_quality_moment_rejects_window_that_amputates_complete_envelope() -> Non
         amputated.window_id,
         "PASS",
         0.9,
+        OPENING,
         "looks good but is incomplete",
         0.9,
     )
@@ -150,6 +160,8 @@ def test_quality_moment_rejects_window_that_amputates_complete_envelope() -> Non
 
 def test_quality_assessment_validation_is_fail_closed() -> None:
     with pytest.raises(ValueError, match="between 0 and 1"):
-        WindowQualityAssessment("core", "window", "PASS", 1.2, "reason", 0.5)
+        WindowQualityAssessment("core", "window", "PASS", 1.2, OPENING, "reason", 0.5)
+    with pytest.raises(ValueError, match="opening strategy"):
+        WindowQualityAssessment("core", "window", "PASS", 0.5, "", "reason", 0.5)
     with pytest.raises(ValueError, match="rationale"):
-        WindowQualityAssessment("core", "window", "PASS", 0.5, "", 0.5)
+        WindowQualityAssessment("core", "window", "PASS", 0.5, OPENING, "", 0.5)
