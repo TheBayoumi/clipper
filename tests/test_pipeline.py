@@ -10,7 +10,13 @@ import pytest
 
 from clipper.brief import load_brief
 from clipper.canonical import CanonicalTimeline, CanonicalWord
-from clipper.models import ClipCandidate, EditPlan, PipelineManifest, TranscriptSegment, VideoCandidate
+from clipper.models import (
+    ClipCandidate,
+    EditPlan,
+    PipelineManifest,
+    TranscriptSegment,
+    VideoCandidate,
+)
 from clipper.pipeline import (
     PipelineSettings,
     _campaign_watermark,
@@ -335,8 +341,16 @@ def _run_with_quality(
     with (
         patch("clipper.pipeline._visual_timeline", side_effect=_fake_visual),
         patch("clipper.pipeline.plan_quality_batch", side_effect=quality_side_effect),
-        patch("clipper.pipeline.run_technical_qc", side_effect=qc_value if callable(qc_value) else None, return_value=None if callable(qc_value) else qc_value),
-        patch("clipper.pipeline.review_rendered_clip", side_effect=review_value if callable(review_value) else None, return_value=None if callable(review_value) else review_value),
+        patch(
+            "clipper.pipeline.run_technical_qc",
+            side_effect=qc_value if callable(qc_value) else None,
+            return_value=None if callable(qc_value) else qc_value,
+        ),
+        patch(
+            "clipper.pipeline.review_rendered_clip",
+            side_effect=review_value if callable(review_value) else None,
+            return_value=None if callable(review_value) else review_value,
+        ),
     ):
         run_dir = run_pipeline(
             brief_path,
@@ -392,7 +406,10 @@ def test_grounding_cache_reuses_exact_model_and_source_identity(tmp_path: Path) 
     a = FakeAlignment()
     d = FakeDiarization()
     settings = PipelineSettings(artifact_root=tmp_path / "runs", cache_root=tmp_path / "cache")
-    quality = lambda *_args, **_kwargs: _empty_quality(tmp_path)
+
+    def quality(*_args, **_kwargs):
+        return _empty_quality(tmp_path)
+
     with (
         patch("clipper.pipeline._visual_timeline", side_effect=_fake_visual),
         patch("clipper.pipeline.plan_quality_batch", side_effect=quality),
@@ -602,8 +619,8 @@ def test_campaign_watermark_is_copied_before_render(tmp_path: Path) -> None:
     source = FakeSource(media, watermark=watermark)
     renderer = FakeRenderer()
 
-    def quality_side_effect(_brief, timelines, _visual, _editorial, *, dag_root):
-        del dag_root
+    def quality_side_effect(brief, timelines, visual_timelines, editorial, *, dag_root):
+        del brief, visual_timelines, editorial, dag_root
         return _quality_result(timelines, tmp_path)
 
     with (
@@ -763,7 +780,9 @@ def test_visual_timeline_requires_grounding_and_records_scout_result(tmp_path: P
         _visual_timeline(media, video, empty, FakeVision(), tmp_path)
 
     timeline = CanonicalTimeline("v1", "hash", _words("v1", 30))
-    visual = VisualTimeline("v1", "hash", (VisualEvent(0, 30, "scene", "source", (), (), 0.9),))
+    visual = VisualTimeline(
+        "v1", "hash", (VisualEvent(0, 30, "scene", "source", (), (), 0.9),)
+    )
     result = ProviderResult({"events": []}, FakeVision.identity, _usage())
     with patch("clipper.pipeline.scout_visual_timeline", return_value=(visual, result)):
         observed, meta = _visual_timeline(media, video, timeline, FakeVision(), tmp_path)
