@@ -13,12 +13,18 @@ def _write_brief(path: Path) -> None:
             {
                 "campaign_id": "c",
                 "title": "Podcast",
-                "objective": "Find clips",
-                "keywords": ["podcast"],
-                "allowed_video_ids": ["v1"],
-                "source_channel_ids": ["UC1"],
-                "rights_confirmed": True,
-                "source_limit": 1,
+                "objective": "Find independently worthwhile clips",
+                "targets": {
+                    "mode": "explicit",
+                    "videos": [
+                        {
+                            "video_id": "v1",
+                            "url": "https://www.youtube.com/watch?v=v1",
+                            "channel_id": "UC1",
+                        }
+                    ],
+                },
+                "rights": {"confirmed": True, "authorized_channels": ["UC1"]},
             }
         ),
         encoding="utf-8",
@@ -27,16 +33,11 @@ def _write_brief(path: Path) -> None:
 
 def _modal_plan() -> dict[str, object]:
     return {
-        "editorial_engine": "open",
-        "grounding_engine": "open",
+        "architecture": "autonomous-multimodal-quality-graph",
         "compute_profile": "balanced",
         "editorial": {
             "model_id": "editorial-test",
             "inference_engine": "modal-transformers",
-        },
-        "embedding": {
-            "model_id": "embedding-test",
-            "inference_engine": "modal-sentence-transformers",
         },
         "transcription": {
             "model_id": "asr-test",
@@ -65,11 +66,7 @@ def _write_manifest(run_dir: Path) -> None:
                             {
                                 "cache_hit": False,
                                 "model": {"model_id": "editorial-test"},
-                            },
-                            {
-                                "cache_hit": False,
-                                "model": {"model_id": "embedding-test"},
-                            },
+                            }
                         ]
                     },
                     "grounding_inference": {
