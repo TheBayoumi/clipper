@@ -126,6 +126,7 @@ class FakeEditorial:
                 "decision": "PASS",
                 "quality_score": 0.9,
                 "rationale": "worth publishing",
+                "opening_strategy": "open on the first complete source-grounded statement",
                 "confidence": 0.93,
             }
         else:  # pragma: no cover - defensive fake-provider guard
@@ -265,6 +266,7 @@ def test_quality_model_can_only_select_supplied_deterministic_window_id() -> Non
         "decision": "PASS",
         "quality_score": 0.9,
         "rationale": "good",
+        "opening_strategy": "open on the first complete source-grounded statement",
         "confidence": 0.9,
     }
     assessment = quality_assessment_from_payload(core, windows, valid)
