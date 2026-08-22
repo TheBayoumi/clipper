@@ -11,7 +11,9 @@ def test_production_workflow_is_single_pass_fresh_and_exact_head() -> None:
     deploy_models = workflow.index("Deploy exact-head open-model workers")
     deploy_pipeline = workflow.index("Deploy exact-head production pipeline worker")
     rendering = workflow.index("Run one fresh-inference current-model production render")
-    validation = workflow.index("Validate dynamic yield, fresh inference, cost bounds, and actual media")
+    validation = workflow.index(
+        "Validate dynamic yield, fresh inference, cost bounds, and actual media"
+    )
 
     assert deploy_models < deploy_pipeline < rendering < validation
     assert '"render": False' not in workflow
@@ -66,8 +68,8 @@ def test_production_workflow_is_dynamic_yield_and_human_review_gated() -> None:
     assert "contract permits zero quality yield" in workflow
     assert "PENDING_ACTUAL_MP4_REVIEW" in workflow
     assert '"human_review": "PENDING"' in workflow
-    assert 'modal deploy scripts/modal_open_models.py' in workflow
-    assert 'modal deploy scripts/modal_pipeline.py' in workflow
+    assert "modal deploy scripts/modal_open_models.py" in workflow
+    assert "modal deploy scripts/modal_pipeline.py" in workflow
 
 
 def test_production_workflow_enforces_current_model_and_budget_evidence() -> None:
@@ -78,5 +80,5 @@ def test_production_workflow_enforces_current_model_and_budget_evidence() -> Non
     assert 'int(cache_summary.get("stage_cache_hits") or 0) != 0' in workflow
     assert 'editorial.get("model_invocations")' in workflow
     assert '"semantic_cores", "narrative_envelope", "quality_windows"' in workflow
-    assert 'gpu_seconds > gpu_limit' in workflow
-    assert 'estimated_usd > cost_limit' in workflow
+    assert "gpu_seconds > gpu_limit" in workflow
+    assert "estimated_usd > cost_limit" in workflow
