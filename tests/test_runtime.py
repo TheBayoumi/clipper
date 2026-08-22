@@ -22,7 +22,8 @@ def test_stage_journal_is_atomic_resumable_and_tracks_failure(tmp_path: Path) ->
     assert completed.status == "SUCCESS"
     assert completed.completed == 4
     payload = json.loads(path.read_text())
-    assert payload["schema_version"] == "clipper-progress-v1"
+    assert len(payload["contract_fingerprint"]) == 64
+    assert "schema_version" not in payload
     assert payload["stages"]["editorial"]["status"] == "SUCCESS"
     failed = resumed.fail("render", "encoder crashed", checkpoint="attempt-2")
     assert failed.failure_reason == "encoder crashed"
