@@ -557,8 +557,8 @@ def test_modal_transcription_alignment_and_diarization_contracts(tmp_path: Path)
         "words": [
             {
                 "text": "hello",
-                "source_start": 0.0,
-                "source_end": 0.5,
+                "start": 0.0,
+                "end": 0.5,
                 "confidence": 0.9,
             }
         ]
