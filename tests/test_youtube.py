@@ -7,21 +7,12 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from clipper.models import CampaignBrief, VideoCandidate
-from clipper.youtube import YouTubeClient, YouTubeError, _run
+from clipper.models import VideoCandidate
+from clipper.youtube import DiscoveryRequest, YouTubeClient, YouTubeError, _run
 
 
-def brief() -> CampaignBrief:
-    return CampaignBrief.from_dict(
-        {
-            "campaign_id": "c",
-            "title": "AI",
-            "objective": "automation",
-            "keywords": ["agents"],
-            "source_channel_ids": ["UC1"],
-            "rights_confirmed": True,
-        }
-    )
+def request() -> DiscoveryRequest:
+    return DiscoveryRequest(query="AI agents", channel_ids=("UC1",), limit=10)
 
 
 def test_api_discovery_maps_results() -> None:
@@ -37,7 +28,7 @@ def test_api_discovery_maps_results() -> None:
         ]
     }
     client._api_get = Mock(side_effect=[search, details])  # type: ignore[method-assign]
-    result = client.discover(brief())
+    result = client.discover(request())
     assert result[0].video_id == "v1"
     assert result[0].view_count == 12
 
@@ -61,7 +52,7 @@ def test_ytdlp_discovery_and_downloads_preserve_highest_source_quality(tmp_path:
         patch("clipper.youtube.shutil.which", return_value="/bin/yt-dlp"),
         patch("clipper.youtube._run", return_value=Mock(stdout=json.dumps(payload))),
     ):
-        assert client._discover_ytdlp(brief())[0].duration_seconds == 30
+        assert client._discover_ytdlp(request())[0].duration_seconds == 30
 
     video = VideoCandidate("v1", "T", "UC1", "C", "https://youtube.test/v1")
     subtitle = tmp_path / "v1.en.vtt"
@@ -192,7 +183,7 @@ def test_ytdlp_403_refreshes_and_uses_same_quality_alternate(tmp_path: Path) -> 
 def test_ytdlp_missing_and_run_errors() -> None:
     client = YouTubeClient(None)
     with patch("clipper.youtube.shutil.which", return_value=None), pytest.raises(YouTubeError):
-        client._discover_ytdlp(brief())
+        client._discover_ytdlp(request())
     with (
         patch("clipper.youtube.subprocess.run", side_effect=FileNotFoundError),
         pytest.raises(YouTubeError, match="not found"),
@@ -272,7 +263,7 @@ def test_api_get_success_and_error() -> None:
 def test_api_discovery_empty_and_optional_fields() -> None:
     client = YouTubeClient("key")
     client._api_get = Mock(return_value={"items": []})  # type: ignore[method-assign]
-    assert client._discover_api(brief()) == []
+    assert client._discover_api(request()) == []
 
     candidate = client._candidate_from_api(
         {"id": "v", "snippet": {"title": "T", "channelId": "C", "channelTitle": "N"}}
