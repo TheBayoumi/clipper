@@ -17,7 +17,7 @@ from clipper.models import ClipConcept, EditorialScores, StoryMoment
 
 
 def _scores() -> EditorialScores:
-    return EditorialScores(*([0.8] * 12))
+    return EditorialScores(8.0, 0.8)
 
 
 def _moment(moment_id: str, start: float, end: float) -> StoryMoment:
