@@ -239,10 +239,13 @@ def test_modal_endpoint_success_retry_and_usage() -> None:
         "choices": [{"message": {"content": '{"cores": []}'}}],
         "usage": {"prompt_tokens": 11, "completion_tokens": 7},
     }
-    with patch(
-        "clipper.providers.modal_endpoint.urlopen",
-        side_effect=[_http_error(503), _HTTPResponse(payload)],
-    ) as opened, patch("clipper.providers.modal_endpoint.time.sleep") as sleep:
+    with (
+        patch(
+            "clipper.providers.modal_endpoint.urlopen",
+            side_effect=[_http_error(503), _HTTPResponse(payload)],
+        ) as opened,
+        patch("clipper.providers.modal_endpoint.time.sleep") as sleep,
+    ):
         result = provider.complete_json(task="semantic_cores:0", payload={"words": []})
     assert result.value == {"cores": []}
     assert result.usage.input_units == 11
@@ -332,7 +335,9 @@ def test_speaker_turn_assignment_uses_maximum_overlap() -> None:
 
 
 def test_faster_whisper_provider_load_and_transcribe_paths(tmp_path: Path) -> None:
-    provider = FasterWhisperTranscriptionProvider(model_id="tiny", device="cpu", compute_type="int8")
+    provider = FasterWhisperTranscriptionProvider(
+        model_id="tiny", device="cpu", compute_type="int8"
+    )
     with (
         patch("clipper.providers.speech.importlib.import_module", side_effect=ImportError),
         pytest.raises(ProviderUnavailable, match="asr"),
@@ -562,8 +567,9 @@ def test_modal_transcription_alignment_and_diarization_contracts(tmp_path: Path)
         result = transcription.transcribe(source, video_id="video", source_hash="source")
     assert result.value.words[0].text == "hello"
     function.remote.return_value = {"words": "bad"}
-    with patch.object(transcription, "_function", return_value=function), pytest.raises(
-        ValueError, match="transcription provider"
+    with (
+        patch.object(transcription, "_function", return_value=function),
+        pytest.raises(ValueError, match="transcription provider"),
     ):
         transcription.transcribe(source, video_id="video", source_hash="source")
 
@@ -581,8 +587,9 @@ def test_modal_transcription_alignment_and_diarization_contracts(tmp_path: Path)
     with patch.object(alignment, "_function", return_value=function):
         assert alignment.align(source, timeline).value.words[0].timing_mode == "aligned"
     function.remote.return_value = {}
-    with patch.object(alignment, "_function", return_value=function), pytest.raises(
-        ValueError, match="alignment provider"
+    with (
+        patch.object(alignment, "_function", return_value=function),
+        pytest.raises(ValueError, match="alignment provider"),
     ):
         alignment.align(source, timeline)
 
@@ -591,13 +598,15 @@ def test_modal_transcription_alignment_and_diarization_contracts(tmp_path: Path)
     with patch.object(diarization, "_function", return_value=function):
         assert diarization.diarize(source, timeline).value.words[0].speaker_id == "S1"
     function.remote.return_value = {"error": {"type": "Boom", "message": "bad"}}
-    with patch.object(diarization, "_function", return_value=function), pytest.raises(
-        RuntimeError, match="Boom: bad"
+    with (
+        patch.object(diarization, "_function", return_value=function),
+        pytest.raises(RuntimeError, match="Boom: bad"),
     ):
         diarization.diarize(source, timeline)
     function.remote.return_value = {"turns": [[0, 1]]}
-    with patch.object(diarization, "_function", return_value=function), pytest.raises(
-        ValueError, match="turn is invalid"
+    with (
+        patch.object(diarization, "_function", return_value=function),
+        pytest.raises(ValueError, match="turn is invalid"),
     ):
         diarization.diarize(source, timeline)
 
