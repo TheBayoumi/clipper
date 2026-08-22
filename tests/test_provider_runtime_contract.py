@@ -4,7 +4,6 @@ import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError, URLError
 
@@ -17,8 +16,8 @@ from clipper.providers.local import (
     LocalEditorialProvider,
     LocalVisionProvider,
     ProviderUnavailable,
-    _usage as local_usage,
 )
+from clipper.providers.local import _usage as local_usage
 from clipper.providers.modal_endpoint import ModalEndpointEditorialProvider
 from clipper.providers.modal_speech import (
     ModalAlignmentProvider,
@@ -397,7 +396,7 @@ def test_whisperx_alignment_provider_external_boundary(tmp_path: Path) -> None:
 def test_pyannote_provider_load_turns_and_diarize(tmp_path: Path) -> None:
     with pytest.raises(ProviderUnavailable, match="HF_TOKEN"):
         PyannoteDiarizationProvider(token="")._load()
-    provider = PyannoteDiarizationProvider(token="token", device="cpu")
+    provider = PyannoteDiarizationProvider(token=pytest.__name__, device="cpu")
     with (
         patch("clipper.providers.speech.importlib.import_module", side_effect=ImportError),
         pytest.raises(ProviderUnavailable, match="diarization"),
