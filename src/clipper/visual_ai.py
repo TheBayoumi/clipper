@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from .providers.base import InferenceUsage, ProviderResult, VisionProvider
-from .visual import VisualEvent, VisualEvidenceSpan, VisualTimeline
+from .visual import VisualEvent, VisualEvidenceScope, VisualEvidenceSpan, VisualTimeline
 
 ReviewDecision = Literal["PASS", "REPAIR", "REJECT", "ESCALATE"]
 Severity = Literal["LOW", "MEDIUM", "HIGH"]
@@ -156,7 +156,7 @@ def visual_evidence_spans_from_samples(
     times: tuple[float, ...],
     duration: float,
     *,
-    scope: str = "source_policy",
+    scope: VisualEvidenceScope = "source_policy",
 ) -> tuple[VisualEvidenceSpan, ...]:
     if duration <= 0:
         raise ValueError("visual evidence duration must be positive")

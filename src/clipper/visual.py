@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from itertools import pairwise
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from .stage_contracts import structural_contract_fingerprint
 
@@ -216,7 +216,7 @@ class VisualTimeline:
                     start=float(raw.get("start") or 0.0),
                     end=float(raw.get("end") or 0.0),
                     sample_time=float(raw.get("sample_time") or 0.0),
-                    scope=scope,
+                    scope=cast(VisualEvidenceScope, scope),
                     method=str(raw.get("method") or "representative_frame_cell"),
                 )
             )
