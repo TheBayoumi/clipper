@@ -485,11 +485,21 @@ def test_extract_video_frames_handles_missing_open_decode_write_and_success(tmp_
 
 def test_visual_scout_clamps_transcript_duration_to_real_media_eof(tmp_path: Path) -> None:
     provider = PolicyVision()
-    frames = [tmp_path / "frame.jpg"]
-    frames[0].write_bytes(b"frame")
+    requested: list[tuple[float, ...]] = []
+
+    def frames_for_times(_source: Path, times: tuple[float, ...], output: Path) -> list[Path]:
+        requested.append(times)
+        output.mkdir(parents=True, exist_ok=True)
+        frames = []
+        for index, timestamp in enumerate(times):
+            frame = output / f"{index:03d}-{timestamp:.3f}.jpg"
+            frame.write_bytes(b"frame")
+            frames.append(frame)
+        return frames
+
     with (
         patch("clipper.visual_ai.media_duration_seconds", return_value=2995.838),
-        patch("clipper.visual_ai.extract_video_frames", return_value=frames) as extractor,
+        patch("clipper.visual_ai.extract_video_frames", side_effect=frames_for_times),
     ):
         scout_visual_timeline(
             tmp_path / "proxy.mp4",
@@ -499,7 +509,7 @@ def test_visual_scout_clamps_transcript_duration_to_real_media_eof(tmp_path: Pat
             duration=2997.599,
             output_dir=tmp_path / "frames",
         )
-    times = extractor.call_args.args[1]
+    times = tuple(timestamp for batch in requested for timestamp in batch)
     assert max(times) <= 2995.788
     assert 2997.549 not in times
 
