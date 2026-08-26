@@ -10,6 +10,7 @@ import pytest
 
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
 from clipper.visual_ai import (
+    _inspect_source_policy_batch,
     VisualReviewIssue,
     VisualReviewReport,
     adaptive_sample_times,
@@ -85,6 +86,31 @@ class PartialPolicyVision(PolicyVision):
             {"observations": observations},
             result.model,
             result.usage,
+        )
+
+
+class InvalidBatchPolicyVision(PolicyVision):
+    def inspect(
+        self, *, task: str, frames: list[Path], context: dict[str, object]
+    ) -> ProviderResult[dict[str, object]]:
+        if len(frames) == 1:
+            return super().inspect(task=task, frames=frames, context=context)
+        self.calls.append((task, frames, context))
+        return ProviderResult(
+            {
+                "observations": [
+                    {
+                        "timestamp": -1.0,
+                        "scene_id": "invalid-batch",
+                        "summary": "invalid timestamp forces bounded batch recovery",
+                        "visible_speakers": [],
+                        "event_labels": [],
+                        "confidence": 0.5,
+                    }
+                ]
+            },
+            self.identity,
+            InferenceUsage("test", "now", 0.01, input_units=len(frames)),
         )
 
 
@@ -335,6 +361,62 @@ def test_source_policy_missing_observation_is_reinspected_without_fabricating_co
     assert len(provider.calls[1][1]) == 1
     assert provider.calls[1][2]["source_policy_recovery_attempt"] == 1
     assert result.usage.input_units == sample_count + 1
+
+
+def test_source_policy_malformed_multi_frame_response_splits_until_valid(
+    tmp_path: Path,
+) -> None:
+    provider = InvalidBatchPolicyVision()
+
+    def frames_for_times(_source: Path, times: tuple[float, ...], output: Path) -> list[Path]:
+        output.mkdir(parents=True, exist_ok=True)
+        frames = []
+        for index, timestamp in enumerate(times):
+            frame = output / f"{index:03d}-{timestamp:.3f}.jpg"
+            frame.write_bytes(b"frame")
+            frames.append(frame)
+        return frames
+
+    with (
+        patch("clipper.visual_ai.media_duration_seconds", return_value=12.0),
+        patch("clipper.visual_ai.extract_video_frames", side_effect=frames_for_times),
+    ):
+        timeline, result = scout_visual_timeline(
+            tmp_path / "source.mp4",
+            provider,
+            video_id="v",
+            source_hash="h",
+            duration=12.0,
+            output_dir=tmp_path / "frames",
+        )
+
+    sample_count = int(timeline.coverage_summary("source_policy")["sample_count"])
+    assert len(timeline.events) == sample_count
+    assert len(provider.calls) > sample_count
+    assert any(len(frames) > 1 for _, frames, _ in provider.calls)
+    assert sum(result.usage.input_units for result in [result]) > sample_count
+
+
+def test_source_policy_batch_rejects_empty_and_inconsistent_evidence() -> None:
+    provider = PolicyVision()
+    with pytest.raises(ValueError, match="cannot be empty"):
+        _inspect_source_policy_batch(
+            provider,
+            video_id="v",
+            source_hash="h",
+            frame_timestamps=(),
+            frames=[],
+            spans=(),
+        )
+    with pytest.raises(ValueError, match="evidence is inconsistent"):
+        _inspect_source_policy_batch(
+            provider,
+            video_id="v",
+            source_hash="h",
+            frame_timestamps=(0.0,),
+            frames=[],
+            spans=(),
+        )
 
 
 def test_source_policy_observation_omission_fails_closed(tmp_path: Path) -> None:
