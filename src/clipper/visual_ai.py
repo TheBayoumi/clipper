@@ -6,12 +6,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from .providers.base import ProviderResult, VisionProvider
-from .visual import VisualEvent, VisualTimeline
+from .providers.base import InferenceUsage, ProviderResult, VisionProvider
+from .visual import VisualEvidenceSpan, VisualEvent, VisualTimeline
 
 ReviewDecision = Literal["PASS", "REPAIR", "REJECT", "ESCALATE"]
 Severity = Literal["LOW", "MEDIUM", "HIGH"]
-VISUAL_SAMPLE_MAX_EDGE = 960
+VISUAL_SAMPLE_MAX_EDGE = 960\nSOURCE_POLICY_SAMPLE_INTERVAL_SECONDS = 4.0\nSOURCE_POLICY_BATCH_SIZE = 24
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +134,51 @@ def adaptive_sample_times(
         samples.add(min(duration - 0.05, max(0.0, (start + end) / 2)))
         samples.add(min(duration - 0.05, max(0.0, end - 0.15)))
     return tuple(sorted(round(value, 3) for value in samples if 0 <= value < duration))
+
+
+def source_policy_sample_times(
+    duration: float,
+    *,
+    scene_cuts: tuple[float, ...] = (),
+    interval_seconds: float = SOURCE_POLICY_SAMPLE_INTERVAL_SECONDS,
+) -> tuple[float, ...]:
+    """Sample source-wide policy evidence independently from candidate/editorial review."""
+    return adaptive_sample_times(
+        duration,
+        scene_cuts=scene_cuts,
+        base_interval=interval_seconds,
+    )
+
+
+def visual_evidence_spans_from_samples(
+    times: tuple[float, ...],
+    duration: float,
+    *,
+    scope: str = "source_policy",
+) -> tuple[VisualEvidenceSpan, ...]:
+    if duration <= 0:
+        raise ValueError("visual evidence duration must be positive")
+    ordered = tuple(sorted(dict.fromkeys(times)))
+    if not ordered:
+        raise ValueError("visual evidence requires at least one sample")
+    if ordered[0] < 0 or ordered[-1] >= duration:
+        raise ValueError("visual evidence sample lies outside source duration")
+    if scope not in {"source_policy", "candidate_editorial"}:
+        raise ValueError("visual evidence scope is invalid")
+
+    spans: list[VisualEvidenceSpan] = []
+    for index, sample in enumerate(ordered):
+        left = 0.0 if index == 0 else (ordered[index - 1] + sample) / 2
+        right = duration if index == len(ordered) - 1 else (sample + ordered[index + 1]) / 2
+        spans.append(
+            VisualEvidenceSpan(
+                start=left,
+                end=right,
+                sample_time=sample,
+                scope=scope,
+            )
+        )
+    return tuple(spans)
 
 
 def tracking_transition_sample_times(transitions: object) -> tuple[float, ...]:
@@ -367,6 +412,80 @@ def parse_visual_timeline(
     return VisualTimeline(video_id, source_hash, tuple(events))
 
 
+def _source_policy_events(
+    payload: dict[str, Any],
+    *,
+    frame_timestamps: tuple[float, ...],
+    spans: tuple[VisualEvidenceSpan, ...],
+) -> tuple[VisualEvent, ...]:
+    raw = payload.get("observations")
+    if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+        raise ValueError("source-policy visual scout must return an observations list")
+    expected = {round(value, 3) for value in frame_timestamps}
+    if len(raw) != len(expected):
+        raise ValueError("source-policy visual scout must return one observation per frame")
+    span_by_sample = {round(span.sample_time, 3): span for span in spans}
+    seen: set[float] = set()
+    events: list[VisualEvent] = []
+    for item in raw:
+        timestamp = round(_float(item.get("timestamp"), "source-policy observation timestamp"), 3)
+        if timestamp not in expected or timestamp in seen:
+            raise ValueError("source-policy observation references an unknown or duplicate frame")
+        seen.add(timestamp)
+        speakers = item.get("visible_speakers", [])
+        labels = item.get("event_labels", [])
+        if not isinstance(speakers, list) or not all(isinstance(value, str) for value in speakers):
+            raise ValueError("visible_speakers must be strings")
+        if not isinstance(labels, list) or not all(isinstance(value, str) for value in labels):
+            raise ValueError("event_labels must be strings")
+        span = span_by_sample[timestamp]
+        events.append(
+            VisualEvent(
+                start=span.start,
+                end=span.end,
+                scene_id=str(item.get("scene_id") or "").strip(),
+                summary=str(item.get("summary") or "").strip(),
+                visible_speakers=tuple(value.strip() for value in speakers if value.strip()),
+                event_labels=tuple(value.strip() for value in labels if value.strip()),
+                confidence=_float(item.get("confidence", 0.0), "visual event confidence"),
+            )
+        )
+    if seen != expected:
+        raise ValueError("source-policy visual scout omitted an inspected frame")
+    return tuple(sorted(events, key=lambda event: (event.start, event.end, event.scene_id)))
+
+
+def _aggregate_vision_results(
+    results: list[ProviderResult[dict[str, Any]]],
+    timeline: VisualTimeline,
+) -> ProviderResult[dict[str, Any]]:
+    if not results:
+        raise ValueError("source-policy visual scout produced no inference results")
+    model = results[0].model
+    if any(result.model != model for result in results[1:]):
+        raise RuntimeError("source-policy visual scout changed model identity between batches")
+    usages = [result.usage for result in results]
+    gpu_types = {usage.gpu_type for usage in usages if usage.gpu_type}
+    peaks = [usage.peak_vram_mb for usage in usages if usage.peak_vram_mb is not None]
+    usage = InferenceUsage(
+        provider=usages[0].provider,
+        started_at=usages[0].started_at,
+        duration_seconds=sum(item.duration_seconds for item in usages),
+        gpu_type=next(iter(gpu_types)) if len(gpu_types) == 1 else None,
+        gpu_seconds=sum(item.gpu_seconds for item in usages),
+        peak_vram_mb=max(peaks) if peaks else None,
+        input_units=sum(item.input_units for item in usages),
+        output_units=sum(item.output_units for item in usages),
+        estimated_cost_usd=sum(item.estimated_cost_usd for item in usages),
+    )
+    return ProviderResult(
+        timeline.to_dict(),
+        model,
+        usage,
+        degraded=any(result.degraded for result in results),
+    )
+
+
 def scout_visual_timeline(
     video_path: Path,
     provider: VisionProvider,
@@ -378,31 +497,61 @@ def scout_visual_timeline(
     scene_cuts: tuple[float, ...] = (),
     candidate_ranges: tuple[tuple[float, float], ...] = (),
 ) -> tuple[VisualTimeline, ProviderResult[dict[str, Any]]]:
+    """Build source-wide policy evidence; candidate/render review remains a separate stage."""
     media_duration = media_duration_seconds(video_path)
     effective_duration = min(duration, media_duration)
-    times = adaptive_sample_times(
-        effective_duration,
-        scene_cuts=scene_cuts,
-        candidate_ranges=candidate_ranges,
-    )
-    frames = extract_video_frames(video_path, times, output_dir)
-    result = provider.inspect(
-        task="visual_timeline_scout",
-        frames=frames,
-        context={
-            "video_id": video_id,
-            "source_hash": source_hash,
-            "frame_timestamps": list(times),
-            "instruction": (
-                "Describe only visible evidence. Do not retranscribe audio. Return semantic "
-                "visual events with source timestamps, scene IDs, visible speakers, event "
-                "labels, summaries, and confidence."
-            ),
-        },
-    )
-    return parse_visual_timeline(result.value, video_id=video_id, source_hash=source_hash), result
+    times = source_policy_sample_times(effective_duration, scene_cuts=scene_cuts)
+    if candidate_ranges:
+        dense_candidate_times = adaptive_sample_times(
+            effective_duration,
+            candidate_ranges=candidate_ranges,
+            base_interval=SOURCE_POLICY_SAMPLE_INTERVAL_SECONDS,
+        )
+        times = tuple(sorted(set(times) | set(dense_candidate_times)))
+    spans = visual_evidence_spans_from_samples(times, effective_duration, scope="source_policy")
+    spans_by_sample = {round(span.sample_time, 3): span for span in spans}
+    events: list[VisualEvent] = []
+    results: list[ProviderResult[dict[str, Any]]] = []
+    for batch_index, start in enumerate(range(0, len(times), SOURCE_POLICY_BATCH_SIZE)):
+        batch_times = times[start : start + SOURCE_POLICY_BATCH_SIZE]
+        batch_dir = output_dir / f"source-policy-batch-{batch_index:04d}"
+        frames = extract_video_frames(video_path, batch_times, batch_dir)
+        if len(frames) != len(batch_times):
+            raise RuntimeError("source-policy frame extraction returned an incomplete batch")
+        batch_spans = tuple(spans_by_sample[round(value, 3)] for value in batch_times)
+        result = provider.inspect(
+            task="source_policy_visual_scout",
+            frames=frames,
+            context={
+                "video_id": video_id,
+                "source_hash": source_hash,
+                "frame_timestamps": list(batch_times),
+                "inspection_scope": "source_policy",
+                "instruction": (
+                    "Inspect every supplied source frame independently for source-visible branding, "
+                    "logos, overlays, on-screen text, people, scenes, and policy-relevant hazards. "
+                    "Do not retranscribe audio. Return exactly one observation for every supplied "
+                    "frame timestamp; never infer an uninspected time range."
+                ),
+            },
+        )
+        events.extend(
+            _source_policy_events(
+                result.value,
+                frame_timestamps=batch_times,
+                spans=batch_spans,
+            )
+        )
+        results.append(result)
 
-
+    timeline = VisualTimeline(
+        video_id,
+        source_hash,
+        tuple(sorted(events, key=lambda event: (event.start, event.end, event.scene_id))),
+        coverage_spans=spans,
+        source_duration=effective_duration,
+    )
+    return timeline, _aggregate_vision_results(results, timeline)
 def _needs_escalation(report: VisualReviewReport, threshold: float) -> bool:
     if report.decision == "ESCALATE":
         return True

@@ -169,10 +169,11 @@ def plan_quality_batch(
             modality_profile = infer_source_modality_profile(multimodal)
             if (
                 _requires_source_visual_policy(brief)
-                and modality_profile.visual_evidence_coverage < 0.5
+                and modality_profile.source_policy_visual_coverage < 0.5
             ):
                 raise RuntimeError(
-                    "campaign branding policy requires broader source visual evidence coverage"
+                    "campaign branding policy requires broader source visual evidence coverage: "
+                    f"{modality_profile.source_policy_visual_coverage:.3f}"
                 )
 
             hazard_classifier = SourceHazardClassifier(
@@ -260,6 +261,11 @@ def plan_quality_batch(
                 "status": "PASS",
                 "multimodal_timeline": multimodal.to_dict(),
                 "modality_profile": modality_profile.to_dict(),
+                "visual_policy_coverage": (
+                    visual.coverage_summary("source_policy", duration=multimodal.duration)
+                    if visual is not None
+                    else None
+                ),
                 "source_hazards": hazard_result.to_dict(),
                 "forbidden_spans": [{"start": item.start, "end": item.end} for item in forbidden],
                 "quality_planning": planning.to_dict(),

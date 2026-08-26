@@ -17,6 +17,7 @@ class SourceModalityProfile:
     action_dependency: float
     visual_evidence_coverage: float
     confidence: float
+    source_policy_visual_coverage: float = 0.0
     contract_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -63,6 +64,37 @@ def _covered_duration(timeline: MultimodalTimeline, predicate: object) -> float:
     return sum(event.duration for event in timeline.events if check(event))
 
 
+def _span_coverage(timeline: MultimodalTimeline, *, scope: str | None = None) -> float:
+    if timeline.duration <= 0:
+        return 0.0
+    spans = [
+        span
+        for span in timeline.visual_evidence_spans
+        if scope is None or span.scope == scope
+    ]
+    if not spans:
+        return 0.0
+    intervals = sorted(
+        (max(0.0, span.start), min(timeline.duration, span.end))
+        for span in spans
+        if span.end > 0 and span.start < timeline.duration
+    )
+    if not intervals:
+        return 0.0
+    start, end = intervals[0]
+    covered = 0.0
+    for next_start, next_end in intervals[1:]:
+        if next_end <= next_start:
+            continue
+        if next_start <= end:
+            end = max(end, next_end)
+            continue
+        covered += max(0.0, end - start)
+        start, end = next_start, next_end
+    covered += max(0.0, end - start)
+    return min(1.0, covered / timeline.duration)
+
+
 def infer_source_modality_profile(timeline: MultimodalTimeline) -> SourceModalityProfile:
     """Infer modality dependence from observed evidence, never from source-type labels."""
     duration = timeline.duration
@@ -96,6 +128,13 @@ def infer_source_modality_profile(timeline: MultimodalTimeline) -> SourceModalit
     speaker_dependency = min(1.0, speakers * (0.6 + 0.4 * speech))
     action_dependency = min(1.0, actions * (0.7 + 0.3 * motion))
 
+    if timeline.visual_evidence_spans:
+        visual_coverage = _span_coverage(timeline)
+        source_policy_coverage = _span_coverage(timeline, scope="source_policy")
+    else:
+        visual_coverage = visual
+        source_policy_coverage = visual
+
     signal_count = sum(
         1 for value in (speech, visual, motion, screen_text, speakers, actions) if value > 0
     )
@@ -108,8 +147,9 @@ def infer_source_modality_profile(timeline: MultimodalTimeline) -> SourceModalit
         screen_text_dependency=max(0.0, screen_dependency),
         speaker_identity_dependency=max(0.0, speaker_dependency),
         action_dependency=max(0.0, action_dependency),
-        visual_evidence_coverage=max(0.0, min(1.0, visual)),
+        visual_evidence_coverage=max(0.0, min(1.0, visual_coverage)),
         confidence=max(0.0, min(1.0, confidence)),
+        source_policy_visual_coverage=max(0.0, min(1.0, source_policy_coverage)),
     )
 
 

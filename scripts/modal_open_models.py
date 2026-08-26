@@ -165,6 +165,16 @@ def _json_text(text: str) -> dict[str, Any]:
 
 
 def _vision_contract(task: str) -> str:
+    if task == "source_policy_visual_scout":
+        return (
+            'Schema: {"observations":[{"timestamp":0.0,"scene_id":"scene-1",'
+            '"summary":"visible source evidence","visible_speakers":["speaker labels"],'
+            '"event_labels":["branding:name","ocr:text","hazard:description"],'
+            '"confidence":0.0}]}. '
+            "Return exactly one observation for every supplied frame_timestamps value, in the "
+            "same order. timestamp must equal a supplied value. Use empty event_labels when no "
+            "policy-relevant label is visible. Never invent observations for unsupplied times."
+        )
     if task == "visual_timeline_scout":
         return (
             'Schema: {"events":[{"start":0.0,"end":1.0,"scene_id":"scene-1",'

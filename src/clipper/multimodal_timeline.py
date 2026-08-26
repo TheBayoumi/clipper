@@ -6,7 +6,7 @@ from typing import Any
 
 from .canonical import CanonicalTimeline
 from .stage_contracts import structural_contract_fingerprint
-from .visual import VisualTimeline
+from .visual import VisualEvidenceSpan, VisualTimeline
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +71,7 @@ class MultimodalTimeline:
     source_hash: str
     duration: float
     events: tuple[MultimodalEvent, ...]
+    visual_evidence_spans: tuple[VisualEvidenceSpan, ...] = ()
     contract_fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -81,6 +82,7 @@ class MultimodalTimeline:
                 "multimodal-timeline",
                 EvidenceProvenance,
                 MultimodalEvent,
+                VisualEvidenceSpan,
                 MultimodalTimeline,
                 exclude_fields=("contract_fingerprint",),
             ),
@@ -91,8 +93,12 @@ class MultimodalTimeline:
             raise ValueError("multimodal timeline duration cannot be negative")
         if any(a.start > b.start for a, b in pairwise(self.events)):
             raise ValueError("multimodal timeline events must be source ordered")
+        if any(a.start > b.start for a, b in pairwise(self.visual_evidence_spans)):
+            raise ValueError("multimodal visual evidence spans must be source ordered")
         if any(event.end > self.duration + 1e-6 for event in self.events):
             raise ValueError("multimodal event exceeds source duration")
+        if any(span.end > self.duration + 1e-6 for span in self.visual_evidence_spans):
+            raise ValueError("multimodal visual evidence span exceeds source duration")
 
     def overlapping(self, start: float, end: float) -> tuple[MultimodalEvent, ...]:
         if start < 0 or end <= start:
@@ -105,6 +111,7 @@ class MultimodalTimeline:
             "video_id": self.video_id,
             "source_hash": self.source_hash,
             "duration": self.duration,
+            "visual_evidence_spans": [span.to_dict() for span in self.visual_evidence_spans],
             "events": [event.to_dict() for event in self.events],
         }
 
@@ -134,9 +141,13 @@ def build_multimodal_timeline(
             raise ValueError("speech and visual timelines reference different source hashes")
 
     visual_events = visual.events if visual is not None else ()
+    visual_spans = visual.coverage_spans if visual is not None else ()
+    visual_duration = visual.source_duration if visual is not None else 0.0
     source_end = max(
         speech.end,
+        visual_duration,
         max((event.end for event in visual_events), default=0.0),
+        max((span.end for span in visual_spans), default=0.0),
         float(duration or 0.0),
     )
     if source_end <= 0:
@@ -203,4 +214,5 @@ def build_multimodal_timeline(
         source_hash=speech.source_hash,
         duration=source_end,
         events=tuple(events),
+        visual_evidence_spans=tuple(visual_spans),
     )

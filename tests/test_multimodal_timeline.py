@@ -7,7 +7,7 @@ from clipper.multimodal_timeline import (
     MultimodalTimeline,
     build_multimodal_timeline,
 )
-from clipper.visual import VisualEvent, VisualTimeline
+from clipper.visual import VisualEvidenceSpan, VisualEvent, VisualTimeline
 
 
 def _speech(source_hash: str = "source") -> CanonicalTimeline:
@@ -61,6 +61,8 @@ def _visual(source_hash: str = "source") -> VisualTimeline:
                 confidence=0.9,
             ),
         ),
+        coverage_spans=(VisualEvidenceSpan(0.0, 1.0, 0.5, "source_policy"),),
+        source_duration=1.0,
     )
 
 
@@ -74,6 +76,7 @@ def test_builder_aligns_words_and_visual_evidence_on_exact_boundaries() -> None:
     )
 
     assert timeline.duration == 1.0
+    assert timeline.visual_evidence_spans[0].scope == "source_policy"
     assert [(event.start, event.end) for event in timeline.events] == [
         (0.0, 0.25),
         (0.25, 0.5),

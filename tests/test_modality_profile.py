@@ -6,6 +6,7 @@ from clipper.modality_profile import (
     infer_source_modality_profile,
 )
 from clipper.multimodal_timeline import MultimodalEvent, MultimodalTimeline
+from clipper.visual import VisualEvidenceSpan
 
 
 def _timeline(events: tuple[MultimodalEvent, ...], duration: float = 10.0) -> MultimodalTimeline:
@@ -119,3 +120,27 @@ def test_empty_evidence_has_zero_dependencies_and_profile_validation_is_strict()
 
     with pytest.raises(ValueError, match="between 0 and 1"):
         SourceModalityProfile(1.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+def test_scoped_visual_coverage_separates_source_policy_from_candidate_review() -> None:
+    timeline = MultimodalTimeline(
+        "video",
+        "source",
+        10.0,
+        (
+            MultimodalEvent(
+                0.0,
+                10.0,
+                scene_ids=("scene",),
+                visual_summaries=("visible",),
+                confidence=0.9,
+            ),
+        ),
+        visual_evidence_spans=(
+            VisualEvidenceSpan(0.0, 4.0, 2.0, "source_policy"),
+            VisualEvidenceSpan(4.0, 10.0, 7.0, "candidate_editorial"),
+        ),
+    )
+    profile = infer_source_modality_profile(timeline)
+    assert profile.visual_evidence_coverage == pytest.approx(1.0)
+    assert profile.source_policy_visual_coverage == pytest.approx(0.4)

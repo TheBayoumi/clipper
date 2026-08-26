@@ -19,7 +19,9 @@ from clipper.visual_ai import (
     repair_stage,
     review_rendered_clip,
     scout_visual_timeline,
+    source_policy_sample_times,
     tracking_transition_sample_times,
+    visual_evidence_spans_from_samples,
 )
 
 
@@ -36,6 +38,34 @@ class FakeVision:
         self.calls.append((task, frames, context))
         return ProviderResult(
             self.payload,
+            self.identity,
+            InferenceUsage("test", "now", 0.01, input_units=len(frames)),
+        )
+
+
+class PolicyVision(FakeVision):
+    def __init__(self) -> None:
+        super().__init__({})
+
+    def inspect(
+        self, *, task: str, frames: list[Path], context: dict[str, object]
+    ) -> ProviderResult[dict[str, object]]:
+        self.calls.append((task, frames, context))
+        timestamps = context["frame_timestamps"]
+        assert isinstance(timestamps, list)
+        observations = [
+            {
+                "timestamp": timestamp,
+                "scene_id": f"scene-{index}",
+                "summary": "source frame inspected for policy evidence",
+                "visible_speakers": [],
+                "event_labels": [],
+                "confidence": 0.95,
+            }
+            for index, timestamp in enumerate(timestamps)
+        ]
+        return ProviderResult(
+            {"observations": observations},
             self.identity,
             InferenceUsage("test", "now", 0.01, input_units=len(frames)),
         )
@@ -201,49 +231,76 @@ def test_parse_visual_timeline_sorts_and_validates_model_output() -> None:
         parse_visual_timeline(broken, video_id="v", source_hash="h")
 
 
-def test_scout_visual_timeline_uses_sparse_frames_and_no_audio_retranscription(
+def test_source_policy_sampling_builds_explicit_continuous_inspection_cells() -> None:
+    times = source_policy_sample_times(20.0, interval_seconds=4.0)
+    spans = visual_evidence_spans_from_samples(times, 20.0)
+    assert times[0] == 0.0 and times[-1] == 19.95
+    assert spans[0].start == 0.0
+    assert spans[-1].end == 20.0
+    assert all(left.end == pytest.approx(right.start) for left, right in zip(spans, spans[1:]))
+    assert sum(span.duration for span in spans) == pytest.approx(20.0)
+
+
+def test_scout_visual_timeline_batches_source_policy_frames_and_records_coverage(
     tmp_path: Path,
 ) -> None:
-    provider = FakeVision(
-        {
-            "events": [
-                {
-                    "start": 0,
-                    "end": 1,
-                    "scene_id": "s1",
-                    "summary": "visible speaker reaction",
-                    "visible_speakers": ["A"],
-                    "event_labels": ["reaction"],
-                    "confidence": 0.9,
-                }
-            ]
-        }
-    )
-    frames = [tmp_path / "a.jpg", tmp_path / "b.jpg"]
-    for frame in frames:
-        frame.write_bytes(b"frame")
+    provider = PolicyVision()
+
+    def frames_for_times(_source: Path, times: tuple[float, ...], output: Path) -> list[Path]:
+        output.mkdir(parents=True, exist_ok=True)
+        frames = []
+        for index, timestamp in enumerate(times):
+            frame = output / f"{index:03d}-{timestamp:.3f}.jpg"
+            frame.write_bytes(b"frame")
+            frames.append(frame)
+        return frames
+
     with (
-        patch("clipper.visual_ai.media_duration_seconds", return_value=119.0),
-        patch("clipper.visual_ai.extract_video_frames", return_value=frames) as extractor,
+        patch("clipper.visual_ai.media_duration_seconds", return_value=100.0),
+        patch("clipper.visual_ai.extract_video_frames", side_effect=frames_for_times),
     ):
         timeline, result = scout_visual_timeline(
             tmp_path / "source.mp4",
             provider,
             video_id="v",
             source_hash="h",
-            duration=120,
+            duration=100,
             output_dir=tmp_path / "frames",
-            scene_cuts=(30.0,),
-            candidate_ranges=((60.0, 70.0),),
         )
-    assert timeline.events[0].summary == "visible speaker reaction"
-    assert result.model.model_id == "vision"
-    task, passed_frames, context = provider.calls[0]
-    assert task == "visual_timeline_scout"
-    assert passed_frames == frames
-    assert "Do not retranscribe audio" in str(context["instruction"])
-    assert extractor.call_args.args[1]
 
+    summary = timeline.coverage_summary("source_policy")
+    assert summary["coverage_fraction"] == pytest.approx(1.0)
+    assert summary["max_sample_gap_seconds"] <= 4.0
+    assert summary["sample_count"] > 24
+    assert len(provider.calls) == 2
+    assert all(call[0] == "source_policy_visual_scout" for call in provider.calls)
+    assert all(len(call[1]) <= 24 for call in provider.calls)
+    assert all("Do not retranscribe audio" in str(call[2]["instruction"]) for call in provider.calls)
+    assert result.usage.input_units == int(summary["sample_count"])
+    assert len(timeline.events) == int(summary["sample_count"])
+
+
+def test_source_policy_observation_omission_fails_closed(tmp_path: Path) -> None:
+    provider = FakeVision({"observations": []})
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"frame")
+
+    def repeated_frames(_source: Path, times: tuple[float, ...], _output: Path) -> list[Path]:
+        return [frame for _ in times]
+
+    with (
+        patch("clipper.visual_ai.media_duration_seconds", return_value=1.0),
+        patch("clipper.visual_ai.extract_video_frames", side_effect=repeated_frames),
+        pytest.raises(ValueError, match="one observation per frame"),
+    ):
+        scout_visual_timeline(
+            tmp_path / "source.mp4",
+            provider,
+            video_id="v",
+            source_hash="h",
+            duration=1.0,
+            output_dir=tmp_path / "frames",
+        )
 
 def test_rendered_clip_review_pass_does_not_escalate(tmp_path: Path) -> None:
     provider = FakeVision(_pass_payload())
@@ -423,7 +480,7 @@ def test_extract_video_frames_handles_missing_open_decode_write_and_success(tmp_
 
 
 def test_visual_scout_clamps_transcript_duration_to_real_media_eof(tmp_path: Path) -> None:
-    provider = FakeVision({"events": []})
+    provider = PolicyVision()
     frames = [tmp_path / "frame.jpg"]
     frames[0].write_bytes(b"frame")
     with (
