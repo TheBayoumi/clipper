@@ -7,7 +7,7 @@ from clipper.multimodal_timeline import (
     MultimodalTimeline,
     build_multimodal_timeline,
 )
-from clipper.visual import VisualEvidenceSpan, VisualEvent, VisualTimeline
+from clipper.visual import VisualEvent, VisualEvidenceSpan, VisualTimeline
 
 
 def _speech(source_hash: str = "source") -> CanonicalTimeline:

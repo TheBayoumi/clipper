@@ -237,7 +237,9 @@ def test_source_policy_sampling_builds_explicit_continuous_inspection_cells() ->
     assert times[0] == 0.0 and times[-1] == 19.95
     assert spans[0].start == 0.0
     assert spans[-1].end == 20.0
-    assert all(left.end == pytest.approx(right.start) for left, right in zip(spans, spans[1:]))
+    assert all(
+        left.end == pytest.approx(right.start) for left, right in pairwise(spans)
+    )
     assert sum(span.duration for span in spans) == pytest.approx(20.0)
 
 

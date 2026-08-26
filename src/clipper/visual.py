@@ -115,10 +115,10 @@ class VisualTimeline:
             raise ValueError("visual timeline source duration cannot be negative")
         if any(a.start > b.start for a, b in zip(self.events, self.events[1:], strict=False)):
             raise ValueError("visual timeline events must be source ordered")
-        if any(
-            a.start > b.start for a, b in zip(self.coverage_spans, self.coverage_spans[1:], strict=False)
-        ):
+        if any(a.start > b.start for a, b in pairwise(self.coverage_spans)):
             raise ValueError("visual evidence spans must be source ordered")
+        if any(span.end <= span.start for span in self.coverage_spans):
+            raise ValueError("visual evidence spans must have positive duration")
         if self.source_duration > 0:
             if any(event.end > self.source_duration + 1e-6 for event in self.events):
                 raise ValueError("visual event exceeds source duration")
@@ -150,7 +150,7 @@ class VisualTimeline:
         samples = sorted({span.sample_time for span in selected})
         if target_duration > 0 and samples:
             gaps = [max(0.0, samples[0])]
-            gaps.extend(max(0.0, right - left) for left, right in zip(samples, samples[1:]))
+            gaps.extend(max(0.0, right - left) for left, right in pairwise(samples))
             gaps.append(max(0.0, target_duration - samples[-1]))
             max_gap = max(gaps, default=target_duration)
         else:

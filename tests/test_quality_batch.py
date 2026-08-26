@@ -10,7 +10,7 @@ from clipper.brief import load_brief
 from clipper.canonical import CanonicalTimeline, CanonicalWord
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
 from clipper.quality_batch import plan_quality_batch
-from clipper.visual import VisualEvidenceSpan, VisualEvent, VisualTimeline
+from clipper.visual import VisualEvent, VisualEvidenceSpan, VisualTimeline
 
 
 class _QualityEditorial:

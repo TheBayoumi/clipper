@@ -528,7 +528,8 @@ def scout_visual_timeline(
                 "frame_timestamps": list(batch_times),
                 "inspection_scope": "source_policy",
                 "instruction": (
-                    "Inspect every supplied source frame independently for source-visible branding, "
+                    "Inspect every supplied source frame independently for source-visible "
+                    "branding, "
                     "logos, overlays, on-screen text, people, scenes, and policy-relevant hazards. "
                     "Do not retranscribe audio. Return exactly one observation for every supplied "
                     "frame timestamp; never infer an uninspected time range."
