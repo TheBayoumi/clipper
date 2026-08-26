@@ -14,6 +14,7 @@ Severity = Literal["LOW", "MEDIUM", "HIGH"]
 VISUAL_SAMPLE_MAX_EDGE = 960
 SOURCE_POLICY_SAMPLE_INTERVAL_SECONDS = 4.0
 SOURCE_POLICY_BATCH_SIZE = 24
+SOURCE_POLICY_SINGLE_FRAME_RETRIES = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,18 +415,21 @@ def parse_visual_timeline(
     return VisualTimeline(video_id, source_hash, tuple(events))
 
 
-def _source_policy_events(
+def _parse_source_policy_events(
     payload: dict[str, Any],
     *,
     frame_timestamps: tuple[float, ...],
     spans: tuple[VisualEvidenceSpan, ...],
-) -> tuple[VisualEvent, ...]:
+) -> tuple[tuple[VisualEvent, ...], tuple[float, ...]]:
     raw = payload.get("observations")
     if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
         raise ValueError("source-policy visual scout must return an observations list")
-    expected = {round(value, 3) for value in frame_timestamps}
-    if len(raw) != len(expected):
-        raise ValueError("source-policy visual scout must return one observation per frame")
+    expected_order = tuple(round(value, 3) for value in frame_timestamps)
+    expected = set(expected_order)
+    if len(expected) != len(expected_order):
+        raise ValueError("source-policy frame timestamps must be unique")
+    if len(raw) > len(expected):
+        raise ValueError("source-policy visual scout returned more observations than frames")
     span_by_sample = {round(span.sample_time, 3): span for span in spans}
     seen: set[float] = set()
     events: list[VisualEvent] = []
@@ -452,9 +456,171 @@ def _source_policy_events(
                 confidence=_float(item.get("confidence", 0.0), "visual event confidence"),
             )
         )
-    if seen != expected:
-        raise ValueError("source-policy visual scout omitted an inspected frame")
-    return tuple(sorted(events, key=lambda event: (event.start, event.end, event.scene_id)))
+    missing = tuple(
+        value for value in frame_timestamps if round(value, 3) not in seen
+    )
+    return (
+        tuple(sorted(events, key=lambda event: (event.start, event.end, event.scene_id))),
+        missing,
+    )
+
+
+def _source_policy_events(
+    payload: dict[str, Any],
+    *,
+    frame_timestamps: tuple[float, ...],
+    spans: tuple[VisualEvidenceSpan, ...],
+) -> tuple[VisualEvent, ...]:
+    events, missing = _parse_source_policy_events(
+        payload,
+        frame_timestamps=frame_timestamps,
+        spans=spans,
+    )
+    if missing:
+        raise ValueError("source-policy visual scout must return one observation per frame")
+    return events
+
+
+def _source_policy_context(
+    *,
+    video_id: str,
+    source_hash: str,
+    frame_timestamps: tuple[float, ...],
+    recovery_attempt: int,
+) -> dict[str, object]:
+    instruction = (
+        "Inspect every supplied source frame independently for source-visible branding, "
+        "logos, overlays, on-screen text, people, scenes, and policy-relevant hazards. "
+        "Do not retranscribe audio. Return exactly one observation for every supplied "
+        "frame timestamp; never infer an uninspected time range."
+    )
+    if recovery_attempt:
+        instruction += (
+            " This is a recovery inspection containing only frames whose previous response "
+            "was missing or invalid. Return one observation for each supplied timestamp even "
+            "when no policy-relevant label is visible."
+        )
+    return {
+        "video_id": video_id,
+        "source_hash": source_hash,
+        "frame_timestamps": list(frame_timestamps),
+        "inspection_scope": "source_policy",
+        "source_policy_recovery_attempt": recovery_attempt,
+        "instruction": instruction,
+    }
+
+
+def _inspect_source_policy_batch(
+    provider: VisionProvider,
+    *,
+    video_id: str,
+    source_hash: str,
+    frame_timestamps: tuple[float, ...],
+    frames: list[Path],
+    spans: tuple[VisualEvidenceSpan, ...],
+) -> tuple[tuple[VisualEvent, ...], list[ProviderResult[dict[str, Any]]]]:
+    if not frame_timestamps:
+        raise ValueError("source-policy inspection batch cannot be empty")
+    if len(frame_timestamps) != len(frames) or len(frame_timestamps) != len(spans):
+        raise ValueError("source-policy inspection batch evidence is inconsistent")
+
+    items = tuple(zip(frame_timestamps, frames, spans, strict=True))
+    accepted: list[VisualEvent] = []
+    results: list[ProviderResult[dict[str, Any]]] = []
+
+    def inspect_subset(
+        subset: tuple[tuple[float, Path, VisualEvidenceSpan], ...],
+        *,
+        recovery_attempt: int = 0,
+        single_retry: int = 0,
+    ) -> None:
+        subset_times = tuple(item[0] for item in subset)
+        subset_frames = [item[1] for item in subset]
+        subset_spans = tuple(item[2] for item in subset)
+        result = provider.inspect(
+            task="source_policy_visual_scout",
+            frames=subset_frames,
+            context=_source_policy_context(
+                video_id=video_id,
+                source_hash=source_hash,
+                frame_timestamps=subset_times,
+                recovery_attempt=recovery_attempt,
+            ),
+        )
+        results.append(result)
+        try:
+            parsed, missing = _parse_source_policy_events(
+                result.value,
+                frame_timestamps=subset_times,
+                spans=subset_spans,
+            )
+        except ValueError as exc:
+            if len(subset) == 1:
+                if single_retry < SOURCE_POLICY_SINGLE_FRAME_RETRIES:
+                    inspect_subset(
+                        subset,
+                        recovery_attempt=recovery_attempt + 1,
+                        single_retry=single_retry + 1,
+                    )
+                    return
+                raise ValueError(
+                    "source-policy visual scout must return one observation per frame "
+                    "after single-frame recovery"
+                ) from exc
+            midpoint = len(subset) // 2
+            inspect_subset(
+                subset[:midpoint],
+                recovery_attempt=recovery_attempt + 1,
+            )
+            inspect_subset(
+                subset[midpoint:],
+                recovery_attempt=recovery_attempt + 1,
+            )
+            return
+
+        accepted.extend(parsed)
+        if not missing:
+            return
+
+        missing_keys = {round(value, 3) for value in missing}
+        missing_subset = tuple(
+            item for item in subset if round(item[0], 3) in missing_keys
+        )
+        if not missing_subset:
+            raise RuntimeError("source-policy recovery lost missing frame identity")
+        if len(missing_subset) == 1:
+            if len(subset) == 1 and single_retry >= SOURCE_POLICY_SINGLE_FRAME_RETRIES:
+                raise ValueError(
+                    "source-policy visual scout must return one observation per frame "
+                    "after single-frame recovery"
+                )
+            inspect_subset(
+                missing_subset,
+                recovery_attempt=recovery_attempt + 1,
+                single_retry=single_retry + 1 if len(subset) == 1 else 0,
+            )
+            return
+        if len(missing_subset) == len(subset):
+            midpoint = len(missing_subset) // 2
+            inspect_subset(
+                missing_subset[:midpoint],
+                recovery_attempt=recovery_attempt + 1,
+            )
+            inspect_subset(
+                missing_subset[midpoint:],
+                recovery_attempt=recovery_attempt + 1,
+            )
+            return
+        inspect_subset(
+            missing_subset,
+            recovery_attempt=recovery_attempt + 1,
+        )
+
+    inspect_subset(items)
+    return (
+        tuple(sorted(accepted, key=lambda event: (event.start, event.end, event.scene_id))),
+        results,
+    )
 
 
 def _aggregate_vision_results(
@@ -521,31 +687,16 @@ def scout_visual_timeline(
         if len(frames) != len(batch_times):
             raise RuntimeError("source-policy frame extraction returned an incomplete batch")
         batch_spans = tuple(spans_by_sample[round(value, 3)] for value in batch_times)
-        result = provider.inspect(
-            task="source_policy_visual_scout",
+        batch_events, batch_results = _inspect_source_policy_batch(
+            provider,
+            video_id=video_id,
+            source_hash=source_hash,
+            frame_timestamps=batch_times,
             frames=frames,
-            context={
-                "video_id": video_id,
-                "source_hash": source_hash,
-                "frame_timestamps": list(batch_times),
-                "inspection_scope": "source_policy",
-                "instruction": (
-                    "Inspect every supplied source frame independently for source-visible "
-                    "branding, "
-                    "logos, overlays, on-screen text, people, scenes, and policy-relevant hazards. "
-                    "Do not retranscribe audio. Return exactly one observation for every supplied "
-                    "frame timestamp; never infer an uninspected time range."
-                ),
-            },
+            spans=batch_spans,
         )
-        events.extend(
-            _source_policy_events(
-                result.value,
-                frame_timestamps=batch_times,
-                spans=batch_spans,
-            )
-        )
-        results.append(result)
+        events.extend(batch_events)
+        results.extend(batch_results)
 
     timeline = VisualTimeline(
         video_id,
