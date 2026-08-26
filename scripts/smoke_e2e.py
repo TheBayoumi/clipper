@@ -263,8 +263,25 @@ class SmokeVision:
     ) -> ProviderResult[dict[str, Any]]:
         if not frames:
             raise ValueError("smoke visual inference requires extracted frames")
-        if task == "visual_timeline_scout":
+        if task == "source_policy_visual_scout":
+            timestamps = context.get("frame_timestamps")
+            if not isinstance(timestamps, list) or len(timestamps) != len(frames):
+                raise ValueError("smoke source-policy scout requires one timestamp per frame")
             value: dict[str, Any] = {
+                "observations": [
+                    {
+                        "timestamp": timestamp,
+                        "scene_id": f"smoke-scene-{index}",
+                        "summary": "Synthetic test pattern inspected for source policy",
+                        "visible_speakers": ["SPEAKER_00"],
+                        "event_labels": ["deterministic_smoke"],
+                        "confidence": 0.99,
+                    }
+                    for index, timestamp in enumerate(timestamps)
+                ]
+            }
+        elif task == "visual_timeline_scout":
+            value = {
                 "events": [
                     {
                         "start": 0.0,
