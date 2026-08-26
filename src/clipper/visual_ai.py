@@ -456,9 +456,7 @@ def _parse_source_policy_events(
                 confidence=_float(item.get("confidence", 0.0), "visual event confidence"),
             )
         )
-    missing = tuple(
-        value for value in frame_timestamps if round(value, 3) not in seen
-    )
+    missing = tuple(value for value in frame_timestamps if round(value, 3) not in seen)
     return (
         tuple(sorted(events, key=lambda event: (event.start, event.end, event.scene_id))),
         missing,
@@ -583,9 +581,7 @@ def _inspect_source_policy_batch(
             return
 
         missing_keys = {round(value, 3) for value in missing}
-        missing_subset = tuple(
-            item for item in subset if round(item[0], 3) in missing_keys
-        )
+        missing_subset = tuple(item for item in subset if round(item[0], 3) in missing_keys)
         if not missing_subset:
             raise RuntimeError("source-policy recovery lost missing frame identity")
         if len(missing_subset) == 1:
