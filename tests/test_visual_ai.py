@@ -10,9 +10,9 @@ import pytest
 
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
 from clipper.visual_ai import (
-    _inspect_source_policy_batch,
     VisualReviewIssue,
     VisualReviewReport,
+    _inspect_source_policy_batch,
     adaptive_sample_times,
     extract_video_frames,
     media_duration_seconds,
@@ -394,7 +394,7 @@ def test_source_policy_malformed_multi_frame_response_splits_until_valid(
     assert len(timeline.events) == sample_count
     assert len(provider.calls) > sample_count
     assert any(len(frames) > 1 for _, frames, _ in provider.calls)
-    assert sum(result.usage.input_units for result in [result]) > sample_count
+    assert result.usage.input_units > sample_count
 
 
 def test_source_policy_batch_rejects_empty_and_inconsistent_evidence() -> None:
