@@ -9,6 +9,7 @@ on:
       - main
     paths:
       - "acceptance/container-canary-request.json"
+      - "acceptance/production-run-request.json"
   workflow_dispatch:
 
 permissions:
