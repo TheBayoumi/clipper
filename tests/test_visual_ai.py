@@ -238,9 +238,7 @@ def test_source_policy_sampling_builds_explicit_continuous_inspection_cells() ->
     assert times[0] == 0.0 and times[-1] == 19.95
     assert spans[0].start == 0.0
     assert spans[-1].end == 20.0
-    assert all(
-        left.end == pytest.approx(right.start) for left, right in pairwise(spans)
-    )
+    assert all(left.end == pytest.approx(right.start) for left, right in pairwise(spans))
     assert sum(span.duration for span in spans) == pytest.approx(20.0)
 
 
@@ -278,7 +276,9 @@ def test_scout_visual_timeline_batches_source_policy_frames_and_records_coverage
     assert len(provider.calls) == 2
     assert all(call[0] == "source_policy_visual_scout" for call in provider.calls)
     assert all(len(call[1]) <= 24 for call in provider.calls)
-    assert all("Do not retranscribe audio" in str(call[2]["instruction"]) for call in provider.calls)
+    assert all(
+        "Do not retranscribe audio" in str(call[2]["instruction"]) for call in provider.calls
+    )
     assert result.usage.input_units == int(summary["sample_count"])
     assert len(timeline.events) == int(summary["sample_count"])
 
@@ -304,6 +304,7 @@ def test_source_policy_observation_omission_fails_closed(tmp_path: Path) -> None
             duration=1.0,
             output_dir=tmp_path / "frames",
         )
+
 
 def test_rendered_clip_review_pass_does_not_escalate(tmp_path: Path) -> None:
     provider = FakeVision(_pass_payload())

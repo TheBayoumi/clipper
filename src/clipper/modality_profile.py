@@ -68,9 +68,7 @@ def _span_coverage(timeline: MultimodalTimeline, *, scope: str | None = None) ->
     if timeline.duration <= 0:
         return 0.0
     spans = [
-        span
-        for span in timeline.visual_evidence_spans
-        if scope is None or span.scope == scope
+        span for span in timeline.visual_evidence_spans if scope is None or span.scope == scope
     ]
     if not spans:
         return 0.0

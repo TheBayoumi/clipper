@@ -555,6 +555,8 @@ def scout_visual_timeline(
         source_duration=effective_duration,
     )
     return timeline, _aggregate_vision_results(results, timeline)
+
+
 def _needs_escalation(report: VisualReviewReport, threshold: float) -> bool:
     if report.decision == "ESCALATE":
         return True

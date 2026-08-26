@@ -138,9 +138,7 @@ def _visual(timeline: CanonicalTimeline) -> VisualTimeline:
                 confidence=0.99,
             ),
         ),
-        coverage_spans=(
-            VisualEvidenceSpan(0.0, timeline.end, timeline.end / 2, "source_policy"),
-        ),
+        coverage_spans=(VisualEvidenceSpan(0.0, timeline.end, timeline.end / 2, "source_policy"),),
         source_duration=timeline.end,
     )
 
@@ -223,8 +221,6 @@ def test_branding_policy_missing_visual_evidence_is_failure_not_zero_yield(tmp_p
             chunk_overlap_words=20,
         )
 
-
-
 def test_branding_policy_rejects_explicitly_insufficient_source_policy_coverage(
     tmp_path: Path,
 ) -> None:
@@ -255,6 +251,7 @@ def test_branding_policy_rejects_explicitly_insufficient_source_policy_coverage(
             max_words_per_chunk=200,
             chunk_overlap_words=20,
         )
+
 
 def test_forbidden_sponsor_source_produces_legitimate_zero_quality_yield(tmp_path: Path) -> None:
     brief = load_brief("campaigns/reach-double-coverage-dedicated.yaml")
