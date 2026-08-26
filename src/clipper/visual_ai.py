@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from .providers.base import InferenceUsage, ProviderResult, VisionProvider
-from .visual import VisualEvidenceSpan, VisualEvent, VisualTimeline
+from .visual import VisualEvent, VisualEvidenceSpan, VisualTimeline
 
 ReviewDecision = Literal["PASS", "REPAIR", "REJECT", "ESCALATE"]
 Severity = Literal["LOW", "MEDIUM", "HIGH"]
