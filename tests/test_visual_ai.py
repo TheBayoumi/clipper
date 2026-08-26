@@ -72,6 +72,22 @@ class PolicyVision(FakeVision):
         )
 
 
+class PartialPolicyVision(PolicyVision):
+    def inspect(
+        self, *, task: str, frames: list[Path], context: dict[str, object]
+    ) -> ProviderResult[dict[str, object]]:
+        result = super().inspect(task=task, frames=frames, context=context)
+        observations = result.value["observations"]
+        assert isinstance(observations, list)
+        if len(frames) > 1:
+            observations = observations[:-1]
+        return ProviderResult(
+            {"observations": observations},
+            result.model,
+            result.usage,
+        )
+
+
 def _pass_payload(confidence: float = 0.95) -> dict[str, object]:
     return {
         "decision": "PASS",
@@ -281,6 +297,44 @@ def test_scout_visual_timeline_batches_source_policy_frames_and_records_coverage
     )
     assert result.usage.input_units == int(summary["sample_count"])
     assert len(timeline.events) == int(summary["sample_count"])
+
+
+def test_source_policy_missing_observation_is_reinspected_without_fabricating_coverage(
+    tmp_path: Path,
+) -> None:
+    provider = PartialPolicyVision()
+
+    def frames_for_times(_source: Path, times: tuple[float, ...], output: Path) -> list[Path]:
+        output.mkdir(parents=True, exist_ok=True)
+        frames = []
+        for index, timestamp in enumerate(times):
+            frame = output / f"{index:03d}-{timestamp:.3f}.jpg"
+            frame.write_bytes(b"frame")
+            frames.append(frame)
+        return frames
+
+    with (
+        patch("clipper.visual_ai.media_duration_seconds", return_value=12.0),
+        patch("clipper.visual_ai.extract_video_frames", side_effect=frames_for_times),
+    ):
+        timeline, result = scout_visual_timeline(
+            tmp_path / "source.mp4",
+            provider,
+            video_id="v",
+            source_hash="h",
+            duration=12.0,
+            output_dir=tmp_path / "frames",
+        )
+
+    summary = timeline.coverage_summary("source_policy")
+    sample_count = int(summary["sample_count"])
+    assert summary["coverage_fraction"] == pytest.approx(1.0)
+    assert len(timeline.events) == sample_count
+    assert len(provider.calls) == 2
+    assert len(provider.calls[0][1]) == sample_count
+    assert len(provider.calls[1][1]) == 1
+    assert provider.calls[1][2]["source_policy_recovery_attempt"] == 1
+    assert result.usage.input_units == sample_count + 1
 
 
 def test_source_policy_observation_omission_fails_closed(tmp_path: Path) -> None:
