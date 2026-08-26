@@ -3,5 +3,6 @@
   "campaign_brief": "campaigns/reach-double-coverage-clix.yaml",
   "target_video_id": "2Y4LP85PTak",
   "max_gpu_seconds": 21600,
-  "max_estimated_usd": 10.0
+  "max_estimated_usd": 10,
+  "request_reason": "Retry exact-head production after source-policy visual observation recovery"
 }
