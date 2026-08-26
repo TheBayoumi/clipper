@@ -11,7 +11,9 @@ from .visual import VisualEvidenceSpan, VisualEvent, VisualTimeline
 
 ReviewDecision = Literal["PASS", "REPAIR", "REJECT", "ESCALATE"]
 Severity = Literal["LOW", "MEDIUM", "HIGH"]
-VISUAL_SAMPLE_MAX_EDGE = 960\nSOURCE_POLICY_SAMPLE_INTERVAL_SECONDS = 4.0\nSOURCE_POLICY_BATCH_SIZE = 24
+VISUAL_SAMPLE_MAX_EDGE = 960
+SOURCE_POLICY_SAMPLE_INTERVAL_SECONDS = 4.0
+SOURCE_POLICY_BATCH_SIZE = 24
 
 
 @dataclass(frozen=True, slots=True)

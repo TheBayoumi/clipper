@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from itertools import pairwise
 from typing import Any, Literal
 
 from .stage_contracts import structural_contract_fingerprint

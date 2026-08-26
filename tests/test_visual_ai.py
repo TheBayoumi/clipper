@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
