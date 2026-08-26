@@ -1,0 +1,58 @@
+name: Modal live log snapshot
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/modal-log-snapshot.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Modal CLI
+        run: python -m pip install 'modal==1.5.4'
+
+      - name: Capture Modal app state and recent logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p modal-log-snapshot
+          modal app list --json > modal-log-snapshot/app-list.json
+          modal app history clipper-production-pipeline --json > modal-log-snapshot/production-history.json
+          modal app history clipper-open-editor --json > modal-log-snapshot/editor-history.json
+
+          modal app logs clipper-production-pipeline             --since 3h --tail 5000 --timestamps             --show-function-id --show-function-call-id --show-container-id             > modal-log-snapshot/production.log 2>&1 || true
+
+          modal app logs clipper-open-editor             --since 3h --tail 5000 --timestamps             --show-function-id --show-function-call-id --show-container-id             > modal-log-snapshot/editor.log 2>&1 || true
+
+          grep -Eai             'run_full_cycle|source[_ -]?policy|visual|ground|transcrib|align|diari|render|quality|clip|error|exception|traceback|fail|retry|recovery|frame'             modal-log-snapshot/production.log modal-log-snapshot/editor.log             > modal-log-snapshot/relevant.log || true
+
+          printf 'production_lines=%s\n' "$(wc -l < modal-log-snapshot/production.log)"
+          printf 'editor_lines=%s\n' "$(wc -l < modal-log-snapshot/editor.log)"
+          printf 'relevant_lines=%s\n' "$(wc -l < modal-log-snapshot/relevant.log)"
+          tail -n 300 modal-log-snapshot/relevant.log || true
+
+      - name: Upload log snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: modal-live-log-snapshot-${{ github.event.pull_request.head.sha }}
+          path: modal-log-snapshot
+          if-no-files-found: error
