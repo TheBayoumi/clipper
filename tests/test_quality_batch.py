@@ -221,6 +221,7 @@ def test_branding_policy_missing_visual_evidence_is_failure_not_zero_yield(tmp_p
             chunk_overlap_words=20,
         )
 
+
 def test_branding_policy_rejects_explicitly_insufficient_source_policy_coverage(
     tmp_path: Path,
 ) -> None:
