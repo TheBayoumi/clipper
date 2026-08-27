@@ -6,11 +6,12 @@ import os
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
-from collections.abc import Callable
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
@@ -55,6 +56,12 @@ from .youtube import YouTubeClient
 from .yield_policy import accepted_quality_plans, group_quality_plans, quality_render_queue
 
 LOGGER = logging.getLogger("clipper")
+_VISUAL_CHECKPOINT_DIR: ContextVar[Path | None] = ContextVar(
+    "clipper_visual_checkpoint_dir", default=None
+)
+_VISUAL_CHECKPOINT_COMMIT: ContextVar[Callable[[], None] | None] = ContextVar(
+    "clipper_visual_checkpoint_commit", default=None
+)
 
 
 class SourceClient(Protocol):
@@ -446,9 +453,6 @@ def _visual_timeline(
     timeline: CanonicalTimeline,
     provider: VisionProvider,
     run_dir: Path,
-    *,
-    cache_root: Path,
-    checkpoint_commit: Callable[[], None] | None,
 ) -> tuple[VisualTimeline, dict[str, object]]:
     if not timeline.words:
         raise RuntimeError("canonical grounding produced no source words")
@@ -460,8 +464,8 @@ def _visual_timeline(
         source_hash=timeline.source_hash,
         duration=duration,
         output_dir=run_dir / "visual-scout" / video.video_id / "frames",
-        checkpoint_dir=cache_root / "source-policy-vision",
-        checkpoint_commit=checkpoint_commit,
+        checkpoint_dir=_VISUAL_CHECKPOINT_DIR.get(),
+        checkpoint_commit=_VISUAL_CHECKPOINT_COMMIT.get(),
     )
     (run_dir / "visual-scout" / f"{video.video_id}.json").write_text(
         json.dumps(visual.to_dict(), indent=2) + "\n",
@@ -706,15 +710,21 @@ def run_pipeline(
             segments = tuple(transcript_segments_from_canonical(timeline))
             if not segments:
                 raise RuntimeError("canonical timeline produced no transcript segments")
-            visual, visual_meta = _visual_timeline(
-                media_path,
-                video,
-                timeline,
-                scout,
-                run_dir,
-                cache_root=cache_root,
-                checkpoint_commit=checkpoint_commit,
+            checkpoint_dir_token = _VISUAL_CHECKPOINT_DIR.set(
+                cache_root / "source-policy-vision"
             )
+            checkpoint_commit_token = _VISUAL_CHECKPOINT_COMMIT.set(checkpoint_commit)
+            try:
+                visual, visual_meta = _visual_timeline(
+                    media_path,
+                    video,
+                    timeline,
+                    scout,
+                    run_dir,
+                )
+            finally:
+                _VISUAL_CHECKPOINT_COMMIT.reset(checkpoint_commit_token)
+                _VISUAL_CHECKPOINT_DIR.reset(checkpoint_dir_token)
 
             source_runtimes[video.video_id] = SourceRuntime(
                 video=video,

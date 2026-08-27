@@ -93,9 +93,8 @@ def vision_provider(profile_name: str, *, large: bool = False) -> VisionProvider
         return LocalVisionProvider(model_id=model_id)
     return ModalVisionProvider(
         app_name=os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor"),
-        class_name="VisionModel",
+        class_name="VisionModelLarge" if large else "VisionModel",
         method_name="inspect",
-        class_parameters={"model_id": model_id},
         identity=ModelIdentity(
             model_id,
             os.getenv("CLIPPER_VISION_MODEL_REVISION", "main"),

@@ -783,6 +783,71 @@ def _vision_infer(
             torch.cuda.empty_cache()
 
 
+def _load_vision_worker(worker: Any, model_id: str) -> None:
+    worker.lifecycle_id = uuid.uuid4().hex
+    worker.processor, worker.model = _load_vision_model(model_id)
+    print(
+        json.dumps(
+            {
+                "event": "vision_model_ready",
+                "worker_lifecycle_id": worker.lifecycle_id,
+                "model": _model_evidence(model_id),
+                "cuda_memory_by_device": _cuda_memory_snapshot(),
+            },
+            sort_keys=True,
+        )
+    )
+
+
+def _vision_worker_ready(worker: Any, model_id: str) -> dict[str, Any]:
+    return {
+        "value": {"ready": True},
+        "model": _model_evidence(model_id),
+        "runtime": _worker_runtime(worker.lifecycle_id, model_load_count=1),
+    }
+
+
+def _vision_worker_inspect(
+    worker: Any,
+    payload: dict[str, Any],
+    model_id: str,
+) -> dict[str, Any]:
+    try:
+        return _vision_infer(
+            payload,
+            model_id,
+            "L4:2",
+            worker.processor,
+            worker.model,
+            lifecycle_id=worker.lifecycle_id,
+        )
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            import torch
+
+            if torch.cuda.is_available():
+                print(
+                    json.dumps(
+                        {
+                            "event": "vision_inference_error",
+                            "worker_lifecycle_id": worker.lifecycle_id,
+                            "model_id": model_id,
+                            "error_type": type(exc).__name__,
+                            "cuda_memory_by_device": _cuda_memory_snapshot(),
+                        },
+                        sort_keys=True,
+                    )
+                )
+                torch.cuda.empty_cache()
+        return _transport_error(
+            exc,
+            context=(
+                f"task={payload.get('task') or '<missing>'} "
+                f"frames={len(payload.get('frames_base64') or [])}"
+            ),
+        )
+
+
 @app.cls(
     image=text_image,
     gpu="L4:2",
@@ -792,69 +857,43 @@ def _vision_infer(
     memory=32768,
 )
 class VisionModel:
-    model_id: str = modal.parameter()
-
     @modal.enter()
     def load_model(self) -> None:
-        if not self.model_id.strip():
-            raise ValueError("vision model_id cannot be empty")
-        self.lifecycle_id = uuid.uuid4().hex
-        self.processor, self.model = _load_vision_model(self.model_id)
-        print(
-            json.dumps(
-                {
-                    "event": "vision_model_ready",
-                    "worker_lifecycle_id": self.lifecycle_id,
-                    "model": _model_evidence(self.model_id),
-                    "cuda_memory_by_device": _cuda_memory_snapshot(),
-                },
-                sort_keys=True,
-            )
-        )
+        _load_vision_worker(self, "Qwen/Qwen3-VL-8B-Instruct")
 
     @modal.method()
     def ready(self) -> dict[str, Any]:
-        return {
-            "value": {"ready": True},
-            "model": _model_evidence(self.model_id),
-            "runtime": _worker_runtime(self.lifecycle_id, model_load_count=1),
-        }
+        return _vision_worker_ready(self, "Qwen/Qwen3-VL-8B-Instruct")
 
     @modal.method()
     def inspect(self, payload: dict[str, Any]) -> dict[str, Any]:
-        try:
-            return _vision_infer(
-                payload,
-                self.model_id,
-                "L4:2",
-                self.processor,
-                self.model,
-                lifecycle_id=self.lifecycle_id,
-            )
-        except Exception as exc:
-            with contextlib.suppress(Exception):
-                import torch
+        return _vision_worker_inspect(self, payload, "Qwen/Qwen3-VL-8B-Instruct")
 
-                if torch.cuda.is_available():
-                    print(
-                        json.dumps(
-                            {
-                                "event": "vision_inference_error",
-                                "worker_lifecycle_id": self.lifecycle_id,
-                                "error_type": type(exc).__name__,
-                                "cuda_memory_by_device": _cuda_memory_snapshot(),
-                            },
-                            sort_keys=True,
-                        )
-                    )
-                    torch.cuda.empty_cache()
-            return _transport_error(
-                exc,
-                context=(
-                    f"task={payload.get('task') or '<missing>'} "
-                    f"frames={len(payload.get('frames_base64') or [])}"
-                ),
-            )
+
+@app.cls(
+    image=text_image,
+    gpu="L4:2",
+    volumes={HF_CACHE: model_cache},
+    secrets=[hf_secret],
+    timeout=1800,
+    memory=32768,
+)
+class VisionModelLarge:
+    @modal.enter()
+    def load_model(self) -> None:
+        _load_vision_worker(self, "Qwen/Qwen3-VL-30B-A3B-Instruct")
+
+    @modal.method()
+    def ready(self) -> dict[str, Any]:
+        return _vision_worker_ready(self, "Qwen/Qwen3-VL-30B-A3B-Instruct")
+
+    @modal.method()
+    def inspect(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return _vision_worker_inspect(
+            self,
+            payload,
+            "Qwen/Qwen3-VL-30B-A3B-Instruct",
+        )
 
 
 @app.function(

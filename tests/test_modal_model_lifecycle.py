@@ -57,7 +57,6 @@ def test_modal_vision_provider_reuses_class_handle_and_surfaces_runtime(
         app_name="app",
         class_name="VisionModel",
         method_name="inspect",
-        class_parameters={"model_id": "vision"},
         identity=_identity("vision"),
     )
     frame = tmp_path / "frame.jpg"
@@ -81,7 +80,7 @@ def test_modal_vision_provider_reuses_class_handle_and_surfaces_runtime(
 
     assert runtime["worker_lifecycle_id"] == "worker-a"
     assert modal.Cls.from_name.call_count == 1
-    class_handle.assert_called_once_with(model_id="vision")
+    class_handle.assert_called_once_with()
     assert inspect.remote.call_count == 2
     assert result.usage.runtime["worker_lifecycle_id"] == "worker-a"
     assert result.usage.runtime["peak_vram_mb_by_device"] == {
@@ -127,7 +126,9 @@ def test_modal_worker_source_uses_enter_loaded_classes_and_dynamic_capacity() ->
     visual_source = Path("src/clipper/visual_ai.py").read_text(encoding="utf-8")
     assert "class EditorialModel:" in source
     assert "class VisionModel:" in source
-    assert source.count("@modal.enter()") >= 2
+    assert "class VisionModelLarge:" in source
+    assert "modal.parameter" not in source
+    assert source.count("@modal.enter()") >= 3
     assert "def vision(" not in source
     assert "def vision_large(" not in source
     assert '"20GiB"' not in source

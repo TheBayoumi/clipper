@@ -170,6 +170,7 @@ jobs:
                       "model_classes_expected": [
                           "EditorialModel",
                           "VisionModel",
+                          "VisionModelLarge",
                       ],
                       "pipeline_functions_expected": ["run_full_cycle"],
                       "editorial_task_families_expected": 4,

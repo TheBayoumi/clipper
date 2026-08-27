@@ -16,7 +16,6 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", default="clipper-open-editor")
     parser.add_argument("--class-name", default="VisionModel")
-    parser.add_argument("--model-id", default="Qwen/Qwen3-VL-8B-Instruct")
     parser.add_argument("--frames", type=int, default=35)
     parser.add_argument("--width", type=int, default=1920)
     parser.add_argument("--height", type=int, default=1080)
@@ -57,7 +56,7 @@ def main() -> int:
             "instruction": "Describe only visible synthetic evidence.",
         },
     }
-    worker = modal.Cls.from_name(args.app, args.class_name)(model_id=args.model_id)
+    worker = modal.Cls.from_name(args.app, args.class_name)()
     worker.ready.remote()
     result = worker.inspect.remote(payload)
     if not isinstance(result, dict):
