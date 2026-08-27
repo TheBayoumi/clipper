@@ -1043,9 +1043,7 @@ def scout_visual_timeline(
                     spans=subset_spans,
                     on_observations=persist_observations,
                     generation_capacity=(
-                        {
-                            "observed_output_tokens_per_item": observed_output_tokens_per_item
-                        }
+                        {"observed_output_tokens_per_item": observed_output_tokens_per_item}
                         if observed_output_tokens_per_item is not None
                         else None
                     ),
