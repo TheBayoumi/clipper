@@ -293,7 +293,9 @@ def _vision_output_template(task: str, cardinality: int) -> dict[str, Any]:
 def _vision_structural_output_tokens(processor: Any, task: str, cardinality: int) -> int:
     tokenizer = getattr(processor, "tokenizer", None)
     if tokenizer is None or not callable(getattr(tokenizer, "encode", None)):
-        raise ValueError("vision processor does not expose a tokenizer for output-capacity planning")
+        raise ValueError(
+            "vision processor does not expose a tokenizer for output-capacity planning"
+        )
     template = json.dumps(
         _vision_output_template(task, cardinality),
         ensure_ascii=False,
