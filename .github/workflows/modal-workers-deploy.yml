@@ -128,8 +128,7 @@ jobs:
               "classes": required_classes,
           }
           Path("modal-model-handles.json").write_text(
-              json.dumps(evidence, indent=2) + "
-",
+              json.dumps(evidence, indent=2) + "\n",
               encoding="utf-8",
           )
           print(json.dumps(evidence, indent=2))
