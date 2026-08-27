@@ -6,10 +6,15 @@ from typing import Any
 
 from .canonical import CanonicalTimeline
 from .dag import DagStore, StageResult
+from .editorial_capacity import (
+    natural_split_index,
+    shrink_context_around_interval,
+    stable_range_stage,
+)
 from .modality_profile import SourceModalityProfile, assert_required_modalities_available
 from .models import SourceSpan
 from .multimodal_timeline import MultimodalTimeline
-from .providers.base import EditorialProvider
+from .providers.base import EditorialCapacityError, EditorialProvider
 from .providers.editorial_prompt import editorial_contract_fingerprint
 from .quality_moments import QualityMoment, WindowQualityAssessment, choose_quality_moments
 from .stage_contracts import StageContract, content_fingerprint, stage_identity
@@ -212,22 +217,9 @@ class AutonomousQualityPlanner:
         self,
         editorial: EditorialProvider,
         dag: DagStore,
-        *,
-        max_words_per_chunk: int = 900,
-        chunk_overlap_words: int = 160,
-        envelope_context_words: int = 700,
     ) -> None:
-        if max_words_per_chunk < 200:
-            raise ValueError("max_words_per_chunk must be at least 200")
-        if not 0 <= chunk_overlap_words < max_words_per_chunk:
-            raise ValueError("chunk overlap must be smaller than chunk size")
-        if envelope_context_words < max_words_per_chunk // 2:
-            raise ValueError("envelope context is too small for autonomous planning")
         self.editorial = editorial
         self.dag = dag
-        self.max_words_per_chunk = max_words_per_chunk
-        self.chunk_overlap_words = chunk_overlap_words
-        self.envelope_context_words = envelope_context_words
         self.cache_hits = 0
         self.executions = 0
 
@@ -320,37 +312,165 @@ class AutonomousQualityPlanner:
             raise AutonomousPlanningError(f"{stage} returned a non-object payload")
         return {str(key): value for key, value in raw.items()}
 
-    def _chunks(self, timeline: CanonicalTimeline) -> tuple[tuple[int, int], ...]:
+    def _semantic_payload(
+        self,
+        timeline: CanonicalTimeline,
+        multimodal: MultimodalTimeline | None,
+        campaign_context: dict[str, object],
+        start: int,
+        end: int,
+    ) -> dict[str, Any]:
+        chunk_start = timeline.words[start].source_start
+        chunk_end = timeline.words[end - 1].source_end
+        return {
+            "campaign": campaign_context,
+            "words": self._word_payload(timeline, start, end),
+            "multimodal_evidence": self._multimodal_payload(
+                multimodal,
+                chunk_start,
+                chunk_end,
+            ),
+            "instruction": (
+                "Identify every independently worthwhile semantic nucleus in this source evidence. "
+                "Do not pad to delivery duration and do not invent boundaries."
+            ),
+        }
+
+    def _semantic_cores_adaptive(
+        self,
+        timeline: CanonicalTimeline,
+        *,
+        multimodal: MultimodalTimeline | None,
+        campaign_context: dict[str, object],
+        relevant_policy: dict[str, object],
+    ) -> tuple[SemanticCore, ...]:
         if not timeline.words:
             return ()
-        step = self.max_words_per_chunk - self.chunk_overlap_words
-        ranges: list[tuple[int, int]] = []
-        for start in range(0, len(timeline.words), step):
-            end = min(len(timeline.words), start + self.max_words_per_chunk)
-            ranges.append((start, end))
-            if end == len(timeline.words):
-                break
-        return tuple(ranges)
+        work: list[tuple[int, int]] = [(0, len(timeline.words))]
+        raw_cores: list[SemanticCore] = []
+        while work:
+            start, end = work.pop(0)
+            stage = stable_range_stage("semantic_cores", timeline, start, end)
+            payload = self._semantic_payload(
+                timeline,
+                multimodal,
+                campaign_context,
+                start,
+                end,
+            )
+            try:
+                result = self._complete(
+                    timeline,
+                    stage,
+                    payload,
+                    relevant_policy=relevant_policy,
+                )
+            except EditorialCapacityError as exc:
+                split = natural_split_index(timeline, start, end)
+                if split is None or split <= start or split >= end:
+                    raise AutonomousPlanningError(
+                        "smallest source-grounded semantic interval exceeds editorial capacity: "
+                        f"{stage}: {exc}"
+                    ) from exc
+                work[0:0] = [(start, split), (split, end)]
+                continue
+            parsed = semantic_cores_from_payload(timeline, result)
+            legal = {word.word_id for word in timeline.words[start:end]}
+            escaped = [
+                core.core_id for core in parsed if not set(core.source_word_ids).issubset(legal)
+            ]
+            if escaped:
+                raise AutonomousPlanningError(
+                    f"{stage} returned semantic cores outside supplied evidence: {escaped[:3]}"
+                )
+            raw_cores.extend(parsed)
+        return _dedupe_cores(tuple(raw_cores))
 
-    def _context_range(
+    def _core_positions(
         self,
         timeline: CanonicalTimeline,
         core: SemanticCore,
     ) -> tuple[int, int]:
         positions = {word.word_id: index for index, word in enumerate(timeline.words)}
-        core_start = positions[core.source_word_ids[0]]
-        core_end = positions[core.source_word_ids[-1]]
-        core_width = core_end - core_start + 1
-        if core_width >= self.envelope_context_words:
-            return core_start, core_end + 1
-        remaining = self.envelope_context_words - core_width
-        before = remaining // 2
-        start = max(0, core_start - before)
-        end = min(len(timeline.words), start + self.envelope_context_words)
-        if end <= core_end:
-            end = core_end + 1
-            start = max(0, end - self.envelope_context_words)
-        return start, end
+        return (
+            positions[core.source_word_ids[0]],
+            positions[core.source_word_ids[-1]] + 1,
+        )
+
+    def _narrative_envelope_adaptive(
+        self,
+        timeline: CanonicalTimeline,
+        core: SemanticCore,
+        *,
+        multimodal: MultimodalTimeline | None,
+        campaign_context: dict[str, object],
+        relevant_policy: dict[str, object],
+    ) -> NarrativeEnvelope:
+        required_start, required_end = self._core_positions(timeline, core)
+        context_start, context_end = 0, len(timeline.words)
+        dependency = (content_fingerprint(core.to_dict()),)
+        while True:
+            source_start = timeline.words[context_start].source_start
+            source_end = timeline.words[context_end - 1].source_end
+            stage = f"narrative_envelope:{core.core_id}"
+            payload = {
+                "campaign": campaign_context,
+                "core": core.to_dict(),
+                "source_context_words": self._word_payload(
+                    timeline,
+                    context_start,
+                    context_end,
+                ),
+                "multimodal_evidence": self._multimodal_payload(
+                    multimodal,
+                    source_start,
+                    source_end,
+                ),
+                "instruction": (
+                    "Return the minimum complete narrative envelope containing this semantic core. "
+                    "Resolve setup, references, causality and payoff without duration padding."
+                ),
+            }
+            try:
+                raw = self._complete(
+                    timeline,
+                    stage,
+                    payload,
+                    relevant_policy=relevant_policy,
+                    dependency_hashes=dependency,
+                )
+                envelope = narrative_envelope_from_payload(timeline, core, raw)
+                legal = {word.word_id for word in timeline.words[context_start:context_end]}
+                if not set(envelope.source_word_ids).issubset(legal):
+                    raise AutonomousPlanningError(
+                        "narrative envelope escaped the supplied adaptive context"
+                    )
+                return envelope
+            except EditorialCapacityError as exc:
+                next_range = shrink_context_around_interval(
+                    timeline,
+                    context_start,
+                    context_end,
+                    required_start,
+                    required_end,
+                )
+                if next_range is None or next_range == (context_start, context_end):
+                    raise AutonomousPlanningError(
+                        "minimum semantic-core context exceeds editorial capacity: "
+                        f"{core.core_id}: {exc}"
+                    ) from exc
+                context_start, context_end = next_range
+
+    def _quality_context_range(
+        self,
+        timeline: CanonicalTimeline,
+        envelope: NarrativeEnvelope,
+    ) -> tuple[int, int]:
+        positions = {word.word_id: index for index, word in enumerate(timeline.words)}
+        return (
+            positions[envelope.source_word_ids[0]],
+            positions[envelope.source_word_ids[-1]] + 1,
+        )
 
     def plan(
         self,
@@ -376,32 +496,12 @@ class AutonomousQualityPlanner:
         if modality_profile is not None:
             assert_required_modalities_available(modality_profile)
 
-        raw_cores: list[SemanticCore] = []
-        for chunk_index, (start, end) in enumerate(self._chunks(timeline)):
-            words = self._word_payload(timeline, start, end)
-            chunk_start = timeline.words[start].source_start
-            chunk_end = timeline.words[end - 1].source_end
-            stage = f"semantic_cores:{chunk_index}"
-            payload = self._complete(
-                timeline,
-                stage,
-                {
-                    "campaign": campaign_context,
-                    "words": words,
-                    "multimodal_evidence": self._multimodal_payload(
-                        multimodal,
-                        chunk_start,
-                        chunk_end,
-                    ),
-                    "instruction": (
-                        "Identify every independently worthwhile semantic nucleus in this source "
-                        "evidence. Do not pad to delivery duration and do not invent boundaries."
-                    ),
-                },
-                relevant_policy=relevant_policy,
-            )
-            raw_cores.extend(semantic_cores_from_payload(timeline, payload))
-        cores = _dedupe_cores(tuple(raw_cores))
+        cores = self._semantic_cores_adaptive(
+            timeline,
+            multimodal=multimodal,
+            campaign_context=campaign_context,
+            relevant_policy=relevant_policy,
+        )
 
         envelopes: list[NarrativeEnvelope] = []
         all_windows: list[FeasibleDeliveryWindow] = []
@@ -409,33 +509,13 @@ class AutonomousQualityPlanner:
         rejections: list[dict[str, object]] = []
 
         for core in cores:
-            context_start, context_end = self._context_range(timeline, core)
-            context_words = self._word_payload(timeline, context_start, context_end)
-            source_start = timeline.words[context_start].source_start
-            source_end = timeline.words[context_end - 1].source_end
-            envelope_stage = f"narrative_envelope:{core.core_id}"
-            envelope_payload = self._complete(
+            envelope = self._narrative_envelope_adaptive(
                 timeline,
-                envelope_stage,
-                {
-                    "campaign": campaign_context,
-                    "core": core.to_dict(),
-                    "source_context_words": context_words,
-                    "multimodal_evidence": self._multimodal_payload(
-                        multimodal,
-                        source_start,
-                        source_end,
-                    ),
-                    "instruction": (
-                        "Return the minimum complete narrative envelope containing this semantic "
-                        "core. Resolve setup, references, causality and payoff without duration "
-                        "padding."
-                    ),
-                },
+                core,
+                multimodal=multimodal,
+                campaign_context=campaign_context,
                 relevant_policy=relevant_policy,
-                dependency_hashes=(content_fingerprint(core.to_dict()),),
             )
-            envelope = narrative_envelope_from_payload(timeline, core, envelope_payload)
             envelopes.append(envelope)
             if not envelope.complete:
                 rejections.append(
@@ -447,6 +527,11 @@ class AutonomousQualityPlanner:
                     }
                 )
                 continue
+
+            context_start, context_end = self._quality_context_range(timeline, envelope)
+            context_words = self._word_payload(timeline, context_start, context_end)
+            source_start = timeline.words[context_start].source_start
+            source_end = timeline.words[context_end - 1].source_end
 
             windows = enumerate_feasible_windows(
                 timeline,

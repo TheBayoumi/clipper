@@ -59,6 +59,8 @@ class _Batch(dict[str, _Tensor]):
 
 
 class _Tokenizer:
+    model_max_length = 128
+
     def __init__(self, text: str = '{"ok": true}') -> None:
         self.text = text
         self.messages: object | None = None

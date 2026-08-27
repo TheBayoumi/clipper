@@ -5,17 +5,25 @@ import importlib
 from pathlib import Path
 from typing import Any
 
-from .base import InferenceUsage, ModelIdentity, ProviderResult
+from .base import EditorialCapacityError, InferenceUsage, ModelIdentity, ProviderResult
 from .local import ProviderUnavailable
 
 
 class ModalRemoteError(RuntimeError):
     """Structured error returned by a remote Modal inference function."""
 
-    def __init__(self, *, function_name: str, error_type: str, message: str) -> None:
+    def __init__(
+        self,
+        *,
+        function_name: str,
+        error_type: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         self.function_name = function_name
         self.error_type = error_type
         self.remote_message = message
+        self.details = dict(details or {})
         super().__init__(f"Modal {function_name} failed: {error_type}: {message}")
 
 
@@ -94,10 +102,13 @@ class ModalJSONProvider:
             return
         error_type = str(raw_error.get("type") or "RemoteError")
         message = str(raw_error.get("message") or "remote inference failed")
+        raw_details = raw_error.get("details")
+        details = dict(raw_details) if isinstance(raw_details, dict) else {}
         raise ModalRemoteError(
             function_name=self.function_name,
             error_type=error_type,
             message=message,
+            details=details,
         )
 
     def invoke(self, payload: dict[str, Any]) -> ProviderResult[dict[str, Any]]:
@@ -135,8 +146,6 @@ class ModalJSONProvider:
 
 
 class ModalEditorialProvider(ModalJSONProvider):
-    _MAX_OUTPUT_RECOVERY_ATTEMPTS = 3
-
     @staticmethod
     def _is_output_contract_error(exc: ModalRemoteError) -> bool:
         if exc.error_type in {"JSONDecodeError", "EditorialOutputTruncated"}:
@@ -146,34 +155,63 @@ class ModalEditorialProvider(ModalJSONProvider):
             and "model output must be a JSON object" in exc.remote_message
         )
 
+    @staticmethod
+    def _is_capacity_error(exc: ModalRemoteError) -> bool:
+        return exc.error_type in {"OutOfMemoryError", "EditorialCapacityError"}
+
     def complete_json(
         self, *, task: str, payload: dict[str, Any]
     ) -> ProviderResult[dict[str, Any]]:
         request: dict[str, Any] = {"task": task, "payload": payload}
-        for attempt in range(1, self._MAX_OUTPUT_RECOVERY_ATTEMPTS + 1):
+        seen_recovery_signatures: set[tuple[object, ...]] = set()
+        while True:
             try:
-                result = self.invoke(request)
+                return self.invoke(request)
             except ModalRemoteError as exc:
+                if self._is_capacity_error(exc):
+                    raise EditorialCapacityError(
+                        str(exc),
+                        details={
+                            "function_name": exc.function_name,
+                            "remote_error_type": exc.error_type,
+                            **exc.details,
+                        },
+                    ) from exc
+                if not self._is_output_contract_error(exc):
+                    raise
+
+                next_budget = exc.details.get("next_output_budget_tokens")
+                current_budget = exc.details.get("generation_budget_tokens")
+                signature = (
+                    exc.error_type,
+                    exc.details.get("generated_sha256"),
+                    current_budget,
+                    next_budget,
+                )
+                if signature in seen_recovery_signatures:
+                    raise
+                seen_recovery_signatures.add(signature)
                 if (
-                    not self._is_output_contract_error(exc)
-                    or attempt >= self._MAX_OUTPUT_RECOVERY_ATTEMPTS
+                    not isinstance(next_budget, int)
+                    or isinstance(next_budget, bool)
+                    or next_budget <= 0
+                    or (
+                        isinstance(current_budget, int)
+                        and not isinstance(current_budget, bool)
+                        and next_budget <= current_budget
+                    )
                 ):
                     raise
                 request = {
                     "task": task,
                     "payload": payload,
-                    "generation_recovery_attempt": attempt + 1,
+                    "generation_minimum_output_tokens": next_budget,
                     "generation_recovery_instruction": (
-                        "The previous generation violated the JSON output contract. Regenerate the "
-                        "complete answer from the original task as exactly one strict JSON object. "
-                        "Use valid JSON syntax with double-quoted keys and strings, no Markdown, "
-                        "no comments, no prose outside the object, and no truncated fields."
+                        "Regenerate the complete strict JSON object from the original source "
+                        "evidence using the expanded runtime-derived output capacity. Do not add "
+                        "Markdown or prose outside the object."
                     ),
                 }
-                continue
-
-            return result
-        raise AssertionError("unreachable editorial recovery loop")
 
 
 class ModalVisionProvider(ModalJSONProvider):

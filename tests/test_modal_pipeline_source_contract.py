@@ -59,9 +59,13 @@ def test_open_model_image_has_qwen3_vl_and_shared_editorial_budget_contract() ->
     source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
     assert '"torch==2.8.0"' in source
     assert '"torchvision==0.23.0"' in source
-    assert "from clipper.providers.editorial_prompt import editorial_output_budget" in source
-    assert "base_budget = editorial_output_budget(payload)" in source
-    assert "return min(4096, base_budget * _editorial_recovery_attempt(payload))" in source
+    assert "def _editorial_generation_plan(" in source
+    assert "def _editorial_context_limit(" in source
+    assert "generation_budget_tokens" in source
+    assert "logits_to_keep" in source
+    assert '"offloaded"' in source
+    assert 'device_map="balanced_low_0"' in source
+    assert "editorial_output_budget" not in source
 
 
 def test_modal_vision_derives_runtime_capacity_without_fixed_vram_or_batch_limits() -> None:

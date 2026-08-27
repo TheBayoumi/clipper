@@ -7,12 +7,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .base import InferenceUsage, ModelIdentity, ProviderResult
+from .base import EditorialCapacityError, InferenceUsage, ModelIdentity, ProviderResult
 from .editorial_prompt import (
     EDITORIAL_IDENTITY,
     EDITORIAL_SCHEMA_IDENTITY,
     editorial_contract,
-    editorial_output_budget,
 )
 
 
@@ -98,10 +97,43 @@ class LocalEditorialProvider:
             messages, tokenize=False, add_generation_prompt=True
         )
         inputs = tokenizer(rendered, return_tensors="pt").to(model.device)
+        model_config = getattr(model, "config", None)
+        text_config = getattr(model_config, "text_config", model_config)
+        candidates = (
+            getattr(text_config, "max_position_embeddings", None),
+            getattr(tokenizer, "model_max_length", None),
+        )
+        context_limit: int | None = None
+        for raw_context in candidates:
+            if isinstance(raw_context, bool) or not isinstance(raw_context, int | str):
+                continue
+            try:
+                parsed = int(raw_context)
+            except (ValueError, OverflowError):
+                continue
+            if parsed > 0:
+                context_limit = parsed
+                break
+        if context_limit is None:
+            raise EditorialCapacityError(
+                "local editorial model does not expose a usable context limit"
+            )
+        input_units = int(inputs["input_ids"].numel())
+        available_output = context_limit - input_units
+        if available_output <= 0:
+            raise EditorialCapacityError(
+                "local editorial request exceeds model context",
+                details={
+                    "input_tokens": input_units,
+                    "context_limit_tokens": context_limit,
+                },
+            )
         output = model.generate(
             **inputs,
-            max_new_tokens=editorial_output_budget({"task": task}),
+            max_new_tokens=available_output,
             do_sample=False,
+            use_cache=True,
+            logits_to_keep=1,
         )
         generated = output[0][inputs["input_ids"].shape[-1] :]
         text = tokenizer.decode(generated, skip_special_tokens=True).strip()
@@ -118,7 +150,7 @@ class LocalEditorialProvider:
                 started_at,
                 started,
                 provider="local",
-                input_units=int(inputs["input_ids"].numel()),
+                input_units=input_units,
                 output_units=int(generated.numel()),
             ),
         )

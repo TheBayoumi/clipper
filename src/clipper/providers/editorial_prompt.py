@@ -23,15 +23,6 @@ _HAZARD_CLASSIFICATIONS = [
 _QUALITY_DECISIONS = ["PASS", "REJECT", "ESCALATE"]
 
 
-def editorial_output_budget(payload: dict[str, Any]) -> int:
-    """Return a bounded generation budget for active adaptive task families."""
-    task = str(payload.get("task") or "")
-    family = editorial_task_family(task)
-    if family in {"narrative_envelope", "quality_windows"}:
-        return 1536
-    return 2048
-
-
 def _string(*, nullable: bool = False) -> dict[str, Any]:
     if nullable:
         return {"type": ["string", "null"]}

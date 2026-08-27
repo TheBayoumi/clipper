@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from .base import InferenceUsage, ModelIdentity, ProviderResult
-from .editorial_prompt import editorial_contract, editorial_output_budget
+from .editorial_prompt import editorial_contract
 from .local import ProviderUnavailable
 
 
@@ -71,7 +71,6 @@ class ModalEndpointEditorialProvider:
                 },
             ],
             "temperature": 0,
-            "max_tokens": editorial_output_budget({"task": task}),
         }
         request = Request(  # noqa: S310
             f"{self.endpoint_url}/v1/chat/completions",

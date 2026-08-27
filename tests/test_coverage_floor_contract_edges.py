@@ -135,16 +135,21 @@ def test_story_graph_factories_reject_empty_word_provenance() -> None:
         )
 
 
-def test_planner_empty_chunks_and_wide_core_context_paths(tmp_path: Path) -> None:
+def test_planner_empty_timeline_and_core_position_paths(tmp_path: Path) -> None:
     planner = AutonomousQualityPlanner(
         _UnusedEditorial(),
         DagStore(tmp_path / "dag"),
-        max_words_per_chunk=200,
-        chunk_overlap_words=20,
-        envelope_context_words=100,
     )
     empty = CanonicalTimeline("empty-video", "empty-source", ())
-    assert planner._chunks(empty) == ()
+    assert (
+        planner._semantic_cores_adaptive(
+            empty,
+            multimodal=None,
+            campaign_context={},
+            relevant_policy={},
+        )
+        == ()
+    )
 
     timeline = _timeline()
     core = SemanticCore.from_word_ids(
@@ -152,10 +157,10 @@ def test_planner_empty_chunks_and_wide_core_context_paths(tmp_path: Path) -> Non
         core_id="wide-core",
         source_word_ids=tuple(word.word_id for word in timeline.words[50:171]),
         semantic_summary="wide complete event",
-        editorial_reason="exercise wide context path",
+        editorial_reason="exercise adaptive context path",
         confidence=0.9,
     )
-    assert planner._context_range(timeline, core) == (50, 171)
+    assert planner._core_positions(timeline, core) == (50, 171)
 
 
 def test_recording_editorial_provider_reports_failures_to_progress_callback() -> None:
@@ -170,28 +175,13 @@ def test_recording_editorial_provider_reports_failures_to_progress_callback() ->
     assert recorder.invocations == []
 
 
-def test_source_hazard_classifier_rejects_bad_configuration_and_mismatched_evidence(
+def test_source_hazard_classifier_rejects_mismatched_evidence(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(ValueError, match="at least 200"):
-        SourceHazardClassifier(
-            _UnusedEditorial(), DagStore(tmp_path / "small"), max_words_per_chunk=199
-        )
-    with pytest.raises(ValueError, match="overlap must be smaller"):
-        SourceHazardClassifier(
-            _UnusedEditorial(),
-            DagStore(tmp_path / "overlap"),
-            max_words_per_chunk=200,
-            chunk_overlap_words=200,
-        )
-
     classifier = SourceHazardClassifier(
         _UnusedEditorial(),
         DagStore(tmp_path / "valid"),
-        max_words_per_chunk=200,
-        chunk_overlap_words=20,
     )
-    assert classifier._chunks(CanonicalTimeline("empty", "empty-source", ())) == ()
     mismatch = MultimodalTimeline("video", "different-source", 220.0, ())
     with pytest.raises(ValueError, match="different sources"):
         classifier.classify(_acceptance_brief(), _timeline(), multimodal=mismatch)
@@ -201,13 +191,11 @@ def test_source_hazard_classifier_fails_closed_when_model_inference_errors(tmp_p
     classifier = SourceHazardClassifier(
         _UnusedEditorial(),
         DagStore(tmp_path / "hazards"),
-        max_words_per_chunk=200,
-        chunk_overlap_words=20,
     )
     result = classifier.classify(_acceptance_brief(), _timeline(), multimodal=None)
 
-    assert len(result.hazards) == 2
-    assert len(result.rejections) == 2
+    assert len(result.hazards) == 1
+    assert len(result.rejections) == 1
     assert all(item.classification.value == "unknown" for item in result.hazards)
     assert all(item.evidence == ("source_hazard_classification_failed",) for item in result.hazards)
     assert all(item["decision"] == "ESCALATE" for item in result.rejections)
@@ -221,8 +209,6 @@ def test_source_hazard_classifier_fails_closed_on_invalid_model_shapes(
     classifier = SourceHazardClassifier(
         _StaticEditorial(value),
         DagStore(tmp_path / f"invalid-{type(value).__name__}"),
-        max_words_per_chunk=200,
-        chunk_overlap_words=20,
     )
     result = classifier.classify(_acceptance_brief(), _timeline(10), multimodal=None)
     assert len(result.hazards) == 1
@@ -234,8 +220,6 @@ def test_source_hazard_classifier_fails_closed_when_segment_escapes_chunk(tmp_pa
     classifier = SourceHazardClassifier(
         _StaticEditorial({"segments": [{}]}),
         DagStore(tmp_path / "escaped"),
-        max_words_per_chunk=200,
-        chunk_overlap_words=20,
     )
     with patch(
         "clipper.source_hazards.SourceHazardSegment.from_payload",
@@ -274,8 +258,6 @@ def test_quality_batch_rejects_ineligible_quality_moment_without_quota_fill(tmp_
             {},
             _UnusedEditorial(),
             dag_root=tmp_path / "batch",
-            max_words_per_chunk=200,
-            chunk_overlap_words=20,
         )
 
     assert result.plans == ()
@@ -299,6 +281,4 @@ def test_quality_batch_fails_closed_on_insufficient_required_visual_coverage(
             {"video": visual},
             _UnusedEditorial(),
             dag_root=tmp_path / "visual-policy",
-            max_words_per_chunk=200,
-            chunk_overlap_words=20,
         )

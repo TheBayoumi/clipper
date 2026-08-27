@@ -144,7 +144,11 @@ def _usage(
 
 
 class EditorialOutputTruncated(ValueError):
-    """Editorial generation exhausted its output budget before valid JSON completed."""
+    """Editorial generation exhausted runtime-derived output capacity."""
+
+    def __init__(self, message: str, *, details: dict[str, Any]) -> None:
+        self.details = dict(details)
+        super().__init__(message)
 
 
 def _json_text(text: str) -> dict[str, Any]:
@@ -363,20 +367,332 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _editorial_recovery_attempt(payload: dict[str, Any]) -> int:
-    raw = payload.get("generation_recovery_attempt")
+def _editorial_context_limit(model: Any, tokenizer: Any) -> int:
+    text_config = getattr(model.config, "text_config", model.config)
+    for value in (
+        getattr(text_config, "max_position_embeddings", None),
+        getattr(model.config, "max_position_embeddings", None),
+    ):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if parsed > 0:
+            return parsed
+    raise ValueError("editorial model does not expose a usable context limit")
+
+
+def _editorial_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    raw = payload.get("payload")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _editorial_discourse_units(payload: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    raw_words = _editorial_payload(payload).get("words")
+    if not isinstance(raw_words, list):
+        raw_words = _editorial_payload(payload).get("source_context_words")
+    words = [item for item in raw_words or [] if isinstance(item, dict)]
+    if not words:
+        return []
+    terminal = (".", "!", "?", "…", "。")
+    units: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    previous_speaker: object = None
+    for word in words:
+        speaker = word.get("speaker_id")
+        if (
+            current
+            and previous_speaker is not None
+            and speaker is not None
+            and speaker != previous_speaker
+        ):
+            units.append(current)
+            current = []
+        current.append(word)
+        if str(word.get("text") or "").rstrip().endswith(terminal):
+            units.append(current)
+            current = []
+        previous_speaker = speaker
+    if current:
+        units.append(current)
+    return units
+
+
+def _editorial_output_template(payload: dict[str, Any]) -> dict[str, Any]:
+    from clipper.providers.editorial_prompt import editorial_task_family
+
+    task = str(payload.get("task") or "")
+    family = editorial_task_family(task)
+    actual = _editorial_payload(payload)
+    units = _editorial_discourse_units(payload)
+
+    def unit_text(unit: list[dict[str, Any]]) -> str:
+        return " ".join(str(item.get("text") or "") for item in unit).strip()
+
+    def first_ref(unit: list[dict[str, Any]]) -> str:
+        return str(unit[0].get("word_ref") or "word-start") if unit else "word-start"
+
+    def last_ref(unit: list[dict[str, Any]]) -> str:
+        return str(unit[-1].get("word_ref") or "word-end") if unit else "word-end"
+
+    if family == "semantic_cores":
+        return {
+            "cores": [
+                {
+                    "core_id": f"core-{first_ref(unit)}-{last_ref(unit)}",
+                    "start_word_id": first_ref(unit),
+                    "end_word_id": last_ref(unit),
+                    "semantic_summary": unit_text(unit),
+                    "editorial_reason": unit_text(unit),
+                    "confidence": 0.0,
+                }
+                for unit in units
+            ]
+        }
+    if family == "source_hazards":
+        return {
+            "segments": [
+                {
+                    "start_word_id": first_ref(unit),
+                    "end_word_id": last_ref(unit),
+                    "classification": "editorial_content",
+                    "confidence": 0.0,
+                    "evidence": [unit_text(unit)],
+                }
+                for unit in units
+            ]
+        }
+    context_text = " ".join(unit_text(unit) for unit in units).strip()
+    core = actual.get("core") if isinstance(actual.get("core"), dict) else {}
+    if family == "narrative_envelope":
+        context_words = actual.get("source_context_words")
+        refs = [item for item in context_words or [] if isinstance(item, dict)]
+        return {
+            "envelope_id": "envelope",
+            "core_id": str(core.get("core_id") or "core"),
+            "start_word_id": str(refs[0].get("word_ref") or "word-start") if refs else "word-start",
+            "end_word_id": str(refs[-1].get("word_ref") or "word-end") if refs else "word-end",
+            "required_prior_context": context_text,
+            "required_followup_context": context_text,
+            "setup_resolved": True,
+            "payoff_resolved": True,
+            "reference_resolution": [],
+            "confidence": 0.0,
+        }
+    windows = actual.get("feasible_windows")
+    first_window = (
+        windows[0] if isinstance(windows, list) and windows and isinstance(windows[0], dict) else {}
+    )
+    return {
+        "core_id": str(core.get("core_id") or "core"),
+        "selected_window_id": first_window.get("window_id"),
+        "decision": "PASS",
+        "quality_score": 0.0,
+        "opening_strategy": context_text,
+        "rationale": context_text,
+        "confidence": 0.0,
+    }
+
+
+def _editorial_structural_output_tokens(payload: dict[str, Any], tokenizer: Any) -> int:
+    template = json.dumps(
+        _editorial_output_template(payload),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return max(1, len(tokenizer.encode(template, add_special_tokens=False)))
+
+
+def _editorial_topology_key() -> str:
+    import torch
+
+    names = [str(torch.cuda.get_device_name(index)) for index in range(torch.cuda.device_count())]
+    material = json.dumps(names, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()[:16]
+
+
+def _editorial_capacity_state_path() -> Path:
+    return (
+        Path(HF_CACHE)
+        / "clipper-editorial-capacity"
+        / f"{EDITORIAL_MODEL_REVISION}-{_editorial_topology_key()}.json"
+    )
+
+
+def _load_editorial_capacity_state() -> dict[str, Any]:
+    path = _editorial_capacity_state_path()
+    if not path.is_file():
+        return {}
     try:
-        attempt = int(raw) if raw is not None else 1
-    except (TypeError, ValueError):
-        attempt = 1
-    return max(1, min(attempt, 3))
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
-def _editorial_output_budget(payload: dict[str, Any]) -> int:
-    from clipper.providers.editorial_prompt import editorial_output_budget
+def _persist_editorial_capacity_state(state: dict[str, Any]) -> None:
+    path = _editorial_capacity_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(state, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+    model_cache.commit()
 
-    base_budget = editorial_output_budget(payload)
-    return min(4096, base_budget * _editorial_recovery_attempt(payload))
+
+def _editorial_history_entry(state: dict[str, Any], task: str) -> dict[str, Any]:
+    from clipper.providers.editorial_prompt import editorial_task_family
+
+    family = editorial_task_family(task)
+    raw = state.get(family)
+    if isinstance(raw, dict):
+        return raw
+    entry: dict[str, Any] = {}
+    state[family] = entry
+    return entry
+
+
+def _positive_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    parsed = float(value)
+    return parsed if parsed > 0 and math.isfinite(parsed) else None
+
+
+def _editorial_generation_plan(
+    payload: dict[str, Any],
+    *,
+    tokenizer: Any,
+    model: Any,
+    input_units: int,
+    capacity_state: dict[str, Any],
+) -> dict[str, Any]:
+    from clipper.providers.base import EditorialCapacityError
+
+    task = str(payload.get("task") or "")
+    context_limit = _editorial_context_limit(model, tokenizer)
+    available_output = context_limit - input_units
+    if available_output <= 0:
+        raise EditorialCapacityError(
+            "editorial request exceeds model context",
+            details={
+                "reason": "context_exhausted",
+                "task": task,
+                "input_tokens": input_units,
+                "context_limit_tokens": context_limit,
+            },
+        )
+    structural = _editorial_structural_output_tokens(payload, tokenizer)
+    raw_minimum = payload.get("generation_minimum_output_tokens")
+    minimum = (
+        int(raw_minimum)
+        if isinstance(raw_minimum, int) and not isinstance(raw_minimum, bool) and raw_minimum > 0
+        else 0
+    )
+    history = _editorial_history_entry(capacity_state, task)
+    ratio = _positive_number(history.get("output_tokens_per_input_token"))
+    history_budget = math.ceil(ratio * input_units) if ratio is not None else 0
+    requested_output = max(structural, minimum, history_budget, 1)
+    if requested_output > available_output:
+        raise EditorialCapacityError(
+            "editorial input and task-derived output demand exceed model context",
+            details={
+                "reason": "input_output_context_exhausted",
+                "task": task,
+                "input_tokens": input_units,
+                "context_limit_tokens": context_limit,
+                "available_output_tokens": available_output,
+                "structural_output_tokens": structural,
+                "history_output_tokens": history_budget,
+                "requested_output_tokens": requested_output,
+            },
+        )
+
+    smallest_bad = history.get("smallest_bad_input_tokens")
+    largest_good = history.get("largest_good_input_tokens")
+    if (
+        isinstance(smallest_bad, int)
+        and not isinstance(smallest_bad, bool)
+        and smallest_bad > 0
+        and input_units >= smallest_bad
+        and (
+            not isinstance(largest_good, int)
+            or isinstance(largest_good, bool)
+            or input_units > largest_good
+        )
+    ):
+        raise EditorialCapacityError(
+            "editorial request is at or above a previously observed OOM boundary",
+            details={
+                "reason": "history_capacity_boundary",
+                "task": task,
+                "input_tokens": input_units,
+                "largest_good_input_tokens": largest_good,
+                "smallest_bad_input_tokens": smallest_bad,
+                "generation_budget_tokens": requested_output,
+            },
+        )
+    return {
+        "task": task,
+        "input_tokens": input_units,
+        "context_limit_tokens": context_limit,
+        "available_output_tokens": available_output,
+        "structural_output_tokens": structural,
+        "history_output_tokens": history_budget,
+        "generation_budget_tokens": requested_output,
+        "largest_good_input_tokens": largest_good,
+        "smallest_bad_input_tokens": smallest_bad,
+    }
+
+
+def _update_editorial_success_history(
+    state: dict[str, Any],
+    *,
+    task: str,
+    input_units: int,
+    output_units: int,
+    cache_implementation: str,
+) -> None:
+    history = _editorial_history_entry(state, task)
+    previous_good = history.get("largest_good_input_tokens")
+    if (
+        not isinstance(previous_good, int)
+        or isinstance(previous_good, bool)
+        or input_units > previous_good
+    ):
+        history["largest_good_input_tokens"] = input_units
+    bad = history.get("smallest_bad_input_tokens")
+    if isinstance(bad, int) and not isinstance(bad, bool) and input_units >= bad:
+        history.pop("smallest_bad_input_tokens", None)
+    if input_units > 0 and output_units > 0:
+        ratio = output_units / input_units
+        previous_ratio = _positive_number(history.get("output_tokens_per_input_token"))
+        history["output_tokens_per_input_token"] = (
+            ratio if previous_ratio is None else max(previous_ratio, ratio)
+        )
+    history["successful_cache_implementation"] = cache_implementation
+    history["cuda_memory_by_device"] = _cuda_memory_snapshot()
+    _persist_editorial_capacity_state(state)
+
+
+def _update_editorial_oom_history(
+    state: dict[str, Any],
+    *,
+    task: str,
+    input_units: int,
+) -> None:
+    history = _editorial_history_entry(state, task)
+    previous_bad = history.get("smallest_bad_input_tokens")
+    if (
+        not isinstance(previous_bad, int)
+        or isinstance(previous_bad, bool)
+        or input_units < previous_bad
+    ):
+        history["smallest_bad_input_tokens"] = input_units
+    history["cuda_memory_by_device_at_oom"] = _cuda_memory_snapshot()
+    _persist_editorial_capacity_state(state)
 
 
 def _transport_error(exc: Exception, *, context: str | None = None) -> dict[str, Any]:
@@ -384,7 +700,15 @@ def _transport_error(exc: Exception, *, context: str | None = None) -> dict[str,
     message = str(exc)
     if context:
         message = f"{context}: {message}"
-    return {"error": {"type": type(exc).__name__, "message": message}}
+    raw_details = getattr(exc, "details", None)
+    details = dict(raw_details) if isinstance(raw_details, dict) else {}
+    return {
+        "error": {
+            "type": type(exc).__name__,
+            "message": message,
+            "details": details,
+        }
+    }
 
 
 def _diarization_audio_source(source_path: str) -> tuple[Path, bool]:
@@ -634,7 +958,7 @@ def _load_editorial_model() -> tuple[Any, Any, Any]:
     model = AutoModelForCausalLM.from_pretrained(
         EDITORIAL_MODEL_ID,
         revision=EDITORIAL_MODEL_REVISION,
-        device_map="auto",
+        device_map="balanced_low_0" if torch.cuda.device_count() > 1 else "auto",
         dtype=torch.bfloat16,
         quantization_config=quantization,
         low_cpu_mem_usage=True,
@@ -645,88 +969,220 @@ def _load_editorial_model() -> tuple[Any, Any, Any]:
 def _editorial_infer(
     payload: dict[str, Any],
     tokenizer: Any,
+    model: Any,
     structured_model: Any,
+    capacity_state: dict[str, Any],
     *,
     lifecycle_id: str,
 ) -> dict[str, Any]:
     import torch
     from outlines.types import JsonSchema
 
+    from clipper.providers.base import EditorialCapacityError
     from clipper.providers.editorial_prompt import editorial_contract, editorial_json_schema
 
     started = time.perf_counter()
     task = str(payload.get("task") or "")
-    recovery_attempt = _editorial_recovery_attempt(payload)
     system_content = (
         "You are a source-grounded multimodal short-form editor. "
         "Never invent source evidence, spoken words, timestamps, or IDs. "
         + editorial_contract(task)
     )
-    if recovery_attempt > 1:
-        system_content += (
-            " This is a constrained recovery generation after a previous invalid, truncated, "
-            "or semantically rejected response. Return a complete object satisfying the JSON "
-            "Schema. If needed, return fewer valid items with shorter prose rather than "
-            "exhausting the output budget."
-        )
+    recovery_instruction = payload.get("generation_recovery_instruction")
+    if isinstance(recovery_instruction, str) and recovery_instruction.strip():
+        system_content += " " + recovery_instruction.strip()
     messages = [
         {"role": "system", "content": system_content},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
     ]
     rendered = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     schema = JsonSchema(editorial_json_schema(task))
-    output_budget = _editorial_output_budget(payload)
     input_ids = tokenizer(rendered, add_special_tokens=False)["input_ids"]
     input_units = len(input_ids)
-    try:
-        with torch.inference_mode():
-            generated_text = structured_model(
-                rendered,
-                schema,
-                max_new_tokens=output_budget,
-                do_sample=False,
-                use_cache=True,
-            )
-        if not isinstance(generated_text, str):
-            raise TypeError(
-                "Outlines transformers generation returned a non-string response: "
-                f"{type(generated_text).__name__}"
-            )
-        output_ids = tokenizer(generated_text, add_special_tokens=False)["input_ids"]
-        output_units = len(output_ids)
-        try:
-            value = _json_text(generated_text)
-        except json.JSONDecodeError as exc:
-            if output_units >= output_budget:
-                raise EditorialOutputTruncated(
-                    f"task={task} attempt={recovery_attempt} exhausted "
-                    f"max_new_tokens={output_budget}: {exc}"
-                ) from exc
-            raise RuntimeError(
-                "constrained editorial generation returned invalid JSON despite Outlines "
-                f"schema enforcement for task={task}: {exc}"
-            ) from exc
-        return {
-            "value": value,
-            "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
-            "structured_generation": {
-                "engine": "outlines-transformers",
-                "schema_version": "editorial-json-v2",
-                "constrained": True,
-                "recovery_attempt": recovery_attempt,
+    plan = _editorial_generation_plan(
+        payload,
+        tokenizer=tokenizer,
+        model=model,
+        input_units=input_units,
+        capacity_state=capacity_state,
+    )
+    output_budget = int(plan["generation_budget_tokens"])
+    print(
+        json.dumps(
+            {
+                "event": "editorial_request_plan",
+                "worker_lifecycle_id": lifecycle_id,
+                **plan,
+                "serialized_request_bytes": len(rendered.encode("utf-8")),
+                "cuda_memory_by_device": _cuda_memory_snapshot(),
             },
-            "usage": _usage(
-                started,
-                "L4:2",
-                input_units=input_units,
-                output_units=output_units,
-            ),
-            "runtime": _worker_runtime(lifecycle_id, model_load_count=1),
+            sort_keys=True,
+        )
+    )
+
+    generated_text: str | None = None
+    cache_implementation = "dynamic"
+    generation_started = time.perf_counter()
+    for cache_policy in ("dynamic", "offloaded"):
+        kwargs: dict[str, Any] = {
+            "max_new_tokens": output_budget,
+            "do_sample": False,
+            "use_cache": True,
+            "logits_to_keep": 1,
         }
-    finally:
-        gc.collect()
-        if torch.cuda.is_available():
+        if cache_policy == "offloaded":
+            kwargs["cache_implementation"] = "offloaded"
+        try:
+            print(
+                json.dumps(
+                    {
+                        "event": "editorial_generation_start",
+                        "worker_lifecycle_id": lifecycle_id,
+                        "task": task,
+                        "cache_implementation": cache_policy,
+                        "input_tokens": input_units,
+                        "generation_budget_tokens": output_budget,
+                        "cuda_memory_by_device": _cuda_memory_snapshot(),
+                    },
+                    sort_keys=True,
+                )
+            )
+            with torch.inference_mode():
+                candidate = structured_model(rendered, schema, **kwargs)
+            if not isinstance(candidate, str):
+                raise TypeError(
+                    "Outlines transformers generation returned a non-string response: "
+                    f"{type(candidate).__name__}"
+                )
+            generated_text = candidate
+            cache_implementation = cache_policy
+            break
+        except torch.OutOfMemoryError as exc:
+            print(
+                json.dumps(
+                    {
+                        "event": "editorial_oom",
+                        "worker_lifecycle_id": lifecycle_id,
+                        "task": task,
+                        "cache_implementation": cache_policy,
+                        "input_tokens": input_units,
+                        "generation_budget_tokens": output_budget,
+                        "cuda_memory_by_device": _cuda_memory_snapshot(),
+                        "error": str(exc),
+                    },
+                    sort_keys=True,
+                )
+            )
+            gc.collect()
             torch.cuda.empty_cache()
+            if cache_policy == "dynamic":
+                print(
+                    json.dumps(
+                        {
+                            "event": "editorial_capacity_fallback",
+                            "worker_lifecycle_id": lifecycle_id,
+                            "task": task,
+                            "from_cache_implementation": "dynamic",
+                            "to_cache_implementation": "offloaded",
+                        },
+                        sort_keys=True,
+                    )
+                )
+                continue
+            _update_editorial_oom_history(
+                capacity_state,
+                task=task,
+                input_units=input_units,
+            )
+            raise EditorialCapacityError(
+                "editorial generation exhausted GPU working-set capacity",
+                details={
+                    "reason": "cuda_oom_after_offloaded_cache",
+                    **plan,
+                    "cache_implementation": cache_policy,
+                    "cuda_memory_by_device": _cuda_memory_snapshot(),
+                },
+            ) from exc
+
+    if generated_text is None:
+        raise AssertionError("editorial generation cache-policy ladder produced no result")
+
+    output_ids = tokenizer(generated_text, add_special_tokens=False)["input_ids"]
+    output_units = len(output_ids)
+    generated_sha = hashlib.sha256(generated_text.encode("utf-8")).hexdigest()[:16]
+    print(
+        json.dumps(
+            {
+                "event": "editorial_generation_complete",
+                "worker_lifecycle_id": lifecycle_id,
+                "task": task,
+                "cache_implementation": cache_implementation,
+                "input_tokens": input_units,
+                "output_tokens": output_units,
+                "generation_budget_tokens": output_budget,
+                "duration_seconds": max(0.0, time.perf_counter() - generation_started),
+                "generated_sha256": generated_sha,
+                "cuda_memory_by_device": _cuda_memory_snapshot(),
+            },
+            sort_keys=True,
+        )
+    )
+    try:
+        value = _json_text(generated_text)
+    except json.JSONDecodeError as exc:
+        if output_units >= output_budget:
+            available = int(plan["available_output_tokens"])
+            next_budget = min(
+                available,
+                max(output_budget + 1, output_budget * 2),
+            )
+            raise EditorialOutputTruncated(
+                f"task={task} exhausted runtime-derived generation budget={output_budget}: {exc}",
+                details={
+                    **plan,
+                    "generated_sha256": generated_sha,
+                    "output_tokens": output_units,
+                    "next_output_budget_tokens": next_budget,
+                },
+            ) from exc
+        raise RuntimeError(
+            "constrained editorial generation returned invalid JSON despite Outlines "
+            f"schema enforcement for task={task}: {exc}"
+        ) from exc
+
+    _update_editorial_success_history(
+        capacity_state,
+        task=task,
+        input_units=input_units,
+        output_units=output_units,
+        cache_implementation=cache_implementation,
+    )
+    runtime = _worker_runtime(lifecycle_id, model_load_count=1)
+    runtime["editorial_capacity"] = {
+        **plan,
+        "output_tokens": output_units,
+        "cache_implementation": cache_implementation,
+        "logits_to_keep": 1,
+        "hf_device_map": dict(getattr(model, "hf_device_map", {}) or {}),
+    }
+    return {
+        "value": value,
+        "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
+        "structured_generation": {
+            "engine": "outlines-transformers",
+            "schema_version": "editorial-json-v2",
+            "constrained": True,
+            "cache_implementation": cache_implementation,
+            "logits_to_keep": 1,
+        },
+        "usage": _usage(
+            started,
+            "L4:2",
+            input_units=input_units,
+            output_units=output_units,
+        ),
+        "runtime": runtime,
+    }
 
 
 @app.cls(
@@ -742,6 +1198,7 @@ class EditorialModel:
     def load_model(self) -> None:
         self.lifecycle_id = uuid.uuid4().hex
         self.tokenizer, self.model, self.structured_model = _load_editorial_model()
+        self.capacity_state = _load_editorial_capacity_state()
         print(
             json.dumps(
                 {
@@ -749,6 +1206,8 @@ class EditorialModel:
                     "worker_lifecycle_id": self.lifecycle_id,
                     "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
                     "cuda_memory_by_device": _cuda_memory_snapshot(),
+                    "hf_device_map": dict(getattr(self.model, "hf_device_map", {}) or {}),
+                    "capacity_state_path": str(_editorial_capacity_state_path()),
                 },
                 sort_keys=True,
             )
@@ -765,12 +1224,13 @@ class EditorialModel:
     @modal.method()
     def complete(self, payload: dict[str, Any]) -> dict[str, Any]:
         task = str(payload.get("task") or "")
-        recovery_attempt = _editorial_recovery_attempt(payload)
         try:
             return _editorial_infer(
                 payload,
                 self.tokenizer,
+                self.model,
                 self.structured_model,
+                self.capacity_state,
                 lifecycle_id=self.lifecycle_id,
             )
         except Exception as exc:
@@ -779,9 +1239,7 @@ class EditorialModel:
 
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-            return _transport_error(
-                exc, context=f"task={task or '<missing>'} attempt={recovery_attempt}"
-            )
+            return _transport_error(exc, context=f"task={task or '<missing>'}")
 
 
 def _load_vision_model(model_id: str) -> tuple[Any, Any]:

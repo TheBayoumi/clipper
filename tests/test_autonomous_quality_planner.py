@@ -15,7 +15,12 @@ from clipper.autonomous_quality_planner import (
 from clipper.canonical import CanonicalTimeline, CanonicalWord
 from clipper.dag import DagStore
 from clipper.modality_profile import SourceModalityProfile
-from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
+from clipper.providers.base import (
+    EditorialCapacityError,
+    InferenceUsage,
+    ModelIdentity,
+    ProviderResult,
+)
 from clipper.story_graph import NarrativeEnvelope, SemanticCore
 from clipper.window_solver import enumerate_feasible_windows
 
@@ -295,7 +300,7 @@ def test_dynamic_planner_produces_one_output_per_independent_quality_core(tmp_pa
         for moment in result.quality_moments
     )
     assert result.stage_executions == 5
-    assert provider.calls.count("semantic_cores:0") == 1
+    assert sum(task.startswith("semantic_cores:") for task in provider.calls) == 1
 
 
 def test_zero_worthwhile_cores_is_valid_zero_yield_without_downstream_calls(tmp_path: Path) -> None:
@@ -305,7 +310,7 @@ def test_zero_worthwhile_cores_is_valid_zero_yield_without_downstream_calls(tmp_
 
     assert result.cores == ()
     assert result.quality_moments == ()
-    assert provider.calls == ["semantic_cores:0"]
+    assert len(provider.calls) == 1 and provider.calls[0].startswith("semantic_cores:")
 
 
 def test_dag_replay_reuses_paid_editorial_outputs_without_new_provider_calls(
@@ -365,3 +370,56 @@ def test_required_visual_evidence_blocks_before_any_editorial_inference(tmp_path
             max_seconds=25.0,
         )
     assert provider.calls == []
+
+
+class CapacityEditorial(FakeEditorial):
+    def __init__(self, *, maximum_words: int) -> None:
+        super().__init__(zero_cores=True)
+        self.maximum_words = maximum_words
+        self.word_counts: list[int] = []
+
+    def complete_json(
+        self,
+        *,
+        task: str,
+        payload: dict[str, Any],
+    ) -> ProviderResult[dict[str, Any]]:
+        if task.startswith("semantic_cores:"):
+            words = payload.get("words")
+            count = len(words) if isinstance(words, list) else 0
+            self.calls.append(task)
+            self.word_counts.append(count)
+            if count > self.maximum_words:
+                raise EditorialCapacityError(
+                    "synthetic capacity boundary",
+                    details={"input_words": count},
+                )
+            return ProviderResult({"cores": []}, self.identity, _usage())
+        return super().complete_json(task=task, payload=payload)
+
+
+def test_semantic_planner_adaptively_splits_capacity_failures_without_fixed_chunk_size(
+    tmp_path: Path,
+) -> None:
+    timeline = _timeline(60)
+    provider = CapacityEditorial(maximum_words=20)
+    result = _plan(_planner(tmp_path, provider), timeline)
+
+    assert result.cores == ()
+    assert provider.word_counts[0] == len(timeline.words)
+    successful = [count for count in provider.word_counts if count <= provider.maximum_words]
+    failed = [count for count in provider.word_counts if count > provider.maximum_words]
+    assert successful
+    assert failed
+    assert sum(successful) == len(timeline.words)
+    assert all(task.startswith("semantic_cores:") for task in provider.calls)
+
+
+def test_semantic_planner_fails_closed_when_smallest_source_unit_exceeds_capacity(
+    tmp_path: Path,
+) -> None:
+    timeline = _timeline(1)
+    provider = CapacityEditorial(maximum_words=0)
+    with pytest.raises(AutonomousPlanningError, match="smallest source-grounded semantic interval"):
+        _plan(_planner(tmp_path, provider), timeline)
+    assert provider.word_counts == [1]

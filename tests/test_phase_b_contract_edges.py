@@ -22,7 +22,6 @@ from clipper.providers.editorial_prompt import (
     editorial_contract,
     editorial_contract_fingerprint,
     editorial_json_schema,
-    editorial_output_budget,
     editorial_task_family,
 )
 from clipper.quality_moments import (
@@ -522,7 +521,7 @@ def test_stage_identity_validates_dependency_material_and_serializes_policy() ->
         StageIdentity("stage", "source", "contract", ("",))
 
 
-def test_editorial_prompt_exposes_every_structured_task_family_and_budget() -> None:
+def test_editorial_prompt_exposes_every_structured_task_family_without_absolute_budget() -> None:
     tasks = {
         "source_hazards:0": "source_hazards",
         "semantic_cores:0": "semantic_cores",
@@ -537,12 +536,6 @@ def test_editorial_prompt_exposes_every_structured_task_family_and_budget() -> N
         assert editorial_contract(task)
         assert len(editorial_contract_fingerprint(task)) == 64
 
-    assert editorial_output_budget({"task": "source_hazards:0"}) == 2048
-    assert editorial_output_budget({"task": "semantic_cores:0"}) == 2048
-    assert editorial_output_budget({"task": "narrative_envelope:x"}) == 1536
-    assert editorial_output_budget({"task": "quality_windows:x"}) == 1536
-    with pytest.raises(ValueError, match="unsupported production editorial task"):
-        editorial_output_budget({"task": "other"})
     with pytest.raises(ValueError, match="unsupported production editorial task"):
         editorial_task_family("unsupported")
     with pytest.raises(ValueError, match="unsupported production editorial task"):
@@ -700,26 +693,7 @@ def test_autonomous_payload_parsers_fail_closed_on_malformed_model_output() -> N
     assert quality_assessment_from_payload(core, (window,), quality_payload) is None
 
 
-def test_autonomous_planner_constructor_source_guards_and_rejection_paths(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="at least 200"):
-        AutonomousQualityPlanner(
-            _EdgeEditorial("reject"), DagStore(tmp_path / "small"), max_words_per_chunk=100
-        )
-    with pytest.raises(ValueError, match="chunk overlap"):
-        AutonomousQualityPlanner(
-            _EdgeEditorial("reject"),
-            DagStore(tmp_path / "overlap"),
-            max_words_per_chunk=200,
-            chunk_overlap_words=200,
-        )
-    with pytest.raises(ValueError, match="context is too small"):
-        AutonomousQualityPlanner(
-            _EdgeEditorial("reject"),
-            DagStore(tmp_path / "context"),
-            max_words_per_chunk=200,
-            envelope_context_words=50,
-        )
-
+def test_autonomous_planner_source_guards_and_rejection_paths(tmp_path: Path) -> None:
     timeline = _timeline()
     planner = AutonomousQualityPlanner(_EdgeEditorial("reject"), DagStore(tmp_path / "guards"))
     with pytest.raises(ValueError, match="duration bounds"):

@@ -133,8 +133,6 @@ def plan_quality_batch(
     editorial: EditorialProvider,
     *,
     dag_root: str | Path,
-    max_words_per_chunk: int = 900,
-    chunk_overlap_words: int = 160,
     progress_callback: ProgressCallback | None = None,
 ) -> QualityBatchResult:
     """Plan evidence-derived quality yield without any clip-count or render-budget quota."""
@@ -179,8 +177,6 @@ def plan_quality_batch(
             hazard_classifier = SourceHazardClassifier(
                 recorder,
                 DagStore(root / video_id / "source-hazards"),
-                max_words_per_chunk=max_words_per_chunk,
-                chunk_overlap_words=chunk_overlap_words,
             )
             hazard_result = hazard_classifier.classify(
                 brief,
@@ -195,9 +191,6 @@ def plan_quality_batch(
             planner = AutonomousQualityPlanner(
                 recorder,
                 DagStore(root / video_id / "quality"),
-                max_words_per_chunk=max_words_per_chunk,
-                chunk_overlap_words=chunk_overlap_words,
-                envelope_context_words=max(700, max_words_per_chunk),
             )
             planning = planner.plan(
                 timeline,

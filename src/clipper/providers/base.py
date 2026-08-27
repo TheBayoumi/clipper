@@ -11,6 +11,14 @@ T = TypeVar("T")
 ProfileName = Literal["local-lite", "balanced", "quality"]
 
 
+class EditorialCapacityError(RuntimeError):
+    """Editorial request cannot fit the active model/runtime capacity."""
+
+    def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
+        self.details = dict(details or {})
+        super().__init__(message)
+
+
 @dataclass(frozen=True, slots=True)
 class ModelIdentity:
     model_id: str

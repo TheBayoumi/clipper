@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from clipper.providers.base import ModelIdentity
+from clipper.providers.base import EditorialCapacityError, ModelIdentity
 from clipper.providers.modal import ModalEditorialProvider
 
 
@@ -36,11 +36,21 @@ def test_proxy_token_parses_modal_1_5_json_schema() -> None:
     )
 
 
-def test_modal_editorial_recovers_from_malformed_json_generation() -> None:
+def test_modal_editorial_recovers_when_remote_reports_more_output_capacity() -> None:
     provider = _editorial_provider()
     function = Mock()
     function.remote.side_effect = [
-        {"error": {"type": "JSONDecodeError", "message": "Expecting ',' delimiter"}},
+        {
+            "error": {
+                "type": "EditorialOutputTruncated",
+                "message": "runtime output capacity exhausted",
+                "details": {
+                    "generation_budget_tokens": 100,
+                    "next_output_budget_tokens": 200,
+                    "generated_sha256": "first",
+                },
+            }
+        },
         {"value": {"cores": []}, "usage": {}},
     ]
     payload = {"source": "canonical words"}
@@ -54,31 +64,35 @@ def test_modal_editorial_recovers_from_malformed_json_generation() -> None:
     assert first_request == {"task": "semantic_cores:3", "payload": payload}
     assert second_request["task"] == "semantic_cores:3"
     assert second_request["payload"] is payload
-    assert second_request["generation_recovery_attempt"] == 2
-    assert "strict JSON object" in second_request["generation_recovery_instruction"]
+    assert second_request["generation_minimum_output_tokens"] == 200
+    assert "runtime-derived output capacity" in second_request["generation_recovery_instruction"]
 
 
-def test_modal_editorial_recovery_is_bounded_and_does_not_retry_runtime_failures() -> None:
+def test_modal_editorial_fails_closed_without_capacity_expansion_and_maps_oom() -> None:
     provider = _editorial_provider()
     function = Mock()
     malformed = {"error": {"type": "JSONDecodeError", "message": "invalid JSON"}}
-    function.remote.side_effect = [malformed, malformed, malformed]
+    function.remote.return_value = malformed
 
     with (
         patch.object(provider, "_function", return_value=function),
         pytest.raises(RuntimeError, match="JSONDecodeError"),
     ):
         provider.complete_json(task="semantic_cores:3", payload={})
-    assert function.remote.call_count == 3
+    assert function.remote.call_count == 1
 
     function.reset_mock()
-    function.remote.side_effect = None
     function.remote.return_value = {
-        "error": {"type": "OutOfMemoryError", "message": "CUDA exhausted"}
+        "error": {
+            "type": "OutOfMemoryError",
+            "message": "CUDA exhausted",
+            "details": {"input_tokens": 1234},
+        }
     }
     with (
         patch.object(provider, "_function", return_value=function),
-        pytest.raises(RuntimeError, match="OutOfMemoryError"),
+        pytest.raises(EditorialCapacityError, match="CUDA exhausted") as caught,
     ):
         provider.complete_json(task="semantic_cores:3", payload={})
+    assert caught.value.details["input_tokens"] == 1234
     assert function.remote.call_count == 1

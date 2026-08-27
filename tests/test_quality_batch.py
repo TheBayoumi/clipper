@@ -153,8 +153,6 @@ def test_quality_batch_yield_is_quality_derived_not_campaign_quota(tmp_path: Pat
         {timeline.video_id: _visual(timeline)},
         provider,
         dag_root=tmp_path / "dag",
-        max_words_per_chunk=200,
-        chunk_overlap_words=20,
     )
 
     assert len(result.quality_moments) == 1
@@ -169,8 +167,8 @@ def test_quality_batch_yield_is_quality_derived_not_campaign_quota(tmp_path: Pat
     assert result.stage_executions == 4
     assert result.stage_cache_hits == 0
     assert provider.tasks == [
-        "source_hazards:0",
-        "semantic_cores:0",
+        next(task for task in provider.tasks if task.startswith("source_hazards:")),
+        next(task for task in provider.tasks if task.startswith("semantic_cores:")),
         next(task for task in provider.tasks if task.startswith("narrative_envelope:")),
         next(task for task in provider.tasks if task.startswith("quality_windows:")),
     ]
@@ -187,8 +185,6 @@ def test_quality_batch_reuses_exact_dag_without_new_model_calls(tmp_path: Path) 
         {timeline.video_id: _visual(timeline)},
         _QualityEditorial(),
         dag_root=dag_root,
-        max_words_per_chunk=200,
-        chunk_overlap_words=20,
     )
     assert first.stage_executions == 4
 
@@ -198,8 +194,6 @@ def test_quality_batch_reuses_exact_dag_without_new_model_calls(tmp_path: Path) 
         {timeline.video_id: _visual(timeline)},
         _QualityEditorial(fail_if_called=True),
         dag_root=dag_root,
-        max_words_per_chunk=200,
-        chunk_overlap_words=20,
     )
     assert len(cached.plans) == 1
     assert cached.stage_executions == 0
@@ -217,8 +211,6 @@ def test_branding_policy_missing_visual_evidence_is_failure_not_zero_yield(tmp_p
             {},
             _QualityEditorial(),
             dag_root=tmp_path / "dag",
-            max_words_per_chunk=200,
-            chunk_overlap_words=20,
         )
 
 
@@ -249,8 +241,6 @@ def test_branding_policy_rejects_explicitly_insufficient_source_policy_coverage(
             {timeline.video_id: visual},
             _QualityEditorial(),
             dag_root=tmp_path / "dag",
-            max_words_per_chunk=200,
-            chunk_overlap_words=20,
         )
 
 
@@ -264,8 +254,6 @@ def test_forbidden_sponsor_source_produces_legitimate_zero_quality_yield(tmp_pat
         {timeline.video_id: _visual(timeline)},
         provider,
         dag_root=tmp_path / "dag",
-        max_words_per_chunk=200,
-        chunk_overlap_words=20,
     )
     assert result.plans == ()
     assert result.quality_moments == ()
