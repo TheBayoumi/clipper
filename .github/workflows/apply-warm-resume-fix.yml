@@ -1,0 +1,83 @@
+name: Apply warm resumable inference fix
+
+on:
+  push:
+    branches:
+      - feat/word-reveal-face-tracking
+    paths:
+      - ".github/patches/apply_warm_resume_fix.py"
+      - ".github/workflows/apply-warm-resume-fix.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/word-reveal-face-tracking
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Apply deterministic patch
+        run: python .github/patches/apply_warm_resume_fix.py
+
+      - name: Install validation dependencies
+        run: python -m pip install -e ".[dev,modal]"
+
+      - name: Format changed Python
+        run: |
+          ruff format \
+            scripts/modal_open_models.py \
+            scripts/modal_pipeline.py \
+            scripts/modal_vision_smoke.py \
+            src/clipper/providers/base.py \
+            src/clipper/providers/modal.py \
+            src/clipper/providers/factory.py \
+            src/clipper/visual_ai.py \
+            src/clipper/pipeline.py \
+            tests/test_visual_ai.py \
+            tests/test_modal_model_lifecycle.py
+
+      - name: Lint changed Python
+        run: |
+          ruff check \
+            scripts/modal_open_models.py \
+            scripts/modal_pipeline.py \
+            scripts/modal_vision_smoke.py \
+            src/clipper/providers/base.py \
+            src/clipper/providers/modal.py \
+            src/clipper/providers/factory.py \
+            src/clipper/visual_ai.py \
+            src/clipper/pipeline.py \
+            tests/test_visual_ai.py \
+            tests/test_modal_model_lifecycle.py
+
+      - name: Targeted regression tests
+        run: |
+          pytest -q -o addopts="" \
+            tests/test_visual_ai.py \
+            tests/test_modal_model_lifecycle.py \
+            tests/test_provider_runtime_contract.py \
+            tests/test_modal_pipeline_source_contract.py \
+            tests/test_production_workflow_contract.py
+
+      - name: Syntax and whitespace validation
+        run: |
+          python -m compileall -q src scripts tests
+          git diff --check
+
+      - name: Commit implementation and remove patch machinery
+        run: |
+          git rm .github/patches/apply_warm_resume_fix.py
+          git rm .github/workflows/apply-warm-resume-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: make model inference warm adaptive and resumable"
+          git push origin HEAD:feat/word-reveal-face-tracking
