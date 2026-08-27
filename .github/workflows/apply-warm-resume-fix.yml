@@ -30,9 +30,20 @@ jobs:
       - name: Install validation dependencies
         run: python -m pip install -e ".[dev,modal]"
 
-      - name: Format changed Python
+      - name: Format and autofix changed Python
         run: |
           ruff format \
+            scripts/modal_open_models.py \
+            scripts/modal_pipeline.py \
+            scripts/modal_vision_smoke.py \
+            src/clipper/providers/base.py \
+            src/clipper/providers/modal.py \
+            src/clipper/providers/factory.py \
+            src/clipper/visual_ai.py \
+            src/clipper/pipeline.py \
+            tests/test_visual_ai.py \
+            tests/test_modal_model_lifecycle.py
+          ruff check --fix \
             scripts/modal_open_models.py \
             scripts/modal_pipeline.py \
             scripts/modal_vision_smoke.py \
