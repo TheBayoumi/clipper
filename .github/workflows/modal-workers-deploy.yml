@@ -168,7 +168,7 @@ jobs:
           model_bytes = placement.get("model_bytes_by_device")
           if not isinstance(expected, int) or isinstance(expected, bool) or expected < 1:
               raise RuntimeError(f"invalid expected_gpu_count: {expected!r}")
-          if not isinstance(observed, list):
+          if not isinstance(observed, (list, tuple)):
               raise RuntimeError(f"invalid model_gpu_indices: {observed!r}")
           normalized = sorted(
               value

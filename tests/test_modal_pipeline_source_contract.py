@@ -69,6 +69,7 @@ def test_open_model_image_has_qwen3_vl_and_shared_editorial_budget_contract() ->
     assert "device_map=_editorial_device_map_policy()" in source
     assert "editorial model did not distribute across all allocated GPUs" in source
     assert '"editorial_placement"' in source
+    assert '"model_gpu_indices": list(model_gpu_indices)' in source
     assert '"application_status": application_status' in source
     deploy_path = Path(".github/workflows/modal-workers-deploy.yml")
     deploy = deploy_path.read_text(encoding="utf-8")
@@ -79,6 +80,7 @@ def test_open_model_image_has_qwen3_vl_and_shared_editorial_budget_contract() ->
     assert "Verify editorial model spans allocated GPUs" in deploy
     assert "worker.ready.remote()" in deploy
     assert 'placement = runtime.get("editorial_placement")' in deploy
+    assert "isinstance(observed, (list, tuple))" in deploy
     assert "normalized != required" in deploy
     assert 'model_bytes.get(f"cuda:{index}")' in deploy
     assert "editorial_output_budget" not in source

@@ -554,7 +554,7 @@ def _editorial_device_distribution(model: Any) -> dict[str, Any]:
     return {
         "placement_policy": _editorial_device_map_policy(),
         "expected_gpu_count": expected_gpu_count,
-        "model_gpu_indices": model_gpu_indices,
+        "model_gpu_indices": list(model_gpu_indices),
         "hf_device_map": raw_map,
         "model_bytes_by_device": _editorial_model_bytes_by_device(model),
     }

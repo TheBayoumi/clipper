@@ -1,7 +1,7 @@
 {
-  "request_reason": "Resume HILP only after exact-head EditorialModel placement verification and deployment decoupling",
-  "requested_from_sha": "599340ff96f245927b3a4a0e0bcc5bf692ba7466",
-  "blocked_hilp_run_id": "33124054002",
+  "request_reason": "Reverify live two-GPU EditorialModel placement after normalizing model_gpu_indices telemetry",
+  "requested_from_sha": "c911b7b58939e8ab4a40784beaa370857abb36ff",
+  "failed_placement_run_id": "33124625082",
   "resume_from_production_run_id": "33120454910",
   "fresh_inference": false,
   "placement_requirement": {
