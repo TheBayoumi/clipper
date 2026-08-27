@@ -43,6 +43,9 @@ No `PASS` may be inferred from historical V7/V8 acceptance when the contract req
 | H | Synthetic visuals never invoked for Double Coverage | campaign policy `forbid` + pre-provider gate | zero-provider-call regression | PASS |
 | I | Content-addressed durable stage DAG | `dag.py`, `stage_contracts.py` | DAG/replay tests | PASS |
 | I | Downstream change does not rerun upstream paid work | dependency/output fingerprints | interrupted/resume regression | PASS |
+| I | Source-policy vision resumes at completed observation granularity | content-addressed per-frame checkpoints + explicit durable commit hook | interruption/resume and fully-cached zero-inference regressions | IMPLEMENTED_PENDING_LIVE |
+| I | Editorial/vision repeated inference uses persistent model-worker lifecycle | Modal class workers with enter-time loading; no ordinary-batch checkpoint reload | local lifecycle contract tests; live lifecycle IDs/load counts required | IMPLEMENTED_PENDING_LIVE |
+| I | Vision capacity is runtime-derived rather than a fixed production batch/VRAM threshold | learned good/bad capacity with adaptive recovery | forced-capacity regression + live per-device VRAM evidence required | IMPLEMENTED_PENDING_LIVE |
 | J | Dynamic acceptance derives expectations from evidence | `acceptance.py` | dynamic acceptance tests | PASS |
 | K | Two-person podcast | synthetic multimodal acceptance corpus | `test_phase_k_cross_content_validation.py` | PENDING CI |
 | K | Single-person talking head | synthetic multimodal acceptance corpus | `test_phase_k_cross_content_validation.py` | PENDING CI |
@@ -78,6 +81,10 @@ No `PASS` may be inferred from historical V7/V8 acceptance when the contract req
 | Interrupted-run resume | DAG regression | PASS |
 | No unrelated-stage recomputation | DAG regression | PASS |
 | Compute/cost accounting | telemetry implemented; current production measurements required | IMPLEMENTED_PENDING_LIVE |
+| Warm editorial/vision worker reuse | class lifecycle implemented; exact live worker lifecycle/model-load evidence required | IMPLEMENTED_PENDING_LIVE |
+| Runtime-derived vision capacity and OOM recovery | adaptive capacity implementation/tests; live VRAM evidence required | IMPLEMENTED_PENDING_LIVE |
+| Durable per-observation visual resume without replay | implementation + interruption/cache regressions; live interrupted/resume evidence required | IMPLEMENTED_PENDING_LIVE |
+| Per-device vision VRAM telemetry | worker/provider telemetry implemented; live evidence required | IMPLEMENTED_PENDING_LIVE |
 | Adaptive visual strategy | implementation + tests | PASS |
 | Generated-media policy gating | implementation + tests | PASS |
 | Double Coverage synthetic-media prohibition | tracked policy + provider non-invocation test | PASS |

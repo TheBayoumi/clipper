@@ -50,7 +50,8 @@ def editorial_provider(profile_name: str) -> EditorialProvider:
     if backend in {"function", "self-hosted", "modal-function"}:
         return ModalEditorialProvider(
             app_name=app,
-            function_name="editorial",
+            class_name="EditorialModel",
+            method_name="complete",
             identity=ModelIdentity(
                 "Qwen/Qwen3-30B-A3B-Instruct-2507",
                 os.getenv(
@@ -92,7 +93,9 @@ def vision_provider(profile_name: str, *, large: bool = False) -> VisionProvider
         return LocalVisionProvider(model_id=model_id)
     return ModalVisionProvider(
         app_name=os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor"),
-        function_name="vision_large" if large else "vision",
+        class_name="VisionModel",
+        method_name="inspect",
+        class_parameters={"model_id": model_id},
         identity=ModelIdentity(
             model_id,
             os.getenv("CLIPPER_VISION_MODEL_REVISION", "main"),

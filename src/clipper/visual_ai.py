@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import math
 import subprocess
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from .providers.base import InferenceUsage, ProviderResult, VisionProvider
+from .cache import FileCache
+from .providers.base import InferenceUsage, ModelIdentity, ProviderResult, VisionProvider
+from .stage_contracts import content_fingerprint
 from .visual import VisualEvent, VisualEvidenceScope, VisualEvidenceSpan, VisualTimeline
 
 ReviewDecision = Literal["PASS", "REPAIR", "REJECT", "ESCALATE"]
 Severity = Literal["LOW", "MEDIUM", "HIGH"]
 VISUAL_SAMPLE_MAX_EDGE = 960
 SOURCE_POLICY_SAMPLE_INTERVAL_SECONDS = 4.0
-SOURCE_POLICY_BATCH_SIZE = 24
 SOURCE_POLICY_SINGLE_FRAME_RETRIES = 2
 
 
@@ -516,6 +518,8 @@ def _inspect_source_policy_batch(
     frame_timestamps: tuple[float, ...],
     frames: list[Path],
     spans: tuple[VisualEvidenceSpan, ...],
+    on_observations: Callable[[tuple[VisualEvent, ...], tuple[float, ...], ModelIdentity], None]
+    | None = None,
 ) -> tuple[tuple[VisualEvent, ...], list[ProviderResult[dict[str, Any]]]]:
     if not frame_timestamps:
         raise ValueError("source-policy inspection batch cannot be empty")
@@ -576,6 +580,12 @@ def _inspect_source_policy_batch(
             )
             return
 
+        if parsed and on_observations is not None:
+            missing_keys = {round(value, 3) for value in missing}
+            observed_times = tuple(
+                value for value in subset_times if round(value, 3) not in missing_keys
+            )
+            on_observations(parsed, observed_times, result.model)
         accepted.extend(parsed)
         if not missing:
             return
@@ -619,21 +629,243 @@ def _inspect_source_policy_batch(
     )
 
 
+def _model_identity_from_payload(payload: object) -> ModelIdentity | None:
+    if not isinstance(payload, dict):
+        return None
+    fields = (
+        "model_id",
+        "revision",
+        "quantization",
+        "inference_engine",
+        "prompt_version",
+        "schema_version",
+    )
+    if not all(payload.get(field) is not None for field in fields):
+        return None
+    return ModelIdentity(*(str(payload[field]) for field in fields))
+
+
+def _source_policy_cache_namespace(
+    *,
+    source_hash: str,
+    requested_identity: ModelIdentity,
+) -> str:
+    instruction = str(
+        _source_policy_context(
+            video_id="cache-contract",
+            source_hash=source_hash,
+            frame_timestamps=(),
+            recovery_attempt=0,
+        )["instruction"]
+    )
+    return content_fingerprint(
+        {
+            "stage": "source_policy_visual_frame",
+            "source_hash": source_hash,
+            "model_identity": requested_identity.to_dict(),
+            "inspection_contract": instruction,
+            "frame_contract": {"max_edge": VISUAL_SAMPLE_MAX_EDGE},
+        }
+    )
+
+
+def _source_policy_frame_cache_key(namespace: str, timestamp: float) -> str:
+    return content_fingerprint({"namespace": namespace, "timestamp": round(timestamp, 3)})
+
+
+def _read_source_policy_checkpoint(
+    cache: FileCache,
+    *,
+    namespace: str,
+    timestamp: float,
+    span: VisualEvidenceSpan,
+) -> tuple[VisualEvent, ModelIdentity] | None:
+    payload = cache.read(_source_policy_frame_cache_key(namespace, timestamp), "observation")
+    if not isinstance(payload, dict):
+        return None
+    model = _model_identity_from_payload(payload.get("model"))
+    observation = payload.get("observation")
+    if model is None or not isinstance(observation, dict):
+        return None
+    try:
+        events, missing = _parse_source_policy_events(
+            {"observations": [observation]},
+            frame_timestamps=(timestamp,),
+            spans=(span,),
+        )
+    except (TypeError, ValueError):
+        return None
+    if missing or len(events) != 1:
+        return None
+    return events[0], model
+
+
+def _write_source_policy_checkpoint(
+    cache: FileCache,
+    *,
+    namespace: str,
+    timestamp: float,
+    event: VisualEvent,
+    model: ModelIdentity,
+) -> None:
+    cache.write(
+        _source_policy_frame_cache_key(namespace, timestamp),
+        "observation",
+        {
+            "timestamp": round(timestamp, 3),
+            "model": model.to_dict(),
+            "observation": {
+                "timestamp": round(timestamp, 3),
+                "scene_id": event.scene_id,
+                "summary": event.summary,
+                "visible_speakers": list(event.visible_speakers),
+                "event_labels": list(event.event_labels),
+                "confidence": event.confidence,
+            },
+        },
+    )
+
+
+def _is_vision_capacity_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(
+        marker in text
+        for marker in (
+            "outofmemoryerror",
+            "out of memory",
+            "exceeds model context",
+            "request too large",
+            "payload too large",
+        )
+    )
+
+
+def _capacity_cache_key(requested_identity: ModelIdentity) -> str:
+    return content_fingerprint(
+        {
+            "stage": "source_policy_visual_capacity",
+            "model_identity": requested_identity.to_dict(),
+            "frame_contract": {"max_edge": VISUAL_SAMPLE_MAX_EDGE},
+        }
+    )
+
+
+def _load_capacity_state(
+    cache: FileCache | None,
+    *,
+    requested_identity: ModelIdentity,
+) -> tuple[str | None, int, int | None]:
+    if cache is None:
+        return None, 0, None
+    key = _capacity_cache_key(requested_identity)
+    payload = cache.read(key, "capacity")
+    if not isinstance(payload, dict):
+        return key, 0, None
+    raw_good = payload.get("largest_good")
+    raw_bad = payload.get("smallest_bad")
+    good = int(raw_good) if isinstance(raw_good, int) and raw_good > 0 else 0
+    bad = int(raw_bad) if isinstance(raw_bad, int) and raw_bad > good else None
+    return key, good, bad
+
+
+def _persist_capacity_state(
+    cache: FileCache | None,
+    key: str | None,
+    *,
+    largest_good: int,
+    smallest_bad: int | None,
+    checkpoint_commit: Callable[[], None] | None,
+) -> None:
+    if cache is None or key is None:
+        return
+    cache.write(
+        key,
+        "capacity",
+        {
+            "largest_good": largest_good,
+            "smallest_bad": smallest_bad,
+        },
+    )
+    if checkpoint_commit is not None:
+        checkpoint_commit()
+
+
+def _next_batch_after_success(
+    current: int,
+    *,
+    largest_good: int,
+    smallest_bad: int | None,
+    remaining: int,
+) -> int:
+    if remaining <= 0:
+        return 0
+    if smallest_bad is None:
+        return min(remaining, max(current + 1, current * 2))
+    if largest_good + 1 < smallest_bad:
+        return min(remaining, largest_good + (smallest_bad - largest_good) // 2)
+    return min(remaining, max(1, largest_good))
+
+
+def _next_batch_after_capacity_failure(
+    current: int,
+    *,
+    largest_good: int,
+    smallest_bad: int,
+) -> int:
+    if current <= 1:
+        return 1
+    if largest_good > 0 and largest_good + 1 < smallest_bad:
+        candidate = largest_good + (smallest_bad - largest_good) // 2
+    elif largest_good > 0:
+        candidate = largest_good
+    else:
+        candidate = current // 2
+    return max(1, min(current - 1, candidate))
+
+
 def _aggregate_vision_results(
     results: list[ProviderResult[dict[str, Any]]],
     timeline: VisualTimeline,
+    *,
+    cached_model: ModelIdentity | None = None,
+    cache_hits: int = 0,
+    requested_frames: int = 0,
 ) -> ProviderResult[dict[str, Any]]:
-    if not results:
-        raise ValueError("source-policy visual scout produced no inference results")
-    model = results[0].model
-    if any(result.model != model for result in results[1:]):
+    model = results[0].model if results else cached_model
+    if model is None:
+        raise ValueError("source-policy visual scout produced no inference or cached evidence")
+    if cached_model is not None and model != cached_model:
+        raise RuntimeError("source-policy cache model identity differs from active vision model")
+    if any(result.model != model for result in results):
         raise RuntimeError("source-policy visual scout changed model identity between batches")
+
     usages = [result.usage for result in results]
     gpu_types = {usage.gpu_type for usage in usages if usage.gpu_type}
     peaks = [usage.peak_vram_mb for usage in usages if usage.peak_vram_mb is not None]
+    lifecycle_loads: dict[str, int] = {}
+    peak_by_device: dict[str, float] = {}
+    for usage in usages:
+        lifecycle_id = usage.runtime.get("worker_lifecycle_id")
+        load_count = usage.runtime.get("model_load_count")
+        if isinstance(lifecycle_id, str) and isinstance(load_count, int):
+            lifecycle_loads[lifecycle_id] = max(lifecycle_loads.get(lifecycle_id, 0), load_count)
+        raw_peaks = usage.runtime.get("peak_vram_mb_by_device")
+        if isinstance(raw_peaks, dict):
+            for device, value in raw_peaks.items():
+                if isinstance(value, int | float):
+                    peak_by_device[str(device)] = max(
+                        peak_by_device.get(str(device), 0.0), float(value)
+                    )
+    runtime: dict[str, Any] = {
+        "source_policy_cache_hits": cache_hits,
+        "source_policy_requested_frames": requested_frames,
+        "source_policy_provider_calls": len(results),
+        "worker_lifecycle_model_loads": lifecycle_loads,
+        "peak_vram_mb_by_device": peak_by_device,
+    }
     usage = InferenceUsage(
-        provider=usages[0].provider,
-        started_at=usages[0].started_at,
+        provider=usages[0].provider if usages else "cache",
+        started_at=usages[0].started_at if usages else "cache",
         duration_seconds=sum(item.duration_seconds for item in usages),
         gpu_type=next(iter(gpu_types)) if len(gpu_types) == 1 else None,
         gpu_seconds=sum(item.gpu_seconds for item in usages),
@@ -641,6 +873,7 @@ def _aggregate_vision_results(
         input_units=sum(item.input_units for item in usages),
         output_units=sum(item.output_units for item in usages),
         estimated_cost_usd=sum(item.estimated_cost_usd for item in usages),
+        runtime=runtime,
     )
     return ProviderResult(
         timeline.to_dict(),
@@ -660,8 +893,10 @@ def scout_visual_timeline(
     output_dir: Path,
     scene_cuts: tuple[float, ...] = (),
     candidate_ranges: tuple[tuple[float, float], ...] = (),
+    checkpoint_dir: Path | None = None,
+    checkpoint_commit: Callable[[], None] | None = None,
 ) -> tuple[VisualTimeline, ProviderResult[dict[str, Any]]]:
-    """Build source-wide policy evidence; candidate/render review remains a separate stage."""
+    """Build source-wide policy evidence with resumable, runtime-learned capacity."""
     media_duration = media_duration_seconds(video_path)
     effective_duration = min(duration, media_duration)
     times = source_policy_sample_times(effective_duration, scene_cuts=scene_cuts)
@@ -674,34 +909,185 @@ def scout_visual_timeline(
         times = tuple(sorted(set(times) | set(dense_candidate_times)))
     spans = visual_evidence_spans_from_samples(times, effective_duration, scope="source_policy")
     spans_by_sample = {round(span.sample_time, 3): span for span in spans}
+    requested_identity = provider.identity
+    cache = FileCache(checkpoint_dir) if checkpoint_dir is not None else None
+    namespace = _source_policy_cache_namespace(
+        source_hash=source_hash,
+        requested_identity=requested_identity,
+    )
+
     events: list[VisualEvent] = []
+    cached_model: ModelIdentity | None = None
+    cached_times: set[float] = set()
+    if cache is not None:
+        for timestamp in times:
+            hit = _read_source_policy_checkpoint(
+                cache,
+                namespace=namespace,
+                timestamp=timestamp,
+                span=spans_by_sample[round(timestamp, 3)],
+            )
+            if hit is None:
+                continue
+            event, model = hit
+            if cached_model is not None and model != cached_model:
+                continue
+            cached_model = model
+            events.append(event)
+            cached_times.add(round(timestamp, 3))
+
+    pending_times = tuple(
+        timestamp for timestamp in times if round(timestamp, 3) not in cached_times
+    )
     results: list[ProviderResult[dict[str, Any]]] = []
-    for batch_index, start in enumerate(range(0, len(times), SOURCE_POLICY_BATCH_SIZE)):
-        batch_times = times[start : start + SOURCE_POLICY_BATCH_SIZE]
-        batch_dir = output_dir / f"source-policy-batch-{batch_index:04d}"
-        frames = extract_video_frames(video_path, batch_times, batch_dir)
-        if len(frames) != len(batch_times):
-            raise RuntimeError("source-policy frame extraction returned an incomplete batch")
-        batch_spans = tuple(spans_by_sample[round(value, 3)] for value in batch_times)
-        batch_events, batch_results = _inspect_source_policy_batch(
-            provider,
-            video_id=video_id,
-            source_hash=source_hash,
-            frame_timestamps=batch_times,
-            frames=frames,
-            spans=batch_spans,
+    if pending_times:
+        prepared_dir = output_dir / "source-policy-pending"
+        prepared_frames = extract_video_frames(video_path, pending_times, prepared_dir)
+        if len(prepared_frames) != len(pending_times):
+            raise RuntimeError("source-policy frame extraction returned incomplete prepared jobs")
+
+        warm = getattr(provider, "warm", None)
+        if callable(warm):
+            warm()
+        if cached_model is not None and provider.identity != cached_model:
+            events.clear()
+            cached_times.clear()
+            cached_model = None
+            pending_times = times
+            prepared_dir = output_dir / "source-policy-revalidated"
+            prepared_frames = extract_video_frames(video_path, pending_times, prepared_dir)
+            if callable(warm):
+                warm()
+
+        work = [
+            (timestamp, frame, spans_by_sample[round(timestamp, 3)])
+            for timestamp, frame in zip(pending_times, prepared_frames, strict=True)
+        ]
+
+        def persist_observations(
+            parsed: tuple[VisualEvent, ...],
+            observed_times: tuple[float, ...],
+            model: ModelIdentity,
+        ) -> None:
+            nonlocal cached_model
+            if cache is None:
+                return
+            if len(parsed) != len(observed_times):
+                raise RuntimeError("source-policy checkpoint lost observation identity")
+            for timestamp, event in zip(observed_times, parsed, strict=True):
+                _write_source_policy_checkpoint(
+                    cache,
+                    namespace=namespace,
+                    timestamp=timestamp,
+                    event=event,
+                    model=model,
+                )
+            cached_model = model
+            if checkpoint_commit is not None:
+                checkpoint_commit()
+
+        capacity_key, largest_good, smallest_bad = _load_capacity_state(
+            cache, requested_identity=requested_identity
         )
-        events.extend(batch_events)
-        results.extend(batch_results)
+        batch_size = largest_good if largest_good > 0 else 1
+
+        while work:
+            size = min(batch_size, len(work))
+            subset = tuple(work[:size])
+            subset_times = tuple(item[0] for item in subset)
+            subset_frames = [item[1] for item in subset]
+            subset_spans = tuple(item[2] for item in subset)
+            try:
+                batch_events, batch_results = _inspect_source_policy_batch(
+                    provider,
+                    video_id=video_id,
+                    source_hash=source_hash,
+                    frame_timestamps=subset_times,
+                    frames=subset_frames,
+                    spans=subset_spans,
+                    on_observations=persist_observations,
+                )
+            except Exception as exc:
+                if not _is_vision_capacity_error(exc):
+                    raise
+
+                if cache is not None:
+                    retained: list[tuple[float, Path, VisualEvidenceSpan]] = []
+                    completed_events: list[VisualEvent] = []
+                    for item in subset:
+                        hit = _read_source_policy_checkpoint(
+                            cache,
+                            namespace=namespace,
+                            timestamp=item[0],
+                            span=item[2],
+                        )
+                        if hit is None:
+                            retained.append(item)
+                        else:
+                            completed_events.append(hit[0])
+                    if completed_events:
+                        events.extend(completed_events)
+                        work = retained + work[size:]
+                        if not retained:
+                            batch_size = min(max(1, batch_size), len(work)) if work else 0
+                            continue
+
+                if size <= 1:
+                    raise RuntimeError(
+                        "vision capacity exhausted for an indivisible single-frame inspection"
+                    ) from exc
+                smallest_bad = size if smallest_bad is None else min(smallest_bad, size)
+                batch_size = _next_batch_after_capacity_failure(
+                    size,
+                    largest_good=largest_good,
+                    smallest_bad=smallest_bad,
+                )
+                _persist_capacity_state(
+                    cache,
+                    capacity_key,
+                    largest_good=largest_good,
+                    smallest_bad=smallest_bad,
+                    checkpoint_commit=checkpoint_commit,
+                )
+                continue
+
+            events.extend(batch_events)
+            results.extend(batch_results)
+            work = work[size:]
+            largest_good = max(largest_good, size)
+            batch_size = _next_batch_after_success(
+                size,
+                largest_good=largest_good,
+                smallest_bad=smallest_bad,
+                remaining=len(work),
+            )
+            _persist_capacity_state(
+                cache,
+                capacity_key,
+                largest_good=largest_good,
+                smallest_bad=smallest_bad,
+                checkpoint_commit=checkpoint_commit,
+            )
 
     timeline = VisualTimeline(
         video_id,
         source_hash,
-        tuple(sorted(events, key=lambda event: (event.start, event.end, event.scene_id))),
+        tuple(
+            sorted(
+                events,
+                key=lambda event: (event.start, event.end, event.scene_id),
+            )
+        ),
         coverage_spans=spans,
         source_duration=effective_duration,
     )
-    return timeline, _aggregate_vision_results(results, timeline)
+    return timeline, _aggregate_vision_results(
+        results,
+        timeline,
+        cached_model=cached_model,
+        cache_hits=len(cached_times),
+        requested_frames=len(times),
+    )
 
 
 def _needs_escalation(report: VisualReviewReport, threshold: float) -> bool:

@@ -272,7 +272,11 @@ A run may complete successfully with zero eligible moments. It must never manufa
 
 Cost constraints are operational constraints, not output targets. Track expected/actual marginal cost per stage and candidate. Expensive stages should not start when prerequisite evidence is already invalid. If budget ends before all eligible moments are processed, preserve their evidence and report budget-limited partial yield.
 
-Prefer warm persistent Modal model services for repeated structured editorial/vision calls to avoid repeated large checkpoint initialization.
+Repeated structured editorial and vision inference MUST use persistent model-worker lifecycles where technically feasible. Ordinary logical batch/task boundaries MUST NOT intentionally reload the same checkpoint. Model initialization count, worker lifecycle identity, per-device peak VRAM and runtime capacity recovery must be observable in live acceptance evidence.
+
+Operational inference capacity MUST be learned from runtime evidence rather than encoded as fixed absolute batch-size or VRAM-headroom numbers. The vision path must adapt to successful capacity and recover from capacity failures by reducing work until the indivisible single-frame unit; a single-frame capacity failure must fail closed rather than silently reduce evidence quality.
+
+Every successfully validated expensive source-policy visual observation MUST be content-addressed and durably checkpointed before subsequent paid work continues. An interrupted run MUST resume from missing observations and MUST NOT repeat already checkpointed visual inference. Cache reuse is keyed by source/model/inspection contract rather than by transient batch numbering.
 
 ## Required modules / responsibilities
 
@@ -463,6 +467,10 @@ All must pass:
 - content-addressed per-stage cache
 - interrupted-run resume without unrelated recomputation
 - cost accounting
+- persistent warm editorial/vision worker lifecycle with model-load/container-reuse evidence
+- runtime-derived vision batch capacity with recoverable OOM/context/payload splitting and fail-closed single-frame exhaustion
+- per-device VRAM telemetry
+- durable per-observation source-policy vision checkpoints and interrupted-run resume without replay
 - adaptive visual strategy
 - generated-media policy gating
 - synthetic generation forbidden for Double Coverage

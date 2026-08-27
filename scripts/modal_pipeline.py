@@ -514,6 +514,7 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
             alignment_provider=alignment,
             diarization_provider=diarization,
             render=render,
+            checkpoint_commit=artifact_volume.commit,
         )
     finally:
         brief_path.unlink(missing_ok=True)

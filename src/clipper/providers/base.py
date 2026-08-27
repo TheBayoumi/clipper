@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Generic, Literal, Protocol, TypeVar
 
@@ -39,6 +39,7 @@ class InferenceUsage:
     input_units: int = 0
     output_units: int = 0
     estimated_cost_usd: float = 0.0
+    runtime: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

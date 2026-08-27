@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import gc
 import hashlib
 import io
 import json
@@ -11,6 +12,7 @@ import subprocess
 import tempfile
 import time
 import traceback
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,7 +29,6 @@ L4_USD_PER_SECOND = 0.000222
 L40S_USD_PER_SECOND = 0.000542
 EDITORIAL_MODEL_ID = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 EDITORIAL_MODEL_REVISION = "110954009be4a882781a90356c7d2b8a9e3428dc"
-VISION_MAX_PIXELS_PER_FRAME = 512 * 28 * 28
 VISION_MAX_NEW_TOKENS = 2048
 VISION_FALLBACK_CONTEXT_LIMIT = 262_144
 VISION_MAX_ATTEMPTS = 2
@@ -81,10 +82,6 @@ speech_image = base_image.uv_pip_install(
 )
 
 app = modal.App(APP_NAME)
-_editorial_tokenizer: Any | None = None
-_editorial_model: Any | None = None
-_editorial_structured_model: Any | None = None
-_vision_models: dict[str, tuple[Any, Any]] = {}
 _whisper_model: Any | None = None
 _diarization_pipeline: Any | None = None
 _model_revisions: dict[str, str] = {}
@@ -439,108 +436,118 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@app.function(
-    image=text_image,
-    gpu="L4:2",
-    volumes={HF_CACHE: model_cache},
-    secrets=[hf_secret],
-    timeout=1800,
-    memory=32768,
-    scaledown_window=2,
-)
-def editorial(payload: dict[str, Any]) -> dict[str, Any]:
+def _cuda_memory_snapshot() -> dict[str, dict[str, float]]:
+    import torch
+
+    if not torch.cuda.is_available():
+        return {}
+    snapshot: dict[str, dict[str, float]] = {}
+    for index in range(torch.cuda.device_count()):
+        free_bytes, total_bytes = torch.cuda.mem_get_info(index)
+        snapshot[str(index)] = {
+            "free_mb": float(free_bytes / (1024 * 1024)),
+            "total_mb": float(total_bytes / (1024 * 1024)),
+            "allocated_mb": float(torch.cuda.memory_allocated(index) / (1024 * 1024)),
+            "reserved_mb": float(torch.cuda.memory_reserved(index) / (1024 * 1024)),
+            "peak_allocated_mb": float(torch.cuda.max_memory_allocated(index) / (1024 * 1024)),
+        }
+    return snapshot
+
+
+def _worker_runtime(
+    lifecycle_id: str,
+    *,
+    model_load_count: int,
+    batch_frame_count: int | None = None,
+) -> dict[str, Any]:
+    runtime: dict[str, Any] = {
+        "worker_lifecycle_id": lifecycle_id,
+        "model_load_count": model_load_count,
+        "cuda_memory_by_device": _cuda_memory_snapshot(),
+    }
+    if batch_frame_count is not None:
+        runtime["batch_frame_count"] = batch_frame_count
+    return runtime
+
+
+def _load_editorial_model() -> tuple[Any, Any, Any]:
+    import torch
+    from outlines import from_transformers
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+    tokenizer = AutoTokenizer.from_pretrained(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION)
+    quantization = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        EDITORIAL_MODEL_ID,
+        revision=EDITORIAL_MODEL_REVISION,
+        device_map="auto",
+        dtype=torch.bfloat16,
+        quantization_config=quantization,
+        low_cpu_mem_usage=True,
+    )
+    return tokenizer, model, from_transformers(model, tokenizer)
+
+
+def _editorial_infer(
+    payload: dict[str, Any],
+    tokenizer: Any,
+    structured_model: Any,
+    *,
+    lifecycle_id: str,
+) -> dict[str, Any]:
+    import torch
+    from outlines.types import JsonSchema
+
     from clipper.providers.editorial_prompt import editorial_contract, editorial_json_schema
 
-    global _editorial_model, _editorial_structured_model, _editorial_tokenizer
+    started = time.perf_counter()
     task = str(payload.get("task") or "")
     recovery_attempt = _editorial_recovery_attempt(payload)
+    system_content = (
+        "You are a source-grounded multimodal short-form editor. "
+        "Never invent source evidence, spoken words, timestamps, or IDs. "
+        + editorial_contract(task)
+    )
+    if recovery_attempt > 1:
+        system_content += (
+            " This is a constrained recovery generation after a previous invalid, truncated, "
+            "or semantically rejected response. Return a complete object satisfying the JSON "
+            "Schema. If needed, return fewer valid items with shorter prose rather than "
+            "exhausting the output budget."
+        )
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+    rendered = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    schema = JsonSchema(editorial_json_schema(task))
+    output_budget = _editorial_output_budget(payload)
+    input_ids = tokenizer(rendered, add_special_tokens=False)["input_ids"]
+    input_units = len(input_ids)
     try:
-        import torch
-        from outlines import from_transformers
-        from outlines.types import JsonSchema
-        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-
-        started = time.perf_counter()
-        if _editorial_model is None or _editorial_tokenizer is None:
-            _editorial_tokenizer = AutoTokenizer.from_pretrained(
-                EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION
+        with torch.inference_mode():
+            generated_text = structured_model(
+                rendered,
+                schema,
+                max_new_tokens=output_budget,
+                do_sample=False,
+                use_cache=True,
             )
-            quantization = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
-            )
-            _editorial_model = AutoModelForCausalLM.from_pretrained(
-                EDITORIAL_MODEL_ID,
-                revision=EDITORIAL_MODEL_REVISION,
-                device_map="auto",
-                dtype=torch.bfloat16,
-                quantization_config=quantization,
-                max_memory={0: "22GiB", 1: "22GiB"},
-                low_cpu_mem_usage=True,
-            )
-            _editorial_structured_model = None
-
-        if _editorial_structured_model is None:
-            _editorial_structured_model = from_transformers(
-                _editorial_model,
-                _editorial_tokenizer,
-            )
-
-        system_content = (
-            "You are a source-grounded multimodal short-form editor. "
-            "Never invent source evidence, spoken words, timestamps, or IDs. "
-            + editorial_contract(task)
-        )
-        if recovery_attempt > 1:
-            system_content += (
-                " This is a constrained recovery generation after a previous invalid, truncated, "
-                "or semantically rejected response. Return a complete object satisfying the JSON "
-                "Schema. If needed, return fewer valid items with shorter prose rather than "
-                "exhausting the output budget."
-            )
-
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ]
-        rendered = _editorial_tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        schema = JsonSchema(editorial_json_schema(task))
-        output_budget = _editorial_output_budget(payload)
-
-        input_ids = _editorial_tokenizer(
-            rendered,
-            add_special_tokens=False,
-        )["input_ids"]
-        input_units = len(input_ids)
-
-        text = _editorial_structured_model(
-            rendered,
-            schema,
-            max_new_tokens=output_budget,
-            do_sample=False,
-            use_cache=True,
-        )
-        if not isinstance(text, str):
+        if not isinstance(generated_text, str):
             raise TypeError(
                 "Outlines transformers generation returned a non-string response: "
-                f"{type(text).__name__}"
+                f"{type(generated_text).__name__}"
             )
-
-        output_ids = _editorial_tokenizer(
-            text,
-            add_special_tokens=False,
-        )["input_ids"]
+        output_ids = tokenizer(generated_text, add_special_tokens=False)["input_ids"]
         output_units = len(output_ids)
-
         try:
-            value = _json_text(text)
+            value = _json_text(generated_text)
         except json.JSONDecodeError as exc:
-            # Outlines constrains syntax during decoding, so reaching this branch generally
-            # means generation was cut off by the output budget or an upstream library error.
             if output_units >= output_budget:
                 raise EditorialOutputTruncated(
                     f"task={task} attempt={recovery_attempt} exhausted "
@@ -550,7 +557,6 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
                 "constrained editorial generation returned invalid JSON despite Outlines "
                 f"schema enforcement for task={task}: {exc}"
             ) from exc
-
         return {
             "value": value,
             "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
@@ -566,188 +572,289 @@ def editorial(payload: dict[str, Any]) -> dict[str, Any]:
                 input_units=input_units,
                 output_units=output_units,
             ),
+            "runtime": _worker_runtime(lifecycle_id, model_load_count=1),
         }
-    except Exception as exc:
-        with contextlib.suppress(Exception):
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        return _transport_error(
-            exc, context=f"task={task or '<missing>'} attempt={recovery_attempt}"
-        )
+    finally:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
-def _vision_infer(payload: dict[str, Any], model_id: str, gpu: str) -> dict[str, Any]:
-    import torch
-    from PIL import Image
-    from transformers import AutoModelForImageTextToText, AutoProcessor, BitsAndBytesConfig
-
-    started = time.perf_counter()
-    raw_frames = payload.get("frames_base64")
-    if not isinstance(raw_frames, list) or not raw_frames:
-        raise ValueError("vision payload requires frames_base64")
-    frames = [Image.open(io.BytesIO(base64.b64decode(item))).convert("RGB") for item in raw_frames]
-    cached = _vision_models.get(model_id)
-    if cached is None:
-        processor = AutoProcessor.from_pretrained(model_id)
-        kwargs: dict[str, Any] = {"device_map": "auto", "dtype": torch.bfloat16}
-        if "30B" in model_id:
-            kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
-            )
-            kwargs["max_memory"] = {0: "22GiB", 1: "22GiB"}
-        else:
-            # Split the dense 8B weights so neither L4 is crowded before visual input arrives.
-            kwargs["device_map"] = "balanced"
-            kwargs["max_memory"] = {0: "20GiB", 1: "20GiB"}
-        processor.image_processor.size["longest_edge"] = VISION_MAX_PIXELS_PER_FRAME
-        model = AutoModelForImageTextToText.from_pretrained(model_id, **kwargs)
-        model.generation_config.do_sample = False
-        model.generation_config.temperature = None
-        model.generation_config.top_p = None
-        model.generation_config.top_k = None
-        _vision_models[model_id] = (processor, model)
-    else:
-        processor, model = cached
-    total_input_units = 0
-    total_output_units = 0
-    for attempt in range(1, VISION_MAX_ATTEMPTS + 1):
-        content: list[dict[str, Any]] = [{"type": "image", "image": frame} for frame in frames]
-        content.append({"type": "text", "text": _vision_prompt(payload, attempt)})
-        messages = [{"role": "user", "content": content}]
-        inputs = processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt",
-        )
-        input_units = int(inputs["input_ids"].numel())
-        text_config = getattr(model.config, "text_config", model.config)
-        context_limit = int(
-            getattr(text_config, "max_position_embeddings", VISION_FALLBACK_CONTEXT_LIMIT)
-        )
-        if input_units + VISION_MAX_NEW_TOKENS > context_limit:
-            raise ValueError(
-                "vision request exceeds model context after pixel bounding: "
-                f"input_tokens={input_units} output_reserve={VISION_MAX_NEW_TOKENS} "
-                f"context_limit={context_limit} frames={len(frames)}"
-            )
-        total_input_units += input_units
-        inputs = inputs.to(model.device)
-        output = model.generate(
-            **inputs,
-            max_new_tokens=VISION_MAX_NEW_TOKENS,
-            do_sample=False,
-            temperature=None,
-            top_p=None,
-            top_k=None,
-        )
-        generated = output[0][inputs["input_ids"].shape[-1] :]
-        output_units = int(generated.numel())
-        total_output_units += output_units
-        text = processor.decode(generated, skip_special_tokens=True)
-        try:
-            value = _json_text(text)
-        except (json.JSONDecodeError, ValueError) as exc:
-            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-            print(
-                "vision JSON validation failed: "
-                f"task={payload.get('task')!s} attempt={attempt} tokens={output_units} "
-                f"chars={len(text)} sha256={digest} error={type(exc).__name__}: {exc}"
-            )
-            if attempt < VISION_MAX_ATTEMPTS:
-                del output, generated, inputs
-                torch.cuda.empty_cache()
-                continue
-            raise ValueError(
-                "vision model did not return valid JSON after recovery: "
-                f"task={payload.get('task')!s} attempts={attempt} tokens={output_units} "
-                f"chars={len(text)} sha256={digest}"
-            ) from exc
-        return {
-            "value": value,
-            "model": _model_evidence(model_id),
-            "usage": _usage(
-                started,
-                gpu,
-                input_units=total_input_units,
-                output_units=total_output_units,
-            ),
-        }
-    raise AssertionError("vision recovery loop exhausted without returning")
-
-
-@app.function(
-    image=text_image,
-    gpu="L4:2",
-    volumes={HF_CACHE: model_cache},
-    secrets=[hf_secret],
-    timeout=1200,
-    memory=24576,
-    scaledown_window=2,
-)
-def vision(payload: dict[str, Any]) -> dict[str, Any]:
-    return _vision_infer(payload, "Qwen/Qwen3-VL-8B-Instruct", "L4:2")
-
-
-@app.function(
+@app.cls(
     image=text_image,
     gpu="L4:2",
     volumes={HF_CACHE: model_cache},
     secrets=[hf_secret],
     timeout=1800,
     memory=32768,
-    scaledown_window=2,
 )
-def vision_large(payload: dict[str, Any]) -> dict[str, Any]:
-    return _vision_infer(payload, "Qwen/Qwen3-VL-30B-A3B-Instruct", "L4:2")
+class EditorialModel:
+    @modal.enter()
+    def load_model(self) -> None:
+        self.lifecycle_id = uuid.uuid4().hex
+        self.tokenizer, self.model, self.structured_model = _load_editorial_model()
+        print(
+            json.dumps(
+                {
+                    "event": "editorial_model_ready",
+                    "worker_lifecycle_id": self.lifecycle_id,
+                    "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
+                    "cuda_memory_by_device": _cuda_memory_snapshot(),
+                },
+                sort_keys=True,
+            )
+        )
+
+    @modal.method()
+    def ready(self) -> dict[str, Any]:
+        return {
+            "value": {"ready": True},
+            "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
+            "runtime": _worker_runtime(self.lifecycle_id, model_load_count=1),
+        }
+
+    @modal.method()
+    def complete(self, payload: dict[str, Any]) -> dict[str, Any]:
+        task = str(payload.get("task") or "")
+        recovery_attempt = _editorial_recovery_attempt(payload)
+        try:
+            return _editorial_infer(
+                payload,
+                self.tokenizer,
+                self.structured_model,
+                lifecycle_id=self.lifecycle_id,
+            )
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            return _transport_error(
+                exc, context=f"task={task or '<missing>'} attempt={recovery_attempt}"
+            )
 
 
-@app.function(
-    image=speech_image,
-    gpu="L4",
-    volumes={HF_CACHE: model_cache, MEDIA_ROOT: media_cache},
-    secrets=[hf_secret],
-    timeout=1800,
-    memory=24576,
-    scaledown_window=2,
-)
-def transcribe(payload: dict[str, Any]) -> dict[str, Any]:
-    global _whisper_model
-    from faster_whisper import WhisperModel
+def _load_vision_model(model_id: str) -> tuple[Any, Any]:
+    import torch
+    from transformers import (
+        AutoModelForImageTextToText,
+        AutoProcessor,
+        BitsAndBytesConfig,
+    )
+
+    processor = AutoProcessor.from_pretrained(model_id)
+    kwargs: dict[str, Any] = {
+        "device_map": "balanced" if torch.cuda.device_count() > 1 else "auto",
+        "dtype": torch.bfloat16,
+    }
+    if "30B" in model_id:
+        kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+    model = AutoModelForImageTextToText.from_pretrained(model_id, **kwargs)
+    model.generation_config.do_sample = False
+    model.generation_config.temperature = None
+    model.generation_config.top_p = None
+    model.generation_config.top_k = None
+    return processor, model
+
+
+def _vision_infer(
+    payload: dict[str, Any],
+    model_id: str,
+    gpu: str,
+    processor: Any,
+    model: Any,
+    *,
+    lifecycle_id: str,
+) -> dict[str, Any]:
+    import torch
+    from PIL import Image
 
     started = time.perf_counter()
-    source_path = str(payload["source_path"])
-    if not source_path.startswith(f"{MEDIA_ROOT}/"):
-        raise ValueError("source_path must be mounted media")
-    if _whisper_model is None:
-        _whisper_model = WhisperModel("large-v3-turbo", device="cuda", compute_type="float16")
-    segments, _info = _whisper_model.transcribe(source_path, word_timestamps=True, vad_filter=True)
-    words: list[dict[str, Any]] = []
-    for segment in segments:
-        for word in segment.words or ():
-            if word.start is None or word.end is None or not word.word.strip():
-                continue
-            words.append(
-                {
-                    "text": word.word.strip(),
-                    "start": float(word.start),
-                    "end": float(word.end),
-                    "confidence": float(word.probability) if word.probability is not None else None,
+    raw_frames = payload.get("frames_base64")
+    if not isinstance(raw_frames, list) or not raw_frames:
+        raise ValueError("vision payload requires frames_base64")
+    frames = [Image.open(io.BytesIO(base64.b64decode(item))).convert("RGB") for item in raw_frames]
+    if torch.cuda.is_available():
+        for index in range(torch.cuda.device_count()):
+            torch.cuda.reset_peak_memory_stats(index)
+
+    total_input_units = 0
+    total_output_units = 0
+    try:
+        for attempt in range(1, VISION_MAX_ATTEMPTS + 1):
+            inputs: Any | None = None
+            output: Any | None = None
+            generated: Any | None = None
+            try:
+                content: list[dict[str, Any]] = [
+                    {"type": "image", "image": frame} for frame in frames
+                ]
+                content.append({"type": "text", "text": _vision_prompt(payload, attempt)})
+                messages = [{"role": "user", "content": content}]
+                inputs = processor.apply_chat_template(
+                    messages,
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    return_dict=True,
+                    return_tensors="pt",
+                )
+                input_units = int(inputs["input_ids"].numel())
+                text_config = getattr(model.config, "text_config", model.config)
+                context_limit = int(
+                    getattr(
+                        text_config,
+                        "max_position_embeddings",
+                        VISION_FALLBACK_CONTEXT_LIMIT,
+                    )
+                )
+                if input_units + VISION_MAX_NEW_TOKENS > context_limit:
+                    raise ValueError(
+                        "vision request exceeds model context: "
+                        f"input_tokens={input_units} "
+                        f"output_reserve={VISION_MAX_NEW_TOKENS} "
+                        f"context_limit={context_limit} frames={len(frames)}"
+                    )
+                total_input_units += input_units
+                inputs = inputs.to(model.device)
+                with torch.inference_mode():
+                    output = model.generate(
+                        **inputs,
+                        max_new_tokens=VISION_MAX_NEW_TOKENS,
+                        do_sample=False,
+                        temperature=None,
+                        top_p=None,
+                        top_k=None,
+                    )
+                generated = output[0][inputs["input_ids"].shape[-1] :]
+                output_units = int(generated.numel())
+                total_output_units += output_units
+                generated_text = processor.decode(generated, skip_special_tokens=True)
+                try:
+                    value = _json_text(generated_text)
+                except (json.JSONDecodeError, ValueError) as exc:
+                    digest = hashlib.sha256(generated_text.encode("utf-8")).hexdigest()[:16]
+                    print(
+                        "vision JSON validation failed: "
+                        f"task={payload.get('task')!s} attempt={attempt} "
+                        f"tokens={output_units} chars={len(generated_text)} "
+                        f"sha256={digest} error={type(exc).__name__}: {exc}"
+                    )
+                    if attempt < VISION_MAX_ATTEMPTS:
+                        continue
+                    raise ValueError(
+                        "vision model did not return valid JSON after recovery: "
+                        f"task={payload.get('task')!s} attempts={attempt} "
+                        f"tokens={output_units} chars={len(generated_text)} "
+                        f"sha256={digest}"
+                    ) from exc
+                return {
+                    "value": value,
+                    "model": _model_evidence(model_id),
+                    "usage": _usage(
+                        started,
+                        gpu,
+                        input_units=total_input_units,
+                        output_units=total_output_units,
+                    ),
+                    "runtime": _worker_runtime(
+                        lifecycle_id,
+                        model_load_count=1,
+                        batch_frame_count=len(frames),
+                    ),
                 }
+            finally:
+                inputs = None
+                output = None
+                generated = None
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        raise AssertionError("vision recovery loop exhausted without returning")
+    finally:
+        frames.clear()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
+@app.cls(
+    image=text_image,
+    gpu="L4:2",
+    volumes={HF_CACHE: model_cache},
+    secrets=[hf_secret],
+    timeout=1800,
+    memory=32768,
+)
+class VisionModel:
+    model_id: str = modal.parameter()
+
+    @modal.enter()
+    def load_model(self) -> None:
+        if not self.model_id.strip():
+            raise ValueError("vision model_id cannot be empty")
+        self.lifecycle_id = uuid.uuid4().hex
+        self.processor, self.model = _load_vision_model(self.model_id)
+        print(
+            json.dumps(
+                {
+                    "event": "vision_model_ready",
+                    "worker_lifecycle_id": self.lifecycle_id,
+                    "model": _model_evidence(self.model_id),
+                    "cuda_memory_by_device": _cuda_memory_snapshot(),
+                },
+                sort_keys=True,
             )
-    if not words:
-        raise ValueError("faster-whisper produced no timestamped words")
-    return {
-        "words": words,
-        "model": _model_evidence("mobiuslabsgmbh/faster-whisper-large-v3-turbo"),
-        "usage": _usage(started, "L4", output_units=len(words)),
-    }
+        )
+
+    @modal.method()
+    def ready(self) -> dict[str, Any]:
+        return {
+            "value": {"ready": True},
+            "model": _model_evidence(self.model_id),
+            "runtime": _worker_runtime(self.lifecycle_id, model_load_count=1),
+        }
+
+    @modal.method()
+    def inspect(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return _vision_infer(
+                payload,
+                self.model_id,
+                "L4:2",
+                self.processor,
+                self.model,
+                lifecycle_id=self.lifecycle_id,
+            )
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                import torch
+
+                if torch.cuda.is_available():
+                    print(
+                        json.dumps(
+                            {
+                                "event": "vision_inference_error",
+                                "worker_lifecycle_id": self.lifecycle_id,
+                                "error_type": type(exc).__name__,
+                                "cuda_memory_by_device": _cuda_memory_snapshot(),
+                            },
+                            sort_keys=True,
+                        )
+                    )
+                    torch.cuda.empty_cache()
+            return _transport_error(
+                exc,
+                context=(
+                    f"task={payload.get('task') or '<missing>'} "
+                    f"frames={len(payload.get('frames_base64') or [])}"
+                ),
+            )
 
 
 @app.function(

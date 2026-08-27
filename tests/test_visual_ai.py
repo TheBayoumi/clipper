@@ -314,10 +314,12 @@ def test_scout_visual_timeline_batches_source_policy_frames_and_records_coverage
     summary = timeline.coverage_summary("source_policy")
     assert summary["coverage_fraction"] == pytest.approx(1.0)
     assert summary["max_sample_gap_seconds"] <= 4.0
-    assert summary["sample_count"] > 24
-    assert len(provider.calls) == 2
+    assert summary["sample_count"] > 1
+    assert len(provider.calls) > 1
     assert all(call[0] == "source_policy_visual_scout" for call in provider.calls)
-    assert all(len(call[1]) <= 24 for call in provider.calls)
+    call_sizes = [len(call[1]) for call in provider.calls]
+    assert call_sizes[0] == 1
+    assert max(call_sizes) > call_sizes[0]
     assert all(
         "Do not retranscribe audio" in str(call[2]["instruction"]) for call in provider.calls
     )
@@ -356,10 +358,11 @@ def test_source_policy_missing_observation_is_reinspected_without_fabricating_co
     sample_count = int(summary["sample_count"])
     assert summary["coverage_fraction"] == pytest.approx(1.0)
     assert len(timeline.events) == sample_count
-    assert len(provider.calls) == 2
-    assert len(provider.calls[0][1]) == sample_count
-    assert len(provider.calls[1][1]) == 1
-    assert provider.calls[1][2]["source_policy_recovery_attempt"] == 1
+    recovery_calls = [
+        call for call in provider.calls if call[2]["source_policy_recovery_attempt"] == 1
+    ]
+    assert recovery_calls
+    assert any(len(call[1]) == 1 for call in recovery_calls)
     assert result.usage.input_units == sample_count + 1
 
 
@@ -677,3 +680,179 @@ def test_media_duration_probe_reads_frame_metadata_and_rejects_invalid_values(
     ):
         media_duration_seconds(video)
     bad.release.assert_called_once()
+
+
+class CapacityPolicyVision(PolicyVision):
+    def __init__(self, capacity: int) -> None:
+        super().__init__()
+        self.capacity = capacity
+        self.attempted_sizes: list[int] = []
+
+    def inspect(
+        self, *, task: str, frames: list[Path], context: dict[str, object]
+    ) -> ProviderResult[dict[str, object]]:
+        self.attempted_sizes.append(len(frames))
+        if len(frames) > self.capacity:
+            raise RuntimeError("CUDA out of memory")
+        return super().inspect(task=task, frames=frames, context=context)
+
+
+class InterruptingPolicyVision(PolicyVision):
+    def __init__(self, fail_after: int | None) -> None:
+        super().__init__()
+        self.fail_after = fail_after
+
+    def inspect(
+        self, *, task: str, frames: list[Path], context: dict[str, object]
+    ) -> ProviderResult[dict[str, object]]:
+        if self.fail_after is not None and len(self.calls) >= self.fail_after:
+            raise RuntimeError("simulated external interruption")
+        return super().inspect(task=task, frames=frames, context=context)
+
+
+def _prepared_source_policy_frames(
+    _source: Path, times: tuple[float, ...], output: Path
+) -> list[Path]:
+    output.mkdir(parents=True, exist_ok=True)
+    frames: list[Path] = []
+    for index, timestamp in enumerate(times):
+        frame = output / f"{index:03d}-{timestamp:.3f}.jpg"
+        frame.write_bytes(b"frame")
+        frames.append(frame)
+    return frames
+
+
+def test_source_policy_capacity_is_learned_from_runtime_failures(
+    tmp_path: Path,
+) -> None:
+    provider = CapacityPolicyVision(capacity=3)
+    commits: list[None] = []
+    with (
+        patch("clipper.visual_ai.media_duration_seconds", return_value=40.0),
+        patch(
+            "clipper.visual_ai.extract_video_frames",
+            side_effect=_prepared_source_policy_frames,
+        ),
+    ):
+        timeline, result = scout_visual_timeline(
+            tmp_path / "source.mp4",
+            provider,
+            video_id="v",
+            source_hash="h",
+            duration=40.0,
+            output_dir=tmp_path / "frames",
+            checkpoint_dir=tmp_path / "cache",
+            checkpoint_commit=lambda: commits.append(None),
+        )
+    sample_count = int(timeline.coverage_summary("source_policy")["sample_count"])
+    assert len(timeline.events) == sample_count
+    assert any(size > provider.capacity for size in provider.attempted_sizes)
+    assert (
+        max(size for size in provider.attempted_sizes if size <= provider.capacity)
+        == provider.capacity
+    )
+    assert result.usage.input_units == sample_count
+    assert commits
+
+
+def test_source_policy_resume_reuses_durable_frame_checkpoints(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "cache"
+    first = InterruptingPolicyVision(fail_after=1)
+    commits: list[None] = []
+    with (
+        patch("clipper.visual_ai.media_duration_seconds", return_value=20.0),
+        patch(
+            "clipper.visual_ai.extract_video_frames",
+            side_effect=_prepared_source_policy_frames,
+        ),
+        pytest.raises(RuntimeError, match="simulated external interruption"),
+    ):
+        scout_visual_timeline(
+            tmp_path / "source.mp4",
+            first,
+            video_id="v",
+            source_hash="h",
+            duration=20.0,
+            output_dir=tmp_path / "first",
+            checkpoint_dir=cache,
+            checkpoint_commit=lambda: commits.append(None),
+        )
+    assert commits
+    completed_timestamps = {
+        round(float(timestamp), 3)
+        for _, _, context in first.calls
+        for timestamp in context["frame_timestamps"]  # type: ignore[index]
+    }
+
+    resumed = InterruptingPolicyVision(fail_after=None)
+    with (
+        patch("clipper.visual_ai.media_duration_seconds", return_value=20.0),
+        patch(
+            "clipper.visual_ai.extract_video_frames",
+            side_effect=_prepared_source_policy_frames,
+        ),
+    ):
+        timeline, result = scout_visual_timeline(
+            tmp_path / "source.mp4",
+            resumed,
+            video_id="v",
+            source_hash="h",
+            duration=20.0,
+            output_dir=tmp_path / "second",
+            checkpoint_dir=cache,
+            checkpoint_commit=lambda: commits.append(None),
+        )
+    resumed_timestamps = {
+        round(float(timestamp), 3)
+        for _, _, context in resumed.calls
+        for timestamp in context["frame_timestamps"]  # type: ignore[index]
+    }
+    assert completed_timestamps
+    assert completed_timestamps.isdisjoint(resumed_timestamps)
+    assert len(timeline.events) == int(timeline.coverage_summary("source_policy")["sample_count"])
+    assert result.usage.runtime["source_policy_cache_hits"] >= len(completed_timestamps)
+
+
+def test_source_policy_fully_cached_resume_performs_no_inference(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "cache"
+    provider = PolicyVision()
+    with (
+        patch("clipper.visual_ai.media_duration_seconds", return_value=12.0),
+        patch(
+            "clipper.visual_ai.extract_video_frames",
+            side_effect=_prepared_source_policy_frames,
+        ),
+    ):
+        scout_visual_timeline(
+            tmp_path / "source.mp4",
+            provider,
+            video_id="v",
+            source_hash="h",
+            duration=12.0,
+            output_dir=tmp_path / "first",
+            checkpoint_dir=cache,
+        )
+    cached = PolicyVision()
+    with (
+        patch("clipper.visual_ai.media_duration_seconds", return_value=12.0),
+        patch("clipper.visual_ai.extract_video_frames") as extract,
+    ):
+        timeline, result = scout_visual_timeline(
+            tmp_path / "source.mp4",
+            cached,
+            video_id="v",
+            source_hash="h",
+            duration=12.0,
+            output_dir=tmp_path / "second",
+            checkpoint_dir=cache,
+        )
+    assert not cached.calls
+    extract.assert_not_called()
+    assert result.usage.provider == "cache"
+    assert result.usage.runtime["source_policy_cache_hits"] == int(
+        timeline.coverage_summary("source_policy")["sample_count"]
+    )

@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
+from collections.abc import Callable
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
@@ -445,6 +446,9 @@ def _visual_timeline(
     timeline: CanonicalTimeline,
     provider: VisionProvider,
     run_dir: Path,
+    *,
+    cache_root: Path,
+    checkpoint_commit: Callable[[], None] | None,
 ) -> tuple[VisualTimeline, dict[str, object]]:
     if not timeline.words:
         raise RuntimeError("canonical grounding produced no source words")
@@ -456,6 +460,8 @@ def _visual_timeline(
         source_hash=timeline.source_hash,
         duration=duration,
         output_dir=run_dir / "visual-scout" / video.video_id / "frames",
+        checkpoint_dir=cache_root / "source-policy-vision",
+        checkpoint_commit=checkpoint_commit,
     )
     (run_dir / "visual-scout" / f"{video.video_id}.json").write_text(
         json.dumps(visual.to_dict(), indent=2) + "\n",
@@ -596,6 +602,7 @@ def run_pipeline(
     alignment_provider: AlignmentProvider | None = None,
     diarization_provider: DiarizationProvider | None = None,
     render: bool = True,
+    checkpoint_commit: Callable[[], None] | None = None,
 ) -> Path:
     """Execute the single supported production architecture over exact campaign targets."""
     brief = load_brief(brief_path)
@@ -629,7 +636,8 @@ def run_pipeline(
         run_dir = cfg.artifact_root / f"{_run_id(brief.campaign_id)}-{os.getpid()}"
     run_dir.mkdir(parents=True, exist_ok=False)
     journal = StageJournal(run_dir / "progress.json")
-    cache = FileCache(cfg.cache_root or (cfg.artifact_root / "_cache"))
+    cache_root = cfg.cache_root or (cfg.artifact_root / "_cache")
+    cache = FileCache(cache_root)
     manifest = PipelineManifest(brief.campaign_id)
     manifest.funnel = _funnel_template()
     manifest.run_metadata = {
@@ -698,7 +706,15 @@ def run_pipeline(
             segments = tuple(transcript_segments_from_canonical(timeline))
             if not segments:
                 raise RuntimeError("canonical timeline produced no transcript segments")
-            visual, visual_meta = _visual_timeline(media_path, video, timeline, scout, run_dir)
+            visual, visual_meta = _visual_timeline(
+                media_path,
+                video,
+                timeline,
+                scout,
+                run_dir,
+                cache_root=cache_root,
+                checkpoint_commit=checkpoint_commit,
+            )
 
             source_runtimes[video.video_id] = SourceRuntime(
                 video=video,
