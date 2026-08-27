@@ -91,6 +91,50 @@ jobs:
               raise RuntimeError(f"deployed Modal apps missing: {sorted(missing)}")
           PY
 
+      - name: Verify required deployed model handles resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import modal
+
+          app = os.environ["CLIPPER_MODAL_APP"]
+          required_functions = [
+              "transcribe",
+              "align",
+              "diarize",
+              "editorial_schema_smoke",
+              "hf_access_smoke",
+          ]
+          for name in required_functions:
+              modal.Function.from_name(app, name).hydrate()
+
+          required_classes = [
+              "EditorialModel",
+              "VisionModel",
+              "VisionModelLarge",
+          ]
+          for name in required_classes:
+              modal.Cls.from_name(app, name).hydrate()
+
+          evidence = {
+              "status": "RESOLVED",
+              "app": app,
+              "functions": required_functions,
+              "classes": required_classes,
+          }
+          Path("modal-model-handles.json").write_text(
+              json.dumps(evidence, indent=2) + "
+",
+              encoding="utf-8",
+          )
+          print(json.dumps(evidence, indent=2))
+          PY
+
       - name: Verify all structured editorial task schemas
         shell: bash
         run: |
@@ -211,6 +255,7 @@ jobs:
             modal-editorial-schema-smoke.json
             modal-hf-access.json
             modal-pipeline-endpoint.json
+            modal-model-handles.json
             modal-worker-deployment.json
           if-no-files-found: warn
           retention-days: 14

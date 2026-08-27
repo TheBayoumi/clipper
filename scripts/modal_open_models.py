@@ -903,6 +903,61 @@ class VisionModelLarge:
     secrets=[hf_secret],
     timeout=1800,
     memory=24576,
+)
+def transcribe(payload: dict[str, Any]) -> dict[str, Any]:
+    global _whisper_model
+    from faster_whisper import WhisperModel
+
+    started = time.perf_counter()
+    source_path = str(payload["source_path"])
+    if not source_path.startswith(f"{MEDIA_ROOT}/"):
+        raise ValueError("source_path must be mounted media")
+    if _whisper_model is None:
+        _whisper_model = WhisperModel(
+            "large-v3-turbo",
+            device="cuda",
+            compute_type="float16",
+        )
+    segments, _info = _whisper_model.transcribe(
+        source_path,
+        word_timestamps=True,
+        vad_filter=True,
+    )
+    words: list[dict[str, Any]] = []
+    for segment in segments:
+        for word in segment.words or ():
+            if word.start is None or word.end is None or not word.word.strip():
+                continue
+            words.append(
+                {
+                    "text": word.word.strip(),
+                    "start": float(word.start),
+                    "end": float(word.end),
+                    "confidence": (
+                        float(word.probability)
+                        if word.probability is not None
+                        else None
+                    ),
+                }
+            )
+    if not words:
+        raise ValueError("faster-whisper produced no timestamped words")
+    return {
+        "words": words,
+        "model": _model_evidence(
+            "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
+        ),
+        "usage": _usage(started, "L4", output_units=len(words)),
+    }
+
+
+@app.function(
+    image=speech_image,
+    gpu="L4",
+    volumes={HF_CACHE: model_cache, MEDIA_ROOT: media_cache},
+    secrets=[hf_secret],
+    timeout=1800,
+    memory=24576,
     scaledown_window=2,
 )
 def align(payload: dict[str, Any]) -> dict[str, Any]:
