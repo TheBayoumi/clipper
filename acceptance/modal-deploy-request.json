@@ -1,7 +1,15 @@
 {
-  "request_reason": "Verify repaired EditorialModel placement gate after YAML parser regression fix",
-  "requested_from_sha": "689868ca94ef43039ce3295f335b0a7b7347c268",
-  "blocked_production_run_id": "33120454910",
-  "attempt": 2,
-  "resume_policy": "Do not resume production until modal-editorial-placement.json proves all allocated GPUs carry model bytes"
+  "request_reason": "Resume HILP only after exact-head EditorialModel placement verification and deployment decoupling",
+  "requested_from_sha": "599340ff96f245927b3a4a0e0bcc5bf692ba7466",
+  "blocked_hilp_run_id": "33124054002",
+  "resume_from_production_run_id": "33120454910",
+  "fresh_inference": false,
+  "placement_requirement": {
+    "expected_gpu_count": 2,
+    "required_model_gpu_indices": [
+      0,
+      1
+    ],
+    "require_model_bytes_on_every_gpu": true
+  }
 }
