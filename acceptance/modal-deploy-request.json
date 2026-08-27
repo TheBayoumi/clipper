@@ -1,0 +1,6 @@
+{
+  "request_reason": "Verify EditorialModel distributes across all allocated GPUs and emits placement evidence before production resume",
+  "requested_from_sha": "fdcb3f9b338aa9ae34a4bc2fc9507d78c3c1f7a7",
+  "blocked_production_run_id": "33120454910",
+  "resume_policy": "Do not resume production until modal-editorial-placement.json proves all allocated GPUs carry model bytes"
+}
