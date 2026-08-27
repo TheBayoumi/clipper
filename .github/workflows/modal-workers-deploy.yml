@@ -195,8 +195,7 @@ jobs:
               )
 
           Path("modal-editorial-placement.json").write_text(
-              json.dumps(placement, indent=2) + "
-",
+              json.dumps(placement, indent=2) + chr(10),
               encoding="utf-8",
           )
           print(json.dumps(placement, indent=2))

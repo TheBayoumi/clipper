@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 
 def _script_function(name: str) -> Any:
@@ -69,7 +70,12 @@ def test_open_model_image_has_qwen3_vl_and_shared_editorial_budget_contract() ->
     assert "editorial model did not distribute across all allocated GPUs" in source
     assert '"editorial_placement"' in source
     assert '"application_status": application_status' in source
-    deploy = Path(".github/workflows/modal-workers-deploy.yml").read_text(encoding="utf-8")
+    deploy_path = Path(".github/workflows/modal-workers-deploy.yml")
+    deploy = deploy_path.read_text(encoding="utf-8")
+    parsed_deploy = yaml.safe_load(deploy)
+    assert isinstance(parsed_deploy, dict)
+    assert "jobs" in parsed_deploy
+    assert "deploy-modal-workers" in parsed_deploy["jobs"]
     assert "Verify editorial model spans allocated GPUs" in deploy
     assert "worker.ready.remote()" in deploy
     assert 'placement = runtime.get("editorial_placement")' in deploy
