@@ -503,12 +503,74 @@ def _editorial_structural_output_tokens(payload: dict[str, Any], tokenizer: Any)
     return max(1, len(tokenizer.encode(template, add_special_tokens=False)))
 
 
+def _editorial_device_map_policy() -> str:
+    import torch
+
+    return "balanced" if torch.cuda.device_count() > 1 else "auto"
+
+
+def _editorial_cuda_device_indices(device_map: dict[str, Any]) -> tuple[int, ...]:
+    indices: set[int] = set()
+    for value in device_map.values():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            if value >= 0:
+                indices.add(value)
+            continue
+        rendered = str(value)
+        if rendered.startswith("cuda:"):
+            suffix = rendered.split(":", 1)[1]
+            if suffix.isdigit():
+                indices.add(int(suffix))
+    return tuple(sorted(indices))
+
+
+def _editorial_model_bytes_by_device(model: Any) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    seen: set[int] = set()
+    for tensor in (*tuple(model.parameters()), *tuple(model.buffers())):
+        marker = id(tensor)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        device = str(tensor.device)
+        totals[device] = totals.get(device, 0) + int(tensor.numel()) * int(tensor.element_size())
+    return totals
+
+
+def _editorial_device_distribution(model: Any) -> dict[str, Any]:
+    import torch
+
+    raw_map = dict(getattr(model, "hf_device_map", {}) or {})
+    model_gpu_indices = _editorial_cuda_device_indices(raw_map)
+    expected_gpu_count = torch.cuda.device_count()
+    if expected_gpu_count > 1 and len(model_gpu_indices) != expected_gpu_count:
+        raise RuntimeError(
+            "editorial model did not distribute across all allocated GPUs: "
+            f"policy={_editorial_device_map_policy()} expected={expected_gpu_count} "
+            f"observed={model_gpu_indices} hf_device_map={raw_map}"
+        )
+    return {
+        "placement_policy": _editorial_device_map_policy(),
+        "expected_gpu_count": expected_gpu_count,
+        "model_gpu_indices": model_gpu_indices,
+        "hf_device_map": raw_map,
+        "model_bytes_by_device": _editorial_model_bytes_by_device(model),
+    }
+
+
 def _editorial_topology_key() -> str:
     import torch
 
-    names = [str(torch.cuda.get_device_name(index)) for index in range(torch.cuda.device_count())]
-    material = json.dumps(names, sort_keys=True).encode("utf-8")
-    return hashlib.sha256(material).hexdigest()[:16]
+    material = {
+        "gpu_names": [
+            str(torch.cuda.get_device_name(index)) for index in range(torch.cuda.device_count())
+        ],
+        "placement_policy": _editorial_device_map_policy(),
+    }
+    encoded = json.dumps(material, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
 
 
 def _editorial_capacity_state_path() -> Path:
@@ -700,14 +762,33 @@ def _transport_error(exc: Exception, *, context: str | None = None) -> dict[str,
     message = str(exc)
     if context:
         message = f"{context}: {message}"
+    error_type = type(exc).__name__
+    capacity_rejected = error_type == "OutOfMemoryError" or "CapacityError" in error_type
+    application_status = "CAPACITY_REJECTED" if capacity_rejected else "FAILED"
+    recovery_action = "REPARTITION" if capacity_rejected else "NONE"
     raw_details = getattr(exc, "details", None)
     details = dict(raw_details) if isinstance(raw_details, dict) else {}
+    details.setdefault("application_status", application_status)
+    details.setdefault("recovery_action", recovery_action)
+    print(
+        json.dumps(
+            {
+                "event": "application_result",
+                "application_status": application_status,
+                "error_type": error_type,
+                "recovery_action": recovery_action,
+            },
+            sort_keys=True,
+        )
+    )
     return {
+        "application_status": application_status,
+        "recovery_action": recovery_action,
         "error": {
-            "type": type(exc).__name__,
+            "type": error_type,
             "message": message,
             "details": details,
-        }
+        },
     }
 
 
@@ -958,11 +1039,12 @@ def _load_editorial_model() -> tuple[Any, Any, Any]:
     model = AutoModelForCausalLM.from_pretrained(
         EDITORIAL_MODEL_ID,
         revision=EDITORIAL_MODEL_REVISION,
-        device_map="balanced_low_0" if torch.cuda.device_count() > 1 else "auto",
+        device_map=_editorial_device_map_policy(),
         dtype=torch.bfloat16,
         quantization_config=quantization,
         low_cpu_mem_usage=True,
     )
+    _editorial_device_distribution(model)
     return tokenizer, model, from_transformers(model, tokenizer)
 
 
@@ -1163,7 +1245,7 @@ def _editorial_infer(
         "output_tokens": output_units,
         "cache_implementation": cache_implementation,
         "logits_to_keep": 1,
-        "hf_device_map": dict(getattr(model, "hf_device_map", {}) or {}),
+        "placement": _editorial_device_distribution(model),
     }
     return {
         "value": value,
@@ -1198,6 +1280,7 @@ class EditorialModel:
     def load_model(self) -> None:
         self.lifecycle_id = uuid.uuid4().hex
         self.tokenizer, self.model, self.structured_model = _load_editorial_model()
+        self.placement = _editorial_device_distribution(self.model)
         self.capacity_state = _load_editorial_capacity_state()
         print(
             json.dumps(
@@ -1206,7 +1289,7 @@ class EditorialModel:
                     "worker_lifecycle_id": self.lifecycle_id,
                     "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
                     "cuda_memory_by_device": _cuda_memory_snapshot(),
-                    "hf_device_map": dict(getattr(self.model, "hf_device_map", {}) or {}),
+                    **self.placement,
                     "capacity_state_path": str(_editorial_capacity_state_path()),
                 },
                 sort_keys=True,
@@ -1215,10 +1298,12 @@ class EditorialModel:
 
     @modal.method()
     def ready(self) -> dict[str, Any]:
+        runtime = _worker_runtime(self.lifecycle_id, model_load_count=1)
+        runtime["editorial_placement"] = dict(self.placement)
         return {
             "value": {"ready": True},
             "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
-            "runtime": _worker_runtime(self.lifecycle_id, model_load_count=1),
+            "runtime": runtime,
         }
 
     @modal.method()

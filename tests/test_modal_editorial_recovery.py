@@ -123,7 +123,12 @@ def test_editorial_provider_maps_remote_oom_to_capacity_signal() -> None:
                 function_name="editorial",
                 error_type="OutOfMemoryError",
                 message="CUDA out of memory",
-                details={"input_tokens": 1234, "reason": "cuda_oom_after_offloaded_cache"},
+                details={
+                    "input_tokens": 1234,
+                    "reason": "cuda_oom_after_offloaded_cache",
+                    "application_status": "CAPACITY_REJECTED",
+                    "recovery_action": "REPARTITION",
+                },
             )
         ]
     )
@@ -131,6 +136,8 @@ def test_editorial_provider_maps_remote_oom_to_capacity_signal() -> None:
         provider.complete_json(task="semantic_cores:range", payload={})
     assert caught.value.details["input_tokens"] == 1234
     assert caught.value.details["remote_error_type"] == "OutOfMemoryError"
+    assert caught.value.details["application_status"] == "CAPACITY_REJECTED"
+    assert caught.value.details["recovery_action"] == "REPARTITION"
     assert len(provider.requests) == 1
 
 
@@ -160,7 +167,15 @@ def test_modal_editorial_runtime_is_model_and_history_derived() -> None:
     assert "def _editorial_generation_plan(" in source
     assert "def _load_editorial_capacity_state(" in source
     assert "def _persist_editorial_capacity_state(" in source
-    assert 'device_map="balanced_low_0"' in source
+    assert 'return "balanced" if torch.cuda.device_count() > 1 else "auto"' in source
+    assert "device_map=_editorial_device_map_policy()" in source
+    assert "def _editorial_device_distribution(" in source
+    assert "editorial model did not distribute across all allocated GPUs" in source
+    assert '"placement_policy": _editorial_device_map_policy()' in source
+    assert '"model_bytes_by_device"' in source
+    assert '"application_status": application_status' in source
+    assert '"recovery_action": recovery_action' in source
+    assert '"event": "application_result"' in source
     assert '"logits_to_keep": 1' in source
     assert '"cache_implementation" = "offloaded"' not in source
     assert 'kwargs["cache_implementation"] = "offloaded"' in source

@@ -64,7 +64,11 @@ def test_open_model_image_has_qwen3_vl_and_shared_editorial_budget_contract() ->
     assert "generation_budget_tokens" in source
     assert "logits_to_keep" in source
     assert '"offloaded"' in source
-    assert 'device_map="balanced_low_0"' in source
+    assert 'return "balanced" if torch.cuda.device_count() > 1 else "auto"' in source
+    assert "device_map=_editorial_device_map_policy()" in source
+    assert "editorial model did not distribute across all allocated GPUs" in source
+    assert '"editorial_placement"' in source
+    assert '"application_status": application_status' in source
     assert "editorial_output_budget" not in source
 
 
