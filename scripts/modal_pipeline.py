@@ -471,6 +471,9 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     render = bool(payload.get("render", True))
     fresh_inference = bool(payload.get("fresh_inference", False))
     resume_from_run_id = str(payload.get("resume_from_run_id") or "").strip() or None
+    if fresh_inference and resume_from_run_id is not None:
+        raise ValueError("fresh inference cannot be combined with a resume_from_run_id")
+    execution_mode = "fresh-inference" if fresh_inference else "content-addressed-resume"
     requested_git_sha = str(payload.get("git_sha") or "").strip()
     if requested_git_sha:
         if len(requested_git_sha) != 40 or any(
@@ -577,16 +580,19 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
             }
         )
     metadata["source_execution"] = source_execution
-    if resume_from_run_id is not None:
+    metadata["execution_mode"] = execution_mode
+    if not fresh_inference:
         metadata["resume"] = {
             "from_run_id": resume_from_run_id,
             "mode": "content-addressed-stage-resume",
+            "cache_root": str(settings.cache_root),
         }
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     artifact_volume.commit()
     return {
         "status": "PASS",
+        "execution_mode": execution_mode,
         "run_volume": "clipper-production-artifacts",
         "run_path": run_relative,
         "sources": source_items,

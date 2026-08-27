@@ -4,5 +4,7 @@
   "target_video_id": "2Y4LP85PTak",
   "max_gpu_seconds": 21600,
   "max_estimated_usd": 10,
-  "request_reason": "Retry exact-head production after source-policy visual observation recovery"
+  "request_reason": "Resume exact-head production with content-addressed stage and vision-observation checkpoints",
+  "fresh_inference": false,
+  "resume_from_run_id": ""
 }

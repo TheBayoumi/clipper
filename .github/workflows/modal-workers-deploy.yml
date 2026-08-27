@@ -68,9 +68,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          modal app list | tee modal-apps.txt
-          grep -F "$CLIPPER_MODAL_APP" modal-apps.txt
-          grep -F "$CLIPPER_MODAL_PIPELINE_APP" modal-apps.txt
+          modal app list --json | tee modal-apps.txt
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          apps = json.loads(Path("modal-apps.txt").read_text(encoding="utf-8"))
+          if not isinstance(apps, list):
+              raise RuntimeError("modal app list --json did not return an array")
+          deployed = {
+              str(app.get("description") or "")
+              for app in apps
+              if isinstance(app, dict) and app.get("state") == "deployed"
+          }
+          expected = {
+              os.environ["CLIPPER_MODAL_APP"],
+              os.environ["CLIPPER_MODAL_PIPELINE_APP"],
+          }
+          missing = expected - deployed
+          if missing:
+              raise RuntimeError(f"deployed Modal apps missing: {sorted(missing)}")
+          PY
 
       - name: Verify all structured editorial task schemas
         shell: bash

@@ -5,23 +5,27 @@ def _workflow() -> str:
     return Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
 
 
-def test_production_workflow_is_single_pass_fresh_and_exact_head() -> None:
+def test_production_workflow_is_single_pass_resumable_and_exact_head() -> None:
     workflow = _workflow()
 
     deploy_models = workflow.index("Deploy exact-head open-model workers")
     deploy_pipeline = workflow.index("Deploy exact-head production pipeline worker")
-    rendering = workflow.index("Run one fresh-inference current-model production render")
+    rendering = workflow.index("Run current-model production render with explicit inference mode")
     validation = workflow.index(
-        "Validate dynamic yield, fresh inference, cost bounds, and actual media"
+        "Validate dynamic yield, resumable inference, cost bounds, and actual media"
     )
 
     assert deploy_models < deploy_pipeline < rendering < validation
     assert '"render": False' not in workflow
     assert '"render": True' in workflow
-    assert '"fresh_inference": True' in workflow
-    assert "resume_from_run_id" not in workflow
+    assert "fresh_inference:" in workflow
+    assert '"fresh_inference": True' not in workflow
+    assert '"fresh_inference": os.environ["CLIPPER_FRESH_INFERENCE"] == "true"' in workflow
+    assert '"resume_from_run_id": os.environ.get("CLIPPER_RESUME_FROM_RUN_ID") or None' in workflow
     assert '"sources": [source]' in workflow
     assert '"git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"]' in workflow
+    assert "content-addressed-resume" in workflow
+    assert "content-addressed-stage-resume" in workflow
     assert "PENDING_ACTUAL_MP4_REVIEW" in workflow
     assert "READY_FOR_HUMAN_REVIEW" in workflow
     assert "READY_TO_PUBLISH" in workflow
