@@ -774,10 +774,13 @@ def _load_capacity_state(
     raw_output_per_item = payload.get("observed_output_tokens_per_item")
     good = int(raw_good) if isinstance(raw_good, int) and raw_good > 0 else 0
     bad = int(raw_bad) if isinstance(raw_bad, int) and raw_bad > good else None
-    try:
-        output_per_item = float(raw_output_per_item)
-    except (TypeError, ValueError, OverflowError):
+    if not isinstance(raw_output_per_item, int | float | str):
         output_per_item = 0.0
+    else:
+        try:
+            output_per_item = float(raw_output_per_item)
+        except (ValueError, OverflowError):
+            output_per_item = 0.0
     history = output_per_item if math.isfinite(output_per_item) and output_per_item > 0.0 else None
     return key, good, bad, history
 
@@ -816,9 +819,11 @@ def _learn_generation_output_tokens_per_item(
         if not isinstance(raw_capacity, dict):
             continue
         raw_value = raw_capacity.get("output_tokens_per_item")
+        if not isinstance(raw_value, int | float | str):
+            continue
         try:
             value = float(raw_value)
-        except (TypeError, ValueError, OverflowError):
+        except (ValueError, OverflowError):
             continue
         if not math.isfinite(value) or value <= 0.0:
             continue
