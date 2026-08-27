@@ -184,31 +184,22 @@ def test_modal_full_cycle_defaults_to_content_addressed_resume() -> None:
 def test_modal_open_model_deploys_required_speech_handles() -> None:
     source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    functions = {
-        node.name
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef)
-    }
+    functions = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
     assert {"transcribe", "align", "diarize"}.issubset(functions)
 
-    transcribe_source = source.split("def transcribe(", 1)[1].split(
-        "def align(", 1
-    )[0]
+    transcribe_source = source.split("def transcribe(", 1)[1].split("def align(", 1)[0]
     assert 'WhisperModel("large-v3-turbo"' in transcribe_source or (
-        '"large-v3-turbo",' in transcribe_source
-        and "WhisperModel(" in transcribe_source
+        '"large-v3-turbo",' in transcribe_source and "WhisperModel(" in transcribe_source
     )
-    assert 'word_timestamps=True' in transcribe_source
-    assert 'vad_filter=True' in transcribe_source
+    assert "word_timestamps=True" in transcribe_source
+    assert "vad_filter=True" in transcribe_source
 
 
 def test_modal_worker_deployment_hydrates_all_required_handles() -> None:
-    workflow = Path(".github/workflows/modal-workers-deploy.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = Path(".github/workflows/modal-workers-deploy.yml").read_text(encoding="utf-8")
     assert "Verify required deployed model handles resolve" in workflow
-    assert 'modal.Function.from_name(app, name).hydrate()' in workflow
-    assert 'modal.Cls.from_name(app, name).hydrate()' in workflow
+    assert "modal.Function.from_name(app, name).hydrate()" in workflow
+    assert "modal.Cls.from_name(app, name).hydrate()" in workflow
     for name in (
         "transcribe",
         "align",

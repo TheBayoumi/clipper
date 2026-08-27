@@ -934,9 +934,7 @@ def transcribe(payload: dict[str, Any]) -> dict[str, Any]:
                     "start": float(word.start),
                     "end": float(word.end),
                     "confidence": (
-                        float(word.probability)
-                        if word.probability is not None
-                        else None
+                        float(word.probability) if word.probability is not None else None
                     ),
                 }
             )
@@ -944,9 +942,7 @@ def transcribe(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("faster-whisper produced no timestamped words")
     return {
         "words": words,
-        "model": _model_evidence(
-            "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
-        ),
+        "model": _model_evidence("mobiuslabsgmbh/faster-whisper-large-v3-turbo"),
         "usage": _usage(started, "L4", output_units=len(words)),
     }
 
