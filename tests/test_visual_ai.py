@@ -13,6 +13,7 @@ from clipper.visual_ai import (
     VisualReviewIssue,
     VisualReviewReport,
     _inspect_source_policy_batch,
+    _is_vision_capacity_error,
     adaptive_sample_times,
     extract_video_frames,
     media_duration_seconds,
@@ -697,6 +698,34 @@ class CapacityPolicyVision(PolicyVision):
         return super().inspect(task=task, frames=frames, context=context)
 
 
+class OutputAwarePolicyVision(PolicyVision):
+    def __init__(self) -> None:
+        super().__init__()
+        self.capacity_hints: list[object] = []
+
+    def inspect(
+        self, *, task: str, frames: list[Path], context: dict[str, object]
+    ) -> ProviderResult[dict[str, object]]:
+        self.capacity_hints.append(context.get("generation_capacity"))
+        result = super().inspect(task=task, frames=frames, context=context)
+        return ProviderResult(
+            result.value,
+            result.model,
+            InferenceUsage(
+                "test",
+                "now",
+                0.01,
+                input_units=len(frames),
+                output_units=len(frames),
+                runtime={
+                    "generation_capacity": {
+                        "output_tokens_per_item": float(len(frames) + 1),
+                    }
+                },
+            ),
+        )
+
+
 class InterruptingPolicyVision(PolicyVision):
     def __init__(self, fail_after: int | None) -> None:
         super().__init__()
@@ -753,6 +782,45 @@ def test_source_policy_capacity_is_learned_from_runtime_failures(
     )
     assert result.usage.input_units == sample_count
     assert commits
+
+
+def test_vision_output_capacity_exhaustion_is_a_runtime_capacity_signal() -> None:
+    assert _is_vision_capacity_error(
+        RuntimeError(
+            "Modal VisionModel.inspect failed: VisionOutputCapacityError: "
+            "vision output capacity exhausted"
+        )
+    )
+
+
+def test_source_policy_generation_history_is_learned_and_fed_into_later_batches(
+    tmp_path: Path,
+) -> None:
+    provider = OutputAwarePolicyVision()
+    with (
+        patch("clipper.visual_ai.media_duration_seconds", return_value=20.0),
+        patch(
+            "clipper.visual_ai.extract_video_frames",
+            side_effect=_prepared_source_policy_frames,
+        ),
+    ):
+        scout_visual_timeline(
+            tmp_path / "source.mp4",
+            provider,
+            video_id="v",
+            source_hash="h",
+            duration=20.0,
+            output_dir=tmp_path / "frames-history",
+            checkpoint_dir=tmp_path / "cache-history",
+        )
+    assert provider.capacity_hints
+    assert provider.capacity_hints[0] is None
+    learned = [
+        hint
+        for hint in provider.capacity_hints[1:]
+        if isinstance(hint, dict) and hint.get("observed_output_tokens_per_item")
+    ]
+    assert learned
 
 
 def test_source_policy_resume_reuses_durable_frame_checkpoints(

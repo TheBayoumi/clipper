@@ -487,6 +487,7 @@ def _source_policy_context(
     source_hash: str,
     frame_timestamps: tuple[float, ...],
     recovery_attempt: int,
+    generation_capacity: dict[str, object] | None = None,
 ) -> dict[str, object]:
     instruction = (
         "Inspect every supplied source frame independently for source-visible branding, "
@@ -500,7 +501,7 @@ def _source_policy_context(
             "was missing or invalid. Return one observation for each supplied timestamp even "
             "when no policy-relevant label is visible."
         )
-    return {
+    context: dict[str, object] = {
         "video_id": video_id,
         "source_hash": source_hash,
         "frame_timestamps": list(frame_timestamps),
@@ -508,6 +509,9 @@ def _source_policy_context(
         "source_policy_recovery_attempt": recovery_attempt,
         "instruction": instruction,
     }
+    if generation_capacity is not None:
+        context["generation_capacity"] = dict(generation_capacity)
+    return context
 
 
 def _inspect_source_policy_batch(
@@ -520,6 +524,7 @@ def _inspect_source_policy_batch(
     spans: tuple[VisualEvidenceSpan, ...],
     on_observations: Callable[[tuple[VisualEvent, ...], tuple[float, ...], ModelIdentity], None]
     | None = None,
+    generation_capacity: dict[str, object] | None = None,
 ) -> tuple[tuple[VisualEvent, ...], list[ProviderResult[dict[str, Any]]]]:
     if not frame_timestamps:
         raise ValueError("source-policy inspection batch cannot be empty")
@@ -547,6 +552,7 @@ def _inspect_source_policy_batch(
                 source_hash=source_hash,
                 frame_timestamps=subset_times,
                 recovery_attempt=recovery_attempt,
+                generation_capacity=generation_capacity,
             ),
         )
         results.append(result)
@@ -736,6 +742,8 @@ def _is_vision_capacity_error(exc: BaseException) -> bool:
             "exceeds model context",
             "request too large",
             "payload too large",
+            "visionoutputcapacityerror",
+            "vision output capacity exhausted",
         )
     )
 
@@ -754,18 +762,24 @@ def _load_capacity_state(
     cache: FileCache | None,
     *,
     requested_identity: ModelIdentity,
-) -> tuple[str | None, int, int | None]:
+) -> tuple[str | None, int, int | None, float | None]:
     if cache is None:
-        return None, 0, None
+        return None, 0, None, None
     key = _capacity_cache_key(requested_identity)
     payload = cache.read(key, "capacity")
     if not isinstance(payload, dict):
-        return key, 0, None
+        return key, 0, None, None
     raw_good = payload.get("largest_good")
     raw_bad = payload.get("smallest_bad")
+    raw_output_per_item = payload.get("observed_output_tokens_per_item")
     good = int(raw_good) if isinstance(raw_good, int) and raw_good > 0 else 0
     bad = int(raw_bad) if isinstance(raw_bad, int) and raw_bad > good else None
-    return key, good, bad
+    try:
+        output_per_item = float(raw_output_per_item)
+    except (TypeError, ValueError, OverflowError):
+        output_per_item = 0.0
+    history = output_per_item if math.isfinite(output_per_item) and output_per_item > 0.0 else None
+    return key, good, bad, history
 
 
 def _persist_capacity_state(
@@ -774,6 +788,7 @@ def _persist_capacity_state(
     *,
     largest_good: int,
     smallest_bad: int | None,
+    observed_output_tokens_per_item: float | None,
     checkpoint_commit: Callable[[], None] | None,
 ) -> None:
     if cache is None or key is None:
@@ -784,10 +799,31 @@ def _persist_capacity_state(
         {
             "largest_good": largest_good,
             "smallest_bad": smallest_bad,
+            "observed_output_tokens_per_item": observed_output_tokens_per_item,
         },
     )
     if checkpoint_commit is not None:
         checkpoint_commit()
+
+
+def _learn_generation_output_tokens_per_item(
+    current: float | None,
+    results: list[ProviderResult[dict[str, Any]]],
+) -> float | None:
+    learned = current
+    for result in results:
+        raw_capacity = result.usage.runtime.get("generation_capacity")
+        if not isinstance(raw_capacity, dict):
+            continue
+        raw_value = raw_capacity.get("output_tokens_per_item")
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(value) or value <= 0.0:
+            continue
+        learned = value if learned is None else max(learned, value)
+    return learned
 
 
 def _next_batch_after_success(
@@ -986,8 +1022,8 @@ def scout_visual_timeline(
             if checkpoint_commit is not None:
                 checkpoint_commit()
 
-        capacity_key, largest_good, smallest_bad = _load_capacity_state(
-            cache, requested_identity=requested_identity
+        capacity_key, largest_good, smallest_bad, observed_output_tokens_per_item = (
+            _load_capacity_state(cache, requested_identity=requested_identity)
         )
         batch_size = largest_good if largest_good > 0 else 1
 
@@ -1006,6 +1042,13 @@ def scout_visual_timeline(
                     frames=subset_frames,
                     spans=subset_spans,
                     on_observations=persist_observations,
+                    generation_capacity=(
+                        {
+                            "observed_output_tokens_per_item": observed_output_tokens_per_item
+                        }
+                        if observed_output_tokens_per_item is not None
+                        else None
+                    ),
                 )
             except Exception as exc:
                 if not _is_vision_capacity_error(exc):
@@ -1047,12 +1090,17 @@ def scout_visual_timeline(
                     capacity_key,
                     largest_good=largest_good,
                     smallest_bad=smallest_bad,
+                    observed_output_tokens_per_item=observed_output_tokens_per_item,
                     checkpoint_commit=checkpoint_commit,
                 )
                 continue
 
             events.extend(batch_events)
             results.extend(batch_results)
+            observed_output_tokens_per_item = _learn_generation_output_tokens_per_item(
+                observed_output_tokens_per_item,
+                batch_results,
+            )
             work = work[size:]
             largest_good = max(largest_good, size)
             batch_size = _next_batch_after_success(
@@ -1066,6 +1114,7 @@ def scout_visual_timeline(
                 capacity_key,
                 largest_good=largest_good,
                 smallest_bad=smallest_bad,
+                observed_output_tokens_per_item=observed_output_tokens_per_item,
                 checkpoint_commit=checkpoint_commit,
             )
 

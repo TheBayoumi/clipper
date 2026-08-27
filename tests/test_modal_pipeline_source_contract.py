@@ -72,7 +72,13 @@ def test_modal_vision_derives_runtime_capacity_without_fixed_vram_or_batch_limit
     assert 'kwargs["max_memory"]' not in source
     assert "class VisionModel:" in source
     assert "@modal.enter()" in source
-    assert "input_units + VISION_MAX_NEW_TOKENS > context_limit" in source
+    assert "VISION_MAX_NEW_TOKENS" not in source
+    assert "VISION_FALLBACK_CONTEXT_LIMIT" not in source
+    assert "def _vision_context_limit(" in source
+    assert "def _vision_generation_capacity(" in source
+    assert "history_output_tokens_per_item" in source
+    assert "max_new_tokens=generation_budget" in source
+    assert "VisionOutputCapacityError" in source
     assert 'gpu="L4:2"' in source
     assert "SOURCE_POLICY_BATCH_SIZE" not in visual_source
     assert "_is_vision_capacity_error" in visual_source
@@ -89,9 +95,13 @@ def test_modal_vision_enforces_schema_and_recovers_invalid_json_once() -> None:
     assert "def _vision_contract(task: str)" in source
     assert 'if task == "visual_timeline_scout"' in source
     assert '"decision":"PASS"' in source
-    assert "for attempt in range(1, VISION_MAX_ATTEMPTS + 1)" in source
-    assert "vision JSON validation failed:" in source
-    assert "vision model did not return valid JSON after recovery" in source
+    assert "VISION_MAX_ATTEMPTS" not in source
+    assert '"event": "vision_generation_start"' in source
+    assert '"event": "vision_generation_complete"' in source
+    assert '"event": "vision_json_validation"' in source
+    assert '"event": "vision_generation_capacity_expand"' in source
+    assert "vision output capacity exhausted:" in source
+    assert "vision model did not return valid JSON after format recovery" in source
     assert "model.generation_config.temperature = None" in source
     assert "temperature=None" in source
 

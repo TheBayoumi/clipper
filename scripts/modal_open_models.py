@@ -6,6 +6,7 @@ import gc
 import hashlib
 import io
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -29,9 +30,6 @@ L4_USD_PER_SECOND = 0.000222
 L40S_USD_PER_SECOND = 0.000542
 EDITORIAL_MODEL_ID = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 EDITORIAL_MODEL_REVISION = "110954009be4a882781a90356c7d2b8a9e3428dc"
-VISION_MAX_NEW_TOKENS = 2048
-VISION_FALLBACK_CONTEXT_LIMIT = 262_144
-VISION_MAX_ATTEMPTS = 2
 
 model_cache = modal.Volume.from_name("clipper-hf-cache", create_if_missing=True)
 media_cache = modal.Volume.from_name("clipper-media-cache", create_if_missing=True)
@@ -207,6 +205,152 @@ def _vision_prompt(payload: dict[str, Any], attempt: int) -> str:
         + " Payload: "
         + json.dumps({"task": task, "context": payload.get("context")}, ensure_ascii=False)
     )
+
+
+class VisionOutputCapacityError(ValueError):
+    """Vision generation exhausted its runtime-derived output capacity."""
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _vision_context_limit(model: Any, processor: Any) -> int:
+    text_config = getattr(model.config, "text_config", model.config)
+    for value in (
+        getattr(text_config, "max_position_embeddings", None),
+        getattr(model.config, "max_position_embeddings", None),
+        getattr(getattr(processor, "tokenizer", None), "model_max_length", None),
+    ):
+        parsed = _positive_int(value)
+        if parsed is not None:
+            return parsed
+    raise ValueError("vision model does not expose a usable context limit")
+
+
+def _vision_output_cardinality(payload: dict[str, Any], frame_count: int) -> int:
+    context = payload.get("context")
+    if isinstance(context, dict):
+        timestamps = context.get("frame_timestamps")
+        if isinstance(timestamps, list) and timestamps:
+            return len(timestamps)
+    return max(1, frame_count)
+
+
+def _vision_output_template(task: str, cardinality: int) -> dict[str, Any]:
+    if task == "source_policy_visual_scout":
+        observation = {
+            "timestamp": 0.0,
+            "scene_id": "scene-visible-source-evidence",
+            "summary": (
+                "visible source evidence including people, scene, branding, overlays, "
+                "on-screen text, and policy-relevant hazards"
+            ),
+            "visible_speakers": ["visible-speaker-a", "visible-speaker-b"],
+            "event_labels": ["branding:visible", "ocr:visible text", "hazard:visible condition"],
+            "confidence": 0.0,
+        }
+        return {"observations": [dict(observation) for _ in range(cardinality)]}
+    if task == "visual_timeline_scout":
+        event = {
+            "start": 0.0,
+            "end": 0.0,
+            "scene_id": "scene-visible-evidence",
+            "summary": "visible scene evidence relevant to editorial continuity",
+            "visible_speakers": ["visible-speaker"],
+            "event_labels": ["visible-event"],
+            "confidence": 0.0,
+        }
+        return {"events": [dict(event) for _ in range(cardinality)]}
+    if task in {"rendered_clip_review", "rendered_clip_review_escalation"}:
+        issue = {
+            "issue_type": "visible_issue",
+            "start": 0.0,
+            "end": 0.0,
+            "severity": "MEDIUM",
+            "confidence": 0.0,
+            "repair_target": "TRACKING",
+            "description": "visible problem requiring deterministic repair or rejection",
+        }
+        return {
+            "decision": "REPAIR",
+            "summary": "visual review of the rendered clip",
+            "overall_confidence": 0.0,
+            "issues": [dict(issue) for _ in range(cardinality)],
+        }
+    return {
+        "items": [
+            {"summary": "structured task output derived from supplied visual evidence"}
+            for _ in range(cardinality)
+        ]
+    }
+
+
+def _vision_structural_output_tokens(processor: Any, task: str, cardinality: int) -> int:
+    tokenizer = getattr(processor, "tokenizer", None)
+    if tokenizer is None or not callable(getattr(tokenizer, "encode", None)):
+        raise ValueError("vision processor does not expose a tokenizer for output-capacity planning")
+    template = json.dumps(
+        _vision_output_template(task, cardinality),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return max(1, len(tokenizer.encode(template, add_special_tokens=False)))
+
+
+def _vision_history_output_tokens_per_item(payload: dict[str, Any]) -> float | None:
+    context = payload.get("context")
+    if not isinstance(context, dict):
+        return None
+    capacity = context.get("generation_capacity")
+    if not isinstance(capacity, dict):
+        return None
+    raw = capacity.get("observed_output_tokens_per_item")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return value if value > 0.0 and math.isfinite(value) else None
+
+
+def _vision_generation_capacity(
+    payload: dict[str, Any],
+    *,
+    frame_count: int,
+    input_units: int,
+    processor: Any,
+    model: Any,
+    minimum_budget: int = 0,
+) -> dict[str, Any]:
+    task = str(payload.get("task") or "")
+    context_limit = _vision_context_limit(model, processor)
+    available_output = context_limit - input_units
+    if available_output <= 0:
+        raise ValueError(
+            "vision request exceeds model context: "
+            f"input_tokens={input_units} context_limit={context_limit} frames={frame_count}"
+        )
+    cardinality = _vision_output_cardinality(payload, frame_count)
+    structural_floor = _vision_structural_output_tokens(processor, task, cardinality)
+    history_per_item = _vision_history_output_tokens_per_item(payload)
+    history_budget = (
+        math.ceil(history_per_item * cardinality) if history_per_item is not None else 0
+    )
+    predicted_budget = max(structural_floor, history_budget, minimum_budget, 1)
+    generation_budget = min(available_output, predicted_budget)
+    return {
+        "task": task,
+        "cardinality": cardinality,
+        "context_limit_tokens": context_limit,
+        "available_output_tokens": available_output,
+        "structural_floor_tokens": structural_floor,
+        "history_output_tokens_per_item": history_per_item,
+        "generation_budget_tokens": generation_budget,
+    }
 
 
 def _sha256_file(path: Path) -> str:
@@ -459,6 +603,7 @@ def _worker_runtime(
     *,
     model_load_count: int,
     batch_frame_count: int | None = None,
+    generation_capacity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     runtime: dict[str, Any] = {
         "worker_lifecycle_id": lifecycle_id,
@@ -467,6 +612,8 @@ def _worker_runtime(
     }
     if batch_frame_count is not None:
         runtime["batch_frame_count"] = batch_frame_count
+    if generation_capacity is not None:
+        runtime["generation_capacity"] = dict(generation_capacity)
     return runtime
 
 
@@ -686,8 +833,13 @@ def _vision_infer(
 
     total_input_units = 0
     total_output_units = 0
+    minimum_budget = 0
+    capacity_expansion_used = False
+    format_recovery_used = False
+    attempt = 0
     try:
-        for attempt in range(1, VISION_MAX_ATTEMPTS + 1):
+        while True:
+            attempt += 1
             inputs: Any | None = None
             output: Any | None = None
             generated: Any | None = None
@@ -705,27 +857,34 @@ def _vision_infer(
                     return_tensors="pt",
                 )
                 input_units = int(inputs["input_ids"].numel())
-                text_config = getattr(model.config, "text_config", model.config)
-                context_limit = int(
-                    getattr(
-                        text_config,
-                        "max_position_embeddings",
-                        VISION_FALLBACK_CONTEXT_LIMIT,
+                capacity = _vision_generation_capacity(
+                    payload,
+                    frame_count=len(frames),
+                    input_units=input_units,
+                    processor=processor,
+                    model=model,
+                    minimum_budget=minimum_budget,
+                )
+                generation_budget = int(capacity["generation_budget_tokens"])
+                total_input_units += input_units
+                print(
+                    json.dumps(
+                        {
+                            "event": "vision_generation_start",
+                            "worker_lifecycle_id": lifecycle_id,
+                            "attempt": attempt,
+                            "frames": len(frames),
+                            **capacity,
+                        },
+                        sort_keys=True,
                     )
                 )
-                if input_units + VISION_MAX_NEW_TOKENS > context_limit:
-                    raise ValueError(
-                        "vision request exceeds model context: "
-                        f"input_tokens={input_units} "
-                        f"output_reserve={VISION_MAX_NEW_TOKENS} "
-                        f"context_limit={context_limit} frames={len(frames)}"
-                    )
-                total_input_units += input_units
                 inputs = inputs.to(model.device)
+                attempt_started = time.perf_counter()
                 with torch.inference_mode():
                     output = model.generate(
                         **inputs,
-                        max_new_tokens=VISION_MAX_NEW_TOKENS,
+                        max_new_tokens=generation_budget,
                         do_sample=False,
                         temperature=None,
                         top_p=None,
@@ -734,25 +893,107 @@ def _vision_infer(
                 generated = output[0][inputs["input_ids"].shape[-1] :]
                 output_units = int(generated.numel())
                 total_output_units += output_units
+                saturated = output_units >= generation_budget
+                print(
+                    json.dumps(
+                        {
+                            "event": "vision_generation_complete",
+                            "worker_lifecycle_id": lifecycle_id,
+                            "attempt": attempt,
+                            "frames": len(frames),
+                            "generated_tokens": output_units,
+                            "generation_budget_tokens": generation_budget,
+                            "saturated": saturated,
+                            "duration_seconds": max(0.0, time.perf_counter() - attempt_started),
+                        },
+                        sort_keys=True,
+                    )
+                )
                 generated_text = processor.decode(generated, skip_special_tokens=True)
                 try:
                     value = _json_text(generated_text)
                 except (json.JSONDecodeError, ValueError) as exc:
                     digest = hashlib.sha256(generated_text.encode("utf-8")).hexdigest()[:16]
                     print(
-                        "vision JSON validation failed: "
-                        f"task={payload.get('task')!s} attempt={attempt} "
-                        f"tokens={output_units} chars={len(generated_text)} "
-                        f"sha256={digest} error={type(exc).__name__}: {exc}"
+                        json.dumps(
+                            {
+                                "event": "vision_json_validation",
+                                "worker_lifecycle_id": lifecycle_id,
+                                "attempt": attempt,
+                                "frames": len(frames),
+                                "valid": False,
+                                "saturated": saturated,
+                                "generated_tokens": output_units,
+                                "generation_budget_tokens": generation_budget,
+                                "sha256": digest,
+                                "error_type": type(exc).__name__,
+                            },
+                            sort_keys=True,
+                        )
                     )
-                    if attempt < VISION_MAX_ATTEMPTS:
+                    if saturated:
+                        available_output = int(capacity["available_output_tokens"])
+                        if not capacity_expansion_used and generation_budget < available_output:
+                            capacity_expansion_used = True
+                            minimum_budget = min(
+                                available_output,
+                                max(generation_budget + 1, generation_budget * 2),
+                            )
+                            print(
+                                json.dumps(
+                                    {
+                                        "event": "vision_generation_capacity_expand",
+                                        "worker_lifecycle_id": lifecycle_id,
+                                        "frames": len(frames),
+                                        "previous_budget_tokens": generation_budget,
+                                        "next_minimum_budget_tokens": minimum_budget,
+                                        "available_output_tokens": available_output,
+                                    },
+                                    sort_keys=True,
+                                )
+                            )
+                            continue
+                        raise VisionOutputCapacityError(
+                            "vision output capacity exhausted: "
+                            f"task={payload.get('task')!s} frames={len(frames)} "
+                            f"generated_tokens={output_units} "
+                            f"generation_budget_tokens={generation_budget} "
+                            f"available_output_tokens={available_output} "
+                            f"context_limit_tokens={capacity['context_limit_tokens']}"
+                        ) from exc
+                    if not format_recovery_used:
+                        format_recovery_used = True
                         continue
                     raise ValueError(
-                        "vision model did not return valid JSON after recovery: "
+                        "vision model did not return valid JSON after format recovery: "
                         f"task={payload.get('task')!s} attempts={attempt} "
                         f"tokens={output_units} chars={len(generated_text)} "
                         f"sha256={digest}"
                     ) from exc
+
+                cardinality = int(capacity["cardinality"])
+                generation_runtime = {
+                    **capacity,
+                    "output_tokens": output_units,
+                    "output_tokens_per_item": output_units / cardinality,
+                    "budget_utilization": output_units / generation_budget,
+                    "capacity_expansion_used": capacity_expansion_used,
+                    "format_recovery_used": format_recovery_used,
+                }
+                print(
+                    json.dumps(
+                        {
+                            "event": "vision_json_validation",
+                            "worker_lifecycle_id": lifecycle_id,
+                            "attempt": attempt,
+                            "frames": len(frames),
+                            "valid": True,
+                            "generated_tokens": output_units,
+                            "generation_budget_tokens": generation_budget,
+                        },
+                        sort_keys=True,
+                    )
+                )
                 return {
                     "value": value,
                     "model": _model_evidence(model_id),
@@ -766,6 +1007,7 @@ def _vision_infer(
                         lifecycle_id,
                         model_load_count=1,
                         batch_frame_count=len(frames),
+                        generation_capacity=generation_runtime,
                     ),
                 }
             finally:
@@ -775,7 +1017,6 @@ def _vision_infer(
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-        raise AssertionError("vision recovery loop exhausted without returning")
     finally:
         frames.clear()
         gc.collect()
