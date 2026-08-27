@@ -1,6 +1,7 @@
 name: Apply warm resumable inference fix
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - feat/word-reveal-face-tracking
