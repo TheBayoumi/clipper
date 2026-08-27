@@ -6,6 +6,7 @@ on:
       - feat/word-reveal-face-tracking
     paths:
       - ".github/patches/apply_warm_resume_fix.py"
+      - ".github/patches/update_dynamic_contract_test.py"
       - ".github/workflows/apply-warm-resume-fix.yml"
 
 permissions:
@@ -25,7 +26,9 @@ jobs:
           python-version: "3.12"
 
       - name: Apply deterministic patch
-        run: python .github/patches/apply_warm_resume_fix.py
+        run: |
+          python .github/patches/apply_warm_resume_fix.py
+          python .github/patches/update_dynamic_contract_test.py
 
       - name: Install validation dependencies
         run: python -m pip install -e ".[dev,modal]"
@@ -42,7 +45,8 @@ jobs:
             src/clipper/visual_ai.py \
             src/clipper/pipeline.py \
             tests/test_visual_ai.py \
-            tests/test_modal_model_lifecycle.py
+            tests/test_modal_model_lifecycle.py \
+            tests/test_modal_pipeline_source_contract.py
           ruff check --fix \
             scripts/modal_open_models.py \
             scripts/modal_pipeline.py \
@@ -53,7 +57,8 @@ jobs:
             src/clipper/visual_ai.py \
             src/clipper/pipeline.py \
             tests/test_visual_ai.py \
-            tests/test_modal_model_lifecycle.py
+            tests/test_modal_model_lifecycle.py \
+            tests/test_modal_pipeline_source_contract.py
 
       - name: Lint changed Python
         run: |
@@ -67,7 +72,8 @@ jobs:
             src/clipper/visual_ai.py \
             src/clipper/pipeline.py \
             tests/test_visual_ai.py \
-            tests/test_modal_model_lifecycle.py
+            tests/test_modal_model_lifecycle.py \
+            tests/test_modal_pipeline_source_contract.py
 
       - name: Targeted regression tests
         run: |
@@ -86,6 +92,7 @@ jobs:
       - name: Commit implementation and remove patch machinery
         run: |
           git rm .github/patches/apply_warm_resume_fix.py
+          git rm .github/patches/update_dynamic_contract_test.py
           git rm .github/workflows/apply-warm-resume-fix.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
