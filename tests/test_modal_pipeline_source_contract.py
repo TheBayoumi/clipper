@@ -174,7 +174,7 @@ def test_modal_full_cycle_defaults_to_content_addressed_resume() -> None:
     cycle = source.split("def run_full_cycle(", 1)[1]
     assert 'fresh_inference = bool(payload.get("fresh_inference", False))' in cycle
     assert '"fresh-inference" if fresh_inference else "content-addressed-resume"' in cycle
-    assert 'if fresh_inference and resume_from_run_id is not None:' in cycle
+    assert "if fresh_inference and resume_from_run_id is not None:" in cycle
     assert 'cache_root=Path(ARTIFACT_ROOT) / "_fresh-cache" / uuid.uuid4().hex' in cycle
     assert 'metadata["execution_mode"] = execution_mode' in cycle
     assert '"mode": "content-addressed-stage-resume"' in cycle
