@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 
 def _workflow() -> str:
     return Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
@@ -8,14 +10,13 @@ def _workflow() -> str:
 def test_production_workflow_is_single_pass_resumable_and_exact_head() -> None:
     workflow = _workflow()
 
-    deploy_models = workflow.index("Deploy exact-head open-model workers")
-    deploy_pipeline = workflow.index("Deploy exact-head production pipeline worker")
+    deployment_gate = workflow.index("Require successful exact-head Modal deployment")
     rendering = workflow.index("Run current-model production render with explicit inference mode")
     validation = workflow.index(
         "Validate dynamic yield, resumable inference, cost bounds, and actual media"
     )
 
-    assert deploy_models < deploy_pipeline < rendering < validation
+    assert deployment_gate < rendering < validation
     assert '"render": False' not in workflow
     assert '"render": True' in workflow
     assert "fresh_inference:" in workflow
@@ -74,8 +75,14 @@ def test_production_workflow_is_dynamic_yield_and_human_review_gated() -> None:
     assert "contract permits zero quality yield" in workflow
     assert "PENDING_ACTUAL_MP4_REVIEW" in workflow
     assert '"human_review": "PENDING_ACTUAL_REVIEW"' in workflow
-    assert "modal deploy scripts/modal_open_models.py" in workflow
-    assert "modal deploy scripts/modal_pipeline.py" in workflow
+    assert "Require successful exact-head Modal deployment" in workflow
+    assert "modal-workers-deploy.yml" in workflow
+    assert '"head_sha": sha' in workflow
+    assert '"status": "success"' in workflow
+    assert "modal-deployment-prerequisite.json" in workflow
+    assert "modal app stop" not in workflow
+    assert "modal deploy scripts/modal_open_models.py" not in workflow
+    assert "modal deploy scripts/modal_pipeline.py" not in workflow
 
 
 def test_production_workflow_enforces_current_model_and_budget_evidence() -> None:
@@ -91,3 +98,19 @@ def test_production_workflow_enforces_current_model_and_budget_evidence() -> Non
     assert '"semantic_cores", "narrative_envelope", "quality_windows"' in workflow
     assert "gpu_seconds > gpu_limit" in workflow
     assert "estimated_usd > cost_limit" in workflow
+
+
+def test_production_workflow_requires_exact_head_modal_deployment_without_mutation() -> None:
+    workflow = _workflow()
+    parsed = yaml.safe_load(workflow)
+    assert isinstance(parsed, dict)
+    assert "jobs" in parsed
+    assert "actions: read" in workflow
+    assert "Require successful exact-head Modal deployment" in workflow
+    assert 'workflow = "modal-workers-deploy.yml"' in workflow
+    assert '"head_sha": sha' in workflow
+    assert 'item.get("head_sha") == sha' in workflow
+    assert 'item.get("conclusion") == "success"' in workflow
+    assert "production requires a successful exact-head Deploy Modal workers run" in workflow
+    assert "modal app stop" not in workflow
+    assert "modal deploy " not in workflow
