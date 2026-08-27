@@ -82,8 +82,15 @@ def test_production_workflow_enforces_current_model_and_budget_evidence() -> Non
     workflow = _workflow()
 
     assert 'int(schema.get("task_families", 0)) != 4' in workflow
-    assert 'int(cache.get("hits") or 0) != 0' in workflow
-    assert 'int(cache_summary.get("stage_cache_hits") or 0) != 0' in workflow
+    assert (
+        'os.environ["CLIPPER_EXECUTION_MODE"] == "fresh-inference" and hits != 0'
+        in workflow
+    )
+    assert (
+        'os.environ["CLIPPER_EXECUTION_MODE"] == "fresh-inference"'
+        " and stage_cache_hits != 0"
+        in workflow
+    )
     assert 'editorial.get("model_invocations")' in workflow
     assert '"semantic_cores", "narrative_envelope", "quality_windows"' in workflow
     assert "gpu_seconds > gpu_limit" in workflow
