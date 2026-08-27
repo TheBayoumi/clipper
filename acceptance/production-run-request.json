@@ -4,7 +4,7 @@
   "target_video_id": "2Y4LP85PTak",
   "max_gpu_seconds": 21600,
   "max_estimated_usd": 10,
-  "request_reason": "Resume exact-head production with content-addressed stage and vision-observation checkpoints",
+  "request_reason": "Resume exact-head production after model-derived adaptive vision generation-capacity fix while preserving content-addressed source and observation checkpoints",
   "fresh_inference": false,
-  "resume_from_run_id": ""
+  "resume_from_run_id": "33069659182"
 }
