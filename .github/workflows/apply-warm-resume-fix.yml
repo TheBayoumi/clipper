@@ -89,11 +89,13 @@ jobs:
           python -m compileall -q src scripts tests
           git diff --check
 
-      - name: Commit implementation and remove patch machinery
+      - name: Commit validated non-workflow implementation
         run: |
-          git rm .github/patches/apply_warm_resume_fix.py
-          git rm .github/patches/update_dynamic_contract_test.py
-          git rm .github/workflows/apply-warm-resume-fix.yml
+          git restore --source=HEAD -- \
+            .github/patches/apply_warm_resume_fix.py \
+            .github/patches/update_dynamic_contract_test.py \
+            .github/workflows/apply-warm-resume-fix.yml \
+            .github/workflows/modal-workers-deploy.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
