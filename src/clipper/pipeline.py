@@ -467,9 +467,9 @@ def _visual_timeline(
         checkpoint_dir=_VISUAL_CHECKPOINT_DIR.get(),
         checkpoint_commit=_VISUAL_CHECKPOINT_COMMIT.get(),
     )
-    (run_dir / "visual-scout" / f"{video.video_id}.json").write_text(
-        json.dumps(visual.to_dict(), indent=2) + "\n",
-        encoding="utf-8",
+    _write_json(
+        run_dir / "visual-scout" / f"{video.video_id}.json",
+        visual.to_dict(),
     )
     return visual, {
         "model": result.model.to_dict(),
@@ -710,9 +710,7 @@ def run_pipeline(
             segments = tuple(transcript_segments_from_canonical(timeline))
             if not segments:
                 raise RuntimeError("canonical timeline produced no transcript segments")
-            checkpoint_dir_token = _VISUAL_CHECKPOINT_DIR.set(
-                cache_root / "source-policy-vision"
-            )
+            checkpoint_dir_token = _VISUAL_CHECKPOINT_DIR.set(cache_root / "source-policy-vision")
             checkpoint_commit_token = _VISUAL_CHECKPOINT_COMMIT.set(checkpoint_commit)
             try:
                 visual, visual_meta = _visual_timeline(

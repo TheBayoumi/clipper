@@ -788,7 +788,7 @@ def test_visual_timeline_requires_grounding_and_records_scout_result(tmp_path: P
     timeline = CanonicalTimeline("v1", "hash", _words("v1", 30))
     visual = VisualTimeline("v1", "hash", (VisualEvent(0, 30, "scene", "source", (), (), 0.9),))
     result = ProviderResult({"events": []}, FakeVision.identity, _usage())
-    (tmp_path / "visual-scout").mkdir()
+    assert not (tmp_path / "visual-scout").exists()
     with patch("clipper.pipeline.scout_visual_timeline", return_value=(visual, result)):
         observed, meta = _visual_timeline(media, video, timeline, FakeVision(), tmp_path)
     assert observed == visual
