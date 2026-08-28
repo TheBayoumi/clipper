@@ -33,6 +33,7 @@ else:
 media_image = (
     modal.Image.from_registry("node:22-bookworm-slim", add_python="3.12")
     .entrypoint([])
+    .env({"CLIPPER_DEPLOYED_GIT_SHA": DEPLOYED_GIT_SHA})
     .apt_install("ffmpeg", "git")
     .uv_pip_install(
         "yt-dlp[default]>=2026.7.4,<2027",
