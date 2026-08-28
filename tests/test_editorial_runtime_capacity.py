@@ -6,6 +6,7 @@ import pytest
 
 from clipper.editorial_capacity import capacity_target_input_tokens
 from clipper.providers.base import EditorialCapacityError, ModelIdentity
+from clipper.providers.local import ProviderUnavailable
 from clipper.providers.modal import ModalEditorialProvider
 
 
@@ -187,3 +188,84 @@ def test_modal_editorial_emits_closed_pipeline_call_pair(
     assert remote.payload["editorial_invocation_id"] == starts[0]["invocation_id"]
     assert remote.payload["execution_id"] == "exec-barrier"
     assert remote.payload["expected_git_sha"] == "b" * 40
+
+
+
+def test_modal_editorial_emits_error_terminal_when_modal_runtime_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    provider = ModalEditorialProvider(
+        app_name="test-app",
+        class_name="EditorialModel",
+        method_name="complete",
+        identity=_identity(),
+    )
+
+    original = RuntimeError("synthetic provider failure")
+
+    def fail(_request):
+        raise original
+
+    def unavailable():
+        raise ProviderUnavailable("modal unavailable")
+
+    monkeypatch.setattr(provider, "invoke", fail)
+    monkeypatch.setattr(provider, "_modal", unavailable)
+
+    with pytest.raises(RuntimeError, match="synthetic provider failure") as captured:
+        provider.complete_json(task="semantic_cores:x", payload={})
+
+    assert captured.value is original
+    events = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
+    ]
+    terminal = next(
+        event for event in events if event.get("event") == "editorial_remote_call_terminal"
+    )
+    assert terminal["status"] == "ERROR"
+    assert terminal["error_type"] == "RuntimeError"
+    assert terminal["reason"] == "local_provider_error"
+
+
+def test_modal_editorial_emits_error_terminal_for_non_timeout_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    provider = ModalEditorialProvider(
+        app_name="test-app",
+        class_name="EditorialModel",
+        method_name="complete",
+        identity=_identity(),
+    )
+
+    class FunctionTimeoutError(Exception):
+        pass
+
+    exception_namespace = type(
+        "_ExceptionNamespace",
+        (),
+        {"FunctionTimeoutError": FunctionTimeoutError},
+    )
+
+    class _ModalModule:
+        exception = exception_namespace()
+
+    def fail(_request):
+        raise ValueError("synthetic non-timeout failure")
+
+    monkeypatch.setattr(provider, "invoke", fail)
+    monkeypatch.setattr(provider, "_modal", lambda: _ModalModule())
+
+    with pytest.raises(ValueError, match="synthetic non-timeout failure"):
+        provider.complete_json(task="semantic_cores:x", payload={})
+
+    events = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
+    ]
+    terminal = next(
+        event for event in events if event.get("event") == "editorial_remote_call_terminal"
+    )
+    assert terminal["status"] == "ERROR"
+    assert terminal["error_type"] == "ValueError"
+    assert terminal["reason"] == "provider_error"
