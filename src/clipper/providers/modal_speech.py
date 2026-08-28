@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -176,6 +177,20 @@ class _ModalSpeechBase:
             raise ProviderUnavailable("install clipper[modal]") from exc
         return modal.Function.from_name(self.app_name, self.function_name)
 
+    @staticmethod
+    def _request_context() -> dict[str, str]:
+        context: dict[str, str] = {}
+        execution_id = os.getenv("CLIPPER_EXECUTION_ID", "").strip()
+        expected_git_sha = (
+            os.getenv("CLIPPER_ACCEPTANCE_SHA", "").strip()
+            or os.getenv("GITHUB_SHA", "").strip()
+        )
+        if execution_id:
+            context["execution_id"] = execution_id
+        if expected_git_sha:
+            context["expected_git_sha"] = expected_git_sha.lower()
+        return context
+
     def _resolved_identity(self, response: dict[str, Any]) -> ModelIdentity:
         raw = response.get("model")
         if not isinstance(raw, dict):
@@ -214,7 +229,12 @@ class ModalTranscriptionProvider(_ModalSpeechBase):
     ) -> ProviderResult[CanonicalTimeline]:
         remote_path = self.media_bridge.ensure_uploaded(source, source_hash)
         response = self._function().remote(
-            {"source_path": remote_path, "video_id": video_id, "source_hash": source_hash}
+            {
+                "source_path": remote_path,
+                "video_id": video_id,
+                "source_hash": source_hash,
+                **self._request_context(),
+            }
         )
         if not isinstance(response, dict) or not isinstance(response.get("words"), list):
             raise ValueError("Modal transcription provider returned an invalid response")
@@ -232,7 +252,11 @@ class ModalAlignmentProvider(_ModalSpeechBase):
     def align(self, source: Path, timeline: CanonicalTimeline) -> ProviderResult[CanonicalTimeline]:
         remote_path = self.media_bridge.ensure_uploaded(source, timeline.source_hash)
         response = self._function().remote(
-            {"source_path": remote_path, "timeline": timeline.to_dict()}
+            {
+                "source_path": remote_path,
+                "timeline": timeline.to_dict(),
+                **self._request_context(),
+            }
         )
         raw_segments = response.get("segments") if isinstance(response, dict) else None
         if not isinstance(raw_segments, list):
@@ -247,7 +271,9 @@ class ModalDiarizationProvider(_ModalSpeechBase):
         self, source: Path, timeline: CanonicalTimeline
     ) -> ProviderResult[CanonicalTimeline]:
         remote_path = self.media_bridge.ensure_uploaded(source, timeline.source_hash)
-        response = self._function().remote({"source_path": remote_path})
+        response = self._function().remote(
+            {"source_path": remote_path, **self._request_context()}
+        )
         if isinstance(response, dict) and isinstance(response.get("error"), dict):
             error = response["error"]
             raise RuntimeError(
