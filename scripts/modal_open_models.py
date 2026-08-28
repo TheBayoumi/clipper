@@ -1844,6 +1844,7 @@ def _vision_worker_inspect(
     model_id: str,
 ) -> dict[str, Any]:
     try:
+        _assert_expected_git_sha(payload)
         return _vision_infer(
             payload,
             model_id,
@@ -1937,6 +1938,7 @@ class VisionModelLarge:
 )
 def transcribe(payload: dict[str, Any]) -> dict[str, Any]:
     global _whisper_model
+    _assert_expected_git_sha(payload)
     from faster_whisper import WhisperModel
 
     started = time.perf_counter()
@@ -1988,6 +1990,7 @@ def transcribe(payload: dict[str, Any]) -> dict[str, Any]:
     scaledown_window=2,
 )
 def align(payload: dict[str, Any]) -> dict[str, Any]:
+    _assert_expected_git_sha(payload)
     import whisperx
 
     started = time.perf_counter()
@@ -2042,6 +2045,7 @@ def align(payload: dict[str, Any]) -> dict[str, Any]:
 )
 def diarize(payload: dict[str, Any]) -> dict[str, Any]:
     global _diarization_pipeline
+    _assert_expected_git_sha(payload)
     cleanup_source: Path | None = None
     try:
         import torch
