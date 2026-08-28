@@ -155,7 +155,6 @@ def test_capacity_error_preserves_same_invocation_id(
     assert result["error"]["details"]["editorial_invocation_id"] == "invocation-2"
 
 
-
 def test_capacity_probe_diagnostic_carries_editorial_invocation_id() -> None:
     tree = _tree()
     function = _function(tree, "_editorial_capacity_probe")
