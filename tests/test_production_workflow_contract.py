@@ -239,7 +239,8 @@ def test_editorial_runtime_safety_is_preflighted_and_fail_closed() -> None:
     assert 'authoritative_counts.get("editorial_remote_call_start")' in workflow
     assert 'authoritative_counts.get("editorial_remote_call_terminal")' in workflow
     assert 'counts.get("editorial_execution_timeout")' in workflow
-    assert "editorial request exceeded runtime-safe input guard" in workflow
+    assert "producer terminal carried unsafe runtime capacity evidence" in workflow
+    assert "safe_completes" in workflow
     assert '"max_gpu_seconds": max_gpu_seconds' in watchdog
     assert '"max_estimated_usd": max_estimated_usd' in watchdog
     assert "conservative in-flight GPU budget reached" in watchdog
