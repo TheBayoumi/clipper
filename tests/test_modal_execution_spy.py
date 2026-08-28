@@ -169,7 +169,7 @@ def test_spy_aborts_repeated_identical_request_plan_without_progress(tmp_path: P
     assert "without forward progress" in spy.abort_reason
 
 
-def test_spy_allows_same_plan_after_generation_completion(tmp_path: Path) -> None:
+def test_spy_allows_same_plan_after_producer_terminal_progress(tmp_path: Path) -> None:
     module = _module()
     spy = module.ModalExecutionSpy(("app",), tmp_path / "progress.ndjson")
     plan = (
@@ -178,10 +178,21 @@ def test_spy_allows_same_plan_after_generation_completion(tmp_path: Path) -> Non
         '"available_output_tokens":1000,"generation_budget_tokens":100,'
         '"serialized_request_bytes":5000}'
     )
+    spy._record(
+        "app",
+        '{"event":"editorial_remote_call_start","invocation_id":"inv-1",'
+        '"task":"semantic_cores:w0-w9"}',
+    )
     spy._record("app", plan)
     spy._record(
         "app",
-        '{"event":"editorial_generation_complete","task":"semantic_cores:w0-w9"}',
+        '{"event":"editorial_remote_call_terminal","invocation_id":"inv-1",'
+        '"task":"semantic_cores:w0-w9","status":"COMPLETE"}',
+    )
+    spy._record(
+        "app",
+        '{"event":"editorial_remote_call_start","invocation_id":"inv-2",'
+        '"task":"semantic_cores:w0-w9"}',
     )
     spy._record("app", plan)
     assert spy.abort_reason is None
