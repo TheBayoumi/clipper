@@ -143,7 +143,7 @@ def test_acceptance_capacity_probe_emits_error_terminal_on_structured_remote_err
     monkeypatch.setenv("CLIPPER_EXECUTION_ID", "exec-structured")
     monkeypatch.setenv("CLIPPER_ACCEPTANCE_SHA", "c" * 40)
 
-    with pytest.raises(RuntimeError, match="EditorialModel.capacity_probe failed"):
+    with pytest.raises(RuntimeError, match=r"EditorialModel\.capacity_probe failed"):
         runner(
             worker,
             task="source_hazards:acceptance_probe:video",
