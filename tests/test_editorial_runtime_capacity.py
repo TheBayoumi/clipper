@@ -153,7 +153,16 @@ def test_modal_editorial_emits_closed_pipeline_call_pair(
                 "value": {"segments": []},
                 "model": {"model_id": "test-model", "revision": "test-revision"},
                 "usage": {},
-                "runtime": {},
+                "runtime": {
+                    "editorial_capacity": {
+                        "input_tokens": 12_345,
+                        "context_limit_tokens": 262_144,
+                        "available_output_tokens": 249_799,
+                        "generation_budget_tokens": 512,
+                        "runtime_safe_input_tokens": 65_536,
+                        "capacity_repartitionable": True,
+                    }
+                },
             }
 
     remote = Remote()
@@ -177,6 +186,9 @@ def test_modal_editorial_emits_closed_pipeline_call_pair(
     assert starts[0]["execution_id"] == terminals[0]["execution_id"] == "exec-barrier"
     assert starts[0]["invocation_id"] == terminals[0]["invocation_id"]
     assert terminals[0]["status"] == "COMPLETE"
+    assert terminals[0]["input_tokens"] == 12_345
+    assert terminals[0]["runtime_safe_input_tokens"] == 65_536
+    assert terminals[0]["capacity_repartitionable"] is True
     assert remote.payload["editorial_invocation_id"] == starts[0]["invocation_id"]
     assert remote.payload["execution_id"] == "exec-barrier"
     assert remote.payload["expected_git_sha"] == "b" * 40
