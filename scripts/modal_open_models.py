@@ -30,6 +30,22 @@ L4_USD_PER_SECOND = 0.000222
 L40S_USD_PER_SECOND = 0.000542
 EDITORIAL_MODEL_ID = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 EDITORIAL_MODEL_REVISION = "110954009be4a882781a90356c7d2b8a9e3428dc"
+DEPLOYED_GIT_SHA = os.getenv("CLIPPER_DEPLOYED_GIT_SHA", "").strip().lower()
+EDITORIAL_EXECUTION_TIMEOUT_SECONDS = int(
+    os.getenv("CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS", "900")
+)
+EDITORIAL_STARTUP_TIMEOUT_SECONDS = int(
+    os.getenv("CLIPPER_EDITORIAL_STARTUP_TIMEOUT_SECONDS", "1800")
+)
+EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS = int(
+    os.getenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", "65536")
+)
+if EDITORIAL_EXECUTION_TIMEOUT_SECONDS <= 0:
+    raise ValueError("CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS must be positive")
+if EDITORIAL_STARTUP_TIMEOUT_SECONDS <= 0:
+    raise ValueError("CLIPPER_EDITORIAL_STARTUP_TIMEOUT_SECONDS must be positive")
+if EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS <= 0:
+    raise ValueError("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS must be positive")
 
 model_cache = modal.Volume.from_name("clipper-hf-cache", create_if_missing=True)
 media_cache = modal.Volume.from_name("clipper-media-cache", create_if_missing=True)
@@ -43,6 +59,7 @@ base_image = (
             "HF_HOME": HF_CACHE,
             "HF_HUB_CACHE": HF_CACHE,
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+            "CLIPPER_DEPLOYED_GIT_SHA": DEPLOYED_GIT_SHA,
         }
     )
 )
@@ -623,6 +640,23 @@ def _positive_number(value: object) -> float | None:
     return parsed if parsed > 0 and math.isfinite(parsed) else None
 
 
+def _execution_id(payload: dict[str, Any]) -> str:
+    return str(payload.get("execution_id") or "").strip()
+
+
+def _assert_expected_git_sha(payload: dict[str, Any]) -> None:
+    expected = str(payload.get("expected_git_sha") or "").strip().lower()
+    if not expected:
+        return
+    if not DEPLOYED_GIT_SHA:
+        raise RuntimeError("open-model worker has no embedded deployment SHA")
+    if expected != DEPLOYED_GIT_SHA:
+        raise RuntimeError(
+            "open-model worker SHA mismatch: "
+            f"expected={expected} deployed={DEPLOYED_GIT_SHA}"
+        )
+
+
 def _editorial_generation_plan(
     payload: dict[str, Any],
     *,
@@ -634,6 +668,8 @@ def _editorial_generation_plan(
     from clipper.providers.base import EditorialCapacityError
 
     task = str(payload.get("task") or "")
+    actual_payload = _editorial_payload(payload)
+    repartitionable = actual_payload.get("capacity_repartitionable") is True
     context_limit = _editorial_context_limit(model, tokenizer)
     available_output = context_limit - input_units
     if available_output <= 0:
@@ -672,12 +708,25 @@ def _editorial_generation_plan(
             },
         )
 
+    if repartitionable and input_units > EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS:
+        raise EditorialCapacityError(
+            "editorial request exceeds the measured runtime-safe input bootstrap",
+            details={
+                "reason": "runtime_input_guard",
+                "task": task,
+                "input_tokens": input_units,
+                "context_limit_tokens": context_limit,
+                "available_output_tokens": available_output,
+                "requested_output_tokens": requested_output,
+                "runtime_safe_input_tokens": EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS,
+            },
+        )
+
     smallest_bad = history.get("smallest_bad_input_tokens")
     largest_good = history.get("largest_good_input_tokens")
     smallest_dynamic_bad = history.get("smallest_dynamic_oom_input_tokens")
     largest_dynamic_good = history.get("largest_dynamic_good_input_tokens")
     largest_offloaded_good = history.get("largest_offloaded_good_input_tokens")
-    repartitionable = payload.get("capacity_repartitionable") is True
 
     if (
         repartitionable
@@ -740,6 +789,7 @@ def _editorial_generation_plan(
         "largest_dynamic_good_input_tokens": largest_dynamic_good,
         "smallest_dynamic_oom_input_tokens": smallest_dynamic_bad,
         "largest_offloaded_good_input_tokens": largest_offloaded_good,
+        "runtime_safe_input_tokens": EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS,
         "capacity_repartitionable": repartitionable,
     }
 
@@ -822,7 +872,12 @@ def _update_editorial_oom_history(
     _persist_editorial_capacity_state(state)
 
 
-def _transport_error(exc: Exception, *, context: str | None = None) -> dict[str, Any]:
+def _transport_error(
+    exc: Exception,
+    *,
+    context: str | None = None,
+    execution_id: str = "",
+) -> dict[str, Any]:
     error_type = type(exc).__name__
     capacity_rejected = error_type == "OutOfMemoryError" or "CapacityError" in error_type
     if not capacity_rejected:
@@ -843,6 +898,7 @@ def _transport_error(exc: Exception, *, context: str | None = None) -> dict[str,
                 "application_status": application_status,
                 "error_type": error_type,
                 "recovery_action": recovery_action,
+                "execution_id": execution_id,
             },
             sort_keys=True,
         )
@@ -1131,6 +1187,7 @@ def _editorial_infer(
 
     started = time.perf_counter()
     task = str(payload.get("task") or "")
+    execution_id = _execution_id(payload)
     system_content = (
         "You are a source-grounded multimodal short-form editor. "
         "Never invent source evidence, spoken words, timestamps, or IDs. "
@@ -1167,6 +1224,7 @@ def _editorial_infer(
                 "event": "editorial_request_plan",
                 "worker_lifecycle_id": lifecycle_id,
                 "task": task,
+                "execution_id": execution_id,
                 **plan,
                 "serialized_request_bytes": serialized_request_bytes,
                 "cuda_memory_by_device": _cuda_memory_snapshot(),
@@ -1194,6 +1252,7 @@ def _editorial_infer(
                         "event": "editorial_generation_start",
                         "worker_lifecycle_id": lifecycle_id,
                         "task": task,
+                        "execution_id": execution_id,
                         "cache_implementation": cache_policy,
                         "input_tokens": input_units,
                         "generation_budget_tokens": output_budget,
@@ -1219,6 +1278,7 @@ def _editorial_infer(
                         "event": "editorial_oom",
                         "worker_lifecycle_id": lifecycle_id,
                         "task": task,
+                        "execution_id": execution_id,
                         "cache_implementation": cache_policy,
                         "input_tokens": input_units,
                         "generation_budget_tokens": output_budget,
@@ -1282,6 +1342,7 @@ def _editorial_infer(
                 "event": "editorial_generation_complete",
                 "worker_lifecycle_id": lifecycle_id,
                 "task": task,
+                "execution_id": execution_id,
                 "cache_implementation": cache_implementation,
                 "input_tokens": input_units,
                 "output_tokens": output_units,
@@ -1366,6 +1427,7 @@ def _editorial_capacity_probe(
 
     started = time.perf_counter()
     task = str(payload.get("task") or "")
+    execution_id = _execution_id(payload)
     system_content = (
         "You are a source-grounded multimodal short-form editor. "
         "Never invent source evidence, spoken words, timestamps, or IDs. "
@@ -1391,6 +1453,7 @@ def _editorial_capacity_probe(
             "event": "editorial_capacity_probe",
             "status": "FIT",
             "task": task,
+            "execution_id": execution_id,
             **plan,
             "serialized_request_bytes": serialized_request_bytes,
         }
@@ -1399,6 +1462,7 @@ def _editorial_capacity_probe(
             "event": "editorial_capacity_probe",
             "status": "CAPACITY_REJECTED",
             "task": task,
+            "execution_id": execution_id,
             **exc.details,
             "serialized_request_bytes": serialized_request_bytes,
         }
@@ -1421,7 +1485,8 @@ def _editorial_capacity_probe(
     gpu="L4:2",
     volumes={HF_CACHE: model_cache},
     secrets=[hf_secret],
-    timeout=1800,
+    timeout=EDITORIAL_EXECUTION_TIMEOUT_SECONDS,
+    startup_timeout=EDITORIAL_STARTUP_TIMEOUT_SECONDS,
     memory=32768,
 )
 class EditorialModel:
@@ -1459,6 +1524,7 @@ class EditorialModel:
     def capacity_probe(self, payload: dict[str, Any]) -> dict[str, Any]:
         task = str(payload.get("task") or "")
         try:
+            _assert_expected_git_sha(payload)
             return _editorial_capacity_probe(
                 payload,
                 self.tokenizer,
@@ -1467,12 +1533,17 @@ class EditorialModel:
                 lifecycle_id=self.lifecycle_id,
             )
         except Exception as exc:
-            return _transport_error(exc, context=f"capacity_probe task={task or '<missing>'}")
+            return _transport_error(
+                exc,
+                context=f"capacity_probe task={task or '<missing>'}",
+                execution_id=_execution_id(payload),
+            )
 
     @modal.method()
     def complete(self, payload: dict[str, Any]) -> dict[str, Any]:
         task = str(payload.get("task") or "")
         try:
+            _assert_expected_git_sha(payload)
             return _editorial_infer(
                 payload,
                 self.tokenizer,
@@ -1487,7 +1558,18 @@ class EditorialModel:
 
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-            return _transport_error(exc, context=f"task={task or '<missing>'}")
+            return _transport_error(
+                exc,
+                context=f"task={task or '<missing>'}",
+                execution_id=_execution_id(payload),
+            )
+        finally:
+            gc.collect()
+            with contextlib.suppress(Exception):
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
 
 def _load_vision_model(model_id: str) -> tuple[Any, Any]:
@@ -1998,6 +2080,15 @@ def diarize(payload: dict[str, Any]) -> dict[str, Any]:
     finally:
         if cleanup_source is not None:
             cleanup_source.unlink(missing_ok=True)
+
+
+@app.function(
+    image=modal.Image.debian_slim().env({"CLIPPER_DEPLOYED_GIT_SHA": DEPLOYED_GIT_SHA}),
+    timeout=60,
+    scaledown_window=2,
+)
+def deployment_identity() -> dict[str, Any]:
+    return {"app": APP_NAME, "deployed_git_sha": DEPLOYED_GIT_SHA}
 
 
 @app.function(image=modal.Image.debian_slim(), timeout=120, scaledown_window=2)
