@@ -25,6 +25,7 @@ env:
   MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
   CLIPPER_MODAL_APP: clipper-open-editor
   CLIPPER_MODAL_PIPELINE_APP: clipper-production-pipeline
+  CLIPPER_DEPLOYED_GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   deploy-modal-workers:
@@ -32,6 +33,15 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact deployment checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CLIPPER_DEPLOYED_GIT_SHA"
 
       - uses: actions/setup-python@v5
         with:
@@ -109,6 +119,7 @@ jobs:
               "diarize",
               "editorial_schema_smoke",
               "hf_access_smoke",
+              "deployment_identity",
           ]
           for name in required_functions:
               modal.Function.from_name(app, name).hydrate()
@@ -132,6 +143,42 @@ jobs:
               encoding="utf-8",
           )
           print(json.dumps(evidence, indent=2))
+          PY
+
+      - name: Verify immutable deployed SHA identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import modal
+
+          expected = os.environ["CLIPPER_DEPLOYED_GIT_SHA"].lower()
+          model_identity = modal.Function.from_name(
+              os.environ["CLIPPER_MODAL_APP"], "deployment_identity"
+          ).remote()
+          pipeline_identity = modal.Function.from_name(
+              os.environ["CLIPPER_MODAL_PIPELINE_APP"], "deployment_identity"
+          ).remote()
+          identities = {
+              "model": model_identity,
+              "pipeline": pipeline_identity,
+          }
+          for name, value in identities.items():
+              if not isinstance(value, dict):
+                  raise RuntimeError(f"{name} deployment identity is not an object: {value!r}")
+              if str(value.get("deployed_git_sha") or "").lower() != expected:
+                  raise RuntimeError(
+                      f"{name} deployed SHA mismatch: expected={expected} value={value}"
+                  )
+          Path("modal-deployed-sha-identities.json").write_text(
+              json.dumps(identities, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(identities, indent=2))
           PY
 
       - name: Verify editorial model spans allocated GPUs
@@ -295,13 +342,14 @@ jobs:
                           "diarize",
                           "editorial_schema_smoke",
                           "hf_access_smoke",
+                          "deployment_identity",
                       ],
                       "model_classes_expected": [
                           "EditorialModel",
                           "VisionModel",
                           "VisionModelLarge",
                       ],
-                      "pipeline_functions_expected": ["run_full_cycle"],
+                      "pipeline_functions_expected": ["run_full_cycle", "deployment_identity"],
                       "editorial_task_families_expected": 4,
                   },
                   indent=2,
@@ -322,6 +370,7 @@ jobs:
             modal-hf-access.json
             modal-pipeline-endpoint.json
             modal-model-handles.json
+            modal-deployed-sha-identities.json
             modal-worker-deployment.json
           if-no-files-found: warn
           retention-days: 14
