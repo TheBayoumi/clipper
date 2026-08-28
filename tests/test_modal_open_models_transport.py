@@ -81,7 +81,6 @@ def test_editorial_model_forwards_invocation_id_to_transport_errors() -> None:
         assert "editorial_invocation_id" in expression
 
 
-
 def _load_transport_error() -> Callable[..., dict[str, Any]]:
     tree = _tree()
     function = _function(tree, "_transport_error")
