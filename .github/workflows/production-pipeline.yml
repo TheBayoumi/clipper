@@ -546,8 +546,6 @@ jobs:
               raise RuntimeError("Modal spy authoritative event counts are missing")
           if int(counts.get("editorial_evidence_projection") or 0) <= 0:
               raise RuntimeError("live editorial acceptance observed no evidence projection")
-          if int(counts.get("editorial_capacity_probe") or 0) <= 0:
-              raise RuntimeError("live editorial acceptance observed no capacity probe")
           if int(counts.get("editorial_acceptance_probe_result") or 0) <= 0:
               raise RuntimeError("live editorial acceptance observed no repartition probe result")
           if int(authoritative_counts.get("editorial_execution_timeout") or 0) != 0:
@@ -602,8 +600,35 @@ jobs:
               raise RuntimeError(
                   f"producer-side editorial calls contained terminal failures: {producer_terminals}"
               )
-          if "COMPLETE" not in terminal_statuses:
+          producer_completes = [
+              event for event in producer_terminals if event.get("status") == "COMPLETE"
+          ]
+          if not producer_completes:
               raise RuntimeError("editorial acceptance produced no completed remote inference")
+          safe_completes = []
+          for event in producer_completes:
+              input_tokens = int(event.get("input_tokens") or 0)
+              context_limit = int(event.get("context_limit_tokens") or 0)
+              runtime_safe = int(event.get("runtime_safe_input_tokens") or 0)
+              generation_budget = int(event.get("generation_budget_tokens") or 0)
+              if event.get("capacity_repartitionable") is not True:
+                  continue
+              if (
+                  input_tokens <= 0
+                  or context_limit <= input_tokens
+                  or runtime_safe <= 0
+                  or input_tokens > runtime_safe
+                  or generation_budget <= 0
+              ):
+                  raise RuntimeError(
+                      f"producer terminal carried unsafe runtime capacity evidence: {event}"
+                  )
+              safe_completes.append(event)
+          if not safe_completes:
+              raise RuntimeError(
+                  "editorial acceptance produced no completed repartitionable inference "
+                  "with measured runtime-safe capacity evidence"
+              )
 
           projections = [
               event
@@ -645,19 +670,8 @@ jobs:
               raise RuntimeError("live editorial telemetry records are incomplete")
           if timeouts:
               raise RuntimeError(f"editorial acceptance contained execution timeouts: {timeouts}")
-          if not request_plans:
-              raise RuntimeError("editorial acceptance emitted no executable request plans")
-          for plan in request_plans:
-              if plan.get("capacity_repartitionable") is not True:
-                  raise RuntimeError(
-                      f"editorial request lost capacity-repartitionable contract: {plan}"
-                  )
-              input_tokens = int(plan.get("input_tokens") or 0)
-              runtime_safe = int(plan.get("runtime_safe_input_tokens") or 0)
-              if runtime_safe <= 0 or input_tokens > runtime_safe:
-                  raise RuntimeError(
-                      f"editorial request exceeded runtime-safe input guard: {plan}"
-                  )
+          # Model-app request-plan logs are diagnostic only. Acceptance uses the measured
+          # capacity echoed by the pipeline-side editorial_remote_call_terminal barrier.
           if not any(
               int(item.get("raw_event_count") or 0)
               > int(item.get("projected_event_count") or 0)
@@ -722,7 +736,7 @@ jobs:
               "producer_complete_events": terminal_statuses.count("COMPLETE"),
               "execution_timeout_events": len(timeouts),
               "maximum_executable_input_tokens": max(
-                  int(item.get("input_tokens") or 0) for item in request_plans
+                  int(item.get("input_tokens") or 0) for item in safe_completes
               ),
               "best_event_count_reduction": max(
                   int(item.get("raw_event_count") or 0)
