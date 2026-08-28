@@ -392,8 +392,8 @@ def run_modal_pipeline(
     resume_from_run_id: str | None,
     render: bool,
     fresh_inference: bool,
-    max_gpu_seconds: float,
-    max_estimated_usd: float,
+    max_gpu_seconds: float = 21600.0,
+    max_estimated_usd: float = 10.0,
 ) -> Path:
     """Execute every explicit campaign target inside one content-addressed Modal run."""
     brief = load_brief(brief_path)
