@@ -45,10 +45,17 @@ def test_modal_function_timeout_becomes_editorial_capacity_error(
     class FunctionTimeoutError(Exception):
         pass
 
+    class _ExceptionNamespace:
+        FunctionTimeoutError = FunctionTimeoutError
+
+    class _ModalModule:
+        exception = _ExceptionNamespace()
+
     def timeout(_request):
         raise FunctionTimeoutError("timed out")
 
     monkeypatch.setattr(provider, "invoke", timeout)
+    monkeypatch.setattr(provider, "_modal", lambda: _ModalModule())
     monkeypatch.setenv("CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS", "900")
     monkeypatch.setenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", "65536")
     monkeypatch.setenv("CLIPPER_EXECUTION_ID", "execution-1")
