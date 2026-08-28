@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any
@@ -123,6 +124,7 @@ class TokenAwareRepartitionPlan:
     def telemetry(self, *, stage: str) -> dict[str, object]:
         return {
             "event": "editorial_repartition",
+            "execution_id": os.getenv("CLIPPER_EXECUTION_ID", ""),
             "stage": stage,
             "reason": self.reason,
             "observed_input_tokens": self.observed_input_tokens,
