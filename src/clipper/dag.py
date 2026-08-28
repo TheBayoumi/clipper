@@ -116,7 +116,7 @@ class DagStore:
                 if time.monotonic() >= deadline:
                     raise TimeoutError(
                         f"timed out acquiring DAG write lock for {identity.stage_name}"
-                    )
+                    ) from None
                 time.sleep(0.01)
         try:
             yield
