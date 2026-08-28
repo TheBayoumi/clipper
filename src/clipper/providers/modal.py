@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import importlib
+import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -112,7 +114,17 @@ class ModalJSONProvider:
         )
 
     def invoke(self, payload: dict[str, Any]) -> ProviderResult[dict[str, Any]]:
-        response = self._function().remote(payload)
+        request = dict(payload)
+        execution_id = os.getenv("CLIPPER_EXECUTION_ID", "").strip()
+        expected_git_sha = (
+            os.getenv("CLIPPER_ACCEPTANCE_SHA", "").strip()
+            or os.getenv("GITHUB_SHA", "").strip()
+        )
+        if execution_id:
+            request.setdefault("execution_id", execution_id)
+        if expected_git_sha:
+            request.setdefault("expected_git_sha", expected_git_sha.lower())
+        response = self._function().remote(request)
         if not isinstance(response, dict):
             raise ValueError("Modal provider returned an invalid response")
         self._raise_remote_error(response)
@@ -159,6 +171,43 @@ class ModalEditorialProvider(ModalJSONProvider):
     def _is_capacity_error(exc: ModalRemoteError) -> bool:
         return exc.error_type in {"OutOfMemoryError", "EditorialCapacityError"}
 
+    def _invoke_with_timeout_capacity(
+        self,
+        request: dict[str, Any],
+    ) -> ProviderResult[dict[str, Any]]:
+        try:
+            return self.invoke(request)
+        except Exception as exc:
+            if type(exc).__name__ != "FunctionTimeoutError":
+                raise
+            self._instance_handle = None
+            timeout_seconds = int(
+                os.getenv("CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS", "900")
+            )
+            runtime_safe_input_tokens = int(
+                os.getenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", "65536")
+            )
+            execution_id = os.getenv("CLIPPER_EXECUTION_ID", "").strip()
+            event = {
+                "event": "editorial_execution_timeout",
+                "task": str(request.get("task") or ""),
+                "execution_id": execution_id,
+                "timeout_seconds": timeout_seconds,
+                "recovery_action": "REPARTITION",
+            }
+            print(json.dumps(event, sort_keys=True), flush=True)
+            raise EditorialCapacityError(
+                f"Modal {self.function_name} exceeded its execution timeout",
+                details={
+                    "reason": "execution_timeout",
+                    "function_name": self.function_name,
+                    "remote_error_type": type(exc).__name__,
+                    "runtime_safe_input_tokens": runtime_safe_input_tokens,
+                    "timeout_seconds": timeout_seconds,
+                    "recovery_action": "REPARTITION",
+                },
+            ) from exc
+
     def complete_json(
         self, *, task: str, payload: dict[str, Any]
     ) -> ProviderResult[dict[str, Any]]:
@@ -166,7 +215,7 @@ class ModalEditorialProvider(ModalJSONProvider):
         seen_recovery_signatures: set[tuple[object, ...]] = set()
         while True:
             try:
-                return self.invoke(request)
+                return self._invoke_with_timeout_capacity(request)
             except ModalRemoteError as exc:
                 if self._is_capacity_error(exc):
                     raise EditorialCapacityError(
