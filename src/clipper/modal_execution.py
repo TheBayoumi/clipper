@@ -26,8 +26,9 @@ _REQUIRED_MODEL_FUNCTIONS = (
     "editorial",
     "vision",
     "hf_access_smoke",
+    "deployment_identity",
 )
-_REQUIRED_PIPELINE_FUNCTIONS = ("acquire_source", "run_full_cycle")
+_REQUIRED_PIPELINE_FUNCTIONS = ("acquire_source", "run_full_cycle", "deployment_identity")
 _CONTROL_PLANE_ATTEMPTS = 3
 _DEPLOY_ATTEMPTS = 3
 _RETRY_DELAYS_SECONDS = (2.0, 5.0)
@@ -87,6 +88,42 @@ def _repo_script(name: str) -> Path:
     return _repo_root() / "scripts" / name
 
 
+def _local_git_sha() -> str:
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=_repo_root(),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    sha = completed.stdout.strip().lower()
+    if len(sha) != 40 or any(character not in "0123456789abcdef" for character in sha):
+        raise RuntimeError(f"local checkout did not resolve to a full git SHA: {sha!r}")
+    return sha
+
+
+def _verify_deployed_runtime_sha(*, model_app: str, pipeline_app: str) -> str:
+    expected = _local_git_sha()
+    for label, app_name in (("model", model_app), ("pipeline", pipeline_app)):
+        identity = _function(app_name, "deployment_identity").remote()
+        if not isinstance(identity, dict):
+            raise RuntimeError(f"{label} deployment identity is not an object: {identity!r}")
+        deployed = str(identity.get("deployed_git_sha") or "").strip().lower()
+        if deployed != expected:
+            raise RuntimeError(
+                f"{label} deployed SHA mismatch: expected={expected} deployed={deployed or '<missing>'}"
+            )
+    return expected
+
+
+def _positive_budget(value: float, *, name: str) -> float:
+    resolved = float(value)
+    if resolved <= 0:
+        raise ValueError(f"{name} must be positive")
+    return resolved
+
+
 def _deploy(script: Path) -> None:
     executable = shutil.which("modal")
     if executable is None:
@@ -96,6 +133,8 @@ def _deploy(script: Path) -> None:
             f"Modal runtime is not deployed and deployment source is unavailable: {script}"
         )
     command = [executable, "deploy", str(script)]
+    deploy_env = os.environ.copy()
+    deploy_env["CLIPPER_DEPLOYED_GIT_SHA"] = _local_git_sha()
     for attempt in range(1, _DEPLOY_ATTEMPTS + 1):
         LOGGER.info(
             "deploying missing Modal runtime from %s (attempt %d/%d)",
@@ -104,7 +143,13 @@ def _deploy(script: Path) -> None:
             _DEPLOY_ATTEMPTS,
         )
         try:
-            subprocess.run(command, check=True, timeout=1800, cwd=_repo_root())
+            subprocess.run(
+                command,
+                check=True,
+                timeout=1800,
+                cwd=_repo_root(),
+                env=deploy_env,
+            )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             if attempt >= _DEPLOY_ATTEMPTS:
                 raise
@@ -219,8 +264,21 @@ def _explicit_candidates(brief_path: Path) -> list[VideoCandidate]:
     return candidates
 
 
-def _acquire_remote_source(function: Any, candidate: VideoCandidate) -> dict[str, Any]:
-    payload = {"video_id": candidate.video_id, "video_url": candidate.url}
+def _acquire_remote_source(
+    function: Any,
+    candidate: VideoCandidate,
+    *,
+    expected_git_sha: str,
+) -> dict[str, Any]:
+    if len(expected_git_sha) != 40 or any(
+        character not in "0123456789abcdef" for character in expected_git_sha.lower()
+    ):
+        raise ValueError("source acquisition requires a full expected_git_sha")
+    payload = {
+        "video_id": candidate.video_id,
+        "video_url": candidate.url,
+        "expected_git_sha": expected_git_sha.lower(),
+    }
     variants = (
         ("cloud:gcp", "cloud", "gcp"),
         ("cloud:aws", "cloud", "aws"),
@@ -334,20 +392,37 @@ def run_modal_pipeline(
     resume_from_run_id: str | None,
     render: bool,
     fresh_inference: bool,
+    max_gpu_seconds: float,
+    max_estimated_usd: float,
 ) -> Path:
     """Execute every explicit campaign target inside one content-addressed Modal run."""
     brief = load_brief(brief_path)
     assert_campaign_authorized(brief)
     ensure_modal_runtime()
 
+    model_app = os.getenv("CLIPPER_MODAL_APP", DEFAULT_MODEL_APP)
     pipeline_app = os.getenv("CLIPPER_MODAL_PIPELINE_APP", DEFAULT_PIPELINE_APP)
+    verified_git_sha = _verify_deployed_runtime_sha(
+        model_app=model_app,
+        pipeline_app=pipeline_app,
+    )
+    execution_id = uuid.uuid4().hex
+    max_gpu_seconds = _positive_budget(max_gpu_seconds, name="max_gpu_seconds")
+    max_estimated_usd = _positive_budget(max_estimated_usd, name="max_estimated_usd")
     acquire = _function(pipeline_app, "acquire_source")
     runner = _function(pipeline_app, "run_full_cycle")
     candidates = _explicit_candidates(brief_path)
     if not candidates:
         raise RuntimeError("campaign contains no explicit authorized targets")
 
-    sources = [_acquire_remote_source(acquire, candidate) for candidate in candidates]
+    sources = [
+        _acquire_remote_source(
+            acquire,
+            candidate,
+            expected_git_sha=verified_git_sha,
+        )
+        for candidate in candidates
+    ]
     source_payloads = [
         {
             "evidence": evidence,
@@ -364,10 +439,24 @@ def run_modal_pipeline(
             "render": render,
             "fresh_inference": fresh_inference,
             "resume_from_run_id": resume_from_run_id,
+            "git_sha": verified_git_sha,
+            "execution_id": execution_id,
+            "max_gpu_seconds": max_gpu_seconds,
+            "max_estimated_usd": max_estimated_usd,
         }
     )
     if not isinstance(response, dict):
         raise RuntimeError("Modal production runner returned an invalid response")
+    if response.get("execution_id") != execution_id:
+        raise RuntimeError(
+            "Modal production runner returned a mismatched execution ID: "
+            f"{response.get('execution_id')!r}"
+        )
+    if str(response.get("deployed_git_sha") or "").lower() != verified_git_sha:
+        raise RuntimeError(
+            "Modal production runner returned a mismatched deployed SHA: "
+            f"{response.get('deployed_git_sha')!r}"
+        )
     remote_run_path = str(response.get("run_path") or "")
     volume_name = str(response.get("run_volume") or DEFAULT_ARTIFACT_VOLUME)
     if not remote_run_path:
