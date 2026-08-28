@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -120,9 +121,54 @@ def _verify_deployed_runtime_sha(*, model_app: str, pipeline_app: str) -> str:
 
 def _positive_budget(value: float, *, name: str) -> float:
     resolved = float(value)
-    if resolved <= 0:
-        raise ValueError(f"{name} must be positive")
+    if not math.isfinite(resolved) or resolved <= 0:
+        raise ValueError(f"{name} must be finite and positive")
     return resolved
+
+
+def _invoke_remote_with_budget(
+    function: Any,
+    request: dict[str, Any],
+    *,
+    max_gpu_seconds: float,
+    max_estimated_usd: float,
+) -> object:
+    max_gpu_seconds = _positive_budget(max_gpu_seconds, name="max_gpu_seconds")
+    max_estimated_usd = _positive_budget(max_estimated_usd, name="max_estimated_usd")
+    poll_seconds = float(os.getenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "5"))
+    if not math.isfinite(poll_seconds) or poll_seconds <= 0:
+        raise ValueError("CLIPPER_MODAL_SPY_POLL_SECONDS must be finite and positive")
+
+    call = function.spawn(request)
+    call.hydrate()
+    started = time.monotonic()
+
+    def budget_usage() -> tuple[float, float]:
+        elapsed = max(0.0, time.monotonic() - started)
+        return elapsed * 2.0, elapsed * 0.000444
+
+    while True:
+        gpu_seconds, estimated_usd = budget_usage()
+        if gpu_seconds >= max_gpu_seconds or estimated_usd >= max_estimated_usd:
+            call.cancel(terminate_containers=False)
+            raise RuntimeError(
+                "CLI production call exceeded its in-flight compute budget: "
+                f"gpu_seconds={gpu_seconds:.3f}/{max_gpu_seconds:.3f} "
+                f"estimated_usd={estimated_usd:.6f}/{max_estimated_usd:.6f}"
+            )
+        try:
+            result = call.get(timeout=poll_seconds)
+        except TimeoutError:
+            continue
+
+        gpu_seconds, estimated_usd = budget_usage()
+        if gpu_seconds >= max_gpu_seconds or estimated_usd >= max_estimated_usd:
+            raise RuntimeError(
+                "CLI production call exceeded its compute budget on the final poll: "
+                f"gpu_seconds={gpu_seconds:.3f}/{max_gpu_seconds:.3f} "
+                f"estimated_usd={estimated_usd:.6f}/{max_estimated_usd:.6f}"
+            )
+        return result
 
 
 def _deploy(script: Path) -> None:
@@ -434,18 +480,22 @@ def run_modal_pipeline(
         }
         for candidate, evidence in zip(candidates, sources, strict=True)
     ]
-    response = runner.remote(
-        {
-            "sources": source_payloads,
-            "brief_yaml": brief_path.read_text(encoding="utf-8"),
-            "render": render,
-            "fresh_inference": fresh_inference,
-            "resume_from_run_id": resume_from_run_id,
-            "git_sha": verified_git_sha,
-            "execution_id": execution_id,
-            "max_gpu_seconds": max_gpu_seconds,
-            "max_estimated_usd": max_estimated_usd,
-        }
+    request = {
+        "sources": source_payloads,
+        "brief_yaml": brief_path.read_text(encoding="utf-8"),
+        "render": render,
+        "fresh_inference": fresh_inference,
+        "resume_from_run_id": resume_from_run_id,
+        "git_sha": verified_git_sha,
+        "execution_id": execution_id,
+        "max_gpu_seconds": max_gpu_seconds,
+        "max_estimated_usd": max_estimated_usd,
+    }
+    response = _invoke_remote_with_budget(
+        runner,
+        request,
+        max_gpu_seconds=max_gpu_seconds,
+        max_estimated_usd=max_estimated_usd,
     )
     if not isinstance(response, dict):
         raise RuntimeError("Modal production runner returned an invalid response")
