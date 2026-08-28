@@ -338,7 +338,7 @@ jobs:
                       "status": "DEPLOYED",
                       "model_app": os.environ["CLIPPER_MODAL_APP"],
                       "pipeline_app": os.environ["CLIPPER_MODAL_PIPELINE_APP"],
-                      "git_sha": os.environ["GITHUB_SHA"],
+                      "git_sha": os.environ["CLIPPER_DEPLOYED_GIT_SHA"],
                       "model_functions_expected": [
                           "transcribe",
                           "align",
