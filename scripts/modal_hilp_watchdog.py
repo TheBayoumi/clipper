@@ -174,6 +174,10 @@ def run(*, render: bool) -> dict[str, Any]:
     poll_seconds = float(os.environ.get("CLIPPER_MODAL_SPY_POLL_SECONDS", "5"))
     if poll_seconds <= 0:
         raise ValueError("CLIPPER_MODAL_SPY_POLL_SECONDS must be positive")
+    drain_timeout_seconds = float(os.environ.get("CLIPPER_MODAL_SPY_DRAIN_TIMEOUT_SECONDS", "30"))
+    drain_quiet_seconds = float(os.environ.get("CLIPPER_MODAL_SPY_DRAIN_QUIET_SECONDS", "2"))
+    if drain_timeout_seconds <= 0 or drain_quiet_seconds <= 0:
+        raise ValueError("Modal spy drain windows must be positive")
 
     try:
         while True:
@@ -200,9 +204,42 @@ def run(*, render: bool) -> dict[str, Any]:
                 raise RuntimeError(reason)
             try:
                 result = call.get(timeout=poll_seconds)
+                elapsed = max(0.0, time.monotonic() - call_started)
+                conservative_gpu_seconds = elapsed * 2.0
+                conservative_cost_usd = elapsed * 0.000444
+                if conservative_gpu_seconds >= max_gpu_seconds:
+                    raise RuntimeError(
+                        "conservative GPU budget exceeded by completed production call: "
+                        f"{conservative_gpu_seconds:.1f} >= {max_gpu_seconds:.1f}"
+                    )
+                if conservative_cost_usd >= max_estimated_usd:
+                    raise RuntimeError(
+                        "conservative cost budget exceeded by completed production call: "
+                        f"{conservative_cost_usd:.4f} >= {max_estimated_usd:.4f}"
+                    )
                 break
             except TimeoutError:
                 continue
+
+        if not spy.wait_for_terminal_and_quiet(
+            timeout_seconds=drain_timeout_seconds,
+            quiet_seconds=drain_quiet_seconds,
+        ):
+            if spy.abort_reason is not None:
+                raise RuntimeError(f"Modal spy aborted during terminal drain: {spy.abort_reason}")
+            raise RuntimeError(
+                "Modal spy did not observe and drain the scoped production terminal event"
+            )
+        if spy.abort_reason is not None:
+            raise RuntimeError(f"Modal spy aborted during terminal drain: {spy.abort_reason}")
+        terminal_event = spy.summary().get("terminal_event")
+        if not isinstance(terminal_event, dict):
+            raise RuntimeError("Modal spy terminal evidence is missing after drain")
+        if not isinstance(result, dict) or terminal_event.get("status") != result.get("status"):
+            raise RuntimeError(
+                "Modal spy terminal status does not match production result: "
+                f"terminal={terminal_event} result={result}"
+            )
 
         validated = _validate_result(result, render=render)
         _append_github_env("CLIPPER_RUN_VOLUME", validated["run_volume"])
