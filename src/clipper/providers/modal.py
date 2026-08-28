@@ -4,6 +4,8 @@ import base64
 import importlib
 import json
 import os
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -174,27 +176,91 @@ class ModalEditorialProvider(ModalJSONProvider):
         self,
         request: dict[str, Any],
     ) -> ProviderResult[dict[str, Any]]:
+        invocation_id = uuid.uuid4().hex
+        execution_id = os.getenv("CLIPPER_EXECUTION_ID", "").strip()
+        task = str(request.get("task") or "")
+        started = time.monotonic()
+        scoped_request = dict(request)
+        scoped_request["editorial_invocation_id"] = invocation_id
+        print(
+            json.dumps(
+                {
+                    "event": "editorial_remote_call_start",
+                    "execution_id": execution_id,
+                    "invocation_id": invocation_id,
+                    "task": task,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+
+        def emit_terminal(
+            status: str,
+            *,
+            error_type: str | None = None,
+            reason: str | None = None,
+        ) -> None:
+            event: dict[str, object] = {
+                "event": "editorial_remote_call_terminal",
+                "execution_id": execution_id,
+                "invocation_id": invocation_id,
+                "task": task,
+                "status": status,
+                "duration_seconds": max(0.0, time.monotonic() - started),
+            }
+            if error_type:
+                event["error_type"] = error_type
+            if reason:
+                event["reason"] = reason
+            print(json.dumps(event, sort_keys=True), flush=True)
+
         try:
-            return self.invoke(request)
+            result = self.invoke(scoped_request)
         except Exception as exc:
+            if isinstance(exc, ModalRemoteError):
+                if self._is_capacity_error(exc):
+                    emit_terminal(
+                        "CAPACITY_REJECTED",
+                        error_type=exc.error_type,
+                        reason=str(exc.details.get("reason") or "remote_capacity"),
+                    )
+                elif self._is_output_contract_error(exc):
+                    emit_terminal(
+                        "OUTPUT_RETRY",
+                        error_type=exc.error_type,
+                        reason="bounded_output_recovery",
+                    )
+                else:
+                    emit_terminal("ERROR", error_type=exc.error_type, reason="remote_error")
+                raise
+
             try:
                 modal_module = self._modal()
             except ProviderUnavailable:
+                emit_terminal("ERROR", error_type=type(exc).__name__, reason="local_provider_error")
                 raise exc from None
             exception_namespace = getattr(modal_module, "exception", None)
             timeout_type = getattr(exception_namespace, "FunctionTimeoutError", None)
             if not isinstance(timeout_type, type) or not isinstance(exc, timeout_type):
+                emit_terminal("ERROR", error_type=type(exc).__name__, reason="provider_error")
                 raise
+
             self._instance_handle = None
             timeout_seconds = int(os.getenv("CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS", "900"))
             runtime_safe_input_tokens = int(
                 os.getenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", "65536")
             )
-            execution_id = os.getenv("CLIPPER_EXECUTION_ID", "").strip()
+            emit_terminal(
+                "TIMEOUT",
+                error_type=type(exc).__name__,
+                reason="execution_timeout",
+            )
             event = {
                 "event": "editorial_execution_timeout",
-                "task": str(request.get("task") or ""),
+                "task": task,
                 "execution_id": execution_id,
+                "invocation_id": invocation_id,
                 "timeout_seconds": timeout_seconds,
                 "recovery_action": "REPARTITION",
             }
@@ -208,8 +274,12 @@ class ModalEditorialProvider(ModalJSONProvider):
                     "runtime_safe_input_tokens": runtime_safe_input_tokens,
                     "timeout_seconds": timeout_seconds,
                     "recovery_action": "REPARTITION",
+                    "editorial_invocation_id": invocation_id,
                 },
             ) from exc
+
+        emit_terminal("COMPLETE")
+        return result
 
     def complete_json(
         self, *, task: str, payload: dict[str, Any]
