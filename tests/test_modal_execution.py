@@ -13,7 +13,9 @@ from clipper.modal_execution import (
     _deploy,
     _explicit_candidates,
     _function,
+    _local_git_sha,
     _materialize_remote_run,
+    _positive_budget,
     _validate_model_access,
     _verify_deployed_runtime_sha,
     ensure_modal_runtime,
@@ -561,3 +563,106 @@ def test_source_acquisition_rejects_missing_exact_sha_before_remote() -> None:
         _acquire_remote_source(function, candidate, expected_git_sha="")
     function.with_options.assert_not_called()
     function.remote.assert_not_called()
+
+
+
+def test_local_git_sha_requires_full_hex_checkout() -> None:
+    completed = SimpleNamespace(stdout="A" * 40 + "\n")
+    with (
+        patch("clipper.modal_execution._repo_root", return_value=Path("/repo")),
+        patch("clipper.modal_execution.subprocess.run", return_value=completed) as run,
+    ):
+        assert _local_git_sha() == "a" * 40
+    run.assert_called_once_with(
+        ["git", "rev-parse", "HEAD"],
+        cwd=Path("/repo"),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    with (
+        patch("clipper.modal_execution._repo_root", return_value=Path("/repo")),
+        patch(
+            "clipper.modal_execution.subprocess.run",
+            return_value=SimpleNamespace(stdout="not-a-sha\n"),
+        ),
+        pytest.raises(RuntimeError, match="full git SHA"),
+    ):
+        _local_git_sha()
+
+
+def test_verify_deployed_runtime_sha_rejects_invalid_identity_object() -> None:
+    handle = Mock()
+    handle.remote.return_value = "invalid"
+    with (
+        patch("clipper.modal_execution._local_git_sha", return_value="a" * 40),
+        patch("clipper.modal_execution._function", return_value=handle),
+        pytest.raises(RuntimeError, match="deployment identity is not an object"),
+    ):
+        _verify_deployed_runtime_sha(model_app="model-app", pipeline_app="pipeline-app")
+
+
+def test_positive_budget_rejects_zero_or_negative_values() -> None:
+    assert _positive_budget(1.5, name="budget") == 1.5
+    with pytest.raises(ValueError, match="budget must be positive"):
+        _positive_budget(0, name="budget")
+    with pytest.raises(ValueError, match="budget must be positive"):
+        _positive_budget(-1, name="budget")
+
+
+def test_run_modal_pipeline_rejects_mismatched_execution_or_sha_before_download(
+    tmp_path: Path,
+) -> None:
+    brief_path = tmp_path / "brief.json"
+    _write_brief(brief_path)
+    candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
+    acquire = Mock()
+    runner = Mock()
+
+    def fake_function(_app: str, name: str) -> Mock:
+        return acquire if name == "acquire_source" else runner
+
+    common = (
+        patch("clipper.modal_execution.ensure_modal_runtime"),
+        patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
+        patch("clipper.modal_execution._verify_deployed_runtime_sha", return_value="a" * 40),
+        patch("clipper.modal_execution.uuid.uuid4", return_value=SimpleNamespace(hex="e" * 32)),
+        patch("clipper.modal_execution._function", side_effect=fake_function),
+        patch(
+            "clipper.modal_execution._acquire_remote_source",
+            return_value={"quality_policy": "highest_available_no_transcode", "sha256": "abc"},
+        ),
+        patch("clipper.modal_execution._materialize_remote_run") as download,
+    )
+
+    runner.remote.return_value = {
+        "execution_id": "f" * 32,
+        "deployed_git_sha": "a" * 40,
+        "run_path": "/run",
+    }
+    with (*common, pytest.raises(RuntimeError, match="mismatched execution ID")):
+        run_modal_pipeline(
+            brief_path,
+            artifact_root=tmp_path / "artifacts-execution",
+            resume_from_run_id=None,
+            render=True,
+            fresh_inference=False,
+        )
+    download.assert_not_called()
+
+    runner.remote.return_value = {
+        "execution_id": "e" * 32,
+        "deployed_git_sha": "b" * 40,
+        "run_path": "/run",
+    }
+    with (*common, pytest.raises(RuntimeError, match="mismatched deployed SHA")):
+        run_modal_pipeline(
+            brief_path,
+            artifact_root=tmp_path / "artifacts-sha",
+            resume_from_run_id=None,
+            render=True,
+            fresh_inference=False,
+        )
+    download.assert_not_called()
