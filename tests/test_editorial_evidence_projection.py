@@ -51,6 +51,7 @@ def _multimodal() -> MultimodalTimeline:
                 objects=("microphone",),
                 visual_summaries=("host at desk",),
                 visual_salience=0.9,
+                motion_salience=0.4,
                 confidence=0.95,
                 provenance=(provenance,),
             ),
@@ -64,6 +65,7 @@ def _multimodal() -> MultimodalTimeline:
                 objects=("microphone",),
                 visual_summaries=("host at desk",),
                 visual_salience=0.9,
+                motion_salience=0.4,
                 confidence=0.70,
                 provenance=(provenance,),
             ),
@@ -121,6 +123,7 @@ def test_projection_coalesces_redundant_word_aligned_visual_state() -> None:
     assert first["end"] == 2.0
     assert first["scene_ids"] == ["scene-host"]
     assert first["objects"] == ["microphone"]
+    assert first["motion_salience"] == 0.4
     assert "transcript_word_ids" not in first
     assert "speaker_ids" not in first
     assert "provenance" not in first

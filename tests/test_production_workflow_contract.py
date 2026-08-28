@@ -90,7 +90,9 @@ def test_production_workflow_is_dynamic_yield_and_human_review_gated() -> None:
     assert "Wait for successful exact-head Modal deployment" in workflow
     assert "modal-workers-deploy.yml" in workflow
     assert '"head_sha": sha' in workflow
-    assert '"status": "success"' in workflow
+    assert 'item.get("status") == "completed"' in workflow
+    assert 'item.get("conclusion") == "success"' in workflow
+    assert "time.sleep(15)" in workflow
     assert "modal-deployment-prerequisite.json" in workflow
     assert "modal app stop" not in workflow
     assert "modal deploy scripts/modal_open_models.py" not in workflow
@@ -123,7 +125,8 @@ def test_production_workflow_requires_exact_head_modal_deployment_without_mutati
     assert '"head_sha": sha' in workflow
     assert 'item.get("head_sha") == sha' in workflow
     assert 'item.get("conclusion") == "success"' in workflow
-    assert "production requires a successful exact-head Deploy Modal workers run" in workflow
+    assert "exact-head Deploy Modal workers completed unsuccessfully" in workflow
+    assert "timed out waiting for successful exact-head Deploy Modal workers run" in workflow
     assert "modal app stop" not in workflow
     assert "modal deploy " not in workflow
 
