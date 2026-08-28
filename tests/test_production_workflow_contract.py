@@ -241,6 +241,8 @@ def test_editorial_runtime_safety_is_preflighted_and_fail_closed() -> None:
     assert 'counts.get("editorial_execution_timeout")' in workflow
     assert "producer terminal carried unsafe runtime capacity evidence" in workflow
     assert "safe_completes" in workflow
+    assert "if not projections or not probe_results:" in workflow
+    assert "if not projections or not capacity_probes or not probe_results:" not in workflow
     assert '"max_gpu_seconds": max_gpu_seconds' in watchdog
     assert '"max_estimated_usd": max_estimated_usd' in watchdog
     assert "conservative in-flight GPU budget reached" in watchdog
