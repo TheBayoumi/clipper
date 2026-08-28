@@ -423,3 +423,39 @@ def test_semantic_planner_fails_closed_when_smallest_source_unit_exceeds_capacit
     with pytest.raises(AutonomousPlanningError, match="smallest source-grounded semantic interval"):
         _plan(_planner(tmp_path, provider), timeline)
     assert provider.word_counts == [1]
+
+
+class QualityCapacityEditorial(FakeEditorial):
+    def complete_json(
+        self,
+        *,
+        task: str,
+        payload: dict[str, Any],
+    ) -> ProviderResult[dict[str, Any]]:
+        if task.startswith("quality_windows:"):
+            self.calls.append(task)
+            assert payload.get("capacity_repartitionable") is True
+            raise EditorialCapacityError(
+                "synthetic runtime capacity guard",
+                details={
+                    "reason": "runtime_input_guard",
+                    "input_tokens": 70_000,
+                    "runtime_safe_input_tokens": 65_536,
+                },
+            )
+        return super().complete_json(task=task, payload=payload)
+
+
+def test_quality_windows_fail_closed_on_runtime_capacity_before_retry_loop(tmp_path: Path) -> None:
+    timeline = _timeline()
+    provider = QualityCapacityEditorial()
+    planner = _planner(tmp_path, provider)
+
+    with pytest.raises(
+        AutonomousPlanningError,
+        match="quality-window evidence exceeds runtime-safe editorial capacity",
+    ):
+        _plan(planner, timeline)
+
+    quality_calls = [task for task in provider.calls if task.startswith("quality_windows:")]
+    assert len(quality_calls) == 1
