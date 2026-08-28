@@ -15,6 +15,7 @@ from clipper.modal_execution import (
     _function,
     _materialize_remote_run,
     _validate_model_access,
+    _verify_deployed_runtime_sha,
     ensure_modal_runtime,
     run_modal_pipeline,
 )
@@ -95,6 +96,7 @@ def test_deploy_requires_modal_cli_and_existing_source(tmp_path: Path) -> None:
     with (
         patch("clipper.modal_execution.shutil.which", return_value="modal"),
         patch("clipper.modal_execution._repo_root", return_value=tmp_path),
+        patch("clipper.modal_execution._local_git_sha", return_value="a" * 40),
         patch("clipper.modal_execution.subprocess.run") as run,
     ):
         _deploy(script)
@@ -103,7 +105,9 @@ def test_deploy_requires_modal_cli_and_existing_source(tmp_path: Path) -> None:
         check=True,
         timeout=1800,
         cwd=tmp_path,
+        env=run.call_args.kwargs["env"],
     )
+    assert run.call_args.kwargs["env"]["CLIPPER_DEPLOYED_GIT_SHA"] == "a" * 40
 
 
 def test_deploy_retries_cli_failure(tmp_path: Path) -> None:
@@ -113,6 +117,7 @@ def test_deploy_retries_cli_failure(tmp_path: Path) -> None:
     with (
         patch("clipper.modal_execution.shutil.which", return_value="modal"),
         patch("clipper.modal_execution._repo_root", return_value=tmp_path),
+        patch("clipper.modal_execution._local_git_sha", return_value="a" * 40),
         patch("clipper.modal_execution.subprocess.run", side_effect=[failure, None]) as run,
         patch("clipper.modal_execution.time.sleep") as sleep,
     ):
@@ -129,7 +134,7 @@ def test_ensure_modal_runtime_attaches_without_deploying_when_apps_exist() -> No
         patch("clipper.modal_execution._validate_model_access") as validate,
     ):
         ensure_modal_runtime()
-    assert function.call_count == 8
+    assert function.call_count == 10
     deploy.assert_not_called()
     validate.assert_called_once_with("clipper-open-editor")
 
@@ -256,10 +261,16 @@ def test_acquire_remote_source_uses_modal_egress_and_validates_quality() -> None
     )
     function.with_options.return_value.remote = remote
     candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
-    result = _acquire_remote_source(function, candidate)
+    result = _acquire_remote_source(function, candidate, expected_git_sha="a" * 40)
     assert result["sha256"] == "abc"
     function.with_options.assert_called_once_with(cloud="gcp", timeout=1800)
-    remote.assert_called_once_with({"video_id": "v1", "video_url": "https://youtu.be/v1"})
+    remote.assert_called_once_with(
+        {
+            "video_id": "v1",
+            "video_url": "https://youtu.be/v1",
+            "expected_git_sha": "a" * 40,
+        }
+    )
 
 
 def test_acquire_remote_source_exhausts_invalid_and_failed_egress() -> None:
@@ -272,13 +283,13 @@ def test_acquire_remote_source_exhausts_invalid_and_failed_egress() -> None:
 
     candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
     with pytest.raises(RuntimeError, match="source acquisition failed"):
-        _acquire_remote_source(AlwaysBad(), candidate)
+        _acquire_remote_source(AlwaysBad(), candidate, expected_git_sha="a" * 40)
 
     function = Mock()
     function.with_options.return_value.remote.return_value = {"quality_policy": "downgraded"}
     function.remote.return_value = "invalid"
     with pytest.raises(RuntimeError, match="source acquisition failed"):
-        _acquire_remote_source(function, candidate)
+        _acquire_remote_source(function, candidate, expected_git_sha="a" * 40)
 
 
 def test_materialize_remote_run_downloads_only_artifact_directory(tmp_path: Path) -> None:
@@ -393,6 +404,8 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
     acquire = Mock()
     runner = Mock()
     runner.remote.return_value = {
+        "execution_id": "e" * 32,
+        "deployed_git_sha": "a" * 40,
         "run_path": "/campaign-run",
         "run_volume": "clipper-production-artifacts",
     }
@@ -404,6 +417,8 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
     with (
         patch("clipper.modal_execution.ensure_modal_runtime") as ensure,
         patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
+        patch("clipper.modal_execution._verify_deployed_runtime_sha", return_value="a" * 40),
+        patch("clipper.modal_execution.uuid.uuid4", return_value=SimpleNamespace(hex="e" * 32)),
         patch("clipper.modal_execution._function", side_effect=fake_function),
         patch(
             "clipper.modal_execution._acquire_remote_source",
@@ -424,11 +439,19 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
 
     assert result == materialized
     ensure.assert_called_once_with()
-    acquire_remote.assert_called_once_with(acquire, candidate)
+    acquire_remote.assert_called_once_with(
+        acquire,
+        candidate,
+        expected_git_sha="a" * 40,
+    )
     payload = runner.remote.call_args.args[0]
     assert payload["resume_from_run_id"] == "old-run"
     assert payload["render"] is True
     assert payload["fresh_inference"] is True
+    assert payload["git_sha"] == "a" * 40
+    assert payload["execution_id"] == "e" * 32
+    assert payload["max_gpu_seconds"] == 21600.0
+    assert payload["max_estimated_usd"] == 10.0
     download.assert_called_once_with(
         artifact_root=tmp_path / "artifacts",
         volume_name="clipper-production-artifacts",
@@ -491,3 +514,42 @@ def test_run_modal_pipeline_fails_closed_for_runtime_empty_targets_and_bad_runne
             render=True, fresh_inference=False,
         )
 
+
+
+
+def test_verify_deployed_runtime_sha_requires_both_apps_match_local_checkout() -> None:
+    expected = "a" * 40
+    model = Mock()
+    model.remote.return_value = {"deployed_git_sha": expected}
+    pipeline = Mock()
+    pipeline.remote.return_value = {"deployed_git_sha": expected}
+
+    def function(app: str, name: str) -> Mock:
+        assert name == "deployment_identity"
+        return model if app == "model-app" else pipeline
+
+    with (
+        patch("clipper.modal_execution._local_git_sha", return_value=expected),
+        patch("clipper.modal_execution._function", side_effect=function),
+    ):
+        assert (
+            _verify_deployed_runtime_sha(model_app="model-app", pipeline_app="pipeline-app")
+            == expected
+        )
+
+    pipeline.remote.return_value = {"deployed_git_sha": "b" * 40}
+    with (
+        patch("clipper.modal_execution._local_git_sha", return_value=expected),
+        patch("clipper.modal_execution._function", side_effect=function),
+        pytest.raises(RuntimeError, match="pipeline deployed SHA mismatch"),
+    ):
+        _verify_deployed_runtime_sha(model_app="model-app", pipeline_app="pipeline-app")
+
+
+def test_source_acquisition_rejects_missing_exact_sha_before_remote() -> None:
+    function = Mock()
+    candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
+    with pytest.raises(ValueError, match="full expected_git_sha"):
+        _acquire_remote_source(function, candidate, expected_git_sha="")
+    function.with_options.assert_not_called()
+    function.remote.assert_not_called()
