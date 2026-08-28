@@ -135,6 +135,8 @@ def test_modal_resume_ignores_previous_local_source_and_dispatches_cloud(tmp_pat
         resume_from_run_id=previous.name,
         render=True,
         fresh_inference=False,
+        max_gpu_seconds=21600.0,
+        max_estimated_usd=10.0,
     )
 
 
