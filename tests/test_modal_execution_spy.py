@@ -280,27 +280,27 @@ def test_spy_scopes_pipeline_and_model_events_to_one_execution(tmp_path: Path) -
 
     spy._record(
         "clipper-production-pipeline",
-        '2026-08-28T12:00:00Z fc-OTHER '
+        "2026-08-28T12:00:00Z fc-OTHER "
         '{"event":"editorial_evidence_projection","raw_event_count":10,'
         '"projected_event_count":1,"raw_serialized_bytes":100,'
         '"projected_serialized_bytes":10}',
     )
     spy._record(
         "clipper-production-pipeline",
-        '2026-08-28T12:00:01Z fc-ABC123 '
+        "2026-08-28T12:00:01Z fc-ABC123 "
         '{"event":"editorial_evidence_projection","raw_event_count":10,'
         '"projected_event_count":1,"raw_serialized_bytes":100,'
         '"projected_serialized_bytes":10}',
     )
     spy._record(
         "clipper-open-editor",
-        '2026-08-28T12:00:02Z fc-CHILD1 '
+        "2026-08-28T12:00:02Z fc-CHILD1 "
         '{"event":"editorial_generation_complete","execution_id":"other",'
         '"task":"source_hazards:x","duration_seconds":1}',
     )
     spy._record(
         "clipper-open-editor",
-        '2026-08-28T12:00:03Z fc-CHILD2 '
+        "2026-08-28T12:00:03Z fc-CHILD2 "
         '{"event":"editorial_generation_complete","execution_id":"exec-123",'
         '"task":"source_hazards:x","duration_seconds":1}',
     )
