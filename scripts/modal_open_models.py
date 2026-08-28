@@ -891,6 +891,8 @@ def _transport_error(
     details = dict(raw_details) if isinstance(raw_details, dict) else {}
     details.setdefault("application_status", application_status)
     details.setdefault("recovery_action", recovery_action)
+    if invocation_id:
+        details.setdefault("editorial_invocation_id", invocation_id)
     print(
         json.dumps(
             {
