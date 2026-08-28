@@ -598,6 +598,7 @@ class AutonomousQualityPlanner:
                     for window in windows
                 ],
                 "source_context_words": context_words,
+                "capacity_repartitionable": True,
                 "instruction": (
                     "Judge whether this complete campaign-legal moment is genuinely worth "
                     "publishing. Select only a supplied feasible window ID; never invent "
@@ -616,17 +617,23 @@ class AutonomousQualityPlanner:
                     sort_keys=True,
                 )
             )
-            quality_payload = self._complete(
-                timeline,
-                quality_stage,
-                quality_request,
-                relevant_policy=relevant_policy,
-                dependency_hashes=(
-                    content_fingerprint(core.to_dict()),
-                    content_fingerprint(envelope.to_dict()),
-                    content_fingerprint([window.to_dict() for window in windows]),
-                ),
-            )
+            try:
+                quality_payload = self._complete(
+                    timeline,
+                    quality_stage,
+                    quality_request,
+                    relevant_policy=relevant_policy,
+                    dependency_hashes=(
+                        content_fingerprint(core.to_dict()),
+                        content_fingerprint(envelope.to_dict()),
+                        content_fingerprint([window.to_dict() for window in windows]),
+                    ),
+                )
+            except EditorialCapacityError as exc:
+                raise AutonomousPlanningError(
+                    "campaign-legal quality-window evidence exceeds runtime-safe editorial "
+                    f"capacity for {core.core_id}: {exc}"
+                ) from exc
             assessment = quality_assessment_from_payload(core, windows, quality_payload)
             if assessment is None:
                 rejections.append(
