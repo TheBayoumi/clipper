@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+import shutil
+import time
+import uuid
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -78,12 +82,46 @@ class DagStore:
     @staticmethod
     def _write_json(path: Path, payload: object) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temporary.replace(path)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @contextmanager
+    def _write_lock(
+        self,
+        identity: StageIdentity,
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> Iterator[None]:
+        lock = self._directory(identity) / ".write-lock"
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                lock.mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                try:
+                    age = time.time() - lock.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                if age > 60.0:
+                    shutil.rmtree(lock, ignore_errors=True)
+                    continue
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"timed out acquiring DAG write lock for {identity.stage_name}"
+                    )
+                time.sleep(0.01)
+        try:
+            yield
+        finally:
+            shutil.rmtree(lock, ignore_errors=True)
 
     def _read_record_payload(self, identity: StageIdentity) -> dict[str, Any] | None:
         path = self._record_path(identity)
@@ -127,49 +165,61 @@ class DagStore:
         if cached is not None:
             return cached, True
 
-        attempt = self.attempt_count(identity) + 1
-        started = _now()
-        running = StageRecord(
-            identity=identity,
-            status="RUNNING",
-            attempt_count=attempt,
-            started_at=started,
-            completed_at=None,
-            output_fingerprint=None,
-            usage={},
-            cost_usd=0.0,
-        )
-        self._write_json(self._record_path(identity), running.to_dict())
+        with self._write_lock(identity):
+            cached = self.cached_output(identity)
+            if cached is not None:
+                return cached, True
+            attempt = self.attempt_count(identity) + 1
+            started = _now()
+            running = StageRecord(
+                identity=identity,
+                status="RUNNING",
+                attempt_count=attempt,
+                started_at=started,
+                completed_at=None,
+                output_fingerprint=None,
+                usage={},
+                cost_usd=0.0,
+            )
+            self._write_json(self._record_path(identity), running.to_dict())
 
         try:
             raw_result = operation()
             result = raw_result if isinstance(raw_result, StageResult) else StageResult(raw_result)
             fingerprint = content_fingerprint(result.output)
-            self._write_json(self._output_path(identity), result.output)
-            passed = StageRecord(
-                identity=identity,
-                status="PASS",
-                attempt_count=attempt,
-                started_at=started,
-                completed_at=_now(),
-                output_fingerprint=fingerprint,
-                usage=dict(result.usage),
-                cost_usd=result.cost_usd,
-            )
-            self._write_json(self._record_path(identity), passed.to_dict())
+            with self._write_lock(identity):
+                cached = self.cached_output(identity)
+                if cached is not None:
+                    return cached, True
+                self._write_json(self._output_path(identity), result.output)
+                passed = StageRecord(
+                    identity=identity,
+                    status="PASS",
+                    attempt_count=attempt,
+                    started_at=started,
+                    completed_at=_now(),
+                    output_fingerprint=fingerprint,
+                    usage=dict(result.usage),
+                    cost_usd=result.cost_usd,
+                )
+                self._write_json(self._record_path(identity), passed.to_dict())
             return result.output, False
         except Exception as exc:
-            failed = StageRecord(
-                identity=identity,
-                status="FAILED",
-                attempt_count=attempt,
-                started_at=started,
-                completed_at=_now(),
-                output_fingerprint=None,
-                usage={},
-                cost_usd=0.0,
-                error_type=type(exc).__name__,
-                error=str(exc),
-            )
-            self._write_json(self._record_path(identity), failed.to_dict())
+            with self._write_lock(identity):
+                cached = self.cached_output(identity)
+                if cached is not None:
+                    return cached, True
+                failed = StageRecord(
+                    identity=identity,
+                    status="FAILED",
+                    attempt_count=attempt,
+                    started_at=started,
+                    completed_at=_now(),
+                    output_fingerprint=None,
+                    usage={},
+                    cost_usd=0.0,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                self._write_json(self._record_path(identity), failed.to_dict())
             raise
