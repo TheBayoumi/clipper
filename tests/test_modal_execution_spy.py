@@ -267,3 +267,81 @@ def test_spy_rejects_capacity_probe_without_measured_context(tmp_path: Path) -> 
     )
     assert spy.abort_reason is not None
     assert "omitted measured token/context" in spy.abort_reason
+
+
+def test_spy_scopes_pipeline_and_model_events_to_one_execution(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "scoped.ndjson",
+        root_function_call_id="fc-ABC123",
+        execution_id="exec-123",
+    )
+
+    spy._record(
+        "clipper-production-pipeline",
+        '2026-08-28T12:00:00Z fc-OTHER '
+        '{"event":"editorial_evidence_projection","raw_event_count":10,'
+        '"projected_event_count":1,"raw_serialized_bytes":100,'
+        '"projected_serialized_bytes":10}',
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '2026-08-28T12:00:01Z fc-ABC123 '
+        '{"event":"editorial_evidence_projection","raw_event_count":10,'
+        '"projected_event_count":1,"raw_serialized_bytes":100,'
+        '"projected_serialized_bytes":10}',
+    )
+    spy._record(
+        "clipper-open-editor",
+        '2026-08-28T12:00:02Z fc-CHILD1 '
+        '{"event":"editorial_generation_complete","execution_id":"other",'
+        '"task":"source_hazards:x","duration_seconds":1}',
+    )
+    spy._record(
+        "clipper-open-editor",
+        '2026-08-28T12:00:03Z fc-CHILD2 '
+        '{"event":"editorial_generation_complete","execution_id":"exec-123",'
+        '"task":"source_hazards:x","duration_seconds":1}',
+    )
+
+    assert spy.event_counts == {
+        "editorial_evidence_projection": 1,
+        "editorial_generation_complete": 1,
+    }
+
+
+def test_spy_aborts_generation_that_exceeds_progress_deadline(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "stall.ndjson",
+        generation_stall_seconds=10,
+    )
+    clock = {"now": 100.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
+    spy._record(
+        "clipper-open-editor",
+        '{"event":"editorial_generation_start","task":"source_hazards:x",'
+        '"input_tokens":100,"generation_budget_tokens":10}',
+    )
+    assert spy.abort_reason is None
+    clock["now"] = 111.0
+    spy._check_stalled_generations()
+    assert spy.abort_reason is not None
+    assert "no completion progress" in spy.abort_reason
+
+
+def test_spy_aborts_explicit_editorial_execution_timeout(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(("app",), tmp_path / "timeout.ndjson")
+    spy._record(
+        "app",
+        '{"event":"editorial_execution_timeout","task":"source_hazards:x",'
+        '"timeout_seconds":900,"recovery_action":"REPARTITION"}',
+    )
+    assert spy.abort_reason is not None
+    assert "runtime timeout" in spy.abort_reason
