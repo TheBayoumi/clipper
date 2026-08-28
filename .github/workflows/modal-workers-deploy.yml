@@ -26,6 +26,9 @@ env:
   CLIPPER_MODAL_APP: clipper-open-editor
   CLIPPER_MODAL_PIPELINE_APP: clipper-production-pipeline
   CLIPPER_DEPLOYED_GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS: 900
+  CLIPPER_EDITORIAL_STARTUP_TIMEOUT_SECONDS: 1800
+  CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS: 65536
 
 jobs:
   deploy-modal-workers:
