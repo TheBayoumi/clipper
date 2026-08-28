@@ -285,7 +285,6 @@ def test_all_paid_modal_calls_carry_expected_deployed_sha() -> None:
     assert "_assert_expected_git_sha(payload)" in pipeline
 
 
-
 def test_paid_workflows_are_not_triggered_by_pull_request_synchronization() -> None:
     production = Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
     deploy = Path(".github/workflows/modal-workers-deploy.yml").read_text(encoding="utf-8")
