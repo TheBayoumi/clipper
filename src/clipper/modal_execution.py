@@ -112,7 +112,8 @@ def _verify_deployed_runtime_sha(*, model_app: str, pipeline_app: str) -> str:
         deployed = str(identity.get("deployed_git_sha") or "").strip().lower()
         if deployed != expected:
             raise RuntimeError(
-                f"{label} deployed SHA mismatch: expected={expected} deployed={deployed or '<missing>'}"
+                f"{label} deployed SHA mismatch: expected={expected} "
+                f"deployed={deployed or '<missing>'}"
             )
     return expected
 
