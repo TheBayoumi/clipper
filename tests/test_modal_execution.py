@@ -492,6 +492,8 @@ def test_run_modal_pipeline_fails_closed_for_runtime_empty_targets_and_bad_runne
     with (
         patch("clipper.modal_execution.ensure_modal_runtime"),
         patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
+        patch("clipper.modal_execution._verify_deployed_runtime_sha", return_value="a" * 40),
+        patch("clipper.modal_execution.uuid.uuid4", return_value=SimpleNamespace(hex="e" * 32)),
         patch("clipper.modal_execution._function", side_effect=lambda _app, name: acquire if name == "acquire_source" else runner),
         patch("clipper.modal_execution._acquire_remote_source", return_value={"quality_policy": "highest_available_no_transcode"}),
         pytest.raises(RuntimeError, match="invalid response"),
@@ -501,10 +503,16 @@ def test_run_modal_pipeline_fails_closed_for_runtime_empty_targets_and_bad_runne
             render=True, fresh_inference=False,
         )
 
-    runner.remote.return_value = {"run_path": ""}
+    runner.remote.return_value = {
+        "execution_id": "e" * 32,
+        "deployed_git_sha": "a" * 40,
+        "run_path": "",
+    }
     with (
         patch("clipper.modal_execution.ensure_modal_runtime"),
         patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
+        patch("clipper.modal_execution._verify_deployed_runtime_sha", return_value="a" * 40),
+        patch("clipper.modal_execution.uuid.uuid4", return_value=SimpleNamespace(hex="e" * 32)),
         patch("clipper.modal_execution._function", side_effect=lambda _app, name: acquire if name == "acquire_source" else runner),
         patch("clipper.modal_execution._acquire_remote_source", return_value={"quality_policy": "highest_available_no_transcode"}),
         pytest.raises(RuntimeError, match="no run path"),
