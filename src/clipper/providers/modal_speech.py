@@ -182,8 +182,7 @@ class _ModalSpeechBase:
         context: dict[str, str] = {}
         execution_id = os.getenv("CLIPPER_EXECUTION_ID", "").strip()
         expected_git_sha = (
-            os.getenv("CLIPPER_ACCEPTANCE_SHA", "").strip()
-            or os.getenv("GITHUB_SHA", "").strip()
+            os.getenv("CLIPPER_ACCEPTANCE_SHA", "").strip() or os.getenv("GITHUB_SHA", "").strip()
         )
         if execution_id:
             context["execution_id"] = execution_id
@@ -271,9 +270,7 @@ class ModalDiarizationProvider(_ModalSpeechBase):
         self, source: Path, timeline: CanonicalTimeline
     ) -> ProviderResult[CanonicalTimeline]:
         remote_path = self.media_bridge.ensure_uploaded(source, timeline.source_hash)
-        response = self._function().remote(
-            {"source_path": remote_path, **self._request_context()}
-        )
+        response = self._function().remote({"source_path": remote_path, **self._request_context()})
         if isinstance(response, dict) and isinstance(response.get("error"), dict):
             error = response["error"]
             raise RuntimeError(
