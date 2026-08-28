@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -88,6 +89,7 @@ class EditorialEvidenceProjection:
     def telemetry(self, *, stage: str, start: float, end: float) -> dict[str, object]:
         return {
             "event": "editorial_evidence_projection",
+            "execution_id": os.getenv("CLIPPER_EXECUTION_ID", ""),
             "stage": stage,
             "source_start": start,
             "source_end": end,
