@@ -10,9 +10,7 @@ def _tree() -> ast.Module:
 
 def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
     return next(
-        item
-        for item in tree.body
-        if isinstance(item, ast.FunctionDef) and item.name == name
+        item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name == name
     )
 
 
