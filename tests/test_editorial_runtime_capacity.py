@@ -274,7 +274,6 @@ def test_modal_editorial_emits_error_terminal_for_non_timeout_provider_error(
     assert terminal["reason"] == "provider_error"
 
 
-
 def test_capacity_probe_uses_closed_producer_invocation(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
