@@ -332,3 +332,43 @@ def test_disabled_acceptance_guards_precede_any_paid_modal_work() -> None:
     deploy_install = deploy.index("Install Modal orchestration dependencies")
     deploy_open_models = deploy.index("Deploy exact-HEAD open-model workers")
     assert deploy_guard < deploy_install < deploy_open_models
+
+
+
+def test_production_budget_limits_are_finite_and_cli_is_cancellable() -> None:
+    workflow = _workflow()
+    watchdog = _watchdog()
+    cli_modal = Path("src/clipper/modal_execution.py").read_text(encoding="utf-8")
+    pipeline = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+
+    assert "math.isfinite(gpu_limit)" in workflow
+    assert "math.isfinite(cost_limit)" in workflow
+    assert "math.isfinite(max_gpu_seconds)" in watchdog
+    assert "math.isfinite(max_estimated_usd)" in watchdog
+    assert "math.isfinite(max_gpu_seconds)" in pipeline
+    assert "math.isfinite(max_estimated_usd)" in pipeline
+    assert "def _invoke_remote_with_budget(" in cli_modal
+    assert "function.spawn(request)" in cli_modal
+    assert "call.get(timeout=poll_seconds)" in cli_modal
+    assert "call.cancel(terminate_containers=False)" in cli_modal
+    assert "math.isfinite(resolved)" in cli_modal
+
+
+def test_failed_runner_response_keeps_verified_execution_identity() -> None:
+    pipeline = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+    failed_start = pipeline.index("if failed:")
+    failed_end = pipeline.index("editorial_probe_result:", failed_start)
+    failed = pipeline[failed_start:failed_end]
+
+    assert '"execution_id": execution_id.lower()' in failed
+    assert '"deployed_git_sha": DEPLOYED_GIT_SHA' in failed
+    assert '"execution_mode": execution_mode' in failed
+
+
+def test_file_cache_uses_per_writer_atomic_temporary_paths() -> None:
+    cache = Path("src/clipper/cache.py").read_text(encoding="utf-8")
+
+    assert "uuid.uuid4().hex" in cache
+    assert 'f".{path.name}.{uuid.uuid4().hex}.tmp"' in cache
+    assert "temporary.replace(path)" in cache
+    assert "temporary.unlink(missing_ok=True)" in cache
