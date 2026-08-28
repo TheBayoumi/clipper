@@ -248,7 +248,7 @@ def test_editorial_runtime_safety_is_preflighted_and_fail_closed() -> None:
     assert "conservative in-flight GPU budget reached" in watchdog
     pipeline = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     assert "invoke_editorial_capacity_probe(" in pipeline
-    assert "_run_editorial_capacity_probe(" in pipeline
+    assert "_run_editorial_capacity_probe(" not in pipeline
     assert "worker.capacity_probe.remote" in pipeline
 
 
