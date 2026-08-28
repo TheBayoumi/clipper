@@ -24,6 +24,8 @@ RECOGNIZED_EVENTS = {
     "editorial_capacity_probe",
     "editorial_acceptance_probe_result",
     "editorial_request_plan",
+    "editorial_remote_call_start",
+    "editorial_remote_call_terminal",
     "editorial_generation_start",
     "editorial_generation_complete",
     "editorial_execution_timeout",
@@ -71,7 +73,8 @@ class ModalExecutionSpy:
         self.stream_errors: list[str] = []
         self.started_at = datetime.now(UTC).isoformat()
         self._last_request_plan_signature: tuple[object, ...] | None = None
-        self._active_generations: dict[str, float] = {}
+        self._active_editorial_calls: dict[str, tuple[str, float]] = {}
+        self._diagnostic_event_counts: dict[str, int] = {}
         self._terminal_event: dict[str, Any] | None = None
         self._terminal_seen_at: float | None = None
         self._last_scoped_event_at: float | None = None
@@ -194,6 +197,8 @@ class ModalExecutionSpy:
         allowed = {
             "event",
             "execution_id",
+            "invocation_id",
+            "error_type",
             "stage",
             "task",
             "application_status",
@@ -251,6 +256,33 @@ class ModalExecutionSpy:
 
     def _validate_event(self, event: dict[str, Any]) -> str | None:
         name = str(event.get("event") or "")
+
+        if name == "editorial_remote_call_start":
+            invocation_id = str(event.get("invocation_id") or "")
+            task = str(event.get("task") or "")
+            if not invocation_id or not task:
+                return f"editorial producer start omitted invocation identity: {event}"
+            return None
+
+        if name == "editorial_remote_call_terminal":
+            invocation_id = str(event.get("invocation_id") or "")
+            task = str(event.get("task") or "")
+            status = str(event.get("status") or "")
+            if not invocation_id or not task:
+                return f"editorial producer terminal omitted invocation identity: {event}"
+            if status not in {
+                "COMPLETE",
+                "CAPACITY_REJECTED",
+                "OUTPUT_RETRY",
+                "TIMEOUT",
+                "ERROR",
+            }:
+                return f"editorial producer terminal emitted invalid status: {event}"
+            if status == "TIMEOUT":
+                return f"editorial remote call hit its runtime timeout: {event}"
+            if status == "ERROR":
+                return f"editorial remote call failed non-recoverably: {event}"
+            return None
 
         if name == "editorial_execution_timeout":
             return f"editorial execution hit its runtime timeout: {event}"
@@ -533,34 +565,63 @@ class ModalExecutionSpy:
         compact = self._compact_event(payload)
         with self.lock:
             observed_at = time.monotonic()
-            self._last_scoped_event_at = observed_at
+            authoritative = app == self.pipeline_app
             task = str(compact.get("task") or "")
-            if name == "editorial_generation_start" and task:
-                self._active_generations[task] = time.monotonic()
-            elif (
-                name
-                in {
-                    "editorial_generation_complete",
-                    "editorial_oom",
-                    "editorial_execution_timeout",
-                }
-                and task
-            ):
-                self._active_generations.pop(task, None)
-            if name in {
-                "editorial_generation_complete",
+            violation: str | None = None
+
+            if authoritative:
+                self._last_scoped_event_at = observed_at
+                if name == "editorial_remote_call_start":
+                    invocation_id = str(compact.get("invocation_id") or "")
+                    if self._terminal_event is not None:
+                        violation = f"editorial producer started work after production terminal: {compact}"
+                    elif invocation_id in self._active_editorial_calls:
+                        violation = f"editorial producer repeated active invocation ID: {compact}"
+                    else:
+                        violation = self._validate_event(compact)
+                        if violation is None:
+                            self._active_editorial_calls[invocation_id] = (task, observed_at)
+                elif name == "editorial_remote_call_terminal":
+                    invocation_id = str(compact.get("invocation_id") or "")
+                    active = self._active_editorial_calls.get(invocation_id)
+                    if active is None:
+                        violation = f"editorial producer terminal has no matching start: {compact}"
+                    elif active[0] != task:
+                        violation = (
+                            "editorial producer terminal task does not match start: "
+                            f"started={active[0]!r} event={compact}"
+                        )
+                    else:
+                        violation = self._validate_event(compact)
+                        self._active_editorial_calls.pop(invocation_id, None)
+                elif name == "production_cycle_terminal":
+                    if self._active_editorial_calls:
+                        violation = (
+                            "production terminal arrived with active editorial calls: "
+                            f"{sorted(self._active_editorial_calls)}"
+                        )
+                    else:
+                        violation = self._validate_event(compact)
+                    if violation is None:
+                        self._terminal_event = dict(compact)
+                        self._terminal_seen_at = observed_at
+                else:
+                    violation = self._validate_event(compact)
+            else:
+                self._diagnostic_event_counts[name] = (
+                    self._diagnostic_event_counts.get(name, 0) + 1
+                )
+
+            if authoritative and name in {
+                "editorial_remote_call_terminal",
                 "editorial_repartition",
                 "editorial_context_repartition",
             }:
                 self._last_request_plan_signature = None
-            violation = self._validate_event(compact)
-            if name == "production_cycle_terminal" and violation is None:
-                self._terminal_event = dict(compact)
-                self._terminal_seen_at = observed_at
             self.events_seen += 1
             self.event_counts[name] = self.event_counts.get(name, 0) + 1
             self.latest[name] = compact
-            record = {"app": app, **compact}
+            record = {"app": app, "authoritative": authoritative, **compact}
             with self.output.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
             print(
@@ -616,21 +677,22 @@ class ModalExecutionSpy:
             if process.poll() is None:
                 process.terminate()
 
-    def _check_stalled_generations(self) -> None:
-        if self.abort_reason is not None or not self._active_generations:
+    def _check_stalled_editorial_calls(self) -> None:
+        if self.abort_reason is not None or not self._active_editorial_calls:
             return
         now = time.monotonic()
         stalled = [
-            (task, now - started)
-            for task, started in self._active_generations.items()
+            (invocation_id, task, now - started)
+            for invocation_id, (task, started) in self._active_editorial_calls.items()
             if now - started >= self.generation_stall_seconds
         ]
         if stalled:
-            task, elapsed = max(stalled, key=lambda item: item[1])
+            invocation_id, task, elapsed = max(stalled, key=lambda item: item[2])
             self._set_abort(
-                "editorial generation made no completion progress before watchdog deadline",
+                "editorial remote call made no terminal progress before watchdog deadline",
                 {
-                    "event": "editorial_generation_stall",
+                    "event": "editorial_remote_call_stall",
+                    "invocation_id": invocation_id,
                     "task": task,
                     "elapsed_seconds": round(elapsed, 3),
                     "stall_limit_seconds": self.generation_stall_seconds,
@@ -638,25 +700,24 @@ class ModalExecutionSpy:
                 },
             )
 
-    def wait_for_terminal_and_quiet(
+    def wait_for_producer_barrier(
         self,
         *,
         timeout_seconds: float,
-        quiet_seconds: float,
     ) -> bool:
-        if timeout_seconds <= 0 or quiet_seconds <= 0:
-            raise ValueError("terminal drain timeouts must be positive")
+        if timeout_seconds <= 0:
+            raise ValueError("producer barrier timeout must be positive")
         deadline = time.monotonic() + timeout_seconds
         while True:
-            now = time.monotonic()
             with self.lock:
                 terminal_seen = self._terminal_event is not None
-                last_event = self._last_scoped_event_at
+                active_calls = bool(self._active_editorial_calls)
                 aborted = self.abort_reason is not None
             if aborted:
                 return False
-            if terminal_seen and last_event is not None and now - last_event >= quiet_seconds:
+            if terminal_seen and not active_calls:
                 return True
+            now = time.monotonic()
             if now >= deadline:
                 return False
             time.sleep(min(0.1, max(0.01, deadline - now)))
@@ -670,7 +731,8 @@ class ModalExecutionSpy:
             "root_function_call_id": self.root_function_call_id,
             "execution_id": self.execution_id,
             "generation_stall_seconds": self.generation_stall_seconds,
-            "active_generations": sorted(self._active_generations),
+            "active_editorial_calls": sorted(self._active_editorial_calls),
+            "diagnostic_event_counts": self._diagnostic_event_counts,
             "terminal_seen": self._terminal_event is not None,
             "terminal_event": self._terminal_event,
             "terminal_seen_at_monotonic": self._terminal_seen_at,
@@ -693,7 +755,7 @@ class ModalExecutionSpy:
         for thread in threads:
             thread.start()
         while not self.stop.wait(1):
-            self._check_stalled_generations()
+            self._check_stalled_editorial_calls()
             if self.abort_reason is not None:
                 break
             if all(not thread.is_alive() for thread in threads):
