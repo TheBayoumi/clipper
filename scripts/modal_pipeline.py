@@ -55,6 +55,19 @@ runner_image = (
 )
 
 
+def _assert_expected_git_sha(payload: dict[str, Any]) -> None:
+    expected = str(payload.get("expected_git_sha") or "").strip().lower()
+    if not expected:
+        return
+    if not DEPLOYED_GIT_SHA:
+        raise RuntimeError("production pipeline worker has no embedded deployment SHA")
+    if expected != DEPLOYED_GIT_SHA:
+        raise RuntimeError(
+            "production pipeline worker SHA mismatch: "
+            f"expected={expected} deployed={DEPLOYED_GIT_SHA}"
+        )
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -182,6 +195,7 @@ def _existing_source(video_id: str, video_url: str) -> dict[str, Any] | None:
 )
 def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
     """Acquire one exact authorized target into the content-addressed media volume."""
+    _assert_expected_git_sha(payload)
     video_url = str(payload.get("video_url") or "").strip()
     video_id = str(payload.get("video_id") or "").strip()
     if not video_url.startswith("https://"):
