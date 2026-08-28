@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import ast
+import json
+import traceback
 from pathlib import Path
+from typing import Any, Callable
+
+import pytest
 
 
 def _tree() -> ast.Module:
@@ -73,3 +78,78 @@ def test_editorial_model_forwards_invocation_id_to_transport_errors() -> None:
         assert "invocation_id" in keywords
         expression = ast.unparse(keywords["invocation_id"])
         assert "editorial_invocation_id" in expression
+
+
+
+def _load_transport_error() -> Callable[..., dict[str, Any]]:
+    tree = _tree()
+    function = _function(tree, "_transport_error")
+    isolated = ast.Module(body=[function], type_ignores=[])
+    ast.fix_missing_locations(isolated)
+    namespace: dict[str, Any] = {
+        "Any": Any,
+        "json": json,
+        "traceback": traceback,
+    }
+    exec(compile(isolated, "scripts/modal_open_models.py", "exec"), namespace)
+    loaded = namespace["_transport_error"]
+    assert callable(loaded)
+    return loaded
+
+
+class EditorialOutputTruncated(Exception):
+    def __init__(self) -> None:
+        super().__init__("synthetic truncated output")
+        self.details = {
+            "generation_budget_tokens": 100,
+            "next_output_budget_tokens": 200,
+        }
+
+
+class EditorialCapacityError(Exception):
+    def __init__(self) -> None:
+        super().__init__("synthetic capacity rejection")
+        self.details = {"reason": "runtime_input_guard", "input_tokens": 70_000}
+
+
+def test_transport_error_preserves_invocation_id_in_event_and_returned_details(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    transport_error = _load_transport_error()
+
+    result = transport_error(
+        EditorialOutputTruncated(),
+        context="task=semantic_cores:x",
+        execution_id="exec-1",
+        invocation_id="invocation-1",
+    )
+
+    event = json.loads(capsys.readouterr().out.strip())
+    assert event["event"] == "application_result"
+    assert event["execution_id"] == "exec-1"
+    assert event["invocation_id"] == "invocation-1"
+    assert event["error_type"] == "EditorialOutputTruncated"
+    assert event["application_status"] == "FAILED"
+
+    details = result["error"]["details"]
+    assert details["editorial_invocation_id"] == "invocation-1"
+    assert details["generation_budget_tokens"] == 100
+    assert details["next_output_budget_tokens"] == 200
+
+
+def test_capacity_error_preserves_same_invocation_id(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    transport_error = _load_transport_error()
+
+    result = transport_error(
+        EditorialCapacityError(),
+        execution_id="exec-2",
+        invocation_id="invocation-2",
+    )
+
+    event = json.loads(capsys.readouterr().out.strip())
+    assert event["invocation_id"] == "invocation-2"
+    assert event["application_status"] == "CAPACITY_REJECTED"
+    assert event["recovery_action"] == "REPARTITION"
+    assert result["error"]["details"]["editorial_invocation_id"] == "invocation-2"
