@@ -200,6 +200,7 @@ class ModalEditorialProvider(ModalJSONProvider):
             *,
             error_type: str | None = None,
             reason: str | None = None,
+            details: dict[str, Any] | None = None,
         ) -> None:
             event: dict[str, object] = {
                 "event": "editorial_remote_call_terminal",
@@ -213,6 +214,19 @@ class ModalEditorialProvider(ModalJSONProvider):
                 event["error_type"] = error_type
             if reason:
                 event["reason"] = reason
+            source = details if isinstance(details, dict) else {}
+            for key in (
+                "input_tokens",
+                "context_limit_tokens",
+                "available_output_tokens",
+                "generation_budget_tokens",
+                "runtime_safe_input_tokens",
+                "capacity_repartitionable",
+                "serialized_request_bytes",
+                "output_tokens",
+            ):
+                if key in source:
+                    event[key] = source[key]
             print(json.dumps(event, sort_keys=True), flush=True)
 
         try:
@@ -224,12 +238,14 @@ class ModalEditorialProvider(ModalJSONProvider):
                         "CAPACITY_REJECTED",
                         error_type=exc.error_type,
                         reason=str(exc.details.get("reason") or "remote_capacity"),
+                        details=exc.details,
                     )
                 elif self._is_output_contract_error(exc):
                     emit_terminal(
                         "OUTPUT_RETRY",
                         error_type=exc.error_type,
                         reason="bounded_output_recovery",
+                        details=exc.details,
                     )
                 else:
                     emit_terminal("ERROR", error_type=exc.error_type, reason="remote_error")
@@ -255,6 +271,10 @@ class ModalEditorialProvider(ModalJSONProvider):
                 "TIMEOUT",
                 error_type=type(exc).__name__,
                 reason="execution_timeout",
+                details={
+                    "runtime_safe_input_tokens": runtime_safe_input_tokens,
+                    "timeout_seconds": timeout_seconds,
+                },
             )
             event = {
                 "event": "editorial_execution_timeout",
@@ -278,7 +298,11 @@ class ModalEditorialProvider(ModalJSONProvider):
                 },
             ) from exc
 
-        emit_terminal("COMPLETE")
+        capacity = result.usage.runtime.get("editorial_capacity")
+        emit_terminal(
+            "COMPLETE",
+            details=capacity if isinstance(capacity, dict) else None,
+        )
         return result
 
     def complete_json(
