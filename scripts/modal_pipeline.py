@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -624,8 +625,13 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
 
     max_gpu_seconds = float(payload.get("max_gpu_seconds") or 0.0)
     max_estimated_usd = float(payload.get("max_estimated_usd") or 0.0)
-    if max_gpu_seconds <= 0 or max_estimated_usd <= 0:
-        raise ValueError("run_full_cycle requires positive compute budget limits")
+    if (
+        not math.isfinite(max_gpu_seconds)
+        or not math.isfinite(max_estimated_usd)
+        or max_gpu_seconds <= 0
+        or max_estimated_usd <= 0
+    ):
+        raise ValueError("run_full_cycle requires finite positive compute budget limits")
 
     os.environ.update(
         {
@@ -711,6 +717,9 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
         )
         return {
             "status": "FAIL",
+            "execution_mode": execution_mode,
+            "execution_id": execution_id.lower(),
+            "deployed_git_sha": DEPLOYED_GIT_SHA,
             "run_volume": "clipper-production-artifacts",
             "run_path": run_relative,
             "sources": source_items,
