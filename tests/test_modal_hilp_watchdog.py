@@ -37,8 +37,10 @@ def _environment(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("CLIPPER_CAMPAIGN_BRIEF", str(brief))
     monkeypatch.setenv("CLIPPER_FRESH_INFERENCE", "false")
     monkeypatch.setenv("CLIPPER_RESUME_FROM_RUN_ID", "prior-run")
-    monkeypatch.setenv("CLIPPER_ACCEPTANCE_SHA", "sha")
+    monkeypatch.setenv("CLIPPER_ACCEPTANCE_SHA", "a" * 40)
     monkeypatch.setenv("CLIPPER_EXECUTION_MODE", "resume")
+    monkeypatch.setenv("CLIPPER_MAX_GPU_SECONDS", "1000")
+    monkeypatch.setenv("CLIPPER_MAX_ESTIMATED_USD", "100")
     monkeypatch.setenv("CLIPPER_MODAL_APP", "models")
     monkeypatch.setenv("CLIPPER_MODAL_PIPELINE_APP", "pipeline")
     monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "0.001")
@@ -47,11 +49,13 @@ def _environment(tmp_path: Path, monkeypatch) -> None:
 class _Spy:
     instance = None
 
-    def __init__(self, apps, output) -> None:
+    def __init__(self, apps, output, **kwargs) -> None:
         self.apps = apps
         self.output = output
         self.abort_reason = None
         self.stopped = False
+        self.root_function_call_id = kwargs.get("root_function_call_id")
+        self.execution_id = kwargs.get("execution_id")
         _Spy.instance = self
 
     def run(self) -> int:
@@ -60,12 +64,18 @@ class _Spy:
     def request_stop(self, *_args) -> None:
         self.stopped = True
 
+    def wait_for_terminal_and_quiet(self, **_kwargs) -> bool:
+        return self.abort_reason is None
+
     def summary(self) -> dict[str, object]:
         return {
             "status": "ABORT" if self.abort_reason else "PASS",
             "abort_reason": self.abort_reason,
-            "events_seen": 0,
-            "event_counts": {},
+            "events_seen": 1,
+            "event_counts": {"production_cycle_terminal": 1},
+            "terminal_seen": True,
+            "terminal_event": {"status": "PASS"},
+            "active_generations": [],
         }
 
 
@@ -108,11 +118,14 @@ def test_watchdog_returns_successful_editorial_only_result(tmp_path: Path, monke
     module = _module()
     _environment(tmp_path, monkeypatch)
     monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
+    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
 
     call = _Call(
         {
             "status": "PASS",
             "execution_mode": "resume",
+            "execution_id": "e" * 32,
+            "deployed_git_sha": "a" * 40,
             "pipeline_status": "SUCCESS",
             "review_status": "NOT_RENDERED",
             "run_volume": "volume",
@@ -141,6 +154,7 @@ def test_watchdog_cancels_exact_call_without_terminating_containers_on_spy_abort
     module = _module()
     _environment(tmp_path, monkeypatch)
     monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
+    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
 
     call = _Call({}, abort_spy=True)
     monkeypatch.setitem(sys.modules, "modal", _modal(call))
@@ -158,3 +172,43 @@ def test_watchdog_cancels_exact_call_without_terminating_containers_on_spy_abort
     )
     assert summary["call_cancelled"] is True
     assert summary["function_call_id"] == "fc-test"
+
+
+def test_watchdog_rechecks_budget_after_successful_final_poll(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
+    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
+    monkeypatch.setenv("CLIPPER_MAX_GPU_SECONDS", "1")
+    clock = {"now": 0.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
+
+    class BudgetCall(_Call):
+        def get(self, *, timeout: float):
+            assert timeout > 0
+            clock["now"] = 1.0
+            return {
+                "status": "PASS",
+                "execution_mode": "resume",
+                "execution_id": "e" * 32,
+                "deployed_git_sha": "a" * 40,
+                "pipeline_status": "SUCCESS",
+                "review_status": "NOT_RENDERED",
+                "run_volume": "volume",
+                "run_path": "/run",
+            }
+
+    call = BudgetCall({})
+    monkeypatch.setitem(sys.modules, "modal", _modal(call))
+
+    try:
+        module.run(render=False)
+    except RuntimeError as exc:
+        assert "GPU budget exceeded by completed production call" in str(exc)
+    else:
+        raise AssertionError("final successful poll must still enforce the GPU budget")
+
+    assert call.cancel_args == []
