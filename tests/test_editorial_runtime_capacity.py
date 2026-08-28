@@ -81,9 +81,7 @@ def test_modal_function_timeout_becomes_editorial_capacity_error(
     assert provider._instance_handle is None
 
     events = [
-        json.loads(line)
-        for line in capsys.readouterr().out.splitlines()
-        if line.startswith("{")
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
     ]
     start = next(event for event in events if event.get("event") == "editorial_remote_call_start")
     terminal = next(
