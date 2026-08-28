@@ -45,11 +45,14 @@ def test_modal_function_timeout_becomes_editorial_capacity_error(
     class FunctionTimeoutError(Exception):
         pass
 
-    class _ExceptionNamespace:
-        FunctionTimeoutError = FunctionTimeoutError
+    exception_namespace = type(
+        "_ExceptionNamespace",
+        (),
+        {"FunctionTimeoutError": FunctionTimeoutError},
+    )
 
     class _ModalModule:
-        exception = _ExceptionNamespace()
+        exception = exception_namespace()
 
     def timeout(_request):
         raise FunctionTimeoutError("timed out")
