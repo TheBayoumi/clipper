@@ -441,6 +441,7 @@ jobs:
           payload = {
               "video_id": os.environ["CLIPPER_TARGET_VIDEO_ID"],
               "video_url": os.environ["CLIPPER_TARGET_VIDEO_URL"],
+              "expected_git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
           }
           base = modal.Function.from_name(os.environ["CLIPPER_MODAL_PIPELINE_APP"], "acquire_source")
           variants = [
