@@ -1,3 +1,5 @@
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -106,6 +108,35 @@ def test_file_cache_round_trip_and_corruption(tmp_path: Path) -> None:
     assert cache.read("a" * 64, "data") == {"ok": True}
     path.write_text("{broken", encoding="utf-8")
     assert cache.read("a" * 64, "data") is None
+
+
+def test_file_cache_concurrent_writers_use_unique_atomic_temps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = FileCache(tmp_path / "cache")
+    key = "b" * 64
+    barrier = threading.Barrier(8)
+    original_replace = Path.replace
+
+    def synchronized_replace(source: Path, target: Path) -> Path:
+        if source.name.endswith(".tmp"):
+            barrier.wait(timeout=5)
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", synchronized_replace)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        paths = list(
+            executor.map(
+                lambda _index: cache.write(key, "canonical", {"ok": True}),
+                range(8),
+            )
+        )
+
+    assert len(set(paths)) == 1
+    assert cache.read(key, "canonical") == {"ok": True}
+    assert not list(paths[0].parent.glob(".*.tmp"))
 
 
 def test_transcript_cache_deserialization_preserves_words() -> None:
