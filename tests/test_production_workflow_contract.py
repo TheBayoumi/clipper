@@ -15,7 +15,7 @@ def test_production_workflow_is_single_pass_resumable_and_exact_head() -> None:
     workflow = _workflow()
     watchdog = _watchdog()
 
-    deployment_gate = workflow.index("Require successful exact-head Modal deployment")
+    deployment_gate = workflow.index("Wait for successful exact-head Modal deployment")
     execution = workflow.index("Run current-model pipeline with cancellable Modal spy")
     validation = workflow.index(
         "Validate dynamic yield, resumable inference, cost bounds, and actual media"
@@ -87,7 +87,7 @@ def test_production_workflow_is_dynamic_yield_and_human_review_gated() -> None:
     assert "contract permits zero quality yield" in workflow
     assert "PENDING_ACTUAL_MP4_REVIEW" in watchdog
     assert '"human_review": "PENDING_ACTUAL_REVIEW"' in workflow
-    assert "Require successful exact-head Modal deployment" in workflow
+    assert "Wait for successful exact-head Modal deployment" in workflow
     assert "modal-workers-deploy.yml" in workflow
     assert '"head_sha": sha' in workflow
     assert '"status": "success"' in workflow
@@ -118,7 +118,7 @@ def test_production_workflow_requires_exact_head_modal_deployment_without_mutati
     assert isinstance(parsed, dict)
     assert "jobs" in parsed
     assert "actions: read" in workflow
-    assert "Require successful exact-head Modal deployment" in workflow
+    assert "Wait for successful exact-head Modal deployment" in workflow
     assert 'workflow = "modal-workers-deploy.yml"' in workflow
     assert '"head_sha": sha' in workflow
     assert 'item.get("head_sha") == sha' in workflow

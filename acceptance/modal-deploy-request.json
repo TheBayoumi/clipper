@@ -1,7 +1,7 @@
 {
-  "request_reason": "Deploy exact-head orchestration race fix plus editorial evidence projection, token-aware repartition, live capacity probe, and cancellable Modal watchdog for editorial-only acceptance before HILP",
-  "requested_from_sha": "baace2172927a47e11686dcf43a1a7368e282b73",
-  "resume_from_production_run_id": "33168524124",
+  "request_reason": "Deploy exact-head test-contract alignment with unchanged runtime editorial projection, token-aware repartition, live capacity probe, and cancellable Modal watchdog before HILP",
+  "requested_from_sha": "85163774b5188bf8799bac1a6e7c5a31b745b90c",
+  "resume_from_production_run_id": "33169610601",
   "fresh_inference": false,
   "live_acceptance_required": {
     "editorial_evidence_projection": true,
