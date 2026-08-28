@@ -52,8 +52,10 @@ def test_stale_dag_lock_is_not_reclaimed_unsafely(tmp_path) -> None:
     lock = store._directory(identity) / ".write-lock"
     lock.mkdir(parents=True)
 
-    with pytest.raises(TimeoutError, match="timed out acquiring DAG write lock"):
-        with store._write_lock(identity, timeout_seconds=0.02):
-            raise AssertionError("stale lock must never be stolen")
+    with (
+        pytest.raises(TimeoutError, match="timed out acquiring DAG write lock"),
+        store._write_lock(identity, timeout_seconds=0.02),
+    ):
+        raise AssertionError("stale lock must never be stolen")
 
     assert lock.is_dir()
