@@ -231,7 +231,8 @@ def test_editorial_runtime_safety_is_preflighted_and_fail_closed() -> None:
     assert "timeout=EDITORIAL_EXECUTION_TIMEOUT_SECONDS" in worker
     assert '"editorial_execution_timeout"' in provider
     assert '"reason": "execution_timeout"' in provider
-    assert 'type(exc).__name__ != "FunctionTimeoutError"' in provider
+    assert 'getattr(exception_namespace, "FunctionTimeoutError", None)' in provider
+    assert "isinstance(exc, timeout_type)" in provider
 
     assert "CLIPPER_MODAL_GENERATION_STALL_SECONDS: 720" in workflow
     assert 'counts.get("editorial_generation_complete")' in workflow
