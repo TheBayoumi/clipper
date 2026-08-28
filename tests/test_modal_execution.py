@@ -13,6 +13,7 @@ from clipper.modal_execution import (
     _deploy,
     _explicit_candidates,
     _function,
+    _invoke_remote_with_budget,
     _local_git_sha,
     _materialize_remote_run,
     _positive_budget,
@@ -405,7 +406,7 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
     candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
     acquire = Mock()
     runner = Mock()
-    runner.remote.return_value = {
+    remote_result = {
         "execution_id": "e" * 32,
         "deployed_git_sha": "a" * 40,
         "run_path": "/campaign-run",
@@ -427,6 +428,10 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
             return_value={"quality_policy": "highest_available_no_transcode", "sha256": "abc"},
         ) as acquire_remote,
         patch(
+            "clipper.modal_execution._invoke_remote_with_budget",
+            return_value=remote_result,
+        ) as invoke,
+        patch(
             "clipper.modal_execution._materialize_remote_run",
             return_value=materialized,
         ) as download,
@@ -446,7 +451,10 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
         candidate,
         expected_git_sha="a" * 40,
     )
-    payload = runner.remote.call_args.args[0]
+    assert invoke.call_args.args[0] is runner
+    payload = invoke.call_args.args[1]
+    assert invoke.call_args.kwargs["max_gpu_seconds"] == 21600.0
+    assert invoke.call_args.kwargs["max_estimated_usd"] == 10.0
     assert payload["resume_from_run_id"] == "old-run"
     assert payload["render"] is True
     assert payload["fresh_inference"] is True
@@ -490,7 +498,6 @@ def test_run_modal_pipeline_fails_closed_for_runtime_empty_targets_and_bad_runne
 
     acquire = Mock()
     runner = Mock()
-    runner.remote.return_value = "invalid"
     with (
         patch("clipper.modal_execution.ensure_modal_runtime"),
         patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
@@ -498,6 +505,7 @@ def test_run_modal_pipeline_fails_closed_for_runtime_empty_targets_and_bad_runne
         patch("clipper.modal_execution.uuid.uuid4", return_value=SimpleNamespace(hex="e" * 32)),
         patch("clipper.modal_execution._function", side_effect=lambda _app, name: acquire if name == "acquire_source" else runner),
         patch("clipper.modal_execution._acquire_remote_source", return_value={"quality_policy": "highest_available_no_transcode"}),
+        patch("clipper.modal_execution._invoke_remote_with_budget", return_value="invalid"),
         pytest.raises(RuntimeError, match="invalid response"),
     ):
         run_modal_pipeline(
@@ -505,7 +513,7 @@ def test_run_modal_pipeline_fails_closed_for_runtime_empty_targets_and_bad_runne
             render=True, fresh_inference=False,
         )
 
-    runner.remote.return_value = {
+    no_path_result = {
         "execution_id": "e" * 32,
         "deployed_git_sha": "a" * 40,
         "run_path": "",
@@ -517,6 +525,7 @@ def test_run_modal_pipeline_fails_closed_for_runtime_empty_targets_and_bad_runne
         patch("clipper.modal_execution.uuid.uuid4", return_value=SimpleNamespace(hex="e" * 32)),
         patch("clipper.modal_execution._function", side_effect=lambda _app, name: acquire if name == "acquire_source" else runner),
         patch("clipper.modal_execution._acquire_remote_source", return_value={"quality_policy": "highest_available_no_transcode"}),
+        patch("clipper.modal_execution._invoke_remote_with_budget", return_value=no_path_result),
         pytest.raises(RuntimeError, match="no run path"),
     ):
         run_modal_pipeline(
@@ -603,12 +612,14 @@ def test_verify_deployed_runtime_sha_rejects_invalid_identity_object() -> None:
         _verify_deployed_runtime_sha(model_app="model-app", pipeline_app="pipeline-app")
 
 
-def test_positive_budget_rejects_zero_or_negative_values() -> None:
+@pytest.mark.parametrize(
+    "value",
+    [0.0, -1.0, float("nan"), float("inf"), float("-inf")],
+)
+def test_positive_budget_rejects_nonfinite_or_nonpositive_values(value: float) -> None:
     assert _positive_budget(1.5, name="budget") == 1.5
-    with pytest.raises(ValueError, match="budget must be positive"):
-        _positive_budget(0, name="budget")
-    with pytest.raises(ValueError, match="budget must be positive"):
-        _positive_budget(-1, name="budget")
+    with pytest.raises(ValueError, match="budget must be finite and positive"):
+        _positive_budget(value, name="budget")
 
 
 def test_run_modal_pipeline_rejects_mismatched_execution_or_sha_before_download(
@@ -623,7 +634,7 @@ def test_run_modal_pipeline_rejects_mismatched_execution_or_sha_before_download(
     def fake_function(_app: str, name: str) -> Mock:
         return acquire if name == "acquire_source" else runner
 
-    runner.remote.return_value = {
+    wrong_execution_result = {
         "execution_id": "f" * 32,
         "deployed_git_sha": "a" * 40,
         "run_path": "/run",
@@ -638,6 +649,10 @@ def test_run_modal_pipeline_rejects_mismatched_execution_or_sha_before_download(
             "clipper.modal_execution._acquire_remote_source",
             return_value={"quality_policy": "highest_available_no_transcode", "sha256": "abc"},
         ),
+        patch(
+            "clipper.modal_execution._invoke_remote_with_budget",
+            return_value=wrong_execution_result,
+        ),
         patch("clipper.modal_execution._materialize_remote_run") as download,
         pytest.raises(RuntimeError, match="mismatched execution ID"),
     ):
@@ -650,7 +665,7 @@ def test_run_modal_pipeline_rejects_mismatched_execution_or_sha_before_download(
         )
     download.assert_not_called()
 
-    runner.remote.return_value = {
+    wrong_sha_result = {
         "execution_id": "e" * 32,
         "deployed_git_sha": "b" * 40,
         "run_path": "/run",
@@ -665,6 +680,10 @@ def test_run_modal_pipeline_rejects_mismatched_execution_or_sha_before_download(
             "clipper.modal_execution._acquire_remote_source",
             return_value={"quality_policy": "highest_available_no_transcode", "sha256": "abc"},
         ),
+        patch(
+            "clipper.modal_execution._invoke_remote_with_budget",
+            return_value=wrong_sha_result,
+        ),
         patch("clipper.modal_execution._materialize_remote_run") as download,
         pytest.raises(RuntimeError, match="mismatched deployed SHA"),
     ):
@@ -676,3 +695,141 @@ def test_run_modal_pipeline_rejects_mismatched_execution_or_sha_before_download(
             fresh_inference=False,
         )
     download.assert_not_called()
+
+
+
+def test_invoke_remote_with_budget_cancels_exact_call_while_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: clock["now"])
+    monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "0.1")
+
+    class Call:
+        def __init__(self) -> None:
+            self.cancel_args: list[bool] = []
+
+        def hydrate(self) -> None:
+            return None
+
+        def get(self, *, timeout: float) -> object:
+            assert timeout == 0.1
+            clock["now"] = 1.0
+            raise TimeoutError
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            self.cancel_args.append(terminate_containers)
+
+    call = Call()
+    function = SimpleNamespace(spawn=Mock(return_value=call))
+
+    with pytest.raises(RuntimeError, match="in-flight compute budget"):
+        _invoke_remote_with_budget(
+            function,
+            {"request": True},
+            max_gpu_seconds=1.0,
+            max_estimated_usd=100.0,
+        )
+
+    function.spawn.assert_called_once_with({"request": True})
+    assert call.cancel_args == [False]
+
+
+def test_invoke_remote_with_budget_rechecks_successful_final_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: clock["now"])
+    monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "0.1")
+
+    class Call:
+        def hydrate(self) -> None:
+            return None
+
+        def get(self, *, timeout: float) -> object:
+            assert timeout == 0.1
+            clock["now"] = 1.0
+            return {"status": "PASS"}
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            raise AssertionError(f"completed call must not be cancelled: {terminate_containers}")
+
+    function = SimpleNamespace(spawn=Mock(return_value=Call()))
+    with pytest.raises(RuntimeError, match="final poll"):
+        _invoke_remote_with_budget(
+            function,
+            {},
+            max_gpu_seconds=1.0,
+            max_estimated_usd=100.0,
+        )
+
+
+def test_invoke_remote_with_budget_rejects_nonfinite_poll_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    function = SimpleNamespace(spawn=Mock())
+    monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "nan")
+    with pytest.raises(ValueError, match="finite and positive"):
+        _invoke_remote_with_budget(
+            function,
+            {},
+            max_gpu_seconds=10.0,
+            max_estimated_usd=1.0,
+        )
+    function.spawn.assert_not_called()
+
+
+def test_failed_runner_response_is_authenticated_and_materialized(
+    tmp_path: Path,
+) -> None:
+    brief_path = tmp_path / "brief.json"
+    _write_brief(brief_path)
+    candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
+    acquire = Mock()
+    runner = Mock()
+    failed_local = tmp_path / "artifacts" / "failed-run"
+    failed_result = {
+        "status": "FAIL",
+        "execution_mode": "content-addressed-resume",
+        "execution_id": "e" * 32,
+        "deployed_git_sha": "a" * 40,
+        "run_path": "/failed-run",
+        "run_volume": "clipper-production-artifacts",
+    }
+
+    def fake_function(_app: str, name: str) -> Mock:
+        return acquire if name == "acquire_source" else runner
+
+    with (
+        patch("clipper.modal_execution.ensure_modal_runtime"),
+        patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
+        patch("clipper.modal_execution._verify_deployed_runtime_sha", return_value="a" * 40),
+        patch("clipper.modal_execution.uuid.uuid4", return_value=SimpleNamespace(hex="e" * 32)),
+        patch("clipper.modal_execution._function", side_effect=fake_function),
+        patch(
+            "clipper.modal_execution._acquire_remote_source",
+            return_value={"quality_policy": "highest_available_no_transcode", "sha256": "abc"},
+        ),
+        patch(
+            "clipper.modal_execution._invoke_remote_with_budget",
+            return_value=failed_result,
+        ),
+        patch(
+            "clipper.modal_execution._materialize_remote_run",
+            return_value=failed_local,
+        ) as materialize,
+    ):
+        result = run_modal_pipeline(
+            brief_path,
+            artifact_root=tmp_path / "artifacts",
+            resume_from_run_id=None,
+            render=True,
+            fresh_inference=False,
+        )
+
+    assert result == failed_local
+    materialize.assert_called_once_with(
+        artifact_root=tmp_path / "artifacts",
+        volume_name="clipper-production-artifacts",
+        remote_run_path="/failed-run",
+    )
