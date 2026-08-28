@@ -461,27 +461,6 @@ class VolumeSourceClient:
         return {video_id: dict(record["evidence"]) for video_id, record in self._records.items()}
 
 
-def _run_editorial_capacity_probe(
-    worker: Any,
-    *,
-    task: str,
-    raw_payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Run one non-generating editorial probe inside the shared producer lifecycle."""
-
-    from clipper.providers.modal import invoke_editorial_capacity_probe
-
-    response = invoke_editorial_capacity_probe(
-        worker.capacity_probe.remote,
-        task=task,
-        payload=raw_payload,
-        execution_id=os.getenv("CLIPPER_EXECUTION_ID", ""),
-        expected_git_sha=os.getenv("CLIPPER_ACCEPTANCE_SHA", ""),
-    )
-    probe = response["value"]
-    return {str(key): value for key, value in probe.items()}
-
-
 def _editorial_acceptance_probe(
     run_dir: Path,
     brief_yaml: str,
@@ -493,6 +472,7 @@ def _editorial_acceptance_probe(
     from clipper.canonical import CanonicalTimeline
     from clipper.editorial_capacity import token_aware_repartition
     from clipper.multimodal_timeline import build_multimodal_timeline
+    from clipper.providers.modal import invoke_editorial_capacity_probe
     from clipper.source_hazards import SourceHazardClassifier, campaign_context
     from clipper.visual import VisualTimeline
 
@@ -539,11 +519,17 @@ def _editorial_acceptance_probe(
             ),
         }
         task = f"source_hazards:acceptance_probe:{video_id}"
-        details = _run_editorial_capacity_probe(
-            worker,
+        response = invoke_editorial_capacity_probe(
+            worker.capacity_probe.remote,
             task=task,
-            raw_payload=raw_payload,
+            payload=raw_payload,
+            expected_git_sha=os.getenv("CLIPPER_ACCEPTANCE_SHA", ""),
+            execution_id=os.getenv("CLIPPER_EXECUTION_ID", ""),
         )
+        probe = response.get("value")
+        if not isinstance(probe, dict):
+            raise RuntimeError("EditorialModel.capacity_probe did not return measured capacity")
+        details = {str(key): value for key, value in probe.items()}
         repartition = token_aware_repartition(
             timeline,
             0,
