@@ -34,6 +34,7 @@ RECOGNIZED_EVENTS = {
     "vision_generation_complete",
     "vision_json_validation",
     "vision_generation_capacity_expand",
+    "production_cycle_terminal",
 }
 
 
@@ -71,6 +72,9 @@ class ModalExecutionSpy:
         self.started_at = datetime.now(UTC).isoformat()
         self._last_request_plan_signature: tuple[object, ...] | None = None
         self._active_generations: dict[str, float] = {}
+        self._terminal_event: dict[str, Any] | None = None
+        self._terminal_seen_at: float | None = None
+        self._last_scoped_event_at: float | None = None
         self.generation_stall_seconds = (
             float(generation_stall_seconds)
             if generation_stall_seconds is not None
@@ -224,6 +228,8 @@ class ModalExecutionSpy:
             "model_gpu_indices",
             "model_bytes_by_device",
             "placement_policy",
+            "pipeline_status",
+            "review_status",
         }
         return {key: value for key, value in event.items() if key in allowed}
 
@@ -248,6 +254,14 @@ class ModalExecutionSpy:
 
         if name == "editorial_execution_timeout":
             return f"editorial execution hit its runtime timeout: {event}"
+
+        if name == "production_cycle_terminal":
+            status = str(event.get("status") or "")
+            if status not in {"PASS", "FAIL"}:
+                return f"production terminal event emitted invalid status: {event}"
+            if self._terminal_event is not None:
+                return f"production terminal event repeated for one execution: {event}"
+            return None
 
         if name == "application_result":
             if str(event.get("application_status") or "") == "FAILED":
@@ -518,6 +532,8 @@ class ModalExecutionSpy:
             return
         compact = self._compact_event(payload)
         with self.lock:
+            observed_at = time.monotonic()
+            self._last_scoped_event_at = observed_at
             task = str(compact.get("task") or "")
             if name == "editorial_generation_start" and task:
                 self._active_generations[task] = time.monotonic()
@@ -538,6 +554,9 @@ class ModalExecutionSpy:
             }:
                 self._last_request_plan_signature = None
             violation = self._validate_event(compact)
+            if name == "production_cycle_terminal" and violation is None:
+                self._terminal_event = dict(compact)
+                self._terminal_seen_at = observed_at
             self.events_seen += 1
             self.event_counts[name] = self.event_counts.get(name, 0) + 1
             self.latest[name] = compact
@@ -619,6 +638,29 @@ class ModalExecutionSpy:
                 },
             )
 
+    def wait_for_terminal_and_quiet(
+        self,
+        *,
+        timeout_seconds: float,
+        quiet_seconds: float,
+    ) -> bool:
+        if timeout_seconds <= 0 or quiet_seconds <= 0:
+            raise ValueError("terminal drain timeouts must be positive")
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            now = time.monotonic()
+            with self.lock:
+                terminal_seen = self._terminal_event is not None
+                last_event = self._last_scoped_event_at
+                aborted = self.abort_reason is not None
+            if aborted:
+                return False
+            if terminal_seen and last_event is not None and now - last_event >= quiet_seconds:
+                return True
+            if now >= deadline:
+                return False
+            time.sleep(min(0.1, max(0.01, deadline - now)))
+
     def summary(self) -> dict[str, object]:
         return {
             "status": "ABORT" if self.abort_reason else "PASS",
@@ -629,6 +671,10 @@ class ModalExecutionSpy:
             "execution_id": self.execution_id,
             "generation_stall_seconds": self.generation_stall_seconds,
             "active_generations": sorted(self._active_generations),
+            "terminal_seen": self._terminal_event is not None,
+            "terminal_event": self._terminal_event,
+            "terminal_seen_at_monotonic": self._terminal_seen_at,
+            "last_scoped_event_at_monotonic": self._last_scoped_event_at,
             "events_seen": self.events_seen,
             "event_counts": self.event_counts,
             "latest": self.latest,
