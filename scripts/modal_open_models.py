@@ -1613,6 +1613,7 @@ def _vision_infer(
     from PIL import Image
 
     started = time.perf_counter()
+    execution_id = _execution_id(payload)
     raw_frames = payload.get("frames_base64")
     if not isinstance(raw_frames, list) or not raw_frames:
         raise ValueError("vision payload requires frames_base64")
@@ -1662,6 +1663,7 @@ def _vision_infer(
                         {
                             "event": "vision_generation_start",
                             "worker_lifecycle_id": lifecycle_id,
+                            "execution_id": execution_id,
                             "attempt": attempt,
                             "frames": len(frames),
                             **capacity,
@@ -1689,6 +1691,7 @@ def _vision_infer(
                         {
                             "event": "vision_generation_complete",
                             "worker_lifecycle_id": lifecycle_id,
+                            "execution_id": execution_id,
                             "attempt": attempt,
                             "frames": len(frames),
                             "generated_tokens": output_units,
@@ -1709,6 +1712,7 @@ def _vision_infer(
                             {
                                 "event": "vision_json_validation",
                                 "worker_lifecycle_id": lifecycle_id,
+                            "execution_id": execution_id,
                                 "attempt": attempt,
                                 "frames": len(frames),
                                 "valid": False,
@@ -1734,6 +1738,7 @@ def _vision_infer(
                                     {
                                         "event": "vision_generation_capacity_expand",
                                         "worker_lifecycle_id": lifecycle_id,
+                            "execution_id": execution_id,
                                         "frames": len(frames),
                                         "previous_budget_tokens": generation_budget,
                                         "next_minimum_budget_tokens": minimum_budget,
@@ -1775,6 +1780,7 @@ def _vision_infer(
                         {
                             "event": "vision_json_validation",
                             "worker_lifecycle_id": lifecycle_id,
+                            "execution_id": execution_id,
                             "attempt": attempt,
                             "frames": len(frames),
                             "valid": True,
@@ -1863,6 +1869,7 @@ def _vision_worker_inspect(
                         {
                             "event": "vision_inference_error",
                             "worker_lifecycle_id": worker.lifecycle_id,
+                            "execution_id": _execution_id(payload),
                             "model_id": model_id,
                             "error_type": type(exc).__name__,
                             "cuda_memory_by_device": _cuda_memory_snapshot(),
@@ -1877,6 +1884,7 @@ def _vision_worker_inspect(
                 f"task={payload.get('task') or '<missing>'} "
                 f"frames={len(payload.get('frames_base64') or [])}"
             ),
+            execution_id=_execution_id(payload),
         )
 
 
