@@ -246,6 +246,10 @@ def test_editorial_runtime_safety_is_preflighted_and_fail_closed() -> None:
     assert '"max_gpu_seconds": max_gpu_seconds' in watchdog
     assert '"max_estimated_usd": max_estimated_usd' in watchdog
     assert "conservative in-flight GPU budget reached" in watchdog
+    pipeline = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+    assert "invoke_editorial_capacity_probe(" in pipeline
+    assert "_run_editorial_capacity_probe(" in pipeline
+    assert "worker.capacity_probe.remote" in pipeline
 
 
 def test_modal_spy_is_bound_to_spawned_call_and_execution_id() -> None:
