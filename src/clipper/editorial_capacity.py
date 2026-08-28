@@ -93,6 +93,10 @@ def capacity_target_input_tokens(details: dict[str, Any]) -> int | None:
     if smallest_bad is not None:
         candidates.append(max(1, smallest_bad - 1))
 
+    runtime_safe = _positive_int(details.get("runtime_safe_input_tokens"))
+    if runtime_safe is not None:
+        candidates.append(runtime_safe)
+
     reason = str(details.get("reason") or "")
     if observed is not None and reason in {
         "cuda_oom_after_offloaded_cache",
