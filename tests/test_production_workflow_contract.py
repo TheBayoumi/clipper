@@ -209,13 +209,13 @@ def test_modal_deployment_embeds_and_verifies_exact_source_sha() -> None:
 
     assert "CLIPPER_DEPLOYED_GIT_SHA" in deploy
     assert "Verify exact deployment checkout" in deploy
-    assert 'ref: ${{ github.event.pull_request.head.sha || github.sha }}' in deploy
+    assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in deploy
     assert "Verify immutable deployed SHA identities" in deploy
     assert '"deployment_identity"' in deploy
     assert "production pipeline worker SHA mismatch" in pipeline
     assert "open-model worker SHA mismatch" in models
-    assert 'def deployment_identity()' in pipeline
-    assert 'def deployment_identity()' in models
+    assert "def deployment_identity()" in pipeline
+    assert "def deployment_identity()" in models
 
 
 def test_editorial_runtime_safety_is_preflighted_and_fail_closed() -> None:
@@ -224,7 +224,7 @@ def test_editorial_runtime_safety_is_preflighted_and_fail_closed() -> None:
     workflow = _workflow()
     watchdog = _watchdog()
 
-    assert 'CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS' in worker
+    assert "CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS" in worker
     assert 'actual_payload.get("capacity_repartitionable") is True' in worker
     assert '"reason": "runtime_input_guard"' in worker
     assert "startup_timeout=EDITORIAL_STARTUP_TIMEOUT_SECONDS" in worker
@@ -256,7 +256,7 @@ def test_modal_spy_is_bound_to_spawned_call_and_execution_id() -> None:
 
     assert "root_function_call_id" in spy
     assert "_belongs_to_execution" in spy
-    assert 'app == self.pipeline_app' in spy
+    assert "app == self.pipeline_app" in spy
     assert 'payload.get("execution_id")' in spy
     assert "editorial generation made no completion progress before watchdog deadline" in spy
 
@@ -280,5 +280,5 @@ def test_all_paid_modal_calls_carry_expected_deployed_sha() -> None:
 
     assert '"expected_git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"]' in workflow
     assert '"expected_git_sha"' in speech
-    assert '_assert_expected_git_sha(payload)' in models
-    assert '_assert_expected_git_sha(payload)' in pipeline
+    assert "_assert_expected_git_sha(payload)" in models
+    assert "_assert_expected_git_sha(payload)" in pipeline
