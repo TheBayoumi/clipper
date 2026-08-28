@@ -65,6 +65,7 @@ class ModalExecutionSpy:
         self.processes: list[subprocess.Popen[str]] = []
         self.events_seen = 0
         self.event_counts: dict[str, int] = {}
+        self.authoritative_event_counts: dict[str, int] = {}
         self.latest: dict[str, dict[str, Any]] = {}
         self.pr_number: int | None = None
         self.comment_id: int | None = None
@@ -620,6 +621,10 @@ class ModalExecutionSpy:
                 self._last_request_plan_signature = None
             self.events_seen += 1
             self.event_counts[name] = self.event_counts.get(name, 0) + 1
+            if authoritative:
+                self.authoritative_event_counts[name] = (
+                    self.authoritative_event_counts.get(name, 0) + 1
+                )
             self.latest[name] = compact
             record = {"app": app, "authoritative": authoritative, **compact}
             with self.output.open("a", encoding="utf-8") as handle:
@@ -739,6 +744,7 @@ class ModalExecutionSpy:
             "last_scoped_event_at_monotonic": self._last_scoped_event_at,
             "events_seen": self.events_seen,
             "event_counts": self.event_counts,
+            "authoritative_event_counts": self.authoritative_event_counts,
             "latest": self.latest,
             "stream_errors": self.stream_errors,
             "pr_number": self.pr_number,
