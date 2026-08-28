@@ -36,7 +36,10 @@ def test_proxy_token_parses_modal_1_5_json_schema() -> None:
     )
 
 
-def test_modal_editorial_recovers_when_remote_reports_more_output_capacity() -> None:
+def test_modal_editorial_recovers_when_remote_reports_more_output_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
     provider = _editorial_provider()
     function = Mock()
     function.remote.side_effect = [
@@ -61,7 +64,11 @@ def test_modal_editorial_recovers_when_remote_reports_more_output_capacity() -> 
     assert result.value == {"cores": []}
     assert function.remote.call_count == 2
     first_request, second_request = [call.args[0] for call in function.remote.call_args_list]
-    assert first_request == {"task": "semantic_cores:3", "payload": payload}
+    assert first_request == {
+        "task": "semantic_cores:3",
+        "payload": payload,
+        "expected_git_sha": "a" * 40,
+    }
     assert second_request["task"] == "semantic_cores:3"
     assert second_request["payload"] is payload
     assert second_request["generation_minimum_output_tokens"] == 200
