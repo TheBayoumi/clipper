@@ -311,7 +311,7 @@ def test_spy_scopes_pipeline_and_model_events_to_one_execution(tmp_path: Path) -
     }
 
 
-def test_spy_aborts_generation_that_exceeds_progress_deadline(
+def test_spy_aborts_editorial_remote_call_that_exceeds_progress_deadline(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -320,19 +320,21 @@ def test_spy_aborts_generation_that_exceeds_progress_deadline(
         ("clipper-open-editor", "clipper-production-pipeline"),
         tmp_path / "stall.ndjson",
         generation_stall_seconds=10,
+        execution_id="exec-123",
     )
     clock = {"now": 100.0}
     monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
     spy._record(
-        "clipper-open-editor",
-        '{"event":"editorial_generation_start","task":"source_hazards:x",'
-        '"input_tokens":100,"generation_budget_tokens":10}',
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_start","execution_id":"exec-123",'
+        '"invocation_id":"inv-1","task":"source_hazards:x"}',
     )
     assert spy.abort_reason is None
     clock["now"] = 111.0
-    spy._check_stalled_generations()
+    spy._check_stalled_editorial_calls()
     assert spy.abort_reason is not None
-    assert "no completion progress" in spy.abort_reason
+    assert "no terminal progress" in spy.abort_reason
+    assert spy.abort_event["invocation_id"] == "inv-1"
 
 
 def test_spy_aborts_explicit_editorial_execution_timeout(tmp_path: Path) -> None:
@@ -347,18 +349,10 @@ def test_spy_aborts_explicit_editorial_execution_timeout(tmp_path: Path) -> None
     assert "runtime timeout" in spy.abort_reason
 
 
-def test_spy_drains_through_scoped_terminal_and_quiet_period(
+def test_spy_requires_closed_pipeline_editorial_calls_before_terminal_barrier(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
     module = _module()
-    clock = {"now": 100.0}
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
-    monkeypatch.setattr(
-        module.time,
-        "sleep",
-        lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
-    )
     spy = module.ModalExecutionSpy(
         ("clipper-open-editor", "clipper-production-pipeline"),
         tmp_path / "terminal.ndjson",
@@ -366,36 +360,81 @@ def test_spy_drains_through_scoped_terminal_and_quiet_period(
     )
     spy._record(
         "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_start","execution_id":"exec-123",'
+        '"invocation_id":"inv-1","task":"source_hazards:x"}',
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_terminal","execution_id":"exec-123",'
+        '"invocation_id":"inv-1","task":"source_hazards:x","status":"COMPLETE"}',
+    )
+    spy._record(
+        "clipper-production-pipeline",
         '{"event":"production_cycle_terminal","execution_id":"exec-123",'
         '"status":"PASS","pipeline_status":"SUCCESS","review_status":"NOT_RENDERED"}',
     )
 
-    assert spy.wait_for_terminal_and_quiet(timeout_seconds=5, quiet_seconds=1) is True
+    assert spy.wait_for_producer_barrier(timeout_seconds=0.1) is True
     summary = spy.summary()
     assert summary["terminal_seen"] is True
     assert summary["terminal_event"]["status"] == "PASS"
+    assert summary["active_editorial_calls"] == []
 
 
-def test_spy_rejects_timeout_buffered_after_terminal(tmp_path: Path) -> None:
+def test_spy_rejects_production_terminal_while_editorial_call_is_active(tmp_path: Path) -> None:
     module = _module()
     spy = module.ModalExecutionSpy(
         ("clipper-open-editor", "clipper-production-pipeline"),
-        tmp_path / "buffered-timeout.ndjson",
+        tmp_path / "active-at-terminal.ndjson",
         execution_id="exec-123",
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_start","execution_id":"exec-123",'
+        '"invocation_id":"inv-1","task":"quality_windows:x"}',
     )
     spy._record(
         "clipper-production-pipeline",
         '{"event":"production_cycle_terminal","execution_id":"exec-123","status":"PASS"}',
     )
+
+    assert spy.abort_reason is not None
+    assert "active editorial calls" in spy.abort_reason
+    assert spy.summary()["terminal_seen"] is False
+
+
+def test_late_model_diagnostic_cannot_invalidate_closed_pipeline_barrier(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "late-diagnostic.ndjson",
+        execution_id="exec-123",
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_start","execution_id":"exec-123",'
+        '"invocation_id":"inv-1","task":"quality_windows:x"}',
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_terminal","execution_id":"exec-123",'
+        '"invocation_id":"inv-1","task":"quality_windows:x","status":"COMPLETE"}',
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"production_cycle_terminal","execution_id":"exec-123","status":"PASS"}',
+    )
+    assert spy.wait_for_producer_barrier(timeout_seconds=0.1) is True
+
     spy._record(
         "clipper-open-editor",
         '{"event":"editorial_execution_timeout","execution_id":"exec-123",'
         '"task":"quality_windows:x","timeout_seconds":900,"recovery_action":"REPARTITION"}',
     )
 
-    assert spy.abort_reason is not None
-    assert "runtime timeout" in spy.abort_reason
-    assert spy.wait_for_terminal_and_quiet(timeout_seconds=0.01, quiet_seconds=0.001) is False
+    assert spy.abort_reason is None
+    assert spy.summary()["diagnostic_event_counts"]["editorial_execution_timeout"] == 1
+    assert spy.wait_for_producer_barrier(timeout_seconds=0.1) is True
 
 
 def test_spy_cannot_pass_terminal_drain_without_terminal_event(
@@ -412,4 +451,4 @@ def test_spy_cannot_pass_terminal_drain_without_terminal_event(
     )
     spy = module.ModalExecutionSpy(("app",), tmp_path / "missing-terminal.ndjson")
 
-    assert spy.wait_for_terminal_and_quiet(timeout_seconds=0.5, quiet_seconds=0.1) is False
+    assert spy.wait_for_producer_barrier(timeout_seconds=0.5) is False
