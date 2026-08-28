@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 from clipper.dag import DagStore, StageResult
 from clipper.stage_contracts import StageIdentity
 
@@ -42,3 +44,16 @@ def test_concurrent_failure_cannot_overwrite_completed_pass(tmp_path) -> None:
     assert not (directory / ".write-lock").exists()
     assert not list(directory.glob("*.tmp"))
     assert not list(directory.glob(".*.tmp"))
+
+
+def test_stale_dag_lock_is_not_reclaimed_unsafely(tmp_path) -> None:
+    store = DagStore(tmp_path)
+    identity = _identity()
+    lock = store._directory(identity) / ".write-lock"
+    lock.mkdir(parents=True)
+
+    with pytest.raises(TimeoutError, match="timed out acquiring DAG write lock"):
+        with store._write_lock(identity, timeout_seconds=0.02):
+            raise AssertionError("stale lock must never be stolen")
+
+    assert lock.is_dir()
