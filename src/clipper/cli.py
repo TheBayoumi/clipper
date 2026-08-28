@@ -82,6 +82,18 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="explicitly permit the smaller local-lite model profile",
     )
+    run.add_argument(
+        "--max-gpu-seconds",
+        type=float,
+        default=float(os.getenv("CLIPPER_MAX_GPU_SECONDS", "21600")),
+        help="hard production GPU-seconds budget (default: env or 21600)",
+    )
+    run.add_argument(
+        "--max-estimated-usd",
+        type=float,
+        default=float(os.getenv("CLIPPER_MAX_ESTIMATED_USD", "10")),
+        help="hard production estimated-cost budget in USD (default: env or 10)",
+    )
     return parser
 
 
@@ -404,6 +416,8 @@ def main(argv: list[str] | None = None) -> int:
                     resume_from_run_id=resume_run.name if resume_run is not None else None,
                     render=should_render,
                     fresh_inference=args.fresh_inference,
+                    max_gpu_seconds=args.max_gpu_seconds,
+                    max_estimated_usd=args.max_estimated_usd,
                 )
             else:
                 _assert_modal_functions_available(plan)
