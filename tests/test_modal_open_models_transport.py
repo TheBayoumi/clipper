@@ -3,8 +3,9 @@ from __future__ import annotations
 import ast
 import json
 import traceback
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pytest
 
@@ -91,7 +92,7 @@ def _load_transport_error() -> Callable[..., dict[str, Any]]:
         "json": json,
         "traceback": traceback,
     }
-    exec(compile(isolated, "scripts/modal_open_models.py", "exec"), namespace)
+    exec(compile(isolated, "scripts/modal_open_models.py", "exec"), namespace)  # noqa: S102
     loaded = namespace["_transport_error"]
     assert callable(loaded)
     return loaded
