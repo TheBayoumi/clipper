@@ -1712,7 +1712,7 @@ def _vision_infer(
                             {
                                 "event": "vision_json_validation",
                                 "worker_lifecycle_id": lifecycle_id,
-                            "execution_id": execution_id,
+                                "execution_id": execution_id,
                                 "attempt": attempt,
                                 "frames": len(frames),
                                 "valid": False,
@@ -1738,7 +1738,7 @@ def _vision_infer(
                                     {
                                         "event": "vision_generation_capacity_expand",
                                         "worker_lifecycle_id": lifecycle_id,
-                            "execution_id": execution_id,
+                                        "execution_id": execution_id,
                                         "frames": len(frames),
                                         "previous_budget_tokens": generation_budget,
                                         "next_minimum_budget_tokens": minimum_budget,
