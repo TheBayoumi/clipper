@@ -26,6 +26,11 @@ on:
         description: Optional explicit target video ID; required when the brief has multiple targets
         required: false
         type: string
+      editorial_acceptance_only:
+        description: Run live editorial projection/repartition acceptance without rendering MP4
+        required: true
+        type: boolean
+        default: false
       max_gpu_seconds:
         description: Maximum aggregate recorded GPU seconds for the acceptance run
         required: true
@@ -94,6 +99,7 @@ jobs:
           REQUEST_RESUME_FROM_RUN_ID: ${{ inputs.resume_from_run_id }}
           REQUEST_CAMPAIGN_BRIEF: ${{ inputs.campaign_brief }}
           REQUEST_TARGET_VIDEO_ID: ${{ inputs.target_video_id }}
+          REQUEST_EDITORIAL_ACCEPTANCE_ONLY: ${{ inputs.editorial_acceptance_only }}
           REQUEST_MAX_GPU_SECONDS: ${{ inputs.max_gpu_seconds }}
           REQUEST_MAX_ESTIMATED_USD: ${{ inputs.max_estimated_usd }}
         run: |
@@ -116,6 +122,9 @@ jobs:
               target_value = os.environ.get("REQUEST_TARGET_VIDEO_ID", "").strip()
               gpu_limit_raw = os.environ.get("REQUEST_MAX_GPU_SECONDS", "21600")
               cost_limit_raw = os.environ.get("REQUEST_MAX_ESTIMATED_USD", "10")
+              editorial_acceptance_only = (
+                  os.environ.get("REQUEST_EDITORIAL_ACCEPTANCE_ONLY", "").lower() == "true"
+              )
           else:
               marker = json.loads(
                   Path("acceptance/production-run-request.json").read_text(encoding="utf-8")
@@ -129,6 +138,7 @@ jobs:
               target_value = str(marker.get("target_video_id") or "").strip()
               gpu_limit_raw = marker.get("max_gpu_seconds", 21600)
               cost_limit_raw = marker.get("max_estimated_usd", 10)
+              editorial_acceptance_only = marker.get("editorial_acceptance_only") is True
 
           if not confirmed:
               raise RuntimeError("production acceptance requires confirm_production=true")
@@ -199,6 +209,8 @@ jobs:
               "execution_mode": execution_mode,
               "max_gpu_seconds": gpu_limit,
               "max_estimated_usd": cost_limit,
+              "editorial_acceptance_only": editorial_acceptance_only,
+              "render": not editorial_acceptance_only,
           }
           Path("open-evidence/acceptance-request.json").write_text(
               json.dumps(evidence, indent=2) + "\n", encoding="utf-8"
@@ -213,6 +225,9 @@ jobs:
               handle.write(f"CLIPPER_EXECUTION_MODE={execution_mode}\n")
               handle.write(f"CLIPPER_MAX_GPU_SECONDS={gpu_limit}\n")
               handle.write(f"CLIPPER_MAX_ESTIMATED_USD={cost_limit}\n")
+              handle.write(
+                  f"CLIPPER_RENDER={'false' if editorial_acceptance_only else 'true'}\n"
+              )
           PY
 
       - name: Verify Modal credentials before compute
@@ -398,76 +413,111 @@ jobs:
           )
           PY
 
-      - name: Run current-model production render with explicit inference mode
+      - name: Run current-model pipeline with cancellable Modal spy
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p open-evidence
-          python scripts/modal_execution_spy.py             --app "$CLIPPER_MODAL_APP"             --app "$CLIPPER_MODAL_PIPELINE_APP"             --output open-evidence/modal-spy.ndjson &
-          SPY_PID=$!
-          cleanup_spy() {
-            kill -TERM "$SPY_PID" 2>/dev/null || true
-            wait "$SPY_PID" 2>/dev/null || true
-          }
-          trap cleanup_spy EXIT
-
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          import modal
-
-          evidence = json.loads(Path("open-evidence/source-master.json").read_text(encoding="utf-8"))
-          source = {
-              "video_id": os.environ["CLIPPER_TARGET_VIDEO_ID"],
-              "channel_id": os.environ["CLIPPER_TARGET_CHANNEL_ID"],
-              "canonical_url": os.environ["CLIPPER_TARGET_VIDEO_URL"],
-              "evidence": evidence,
-          }
-          result = modal.Function.from_name(
-              os.environ["CLIPPER_MODAL_PIPELINE_APP"], "run_full_cycle"
-          ).remote(
-              {
-                  "sources": [source],
-                  "brief_yaml": Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"]).read_text(encoding="utf-8"),
-                  "render": True,
-                  "fresh_inference": os.environ["CLIPPER_FRESH_INFERENCE"] == "true",
-                  "resume_from_run_id": os.environ.get("CLIPPER_RESUME_FROM_RUN_ID") or None,
-                  "git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
-              }
-          )
-          if not isinstance(result, dict) or result.get("status") != "PASS":
-              raise RuntimeError(f"production cycle failed: {result}")
-          if result.get("execution_mode") != os.environ["CLIPPER_EXECUTION_MODE"]:
-              raise RuntimeError(
-                  f"production execution mode drifted from request: {result.get('execution_mode')}"
-              )
-          rendered = int(result.get("rendered") or 0)
-          reviewable = int(result.get("reviewable") or 0)
-          if result.get("pipeline_status") not in {"SUCCESS", "DEGRADED"}:
-              raise RuntimeError(f"production pipeline did not complete: {result}")
-          if result.get("review_status") != "PENDING_ACTUAL_MP4_REVIEW":
-              raise RuntimeError(f"production result bypassed actual-MP4 review: {result}")
-          if reviewable != rendered:
-              raise RuntimeError("every accepted rendered quality moment must remain reviewable")
-          Path("open-evidence/cycle-result.json").write_text(
-              json.dumps(result, indent=2) + "\n", encoding="utf-8"
-          )
-          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as handle:
-              handle.write(f"CLIPPER_RUN_VOLUME={result['run_volume']}\n")
-              handle.write(f"CLIPPER_RUN_PATH={result['run_path']}\n")
-          PY
-
-          cleanup_spy
-          trap - EXIT
+        run: python scripts/modal_hilp_watchdog.py
 
       - name: Materialize exact production run from Modal volume
         run: |
           rm -rf cycle-evidence
           modal volume get --force "$CLIPPER_RUN_VOLUME" "$CLIPPER_RUN_PATH" cycle-evidence
 
+      - name: Validate live editorial projection and token-aware repartition
+        if: env.CLIPPER_RENDER == 'false'
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          summary = json.loads(
+              Path("open-evidence/modal-spy-summary.json").read_text(encoding="utf-8")
+          )
+          if summary.get("status") != "PASS":
+              raise RuntimeError(f"Modal spy did not pass editorial acceptance: {summary}")
+          counts = summary.get("event_counts")
+          if not isinstance(counts, dict):
+              raise RuntimeError("Modal spy event counts are missing")
+          if int(counts.get("editorial_evidence_projection") or 0) <= 0:
+              raise RuntimeError("live editorial acceptance observed no evidence projection")
+          if int(counts.get("editorial_repartition") or 0) <= 0:
+              raise RuntimeError("live editorial acceptance observed no token-aware repartition")
+
+          records = []
+          for line in Path("open-evidence/modal-spy.ndjson").read_text(
+              encoding="utf-8"
+          ).splitlines():
+              event = json.loads(line)
+              if isinstance(event, dict):
+                  records.append(event)
+
+          projections = [
+              event
+              for event in records
+              if event.get("event") == "editorial_evidence_projection"
+          ]
+          repartitions = [
+              event
+              for event in records
+              if event.get("event") == "editorial_repartition"
+          ]
+          if not projections or not repartitions:
+              raise RuntimeError("live editorial telemetry records are incomplete")
+          if not any(
+              int(item.get("raw_event_count") or 0)
+              > int(item.get("projected_event_count") or 0)
+              for item in projections
+          ):
+              raise RuntimeError(
+                  "live projection did not reduce word-segmented event cardinality"
+              )
+          if not any(
+              int(item.get("raw_serialized_bytes") or 0)
+              > int(item.get("projected_serialized_bytes") or 0)
+              for item in projections
+          ):
+              raise RuntimeError("live projection did not reduce serialized evidence")
+          if not any(int(item.get("partition_count") or 0) > 2 for item in repartitions):
+              raise RuntimeError(
+                  "live token-aware repartitioner never demonstrated multi-way recovery"
+              )
+
+          cycle = json.loads(
+              Path("open-evidence/cycle-result.json").read_text(encoding="utf-8")
+          )
+          if (
+              cycle.get("status") != "PASS"
+              or cycle.get("review_status") != "NOT_RENDERED"
+          ):
+              raise RuntimeError(f"editorial-only cycle did not complete: {cycle}")
+
+          evidence = {
+              "status": "PASS",
+              "projection_events": len(projections),
+              "repartition_events": len(repartitions),
+              "best_event_count_reduction": max(
+                  int(item.get("raw_event_count") or 0)
+                  - int(item.get("projected_event_count") or 0)
+                  for item in projections
+              ),
+              "best_byte_reduction": max(
+                  int(item.get("raw_serialized_bytes") or 0)
+                  - int(item.get("projected_serialized_bytes") or 0)
+                  for item in projections
+              ),
+              "maximum_partition_count": max(
+                  int(item.get("partition_count") or 0) for item in repartitions
+              ),
+          }
+          Path("open-evidence/editorial-acceptance-validation.json").write_text(
+              json.dumps(evidence, indent=2) + chr(10),
+              encoding="utf-8",
+          )
+          print(json.dumps(evidence, indent=2))
+          PY
+
       - name: Validate dynamic yield, resumable inference, cost bounds, and actual media
+        if: env.CLIPPER_RENDER == 'true'
         run: |
           python - <<'PY'
           import hashlib

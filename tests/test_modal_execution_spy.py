@@ -85,3 +85,124 @@ def test_spy_tracks_only_known_structured_fields(tmp_path: Path) -> None:
     )
     assert compact["event"] == "editorial_repartition"
     assert "secret_payload" not in compact
+
+
+def test_spy_treats_capacity_rejection_as_recoverable(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(("app",), tmp_path / "spy.ndjson")
+    spy._record(
+        "app",
+        '{"event":"application_result","application_status":"CAPACITY_REJECTED",'
+        '"recovery_action":"REPARTITION"}',
+    )
+    assert spy.abort_reason is None
+
+
+def test_spy_aborts_nonrecoverable_application_failure(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(("app",), tmp_path / "spy.ndjson")
+    spy._record(
+        "app",
+        '{"event":"application_result","application_status":"FAILED","error_type":"ValueError"}',
+    )
+    assert spy.abort_reason is not None
+    assert "non-recoverable" in spy.abort_reason
+
+
+def test_spy_aborts_underpartitioned_measured_request(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(("app",), tmp_path / "spy.ndjson")
+    spy._record(
+        "app",
+        '{"event":"editorial_repartition","observed_input_tokens":1000000,'
+        '"target_input_tokens":250000,"partition_count":2,'
+        '"ranges":[[0,50],[50,100]]}',
+    )
+    assert spy.abort_reason is not None
+    assert "under-partitioned" in spy.abort_reason
+
+
+def test_spy_accepts_valid_multiway_repartition(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(("app",), tmp_path / "spy.ndjson")
+    spy._record(
+        "app",
+        '{"event":"editorial_repartition","observed_input_tokens":1000000,'
+        '"target_input_tokens":250000,"partition_count":4,'
+        '"ranges":[[0,25],[25,50],[50,75],[75,100]]}',
+    )
+    assert spy.abort_reason is None
+
+
+def test_spy_aborts_projection_expansion_and_nonshrinking_context(tmp_path: Path) -> None:
+    module = _module()
+    projection = module.ModalExecutionSpy(("app",), tmp_path / "projection.ndjson")
+    projection._record(
+        "app",
+        '{"event":"editorial_evidence_projection","raw_event_count":10,'
+        '"projected_event_count":11,"raw_serialized_bytes":100,'
+        '"projected_serialized_bytes":101}',
+    )
+    assert projection.abort_reason is not None
+
+    context = module.ModalExecutionSpy(("app",), tmp_path / "context.ndjson")
+    context._record(
+        "app",
+        '{"event":"editorial_context_repartition","previous_range":[0,100],"next_range":[0,100]}',
+    )
+    assert context.abort_reason is not None
+
+
+def test_spy_aborts_repeated_identical_request_plan_without_progress(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(("app",), tmp_path / "repeat.ndjson")
+    plan = (
+        '{"event":"editorial_request_plan","task":"source_hazards:w0-w9",'
+        '"input_tokens":1000,"context_limit_tokens":2000,'
+        '"available_output_tokens":1000,"generation_budget_tokens":100,'
+        '"serialized_request_bytes":5000}'
+    )
+    spy._record("app", plan)
+    assert spy.abort_reason is None
+    spy._record("app", plan)
+    assert spy.abort_reason is not None
+    assert "without forward progress" in spy.abort_reason
+
+
+def test_spy_allows_same_plan_after_generation_completion(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(("app",), tmp_path / "progress.ndjson")
+    plan = (
+        '{"event":"editorial_request_plan","task":"semantic_cores:w0-w9",'
+        '"input_tokens":1000,"context_limit_tokens":2000,'
+        '"available_output_tokens":1000,"generation_budget_tokens":100,'
+        '"serialized_request_bytes":5000}'
+    )
+    spy._record("app", plan)
+    spy._record(
+        "app",
+        '{"event":"editorial_generation_complete","task":"semantic_cores:w0-w9"}',
+    )
+    spy._record("app", plan)
+    assert spy.abort_reason is None
+
+
+def test_spy_aborts_invalid_generation_plan(tmp_path: Path) -> None:
+    module = _module()
+    context = module.ModalExecutionSpy(("app",), tmp_path / "context-plan.ndjson")
+    context._record(
+        "app",
+        '{"event":"editorial_request_plan","task":"x","input_tokens":100,'
+        '"context_limit_tokens":100,"available_output_tokens":1,'
+        '"generation_budget_tokens":1,"serialized_request_bytes":100}',
+    )
+    assert context.abort_reason is not None
+
+    output = module.ModalExecutionSpy(("app",), tmp_path / "output-plan.ndjson")
+    output._record(
+        "app",
+        '{"event":"editorial_request_plan","task":"x","input_tokens":50,'
+        '"context_limit_tokens":100,"available_output_tokens":20,'
+        '"generation_budget_tokens":21,"serialized_request_bytes":100}',
+    )
+    assert output.abort_reason is not None

@@ -192,6 +192,93 @@ def natural_split_index(
     return natural_boundary_near(timeline, start, end, midpoint)
 
 
+def token_aware_context_range(
+    timeline: CanonicalTimeline,
+    start: int,
+    end: int,
+    required_start: int,
+    required_end: int,
+    details: dict[str, Any],
+) -> tuple[int, int] | None:
+    """Shrink context from measured token density while preserving a required span."""
+
+    if not (start <= required_start < required_end <= end):
+        raise ValueError("required editorial interval is outside context")
+    if start == required_start and end == required_end:
+        return None
+
+    observed = _positive_int(details.get("input_tokens"))
+    target_tokens = capacity_target_input_tokens(details)
+    total_words = end - start
+    required_words = required_end - required_start
+
+    if observed is None or target_tokens is None or target_tokens >= observed:
+        return shrink_context_around_interval(
+            timeline,
+            start,
+            end,
+            required_start,
+            required_end,
+        )
+
+    target_words = max(
+        required_words,
+        min(total_words - 1, math.floor(total_words * target_tokens / observed)),
+    )
+    if target_words <= required_words:
+        return (required_start, required_end)
+
+    extras = target_words - required_words
+    left_available = required_start - start
+    right_available = end - required_end
+    total_available = left_available + right_available
+    if total_available <= 0:
+        return None
+
+    left_keep = min(left_available, round(extras * left_available / total_available))
+    right_keep = min(right_available, extras - left_keep)
+    remaining = extras - left_keep - right_keep
+    if remaining > 0:
+        additional_left = min(left_available - left_keep, remaining)
+        left_keep += additional_left
+        remaining -= additional_left
+    if remaining > 0:
+        right_keep += min(right_available - right_keep, remaining)
+
+    proposed_start = required_start - left_keep
+    proposed_end = required_end + right_keep
+
+    if proposed_start > start:
+        boundary = natural_boundary_near(
+            timeline,
+            start,
+            required_start + 1,
+            proposed_start,
+        )
+        if boundary is not None:
+            proposed_start = min(boundary, required_start)
+    if proposed_end < end:
+        boundary = natural_boundary_near(
+            timeline,
+            required_end - 1,
+            end,
+            proposed_end,
+        )
+        if boundary is not None:
+            proposed_end = max(boundary, required_end)
+
+    candidate = (max(start, proposed_start), min(end, proposed_end))
+    if candidate == (start, end):
+        return shrink_context_around_interval(
+            timeline,
+            start,
+            end,
+            required_start,
+            required_end,
+        )
+    return candidate
+
+
 def stable_range_stage(
     prefix: str,
     timeline: CanonicalTimeline,

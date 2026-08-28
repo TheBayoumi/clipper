@@ -7,27 +7,37 @@ def _workflow() -> str:
     return Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
 
 
+def _watchdog() -> str:
+    return Path("scripts/modal_hilp_watchdog.py").read_text(encoding="utf-8")
+
+
 def test_production_workflow_is_single_pass_resumable_and_exact_head() -> None:
     workflow = _workflow()
+    watchdog = _watchdog()
 
     deployment_gate = workflow.index("Require successful exact-head Modal deployment")
-    rendering = workflow.index("Run current-model production render with explicit inference mode")
+    execution = workflow.index("Run current-model pipeline with cancellable Modal spy")
     validation = workflow.index(
         "Validate dynamic yield, resumable inference, cost bounds, and actual media"
     )
 
-    assert deployment_gate < rendering < validation
-    assert '"render": False' not in workflow
-    assert '"render": True' in workflow
+    assert deployment_gate < execution < validation
+    assert "python scripts/modal_hilp_watchdog.py" in workflow
+    assert "editorial_acceptance_only:" in workflow
+    assert "CLIPPER_RENDER" in workflow
     assert "fresh_inference:" in workflow
     assert '"fresh_inference": True' not in workflow
-    assert '"fresh_inference": os.environ["CLIPPER_FRESH_INFERENCE"] == "true"' in workflow
-    assert '"resume_from_run_id": os.environ.get("CLIPPER_RESUME_FROM_RUN_ID") or None' in workflow
-    assert '"sources": [source]' in workflow
-    assert '"git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"]' in workflow
+    assert '"fresh_inference": os.environ["CLIPPER_FRESH_INFERENCE"] == "true"' in watchdog
+    assert '"resume_from_run_id": os.environ.get("CLIPPER_RESUME_FROM_RUN_ID") or None' in watchdog
+    assert '"sources": [_source_payload()]' in watchdog
+    assert '"git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"]' in watchdog
+    assert "function.spawn(request)" in watchdog
+    assert "call.get(timeout=poll_seconds)" in watchdog
+    assert "call.cancel(terminate_containers=False)" in watchdog
+    assert "modal-function-call.json" in watchdog
     assert "content-addressed-resume" in workflow
     assert "content-addressed-stage-resume" in workflow
-    assert "PENDING_ACTUAL_MP4_REVIEW" in workflow
+    assert "PENDING_ACTUAL_MP4_REVIEW" in watchdog
     assert "READY_FOR_HUMAN_REVIEW" in workflow
     assert "READY_TO_PUBLISH" in workflow
     assert "cycle-evidence" in workflow
@@ -44,10 +54,11 @@ def test_production_workflow_resolves_campaign_and_target_from_request_data() ->
     assert 'marker.get("target_video_id")' in workflow
     assert 'targets.get("videos")' in workflow
     assert 'rights.get("authorized_channels")' in workflow
-    assert 'os.environ["CLIPPER_TARGET_VIDEO_ID"]' in workflow
-    assert 'os.environ["CLIPPER_TARGET_VIDEO_URL"]' in workflow
-    assert 'os.environ["CLIPPER_TARGET_CHANNEL_ID"]' in workflow
-    assert 'Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"]).read_text(encoding="utf-8")' in workflow
+    watchdog = _watchdog()
+    assert 'os.environ["CLIPPER_TARGET_VIDEO_ID"]' in watchdog
+    assert 'os.environ["CLIPPER_TARGET_VIDEO_URL"]' in watchdog
+    assert 'os.environ["CLIPPER_TARGET_CHANNEL_ID"]' in watchdog
+    assert 'Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"]).read_text(' in watchdog
 
 
 def test_production_acceptance_contains_no_campaign_specific_identity() -> None:
@@ -69,11 +80,12 @@ def test_production_workflow_is_dynamic_yield_and_human_review_gated() -> None:
     assert 'int(result["rendered_finalists"]) >= 6' not in workflow
     assert 'int(result["initial_shortlist"]) >= 3' not in workflow
     assert "eligible_quality_moments" in workflow
-    assert 'rendered = int(result.get("rendered") or 0)' in workflow
-    assert 'reviewable = int(result.get("reviewable") or 0)' in workflow
-    assert "if reviewable != rendered:" in workflow
+    watchdog = _watchdog()
+    assert 'rendered = int(normalized.get("rendered") or 0)' in watchdog
+    assert 'reviewable = int(normalized.get("reviewable") or 0)' in watchdog
+    assert "if reviewable != rendered:" in watchdog
     assert "contract permits zero quality yield" in workflow
-    assert "PENDING_ACTUAL_MP4_REVIEW" in workflow
+    assert "PENDING_ACTUAL_MP4_REVIEW" in watchdog
     assert '"human_review": "PENDING_ACTUAL_REVIEW"' in workflow
     assert "Require successful exact-head Modal deployment" in workflow
     assert "modal-workers-deploy.yml" in workflow
@@ -116,14 +128,37 @@ def test_production_workflow_requires_exact_head_modal_deployment_without_mutati
     assert "modal deploy " not in workflow
 
 
-def test_production_workflow_spies_modal_during_render() -> None:
+def test_production_workflow_has_cancellable_modal_spy_and_editorial_acceptance() -> None:
     workflow = _workflow()
+    watchdog = _watchdog()
+    spy = Path("scripts/modal_execution_spy.py").read_text(encoding="utf-8")
+    parsed = yaml.safe_load(workflow)
+    assert isinstance(parsed, dict)
+
     assert "issues: write" in workflow
-    assert "scripts/modal_execution_spy.py" in workflow
-    assert '--app "$CLIPPER_MODAL_APP"' in workflow
-    assert '--app "$CLIPPER_MODAL_PIPELINE_APP"' in workflow
-    assert "--output open-evidence/modal-spy.ndjson" in workflow
-    assert "SPY_PID=$!" in workflow
-    assert "trap cleanup_spy EXIT" in workflow
-    assert "cleanup_spy" in workflow
-    assert "modal-spy.ndjson" in workflow
+    assert "editorial_acceptance_only:" in workflow
+    assert "REQUEST_EDITORIAL_ACCEPTANCE_ONLY" in workflow
+    assert 'os.environ.get("REQUEST_EDITORIAL_ACCEPTANCE_ONLY", "").lower() == "true"' in workflow
+    assert "Run current-model pipeline with cancellable Modal spy" in workflow
+    assert "python scripts/modal_hilp_watchdog.py" in workflow
+    assert "Validate live editorial projection and token-aware repartition" in workflow
+    assert "editorial_evidence_projection" in workflow
+    assert "editorial_repartition" in workflow
+    assert "maximum_partition_count" in workflow
+    assert "multi-way recovery" in workflow
+    assert "if: env.CLIPPER_RENDER == 'false'" in workflow
+    assert "if: env.CLIPPER_RENDER == 'true'" in workflow
+
+    assert "function.spawn(request)" in watchdog
+    assert "call.cancel(terminate_containers=False)" in watchdog
+    assert "production_call_spawned" in watchdog
+    assert "production_call_cancel" in watchdog
+    assert "SIGTERM" in watchdog
+    assert "SIGINT" in watchdog
+    assert "modal-spy-summary.json" in watchdog
+
+    assert '"editorial_context_repartition"' in spy
+    assert "under-partitioned measured input" in spy
+    assert "repeated without forward progress" in spy
+    assert "projection expanded serialized evidence" in spy
+    assert "--show-function-call-id" in spy

@@ -336,3 +336,27 @@ def test_narrative_context_shrinks_on_capacity_while_preserving_core(tmp_path: P
         set(core.source_word_ids).issubset(envelope.source_word_ids)
         for core, envelope in zip(result.cores, result.envelopes, strict=True)
     )
+
+
+def test_token_aware_context_shrink_uses_measured_density_and_preserves_core() -> None:
+    from clipper.editorial_capacity import token_aware_context_range
+
+    timeline = _timeline(100)
+    next_range = token_aware_context_range(
+        timeline,
+        0,
+        100,
+        45,
+        55,
+        {
+            "input_tokens": 1_000_000,
+            "context_limit_tokens": 250_000,
+            "requested_output_tokens": 1_000,
+        },
+    )
+
+    assert next_range is not None
+    assert next_range[0] <= 45 < 55 <= next_range[1]
+    assert next_range[0] > 0
+    assert next_range[1] < 100
+    assert next_range[1] - next_range[0] < 100

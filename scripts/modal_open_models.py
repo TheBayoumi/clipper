@@ -1166,6 +1166,7 @@ def _editorial_infer(
             {
                 "event": "editorial_request_plan",
                 "worker_lifecycle_id": lifecycle_id,
+                "task": task,
                 **plan,
                 "serialized_request_bytes": serialized_request_bytes,
                 "cuda_memory_by_device": _cuda_memory_snapshot(),

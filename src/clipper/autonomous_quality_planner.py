@@ -8,8 +8,8 @@ from typing import Any
 from .canonical import CanonicalTimeline
 from .dag import DagStore, StageResult
 from .editorial_capacity import (
-    shrink_context_around_interval,
     stable_range_stage,
+    token_aware_context_range,
     token_aware_repartition,
 )
 from .editorial_evidence import EditorialEvidenceProjection, project_multimodal_evidence
@@ -451,18 +451,32 @@ class AutonomousQualityPlanner:
                     )
                 return envelope
             except EditorialCapacityError as exc:
-                next_range = shrink_context_around_interval(
+                next_range = token_aware_context_range(
                     timeline,
                     context_start,
                     context_end,
                     required_start,
                     required_end,
+                    exc.details,
                 )
                 if next_range is None or next_range == (context_start, context_end):
                     raise AutonomousPlanningError(
                         "minimum semantic-core context exceeds editorial capacity: "
                         f"{core.core_id}: {exc}"
                     ) from exc
+                print(
+                    json.dumps(
+                        {
+                            "event": "editorial_context_repartition",
+                            "stage": stage,
+                            "reason": str(exc.details.get("reason") or "capacity_rejected"),
+                            "input_tokens": exc.details.get("input_tokens"),
+                            "previous_range": [context_start, context_end],
+                            "next_range": list(next_range),
+                        },
+                        sort_keys=True,
+                    )
+                )
                 context_start, context_end = next_range
 
     def _quality_context_range(

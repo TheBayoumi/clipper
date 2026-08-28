@@ -1,15 +1,12 @@
 {
-  "request_reason": "Reverify live two-GPU EditorialModel placement after normalizing model_gpu_indices telemetry",
-  "requested_from_sha": "c911b7b58939e8ab4a40784beaa370857abb36ff",
-  "failed_placement_run_id": "33124625082",
-  "resume_from_production_run_id": "33120454910",
+  "request_reason": "Deploy exact-head editorial evidence projection, token-aware repartition, and cancellable Modal watchdog for live editorial acceptance before HILP",
+  "requested_from_sha": "d47b9ec95e7752b7dde2f46a4f40cfa6efab3ed1",
+  "resume_from_production_run_id": "33125698696",
   "fresh_inference": false,
-  "placement_requirement": {
-    "expected_gpu_count": 2,
-    "required_model_gpu_indices": [
-      0,
-      1
-    ],
-    "require_model_bytes_on_every_gpu": true
+  "live_acceptance_required": {
+    "editorial_evidence_projection": true,
+    "token_aware_multiway_repartition": true,
+    "cancellable_modal_spy": true,
+    "two_gpu_editorial_placement": true
   }
 }
