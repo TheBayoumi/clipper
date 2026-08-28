@@ -235,7 +235,7 @@ jobs:
           test -n "$MODAL_TOKEN_ID"
           test -n "$MODAL_TOKEN_SECRET"
 
-      - name: Require successful exact-head Modal deployment
+      - name: Wait for successful exact-head Modal deployment
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -243,6 +243,7 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import time
           import urllib.parse
           import urllib.request
           from pathlib import Path
@@ -253,7 +254,6 @@ jobs:
           query = urllib.parse.urlencode(
               {
                   "head_sha": sha,
-                  "status": "success",
                   "per_page": 20,
               }
           )
@@ -261,33 +261,74 @@ jobs:
               f"https://api.github.com/repos/{repository}/actions/workflows/"
               f"{workflow}/runs?{query}"
           )
-          request = urllib.request.Request(
-              url,
-              headers={
-                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-                  "Accept": "application/vnd.github+json",
-                  "X-GitHub-Api-Version": "2022-11-28",
-              },
-          )
-          with urllib.request.urlopen(request, timeout=30) as response:
-              payload = json.load(response)
 
-          runs = [
-              item
-              for item in payload.get("workflow_runs", [])
-              if isinstance(item, dict)
-              and item.get("head_sha") == sha
-              and item.get("conclusion") == "success"
-          ]
-          if not runs:
+          selected = None
+          terminal_failure = None
+          for _attempt in range(180):
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  payload = json.load(response)
+
+              exact_head_runs = [
+                  item
+                  for item in payload.get("workflow_runs", [])
+                  if isinstance(item, dict) and item.get("head_sha") == sha
+              ]
+              successful = [
+                  item
+                  for item in exact_head_runs
+                  if item.get("status") == "completed"
+                  and item.get("conclusion") == "success"
+              ]
+              if successful:
+                  selected = max(
+                      successful,
+                      key=lambda item: int(item.get("run_number") or 0),
+                  )
+                  break
+
+              completed = [
+                  item
+                  for item in exact_head_runs
+                  if item.get("status") == "completed"
+              ]
+              running = [
+                  item
+                  for item in exact_head_runs
+                  if item.get("status") in {"queued", "in_progress", "waiting", "pending"}
+              ]
+              failed = [
+                  item
+                  for item in completed
+                  if item.get("conclusion") not in {None, "success"}
+              ]
+              if failed and not running:
+                  terminal_failure = max(
+                      failed,
+                      key=lambda item: int(item.get("run_number") or 0),
+                  )
+                  break
+              time.sleep(15)
+
+          if selected is None:
+              if terminal_failure is not None:
+                  raise RuntimeError(
+                      "exact-head Deploy Modal workers completed unsuccessfully: "
+                      f"sha={sha} run_id={terminal_failure.get('id')} "
+                      f"conclusion={terminal_failure.get('conclusion')}"
+                  )
               raise RuntimeError(
-                  "production requires a successful exact-head Deploy Modal workers run "
+                  "timed out waiting for successful exact-head Deploy Modal workers run "
                   f"before inference: sha={sha}"
               )
-          selected = max(
-              runs,
-              key=lambda item: int(item.get("run_number") or 0),
-          )
+
           evidence = {
               "status": "PASS",
               "acceptance_sha": sha,

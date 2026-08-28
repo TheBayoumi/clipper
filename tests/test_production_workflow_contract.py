@@ -185,3 +185,13 @@ def test_modal_editorial_capacity_probe_is_non_generating() -> None:
     assert "token_aware_repartition(" in pipeline
     assert '"event": "editorial_acceptance_probe_result"' in pipeline
     assert "editorial-acceptance-probe.json" in pipeline
+
+
+def test_production_workflow_waits_for_exact_head_modal_deploy() -> None:
+    workflow = Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
+    assert "Wait for successful exact-head Modal deployment" in workflow
+    assert "for _attempt in range(180):" in workflow
+    assert "time.sleep(15)" in workflow
+    assert '"status") in {"queued", "in_progress", "waiting", "pending"}' in workflow
+    assert "exact-head Deploy Modal workers completed unsuccessfully" in workflow
+    assert "timed out waiting for successful exact-head Deploy Modal workers run" in workflow
