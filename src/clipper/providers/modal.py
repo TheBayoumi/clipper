@@ -183,9 +183,7 @@ def invoke_editorial_capacity_probe(
         details_raw = error.get("details")
         details = dict(details_raw) if isinstance(details_raw, dict) else {}
         application_status = str(
-            response.get("application_status")
-            or details.get("application_status")
-            or ""
+            response.get("application_status") or details.get("application_status") or ""
         )
         status = "CAPACITY_REJECTED" if application_status == "CAPACITY_REJECTED" else "ERROR"
         invocation.terminal(
