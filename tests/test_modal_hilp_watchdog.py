@@ -212,3 +212,47 @@ def test_watchdog_rechecks_budget_after_successful_final_poll(
         raise AssertionError("final successful poll must still enforce the GPU budget")
 
     assert call.cancel_args == []
+
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("CLIPPER_MAX_GPU_SECONDS", "nan"),
+        ("CLIPPER_MAX_GPU_SECONDS", "inf"),
+        ("CLIPPER_MAX_GPU_SECONDS", "-inf"),
+        ("CLIPPER_MAX_ESTIMATED_USD", "nan"),
+        ("CLIPPER_MAX_ESTIMATED_USD", "inf"),
+        ("CLIPPER_MAX_ESTIMATED_USD", "-inf"),
+    ],
+)
+def test_watchdog_rejects_nonfinite_production_budgets(
+    tmp_path: Path,
+    monkeypatch,
+    name: str,
+    value: str,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    monkeypatch.setitem(sys.modules, "modal", _modal(_Call({})))
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        module.run(render=False)
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_watchdog_rejects_nonfinite_poll_interval(
+    tmp_path: Path,
+    monkeypatch,
+    value: str,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
+    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
+    monkeypatch.setitem(sys.modules, "modal", _modal(_Call({})))
+    monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", value)
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        module.run(render=False)
