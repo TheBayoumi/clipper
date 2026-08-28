@@ -165,12 +165,12 @@ class ModalExecutionSpy:
     ) -> bool:
         if self.root_function_call_id is None and self.execution_id is None:
             return True
-        if app == self.pipeline_app:
+        payload_execution_id = str(payload.get("execution_id") or "")
+        if self.execution_id is not None and payload_execution_id == self.execution_id:
+            return True
+        if app == self.pipeline_app and self.root_function_call_id is not None:
             return self._function_call_id(line) == self.root_function_call_id
-        return (
-            self.execution_id is not None
-            and str(payload.get("execution_id") or "") == self.execution_id
-        )
+        return False
 
     @staticmethod
     def _parse_json(line: str) -> dict[str, Any] | None:
