@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from clipper.editorial_capacity import capacity_target_input_tokens
@@ -34,6 +36,7 @@ def test_runtime_safe_target_participates_in_capacity_repartition() -> None:
 
 def test_modal_function_timeout_becomes_editorial_capacity_error(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     provider = ModalEditorialProvider(
         app_name="test-app",
@@ -77,6 +80,21 @@ def test_modal_function_timeout_becomes_editorial_capacity_error(
     assert details["recovery_action"] == "REPARTITION"
     assert provider._instance_handle is None
 
+    events = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("{")
+    ]
+    start = next(event for event in events if event.get("event") == "editorial_remote_call_start")
+    terminal = next(
+        event for event in events if event.get("event") == "editorial_remote_call_terminal"
+    )
+    timeout_event = next(
+        event for event in events if event.get("event") == "editorial_execution_timeout"
+    )
+    assert start["invocation_id"] == terminal["invocation_id"] == timeout_event["invocation_id"]
+    assert terminal["status"] == "TIMEOUT"
+
 
 def test_modal_provider_propagates_execution_and_expected_sha(
     monkeypatch: pytest.MonkeyPatch,
@@ -111,3 +129,54 @@ def test_modal_provider_propagates_execution_and_expected_sha(
     assert result.value == {"segments": []}
     assert remote.payload["execution_id"] == "exec-abc"
     assert remote.payload["expected_git_sha"] == "a" * 40
+
+
+
+def test_modal_editorial_emits_closed_pipeline_call_pair(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    provider = ModalEditorialProvider(
+        app_name="test-app",
+        class_name="EditorialModel",
+        method_name="complete",
+        identity=_identity(),
+    )
+
+    class Remote:
+        def __init__(self) -> None:
+            self.payload = None
+
+        def remote(self, payload):
+            self.payload = payload
+            return {
+                "value": {"segments": []},
+                "model": {"model_id": "test-model", "revision": "test-revision"},
+                "usage": {},
+                "runtime": {},
+            }
+
+    remote = Remote()
+    monkeypatch.setattr(provider, "_function", lambda: remote)
+    monkeypatch.setenv("CLIPPER_EXECUTION_ID", "exec-barrier")
+    monkeypatch.setenv("CLIPPER_ACCEPTANCE_SHA", "b" * 40)
+
+    result = provider.complete_json(task="source_hazards:x", payload={})
+
+    assert result.value == {"segments": []}
+    events = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("{")
+    ]
+    starts = [event for event in events if event.get("event") == "editorial_remote_call_start"]
+    terminals = [
+        event for event in events if event.get("event") == "editorial_remote_call_terminal"
+    ]
+    assert len(starts) == len(terminals) == 1
+    assert starts[0]["execution_id"] == terminals[0]["execution_id"] == "exec-barrier"
+    assert starts[0]["invocation_id"] == terminals[0]["invocation_id"]
+    assert terminals[0]["status"] == "COMPLETE"
+    assert remote.payload["editorial_invocation_id"] == starts[0]["invocation_id"]
+    assert remote.payload["execution_id"] == "exec-barrier"
+    assert remote.payload["expected_git_sha"] == "b" * 40
