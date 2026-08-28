@@ -42,8 +42,6 @@ on:
         type: number
         default: 10
   push:
-    branches:
-      - feat/word-reveal-face-tracking
     paths:
       - "acceptance/production-run-request.json"
 
