@@ -153,3 +153,33 @@ def test_capacity_error_preserves_same_invocation_id(
     assert event["application_status"] == "CAPACITY_REJECTED"
     assert event["recovery_action"] == "REPARTITION"
     assert result["error"]["details"]["editorial_invocation_id"] == "invocation-2"
+
+
+
+def test_capacity_probe_diagnostic_carries_editorial_invocation_id() -> None:
+    tree = _tree()
+    function = _function(tree, "_editorial_capacity_probe")
+    event_dicts = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Dict)
+        and any(
+            isinstance(key, ast.Constant)
+            and key.value == "event"
+            and isinstance(value, ast.Constant)
+            and value.value == "editorial_capacity_probe"
+            for key, value in zip(node.keys, node.values, strict=True)
+        )
+    ]
+    assert len(event_dicts) == 2
+    for event in event_dicts:
+        mapping = {
+            key.value: value
+            for key, value in zip(event.keys, event.values, strict=True)
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        }
+        assert isinstance(mapping["invocation_id"], ast.Name)
+        assert mapping["invocation_id"].id == "invocation_id"
+
+    rendered = ast.unparse(function)
+    assert "payload.get('editorial_invocation_id')" in rendered
