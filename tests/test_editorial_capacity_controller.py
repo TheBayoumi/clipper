@@ -10,9 +10,12 @@ from clipper.brief import load_brief
 from clipper.canonical import CanonicalTimeline, CanonicalWord
 from clipper.dag import DagStore
 from clipper.editorial_capacity import (
+    capacity_target_input_tokens,
+    natural_boundary_near,
     natural_split_index,
     shrink_context_around_interval,
     stable_range_stage,
+    token_aware_repartition,
 )
 from clipper.providers.base import (
     EditorialCapacityError,
@@ -70,6 +73,66 @@ def test_natural_capacity_split_prefers_source_boundaries_and_validates_ranges()
     assert stable_range_stage("semantic_cores", timeline, 1, 7).startswith("semantic_cores:")
     with pytest.raises(ValueError, match="range is invalid"):
         stable_range_stage("semantic_cores", timeline, 4, 4)
+
+
+def test_token_aware_repartition_uses_observed_context_ratio_in_one_step() -> None:
+    timeline = _timeline(100, sentence_at=23)
+    details = {
+        "reason": "context_exhausted",
+        "input_tokens": 4_239_373,
+        "context_limit_tokens": 262_144,
+        "generation_budget_tokens": 1_456,
+    }
+
+    target = capacity_target_input_tokens(details)
+    assert target == 260_688
+    plan = token_aware_repartition(timeline, 0, 100, details)
+    assert plan is not None
+    assert plan.observed_input_tokens == 4_239_373
+    assert plan.target_input_tokens == 260_688
+    assert plan.partition_count == 17
+    assert plan.ranges[0][0] == 0
+    assert plan.ranges[-1][1] == 100
+    assert all(left < right for left, right in plan.ranges)
+    assert sum(right - left for left, right in plan.ranges) == 100
+
+
+def test_token_aware_repartition_uses_dynamic_oom_as_runtime_boundary() -> None:
+    timeline = _timeline(40, speaker_change_at=20)
+    details = {
+        "reason": "cuda_oom_dynamic_cache",
+        "input_tokens": 153_725,
+        "context_limit_tokens": 262_144,
+        "generation_budget_tokens": 1_456,
+    }
+
+    assert capacity_target_input_tokens(details) == 76_862
+    plan = token_aware_repartition(timeline, 0, 40, details)
+    assert plan is not None
+    assert plan.partition_count == 3
+    assert plan.ranges[0][0] == 0
+    assert plan.ranges[-1][1] == 40
+
+
+def test_token_aware_repartition_prefers_learned_good_boundary() -> None:
+    timeline = _timeline(30)
+    details = {
+        "reason": "history_dynamic_oom_boundary",
+        "input_tokens": 160_000,
+        "context_limit_tokens": 262_144,
+        "generation_budget_tokens": 1_000,
+        "largest_good_input_tokens": 61_591,
+        "smallest_bad_input_tokens": 153_725,
+    }
+    assert capacity_target_input_tokens(details) == 61_591
+    plan = token_aware_repartition(timeline, 0, 30, details)
+    assert plan is not None
+    assert plan.partition_count == 3
+
+
+def test_natural_boundary_near_snaps_to_source_structure_not_midpoint() -> None:
+    timeline = _timeline(20, sentence_at=3, speaker_change_at=15)
+    assert natural_boundary_near(timeline, 0, 20, 5) == 4
 
 
 def test_context_shrinking_preserves_required_interval_without_absolute_window() -> None:

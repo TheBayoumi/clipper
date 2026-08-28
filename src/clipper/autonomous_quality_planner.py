@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from .canonical import CanonicalTimeline
 from .dag import DagStore, StageResult
 from .editorial_capacity import (
-    natural_split_index,
     shrink_context_around_interval,
     stable_range_stage,
+    token_aware_repartition,
 )
+from .editorial_evidence import EditorialEvidenceProjection, project_multimodal_evidence
 from .modality_profile import SourceModalityProfile, assert_required_modalities_available
 from .models import SourceSpan
 from .multimodal_timeline import MultimodalTimeline
@@ -242,33 +244,21 @@ class AutonomousQualityPlanner:
         ]
 
     @staticmethod
-    def _multimodal_payload(
+    def _multimodal_projection(
         multimodal: MultimodalTimeline | None,
         start: float,
         end: float,
-    ) -> list[dict[str, object]]:
-        if multimodal is None:
-            return []
-        return [
-            {
-                "start": event.start,
-                "end": event.end,
-                "speaker_ids": list(event.speaker_ids),
-                "scene_ids": list(event.scene_ids),
-                "visible_people": list(event.visible_people),
-                "actions": list(event.actions),
-                "objects": list(event.objects),
-                "ocr_text": list(event.ocr_text),
-                "branding": list(event.branding),
-                "hazards": list(event.hazards),
-                "audio_events": list(event.audio_events),
-                "visual_summaries": list(event.visual_summaries),
-                "visual_salience": event.visual_salience,
-                "motion_salience": event.motion_salience,
-                "confidence": event.confidence,
-            }
-            for event in multimodal.overlapping(start, end)
-        ]
+    ) -> EditorialEvidenceProjection:
+        return project_multimodal_evidence(multimodal, start, end)
+
+    @staticmethod
+    def _attach_projection(
+        payload: dict[str, Any],
+        projection: EditorialEvidenceProjection,
+    ) -> None:
+        payload["multimodal_evidence"] = list(projection.events)
+        if projection.provenance:
+            payload["multimodal_provenance"] = list(projection.provenance)
 
     def _complete(
         self,
@@ -319,22 +309,21 @@ class AutonomousQualityPlanner:
         campaign_context: dict[str, object],
         start: int,
         end: int,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], EditorialEvidenceProjection]:
         chunk_start = timeline.words[start].source_start
         chunk_end = timeline.words[end - 1].source_end
-        return {
+        projection = self._multimodal_projection(multimodal, chunk_start, chunk_end)
+        payload: dict[str, Any] = {
             "campaign": campaign_context,
             "words": self._word_payload(timeline, start, end),
-            "multimodal_evidence": self._multimodal_payload(
-                multimodal,
-                chunk_start,
-                chunk_end,
-            ),
+            "capacity_repartitionable": True,
             "instruction": (
                 "Identify every independently worthwhile semantic nucleus in this source evidence. "
                 "Do not pad to delivery duration and do not invent boundaries."
             ),
         }
+        self._attach_projection(payload, projection)
+        return payload, projection
 
     def _semantic_cores_adaptive(
         self,
@@ -351,12 +340,22 @@ class AutonomousQualityPlanner:
         while work:
             start, end = work.pop(0)
             stage = stable_range_stage("semantic_cores", timeline, start, end)
-            payload = self._semantic_payload(
+            payload, projection = self._semantic_payload(
                 timeline,
                 multimodal,
                 campaign_context,
                 start,
                 end,
+            )
+            print(
+                json.dumps(
+                    projection.telemetry(
+                        stage=stage,
+                        start=timeline.words[start].source_start,
+                        end=timeline.words[end - 1].source_end,
+                    ),
+                    sort_keys=True,
+                )
             )
             try:
                 result = self._complete(
@@ -366,13 +365,14 @@ class AutonomousQualityPlanner:
                     relevant_policy=relevant_policy,
                 )
             except EditorialCapacityError as exc:
-                split = natural_split_index(timeline, start, end)
-                if split is None or split <= start or split >= end:
+                repartition = token_aware_repartition(timeline, start, end, exc.details)
+                if repartition is None:
                     raise AutonomousPlanningError(
                         "smallest source-grounded semantic interval exceeds editorial capacity: "
                         f"{stage}: {exc}"
                     ) from exc
-                work[0:0] = [(start, split), (split, end)]
+                print(json.dumps(repartition.telemetry(stage=stage), sort_keys=True))
+                work[0:0] = list(repartition.ranges)
                 continue
             parsed = semantic_cores_from_payload(timeline, result)
             legal = {word.word_id for word in timeline.words[start:end]}
@@ -413,6 +413,7 @@ class AutonomousQualityPlanner:
             source_start = timeline.words[context_start].source_start
             source_end = timeline.words[context_end - 1].source_end
             stage = f"narrative_envelope:{core.core_id}"
+            projection = self._multimodal_projection(multimodal, source_start, source_end)
             payload = {
                 "campaign": campaign_context,
                 "core": core.to_dict(),
@@ -421,16 +422,19 @@ class AutonomousQualityPlanner:
                     context_start,
                     context_end,
                 ),
-                "multimodal_evidence": self._multimodal_payload(
-                    multimodal,
-                    source_start,
-                    source_end,
-                ),
+                "capacity_repartitionable": True,
                 "instruction": (
                     "Return the minimum complete narrative envelope containing this semantic core. "
                     "Resolve setup, references, causality and payoff without duration padding."
                 ),
             }
+            self._attach_projection(payload, projection)
+            print(
+                json.dumps(
+                    projection.telemetry(stage=stage, start=source_start, end=source_end),
+                    sort_keys=True,
+                )
+            )
             try:
                 raw = self._complete(
                     timeline,
@@ -557,37 +561,49 @@ class AutonomousQualityPlanner:
                 continue
 
             quality_stage = f"quality_windows:{core.core_id}"
+            quality_projection = self._multimodal_projection(
+                multimodal,
+                source_start,
+                source_end,
+            )
+            quality_request: dict[str, Any] = {
+                "campaign": campaign_context,
+                "core": core.to_dict(),
+                "envelope": envelope.to_dict(),
+                "feasible_windows": [
+                    {
+                        "window_id": window.window_id,
+                        "source_start": window.source_start,
+                        "source_end": window.source_end,
+                        "duration": window.duration,
+                        "start_word_ref": timeline.word_ref(window.source_word_ids[0]),
+                        "end_word_ref": timeline.word_ref(window.source_word_ids[-1]),
+                    }
+                    for window in windows
+                ],
+                "source_context_words": context_words,
+                "instruction": (
+                    "Judge whether this complete campaign-legal moment is genuinely worth "
+                    "publishing. Select only a supplied feasible window ID; never invent "
+                    "timestamps. Describe the selected opening from its actual source evidence "
+                    "without assigning it to a predefined hook category."
+                ),
+            }
+            self._attach_projection(quality_request, quality_projection)
+            print(
+                json.dumps(
+                    quality_projection.telemetry(
+                        stage=quality_stage,
+                        start=source_start,
+                        end=source_end,
+                    ),
+                    sort_keys=True,
+                )
+            )
             quality_payload = self._complete(
                 timeline,
                 quality_stage,
-                {
-                    "campaign": campaign_context,
-                    "core": core.to_dict(),
-                    "envelope": envelope.to_dict(),
-                    "feasible_windows": [
-                        {
-                            "window_id": window.window_id,
-                            "source_start": window.source_start,
-                            "source_end": window.source_end,
-                            "duration": window.duration,
-                            "start_word_ref": timeline.word_ref(window.source_word_ids[0]),
-                            "end_word_ref": timeline.word_ref(window.source_word_ids[-1]),
-                        }
-                        for window in windows
-                    ],
-                    "source_context_words": context_words,
-                    "multimodal_evidence": self._multimodal_payload(
-                        multimodal,
-                        source_start,
-                        source_end,
-                    ),
-                    "instruction": (
-                        "Judge whether this complete campaign-legal moment is genuinely worth "
-                        "publishing. Select only a supplied feasible window ID; never invent "
-                        "timestamps. Describe the selected opening from its actual source evidence "
-                        "without assigning it to a predefined hook category."
-                    ),
-                },
+                quality_request,
                 relevant_policy=relevant_policy,
                 dependency_hashes=(
                     content_fingerprint(core.to_dict()),

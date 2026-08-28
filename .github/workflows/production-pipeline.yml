@@ -48,6 +48,7 @@ concurrency:
 permissions:
   actions: read
   contents: read
+  issues: write
 
 env:
   MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -398,7 +399,19 @@ jobs:
           PY
 
       - name: Run current-model production render with explicit inference mode
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          mkdir -p open-evidence
+          python scripts/modal_execution_spy.py             --app "$CLIPPER_MODAL_APP"             --app "$CLIPPER_MODAL_PIPELINE_APP"             --output open-evidence/modal-spy.ndjson &
+          SPY_PID=$!
+          cleanup_spy() {
+            kill -TERM "$SPY_PID" 2>/dev/null || true
+            wait "$SPY_PID" 2>/dev/null || true
+          }
+          trap cleanup_spy EXIT
+
           python - <<'PY'
           import json
           import os
@@ -445,6 +458,9 @@ jobs:
               handle.write(f"CLIPPER_RUN_VOLUME={result['run_volume']}\n")
               handle.write(f"CLIPPER_RUN_PATH={result['run_path']}\n")
           PY
+
+          cleanup_spy
+          trap - EXIT
 
       - name: Materialize exact production run from Modal volume
         run: |

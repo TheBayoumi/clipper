@@ -114,3 +114,16 @@ def test_production_workflow_requires_exact_head_modal_deployment_without_mutati
     assert "production requires a successful exact-head Deploy Modal workers run" in workflow
     assert "modal app stop" not in workflow
     assert "modal deploy " not in workflow
+
+
+def test_production_workflow_spies_modal_during_render() -> None:
+    workflow = _workflow()
+    assert "issues: write" in workflow
+    assert "scripts/modal_execution_spy.py" in workflow
+    assert '--app "$CLIPPER_MODAL_APP"' in workflow
+    assert '--app "$CLIPPER_MODAL_PIPELINE_APP"' in workflow
+    assert "--output open-evidence/modal-spy.ndjson" in workflow
+    assert "SPY_PID=$!" in workflow
+    assert "trap cleanup_spy EXIT" in workflow
+    assert "cleanup_spy" in workflow
+    assert "modal-spy.ndjson" in workflow

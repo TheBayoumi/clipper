@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from .canonical import CanonicalTimeline
 from .dag import DagStore, StageResult
-from .editorial_capacity import natural_split_index, stable_range_stage
+from .editorial_capacity import stable_range_stage, token_aware_repartition
+from .editorial_evidence import EditorialEvidenceProjection, project_multimodal_evidence
 from .editorial_integrity import HazardClassification, SourceHazardSegment
 from .models import CampaignBrief
 from .multimodal_timeline import MultimodalTimeline
@@ -82,7 +84,7 @@ class SourceHazardClassifier:
         ]
 
     @staticmethod
-    def _multimodal_payload(
+    def _legacy_multimodal_payload(
         multimodal: MultimodalTimeline | None,
         start: float,
         end: float,
@@ -90,6 +92,14 @@ class SourceHazardClassifier:
         if multimodal is None:
             return []
         return [item.to_dict() for item in multimodal.overlapping(start, end)]
+
+    @staticmethod
+    def _project_multimodal_payload(
+        multimodal: MultimodalTimeline | None,
+        start: float,
+        end: float,
+    ) -> EditorialEvidenceProjection:
+        return project_multimodal_evidence(multimodal, start, end)
 
     def _identity(
         self,
@@ -141,6 +151,34 @@ class SourceHazardClassifier:
             raise ValueError(f"{stage} returned a non-object payload")
         return {str(key): value for key, value in raw.items()}
 
+    def _projected_payload_for_range(
+        self,
+        brief: CampaignBrief,
+        timeline: CanonicalTimeline,
+        multimodal: MultimodalTimeline | None,
+        start: int,
+        end: int,
+    ) -> tuple[dict[str, Any], EditorialEvidenceProjection]:
+        words = timeline.words[start:end]
+        chunk_start = words[0].source_start
+        chunk_end = words[-1].source_end
+        projection = self._project_multimodal_payload(multimodal, chunk_start, chunk_end)
+        payload: dict[str, Any] = {
+            "campaign": campaign_context(brief),
+            "instruction": (
+                "Classify the entire supplied source interval into exhaustive chronological "
+                "segments. Fuse speech and multimodal evidence. Ordinary source material is "
+                "editorial_content. Use unknown when evidence is insufficient; uncertainty "
+                "must never be converted into an automatic PASS."
+            ),
+            "words": self._word_payload(timeline, start, end),
+            "capacity_repartitionable": True,
+            "multimodal_evidence": list(projection.events),
+        }
+        if projection.provenance:
+            payload["multimodal_provenance"] = list(projection.provenance)
+        return payload, projection
+
     def _payload_for_range(
         self,
         brief: CampaignBrief,
@@ -161,7 +199,7 @@ class SourceHazardClassifier:
                 "must never be converted into an automatic PASS."
             ),
             "words": self._word_payload(timeline, start, end),
-            "multimodal_evidence": self._multimodal_payload(
+            "multimodal_evidence": self._legacy_multimodal_payload(
                 multimodal,
                 chunk_start,
                 chunk_end,
@@ -223,7 +261,27 @@ class SourceHazardClassifier:
             chunk_start = words[0].source_start
             chunk_end = words[-1].source_end
             stage = cached_stage or stable_range_stage("source_hazards", timeline, start, end)
-            payload = self._payload_for_range(brief, timeline, multimodal, start, end)
+            if cached_stage is not None:
+                payload = self._payload_for_range(brief, timeline, multimodal, start, end)
+                projection = None
+            else:
+                payload, projection = self._projected_payload_for_range(
+                    brief,
+                    timeline,
+                    multimodal,
+                    start,
+                    end,
+                )
+                print(
+                    json.dumps(
+                        projection.telemetry(
+                            stage=stage,
+                            start=chunk_start,
+                            end=chunk_end,
+                        ),
+                        sort_keys=True,
+                    )
+                )
             try:
                 result = self._complete(timeline, brief, stage, payload)
                 raw_segments = result.get("segments")
@@ -242,9 +300,13 @@ class SourceHazardClassifier:
                         raise ValueError("source hazard escaped the supplied chunk evidence")
                     hazards.append(hazard)
             except EditorialCapacityError as exc:
-                split = natural_split_index(timeline, start, end)
-                if split is not None and start < split < end:
-                    work[0:0] = [(start, split, None), (split, end, None)]
+                repartition = token_aware_repartition(timeline, start, end, exc.details)
+                if repartition is not None:
+                    print(json.dumps(repartition.telemetry(stage=stage), sort_keys=True))
+                    work[0:0] = [
+                        (child_start, child_end, None)
+                        for child_start, child_end in repartition.ranges
+                    ]
                     continue
                 hazards.append(
                     SourceHazardSegment(

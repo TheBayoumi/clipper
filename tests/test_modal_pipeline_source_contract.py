@@ -71,6 +71,9 @@ def test_open_model_image_has_qwen3_vl_and_shared_editorial_budget_contract() ->
     assert '"editorial_placement"' in source
     assert '"model_gpu_indices": list(model_gpu_indices)' in source
     assert '"application_status": application_status' in source
+    assert '"smallest_dynamic_oom_input_tokens"' in source
+    assert '"largest_dynamic_good_input_tokens"' in source
+    assert '"capacity_repartitionable": repartitionable' in source
     deploy_path = Path(".github/workflows/modal-workers-deploy.yml")
     deploy = deploy_path.read_text(encoding="utf-8")
     parsed_deploy = yaml.safe_load(deploy)

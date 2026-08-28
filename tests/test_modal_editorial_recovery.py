@@ -181,4 +181,11 @@ def test_modal_editorial_runtime_is_model_and_history_derived() -> None:
     assert 'kwargs["cache_implementation"] = "offloaded"' in source
     assert '"event": "editorial_oom"' in source
     assert '"event": "editorial_capacity_fallback"' in source
+    assert '"smallest_dynamic_oom_input_tokens"' in source
+    assert '"largest_dynamic_good_input_tokens"' in source
+    assert '"capacity_repartitionable": repartitionable' in source
+    assert '"reason": "cuda_oom_dynamic_cache"' in source
+    assert 'if plan.get("capacity_repartitionable") is True:' in source
+    assert "if not capacity_rejected:" in source
+    assert "traceback.print_exception(exc)" in source
     assert "editorial_output_budget" not in source

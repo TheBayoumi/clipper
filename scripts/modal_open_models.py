@@ -674,6 +674,36 @@ def _editorial_generation_plan(
 
     smallest_bad = history.get("smallest_bad_input_tokens")
     largest_good = history.get("largest_good_input_tokens")
+    smallest_dynamic_bad = history.get("smallest_dynamic_oom_input_tokens")
+    largest_dynamic_good = history.get("largest_dynamic_good_input_tokens")
+    largest_offloaded_good = history.get("largest_offloaded_good_input_tokens")
+    repartitionable = payload.get("capacity_repartitionable") is True
+
+    if (
+        repartitionable
+        and isinstance(smallest_dynamic_bad, int)
+        and not isinstance(smallest_dynamic_bad, bool)
+        and smallest_dynamic_bad > 0
+        and input_units >= smallest_dynamic_bad
+        and (
+            not isinstance(largest_dynamic_good, int)
+            or isinstance(largest_dynamic_good, bool)
+            or input_units > largest_dynamic_good
+        )
+    ):
+        raise EditorialCapacityError(
+            "editorial request is at or above a learned dynamic-KV OOM boundary",
+            details={
+                "reason": "history_dynamic_oom_boundary",
+                "task": task,
+                "input_tokens": input_units,
+                "context_limit_tokens": context_limit,
+                "largest_good_input_tokens": largest_dynamic_good,
+                "smallest_bad_input_tokens": smallest_dynamic_bad,
+                "generation_budget_tokens": requested_output,
+            },
+        )
+
     if (
         isinstance(smallest_bad, int)
         and not isinstance(smallest_bad, bool)
@@ -691,6 +721,7 @@ def _editorial_generation_plan(
                 "reason": "history_capacity_boundary",
                 "task": task,
                 "input_tokens": input_units,
+                "context_limit_tokens": context_limit,
                 "largest_good_input_tokens": largest_good,
                 "smallest_bad_input_tokens": smallest_bad,
                 "generation_budget_tokens": requested_output,
@@ -706,6 +737,10 @@ def _editorial_generation_plan(
         "generation_budget_tokens": requested_output,
         "largest_good_input_tokens": largest_good,
         "smallest_bad_input_tokens": smallest_bad,
+        "largest_dynamic_good_input_tokens": largest_dynamic_good,
+        "smallest_dynamic_oom_input_tokens": smallest_dynamic_bad,
+        "largest_offloaded_good_input_tokens": largest_offloaded_good,
+        "capacity_repartitionable": repartitionable,
     }
 
 
@@ -725,6 +760,20 @@ def _update_editorial_success_history(
         or input_units > previous_good
     ):
         history["largest_good_input_tokens"] = input_units
+
+    cache_good_key = (
+        "largest_dynamic_good_input_tokens"
+        if cache_implementation == "dynamic"
+        else "largest_offloaded_good_input_tokens"
+    )
+    previous_cache_good = history.get(cache_good_key)
+    if (
+        not isinstance(previous_cache_good, int)
+        or isinstance(previous_cache_good, bool)
+        or input_units > previous_cache_good
+    ):
+        history[cache_good_key] = input_units
+
     bad = history.get("smallest_bad_input_tokens")
     if isinstance(bad, int) and not isinstance(bad, bool) and input_units >= bad:
         history.pop("smallest_bad_input_tokens", None)
@@ -744,26 +793,43 @@ def _update_editorial_oom_history(
     *,
     task: str,
     input_units: int,
+    cache_implementation: str,
 ) -> None:
     history = _editorial_history_entry(state, task)
-    previous_bad = history.get("smallest_bad_input_tokens")
+    cache_bad_key = (
+        "smallest_dynamic_oom_input_tokens"
+        if cache_implementation == "dynamic"
+        else "smallest_offloaded_oom_input_tokens"
+    )
+    previous_cache_bad = history.get(cache_bad_key)
     if (
-        not isinstance(previous_bad, int)
-        or isinstance(previous_bad, bool)
-        or input_units < previous_bad
+        not isinstance(previous_cache_bad, int)
+        or isinstance(previous_cache_bad, bool)
+        or input_units < previous_cache_bad
     ):
-        history["smallest_bad_input_tokens"] = input_units
-    history["cuda_memory_by_device_at_oom"] = _cuda_memory_snapshot()
+        history[cache_bad_key] = input_units
+
+    if cache_implementation == "offloaded":
+        previous_bad = history.get("smallest_bad_input_tokens")
+        if (
+            not isinstance(previous_bad, int)
+            or isinstance(previous_bad, bool)
+            or input_units < previous_bad
+        ):
+            history["smallest_bad_input_tokens"] = input_units
+
+    history[f"cuda_memory_by_device_at_{cache_implementation}_oom"] = _cuda_memory_snapshot()
     _persist_editorial_capacity_state(state)
 
 
 def _transport_error(exc: Exception, *, context: str | None = None) -> dict[str, Any]:
-    traceback.print_exception(exc)
+    error_type = type(exc).__name__
+    capacity_rejected = error_type == "OutOfMemoryError" or "CapacityError" in error_type
+    if not capacity_rejected:
+        traceback.print_exception(exc)
     message = str(exc)
     if context:
         message = f"{context}: {message}"
-    error_type = type(exc).__name__
-    capacity_rejected = error_type == "OutOfMemoryError" or "CapacityError" in error_type
     application_status = "CAPACITY_REJECTED" if capacity_rejected else "FAILED"
     recovery_action = "REPARTITION" if capacity_rejected else "NONE"
     raw_details = getattr(exc, "details", None)
@@ -1081,13 +1147,19 @@ def _editorial_infer(
     schema = JsonSchema(editorial_json_schema(task))
     input_ids = tokenizer(rendered, add_special_tokens=False)["input_ids"]
     input_units = len(input_ids)
-    plan = _editorial_generation_plan(
-        payload,
-        tokenizer=tokenizer,
-        model=model,
-        input_units=input_units,
-        capacity_state=capacity_state,
-    )
+    serialized_request_bytes = len(rendered.encode("utf-8"))
+    try:
+        plan = _editorial_generation_plan(
+            payload,
+            tokenizer=tokenizer,
+            model=model,
+            input_units=input_units,
+            capacity_state=capacity_state,
+        )
+    except EditorialCapacityError as exc:
+        exc.details.setdefault("serialized_request_bytes", serialized_request_bytes)
+        raise
+    plan["serialized_request_bytes"] = serialized_request_bytes
     output_budget = int(plan["generation_budget_tokens"])
     print(
         json.dumps(
@@ -1095,7 +1167,7 @@ def _editorial_infer(
                 "event": "editorial_request_plan",
                 "worker_lifecycle_id": lifecycle_id,
                 **plan,
-                "serialized_request_bytes": len(rendered.encode("utf-8")),
+                "serialized_request_bytes": serialized_request_bytes,
                 "cuda_memory_by_device": _cuda_memory_snapshot(),
             },
             sort_keys=True,
@@ -1157,7 +1229,23 @@ def _editorial_infer(
             )
             gc.collect()
             torch.cuda.empty_cache()
+            _update_editorial_oom_history(
+                capacity_state,
+                task=task,
+                input_units=input_units,
+                cache_implementation=cache_policy,
+            )
             if cache_policy == "dynamic":
+                if plan.get("capacity_repartitionable") is True:
+                    raise EditorialCapacityError(
+                        "editorial generation exceeded dynamic-KV working-set capacity",
+                        details={
+                            "reason": "cuda_oom_dynamic_cache",
+                            **plan,
+                            "cache_implementation": cache_policy,
+                            "cuda_memory_by_device": _cuda_memory_snapshot(),
+                        },
+                    ) from exc
                 print(
                     json.dumps(
                         {
@@ -1171,11 +1259,6 @@ def _editorial_infer(
                     )
                 )
                 continue
-            _update_editorial_oom_history(
-                capacity_state,
-                task=task,
-                input_units=input_units,
-            )
             raise EditorialCapacityError(
                 "editorial generation exhausted GPU working-set capacity",
                 details={
