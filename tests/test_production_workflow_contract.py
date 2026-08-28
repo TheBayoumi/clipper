@@ -236,7 +236,8 @@ def test_editorial_runtime_safety_is_preflighted_and_fail_closed() -> None:
     assert "isinstance(exc, timeout_type)" in provider
 
     assert "CLIPPER_MODAL_GENERATION_STALL_SECONDS: 720" in workflow
-    assert 'counts.get("editorial_generation_complete")' in workflow
+    assert 'counts.get("editorial_remote_call_start")' in workflow
+    assert 'counts.get("editorial_remote_call_terminal")' in workflow
     assert 'counts.get("editorial_execution_timeout")' in workflow
     assert "editorial request exceeded runtime-safe input guard" in workflow
     assert '"max_gpu_seconds": max_gpu_seconds' in watchdog
@@ -259,7 +260,9 @@ def test_modal_spy_is_bound_to_spawned_call_and_execution_id() -> None:
     assert "_belongs_to_execution" in spy
     assert "app == self.pipeline_app" in spy
     assert 'payload.get("execution_id")' in spy
-    assert "editorial generation made no completion progress before watchdog deadline" in spy
+    assert "editorial remote call made no terminal progress before watchdog deadline" in spy
+    assert "wait_for_producer_barrier" in spy
+    assert "active_editorial_calls" in spy
 
 
 def test_production_runtime_rechecks_deployed_identity_before_inference() -> None:
