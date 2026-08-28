@@ -64,7 +64,7 @@ class _Spy:
     def request_stop(self, *_args) -> None:
         self.stopped = True
 
-    def wait_for_terminal_and_quiet(self, **_kwargs) -> bool:
+    def wait_for_producer_barrier(self, **_kwargs) -> bool:
         return self.abort_reason is None
 
     def summary(self) -> dict[str, object]:
@@ -75,7 +75,7 @@ class _Spy:
             "event_counts": {"production_cycle_terminal": 1},
             "terminal_seen": True,
             "terminal_event": {"status": "PASS"},
-            "active_generations": [],
+            "active_editorial_calls": [],
         }
 
 
