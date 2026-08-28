@@ -565,7 +565,6 @@ def test_source_acquisition_rejects_missing_exact_sha_before_remote() -> None:
     function.remote.assert_not_called()
 
 
-
 def test_local_git_sha_requires_full_hex_checkout() -> None:
     completed = SimpleNamespace(stdout="A" * 40 + "\n")
     with (
@@ -624,7 +623,12 @@ def test_run_modal_pipeline_rejects_mismatched_execution_or_sha_before_download(
     def fake_function(_app: str, name: str) -> Mock:
         return acquire if name == "acquire_source" else runner
 
-    common = (
+    runner.remote.return_value = {
+        "execution_id": "f" * 32,
+        "deployed_git_sha": "a" * 40,
+        "run_path": "/run",
+    }
+    with (
         patch("clipper.modal_execution.ensure_modal_runtime"),
         patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
         patch("clipper.modal_execution._verify_deployed_runtime_sha", return_value="a" * 40),
@@ -635,14 +639,8 @@ def test_run_modal_pipeline_rejects_mismatched_execution_or_sha_before_download(
             return_value={"quality_policy": "highest_available_no_transcode", "sha256": "abc"},
         ),
         patch("clipper.modal_execution._materialize_remote_run") as download,
-    )
-
-    runner.remote.return_value = {
-        "execution_id": "f" * 32,
-        "deployed_git_sha": "a" * 40,
-        "run_path": "/run",
-    }
-    with (*common, pytest.raises(RuntimeError, match="mismatched execution ID")):
+        pytest.raises(RuntimeError, match="mismatched execution ID"),
+    ):
         run_modal_pipeline(
             brief_path,
             artifact_root=tmp_path / "artifacts-execution",
@@ -657,7 +655,19 @@ def test_run_modal_pipeline_rejects_mismatched_execution_or_sha_before_download(
         "deployed_git_sha": "b" * 40,
         "run_path": "/run",
     }
-    with (*common, pytest.raises(RuntimeError, match="mismatched deployed SHA")):
+    with (
+        patch("clipper.modal_execution.ensure_modal_runtime"),
+        patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
+        patch("clipper.modal_execution._verify_deployed_runtime_sha", return_value="a" * 40),
+        patch("clipper.modal_execution.uuid.uuid4", return_value=SimpleNamespace(hex="e" * 32)),
+        patch("clipper.modal_execution._function", side_effect=fake_function),
+        patch(
+            "clipper.modal_execution._acquire_remote_source",
+            return_value={"quality_policy": "highest_available_no_transcode", "sha256": "abc"},
+        ),
+        patch("clipper.modal_execution._materialize_remote_run") as download,
+        pytest.raises(RuntimeError, match="mismatched deployed SHA"),
+    ):
         run_modal_pipeline(
             brief_path,
             artifact_root=tmp_path / "artifacts-sha",
