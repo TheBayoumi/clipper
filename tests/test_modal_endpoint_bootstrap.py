@@ -64,11 +64,14 @@ def test_modal_editorial_recovers_when_remote_reports_more_output_capacity(
     assert result.value == {"cores": []}
     assert function.remote.call_count == 2
     first_request, second_request = [call.args[0] for call in function.remote.call_args_list]
-    assert first_request == {
-        "task": "semantic_cores:3",
-        "payload": payload,
-        "expected_git_sha": "a" * 40,
-    }
+    assert first_request["task"] == "semantic_cores:3"
+    assert first_request["payload"] is payload
+    assert first_request["expected_git_sha"] == "a" * 40
+    first_invocation = first_request["editorial_invocation_id"]
+    second_invocation = second_request["editorial_invocation_id"]
+    assert isinstance(first_invocation, str) and len(first_invocation) == 32
+    assert isinstance(second_invocation, str) and len(second_invocation) == 32
+    assert first_invocation != second_invocation
     assert second_request["task"] == "semantic_cores:3"
     assert second_request["payload"] is payload
     assert second_request["generation_minimum_output_tokens"] == 200
