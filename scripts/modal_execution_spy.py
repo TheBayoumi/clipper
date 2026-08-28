@@ -4,9 +4,11 @@ import argparse
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import threading
+import time
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
@@ -24,6 +26,7 @@ RECOGNIZED_EVENTS = {
     "editorial_request_plan",
     "editorial_generation_start",
     "editorial_generation_complete",
+    "editorial_execution_timeout",
     "editorial_oom",
     "editorial_capacity_fallback",
     "application_result",
@@ -37,8 +40,21 @@ RECOGNIZED_EVENTS = {
 class ModalExecutionSpy:
     """Stream Modal telemetry, publish compact evidence, and flag unsafe execution."""
 
-    def __init__(self, apps: tuple[str, ...], output: Path) -> None:
+    _CALL_ID_RE = re.compile(r"\b(fc-[A-Z0-9]+)\b")
+
+    def __init__(
+        self,
+        apps: tuple[str, ...],
+        output: Path,
+        *,
+        root_function_call_id: str | None = None,
+        execution_id: str | None = None,
+        generation_stall_seconds: float | None = None,
+    ) -> None:
         self.apps = apps
+        self.pipeline_app = apps[-1] if apps else ""
+        self.root_function_call_id = root_function_call_id
+        self.execution_id = execution_id
         self.output = output
         self.output.parent.mkdir(parents=True, exist_ok=True)
         self.stop = threading.Event()
@@ -54,6 +70,14 @@ class ModalExecutionSpy:
         self.stream_errors: list[str] = []
         self.started_at = datetime.now(UTC).isoformat()
         self._last_request_plan_signature: tuple[object, ...] | None = None
+        self._active_generations: dict[str, float] = {}
+        self.generation_stall_seconds = (
+            float(generation_stall_seconds)
+            if generation_stall_seconds is not None
+            else float(os.getenv("CLIPPER_MODAL_GENERATION_STALL_SECONDS", "720"))
+        )
+        if self.generation_stall_seconds <= 0:
+            raise ValueError("generation stall timeout must be positive")
 
     @staticmethod
     def _positive_int(value: object) -> int | None:
@@ -92,7 +116,7 @@ class ModalExecutionSpy:
 
     def _resolve_pr(self) -> None:
         repository = os.environ.get("GITHUB_REPOSITORY", "")
-        branch = os.environ.get("GITHUB_REF_NAME", "")
+        branch = os.environ.get("GITHUB_HEAD_REF", "") or os.environ.get("GITHUB_REF_NAME", "")
         if not repository or not branch:
             return
         owner = repository.split("/", 1)[0]
@@ -128,6 +152,26 @@ class ModalExecutionSpy:
                 self.comment_id = comment_id
                 return
 
+    @classmethod
+    def _function_call_id(cls, line: str) -> str | None:
+        match = cls._CALL_ID_RE.search(line)
+        return match.group(1) if match else None
+
+    def _belongs_to_execution(
+        self,
+        app: str,
+        line: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        if self.root_function_call_id is None and self.execution_id is None:
+            return True
+        if app == self.pipeline_app:
+            return self._function_call_id(line) == self.root_function_call_id
+        return (
+            self.execution_id is not None
+            and str(payload.get("execution_id") or "") == self.execution_id
+        )
+
     @staticmethod
     def _parse_json(line: str) -> dict[str, Any] | None:
         marker = line.find("{")
@@ -145,6 +189,7 @@ class ModalExecutionSpy:
     def _compact_event(event: dict[str, Any]) -> dict[str, Any]:
         allowed = {
             "event",
+            "execution_id",
             "stage",
             "task",
             "application_status",
@@ -160,6 +205,9 @@ class ModalExecutionSpy:
             "target_input_tokens",
             "observed_input_tokens",
             "generation_budget_tokens",
+            "runtime_safe_input_tokens",
+            "capacity_repartitionable",
+            "timeout_seconds",
             "serialized_request_bytes",
             "output_tokens",
             "duration_seconds",
@@ -197,6 +245,9 @@ class ModalExecutionSpy:
 
     def _validate_event(self, event: dict[str, Any]) -> str | None:
         name = str(event.get("event") or "")
+
+        if name == "editorial_execution_timeout":
+            return f"editorial execution hit its runtime timeout: {event}"
 
         if name == "application_result":
             if str(event.get("application_status") or "") == "FAILED":
@@ -460,13 +511,22 @@ class ModalExecutionSpy:
 
     def _record(self, app: str, line: str) -> None:
         payload = self._parse_json(line)
-        if payload is None:
+        if payload is None or not self._belongs_to_execution(app, line, payload):
             return
         name = payload.get("event")
         if not isinstance(name, str) or name not in RECOGNIZED_EVENTS:
             return
         compact = self._compact_event(payload)
         with self.lock:
+            task = str(compact.get("task") or "")
+            if name == "editorial_generation_start" and task:
+                self._active_generations[task] = time.monotonic()
+            elif name in {
+                "editorial_generation_complete",
+                "editorial_oom",
+                "editorial_execution_timeout",
+            } and task:
+                self._active_generations.pop(task, None)
             if name in {
                 "editorial_generation_complete",
                 "editorial_repartition",
@@ -533,12 +593,38 @@ class ModalExecutionSpy:
             if process.poll() is None:
                 process.terminate()
 
+    def _check_stalled_generations(self) -> None:
+        if self.abort_reason is not None or not self._active_generations:
+            return
+        now = time.monotonic()
+        stalled = [
+            (task, now - started)
+            for task, started in self._active_generations.items()
+            if now - started >= self.generation_stall_seconds
+        ]
+        if stalled:
+            task, elapsed = max(stalled, key=lambda item: item[1])
+            self._set_abort(
+                "editorial generation made no completion progress before watchdog deadline",
+                {
+                    "event": "editorial_generation_stall",
+                    "task": task,
+                    "elapsed_seconds": round(elapsed, 3),
+                    "stall_limit_seconds": self.generation_stall_seconds,
+                    "execution_id": self.execution_id,
+                },
+            )
+
     def summary(self) -> dict[str, object]:
         return {
             "status": "ABORT" if self.abort_reason else "PASS",
             "abort_reason": self.abort_reason,
             "abort_event": self.abort_event,
             "started_at": self.started_at,
+            "root_function_call_id": self.root_function_call_id,
+            "execution_id": self.execution_id,
+            "generation_stall_seconds": self.generation_stall_seconds,
+            "active_generations": sorted(self._active_generations),
             "events_seen": self.events_seen,
             "event_counts": self.event_counts,
             "latest": self.latest,
@@ -557,6 +643,9 @@ class ModalExecutionSpy:
         for thread in threads:
             thread.start()
         while not self.stop.wait(1):
+            self._check_stalled_generations()
+            if self.abort_reason is not None:
+                break
             if all(not thread.is_alive() for thread in threads):
                 if self.abort_reason is None:
                     self._set_abort("all Modal log streams ended unexpectedly")
