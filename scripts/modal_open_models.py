@@ -652,8 +652,7 @@ def _assert_expected_git_sha(payload: dict[str, Any]) -> None:
         raise RuntimeError("open-model worker has no embedded deployment SHA")
     if expected != DEPLOYED_GIT_SHA:
         raise RuntimeError(
-            "open-model worker SHA mismatch: "
-            f"expected={expected} deployed={DEPLOYED_GIT_SHA}"
+            f"open-model worker SHA mismatch: expected={expected} deployed={DEPLOYED_GIT_SHA}"
         )
 
 
