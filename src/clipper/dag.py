@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -106,13 +105,6 @@ class DagStore:
                 lock.mkdir(parents=True, exist_ok=False)
                 break
             except FileExistsError:
-                try:
-                    age = time.time() - lock.stat().st_mtime
-                except FileNotFoundError:
-                    continue
-                if age > 60.0:
-                    shutil.rmtree(lock, ignore_errors=True)
-                    continue
                 if time.monotonic() >= deadline:
                     raise TimeoutError(
                         f"timed out acquiring DAG write lock for {identity.stage_name}"
@@ -121,7 +113,7 @@ class DagStore:
         try:
             yield
         finally:
-            shutil.rmtree(lock, ignore_errors=True)
+            lock.rmdir()
 
     def _read_record_payload(self, identity: StageIdentity) -> dict[str, Any] | None:
         path = self._record_path(identity)
