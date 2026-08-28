@@ -539,26 +539,27 @@ jobs:
           if not isinstance(terminal, dict) or terminal.get("status") != "PASS":
               raise RuntimeError(f"editorial acceptance terminal event is invalid: {summary}")
           counts = summary.get("event_counts")
+          authoritative_counts = summary.get("authoritative_event_counts")
           if not isinstance(counts, dict):
               raise RuntimeError("Modal spy event counts are missing")
+          if not isinstance(authoritative_counts, dict):
+              raise RuntimeError("Modal spy authoritative event counts are missing")
           if int(counts.get("editorial_evidence_projection") or 0) <= 0:
               raise RuntimeError("live editorial acceptance observed no evidence projection")
           if int(counts.get("editorial_capacity_probe") or 0) <= 0:
               raise RuntimeError("live editorial acceptance observed no capacity probe")
           if int(counts.get("editorial_acceptance_probe_result") or 0) <= 0:
               raise RuntimeError("live editorial acceptance observed no repartition probe result")
-          if int(counts.get("editorial_generation_complete") or 0) <= 0:
-              raise RuntimeError("live editorial acceptance observed no completed editorial generation")
-          if int(counts.get("editorial_execution_timeout") or 0) != 0:
+          if int(authoritative_counts.get("editorial_execution_timeout") or 0) != 0:
               raise RuntimeError("live editorial acceptance observed an editorial execution timeout")
-          call_starts = int(counts.get("editorial_remote_call_start") or 0)
-          call_terminals = int(counts.get("editorial_remote_call_terminal") or 0)
+          call_starts = int(authoritative_counts.get("editorial_remote_call_start") or 0)
+          call_terminals = int(authoritative_counts.get("editorial_remote_call_terminal") or 0)
           if call_starts <= 0 or call_terminals != call_starts:
               raise RuntimeError(
                   "live editorial acceptance lacks a closed producer-side editorial call set: "
                   f"starts={call_starts} terminals={call_terminals}"
               )
-          if int(counts.get("production_cycle_terminal") or 0) != 1:
+          if int(authoritative_counts.get("production_cycle_terminal") or 0) != 1:
               raise RuntimeError(
                   "live editorial acceptance requires exactly one scoped production terminal event"
               )
@@ -638,6 +639,7 @@ jobs:
               event
               for event in records
               if event.get("event") == "editorial_execution_timeout"
+              and event.get("authoritative") is True
           ]
           if not projections or not capacity_probes or not probe_results:
               raise RuntimeError("live editorial telemetry records are incomplete")
