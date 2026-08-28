@@ -4,6 +4,8 @@ import json
 import os
 import signal
 import threading
+import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -53,6 +55,15 @@ def _validate_result(result: object, *, render: bool) -> dict[str, Any]:
         raise RuntimeError(
             f"production execution mode drifted from request: {normalized.get('execution_mode')}"
         )
+    if normalized.get("execution_id") != os.environ["CLIPPER_EXECUTION_ID"]:
+        raise RuntimeError(
+            f"production execution ID drifted from request: {normalized.get('execution_id')}"
+        )
+    if normalized.get("deployed_git_sha") != os.environ["CLIPPER_ACCEPTANCE_SHA"]:
+        raise RuntimeError(
+            "production worker did not prove the requested deployed SHA: "
+            f"{normalized.get('deployed_git_sha')}"
+        )
     if normalized.get("pipeline_status") not in {"SUCCESS", "DEGRADED"}:
         raise RuntimeError(f"production pipeline did not complete: {normalized}")
 
@@ -73,15 +84,12 @@ def run(*, render: bool) -> dict[str, Any]:
 
     evidence_dir = Path("open-evidence")
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    spy = ModalExecutionSpy(
-        (
-            os.environ["CLIPPER_MODAL_APP"],
-            os.environ["CLIPPER_MODAL_PIPELINE_APP"],
-        ),
-        evidence_dir / "modal-spy.ndjson",
-    )
-    spy_thread = threading.Thread(target=spy.run, daemon=True)
-    spy_thread.start()
+    execution_id = uuid.uuid4().hex
+    os.environ["CLIPPER_EXECUTION_ID"] = execution_id
+    max_gpu_seconds = float(os.environ["CLIPPER_MAX_GPU_SECONDS"])
+    max_estimated_usd = float(os.environ["CLIPPER_MAX_ESTIMATED_USD"])
+    if max_gpu_seconds <= 0 or max_estimated_usd <= 0:
+        raise ValueError("production compute budget limits must be positive")
 
     request = {
         "sources": [_source_payload()],
@@ -91,6 +99,9 @@ def run(*, render: bool) -> dict[str, Any]:
         "fresh_inference": os.environ["CLIPPER_FRESH_INFERENCE"] == "true",
         "resume_from_run_id": os.environ.get("CLIPPER_RESUME_FROM_RUN_ID") or None,
         "git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
+        "execution_id": execution_id,
+        "max_gpu_seconds": max_gpu_seconds,
+        "max_estimated_usd": max_estimated_usd,
     }
     function = modal.Function.from_name(
         os.environ["CLIPPER_MODAL_PIPELINE_APP"],
@@ -99,10 +110,23 @@ def run(*, render: bool) -> dict[str, Any]:
     call = function.spawn(request)
     call.hydrate()
     call_id = str(call.object_id)
+    spy = ModalExecutionSpy(
+        (
+            os.environ["CLIPPER_MODAL_APP"],
+            os.environ["CLIPPER_MODAL_PIPELINE_APP"],
+        ),
+        evidence_dir / "modal-spy.ndjson",
+        root_function_call_id=call_id,
+        execution_id=execution_id,
+    )
+    spy_thread = threading.Thread(target=spy.run, daemon=True)
+    spy_thread.start()
+    call_started = time.monotonic()
 
     metadata = {
         "event": "production_call_spawned",
         "function_call_id": call_id,
+        "execution_id": execution_id,
         "pipeline_app": os.environ["CLIPPER_MODAL_PIPELINE_APP"],
         "model_app": os.environ["CLIPPER_MODAL_APP"],
         "acceptance_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
@@ -110,6 +134,8 @@ def run(*, render: bool) -> dict[str, Any]:
         "fresh_inference": request["fresh_inference"],
         "render": render,
         "editorial_acceptance_probe": request["editorial_acceptance_probe"],
+        "max_gpu_seconds": max_gpu_seconds,
+        "max_estimated_usd": max_estimated_usd,
         "spawned_at": datetime.now(UTC).isoformat(),
     }
     _write_json(evidence_dir / "modal-function-call.json", metadata)
@@ -153,6 +179,24 @@ def run(*, render: bool) -> dict[str, Any]:
             if spy.abort_reason is not None:
                 cancel_call(spy.abort_reason)
                 raise RuntimeError(f"Modal spy aborted production early: {spy.abort_reason}")
+
+            elapsed = max(0.0, time.monotonic() - call_started)
+            conservative_gpu_seconds = elapsed * 2.0
+            conservative_cost_usd = elapsed * 0.000444
+            if conservative_gpu_seconds >= max_gpu_seconds:
+                reason = (
+                    "conservative in-flight GPU budget reached before completion: "
+                    f"{conservative_gpu_seconds:.1f} >= {max_gpu_seconds:.1f}"
+                )
+                cancel_call(reason)
+                raise RuntimeError(reason)
+            if conservative_cost_usd >= max_estimated_usd:
+                reason = (
+                    "conservative in-flight cost budget reached before completion: "
+                    f"{conservative_cost_usd:.4f} >= {max_estimated_usd:.4f}"
+                )
+                cancel_call(reason)
+                raise RuntimeError(reason)
             try:
                 result = call.get(timeout=poll_seconds)
                 break
