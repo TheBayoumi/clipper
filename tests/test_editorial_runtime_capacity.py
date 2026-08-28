@@ -190,7 +190,6 @@ def test_modal_editorial_emits_closed_pipeline_call_pair(
     assert remote.payload["expected_git_sha"] == "b" * 40
 
 
-
 def test_modal_editorial_emits_error_terminal_when_modal_runtime_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
