@@ -575,7 +575,10 @@ class ModalExecutionSpy:
                 if name == "editorial_remote_call_start":
                     invocation_id = str(compact.get("invocation_id") or "")
                     if self._terminal_event is not None:
-                        violation = f"editorial producer started work after production terminal: {compact}"
+                        violation = (
+                            "editorial producer started work after production terminal: "
+                            f"{compact}"
+                        )
                     elif invocation_id in self._active_editorial_calls:
                         violation = f"editorial producer repeated active invocation ID: {compact}"
                     else:
