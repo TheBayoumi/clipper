@@ -61,6 +61,9 @@ env:
   CLIPPER_YOUTUBE_COOKIES_B64: ${{ secrets.CLIPPER_YOUTUBE_COOKIES_B64 }}
   CLIPPER_MODAL_APP: clipper-open-editor
   CLIPPER_MODAL_PIPELINE_APP: clipper-production-pipeline
+  CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS: 900
+  CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS: 65536
+  CLIPPER_MODAL_GENERATION_STALL_SECONDS: 720
 
 jobs:
   production-render-evidence:
@@ -345,6 +348,38 @@ jobs:
           print(json.dumps(evidence, indent=2))
           PY
 
+      - name: Verify immutable deployed Modal SHA identities
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import modal
+
+          expected = os.environ["CLIPPER_ACCEPTANCE_SHA"].lower()
+          identities = {
+              "model": modal.Function.from_name(
+                  os.environ["CLIPPER_MODAL_APP"], "deployment_identity"
+              ).remote(),
+              "pipeline": modal.Function.from_name(
+                  os.environ["CLIPPER_MODAL_PIPELINE_APP"], "deployment_identity"
+              ).remote(),
+          }
+          for name, value in identities.items():
+              if not isinstance(value, dict):
+                  raise RuntimeError(f"{name} deployment identity is not an object: {value!r}")
+              actual = str(value.get("deployed_git_sha") or "").lower()
+              if actual != expected:
+                  raise RuntimeError(
+                      f"{name} deployed SHA mismatch before inference: "
+                      f"expected={expected} actual={actual}"
+                  )
+          Path("open-evidence/modal-deployed-sha-identities.json").write_text(
+              json.dumps(identities, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
       - name: Verify four production editorial schemas and gated-model access
         run: |
           python - <<'PY'
@@ -379,7 +414,7 @@ jobs:
           import modal
 
           app = os.environ["CLIPPER_MODAL_PIPELINE_APP"]
-          for name in ("acquire_source", "run_full_cycle"):
+          for name in ("acquire_source", "run_full_cycle", "deployment_identity"):
               modal.Function.from_name(app, name).hydrate()
           Path("open-evidence/modal-deployment.json").write_text(
               json.dumps(
@@ -476,6 +511,10 @@ jobs:
           )
           if summary.get("status") != "PASS":
               raise RuntimeError(f"Modal spy did not pass editorial acceptance: {summary}")
+          if summary.get("call_cancelled") is not False:
+              raise RuntimeError(f"editorial acceptance call was cancelled: {summary}")
+          if summary.get("active_generations"):
+              raise RuntimeError(f"editorial acceptance ended with active generations: {summary}")
           counts = summary.get("event_counts")
           if not isinstance(counts, dict):
               raise RuntimeError("Modal spy event counts are missing")
@@ -485,6 +524,10 @@ jobs:
               raise RuntimeError("live editorial acceptance observed no capacity probe")
           if int(counts.get("editorial_acceptance_probe_result") or 0) <= 0:
               raise RuntimeError("live editorial acceptance observed no repartition probe result")
+          if int(counts.get("editorial_generation_complete") or 0) <= 0:
+              raise RuntimeError("live editorial acceptance observed no completed editorial generation")
+          if int(counts.get("editorial_execution_timeout") or 0) != 0:
+              raise RuntimeError("live editorial acceptance observed an editorial execution timeout")
 
           records = []
           for line in Path("open-evidence/modal-spy.ndjson").read_text(
@@ -514,8 +557,38 @@ jobs:
               for event in records
               if event.get("event") == "editorial_acceptance_probe_result"
           ]
-          if not projections or not capacity_probes or not probe_results:
+          generations = [
+              event
+              for event in records
+              if event.get("event") == "editorial_generation_complete"
+          ]
+          request_plans = [
+              event
+              for event in records
+              if event.get("event") == "editorial_request_plan"
+          ]
+          timeouts = [
+              event
+              for event in records
+              if event.get("event") == "editorial_execution_timeout"
+          ]
+          if not projections or not capacity_probes or not probe_results or not generations:
               raise RuntimeError("live editorial telemetry records are incomplete")
+          if timeouts:
+              raise RuntimeError(f"editorial acceptance contained execution timeouts: {timeouts}")
+          if not request_plans:
+              raise RuntimeError("editorial acceptance emitted no executable request plans")
+          for plan in request_plans:
+              if plan.get("capacity_repartitionable") is not True:
+                  raise RuntimeError(
+                      f"editorial request lost capacity-repartitionable contract: {plan}"
+                  )
+              input_tokens = int(plan.get("input_tokens") or 0)
+              runtime_safe = int(plan.get("runtime_safe_input_tokens") or 0)
+              if runtime_safe <= 0 or input_tokens > runtime_safe:
+                  raise RuntimeError(
+                      f"editorial request exceeded runtime-safe input guard: {plan}"
+                  )
           if not any(
               int(item.get("raw_event_count") or 0)
               > int(item.get("projected_event_count") or 0)
@@ -574,6 +647,11 @@ jobs:
               "repartition_events": len(repartitions),
               "capacity_probe_events": len(capacity_probes),
               "acceptance_probe_events": len(probe_results),
+              "generation_complete_events": len(generations),
+              "execution_timeout_events": len(timeouts),
+              "maximum_executable_input_tokens": max(
+                  int(item.get("input_tokens") or 0) for item in request_plans
+              ),
               "best_event_count_reduction": max(
                   int(item.get("raw_event_count") or 0)
                   - int(item.get("projected_event_count") or 0)
