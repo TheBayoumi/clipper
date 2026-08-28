@@ -282,3 +282,40 @@ def test_all_paid_modal_calls_carry_expected_deployed_sha() -> None:
     assert '"expected_git_sha"' in speech
     assert "_assert_expected_git_sha(payload)" in models
     assert "_assert_expected_git_sha(payload)" in pipeline
+
+
+
+def test_paid_workflows_are_not_triggered_by_pull_request_synchronization() -> None:
+    production = Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
+    deploy = Path(".github/workflows/modal-workers-deploy.yml").read_text(encoding="utf-8")
+    production_marker = json.loads(
+        Path("acceptance/production-run-request.json").read_text(encoding="utf-8")
+    )
+    deploy_marker = json.loads(
+        Path("acceptance/modal-deploy-request.json").read_text(encoding="utf-8")
+    )
+
+    assert "pull_request:" not in production
+    assert "pull_request:" not in deploy
+    assert 'paths:\n      - "acceptance/production-run-request.json"' in production
+    assert 'paths:\n      - "acceptance/modal-deploy-request.json"' in deploy
+    assert "Require enabled production acceptance request" in production
+    assert "Require enabled Modal deployment request" in deploy
+    assert production_marker["enabled"] is False
+    assert production_marker["confirm_production"] is False
+    assert deploy_marker["enabled"] is False
+
+
+def test_disabled_acceptance_guards_precede_any_paid_modal_work() -> None:
+    production = Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
+    deploy = Path(".github/workflows/modal-workers-deploy.yml").read_text(encoding="utf-8")
+
+    production_guard = production.index("Require enabled production acceptance request")
+    production_compute = production.index("Verify Modal credentials before compute")
+    production_spawn = production.index("Run current-model pipeline with cancellable Modal spy")
+    assert production_guard < production_compute < production_spawn
+
+    deploy_guard = deploy.index("Require enabled Modal deployment request")
+    deploy_install = deploy.index("Install Modal orchestration dependencies")
+    deploy_open_models = deploy.index("Deploy exact-HEAD open-model workers")
+    assert deploy_guard < deploy_install < deploy_open_models
