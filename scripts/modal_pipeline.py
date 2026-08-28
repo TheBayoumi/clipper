@@ -15,6 +15,7 @@ import modal
 
 APP_NAME = os.getenv("CLIPPER_MODAL_PIPELINE_APP", "clipper-production-pipeline")
 MODEL_APP = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
+DEPLOYED_GIT_SHA = os.getenv("CLIPPER_DEPLOYED_GIT_SHA", "").strip().lower()
 MEDIA_ROOT = "/media"
 ARTIFACT_ROOT = "/artifacts"
 
@@ -50,6 +51,7 @@ runner_image = (
     .entrypoint([])
     .apt_install("git")
     .uv_pip_install("modal>=1.5.2,<2", "huggingface-hub>=1.24,<2")
+    .env({"CLIPPER_DEPLOYED_GIT_SHA": DEPLOYED_GIT_SHA})
 )
 
 
@@ -501,7 +503,14 @@ def _editorial_acceptance_probe(
             ),
         }
         task = f"source_hazards:acceptance_probe:{video_id}"
-        response = worker.capacity_probe.remote({"task": task, "payload": raw_payload})
+        response = worker.capacity_probe.remote(
+            {
+                "task": task,
+                "payload": raw_payload,
+                "execution_id": os.getenv("CLIPPER_EXECUTION_ID", ""),
+                "expected_git_sha": os.getenv("CLIPPER_ACCEPTANCE_SHA", ""),
+            }
+        )
         if not isinstance(response, dict):
             raise RuntimeError("EditorialModel.capacity_probe returned a non-object response")
         if response.get("error"):
@@ -532,6 +541,7 @@ def _editorial_acceptance_probe(
             json.dumps(
                 {
                     "event": "editorial_acceptance_probe_result",
+                    "execution_id": os.getenv("CLIPPER_EXECUTION_ID", ""),
                     **evidence,
                 },
                 sort_keys=True,
@@ -545,6 +555,11 @@ def _editorial_acceptance_probe(
     )
     artifact_volume.commit()
     return result
+
+
+@app.function(image=runner_image, timeout=60, scaledown_window=2)
+def deployment_identity() -> dict[str, Any]:
+    return {"app": APP_NAME, "deployed_git_sha": DEPLOYED_GIT_SHA}
 
 
 @app.function(
@@ -578,13 +593,39 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     if fresh_inference and resume_from_run_id is not None:
         raise ValueError("fresh inference cannot be combined with a resume_from_run_id")
     execution_mode = "fresh-inference" if fresh_inference else "content-addressed-resume"
-    requested_git_sha = str(payload.get("git_sha") or "").strip()
-    if requested_git_sha:
-        if len(requested_git_sha) != 40 or any(
-            character not in "0123456789abcdef" for character in requested_git_sha.lower()
-        ):
-            raise ValueError("run_full_cycle git_sha must be a full hexadecimal commit SHA")
-        os.environ["GITHUB_SHA"] = requested_git_sha.lower()
+    execution_id = str(payload.get("execution_id") or "").strip()
+    if len(execution_id) != 32 or any(
+        character not in "0123456789abcdef" for character in execution_id.lower()
+    ):
+        raise ValueError("run_full_cycle execution_id must be a 32-character hexadecimal ID")
+
+    requested_git_sha = str(payload.get("git_sha") or "").strip().lower()
+    if len(requested_git_sha) != 40 or any(
+        character not in "0123456789abcdef" for character in requested_git_sha
+    ):
+        raise ValueError("run_full_cycle git_sha must be a full hexadecimal commit SHA")
+    if not DEPLOYED_GIT_SHA:
+        raise RuntimeError("production pipeline worker has no embedded deployment SHA")
+    if requested_git_sha != DEPLOYED_GIT_SHA:
+        raise RuntimeError(
+            "production pipeline worker SHA mismatch: "
+            f"expected={requested_git_sha} deployed={DEPLOYED_GIT_SHA}"
+        )
+
+    max_gpu_seconds = float(payload.get("max_gpu_seconds") or 0.0)
+    max_estimated_usd = float(payload.get("max_estimated_usd") or 0.0)
+    if max_gpu_seconds <= 0 or max_estimated_usd <= 0:
+        raise ValueError("run_full_cycle requires positive compute budget limits")
+
+    os.environ.update(
+        {
+            "GITHUB_SHA": requested_git_sha,
+            "CLIPPER_ACCEPTANCE_SHA": requested_git_sha,
+            "CLIPPER_EXECUTION_ID": execution_id.lower(),
+            "CLIPPER_MAX_GPU_SECONDS": str(max_gpu_seconds),
+            "CLIPPER_MAX_ESTIMATED_USD": str(max_estimated_usd),
+        }
+    )
 
     media_cache.reload()
     artifact_volume.reload()
@@ -705,6 +746,8 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": "PASS",
         "execution_mode": execution_mode,
+        "execution_id": execution_id.lower(),
+        "deployed_git_sha": DEPLOYED_GIT_SHA,
         "run_volume": "clipper-production-artifacts",
         "run_path": run_relative,
         "sources": source_items,
