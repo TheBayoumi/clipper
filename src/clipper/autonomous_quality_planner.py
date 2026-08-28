@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -468,7 +469,7 @@ class AutonomousQualityPlanner:
                     json.dumps(
                         {
                             "event": "editorial_context_repartition",
-                            "execution_id": __import__("os").getenv("CLIPPER_EXECUTION_ID", ""),
+                            "execution_id": os.getenv("CLIPPER_EXECUTION_ID", ""),
                             "stage": stage,
                             "reason": str(exc.details.get("reason") or "capacity_rejected"),
                             "input_tokens": exc.details.get("input_tokens"),
