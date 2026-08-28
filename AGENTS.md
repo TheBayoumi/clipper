@@ -35,3 +35,43 @@ Follow the repository's concise Conventional Commit subjects: `feat:`, `fix:`, `
 ## Security & Configuration
 
 Copy `campaign.example.yaml` for local configuration. Keep API keys (for example, `YOUTUBE_API_KEY`) in the environment or `.env`, never YAML or source control. Preserve source-rights checks and the explicit publication boundary when modifying acquisition or release behavior.
+
+
+## Expert Reviewer Contract
+
+When acting as a reviewer, operate independently and adversarially rather than as the implementation
+agent. Review the repository in execution-path context, not only the changed lines. Do not infer
+runtime correctness from green CI, comments, README claims, acceptance markers, or historical
+artifacts.
+
+Reviewer findings must be evidence-based and prioritized P0-P3. For each actionable finding, identify
+the exact file/range, concrete failure mode, reachable execution path or reproduction, why existing
+tests or checks miss it, and the smallest safe corrective direction. Label concerns that require live
+evidence as `NEEDS_RUNTIME_EVIDENCE` instead of guessing.
+
+Always verify these production invariants when they are affected:
+
+- exact-head acceptance must prove the immutable SHA embedded in the deployed Modal workers;
+- Modal spy evidence must be scoped to the exact spawned production execution and its correlated
+  descendants, never global app logs;
+- source authorization and explicit-target rights gates must fail closed;
+- publication must remain behind the explicit human review boundary;
+- production open-model execution must not silently fall back to a weaker/local path;
+- fresh inference must not reuse grounding or editorial inference caches;
+- content-addressed resume must reuse only contract-compatible artifacts;
+- evidence projection must reduce LLM-facing evidence without changing canonical source truth;
+- capacity rejection must happen before unsafe generation;
+- runtime-safe token guards must be enforced in addition to raw model context limits;
+- timeout, OOM, and context failures must either repartition with measurable forward progress or fail
+  closed;
+- repartition ranges must terminate, remain contiguous and ordered, and contain no gaps or overlap;
+- a timed-out or stalled generation must never count toward a passing acceptance result;
+- watchdogs must cancel only the exact offending production call;
+- compute budgets must be enforced during execution, not only audited after completion;
+- persistent DAG writes must remain valid under concurrent writers;
+- tests must preserve the repository-wide >=95% coverage floor while asserting behavior rather than
+  implementation text alone.
+
+For review-only requests, do not push commits, update refs, dispatch/rerun/cancel GitHub Actions, call
+production endpoints, deploy Modal workers, or start paid compute unless the user explicitly asks for
+implementation or execution after the review.
