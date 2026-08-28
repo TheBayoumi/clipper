@@ -1187,6 +1187,7 @@ def _editorial_infer(
     started = time.perf_counter()
     task = str(payload.get("task") or "")
     execution_id = _execution_id(payload)
+    invocation_id = str(payload.get("editorial_invocation_id") or "")
     system_content = (
         "You are a source-grounded multimodal short-form editor. "
         "Never invent source evidence, spoken words, timestamps, or IDs. "
@@ -1224,6 +1225,7 @@ def _editorial_infer(
                 "worker_lifecycle_id": lifecycle_id,
                 "task": task,
                 "execution_id": execution_id,
+                "invocation_id": invocation_id,
                 **plan,
                 "serialized_request_bytes": serialized_request_bytes,
                 "cuda_memory_by_device": _cuda_memory_snapshot(),
@@ -1252,6 +1254,7 @@ def _editorial_infer(
                         "worker_lifecycle_id": lifecycle_id,
                         "task": task,
                         "execution_id": execution_id,
+                        "invocation_id": invocation_id,
                         "cache_implementation": cache_policy,
                         "input_tokens": input_units,
                         "generation_budget_tokens": output_budget,
@@ -1278,6 +1281,7 @@ def _editorial_infer(
                         "worker_lifecycle_id": lifecycle_id,
                         "task": task,
                         "execution_id": execution_id,
+                        "invocation_id": invocation_id,
                         "cache_implementation": cache_policy,
                         "input_tokens": input_units,
                         "generation_budget_tokens": output_budget,
@@ -1312,6 +1316,8 @@ def _editorial_infer(
                             "event": "editorial_capacity_fallback",
                             "worker_lifecycle_id": lifecycle_id,
                             "task": task,
+                            "execution_id": execution_id,
+                            "invocation_id": invocation_id,
                             "from_cache_implementation": "dynamic",
                             "to_cache_implementation": "offloaded",
                         },
@@ -1342,6 +1348,7 @@ def _editorial_infer(
                 "worker_lifecycle_id": lifecycle_id,
                 "task": task,
                 "execution_id": execution_id,
+                "invocation_id": invocation_id,
                 "cache_implementation": cache_implementation,
                 "input_tokens": input_units,
                 "output_tokens": output_units,
