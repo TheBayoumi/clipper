@@ -701,6 +701,19 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
         metadata = manifest.get("run_metadata")
         git_sha = metadata.get("git_sha") if isinstance(metadata, dict) else requested_git_sha
         artifact_volume.commit()
+        print(
+            json.dumps(
+                {
+                    "event": "production_cycle_terminal",
+                    "execution_id": execution_id.lower(),
+                    "status": "FAIL",
+                    "pipeline_status": manifest.get("status"),
+                    "review_status": "NOT_REVIEWABLE",
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
         return {
             "status": "FAIL",
             "run_volume": "clipper-production-artifacts",
@@ -758,6 +771,20 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     artifact_volume.commit()
+    terminal_review_status = "PENDING_ACTUAL_MP4_REVIEW" if render else "NOT_RENDERED"
+    print(
+        json.dumps(
+            {
+                "event": "production_cycle_terminal",
+                "execution_id": execution_id.lower(),
+                "status": "PASS",
+                "pipeline_status": manifest.get("status"),
+                "review_status": terminal_review_status,
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
     return {
         "status": "PASS",
         "execution_mode": execution_mode,
