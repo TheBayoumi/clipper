@@ -91,6 +91,17 @@ def run(*, render: bool) -> dict[str, Any]:
     if max_gpu_seconds <= 0 or max_estimated_usd <= 0:
         raise ValueError("production compute budget limits must be positive")
 
+    spy = ModalExecutionSpy(
+        (
+            os.environ["CLIPPER_MODAL_APP"],
+            os.environ["CLIPPER_MODAL_PIPELINE_APP"],
+        ),
+        evidence_dir / "modal-spy.ndjson",
+        execution_id=execution_id,
+    )
+    spy_thread = threading.Thread(target=spy.run, daemon=True)
+    spy_thread.start()
+
     request = {
         "sources": [_source_payload()],
         "brief_yaml": Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"]).read_text(encoding="utf-8"),
@@ -110,17 +121,7 @@ def run(*, render: bool) -> dict[str, Any]:
     call = function.spawn(request)
     call.hydrate()
     call_id = str(call.object_id)
-    spy = ModalExecutionSpy(
-        (
-            os.environ["CLIPPER_MODAL_APP"],
-            os.environ["CLIPPER_MODAL_PIPELINE_APP"],
-        ),
-        evidence_dir / "modal-spy.ndjson",
-        root_function_call_id=call_id,
-        execution_id=execution_id,
-    )
-    spy_thread = threading.Thread(target=spy.run, daemon=True)
-    spy_thread.start()
+    spy.root_function_call_id = call_id
     call_started = time.monotonic()
 
     metadata = {
