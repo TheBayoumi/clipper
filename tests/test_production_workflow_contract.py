@@ -200,3 +200,71 @@ def test_production_workflow_waits_for_exact_head_modal_deploy() -> None:
     assert '"status") in {"queued", "in_progress", "waiting", "pending"}' in workflow
     assert "exact-head Deploy Modal workers completed unsuccessfully" in workflow
     assert "timed out waiting for successful exact-head Deploy Modal workers run" in workflow
+
+
+def test_modal_deployment_embeds_and_verifies_exact_source_sha() -> None:
+    deploy = Path(".github/workflows/modal-workers-deploy.yml").read_text(encoding="utf-8")
+    pipeline = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+    models = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+
+    assert "CLIPPER_DEPLOYED_GIT_SHA" in deploy
+    assert "Verify exact deployment checkout" in deploy
+    assert 'ref: ${{ github.event.pull_request.head.sha || github.sha }}' in deploy
+    assert "Verify immutable deployed SHA identities" in deploy
+    assert '"deployment_identity"' in deploy
+    assert "production pipeline worker SHA mismatch" in pipeline
+    assert "open-model worker SHA mismatch" in models
+    assert 'def deployment_identity()' in pipeline
+    assert 'def deployment_identity()' in models
+
+
+def test_editorial_runtime_safety_is_preflighted_and_fail_closed() -> None:
+    worker = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+    provider = Path("src/clipper/providers/modal.py").read_text(encoding="utf-8")
+    workflow = _workflow()
+    watchdog = _watchdog()
+
+    assert 'CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS' in worker
+    assert 'actual_payload.get("capacity_repartitionable") is True' in worker
+    assert '"reason": "runtime_input_guard"' in worker
+    assert "startup_timeout=EDITORIAL_STARTUP_TIMEOUT_SECONDS" in worker
+    assert "timeout=EDITORIAL_EXECUTION_TIMEOUT_SECONDS" in worker
+    assert '"editorial_execution_timeout"' in provider
+    assert '"reason": "execution_timeout"' in provider
+    assert 'type(exc).__name__ != "FunctionTimeoutError"' in provider
+
+    assert "CLIPPER_MODAL_GENERATION_STALL_SECONDS: 720" in workflow
+    assert 'counts.get("editorial_generation_complete")' in workflow
+    assert 'counts.get("editorial_execution_timeout")' in workflow
+    assert "editorial request exceeded runtime-safe input guard" in workflow
+    assert '"max_gpu_seconds": max_gpu_seconds' in watchdog
+    assert '"max_estimated_usd": max_estimated_usd' in watchdog
+    assert "conservative in-flight GPU budget reached" in watchdog
+
+
+def test_modal_spy_is_bound_to_spawned_call_and_execution_id() -> None:
+    watchdog = _watchdog()
+    spy = Path("scripts/modal_execution_spy.py").read_text(encoding="utf-8")
+
+    assert "execution_id = uuid.uuid4().hex" in watchdog
+    assert "root_function_call_id=call_id" in watchdog
+    assert "execution_id=execution_id" in watchdog
+    assert "spy_thread.start()" in watchdog
+    assert watchdog.index("call.hydrate()") < watchdog.index("spy_thread.start()")
+
+    assert "root_function_call_id" in spy
+    assert "_belongs_to_execution" in spy
+    assert 'app == self.pipeline_app' in spy
+    assert 'payload.get("execution_id")' in spy
+    assert "editorial generation made no completion progress before watchdog deadline" in spy
+
+
+def test_production_runtime_rechecks_deployed_identity_before_inference() -> None:
+    workflow = _workflow()
+
+    identity = workflow.index("Verify immutable deployed Modal SHA identities")
+    schemas = workflow.index("Verify four production editorial schemas and gated-model access")
+    execution = workflow.index("Run current-model pipeline with cancellable Modal spy")
+    assert identity < schemas < execution
+    assert '"deployment_identity"' in workflow
+    assert "deployed SHA mismatch before inference" in workflow
