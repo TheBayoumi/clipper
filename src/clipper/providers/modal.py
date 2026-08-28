@@ -117,8 +117,7 @@ class ModalJSONProvider:
         request = dict(payload)
         execution_id = os.getenv("CLIPPER_EXECUTION_ID", "").strip()
         expected_git_sha = (
-            os.getenv("CLIPPER_ACCEPTANCE_SHA", "").strip()
-            or os.getenv("GITHUB_SHA", "").strip()
+            os.getenv("CLIPPER_ACCEPTANCE_SHA", "").strip() or os.getenv("GITHUB_SHA", "").strip()
         )
         if execution_id:
             request.setdefault("execution_id", execution_id)
@@ -184,9 +183,7 @@ class ModalEditorialProvider(ModalJSONProvider):
             if not isinstance(timeout_type, type) or not isinstance(exc, timeout_type):
                 raise
             self._instance_handle = None
-            timeout_seconds = int(
-                os.getenv("CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS", "900")
-            )
+            timeout_seconds = int(os.getenv("CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS", "900"))
             runtime_safe_input_tokens = int(
                 os.getenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", "65536")
             )
