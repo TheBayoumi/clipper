@@ -345,3 +345,71 @@ def test_spy_aborts_explicit_editorial_execution_timeout(tmp_path: Path) -> None
     )
     assert spy.abort_reason is not None
     assert "runtime timeout" in spy.abort_reason
+
+
+def test_spy_drains_through_scoped_terminal_and_quiet_period(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    clock = {"now": 100.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        module.time,
+        "sleep",
+        lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+    )
+    spy = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "terminal.ndjson",
+        execution_id="exec-123",
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"production_cycle_terminal","execution_id":"exec-123",'
+        '"status":"PASS","pipeline_status":"SUCCESS","review_status":"NOT_RENDERED"}',
+    )
+
+    assert spy.wait_for_terminal_and_quiet(timeout_seconds=5, quiet_seconds=1) is True
+    summary = spy.summary()
+    assert summary["terminal_seen"] is True
+    assert summary["terminal_event"]["status"] == "PASS"
+
+
+def test_spy_rejects_timeout_buffered_after_terminal(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "buffered-timeout.ndjson",
+        execution_id="exec-123",
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"production_cycle_terminal","execution_id":"exec-123","status":"PASS"}',
+    )
+    spy._record(
+        "clipper-open-editor",
+        '{"event":"editorial_execution_timeout","execution_id":"exec-123",'
+        '"task":"quality_windows:x","timeout_seconds":900,"recovery_action":"REPARTITION"}',
+    )
+
+    assert spy.abort_reason is not None
+    assert "runtime timeout" in spy.abort_reason
+    assert spy.wait_for_terminal_and_quiet(timeout_seconds=0.01, quiet_seconds=0.001) is False
+
+
+def test_spy_cannot_pass_terminal_drain_without_terminal_event(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    clock = {"now": 10.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        module.time,
+        "sleep",
+        lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+    )
+    spy = module.ModalExecutionSpy(("app",), tmp_path / "missing-terminal.ndjson")
+
+    assert spy.wait_for_terminal_and_quiet(timeout_seconds=0.5, quiet_seconds=0.1) is False
