@@ -467,86 +467,19 @@ def _run_editorial_capacity_probe(
     task: str,
     raw_payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Run one non-generating editorial probe inside the producer lifecycle barrier."""
+    """Run one non-generating editorial probe inside the shared producer lifecycle."""
 
-    execution_id = os.getenv("CLIPPER_EXECUTION_ID", "")
-    invocation_id = uuid.uuid4().hex
-    start_event = {
-        "event": "editorial_remote_call_start",
-        "execution_id": execution_id,
-        "invocation_id": invocation_id,
-        "task": task,
-    }
-    print(json.dumps(start_event, sort_keys=True), flush=True)
+    from clipper.providers.modal import invoke_editorial_capacity_probe
 
-    def emit_terminal(
-        status: str,
-        *,
-        error_type: str | None = None,
-        reason: str | None = None,
-        details: dict[str, Any] | None = None,
-    ) -> None:
-        event: dict[str, object] = {
-            "event": "editorial_remote_call_terminal",
-            "execution_id": execution_id,
-            "invocation_id": invocation_id,
-            "task": task,
-            "status": status,
-        }
-        if error_type:
-            event["error_type"] = error_type
-        if reason:
-            event["reason"] = reason
-        source = details if isinstance(details, dict) else {}
-        for key in (
-            "input_tokens",
-            "context_limit_tokens",
-            "available_output_tokens",
-            "generation_budget_tokens",
-            "runtime_safe_input_tokens",
-            "capacity_repartitionable",
-            "serialized_request_bytes",
-        ):
-            if key in source:
-                event[key] = source[key]
-        print(json.dumps(event, sort_keys=True), flush=True)
-
-    request = {
-        "task": task,
-        "payload": raw_payload,
-        "execution_id": execution_id,
-        "editorial_invocation_id": invocation_id,
-        "expected_git_sha": os.getenv("CLIPPER_ACCEPTANCE_SHA", ""),
-    }
-    try:
-        response = worker.capacity_probe.remote(request)
-        if not isinstance(response, dict):
-            raise RuntimeError("EditorialModel.capacity_probe returned a non-object response")
-        if response.get("error"):
-            raise RuntimeError(f"EditorialModel.capacity_probe failed: {response['error']}")
-        probe = response.get("value")
-        if not isinstance(probe, dict):
-            raise RuntimeError("EditorialModel.capacity_probe did not return measured capacity")
-        details = {str(key): value for key, value in probe.items()}
-    except Exception as exc:
-        emit_terminal(
-            "ERROR",
-            error_type=type(exc).__name__,
-            reason="acceptance_capacity_probe_failed",
-        )
-        raise
-
-    status = (
-        "CAPACITY_REJECTED"
-        if str(details.get("status") or "") == "CAPACITY_REJECTED"
-        else "COMPLETE"
+    response = invoke_editorial_capacity_probe(
+        worker.capacity_probe.remote,
+        task=task,
+        payload=raw_payload,
+        execution_id=os.getenv("CLIPPER_EXECUTION_ID", ""),
+        expected_git_sha=os.getenv("CLIPPER_ACCEPTANCE_SHA", ""),
     )
-    emit_terminal(
-        status,
-        reason=str(details.get("reason") or "") or None,
-        details=details,
-    )
-    return details
+    probe = response["value"]
+    return {str(key): value for key, value in probe.items()}
 
 
 def _editorial_acceptance_probe(
