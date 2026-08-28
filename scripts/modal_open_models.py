@@ -876,6 +876,7 @@ def _transport_error(
     *,
     context: str | None = None,
     execution_id: str = "",
+    invocation_id: str = "",
 ) -> dict[str, Any]:
     error_type = type(exc).__name__
     capacity_rejected = error_type == "OutOfMemoryError" or "CapacityError" in error_type
@@ -898,6 +899,7 @@ def _transport_error(
                 "error_type": error_type,
                 "recovery_action": recovery_action,
                 "execution_id": execution_id,
+                "invocation_id": invocation_id,
             },
             sort_keys=True,
         )
@@ -1543,6 +1545,7 @@ class EditorialModel:
                 exc,
                 context=f"capacity_probe task={task or '<missing>'}",
                 execution_id=_execution_id(payload),
+                invocation_id=str(payload.get("editorial_invocation_id") or ""),
             )
 
     @modal.method()
@@ -1568,6 +1571,7 @@ class EditorialModel:
                 exc,
                 context=f"task={task or '<missing>'}",
                 execution_id=_execution_id(payload),
+                invocation_id=str(payload.get("editorial_invocation_id") or ""),
             )
         finally:
             gc.collect()
