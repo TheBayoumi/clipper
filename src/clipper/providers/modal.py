@@ -6,6 +6,7 @@ import json
 import os
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +137,86 @@ class EditorialInvocation:
                 event[key] = source[key]
         self.closed = True
         print(json.dumps(event, sort_keys=True), flush=True)
+
+
+def invoke_editorial_capacity_probe(
+    remote: Callable[[dict[str, Any]], Any],
+    *,
+    task: str,
+    payload: dict[str, Any],
+    expected_git_sha: str,
+    execution_id: str | None = None,
+) -> dict[str, Any]:
+    """Invoke the live capacity probe inside the authoritative producer lifecycle."""
+
+    invocation = EditorialInvocation.start(task=task, execution_id=execution_id)
+    request: dict[str, Any] = {
+        "task": task,
+        "payload": payload,
+        "expected_git_sha": expected_git_sha,
+        **invocation.request_fields(),
+    }
+    try:
+        response = remote(request)
+    except Exception as exc:
+        status = "TIMEOUT" if type(exc).__name__ == "FunctionTimeoutError" else "ERROR"
+        invocation.terminal(
+            status,
+            error_type=type(exc).__name__,
+            reason="capacity_probe_remote_exception",
+        )
+        raise
+
+    if not isinstance(response, dict):
+        invocation.terminal(
+            "ERROR",
+            error_type=type(response).__name__,
+            reason="capacity_probe_non_object_response",
+        )
+        raise RuntimeError("EditorialModel.capacity_probe returned a non-object response")
+
+    raw_error = response.get("error")
+    if raw_error:
+        error = raw_error if isinstance(raw_error, dict) else {}
+        details_raw = error.get("details")
+        details = dict(details_raw) if isinstance(details_raw, dict) else {}
+        application_status = str(
+            response.get("application_status")
+            or details.get("application_status")
+            or ""
+        )
+        status = "CAPACITY_REJECTED" if application_status == "CAPACITY_REJECTED" else "ERROR"
+        invocation.terminal(
+            status,
+            error_type=str(error.get("type") or "RemoteError"),
+            reason="capacity_probe_remote_error",
+            details=details,
+        )
+        raise RuntimeError(f"EditorialModel.capacity_probe failed: {raw_error}")
+
+    probe = response.get("value")
+    if not isinstance(probe, dict):
+        invocation.terminal(
+            "ERROR",
+            reason="capacity_probe_missing_measurement",
+        )
+        raise RuntimeError("EditorialModel.capacity_probe did not return measured capacity")
+
+    probe_status = str(probe.get("status") or "")
+    if probe_status == "CAPACITY_REJECTED":
+        invocation.terminal("CAPACITY_REJECTED", details=probe)
+    elif probe_status == "FIT":
+        invocation.terminal("COMPLETE", details=probe)
+    else:
+        invocation.terminal(
+            "ERROR",
+            reason="capacity_probe_invalid_status",
+            details=probe,
+        )
+        raise RuntimeError(
+            f"EditorialModel.capacity_probe returned invalid status: {probe_status!r}"
+        )
+    return response
 
 
 class ModalJSONProvider:
