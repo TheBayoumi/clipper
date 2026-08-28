@@ -1438,6 +1438,7 @@ def _editorial_capacity_probe(
     started = time.perf_counter()
     task = str(payload.get("task") or "")
     execution_id = _execution_id(payload)
+    invocation_id = str(payload.get("editorial_invocation_id") or "")
     system_content = (
         "You are a source-grounded multimodal short-form editor. "
         "Never invent source evidence, spoken words, timestamps, or IDs. "
@@ -1464,6 +1465,7 @@ def _editorial_capacity_probe(
             "status": "FIT",
             "task": task,
             "execution_id": execution_id,
+            "invocation_id": invocation_id,
             **plan,
             "serialized_request_bytes": serialized_request_bytes,
         }
@@ -1473,6 +1475,7 @@ def _editorial_capacity_probe(
             "status": "CAPACITY_REJECTED",
             "task": task,
             "execution_id": execution_id,
+            "invocation_id": invocation_id,
             **exc.details,
             "serialized_request_bytes": serialized_request_bytes,
         }
