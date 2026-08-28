@@ -400,6 +400,10 @@ def run_modal_pipeline(
     assert_campaign_authorized(brief)
     ensure_modal_runtime()
 
+    candidates = _explicit_candidates(brief_path)
+    if not candidates:
+        raise RuntimeError("campaign contains no explicit authorized targets")
+
     model_app = os.getenv("CLIPPER_MODAL_APP", DEFAULT_MODEL_APP)
     pipeline_app = os.getenv("CLIPPER_MODAL_PIPELINE_APP", DEFAULT_PIPELINE_APP)
     verified_git_sha = _verify_deployed_runtime_sha(
@@ -411,9 +415,6 @@ def run_modal_pipeline(
     max_estimated_usd = _positive_budget(max_estimated_usd, name="max_estimated_usd")
     acquire = _function(pipeline_app, "acquire_source")
     runner = _function(pipeline_app, "run_full_cycle")
-    candidates = _explicit_candidates(brief_path)
-    if not candidates:
-        raise RuntimeError("campaign contains no explicit authorized targets")
 
     sources = [
         _acquire_remote_source(
