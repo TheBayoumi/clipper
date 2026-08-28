@@ -334,7 +334,6 @@ def test_disabled_acceptance_guards_precede_any_paid_modal_work() -> None:
     assert deploy_guard < deploy_install < deploy_open_models
 
 
-
 def test_production_budget_limits_are_finite_and_cli_is_cancellable() -> None:
     workflow = _workflow()
     watchdog = _watchdog()
