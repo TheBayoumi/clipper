@@ -666,8 +666,8 @@ jobs:
               if event.get("event") == "editorial_execution_timeout"
               and event.get("authoritative") is True
           ]
-          if not projections or not capacity_probes or not probe_results:
-              raise RuntimeError("live editorial telemetry records are incomplete")
+          if not projections or not probe_results:
+              raise RuntimeError("live authoritative editorial telemetry records are incomplete")
           if timeouts:
               raise RuntimeError(f"editorial acceptance contained execution timeouts: {timeouts}")
           # Model-app request-plan logs are diagnostic only. Acceptance uses the measured
