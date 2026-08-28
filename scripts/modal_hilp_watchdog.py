@@ -87,6 +87,7 @@ def run(*, render: bool) -> dict[str, Any]:
         "sources": [_source_payload()],
         "brief_yaml": Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"]).read_text(encoding="utf-8"),
         "render": render,
+        "editorial_acceptance_probe": not render,
         "fresh_inference": os.environ["CLIPPER_FRESH_INFERENCE"] == "true",
         "resume_from_run_id": os.environ.get("CLIPPER_RESUME_FROM_RUN_ID") or None,
         "git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
@@ -108,6 +109,7 @@ def run(*, render: bool) -> dict[str, Any]:
         "resume_from_run_id": request["resume_from_run_id"],
         "fresh_inference": request["fresh_inference"],
         "render": render,
+        "editorial_acceptance_probe": request["editorial_acceptance_probe"],
         "spawned_at": datetime.now(UTC).isoformat(),
     }
     _write_json(evidence_dir / "modal-function-call.json", metadata)

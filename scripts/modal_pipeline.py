@@ -444,6 +444,109 @@ class VolumeSourceClient:
         return {video_id: dict(record["evidence"]) for video_id, record in self._records.items()}
 
 
+def _editorial_acceptance_probe(
+    run_dir: Path,
+    brief_yaml: str,
+    video_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    """Measure the legacy raw evidence and verify token-aware repartition inside Modal."""
+
+    from clipper.brief import load_brief
+    from clipper.canonical import CanonicalTimeline
+    from clipper.editorial_capacity import token_aware_repartition
+    from clipper.multimodal_timeline import build_multimodal_timeline
+    from clipper.source_hazards import SourceHazardClassifier, campaign_context
+    from clipper.visual import VisualTimeline
+
+    brief_path = Path(f"/tmp/clipper-editorial-probe-{uuid.uuid4().hex}.yaml")
+    brief_path.write_text(brief_yaml, encoding="utf-8")
+    try:
+        brief = load_brief(brief_path)
+    finally:
+        brief_path.unlink(missing_ok=True)
+
+    worker = modal.Cls.from_name(MODEL_APP, "EditorialModel")()
+    results: list[dict[str, Any]] = []
+    for video_id in video_ids:
+        timeline = CanonicalTimeline.from_dict(
+            json.loads((run_dir / "canonical" / f"{video_id}.json").read_text(encoding="utf-8"))
+        )
+        visual = VisualTimeline.from_dict(
+            json.loads((run_dir / "visual-scout" / f"{video_id}.json").read_text(encoding="utf-8"))
+        )
+        multimodal = build_multimodal_timeline(timeline, visual)
+        if not timeline.words:
+            raise RuntimeError(f"editorial acceptance probe has no canonical words: {video_id}")
+
+        source_start = timeline.words[0].source_start
+        source_end = timeline.words[-1].source_end
+        raw_payload: dict[str, Any] = {
+            "campaign": campaign_context(brief),
+            "instruction": (
+                "Classify the entire supplied source interval into exhaustive chronological "
+                "segments. Fuse speech and multimodal evidence. Ordinary source material is "
+                "editorial_content. Use unknown when evidence is insufficient; uncertainty "
+                "must never be converted into an automatic PASS."
+            ),
+            "words": SourceHazardClassifier._word_payload(
+                timeline,
+                0,
+                len(timeline.words),
+            ),
+            "capacity_repartitionable": True,
+            "multimodal_evidence": SourceHazardClassifier._legacy_multimodal_payload(
+                multimodal,
+                source_start,
+                source_end,
+            ),
+        }
+        task = f"source_hazards:acceptance_probe:{video_id}"
+        response = worker.capacity_probe.remote({"task": task, "payload": raw_payload})
+        if not isinstance(response, dict):
+            raise RuntimeError("EditorialModel.capacity_probe returned a non-object response")
+        if response.get("error"):
+            raise RuntimeError(f"EditorialModel.capacity_probe failed: {response['error']}")
+        probe = response.get("value")
+        if not isinstance(probe, dict):
+            raise RuntimeError("EditorialModel.capacity_probe did not return measured capacity")
+
+        details = {str(key): value for key, value in probe.items()}
+        repartition = token_aware_repartition(
+            timeline,
+            0,
+            len(timeline.words),
+            details,
+        )
+        if repartition is None:
+            raise RuntimeError(
+                "live raw-evidence capacity probe did not produce a token-aware repartition"
+            )
+        repartition_event = repartition.telemetry(stage=task)
+        evidence = {
+            "video_id": video_id,
+            "capacity_probe": details,
+            "repartition": repartition_event,
+        }
+        results.append(evidence)
+        print(
+            json.dumps(
+                {
+                    "event": "editorial_acceptance_probe_result",
+                    **evidence,
+                },
+                sort_keys=True,
+            )
+        )
+
+    result = {"status": "PASS", "sources": results}
+    (run_dir / "editorial-acceptance-probe.json").write_text(
+        json.dumps(result, indent=2) + chr(10),
+        encoding="utf-8",
+    )
+    artifact_volume.commit()
+    return result
+
+
 @app.function(
     image=runner_image,
     volumes={MEDIA_ROOT: media_cache, ARTIFACT_ROOT: artifact_volume},
@@ -469,6 +572,7 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("run_full_cycle requires a campaign brief")
 
     render = bool(payload.get("render", True))
+    editorial_acceptance_probe = bool(payload.get("editorial_acceptance_probe", False))
     fresh_inference = bool(payload.get("fresh_inference", False))
     resume_from_run_id = str(payload.get("resume_from_run_id") or "").strip() or None
     if fresh_inference and resume_from_run_id is not None:
@@ -555,6 +659,14 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
             "review_status": "NOT_REVIEWABLE",
         }
 
+    editorial_probe_result: dict[str, Any] | None = None
+    if editorial_acceptance_probe:
+        editorial_probe_result = _editorial_acceptance_probe(
+            run_dir,
+            brief_yaml,
+            tuple(video.video_id for video in source.videos),
+        )
+
     metadata = manifest.get("run_metadata")
     if not isinstance(metadata, dict):
         raise RuntimeError("production manifest is missing run_metadata")
@@ -605,4 +717,5 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
         "rendered": len(manifest.get("rendered_clips") or []),
         "reviewable": len(manifest.get("submission_shortlist") or []),
         "review_status": "PENDING_ACTUAL_MP4_REVIEW" if render else "NOT_RENDERED",
+        "editorial_acceptance_probe": editorial_probe_result,
     }

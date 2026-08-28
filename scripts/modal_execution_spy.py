@@ -9,6 +9,7 @@ import subprocess
 import threading
 import urllib.parse
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,8 @@ RECOGNIZED_EVENTS = {
     "editorial_evidence_projection",
     "editorial_repartition",
     "editorial_context_repartition",
+    "editorial_capacity_probe",
+    "editorial_acceptance_probe_result",
     "editorial_request_plan",
     "editorial_generation_start",
     "editorial_generation_complete",
@@ -49,6 +52,7 @@ class ModalExecutionSpy:
         self.abort_reason: str | None = None
         self.abort_event: dict[str, Any] | None = None
         self.stream_errors: list[str] = []
+        self.started_at = datetime.now(UTC).isoformat()
         self._last_request_plan_signature: tuple[object, ...] | None = None
 
     @staticmethod
@@ -161,6 +165,8 @@ class ModalExecutionSpy:
             "duration_seconds",
             "partition_count",
             "ranges",
+            "status",
+            "video_id",
             "previous_range",
             "next_range",
             "raw_event_count",
@@ -277,6 +283,19 @@ class ModalExecutionSpy:
             next_size = next_range[1] - next_range[0]
             if previous_size <= 0 or next_size <= 0 or next_size >= previous_size:
                 return f"context repartition did not reduce evidence: {event}"
+            return None
+
+        if name == "editorial_capacity_probe":
+            status = str(event.get("status") or "")
+            input_tokens = self._positive_int(event.get("input_tokens"))
+            context_limit = self._positive_int(event.get("context_limit_tokens"))
+            if status not in {"FIT", "CAPACITY_REJECTED"}:
+                return f"capacity probe emitted invalid status: {event}"
+            if input_tokens is None or context_limit is None:
+                return f"capacity probe omitted measured token/context evidence: {event}"
+            return None
+
+        if name == "editorial_acceptance_probe_result":
             return None
 
         if name == "editorial_request_plan":
@@ -476,6 +495,8 @@ class ModalExecutionSpy:
             "logs",
             app,
             "--follow",
+            "--since",
+            self.started_at,
             "--timestamps",
             "--show-function-id",
             "--show-function-call-id",
@@ -519,6 +540,7 @@ class ModalExecutionSpy:
             "status": "ABORT" if self.abort_reason else "PASS",
             "abort_reason": self.abort_reason,
             "abort_event": self.abort_event,
+            "started_at": self.started_at,
             "events_seen": self.events_seen,
             "event_counts": self.event_counts,
             "latest": self.latest,

@@ -143,13 +143,16 @@ def test_production_workflow_has_cancellable_modal_spy_and_editorial_acceptance(
     assert "python scripts/modal_hilp_watchdog.py" in workflow
     assert "Validate live editorial projection and token-aware repartition" in workflow
     assert "editorial_evidence_projection" in workflow
-    assert "editorial_repartition" in workflow
+    assert "editorial_capacity_probe" in workflow
+    assert "editorial_acceptance_probe_result" in workflow
     assert "maximum_partition_count" in workflow
-    assert "multi-way recovery" in workflow
+    assert "legacy raw negative-control payload unexpectedly fit model context" in workflow
+    assert "token-aware repartitioner did not produce measured multi-way recovery" in workflow
     assert "if: env.CLIPPER_RENDER == 'false'" in workflow
     assert "if: env.CLIPPER_RENDER == 'true'" in workflow
 
     assert "function.spawn(request)" in watchdog
+    assert '"editorial_acceptance_probe": not render' in watchdog
     assert "call.cancel(terminate_containers=False)" in watchdog
     assert "production_call_spawned" in watchdog
     assert "production_call_cancel" in watchdog
@@ -162,3 +165,23 @@ def test_production_workflow_has_cancellable_modal_spy_and_editorial_acceptance(
     assert "repeated without forward progress" in spy
     assert "projection expanded serialized evidence" in spy
     assert "--show-function-call-id" in spy
+
+
+def test_modal_editorial_capacity_probe_is_non_generating() -> None:
+    worker = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+    pipeline = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+    assert "def _editorial_capacity_probe(" in worker
+    assert "def capacity_probe(" in worker
+    probe_start = worker.index("def _editorial_capacity_probe(")
+    probe_end = worker.index("@app.cls(", probe_start)
+    probe = worker[probe_start:probe_end]
+    assert "_editorial_generation_plan(" in probe
+    assert "structured_model(" not in probe
+    assert "model.generate(" not in probe
+    assert '"event": "editorial_capacity_probe"' in probe
+
+    assert "def _editorial_acceptance_probe(" in pipeline
+    assert "worker.capacity_probe.remote(" in pipeline
+    assert "token_aware_repartition(" in pipeline
+    assert '"event": "editorial_acceptance_probe_result"' in pipeline
+    assert "editorial-acceptance-probe.json" in pipeline

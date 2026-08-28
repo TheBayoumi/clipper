@@ -1351,6 +1351,71 @@ def _editorial_infer(
     }
 
 
+def _editorial_capacity_probe(
+    payload: dict[str, Any],
+    tokenizer: Any,
+    model: Any,
+    capacity_state: dict[str, Any],
+    *,
+    lifecycle_id: str,
+) -> dict[str, Any]:
+    """Measure a real editorial request against live model capacity without generation."""
+
+    from clipper.providers.base import EditorialCapacityError
+    from clipper.providers.editorial_prompt import editorial_contract
+
+    started = time.perf_counter()
+    task = str(payload.get("task") or "")
+    system_content = (
+        "You are a source-grounded multimodal short-form editor. "
+        "Never invent source evidence, spoken words, timestamps, or IDs. "
+        + editorial_contract(task)
+    )
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+    rendered = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    input_units = len(tokenizer(rendered, add_special_tokens=False)["input_ids"])
+    serialized_request_bytes = len(rendered.encode("utf-8"))
+
+    try:
+        plan = _editorial_generation_plan(
+            payload,
+            tokenizer=tokenizer,
+            model=model,
+            input_units=input_units,
+            capacity_state=capacity_state,
+        )
+        value: dict[str, Any] = {
+            "event": "editorial_capacity_probe",
+            "status": "FIT",
+            "task": task,
+            **plan,
+            "serialized_request_bytes": serialized_request_bytes,
+        }
+    except EditorialCapacityError as exc:
+        value = {
+            "event": "editorial_capacity_probe",
+            "status": "CAPACITY_REJECTED",
+            "task": task,
+            **exc.details,
+            "serialized_request_bytes": serialized_request_bytes,
+        }
+
+    value["worker_lifecycle_id"] = lifecycle_id
+    value["duration_seconds"] = max(0.0, time.perf_counter() - started)
+    print(json.dumps(value, sort_keys=True))
+    runtime = _worker_runtime(lifecycle_id, model_load_count=1)
+    runtime["editorial_placement"] = dict(_editorial_device_distribution(model))
+    return {
+        "value": value,
+        "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
+        "usage": _usage(started, "L4:2", input_units=input_units, output_units=0),
+        "runtime": runtime,
+    }
+
+
 @app.cls(
     image=text_image,
     gpu="L4:2",
@@ -1389,6 +1454,20 @@ class EditorialModel:
             "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
             "runtime": runtime,
         }
+
+    @modal.method()
+    def capacity_probe(self, payload: dict[str, Any]) -> dict[str, Any]:
+        task = str(payload.get("task") or "")
+        try:
+            return _editorial_capacity_probe(
+                payload,
+                self.tokenizer,
+                self.model,
+                self.capacity_state,
+                lifecycle_id=self.lifecycle_id,
+            )
+        except Exception as exc:
+            return _transport_error(exc, context=f"capacity_probe task={task or '<missing>'}")
 
     @modal.method()
     def complete(self, payload: dict[str, Any]) -> dict[str, Any]:

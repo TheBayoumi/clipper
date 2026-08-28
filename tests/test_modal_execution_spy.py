@@ -206,3 +206,59 @@ def test_spy_aborts_invalid_generation_plan(tmp_path: Path) -> None:
         '"generation_budget_tokens":21,"serialized_request_bytes":100}',
     )
     assert output.abort_reason is not None
+
+
+def test_spy_log_follow_is_scoped_to_spy_start_time(tmp_path: Path, monkeypatch) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(("app",), tmp_path / "spy.ndjson")
+
+    class _Process:
+        stdout = iter(())
+        returncode = 0
+
+        def wait(self) -> int:
+            return 0
+
+        def poll(self) -> int:
+            return 0
+
+        def terminate(self) -> None:
+            raise AssertionError("completed process should not be terminated")
+
+    observed: list[list[str]] = []
+
+    def popen(command, **_kwargs):
+        observed.append(command)
+        return _Process()
+
+    monkeypatch.setattr(module.subprocess, "Popen", popen)
+    spy.request_stop()
+    spy._follow("app")
+    assert observed
+    command = observed[0]
+    assert "--since" in command
+    assert command[command.index("--since") + 1] == spy.started_at
+
+
+def test_spy_accepts_measured_capacity_probe(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(("app",), tmp_path / "probe.ndjson")
+    spy._record(
+        "app",
+        '{"event":"editorial_capacity_probe","status":"CAPACITY_REJECTED",'
+        '"task":"source_hazards:acceptance_probe:video","input_tokens":4239373,'
+        '"context_limit_tokens":262144,"serialized_request_bytes":10000000}',
+    )
+    assert spy.abort_reason is None
+    assert spy.event_counts["editorial_capacity_probe"] == 1
+
+
+def test_spy_rejects_capacity_probe_without_measured_context(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(("app",), tmp_path / "bad-probe.ndjson")
+    spy._record(
+        "app",
+        '{"event":"editorial_capacity_probe","status":"CAPACITY_REJECTED","input_tokens":4239373}',
+    )
+    assert spy.abort_reason is not None
+    assert "omitted measured token/context" in spy.abort_reason

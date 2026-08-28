@@ -440,8 +440,10 @@ jobs:
               raise RuntimeError("Modal spy event counts are missing")
           if int(counts.get("editorial_evidence_projection") or 0) <= 0:
               raise RuntimeError("live editorial acceptance observed no evidence projection")
-          if int(counts.get("editorial_repartition") or 0) <= 0:
-              raise RuntimeError("live editorial acceptance observed no token-aware repartition")
+          if int(counts.get("editorial_capacity_probe") or 0) <= 0:
+              raise RuntimeError("live editorial acceptance observed no capacity probe")
+          if int(counts.get("editorial_acceptance_probe_result") or 0) <= 0:
+              raise RuntimeError("live editorial acceptance observed no repartition probe result")
 
           records = []
           for line in Path("open-evidence/modal-spy.ndjson").read_text(
@@ -461,7 +463,17 @@ jobs:
               for event in records
               if event.get("event") == "editorial_repartition"
           ]
-          if not projections or not repartitions:
+          capacity_probes = [
+              event
+              for event in records
+              if event.get("event") == "editorial_capacity_probe"
+          ]
+          probe_results = [
+              event
+              for event in records
+              if event.get("event") == "editorial_acceptance_probe_result"
+          ]
+          if not projections or not capacity_probes or not probe_results:
               raise RuntimeError("live editorial telemetry records are incomplete")
           if not any(
               int(item.get("raw_event_count") or 0)
@@ -477,11 +489,6 @@ jobs:
               for item in projections
           ):
               raise RuntimeError("live projection did not reduce serialized evidence")
-          if not any(int(item.get("partition_count") or 0) > 2 for item in repartitions):
-              raise RuntimeError(
-                  "live token-aware repartitioner never demonstrated multi-way recovery"
-              )
-
           cycle = json.loads(
               Path("open-evidence/cycle-result.json").read_text(encoding="utf-8")
           )
@@ -491,10 +498,41 @@ jobs:
           ):
               raise RuntimeError(f"editorial-only cycle did not complete: {cycle}")
 
+          probe = cycle.get("editorial_acceptance_probe")
+          if not isinstance(probe, dict) or probe.get("status") != "PASS":
+              raise RuntimeError(f"editorial capacity probe did not pass: {probe}")
+          sources = probe.get("sources")
+          if not isinstance(sources, list) or not sources:
+              raise RuntimeError("editorial capacity probe returned no source evidence")
+          measured_partition_counts = []
+          for source_probe in sources:
+              if not isinstance(source_probe, dict):
+                  raise RuntimeError(f"invalid source capacity probe: {source_probe!r}")
+              capacity = source_probe.get("capacity_probe")
+              repartition = source_probe.get("repartition")
+              if not isinstance(capacity, dict) or not isinstance(repartition, dict):
+                  raise RuntimeError(f"incomplete source capacity probe: {source_probe}")
+              input_tokens = int(capacity.get("input_tokens") or 0)
+              context_limit = int(capacity.get("context_limit_tokens") or 0)
+              partition_count = int(repartition.get("partition_count") or 0)
+              if input_tokens <= context_limit:
+                  raise RuntimeError(
+                      "legacy raw negative-control payload unexpectedly fit model context: "
+                      f"{source_probe}"
+                  )
+              if partition_count <= 2:
+                  raise RuntimeError(
+                      "token-aware repartitioner did not produce measured multi-way recovery: "
+                      f"{source_probe}"
+                  )
+              measured_partition_counts.append(partition_count)
+
           evidence = {
               "status": "PASS",
               "projection_events": len(projections),
               "repartition_events": len(repartitions),
+              "capacity_probe_events": len(capacity_probes),
+              "acceptance_probe_events": len(probe_results),
               "best_event_count_reduction": max(
                   int(item.get("raw_event_count") or 0)
                   - int(item.get("projected_event_count") or 0)
@@ -505,9 +543,8 @@ jobs:
                   - int(item.get("projected_serialized_bytes") or 0)
                   for item in projections
               ),
-              "maximum_partition_count": max(
-                  int(item.get("partition_count") or 0) for item in repartitions
-              ),
+              "maximum_partition_count": max(measured_partition_counts),
+              "natural_repartition_events": len(repartitions),
           }
           Path("open-evidence/editorial-acceptance-validation.json").write_text(
               json.dumps(evidence, indent=2) + chr(10),
