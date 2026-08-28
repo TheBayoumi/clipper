@@ -216,7 +216,6 @@ def test_watchdog_rechecks_budget_after_successful_final_poll(
     assert call.cancel_args == []
 
 
-
 @pytest.mark.parametrize(
     ("name", "value"),
     [
