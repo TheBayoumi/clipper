@@ -2,11 +2,6 @@ name: Deploy Modal workers
 
 on:
   workflow_dispatch:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - "acceptance/modal-deploy-request.json"
   push:
     branches:
       - feat/word-reveal-face-tracking
