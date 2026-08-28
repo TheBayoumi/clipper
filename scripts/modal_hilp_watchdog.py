@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import signal
 import threading
@@ -88,8 +89,13 @@ def run(*, render: bool) -> dict[str, Any]:
     os.environ["CLIPPER_EXECUTION_ID"] = execution_id
     max_gpu_seconds = float(os.environ["CLIPPER_MAX_GPU_SECONDS"])
     max_estimated_usd = float(os.environ["CLIPPER_MAX_ESTIMATED_USD"])
-    if max_gpu_seconds <= 0 or max_estimated_usd <= 0:
-        raise ValueError("production compute budget limits must be positive")
+    if (
+        not math.isfinite(max_gpu_seconds)
+        or not math.isfinite(max_estimated_usd)
+        or max_gpu_seconds <= 0
+        or max_estimated_usd <= 0
+    ):
+        raise ValueError("production compute budget limits must be finite and positive")
 
     spy = ModalExecutionSpy(
         (
@@ -172,13 +178,13 @@ def run(*, render: bool) -> dict[str, Any]:
         signal.signal(signum, handle_signal)
 
     poll_seconds = float(os.environ.get("CLIPPER_MODAL_SPY_POLL_SECONDS", "5"))
-    if poll_seconds <= 0:
-        raise ValueError("CLIPPER_MODAL_SPY_POLL_SECONDS must be positive")
+    if not math.isfinite(poll_seconds) or poll_seconds <= 0:
+        raise ValueError("CLIPPER_MODAL_SPY_POLL_SECONDS must be finite and positive")
     barrier_timeout_seconds = float(
         os.environ.get("CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS", "30")
     )
-    if barrier_timeout_seconds <= 0:
-        raise ValueError("Modal spy producer barrier timeout must be positive")
+    if not math.isfinite(barrier_timeout_seconds) or barrier_timeout_seconds <= 0:
+        raise ValueError("Modal spy producer barrier timeout must be finite and positive")
 
     try:
         while True:
