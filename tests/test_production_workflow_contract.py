@@ -247,10 +247,11 @@ def test_modal_spy_is_bound_to_spawned_call_and_execution_id() -> None:
     spy = Path("scripts/modal_execution_spy.py").read_text(encoding="utf-8")
 
     assert "execution_id = uuid.uuid4().hex" in watchdog
-    assert "root_function_call_id=call_id" in watchdog
+    assert "spy.root_function_call_id = call_id" in watchdog
     assert "execution_id=execution_id" in watchdog
     assert "spy_thread.start()" in watchdog
-    assert watchdog.index("call.hydrate()") < watchdog.index("spy_thread.start()")
+    assert watchdog.index("spy_thread.start()") < watchdog.index("function.spawn(request)")
+    assert watchdog.index("call.hydrate()") < watchdog.index("spy.root_function_call_id = call_id")
 
     assert "root_function_call_id" in spy
     assert "_belongs_to_execution" in spy
@@ -268,3 +269,15 @@ def test_production_runtime_rechecks_deployed_identity_before_inference() -> Non
     assert identity < schemas < execution
     assert '"deployment_identity"' in workflow
     assert "deployed SHA mismatch before inference" in workflow
+
+
+def test_all_paid_modal_calls_carry_expected_deployed_sha() -> None:
+    workflow = _workflow()
+    speech = Path("src/clipper/providers/modal_speech.py").read_text(encoding="utf-8")
+    models = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+    pipeline = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+
+    assert '"expected_git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"]' in workflow
+    assert '"expected_git_sha"' in speech
+    assert '_assert_expected_git_sha(payload)' in models
+    assert '_assert_expected_git_sha(payload)' in pipeline
