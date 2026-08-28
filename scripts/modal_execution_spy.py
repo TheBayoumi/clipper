@@ -521,11 +521,15 @@ class ModalExecutionSpy:
             task = str(compact.get("task") or "")
             if name == "editorial_generation_start" and task:
                 self._active_generations[task] = time.monotonic()
-            elif name in {
-                "editorial_generation_complete",
-                "editorial_oom",
-                "editorial_execution_timeout",
-            } and task:
+            elif (
+                name
+                in {
+                    "editorial_generation_complete",
+                    "editorial_oom",
+                    "editorial_execution_timeout",
+                }
+                and task
+            ):
                 self._active_generations.pop(task, None)
             if name in {
                 "editorial_generation_complete",
