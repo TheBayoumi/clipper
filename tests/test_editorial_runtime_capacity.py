@@ -129,7 +129,6 @@ def test_modal_provider_propagates_execution_and_expected_sha(
     assert remote.payload["expected_git_sha"] == "a" * 40
 
 
-
 def test_modal_editorial_emits_closed_pipeline_call_pair(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -172,9 +171,7 @@ def test_modal_editorial_emits_closed_pipeline_call_pair(
 
     assert result.value == {"segments": []}
     events = [
-        json.loads(line)
-        for line in capsys.readouterr().out.splitlines()
-        if line.startswith("{")
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
     ]
     starts = [event for event in events if event.get("event") == "editorial_remote_call_start"]
     terminals = [
