@@ -1,37 +1,11 @@
 from __future__ import annotations
 
-import ast
 import json
-import os
-import uuid
-from collections.abc import Callable
-from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-
-def _load_probe_runner() -> Callable[..., dict[str, Any]]:
-    source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    function = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_run_editorial_capacity_probe"
-    )
-    isolated = ast.Module(body=[function], type_ignores=[])
-    ast.fix_missing_locations(isolated)
-    namespace: dict[str, Any] = {
-        "Any": Any,
-        "json": json,
-        "os": os,
-        "uuid": uuid,
-    }
-    exec(compile(isolated, "scripts/modal_pipeline.py", "exec"), namespace)  # noqa: S102
-    loaded = namespace["_run_editorial_capacity_probe"]
-    assert callable(loaded)
-    return loaded
+from clipper.providers.modal import invoke_editorial_capacity_probe
 
 
 class _Remote:
@@ -40,18 +14,17 @@ class _Remote:
         self.error = error
         self.requests: list[dict[str, Any]] = []
 
-    def remote(self, request: dict[str, Any]) -> object:
+    def __call__(self, request: dict[str, Any]) -> object:
         self.requests.append(dict(request))
         if self.error is not None:
             raise self.error
         return self.response
 
 
-def test_acceptance_capacity_probe_is_closed_by_producer_barrier(
+def test_acceptance_capacity_probe_is_closed_by_shared_producer_barrier(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    runner = _load_probe_runner()
     remote = _Remote(
         {
             "value": {
@@ -63,14 +36,13 @@ def test_acceptance_capacity_probe_is_closed_by_producer_barrier(
             }
         }
     )
-    worker = SimpleNamespace(capacity_probe=remote)
     monkeypatch.setenv("CLIPPER_EXECUTION_ID", "exec-probe")
-    monkeypatch.setenv("CLIPPER_ACCEPTANCE_SHA", "a" * 40)
 
-    details = runner(
-        worker,
+    response = invoke_editorial_capacity_probe(
+        remote,
         task="source_hazards:acceptance_probe:video",
-        raw_payload={"capacity_repartitionable": True},
+        payload={"capacity_repartitionable": True},
+        expected_git_sha="a" * 40,
     )
 
     events = [
@@ -86,7 +58,7 @@ def test_acceptance_capacity_probe_is_closed_by_producer_barrier(
     assert terminal["status"] == "CAPACITY_REJECTED"
     assert terminal["input_tokens"] == 761_756
     assert terminal["context_limit_tokens"] == 262_144
-    assert details["status"] == "CAPACITY_REJECTED"
+    assert response["value"]["status"] == "CAPACITY_REJECTED"
 
     request = remote.requests[0]
     assert request["execution_id"] == "exec-probe"
@@ -98,38 +70,58 @@ def test_acceptance_capacity_probe_emits_error_terminal_on_transport_failure(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    runner = _load_probe_runner()
     remote = _Remote(error=RuntimeError("synthetic probe transport failure"))
-    worker = SimpleNamespace(capacity_probe=remote)
     monkeypatch.setenv("CLIPPER_EXECUTION_ID", "exec-failure")
-    monkeypatch.setenv("CLIPPER_ACCEPTANCE_SHA", "b" * 40)
 
     with pytest.raises(RuntimeError, match="synthetic probe transport failure"):
-        runner(
-            worker,
+        invoke_editorial_capacity_probe(
+            remote,
             task="source_hazards:acceptance_probe:video",
-            raw_payload={"capacity_repartitionable": True},
+            payload={"capacity_repartitionable": True},
+            expected_git_sha="b" * 40,
         )
 
     events = [
         json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
     ]
-    assert [event["event"] for event in events] == [
-        "editorial_remote_call_start",
-        "editorial_remote_call_terminal",
-    ]
     start, terminal = events
     assert start["invocation_id"] == terminal["invocation_id"]
     assert terminal["status"] == "ERROR"
     assert terminal["error_type"] == "RuntimeError"
-    assert terminal["reason"] == "acceptance_capacity_probe_failed"
+    assert terminal["reason"] == "capacity_probe_remote_exception"
+
+
+def test_acceptance_capacity_probe_emits_timeout_terminal_for_modal_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FunctionTimeoutError(Exception):
+        pass
+
+    remote = _Remote(error=FunctionTimeoutError("synthetic timeout"))
+    monkeypatch.setenv("CLIPPER_EXECUTION_ID", "exec-timeout")
+
+    with pytest.raises(FunctionTimeoutError, match="synthetic timeout"):
+        invoke_editorial_capacity_probe(
+            remote,
+            task="source_hazards:acceptance_probe:video",
+            payload={"capacity_repartitionable": True},
+            expected_git_sha="c" * 40,
+        )
+
+    events = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
+    ]
+    start, terminal = events
+    assert start["invocation_id"] == terminal["invocation_id"]
+    assert terminal["status"] == "TIMEOUT"
+    assert terminal["error_type"] == "FunctionTimeoutError"
 
 
 def test_acceptance_capacity_probe_emits_error_terminal_on_structured_remote_error(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    runner = _load_probe_runner()
     remote = _Remote(
         {
             "error": {
@@ -139,15 +131,14 @@ def test_acceptance_capacity_probe_emits_error_terminal_on_structured_remote_err
             }
         }
     )
-    worker = SimpleNamespace(capacity_probe=remote)
     monkeypatch.setenv("CLIPPER_EXECUTION_ID", "exec-structured")
-    monkeypatch.setenv("CLIPPER_ACCEPTANCE_SHA", "c" * 40)
 
     with pytest.raises(RuntimeError, match=r"EditorialModel\.capacity_probe failed"):
-        runner(
-            worker,
+        invoke_editorial_capacity_probe(
+            remote,
             task="source_hazards:acceptance_probe:video",
-            raw_payload={"capacity_repartitionable": True},
+            payload={"capacity_repartitionable": True},
+            expected_git_sha="d" * 40,
         )
 
     events = [
@@ -156,3 +147,28 @@ def test_acceptance_capacity_probe_emits_error_terminal_on_structured_remote_err
     start, terminal = events
     assert start["invocation_id"] == terminal["invocation_id"]
     assert terminal["status"] == "ERROR"
+    assert terminal["reason"] == "capacity_probe_remote_error"
+
+
+def test_acceptance_capacity_probe_rejects_invalid_measurement_status(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    remote = _Remote({"value": {"status": "UNKNOWN"}})
+    monkeypatch.setenv("CLIPPER_EXECUTION_ID", "exec-invalid")
+
+    with pytest.raises(RuntimeError, match="returned invalid status"):
+        invoke_editorial_capacity_probe(
+            remote,
+            task="source_hazards:acceptance_probe:video",
+            payload={"capacity_repartitionable": True},
+            expected_git_sha="e" * 40,
+        )
+
+    events = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
+    ]
+    start, terminal = events
+    assert start["invocation_id"] == terminal["invocation_id"]
+    assert terminal["status"] == "ERROR"
+    assert terminal["reason"] == "capacity_probe_invalid_status"
