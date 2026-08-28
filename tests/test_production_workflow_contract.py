@@ -168,6 +168,8 @@ def test_production_workflow_has_cancellable_modal_spy_and_editorial_acceptance(
     assert "repeated without forward progress" in spy
     assert "projection expanded serialized evidence" in spy
     assert "--show-function-call-id" in spy
+    assert '"--follow"' in spy
+    assert '"--since"' not in spy
 
 
 def test_modal_editorial_capacity_probe_is_non_generating() -> None:

@@ -208,7 +208,10 @@ def test_spy_aborts_invalid_generation_plan(tmp_path: Path) -> None:
     assert output.abort_reason is not None
 
 
-def test_spy_log_follow_is_scoped_to_spy_start_time(tmp_path: Path, monkeypatch) -> None:
+def test_spy_log_follow_uses_live_stream_without_historical_range(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     module = _module()
     spy = module.ModalExecutionSpy(("app",), tmp_path / "spy.ndjson")
 
@@ -236,8 +239,10 @@ def test_spy_log_follow_is_scoped_to_spy_start_time(tmp_path: Path, monkeypatch)
     spy._follow("app")
     assert observed
     command = observed[0]
-    assert "--since" in command
-    assert command[command.index("--since") + 1] == spy.started_at
+    assert "--follow" in command
+    assert "--since" not in command
+    assert "--until" not in command
+    assert "--show-function-call-id" in command
 
 
 def test_spy_accepts_measured_capacity_probe(tmp_path: Path) -> None:

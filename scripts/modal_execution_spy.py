@@ -495,8 +495,6 @@ class ModalExecutionSpy:
             "logs",
             app,
             "--follow",
-            "--since",
-            self.started_at,
             "--timestamps",
             "--show-function-id",
             "--show-function-call-id",
