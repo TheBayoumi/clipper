@@ -31,6 +31,113 @@ class ModalRemoteError(RuntimeError):
         super().__init__(f"Modal {function_name} failed: {error_type}: {message}")
 
 
+class EditorialInvocation:
+    """Authoritative producer-side lifecycle for one editorial Modal attempt."""
+
+    _TERMINAL_STATUSES = {
+        "COMPLETE",
+        "CAPACITY_REJECTED",
+        "OUTPUT_RETRY",
+        "TIMEOUT",
+        "ERROR",
+    }
+    _DETAIL_FIELDS = (
+        "input_tokens",
+        "context_limit_tokens",
+        "available_output_tokens",
+        "generation_budget_tokens",
+        "runtime_safe_input_tokens",
+        "capacity_repartitionable",
+        "serialized_request_bytes",
+        "output_tokens",
+    )
+
+    def __init__(
+        self,
+        *,
+        task: str,
+        execution_id: str,
+        invocation_id: str,
+        started: float,
+    ) -> None:
+        self.task = task
+        self.execution_id = execution_id
+        self.invocation_id = invocation_id
+        self.started = started
+        self.closed = False
+
+    @classmethod
+    def start(
+        cls,
+        *,
+        task: str,
+        execution_id: str | None = None,
+    ) -> "EditorialInvocation":
+        resolved_execution_id = (
+            os.getenv("CLIPPER_EXECUTION_ID", "").strip()
+            if execution_id is None
+            else execution_id.strip()
+        )
+        invocation = cls(
+            task=task,
+            execution_id=resolved_execution_id,
+            invocation_id=uuid.uuid4().hex,
+            started=time.monotonic(),
+        )
+        print(
+            json.dumps(
+                {
+                    "event": "editorial_remote_call_start",
+                    "execution_id": invocation.execution_id,
+                    "invocation_id": invocation.invocation_id,
+                    "task": invocation.task,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return invocation
+
+    def request_fields(self) -> dict[str, str]:
+        return {
+            "execution_id": self.execution_id,
+            "editorial_invocation_id": self.invocation_id,
+        }
+
+    def terminal(
+        self,
+        status: str,
+        *,
+        error_type: str | None = None,
+        reason: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        if status not in self._TERMINAL_STATUSES:
+            raise ValueError(f"invalid editorial invocation terminal status: {status}")
+        if self.closed:
+            raise RuntimeError(
+                f"editorial invocation {self.invocation_id} already emitted a terminal event"
+            )
+        event: dict[str, object] = {
+            "event": "editorial_remote_call_terminal",
+            "execution_id": self.execution_id,
+            "invocation_id": self.invocation_id,
+            "task": self.task,
+            "status": status,
+            "duration_seconds": max(0.0, time.monotonic() - self.started),
+        }
+        if error_type:
+            event["error_type"] = error_type
+        if reason:
+            event["reason"] = reason
+        source = details if isinstance(details, dict) else {}
+        for key in self._DETAIL_FIELDS:
+            if key in source:
+                event[key] = source[key]
+        self.closed = True
+        print(json.dumps(event, sort_keys=True), flush=True)
+
+
 class ModalJSONProvider:
     def __init__(
         self,
@@ -176,90 +283,41 @@ class ModalEditorialProvider(ModalJSONProvider):
         self,
         request: dict[str, Any],
     ) -> ProviderResult[dict[str, Any]]:
-        invocation_id = uuid.uuid4().hex
-        execution_id = os.getenv("CLIPPER_EXECUTION_ID", "").strip()
         task = str(request.get("task") or "")
-        started = time.monotonic()
-        scoped_request = dict(request)
-        scoped_request["editorial_invocation_id"] = invocation_id
-        print(
-            json.dumps(
-                {
-                    "event": "editorial_remote_call_start",
-                    "execution_id": execution_id,
-                    "invocation_id": invocation_id,
-                    "task": task,
-                },
-                sort_keys=True,
-            ),
-            flush=True,
-        )
-
-        def emit_terminal(
-            status: str,
-            *,
-            error_type: str | None = None,
-            reason: str | None = None,
-            details: dict[str, Any] | None = None,
-        ) -> None:
-            event: dict[str, object] = {
-                "event": "editorial_remote_call_terminal",
-                "execution_id": execution_id,
-                "invocation_id": invocation_id,
-                "task": task,
-                "status": status,
-                "duration_seconds": max(0.0, time.monotonic() - started),
-            }
-            if error_type:
-                event["error_type"] = error_type
-            if reason:
-                event["reason"] = reason
-            source = details if isinstance(details, dict) else {}
-            for key in (
-                "input_tokens",
-                "context_limit_tokens",
-                "available_output_tokens",
-                "generation_budget_tokens",
-                "runtime_safe_input_tokens",
-                "capacity_repartitionable",
-                "serialized_request_bytes",
-                "output_tokens",
-            ):
-                if key in source:
-                    event[key] = source[key]
-            print(json.dumps(event, sort_keys=True), flush=True)
+        invocation = EditorialInvocation.start(task=task)
+        scoped_request = {**request, **invocation.request_fields()}
 
         try:
             result = self.invoke(scoped_request)
         except Exception as exc:
             if isinstance(exc, ModalRemoteError):
                 if self._is_capacity_error(exc):
-                    emit_terminal(
+                    invocation.terminal(
                         "CAPACITY_REJECTED",
                         error_type=exc.error_type,
                         reason=str(exc.details.get("reason") or "remote_capacity"),
                         details=exc.details,
                     )
                 elif self._is_output_contract_error(exc):
-                    emit_terminal(
+                    invocation.terminal(
                         "OUTPUT_RETRY",
                         error_type=exc.error_type,
                         reason="bounded_output_recovery",
                         details=exc.details,
                     )
                 else:
-                    emit_terminal("ERROR", error_type=exc.error_type, reason="remote_error")
+                    invocation.terminal("ERROR", error_type=exc.error_type, reason="remote_error")
                 raise
 
             try:
                 modal_module = self._modal()
             except ProviderUnavailable:
-                emit_terminal("ERROR", error_type=type(exc).__name__, reason="local_provider_error")
+                invocation.terminal("ERROR", error_type=type(exc).__name__, reason="local_provider_error")
                 raise exc from None
             exception_namespace = getattr(modal_module, "exception", None)
             timeout_type = getattr(exception_namespace, "FunctionTimeoutError", None)
             if not isinstance(timeout_type, type) or not isinstance(exc, timeout_type):
-                emit_terminal("ERROR", error_type=type(exc).__name__, reason="provider_error")
+                invocation.terminal("ERROR", error_type=type(exc).__name__, reason="provider_error")
                 raise
 
             self._instance_handle = None
@@ -267,7 +325,7 @@ class ModalEditorialProvider(ModalJSONProvider):
             runtime_safe_input_tokens = int(
                 os.getenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", "65536")
             )
-            emit_terminal(
+            invocation.terminal(
                 "TIMEOUT",
                 error_type=type(exc).__name__,
                 reason="execution_timeout",
@@ -279,8 +337,8 @@ class ModalEditorialProvider(ModalJSONProvider):
             event = {
                 "event": "editorial_execution_timeout",
                 "task": task,
-                "execution_id": execution_id,
-                "invocation_id": invocation_id,
+                "execution_id": invocation.execution_id,
+                "invocation_id": invocation.invocation_id,
                 "timeout_seconds": timeout_seconds,
                 "recovery_action": "REPARTITION",
             }
@@ -294,12 +352,12 @@ class ModalEditorialProvider(ModalJSONProvider):
                     "runtime_safe_input_tokens": runtime_safe_input_tokens,
                     "timeout_seconds": timeout_seconds,
                     "recovery_action": "REPARTITION",
-                    "editorial_invocation_id": invocation_id,
+                    "editorial_invocation_id": invocation.invocation_id,
                 },
             ) from exc
 
         capacity = result.usage.runtime.get("editorial_capacity")
-        emit_terminal(
+        invocation.terminal(
             "COMPLETE",
             details=capacity if isinstance(capacity, dict) else None,
         )
