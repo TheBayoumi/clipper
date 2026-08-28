@@ -516,6 +516,11 @@ jobs:
               raise RuntimeError(f"editorial acceptance call was cancelled: {summary}")
           if summary.get("active_generations"):
               raise RuntimeError(f"editorial acceptance ended with active generations: {summary}")
+          if summary.get("terminal_seen") is not True:
+              raise RuntimeError(f"editorial acceptance lacks scoped terminal telemetry: {summary}")
+          terminal = summary.get("terminal_event")
+          if not isinstance(terminal, dict) or terminal.get("status") != "PASS":
+              raise RuntimeError(f"editorial acceptance terminal event is invalid: {summary}")
           counts = summary.get("event_counts")
           if not isinstance(counts, dict):
               raise RuntimeError("Modal spy event counts are missing")
@@ -529,6 +534,10 @@ jobs:
               raise RuntimeError("live editorial acceptance observed no completed editorial generation")
           if int(counts.get("editorial_execution_timeout") or 0) != 0:
               raise RuntimeError("live editorial acceptance observed an editorial execution timeout")
+          if int(counts.get("production_cycle_terminal") or 0) != 1:
+              raise RuntimeError(
+                  "live editorial acceptance requires exactly one scoped production terminal event"
+              )
 
           records = []
           for line in Path("open-evidence/modal-spy.ndjson").read_text(
