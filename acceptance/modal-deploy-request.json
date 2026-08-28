@@ -1,5 +1,5 @@
 {
-  "request_reason": "Deploy exact-head Modal spy follow compatibility correction with unchanged editorial evidence projection, token-aware repartition, live capacity probe, and cancellable watchdog before HILP",
+  "request_reason": "Disabled while Codex-reviewed editorial runtime-capacity, watchdog, and acceptance hardening is in progress",
   "requested_from_sha": "955797ae10be418b4c7dab2fe5d31bd69c773ed5",
   "resume_from_production_run_id": "33169878733",
   "fresh_inference": false,
@@ -10,5 +10,6 @@
     "cancellable_modal_spy": true,
     "two_gpu_editorial_placement": true,
     "editorial_acceptance_only": true
-  }
+  },
+  "enabled": false
 }

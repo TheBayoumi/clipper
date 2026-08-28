@@ -41,13 +41,14 @@ on:
         required: true
         type: number
         default: 10
-  pull_request:
-    branches: [main]
+  push:
+    branches:
+      - feat/word-reveal-face-tracking
     paths:
       - "acceptance/production-run-request.json"
 
 concurrency:
-  group: production-hilp-${{ github.event.pull_request.head.ref || github.ref }}
+  group: production-hilp-${{ github.ref_name }}
   cancel-in-progress: true
 
 permissions:
@@ -74,6 +75,22 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
+
+      - name: Require enabled production acceptance request
+        if: github.event_name != 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          marker = json.loads(
+              Path("acceptance/production-run-request.json").read_text(encoding="utf-8")
+          )
+          if not isinstance(marker, dict) or marker.get("enabled") is not True:
+              raise SystemExit("production acceptance request is disabled")
+          PY
 
       - uses: actions/setup-python@v5
         with:

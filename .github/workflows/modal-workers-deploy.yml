@@ -46,6 +46,22 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$CLIPPER_DEPLOYED_GIT_SHA"
 
+      - name: Require enabled Modal deployment request
+        if: github.event_name != 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          marker = json.loads(
+              Path("acceptance/modal-deploy-request.json").read_text(encoding="utf-8")
+          )
+          if not isinstance(marker, dict) or marker.get("enabled") is not True:
+              raise SystemExit("Modal deployment request is disabled")
+          PY
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

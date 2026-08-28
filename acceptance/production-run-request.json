@@ -1,11 +1,12 @@
 {
-  "confirm_production": true,
+  "confirm_production": false,
   "campaign_brief": "campaigns/reach-double-coverage-clix.yaml",
   "target_video_id": "2Y4LP85PTak",
   "max_gpu_seconds": 21600,
   "max_estimated_usd": 10,
-  "request_reason": "Re-run exact-head editorial-only acceptance after correcting Modal live-log follow flags; prove projection and measured token-aware multi-way repartition under the cancellable spy before HILP",
+  "request_reason": "Disabled while Codex-reviewed editorial runtime-capacity, watchdog, and acceptance hardening is in progress",
   "fresh_inference": false,
   "resume_from_run_id": "33069659182",
-  "editorial_acceptance_only": true
+  "editorial_acceptance_only": true,
+  "enabled": false
 }
