@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from pathlib import Path
 
 from .models import (
@@ -147,9 +148,12 @@ class FileCache:
     def write(self, key: str, name: str, payload: object) -> Path:
         path = self._path(key, name)
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(path)
+        temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+        try:
+            temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
         return path
 
 
