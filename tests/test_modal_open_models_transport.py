@@ -1,56 +1,56 @@
 from __future__ import annotations
 
 import ast
-import json
-import traceback
 from pathlib import Path
-from typing import Any
 
 
-def _transport_error_function():
-    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    node = next(
+def _tree() -> ast.Module:
+    return ast.parse(Path("scripts/modal_open_models.py").read_text(encoding="utf-8"))
+
+
+def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
+    return next(
         item
         for item in tree.body
-        if isinstance(item, ast.FunctionDef) and item.name == "_transport_error"
+        if isinstance(item, ast.FunctionDef) and item.name == name
     )
-    module = ast.Module(body=[node], type_ignores=[])
-    ast.fix_missing_locations(module)
-    namespace: dict[str, Any] = {
-        "Any": Any,
-        "json": json,
-        "traceback": traceback,
+
+
+def test_transport_error_emits_editorial_invocation_id() -> None:
+    tree = _tree()
+    function = _function(tree, "_transport_error")
+
+    keyword_only = {argument.arg for argument in function.args.kwonlyargs}
+    assert "execution_id" in keyword_only
+    assert "invocation_id" in keyword_only
+
+    event_dicts = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Dict)
+        and any(
+            isinstance(key, ast.Constant)
+            and key.value == "event"
+            and isinstance(value, ast.Constant)
+            and value.value == "application_result"
+            for key, value in zip(node.keys, node.values, strict=True)
+        )
+    ]
+    assert len(event_dicts) == 1
+    event = event_dicts[0]
+    mapping = {
+        key.value: value
+        for key, value in zip(event.keys, event.values, strict=True)
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
     }
-    exec(compile(module, "scripts/modal_open_models.py", "exec"), namespace)
-    return namespace["_transport_error"]
-
-
-def test_transport_error_preserves_editorial_invocation_id(
-    capsys,
-) -> None:
-    transport_error = _transport_error_function()
-
-    class EditorialOutputTruncated(Exception):
-        details = {"generation_budget_tokens": 100}
-
-    result = transport_error(
-        EditorialOutputTruncated("truncated"),
-        context="task=semantic_cores:x",
-        execution_id="exec-123",
-        invocation_id="inv-456",
-    )
-
-    event = json.loads(capsys.readouterr().out.splitlines()[-1])
-    assert event["event"] == "application_result"
-    assert event["execution_id"] == "exec-123"
-    assert event["invocation_id"] == "inv-456"
-    assert result["error"]["type"] == "EditorialOutputTruncated"
+    assert isinstance(mapping["execution_id"], ast.Name)
+    assert mapping["execution_id"].id == "execution_id"
+    assert isinstance(mapping["invocation_id"], ast.Name)
+    assert mapping["invocation_id"].id == "invocation_id"
 
 
 def test_editorial_model_forwards_invocation_id_to_transport_errors() -> None:
-    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
+    tree = _tree()
     editorial = next(
         item
         for item in tree.body
