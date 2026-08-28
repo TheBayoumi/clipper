@@ -8,7 +8,7 @@ import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from .base import EditorialCapacityError, InferenceUsage, ModelIdentity, ProviderResult
 from .local import ProviderUnavailable
@@ -35,13 +35,15 @@ class ModalRemoteError(RuntimeError):
 class EditorialInvocation:
     """Authoritative producer-side lifecycle for one editorial Modal attempt."""
 
-    _TERMINAL_STATUSES = {
-        "COMPLETE",
-        "CAPACITY_REJECTED",
-        "OUTPUT_RETRY",
-        "TIMEOUT",
-        "ERROR",
-    }
+    _TERMINAL_STATUSES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "COMPLETE",
+            "CAPACITY_REJECTED",
+            "OUTPUT_RETRY",
+            "TIMEOUT",
+            "ERROR",
+        }
+    )
     _DETAIL_FIELDS = (
         "input_tokens",
         "context_limit_tokens",
@@ -73,7 +75,7 @@ class EditorialInvocation:
         *,
         task: str,
         execution_id: str | None = None,
-    ) -> "EditorialInvocation":
+    ) -> EditorialInvocation:
         resolved_execution_id = (
             os.getenv("CLIPPER_EXECUTION_ID", "").strip()
             if execution_id is None
@@ -393,7 +395,11 @@ class ModalEditorialProvider(ModalJSONProvider):
             try:
                 modal_module = self._modal()
             except ProviderUnavailable:
-                invocation.terminal("ERROR", error_type=type(exc).__name__, reason="local_provider_error")
+                invocation.terminal(
+                    "ERROR",
+                    error_type=type(exc).__name__,
+                    reason="local_provider_error",
+                )
                 raise exc from None
             exception_namespace = getattr(modal_module, "exception", None)
             timeout_type = getattr(exception_namespace, "FunctionTimeoutError", None)
