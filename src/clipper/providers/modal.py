@@ -178,7 +178,10 @@ class ModalEditorialProvider(ModalJSONProvider):
         try:
             return self.invoke(request)
         except Exception as exc:
-            if type(exc).__name__ != "FunctionTimeoutError":
+            modal_module = self._modal()
+            exception_namespace = getattr(modal_module, "exception", None)
+            timeout_type = getattr(exception_namespace, "FunctionTimeoutError", None)
+            if not isinstance(timeout_type, type) or not isinstance(exc, timeout_type):
                 raise
             self._instance_handle = None
             timeout_seconds = int(
