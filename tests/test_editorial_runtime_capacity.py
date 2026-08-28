@@ -7,7 +7,11 @@ import pytest
 from clipper.editorial_capacity import capacity_target_input_tokens
 from clipper.providers.base import EditorialCapacityError, ModelIdentity
 from clipper.providers.local import ProviderUnavailable
-from clipper.providers.modal import ModalEditorialProvider
+from clipper.providers.modal import (
+    EditorialInvocation,
+    ModalEditorialProvider,
+    invoke_editorial_capacity_probe,
+)
 
 
 def _identity() -> ModelIdentity:
@@ -268,3 +272,124 @@ def test_modal_editorial_emits_error_terminal_for_non_timeout_provider_error(
     assert terminal["status"] == "ERROR"
     assert terminal["error_type"] == "ValueError"
     assert terminal["reason"] == "provider_error"
+
+
+
+def test_capacity_probe_uses_closed_producer_invocation(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    captured: dict[str, object] = {}
+
+    def remote(request: dict[str, object]) -> dict[str, object]:
+        captured.update(request)
+        return {
+            "value": {
+                "status": "CAPACITY_REJECTED",
+                "input_tokens": 300_000,
+                "context_limit_tokens": 262_144,
+                "runtime_safe_input_tokens": 65_536,
+                "capacity_repartitionable": True,
+                "serialized_request_bytes": 900_000,
+            }
+        }
+
+    response = invoke_editorial_capacity_probe(
+        remote,
+        task="source_hazards:acceptance_probe:video",
+        payload={"capacity_repartitionable": True},
+        execution_id="exec-probe",
+        expected_git_sha="c" * 40,
+    )
+
+    assert response["value"]["status"] == "CAPACITY_REJECTED"
+    events = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
+    ]
+    start = next(event for event in events if event.get("event") == "editorial_remote_call_start")
+    terminal = next(
+        event for event in events if event.get("event") == "editorial_remote_call_terminal"
+    )
+    assert start["execution_id"] == terminal["execution_id"] == "exec-probe"
+    assert start["invocation_id"] == terminal["invocation_id"]
+    assert captured["execution_id"] == "exec-probe"
+    assert captured["editorial_invocation_id"] == start["invocation_id"]
+    assert captured["expected_git_sha"] == "c" * 40
+    assert terminal["status"] == "CAPACITY_REJECTED"
+    assert terminal["input_tokens"] == 300_000
+
+
+def test_capacity_probe_fit_closes_as_complete(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def remote(_request: dict[str, object]) -> dict[str, object]:
+        return {
+            "value": {
+                "status": "FIT",
+                "input_tokens": 32_000,
+                "context_limit_tokens": 262_144,
+                "generation_budget_tokens": 1_024,
+                "runtime_safe_input_tokens": 65_536,
+                "capacity_repartitionable": True,
+            }
+        }
+
+    invoke_editorial_capacity_probe(
+        remote,
+        task="source_hazards:acceptance_probe:fit",
+        payload={"capacity_repartitionable": True},
+        execution_id="exec-fit",
+        expected_git_sha="d" * 40,
+    )
+    events = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
+    ]
+    terminal = next(
+        event for event in events if event.get("event") == "editorial_remote_call_terminal"
+    )
+    assert terminal["status"] == "COMPLETE"
+    assert terminal["generation_budget_tokens"] == 1_024
+
+
+def test_capacity_probe_remote_timeout_closes_fail_closed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FunctionTimeoutError(Exception):
+        pass
+
+    def remote(_request: dict[str, object]) -> dict[str, object]:
+        raise FunctionTimeoutError("synthetic probe timeout")
+
+    with pytest.raises(FunctionTimeoutError, match="synthetic probe timeout"):
+        invoke_editorial_capacity_probe(
+            remote,
+            task="source_hazards:acceptance_probe:timeout",
+            payload={"capacity_repartitionable": True},
+            execution_id="exec-timeout",
+            expected_git_sha="e" * 40,
+        )
+
+    events = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
+    ]
+    terminal = next(
+        event for event in events if event.get("event") == "editorial_remote_call_terminal"
+    )
+    assert terminal["status"] == "TIMEOUT"
+    assert terminal["error_type"] == "FunctionTimeoutError"
+
+
+def test_editorial_invocation_rejects_second_terminal(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    invocation = EditorialInvocation.start(task="semantic_cores:x", execution_id="exec-once")
+    invocation.terminal("COMPLETE", details={"input_tokens": 1})
+    with pytest.raises(RuntimeError, match="already emitted a terminal event"):
+        invocation.terminal("ERROR")
+
+    events = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
+    ]
+    assert [event["event"] for event in events] == [
+        "editorial_remote_call_start",
+        "editorial_remote_call_terminal",
+    ]
