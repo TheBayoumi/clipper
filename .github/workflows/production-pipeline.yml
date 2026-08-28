@@ -529,8 +529,10 @@ jobs:
               raise RuntimeError(f"Modal spy did not pass editorial acceptance: {summary}")
           if summary.get("call_cancelled") is not False:
               raise RuntimeError(f"editorial acceptance call was cancelled: {summary}")
-          if summary.get("active_generations"):
-              raise RuntimeError(f"editorial acceptance ended with active generations: {summary}")
+          if summary.get("active_editorial_calls"):
+              raise RuntimeError(
+                  f"editorial acceptance ended with active producer calls: {summary}"
+              )
           if summary.get("terminal_seen") is not True:
               raise RuntimeError(f"editorial acceptance lacks scoped terminal telemetry: {summary}")
           terminal = summary.get("terminal_event")
@@ -549,6 +551,13 @@ jobs:
               raise RuntimeError("live editorial acceptance observed no completed editorial generation")
           if int(counts.get("editorial_execution_timeout") or 0) != 0:
               raise RuntimeError("live editorial acceptance observed an editorial execution timeout")
+          call_starts = int(counts.get("editorial_remote_call_start") or 0)
+          call_terminals = int(counts.get("editorial_remote_call_terminal") or 0)
+          if call_starts <= 0 or call_terminals != call_starts:
+              raise RuntimeError(
+                  "live editorial acceptance lacks a closed producer-side editorial call set: "
+                  f"starts={call_starts} terminals={call_terminals}"
+              )
           if int(counts.get("production_cycle_terminal") or 0) != 1:
               raise RuntimeError(
                   "live editorial acceptance requires exactly one scoped production terminal event"
@@ -561,6 +570,39 @@ jobs:
               event = json.loads(line)
               if isinstance(event, dict):
                   records.append(event)
+
+          producer_starts = [
+              event
+              for event in records
+              if event.get("event") == "editorial_remote_call_start"
+              and event.get("authoritative") is True
+          ]
+          producer_terminals = [
+              event
+              for event in records
+              if event.get("event") == "editorial_remote_call_terminal"
+              and event.get("authoritative") is True
+          ]
+          start_ids = {
+              str(event.get("invocation_id") or "")
+              for event in producer_starts
+          }
+          terminal_ids = {
+              str(event.get("invocation_id") or "")
+              for event in producer_terminals
+          }
+          if "" in start_ids or "" in terminal_ids or start_ids != terminal_ids:
+              raise RuntimeError(
+                  "producer-side editorial invocation IDs are not one-to-one closed: "
+                  f"starts={sorted(start_ids)} terminals={sorted(terminal_ids)}"
+              )
+          terminal_statuses = [str(event.get("status") or "") for event in producer_terminals]
+          if any(status in {"TIMEOUT", "ERROR"} for status in terminal_statuses):
+              raise RuntimeError(
+                  f"producer-side editorial calls contained terminal failures: {producer_terminals}"
+              )
+          if "COMPLETE" not in terminal_statuses:
+              raise RuntimeError("editorial acceptance produced no completed remote inference")
 
           projections = [
               event
@@ -597,7 +639,7 @@ jobs:
               for event in records
               if event.get("event") == "editorial_execution_timeout"
           ]
-          if not projections or not capacity_probes or not probe_results or not generations:
+          if not projections or not capacity_probes or not probe_results:
               raise RuntimeError("live editorial telemetry records are incomplete")
           if timeouts:
               raise RuntimeError(f"editorial acceptance contained execution timeouts: {timeouts}")
@@ -672,7 +714,10 @@ jobs:
               "repartition_events": len(repartitions),
               "capacity_probe_events": len(capacity_probes),
               "acceptance_probe_events": len(probe_results),
-              "generation_complete_events": len(generations),
+              "generation_complete_events_diagnostic": len(generations),
+              "producer_call_start_events": len(producer_starts),
+              "producer_call_terminal_events": len(producer_terminals),
+              "producer_complete_events": terminal_statuses.count("COMPLETE"),
               "execution_timeout_events": len(timeouts),
               "maximum_executable_input_tokens": max(
                   int(item.get("input_tokens") or 0) for item in request_plans
