@@ -187,7 +187,8 @@ def test_modal_editorial_capacity_probe_is_non_generating() -> None:
     assert '"event": "editorial_capacity_probe"' in probe
 
     assert "def _editorial_acceptance_probe(" in pipeline
-    assert "worker.capacity_probe.remote(" in pipeline
+    assert "invoke_editorial_capacity_probe(" in pipeline
+    assert "worker.capacity_probe.remote" in pipeline
     assert "token_aware_repartition(" in pipeline
     assert '"event": "editorial_acceptance_probe_result"' in pipeline
     assert "editorial-acceptance-probe.json" in pipeline
