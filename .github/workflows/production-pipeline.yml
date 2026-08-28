@@ -126,6 +126,7 @@ jobs:
           python - <<'PY'
           import hashlib
           import json
+          import math
           import os
           from pathlib import Path
           import yaml
@@ -165,8 +166,13 @@ jobs:
           execution_mode = "fresh-inference" if fresh_inference else "content-addressed-resume"
           gpu_limit = float(gpu_limit_raw)
           cost_limit = float(cost_limit_raw)
-          if gpu_limit <= 0 or cost_limit <= 0:
-              raise RuntimeError("production acceptance budget limits must be positive")
+          if (
+              not math.isfinite(gpu_limit)
+              or not math.isfinite(cost_limit)
+              or gpu_limit <= 0
+              or cost_limit <= 0
+          ):
+              raise RuntimeError("production acceptance budget limits must be finite and positive")
 
           brief_path = Path(brief_value)
           if (
