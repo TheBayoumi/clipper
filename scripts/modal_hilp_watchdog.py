@@ -174,10 +174,11 @@ def run(*, render: bool) -> dict[str, Any]:
     poll_seconds = float(os.environ.get("CLIPPER_MODAL_SPY_POLL_SECONDS", "5"))
     if poll_seconds <= 0:
         raise ValueError("CLIPPER_MODAL_SPY_POLL_SECONDS must be positive")
-    drain_timeout_seconds = float(os.environ.get("CLIPPER_MODAL_SPY_DRAIN_TIMEOUT_SECONDS", "30"))
-    drain_quiet_seconds = float(os.environ.get("CLIPPER_MODAL_SPY_DRAIN_QUIET_SECONDS", "2"))
-    if drain_timeout_seconds <= 0 or drain_quiet_seconds <= 0:
-        raise ValueError("Modal spy drain windows must be positive")
+    barrier_timeout_seconds = float(
+        os.environ.get("CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS", "30")
+    )
+    if barrier_timeout_seconds <= 0:
+        raise ValueError("Modal spy producer barrier timeout must be positive")
 
     try:
         while True:
@@ -221,17 +222,15 @@ def run(*, render: bool) -> dict[str, Any]:
             except TimeoutError:
                 continue
 
-        if not spy.wait_for_terminal_and_quiet(
-            timeout_seconds=drain_timeout_seconds,
-            quiet_seconds=drain_quiet_seconds,
-        ):
+        if not spy.wait_for_producer_barrier(timeout_seconds=barrier_timeout_seconds):
             if spy.abort_reason is not None:
-                raise RuntimeError(f"Modal spy aborted during terminal drain: {spy.abort_reason}")
+                raise RuntimeError(f"Modal spy aborted before producer barrier: {spy.abort_reason}")
             raise RuntimeError(
-                "Modal spy did not observe and drain the scoped production terminal event"
+                "Modal spy did not observe a closed pipeline editorial-call set "
+                "before the production terminal barrier"
             )
         if spy.abort_reason is not None:
-            raise RuntimeError(f"Modal spy aborted during terminal drain: {spy.abort_reason}")
+            raise RuntimeError(f"Modal spy aborted before producer barrier: {spy.abort_reason}")
         terminal_event = spy.summary().get("terminal_event")
         if not isinstance(terminal_event, dict):
             raise RuntimeError("Modal spy terminal evidence is missing after drain")
