@@ -180,7 +180,7 @@ class ModalEditorialProvider(ModalJSONProvider):
             try:
                 modal_module = self._modal()
             except ProviderUnavailable:
-                raise
+                raise exc from None
             exception_namespace = getattr(modal_module, "exception", None)
             timeout_type = getattr(exception_namespace, "FunctionTimeoutError", None)
             if not isinstance(timeout_type, type) or not isinstance(exc, timeout_type):
