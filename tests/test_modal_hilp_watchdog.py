@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -257,3 +258,32 @@ def test_watchdog_rejects_nonfinite_poll_interval(
 
     with pytest.raises(ValueError, match="finite and positive"):
         module.run(render=False)
+
+
+
+def test_watchdog_cancels_exact_call_if_spy_thread_dies(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
+
+    class DeadSpy(_Spy):
+        def run(self) -> int:
+            raise RuntimeError("synthetic spy thread crash")
+
+    class PollingCall(_Call):
+        def get(self, *, timeout: float):
+            assert timeout > 0
+            time.sleep(0.01)
+            raise TimeoutError
+
+    call = PollingCall({})
+    monkeypatch.setattr(module, "ModalExecutionSpy", DeadSpy)
+    monkeypatch.setitem(sys.modules, "modal", _modal(call))
+
+    with pytest.raises(RuntimeError, match="spy thread exited unexpectedly"):
+        module.run(render=False)
+
+    assert call.cancel_args == [False]
