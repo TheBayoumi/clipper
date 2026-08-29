@@ -26,7 +26,7 @@ def test_modal_vision_provider_reuses_class_handle_and_surfaces_runtime(
         remote=Mock(
             return_value={
                 "value": {"ready": True},
-                "model": {"model_id": "vision", "revision": "actual"},
+                "model": {"model_id": "vision", "revision": "requested", "quantization": "none"},
                 "runtime": {
                     "worker_lifecycle_id": "worker-a",
                     "model_load_count": 1,
@@ -38,7 +38,7 @@ def test_modal_vision_provider_reuses_class_handle_and_surfaces_runtime(
         remote=Mock(
             return_value={
                 "value": {"observations": []},
-                "model": {"model_id": "vision", "revision": "actual"},
+                "model": {"model_id": "vision", "revision": "requested", "quantization": "none"},
                 "usage": {
                     "duration_seconds": 1.0,
                     "peak_vram_mb_by_device": {"0": 10.0, "1": 11.0},
