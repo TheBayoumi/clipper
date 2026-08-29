@@ -496,7 +496,6 @@ def test_spy_retains_execution_scoped_editorial_runtime_metadata(tmp_path: Path)
     assert summary["diagnostic_event_counts"]["editorial_request_plan"] == 1
 
 
-
 def test_spy_stall_snapshot_is_safe_during_concurrent_terminal_record(tmp_path: Path) -> None:
     module = _module()
     spy = module.ModalExecutionSpy(
