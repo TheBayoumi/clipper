@@ -1,5 +1,5 @@
 {
-  "request_reason": "Editorial-only live proof of 32768-token runtime guard, 300s generation deadline, token-aware repartition, and exact-call watchdog fallback",
+  "request_reason": "Disabled after exact-head acceptance preflight exposed marker-state CI contract defect; runtime proof not started",
   "requested_from_sha": "a2a720f6d4604a9e4b4162a0785bb88e7a010fc2",
   "resume_from_production_run_id": "33169878733",
   "fresh_inference": false,
@@ -11,5 +11,5 @@
     "two_gpu_editorial_placement": true,
     "editorial_acceptance_only": true
   },
-  "enabled": true
+  "enabled": false
 }
