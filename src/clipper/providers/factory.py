@@ -23,6 +23,12 @@ from .modal_speech import (
     ModalMediaBridge,
     ModalTranscriptionProvider,
 )
+from .speech_contract import (
+    ASR_COMPUTE_TYPE,
+    ASR_INFERENCE_ENGINE,
+    ASR_MODEL_ID,
+    ASR_MODEL_REVISION,
+)
 from .speech import (
     FasterWhisperTranscriptionProvider,
     PassthroughDiarizationProvider,
@@ -130,10 +136,10 @@ def speech_providers(
             app_name=app,
             function_name="transcribe",
             identity=ModelIdentity(
-                "faster-whisper/large-v3-turbo",
-                os.getenv("CLIPPER_ASR_MODEL_REVISION", "main"),
-                "int8_float16",
-                "modal-faster-whisper",
+                ASR_MODEL_ID,
+                ASR_MODEL_REVISION,
+                ASR_COMPUTE_TYPE,
+                ASR_INFERENCE_ENGINE,
                 "none",
                 canonical_contract,
             ),
