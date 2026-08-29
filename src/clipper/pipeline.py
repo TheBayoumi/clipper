@@ -37,6 +37,7 @@ from .providers.base import (
     AlignmentProvider,
     DiarizationProvider,
     EditorialProvider,
+    ProviderResult,
     TranscriptionProvider,
     VisionProvider,
 )
@@ -47,7 +48,7 @@ from .quality_batch import QualityBatchResult, plan_quality_batch
 from .render import FFmpegRenderer
 from .rights import assert_campaign_authorized, assert_video_allowed
 from .runtime import StageJournal
-from .stage_contracts import StageContract, stage_identity
+from .stage_contracts import StageContract, StageIdentity, stage_identity
 from .visual import VisualTimeline
 from .visual_ai import (
     review_rendered_clip,
@@ -214,7 +215,7 @@ def _grounding_cache_key(stage: str, source_hash: str, provider: object, payload
     )
 
 
-def _grounding_stage_identity(stage: str, key: str):
+def _grounding_stage_identity(stage: str, key: str) -> StageIdentity:
     return stage_identity(
         StageContract(
             stage,
@@ -227,7 +228,9 @@ def _grounding_stage_identity(stage: str, key: str):
     )
 
 
-def _grounding_stage_output(result) -> dict[str, object]:
+def _grounding_stage_output(
+    result: ProviderResult[CanonicalTimeline],
+) -> dict[str, object]:
     return {
         "canonical": result.value.to_dict(),
         "model": result.model.to_dict(),
@@ -242,7 +245,7 @@ def _grounding_stage_value(
     key: str,
     cache: FileCache,
     dag: DagStore | None,
-    operation: Callable[[], object],
+    operation: Callable[[], ProviderResult[CanonicalTimeline]],
 ) -> tuple[dict[str, object], bool]:
     if dag is None:
         result = operation()
@@ -269,14 +272,14 @@ def _grounding_stage_value(
 
 def _grounding_payload(
     payload: dict[str, object],
-    provider: object,
+    provider: TranscriptionProvider | AlignmentProvider | DiarizationProvider,
 ) -> tuple[CanonicalTimeline, dict[str, object]]:
     raw_canonical = payload.get("canonical")
     if not isinstance(raw_canonical, dict):
         raise RuntimeError("grounding DAG output is missing canonical timeline")
     timeline = CanonicalTimeline.from_dict(raw_canonical)
     raw_model = payload.get("model")
-    model = dict(raw_model) if isinstance(raw_model, dict) else getattr(provider, "identity").to_dict()
+    model = dict(raw_model) if isinstance(raw_model, dict) else provider.identity.to_dict()
     raw_usage = payload.get("usage")
     usage = dict(raw_usage) if isinstance(raw_usage, dict) else {}
     return timeline, {
