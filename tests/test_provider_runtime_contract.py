@@ -18,7 +18,7 @@ from clipper.providers.local import (
     ProviderUnavailable,
 )
 from clipper.providers.local import _usage as local_usage
-from clipper.providers.modal import ModalVisionProvider
+from clipper.providers.modal import ModalEditorialProvider, ModalVisionProvider
 from clipper.providers.modal_endpoint import ModalEndpointEditorialProvider
 from clipper.providers.modal_speech import (
     ModalAlignmentProvider,
@@ -706,6 +706,39 @@ def test_modal_transcription_alignment_and_diarization_contracts(tmp_path: Path)
         pytest.raises(ValueError, match="turn is invalid"),
     ):
         diarization.diarize(source, timeline)
+
+
+def test_modal_editorial_requires_complete_exact_worker_identity() -> None:
+    expected = ModelIdentity(
+        "editorial-model",
+        "editorial-rev",
+        "bnb-4bit-nf4",
+        "modal-transformers",
+        "editor",
+        "structured-json",
+    )
+    provider = ModalEditorialProvider(
+        app_name="app",
+        class_name="EditorialModel",
+        method_name="complete",
+        identity=expected,
+    )
+
+    assert provider._response_identity({"model": expected.to_dict()}) == expected
+    with pytest.raises(ValueError, match="no model identity"):
+        provider._response_identity({})
+    for field in (
+        "model_id",
+        "revision",
+        "quantization",
+        "inference_engine",
+        "prompt_version",
+        "schema_version",
+    ):
+        wrong = expected.to_dict()
+        wrong[field] = f"wrong-{field}"
+        with pytest.raises(ValueError, match="model identity mismatch"):
+            provider._response_identity({"model": wrong})
 
 
 def test_provider_factory_selects_local_modal_managed_and_degraded(monkeypatch) -> None:
