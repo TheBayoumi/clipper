@@ -4,8 +4,6 @@ import json
 import math
 import uuid
 from pathlib import Path
-from typing import Any
-
 
 _MAX_INT_FIELDS = frozenset(
     {
@@ -32,12 +30,12 @@ def _valid_number(value: object) -> float | None:
 
 
 def merge_editorial_capacity_state(
-    current: dict[str, Any],
-    incoming: dict[str, Any],
-) -> dict[str, Any]:
+    current: dict[str, object],
+    incoming: dict[str, object],
+) -> dict[str, object]:
     """Merge independently learned capacity observations conservatively."""
 
-    merged: dict[str, Any] = {
+    merged: dict[str, object] = {
         str(family): dict(entry) if isinstance(entry, dict) else entry
         for family, entry in current.items()
     }
@@ -72,7 +70,7 @@ def merge_editorial_capacity_state(
     return merged
 
 
-def load_editorial_capacity_state(path: Path) -> dict[str, Any]:
+def load_editorial_capacity_state(path: Path) -> dict[str, object]:
     if not path.is_file():
         return {}
     try:
@@ -82,7 +80,7 @@ def load_editorial_capacity_state(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def write_editorial_capacity_state(path: Path, state: dict[str, Any]) -> None:
+def write_editorial_capacity_state(path: Path, state: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
     try:
