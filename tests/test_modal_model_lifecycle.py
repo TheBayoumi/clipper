@@ -131,6 +131,13 @@ def test_modal_worker_source_uses_enter_loaded_classes_and_dynamic_capacity() ->
     assert source.count("@modal.enter()") >= 3
     assert "def vision(" not in source
     assert "def vision_large(" not in source
+    assert "from clipper.providers.speech_contract import (" in source
+    assert "ASR_MODEL_ID," in source
+    assert "ASR_MODEL_REVISION," in source
+    assert "ASR_COMPUTE_TYPE," in source
+    assert "revision=ASR_MODEL_REVISION" in source
+    assert "compute_type=ASR_COMPUTE_TYPE" in source
+    assert '"quantization": ASR_COMPUTE_TYPE' in source
     assert '"20GiB"' not in source
     assert '"22GiB"' not in source
     assert "SOURCE_POLICY_BATCH_SIZE" not in visual_source
