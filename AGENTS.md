@@ -38,16 +38,18 @@ Copy `campaign.example.yaml` for local configuration. Keep API keys (for example
 
 ## Mandatory Independent Reviewer Contract
 
-Codex is an independent adversarial reviewer, not an implementation agent and not a mechanism for making CI green. Every material PR head must receive a fresh Codex review after implementation and deterministic verification are complete. A review of an older SHA is historical evidence only and must never be represented as approval of a newer head.
+Codex and the repository custom agent `Clipper Adversarial Reviewer` are two independent adversarial reviewers, not implementation agents and not mechanisms for making CI green. Every material PR head must receive a fresh review from both reviewers after implementation and deterministic verification are complete. A review of an older SHA is historical evidence only and must never be represented as approval of a newer head. The two reviewers must form their findings independently before comparing results; one review must not seed, narrow, or bias the other.
 
 The reviewer must inspect the repository in execution-path context, including relevant callers, callees, workflows, state transitions, persistence boundaries, failure handling, and tests. Do not limit review to the changed lines. Do not infer correctness from green CI, comments, README claims, acceptance markers, prior reviews, or implementation-agent assertions.
 
 ### Review independence and anti-gaming rules
 
-- Never modify this file, prompts, tests, comments, workflow text, or acceptance criteria merely to steer Codex toward a clean verdict.
+- Never modify this file, reviewer prompts, tests, comments, workflow text, or acceptance criteria merely to steer either reviewer toward a clean verdict.
 - Never weaken, hide, reclassify, suppress, auto-resolve, or omit a finding to satisfy an acceptance gate.
-- Never treat a Codex reaction, acknowledgement, absence of comments, or stale review as proof of correctness.
-- Never ask Codex to implement its own findings during the independent review pass. Implementation and review are separate phases.
+- Never treat a reviewer reaction, acknowledgement, absence of comments, stale review, or the other reviewer's approval as proof of correctness.
+- Never ask either reviewer to implement its own findings during the independent review pass. Implementation and review are separate phases.
+- Do not expose one reviewer's findings to the other until both independent first-pass reviews are complete. Afterward, compare them explicitly for overlap, omissions, and disagreement.
+- A disagreement on a P0/P1/P2-relevant invariant is blocking until evidence resolves it; do not choose the more convenient verdict.
 - Never resolve a blocking review thread solely because code changed. Verify the corrective behavior first; runtime-evidence findings remain open until the required live evidence exists.
 - A new material commit after review invalidates the prior exact-head acceptance verdict and requires another independent review.
 - If reviewer infrastructure is unavailable, fail the acceptance process closed rather than replacing independent review with self-review.
@@ -94,6 +96,6 @@ For generation deadlines specifically, adapter/source inspection may prove that 
 
 ### Review and execution separation
 
-For review-only requests, Codex must not push commits, update refs, dispatch/rerun/cancel GitHub Actions, resolve review threads, call production endpoints, deploy Modal workers, start paid compute, alter acceptance markers, or publish artifacts. It may inspect existing repository state and already-produced evidence. Implementation or live execution begins only after an explicit user request outside the independent review pass.
+For review-only requests, both Codex and `Clipper Adversarial Reviewer` must remain read-only: they must not push commits, update refs, create branches, edit files, dispatch/rerun/cancel GitHub Actions, resolve review threads, call production endpoints, deploy Modal workers, start paid compute, alter acceptance markers, or publish artifacts. They may inspect existing repository state and already-produced evidence. Implementation or live execution begins only after an explicit user request outside the independent review pass.
 
-The implementation agent must not claim the PR is acceptance-ready until deterministic tests and exact-head CI are green, a fresh independent Codex review has no unresolved static P0/P1/P2 findings, and every blocking `NEEDS_RUNTIME_EVIDENCE` item has been satisfied by the required correlated runtime proof. HILP/render/full production acceptance remains disabled until those prerequisites are satisfied.
+The implementation agent must not claim the PR is acceptance-ready until deterministic tests and exact-head CI are green, fresh independent reviews from both Codex and `Clipper Adversarial Reviewer` have no unresolved static P0/P1/P2 findings or unresolved reviewer disagreement, and every blocking `NEEDS_RUNTIME_EVIDENCE` item from either reviewer has been satisfied by the required correlated runtime proof. HILP/render/full production acceptance remains disabled until those prerequisites are satisfied.
