@@ -450,6 +450,33 @@ def test_run_id_is_execution_unique_and_traceable() -> None:
     assert second.endswith(second_execution)
 
 
+def test_pipeline_rejects_prohibited_campaign_watermark_before_source_work(
+    tmp_path: Path,
+) -> None:
+    brief = _write_brief(
+        tmp_path / "brief.json",
+        watermark_url="https://assets.example.test/watermark.png",
+        acceptance_policy={
+            "branding": {
+                "supplied_campaign_assets_allowed": False,
+                "foreign_logos": "escalate",
+                "minimum_confidence": 0.75,
+            }
+        },
+    )
+    source = FakeSource(tmp_path / "unused.mkv")
+    with pytest.raises(ValueError, match="watermark_url is prohibited"):
+        run_pipeline(
+            brief,
+            settings=PipelineSettings(artifact_root=tmp_path / "artifacts"),
+            source_client=source,
+            editorial_provider=FakeEditorial(),
+            visual_scout_provider=FakeVision(),
+            render=True,
+        )
+    assert source.downloads == 0
+
+
 def test_pipeline_rejects_partial_grounding_provider_override(tmp_path: Path) -> None:
     brief = _write_brief(tmp_path / "brief.json")
     with pytest.raises(ValueError, match="requires transcription, alignment, and diarization"):
