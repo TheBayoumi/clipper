@@ -431,6 +431,25 @@ class ModalJSONProvider:
 
 
 class ModalEditorialProvider(ModalJSONProvider):
+    def _response_identity(self, response: dict[str, Any]) -> ModelIdentity:
+        raw = response.get("model")
+        if not isinstance(raw, dict):
+            raise ValueError("Modal editorial provider returned no model identity")
+        observed = ModelIdentity(
+            str(raw.get("model_id") or ""),
+            str(raw.get("revision") or ""),
+            str(raw.get("quantization") or ""),
+            str(raw.get("inference_engine") or ""),
+            str(raw.get("prompt_version") or ""),
+            str(raw.get("schema_version") or ""),
+        )
+        if observed != self.identity:
+            raise ValueError(
+                "Modal editorial model identity mismatch: "
+                f"expected={self.identity.to_dict()!r} observed={observed.to_dict()!r}"
+            )
+        return observed
+
     @staticmethod
     def _is_output_contract_error(exc: ModalRemoteError) -> bool:
         if exc.error_type in {"JSONDecodeError", "EditorialOutputTruncated"}:
