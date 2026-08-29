@@ -385,3 +385,31 @@ def test_file_cache_uses_per_writer_atomic_temporary_paths() -> None:
     assert 'f".{path.name}.{uuid.uuid4().hex}.tmp"' in cache
     assert "temporary.replace(path)" in cache
     assert "temporary.unlink(missing_ok=True)" in cache
+
+
+
+def test_editorial_capacity_state_has_one_serialized_remote_writer() -> None:
+    worker = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+    state = Path("src/clipper/editorial_capacity_state.py").read_text(encoding="utf-8")
+
+    assert "def editorial_capacity_state_writer(" in worker
+    assert "max_containers=1" in worker
+    assert "model_cache.reload()" in worker
+    assert "merge_editorial_capacity_state(current, incoming)" in worker
+    assert "write_editorial_capacity_state(path, merged)" in worker
+    assert "model_cache.commit()" in worker
+    assert "editorial_capacity_state_writer.remote(" in worker
+    assert "editorial_capacity_state_persist_failed" in worker
+    assert 'f".{path.name}.{uuid.uuid4().hex}.tmp"' in state
+    assert "temporary.replace(path)" in state
+
+
+def test_watchdog_fails_closed_if_spy_thread_exits() -> None:
+    watchdog = _watchdog()
+    spy = Path("scripts/modal_execution_spy.py").read_text(encoding="utf-8")
+
+    assert "active_calls = list(self._active_editorial_calls.items())" in spy
+    assert "with self.lock:" in spy
+    assert "if not spy_thread.is_alive():" in watchdog
+    assert "Modal spy thread exited unexpectedly before production completion" in watchdog
+    assert "cancel_call(reason)" in watchdog
