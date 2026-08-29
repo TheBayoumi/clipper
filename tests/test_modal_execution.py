@@ -4,7 +4,8 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import ANY, Mock, call as mock_call, patch
+from unittest.mock import ANY, Mock, patch
+from unittest.mock import call as mock_call
 
 import pytest
 
