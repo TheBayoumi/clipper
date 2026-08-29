@@ -24,8 +24,8 @@ def test_api_discovery_maps_results() -> None:
                 "id": "v1",
                 "snippet": {"title": "T", "channelId": "UC1", "channelTitle": "C"},
                 "statistics": {"viewCount": "12"},
-            }
-        ]
+            },
+        ],
     }
     client._api_get = Mock(side_effect=[search, details])  # type: ignore[method-assign]
     result = client.discover(request())
@@ -44,8 +44,8 @@ def test_ytdlp_discovery_and_downloads_preserve_highest_source_quality(tmp_path:
                 "webpage_url": "https://www.youtube.com/watch?v=v1",
                 "duration": 30,
                 "view_count": 99,
-            }
-        ]
+            },
+        ],
     }
     client = YouTubeClient(None)
     with (
@@ -90,7 +90,7 @@ def test_ytdlp_discovery_and_downloads_preserve_highest_source_quality(tmp_path:
                 "ext": "mp4",
                 "tbr": 1900,
             },
-        ]
+        ],
     }
     calls: list[list[str]] = []
 
@@ -192,7 +192,7 @@ def test_ytdlp_403_refreshes_and_uses_same_quality_alternate(tmp_path: Path) -> 
                 "ext": "mp4",
                 "tbr": 1900,
             },
-        ]
+        ],
     }
     calls: list[list[str]] = []
 
@@ -352,8 +352,8 @@ def test_download_subtitle_and_media_failure_paths(tmp_path: Path) -> None:
                 "acodec": "none",
                 "ext": "mp4",
                 "tbr": 1900,
-            }
-        ]
+            },
+        ],
     }
     with (
         patch(
@@ -401,7 +401,7 @@ def test_format_selection_prefers_quality_without_container_bias() -> None:
                 "ext": "mp4",
                 "tbr": 2100,
             },
-        ]
+        ],
     }
     selected, available = YouTubeClient._select_video_format(payload, None)
     assert selected["format_id"] == "313"
