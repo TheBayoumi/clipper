@@ -465,7 +465,6 @@ def test_spy_cannot_pass_terminal_drain_without_terminal_event(
     assert spy.wait_for_producer_barrier(timeout_seconds=0.5) is False
 
 
-
 def test_spy_retains_execution_scoped_editorial_runtime_metadata(tmp_path: Path) -> None:
     module = _module()
     spy = module.ModalExecutionSpy(
