@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import ANY, Mock, patch
+from unittest.mock import ANY, Mock, call, patch
 
 import pytest
 
@@ -407,6 +407,172 @@ def test_source_acquisition_cost_is_deducted_before_root_budget(
     assert budget.gpu_seconds == 0.0
     assert budget.estimated_usd > 0.0
     assert budget.remaining_budgets()[1] < 1.0
+
+
+def test_budget_ledger_enforces_rates_and_remaining_capacity() -> None:
+    budget = _BudgetLedger(10.0, 1.0)
+    budget.charge(2.0, gpu_count=1.0, estimated_usd_per_second=0.1)
+    assert budget.projected_usage(
+        1.0,
+        gpu_count=1.0,
+        estimated_usd_per_second=0.1,
+    ) == pytest.approx((3.0, 0.3))
+    assert budget.remaining_wall_seconds(
+        0.0,
+        gpu_count=1.0,
+        estimated_usd_per_second=0.1,
+    ) == pytest.approx(8.0)
+    assert budget.remaining_budgets() == pytest.approx((8.0, 0.8))
+    assert budget.to_dict()["remaining_estimated_usd"] == pytest.approx(0.8)
+
+    with pytest.raises(ValueError, match="gpu_count"):
+        budget.projected_usage(
+            0.0,
+            gpu_count=-1.0,
+            estimated_usd_per_second=0.0,
+        )
+
+    gpu_exhausted = _BudgetLedger(1.0, 1.0, gpu_seconds=2.0)
+    assert (
+        gpu_exhausted.remaining_wall_seconds(
+            0.0,
+            gpu_count=0.0,
+            estimated_usd_per_second=0.0,
+        )
+        == 0.0
+    )
+    cost_exhausted = _BudgetLedger(10.0, 1.0, estimated_usd=2.0)
+    assert (
+        cost_exhausted.remaining_wall_seconds(
+            0.0,
+            gpu_count=0.0,
+            estimated_usd_per_second=0.0,
+        )
+        == 0.0
+    )
+    idle = _BudgetLedger(10.0, 1.0)
+    assert idle.remaining_wall_seconds(
+        0.0,
+        gpu_count=0.0,
+        estimated_usd_per_second=0.0,
+    ) == float("inf")
+
+
+def test_runtime_source_sha_fails_closed_without_or_with_conflicting_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("clipper.modal_execution._repo_root", lambda: tmp_path)
+    monkeypatch.delenv("CLIPPER_SOURCE_SHA", raising=False)
+    with (
+        patch("clipper.modal_execution.subprocess.run", side_effect=FileNotFoundError("git missing")),
+        pytest.raises(RuntimeError, match="runtime source SHA is unavailable"),
+    ):
+        _runtime_source_sha()
+
+    monkeypatch.setenv("CLIPPER_SOURCE_SHA", "not-a-sha")
+    with pytest.raises(RuntimeError, match="full immutable source SHA"):
+        _runtime_source_sha()
+
+    monkeypatch.setenv("CLIPPER_SOURCE_SHA", "a" * 40)
+    with (
+        patch("clipper.modal_execution._local_git_sha", return_value="b" * 40),
+        pytest.raises(RuntimeError, match="runtime source SHA mismatch"),
+    ):
+        _runtime_source_sha()
+
+
+def test_remote_invocation_requires_complete_budget() -> None:
+    function = SimpleNamespace(spawn=Mock())
+    with pytest.raises(ValueError, match="complete compute budget"):
+        _invoke_remote_with_budget(function, {}, max_gpu_seconds=1.0)
+    function.spawn.assert_not_called()
+
+
+def test_source_acquisition_records_failed_clouds_before_region_success() -> None:
+    candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
+    failed_calls = []
+    variants = []
+    for label in ("gcp", "aws", "oci"):
+        call = Mock()
+        call.get.side_effect = RuntimeError(f"{label} blocked")
+        failed_calls.append(call)
+        variants.append(SimpleNamespace(spawn=Mock(return_value=call)))
+    success_call = Mock()
+    success_call.get.return_value = {
+        "video_id": "v1",
+        "channel_id": "UC1",
+        "quality_policy": "highest_available_no_transcode",
+        "bytes": 123,
+        "sha256": "a" * 64,
+    }
+    variants.append(SimpleNamespace(spawn=Mock(return_value=success_call)))
+    function = Mock()
+    function.with_options.side_effect = variants
+    attempts: list[dict[str, object]] = []
+
+    result = _acquire_remote_source(
+        function,
+        candidate,
+        expected_git_sha="a" * 40,
+        budget=_BudgetLedger(100.0, 1.0),
+        attempt_evidence=attempts,
+        execution_id="e" * 32,
+    )
+
+    assert result["sha256"] == "a" * 64
+    assert [item["status"] for item in attempts] == ["FAIL", "FAIL", "FAIL", "PASS"]
+    assert function.with_options.call_args_list == [
+        call(cloud="gcp", timeout=1800),
+        call(cloud="aws", timeout=1800),
+        call(cloud="oci", timeout=1800),
+        call(region="eu", timeout=1800),
+    ]
+    for call in failed_calls:
+        call.cancel.assert_called_once_with(terminate_containers=False)
+    payload = variants[-1].spawn.call_args.args[0]
+    assert payload["execution_id"] == "e" * 32
+
+
+def test_source_acquisition_budget_exhaustion_is_evidenced_and_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: clock["now"])
+    monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "5")
+
+    class SlowCall:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def hydrate(self) -> None:
+            return None
+
+        def get(self, *, timeout: float) -> object:
+            assert 0.0 < timeout < 1.0
+            clock["now"] = 1.0
+            raise TimeoutError
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            assert terminate_containers is False
+            self.cancelled = True
+
+    call = SlowCall()
+    function = Mock()
+    function.with_options.return_value.spawn.return_value = call
+    attempts: list[dict[str, object]] = []
+
+    with pytest.raises(RuntimeError, match="compute budget"):
+        _acquire_remote_source(
+            function,
+            VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1"),
+            expected_git_sha="a" * 40,
+            budget=_BudgetLedger(100.0, 0.00001),
+            attempt_evidence=attempts,
+        )
+
+    assert attempts[0]["status"] == "BUDGET_EXCEEDED"
+    assert call.cancelled is True
 
 def test_materialize_remote_run_downloads_only_artifact_directory(tmp_path: Path) -> None:
     artifact_root = tmp_path / "artifacts"

@@ -466,6 +466,65 @@ def test_whisperx_alignment_provider_external_boundary(tmp_path: Path) -> None:
         provider.align(tmp_path / "x.wav", _timeline())
 
 
+def test_whisperx_pinned_alignment_resolves_exact_snapshot(tmp_path: Path) -> None:
+    provider = WhisperXAlignmentProvider(
+        model_id=ALIGNMENT_MODEL_ID,
+        revision=ALIGNMENT_MODEL_REVISION,
+        device="cpu",
+    )
+    whisperx = SimpleNamespace(
+        load_audio=Mock(return_value="audio"),
+        load_align_model=Mock(return_value=("model", {"meta": True})),
+        align=Mock(
+            return_value={
+                "segments": [
+                    {
+                        "words": [
+                            {"word": "Hello", "start": 0.0, "end": 0.7, "score": 0.9},
+                            {"word": "world", "start": 1.0, "end": 1.7, "score": 0.9},
+                        ]
+                    }
+                ]
+            }
+        ),
+    )
+
+    def missing_hub(name: str):
+        if name == "whisperx":
+            return whisperx
+        raise ImportError(name)
+
+    with (
+        patch("clipper.providers.speech.importlib.import_module", side_effect=missing_hub),
+        pytest.raises(ProviderUnavailable, match="huggingface_hub"),
+    ):
+        provider.align(tmp_path / "x.wav", _timeline())
+
+    hub = SimpleNamespace(snapshot_download=Mock(return_value=Path("/cache/alignment")))
+
+    def modules(name: str):
+        if name == "whisperx":
+            return whisperx
+        if name == "huggingface_hub":
+            return hub
+        raise ImportError(name)
+
+    with patch("clipper.providers.speech.importlib.import_module", side_effect=modules):
+        result = provider.align(tmp_path / "x.wav", _timeline())
+
+    assert result.value.words[0].timing_mode == "aligned"
+    hub.snapshot_download.assert_called_once_with(
+        repo_id=ALIGNMENT_MODEL_ID,
+        revision=ALIGNMENT_MODEL_REVISION,
+    )
+    whisperx.load_align_model.assert_called_once_with(
+        language_code="en",
+        device="cpu",
+        model_name="/cache/alignment",
+        model_cache_only=True,
+    )
+
+
 def test_pyannote_provider_load_turns_and_diarize(tmp_path: Path) -> None:
     with pytest.raises(ProviderUnavailable, match="HF_TOKEN"):
         PyannoteDiarizationProvider(token="")._load()
