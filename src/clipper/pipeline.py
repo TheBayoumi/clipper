@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import time
+import uuid
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
@@ -163,9 +164,9 @@ def _client(cfg: PipelineSettings) -> SourceClient:
     return YouTubeClient(max_height=cfg.source_max_height)
 
 
-def _run_id(campaign_id: str) -> str:
+def _run_id(campaign_id: str, execution_id: str) -> str:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return f"{campaign_id}-{timestamp}"
+    return f"{campaign_id}-{timestamp}-{execution_id}"
 
 
 def _safe_slug(value: str) -> str:
@@ -607,6 +608,7 @@ def run_pipeline(
     diarization_provider: DiarizationProvider | None = None,
     render: bool = True,
     checkpoint_commit: Callable[[], None] | None = None,
+    execution_id: str | None = None,
 ) -> Path:
     """Execute the single supported production architecture over exact campaign targets."""
     brief = load_brief(brief_path)
@@ -635,9 +637,12 @@ def run_pipeline(
     if transcription_provider is None or alignment_provider is None or diarization_provider is None:
         raise RuntimeError("canonical grounding provider resolution failed")
 
-    run_dir = cfg.artifact_root / _run_id(brief.campaign_id)
-    if run_dir.exists():
-        run_dir = cfg.artifact_root / f"{_run_id(brief.campaign_id)}-{os.getpid()}"
+    run_execution_id = (execution_id or uuid.uuid4().hex).strip().lower()
+    if len(run_execution_id) != 32 or any(
+        character not in "0123456789abcdef" for character in run_execution_id
+    ):
+        raise ValueError("pipeline execution_id must be a 32-character hexadecimal ID")
+    run_dir = cfg.artifact_root / _run_id(brief.campaign_id, run_execution_id)
     run_dir.mkdir(parents=True, exist_ok=False)
     journal = StageJournal(run_dir / "progress.json")
     cache_root = cfg.cache_root or (cfg.artifact_root / "_cache")
@@ -646,6 +651,7 @@ def run_pipeline(
     manifest.funnel = _funnel_template()
     manifest.run_metadata = {
         "architecture": "autonomous-multimodal-quality-graph",
+        "execution_id": run_execution_id,
         "git_sha": _git_sha(),
         "compute_profile": cfg.compute_profile,
         "source_hashes": {},
