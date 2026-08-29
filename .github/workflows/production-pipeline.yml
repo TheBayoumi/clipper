@@ -568,6 +568,7 @@ jobs:
 
           payload = {
               "video_id": os.environ["CLIPPER_TARGET_VIDEO_ID"],
+              "channel_id": os.environ["CLIPPER_TARGET_CHANNEL_ID"],
               "video_url": os.environ["CLIPPER_TARGET_VIDEO_URL"],
               "expected_git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
           }
@@ -609,6 +610,16 @@ jobs:
               raise RuntimeError("all autonomous source egress pools failed")
           if result.get("video_id") != os.environ["CLIPPER_TARGET_VIDEO_ID"]:
               raise RuntimeError("source acquisition returned the wrong explicit target")
+          if result.get("channel_id") != os.environ["CLIPPER_TARGET_CHANNEL_ID"]:
+              raise RuntimeError("source acquisition returned the wrong authorized channel")
+          identity = result.get("canonical_identity")
+          if not isinstance(identity, dict):
+              raise RuntimeError("source acquisition returned no canonical source identity")
+          if (
+              identity.get("video_id") != os.environ["CLIPPER_TARGET_VIDEO_ID"]
+              or identity.get("channel_id") != os.environ["CLIPPER_TARGET_CHANNEL_ID"]
+          ):
+              raise RuntimeError("source acquisition canonical identity mismatched the target")
           if result.get("quality_policy") != "highest_available_no_transcode":
               raise RuntimeError("source acquisition violated highest-available/no-transcode policy")
           if int(result.get("bytes") or 0) <= 0 or len(str(result.get("sha256") or "")) != 64:
