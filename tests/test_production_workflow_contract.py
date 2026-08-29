@@ -466,6 +466,19 @@ def test_production_pipeline_rejects_prohibited_watermark_before_paid_work() -> 
     assert brief_load < watermark_gate < provider_resolution
 
 
+def test_published_image_installs_and_preflights_real_cli_runtimes() -> None:
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+    smoke = Path(".github/workflows/deploy-and-smoke.yml").read_text(encoding="utf-8")
+    publish = Path(".github/workflows/publish-tested-image.yml").read_text(encoding="utf-8")
+
+    assert 'pip install ".[open-models]"' in dockerfile
+    assert 'pip install ".[asr]"' not in dockerfile
+    for workflow in (smoke, publish):
+        assert "Preflight published CLI runtimes inside image" in workflow
+        assert 'preflight --profile balanced' in workflow
+        assert 'preflight --profile local-lite --allow-local-lite' in workflow
+
+
 def test_disabled_acceptance_guards_precede_any_paid_modal_work() -> None:
     production = Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
     deploy = Path(".github/workflows/modal-workers-deploy.yml").read_text(encoding="utf-8")
