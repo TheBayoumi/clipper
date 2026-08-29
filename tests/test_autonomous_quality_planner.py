@@ -313,6 +313,28 @@ def test_zero_worthwhile_cores_is_valid_zero_yield_without_downstream_calls(tmp_
     assert len(provider.calls) == 1 and provider.calls[0].startswith("semantic_cores:")
 
 
+def test_dag_cache_does_not_cross_full_model_identity_with_same_revision(
+    tmp_path: Path,
+) -> None:
+    timeline = _timeline()
+    first_provider = FakeEditorial()
+    _plan(_planner(tmp_path, first_provider), timeline)
+
+    second_provider = FakeEditorial()
+    second_provider.identity = ModelIdentity(
+        model_id="different-editor",
+        revision="rev-1",
+        quantization="int4",
+        inference_engine="fake",
+        prompt_version="editor",
+        schema_version="editorial-json",
+    )
+    second = _plan(_planner(tmp_path, second_provider), timeline)
+
+    assert second_provider.calls
+    assert second.stage_executions > 0
+
+
 def test_dag_replay_reuses_paid_editorial_outputs_without_new_provider_calls(
     tmp_path: Path,
 ) -> None:
