@@ -23,17 +23,17 @@ from .modal_speech import (
     ModalMediaBridge,
     ModalTranscriptionProvider,
 )
-from .speech_contract import (
-    ASR_COMPUTE_TYPE,
-    ASR_INFERENCE_ENGINE,
-    ASR_MODEL_ID,
-    ASR_MODEL_REVISION,
-)
 from .speech import (
     FasterWhisperTranscriptionProvider,
     PassthroughDiarizationProvider,
     PyannoteDiarizationProvider,
     WhisperXAlignmentProvider,
+)
+from .speech_contract import (
+    ASR_COMPUTE_TYPE,
+    ASR_INFERENCE_ENGINE,
+    ASR_MODEL_ID,
+    ASR_MODEL_REVISION,
 )
 
 
