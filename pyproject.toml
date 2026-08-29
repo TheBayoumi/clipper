@@ -22,15 +22,15 @@ dependencies = [
 asr = ["faster-whisper>=1.2.1,<2"]
 alignment = ["whisperx>=3.8.6,<4"]
 diarization = ["pyannote.audio>=4.0.7,<5"]
-editorial = ["accelerate>=1.14,<2", "transformers>=5.14,<6"]
-vision = ["accelerate>=1.14,<2", "transformers>=5.14,<6"]
+editorial = ["accelerate>=1.14,<2", "transformers==4.57.3"]
+vision = ["accelerate>=1.14,<2", "transformers==4.57.3"]
 modal = ["huggingface-hub>=1.24,<2", "modal>=1.5.2,<2"]
 open-models = [
   "accelerate>=1.14,<2",
   "faster-whisper>=1.2.1,<2",
   "modal>=1.5.2,<2",
   "pyannote.audio>=4.0.7,<5",
-  "transformers>=5.14,<6",
+  "transformers==4.57.3",
   "whisperx>=3.8.6,<4",
 ]
 dev = [
