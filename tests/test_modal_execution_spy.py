@@ -463,3 +463,33 @@ def test_spy_cannot_pass_terminal_drain_without_terminal_event(
     spy = module.ModalExecutionSpy(("app",), tmp_path / "missing-terminal.ndjson")
 
     assert spy.wait_for_producer_barrier(timeout_seconds=0.5) is False
+
+
+
+def test_spy_retains_execution_scoped_editorial_runtime_metadata(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "runtime-metadata.ndjson",
+        execution_id="exec-123",
+    )
+    spy._record(
+        "clipper-open-editor",
+        '{"event":"editorial_request_plan","execution_id":"exec-123",'
+        '"invocation_id":"inv-runtime","task":"source_hazards:x",'
+        '"input_tokens":12345,"context_limit_tokens":262144,'
+        '"available_output_tokens":249799,"generation_budget_tokens":512,'
+        '"runtime_safe_input_tokens":32768,"capacity_repartitionable":true,'
+        '"serialized_request_bytes":50000,"outlines_version":"1.3.0",'
+        '"transformers_version":"4.57.3","generation_deadline_seconds":300,'
+        '"execution_timeout_seconds":900}',
+    )
+
+    summary = spy.summary()
+    latest = summary["latest"]["editorial_request_plan"]
+    assert latest["outlines_version"] == "1.3.0"
+    assert latest["transformers_version"] == "4.57.3"
+    assert latest["runtime_safe_input_tokens"] == 32768
+    assert latest["generation_deadline_seconds"] == 300
+    assert latest["execution_timeout_seconds"] == 900
+    assert summary["diagnostic_event_counts"]["editorial_request_plan"] == 1
