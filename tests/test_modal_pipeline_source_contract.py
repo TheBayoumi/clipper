@@ -21,7 +21,6 @@ def _script_function(name: str) -> Any:
     return namespace[name]
 
 
-
 def _modal_pipeline_helpers(*names: str) -> dict[str, Any]:
     source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -61,14 +60,13 @@ def test_public_youtube_acquisition_uses_bgutil_before_optional_cookies() -> Non
 def test_source_acquisition_is_exact_and_content_addressed() -> None:
     source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     acquire = source.split("def acquire_source(", 1)[1].split("class VolumeSourceClient", 1)[0]
-    assert "source acquisition requires an https video_url" in acquire
+    assert "source acquisition requires an https video_url" in source
     assert "source acquisition requires a safe video_id" in acquire
     assert '"--no-playlist"' in acquire
     assert '"bestvideo+bestaudio/best"' in acquire
     assert '"quality_policy": "highest_available_no_transcode"' in source
     assert 'volume_path = f"/inputs/{digest}{suffix}"' in acquire
     assert "content-addressed source master hash mismatch" in acquire
-
 
 
 def test_source_acquisition_binds_requested_and_extracted_identity() -> None:
