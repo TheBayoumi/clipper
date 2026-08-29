@@ -38,7 +38,10 @@ EDITORIAL_STARTUP_TIMEOUT_SECONDS = int(
     os.getenv("CLIPPER_EDITORIAL_STARTUP_TIMEOUT_SECONDS", "1800")
 )
 EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS = int(
-    os.getenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", "65536")
+    os.getenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", "32768")
+)
+EDITORIAL_GENERATION_DEADLINE_SECONDS = float(
+    os.getenv("CLIPPER_EDITORIAL_GENERATION_DEADLINE_SECONDS", "300")
 )
 if EDITORIAL_EXECUTION_TIMEOUT_SECONDS <= 0:
     raise ValueError("CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS must be positive")
@@ -46,6 +49,15 @@ if EDITORIAL_STARTUP_TIMEOUT_SECONDS <= 0:
     raise ValueError("CLIPPER_EDITORIAL_STARTUP_TIMEOUT_SECONDS must be positive")
 if EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS <= 0:
     raise ValueError("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS must be positive")
+if (
+    not math.isfinite(EDITORIAL_GENERATION_DEADLINE_SECONDS)
+    or EDITORIAL_GENERATION_DEADLINE_SECONDS <= 0
+    or EDITORIAL_GENERATION_DEADLINE_SECONDS >= EDITORIAL_EXECUTION_TIMEOUT_SECONDS
+):
+    raise ValueError(
+        "CLIPPER_EDITORIAL_GENERATION_DEADLINE_SECONDS must be finite, positive, "
+        "and lower than the editorial execution timeout"
+    )
 
 model_cache = modal.Volume.from_name("clipper-hf-cache", create_if_missing=True)
 media_cache = modal.Volume.from_name("clipper-media-cache", create_if_missing=True)
@@ -459,8 +471,8 @@ def _editorial_output_template(payload: dict[str, Any]) -> dict[str, Any]:
                     "core_id": f"core-{first_ref(unit)}-{last_ref(unit)}",
                     "start_word_id": first_ref(unit),
                     "end_word_id": last_ref(unit),
-                    "semantic_summary": unit_text(unit),
-                    "editorial_reason": unit_text(unit),
+                    "semantic_summary": "source-grounded summary",
+                    "editorial_reason": "source-grounded editorial reason",
                     "confidence": 0.0,
                 }
                 for unit in units
@@ -474,9 +486,9 @@ def _editorial_output_template(payload: dict[str, Any]) -> dict[str, Any]:
                     "end_word_id": last_ref(unit),
                     "classification": "editorial_content",
                     "confidence": 0.0,
-                    "evidence": [unit_text(unit)],
+                    "evidence": ["source evidence"],
                 }
-                for unit in units
+                for unit in units[:64]
             ]
         }
     context_text = " ".join(unit_text(unit) for unit in units).strip()
@@ -489,8 +501,8 @@ def _editorial_output_template(payload: dict[str, Any]) -> dict[str, Any]:
             "core_id": str(core.get("core_id") or "core"),
             "start_word_id": str(refs[0].get("word_ref") or "word-start") if refs else "word-start",
             "end_word_id": str(refs[-1].get("word_ref") or "word-end") if refs else "word-end",
-            "required_prior_context": context_text,
-            "required_followup_context": context_text,
+            "required_prior_context": "required prior context",
+            "required_followup_context": "required followup context",
             "setup_resolved": True,
             "payoff_resolved": True,
             "reference_resolution": [],
@@ -505,8 +517,8 @@ def _editorial_output_template(payload: dict[str, Any]) -> dict[str, Any]:
         "selected_window_id": first_window.get("window_id"),
         "decision": "PASS",
         "quality_score": 0.0,
-        "opening_strategy": context_text,
-        "rationale": context_text,
+        "opening_strategy": "source-specific opening",
+        "rationale": "source-grounded rationale",
         "confidence": 0.0,
     }
 
@@ -1244,6 +1256,7 @@ def _editorial_infer(
     for cache_policy in ("dynamic", "offloaded"):
         kwargs: dict[str, Any] = {
             "max_new_tokens": output_budget,
+            "max_time": EDITORIAL_GENERATION_DEADLINE_SECONDS,
             "do_sample": False,
             "use_cache": True,
             "logits_to_keep": 1,
@@ -1251,6 +1264,7 @@ def _editorial_infer(
         if cache_policy == "offloaded":
             kwargs["cache_implementation"] = "offloaded"
         try:
+            cache_attempt_started = time.perf_counter()
             print(
                 json.dumps(
                     {
@@ -1269,6 +1283,7 @@ def _editorial_infer(
             )
             with torch.inference_mode():
                 candidate = structured_model(rendered, schema, **kwargs)
+            cache_attempt_seconds = max(0.0, time.perf_counter() - cache_attempt_started)
             if not isinstance(candidate, str):
                 raise TypeError(
                     "Outlines transformers generation returned a non-string response: "
@@ -1338,6 +1353,50 @@ def _editorial_infer(
                     "cuda_memory_by_device": _cuda_memory_snapshot(),
                 },
             ) from exc
+        except Exception as exc:
+            cache_attempt_seconds = max(0.0, time.perf_counter() - cache_attempt_started)
+            if (
+                plan.get("capacity_repartitionable") is True
+                and cache_attempt_seconds >= EDITORIAL_GENERATION_DEADLINE_SECONDS
+            ):
+                runtime_target = max(
+                    1,
+                    min(
+                        EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS,
+                        max(1, input_units // 2),
+                    ),
+                )
+                print(
+                    json.dumps(
+                        {
+                            "event": "editorial_generation_deadline",
+                            "worker_lifecycle_id": lifecycle_id,
+                            "task": task,
+                            "execution_id": execution_id,
+                            "invocation_id": invocation_id,
+                            "cache_implementation": cache_policy,
+                            "input_tokens": input_units,
+                            "generation_budget_tokens": output_budget,
+                            "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
+                            "elapsed_seconds": cache_attempt_seconds,
+                            "runtime_safe_input_tokens": runtime_target,
+                            "error_type": type(exc).__name__,
+                        },
+                        sort_keys=True,
+                    )
+                )
+                raise EditorialCapacityError(
+                    "editorial generation exceeded the runtime latency budget",
+                    details={
+                        "reason": "generation_runtime_deadline",
+                        **plan,
+                        "runtime_safe_input_tokens": runtime_target,
+                        "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
+                        "elapsed_seconds": cache_attempt_seconds,
+                        "cache_implementation": cache_policy,
+                    },
+                ) from exc
+            raise
 
     if generated_text is None:
         raise AssertionError("editorial generation cache-policy ladder produced no result")
@@ -1367,6 +1426,49 @@ def _editorial_infer(
     try:
         value = _json_text(generated_text)
     except json.JSONDecodeError as exc:
+        generation_elapsed = max(0.0, time.perf_counter() - generation_started)
+        if (
+            plan.get("capacity_repartitionable") is True
+            and generation_elapsed >= EDITORIAL_GENERATION_DEADLINE_SECONDS
+        ):
+            runtime_target = max(
+                1,
+                min(
+                    EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS,
+                    max(1, input_units // 2),
+                ),
+            )
+            print(
+                json.dumps(
+                    {
+                        "event": "editorial_generation_deadline",
+                        "worker_lifecycle_id": lifecycle_id,
+                        "task": task,
+                        "execution_id": execution_id,
+                        "invocation_id": invocation_id,
+                        "cache_implementation": cache_implementation,
+                        "input_tokens": input_units,
+                        "output_tokens": output_units,
+                        "generation_budget_tokens": output_budget,
+                        "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
+                        "elapsed_seconds": generation_elapsed,
+                        "runtime_safe_input_tokens": runtime_target,
+                    },
+                    sort_keys=True,
+                )
+            )
+            raise EditorialCapacityError(
+                "editorial generation hit its runtime deadline before completing valid JSON",
+                details={
+                    "reason": "generation_runtime_deadline",
+                    **plan,
+                    "runtime_safe_input_tokens": runtime_target,
+                    "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
+                    "elapsed_seconds": generation_elapsed,
+                    "output_tokens": output_units,
+                    "cache_implementation": cache_implementation,
+                },
+            ) from exc
         if output_units >= output_budget:
             available = int(plan["available_output_tokens"])
             next_budget = min(
