@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import codecs
+import hashlib
 import json
 import os
 import shutil
@@ -43,6 +44,69 @@ class DiscoveryRequest:
             raise ValueError("channel discovery requires a non-empty query")
         if not self.language.strip() or not self.region_code.strip():
             raise ValueError("discovery language and region_code cannot be empty")
+
+
+def _youtube_video_id(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    video_id = ""
+    if parsed.scheme == "https" and host == "youtu.be":
+        video_id = parsed.path.strip("/").split("/", 1)[0]
+    elif parsed.scheme == "https" and host in {"youtube.com", "m.youtube.com", "music.youtube.com"}:
+        if parsed.path == "/watch":
+            video_id = (urllib.parse.parse_qs(parsed.query).get("v") or [""])[0]
+        else:
+            for prefix in ("/shorts/", "/live/", "/embed/"):
+                if parsed.path.startswith(prefix):
+                    video_id = parsed.path[len(prefix) :].split("/", 1)[0]
+                    break
+    if not video_id:
+        raise YouTubeError("authorized source URL must identify a YouTube video")
+    return video_id
+
+
+def _source_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validated_source_identity(
+    video: VideoCandidate,
+    info: dict[str, Any],
+) -> dict[str, str]:
+    requested_id = _youtube_video_id(video.url)
+    actual_id = str(info.get("id") or "")
+    actual_channel_id = str(info.get("channel_id") or "")
+    canonical_url = str(info.get("webpage_url") or info.get("original_url") or "")
+    if requested_id != video.video_id:
+        raise YouTubeError(
+            "authorized candidate URL video ID mismatch: "
+            f"expected={video.video_id} url={requested_id}"
+        )
+    if actual_id != video.video_id:
+        raise YouTubeError(
+            "YouTube extractor video ID does not match authorized candidate: "
+            f"expected={video.video_id} actual={actual_id}"
+        )
+    if actual_channel_id != video.channel_id:
+        raise YouTubeError(
+            "YouTube extractor channel ID does not match authorized candidate: "
+            f"expected={video.channel_id} actual={actual_channel_id}"
+        )
+    if _youtube_video_id(canonical_url) != video.video_id:
+        raise YouTubeError(
+            "YouTube extractor canonical URL does not match authorized candidate"
+        )
+    return {
+        "video_id": actual_id,
+        "channel_id": actual_channel_id,
+        "webpage_url": canonical_url,
+    }
 
 
 def _json_object(text: str) -> dict[str, Any]:
@@ -434,9 +498,25 @@ class YouTubeClient:
         output = work_dir / f"{video.video_id}.mkv"
         metadata_path = output.with_suffix(".source.json")
         if output.is_file() and output.stat().st_size > 0:
+            if not metadata_path.is_file():
+                raise YouTubeError("cached source is missing identity evidence")
+            try:
+                cached_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise YouTubeError("cached source identity evidence is invalid") from exc
+            if not isinstance(cached_metadata, dict):
+                raise YouTubeError("cached source identity evidence is invalid")
+            identity = cached_metadata.get("canonical_identity")
+            if not isinstance(identity, dict):
+                raise YouTubeError("cached source has no canonical identity")
+            _validated_source_identity(video, identity)
+            expected_sha = str(cached_metadata.get("sha256") or "")
+            if not expected_sha or _source_sha256(output) != expected_sha:
+                raise YouTubeError("cached source media hash does not match identity evidence")
             return output
 
         initial_info = self._video_info(video.url)
+        final_identity = _validated_source_identity(video, initial_info)
         initial_selected, initial_available = self._select_video_format(initial_info, None)
         attempts: list[dict[str, object]] = []
         final_selected = initial_selected
@@ -480,6 +560,7 @@ class YouTubeClient:
             for player_client in _retry_player_clients():
                 try:
                     refreshed_info = self._video_info(video.url, player_client)
+                    refreshed_identity = _validated_source_identity(video, refreshed_info)
                     _, refreshed_available = self._select_video_format(refreshed_info, None)
                 except YouTubeError as refresh_error:
                     attempts.append(
@@ -511,6 +592,7 @@ class YouTubeClient:
                     final_selected = candidate
                     final_available = refreshed_available
                     final_client = player_client
+                    final_identity = refreshed_identity
                     recovered = True
                     break
                 if recovered:
@@ -529,6 +611,8 @@ class YouTubeClient:
             json.dumps(
                 {
                     "quality_policy": "highest_available_no_transcode",
+                    "canonical_identity": final_identity,
+                    "sha256": _source_sha256(output),
                     "legacy_requested_max_height_ignored": self.max_height,
                     "initial_selected": initial_selected,
                     "selected": final_selected,
