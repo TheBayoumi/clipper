@@ -24,6 +24,8 @@ from clipper.models import (
 from clipper.pipeline import (
     PipelineSettings,
     _cached_transcription,
+    _grounding_payload,
+    _grounding_stage_value,
     _campaign_watermark,
     _copy_render_sidecars,
     _download_asset,
@@ -408,6 +410,30 @@ def test_pipeline_planning_uses_only_explicit_target_and_writes_contract_artifac
         "eligible_quality_moments": 1,
         "accepted_quality_moments": 0,
     }
+
+
+def test_grounding_dag_rejects_invalid_terminal_payload(tmp_path: Path) -> None:
+    class InvalidDag:
+        def execute(self, _identity, _operation):
+            return ["not", "an", "object"], False
+
+    with pytest.raises(RuntimeError, match="grounding DAG returned invalid output"):
+        _grounding_stage_value(
+            stage="canonical-transcription",
+            key="k",
+            cache=FileCache(tmp_path / "cache"),
+            dag=InvalidDag(),  # type: ignore[arg-type]
+            operation=lambda: ProviderResult(
+                CanonicalTimeline("v1", "source", _words("v1", 1)),
+                FakeTranscription.identity,
+                _usage(),
+            ),
+        )
+
+
+def test_grounding_payload_rejects_missing_canonical_timeline() -> None:
+    with pytest.raises(RuntimeError, match="missing canonical timeline"):
+        _grounding_payload({"model": {}}, FakeTranscription())
 
 
 def test_grounding_dag_allows_only_one_provider_execution_per_cache_key(
