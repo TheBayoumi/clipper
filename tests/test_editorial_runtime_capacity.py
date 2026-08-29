@@ -141,7 +141,7 @@ def test_modal_provider_propagates_execution_and_expected_sha(
             self.payload = payload
             return {
                 "value": {"segments": []},
-                "model": {"model_id": "test-model", "revision": "test-revision"},
+                "model": provider.identity.to_dict(),
                 "usage": {},
                 "runtime": {},
             }
@@ -177,7 +177,7 @@ def test_modal_editorial_emits_closed_pipeline_call_pair(
             self.payload = payload
             return {
                 "value": {"segments": []},
-                "model": {"model_id": "test-model", "revision": "test-revision"},
+                "model": provider.identity.to_dict(),
                 "usage": {},
                 "runtime": {
                     "editorial_capacity": {
