@@ -512,6 +512,16 @@ def _renderer_for_source(
     )
 
 
+def _remove_render_attempt_files(rendered: Path) -> None:
+    for path in (
+        rendered,
+        rendered.with_suffix(".ass"),
+        rendered.with_suffix(".caption-audit.json"),
+        rendered.with_suffix(".tracking.json"),
+    ):
+        path.unlink(missing_ok=True)
+
+
 def _copy_render_sidecars(rendered: Path, run_dir: Path, plan: EditPlan) -> None:
     slug = _safe_slug(plan.plan_id)
     copies = (
@@ -754,6 +764,8 @@ def run_pipeline(
             _write_json(run_dir / "canonical" / f"{video.video_id}.json", timeline.to_dict())
             journal.progress("source_grounding", index, total=len(targets))
         except Exception as exc:
+            if rendered is not None:
+                _remove_render_attempt_files(rendered)
             manifest.errors.append(
                 {
                     "stage": "source_grounding",
@@ -932,6 +944,7 @@ def run_pipeline(
             "concept_id": plan.concept_id,
             "plan_id": plan.plan_id,
         }
+        rendered: Path | None = None
         try:
             rendered = active_renderer.render(
                 runtime.media_path,
@@ -956,6 +969,7 @@ def run_pipeline(
             qc["plan_id"] = plan.plan_id
             manifest.technical_qc.append(qc)
             if qc.get("status") != "PASS":
+                _remove_render_attempt_files(rendered)
                 attempt.update({"status": "REJECTED", "reason": "technical_qc_failed"})
                 manifest.render_attempts.append(attempt)
                 continue
@@ -1011,6 +1025,7 @@ def run_pipeline(
             manifest.campaign_policy_qc.append(policy)
             if review.decision != "PASS" or review.issues:
                 manifest.funnel["editorial_review_reject_count"] += 1
+                _remove_render_attempt_files(rendered)
                 attempt.update({"status": "REJECTED", "reason": "multimodal_review_failed"})
                 manifest.render_attempts.append(attempt)
                 continue
