@@ -2,6 +2,7 @@ import ast
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 import yaml
@@ -18,6 +19,29 @@ def _script_function(name: str) -> Any:
         compile(ast.Module(body=[function], type_ignores=[]), "<modal-helper>", "exec"), namespace
     )
     return namespace[name]
+
+
+
+def _modal_pipeline_helpers(*names: str) -> dict[str, Any]:
+    source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    selected = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in set(names)
+    ]
+    namespace: dict[str, Any] = {
+        "Any": Any,
+        "Path": Path,
+        "json": json,
+        "parse_qs": parse_qs,
+        "urlparse": urlparse,
+    }
+    exec(  # noqa: S102 - execute repository-owned pure helper functions only
+        compile(ast.Module(body=selected, type_ignores=[]), "<modal-pipeline-helpers>", "exec"),
+        namespace,
+    )
+    return {name: namespace[name] for name in names}
 
 
 def test_public_youtube_acquisition_uses_bgutil_before_optional_cookies() -> None:
@@ -44,6 +68,80 @@ def test_source_acquisition_is_exact_and_content_addressed() -> None:
     assert '"quality_policy": "highest_available_no_transcode"' in source
     assert 'volume_path = f"/inputs/{digest}{suffix}"' in acquire
     assert "content-addressed source master hash mismatch" in acquire
+
+
+
+def test_source_acquisition_binds_requested_and_extracted_identity() -> None:
+    helpers = _modal_pipeline_helpers(
+        "_youtube_video_id",
+        "_validate_extracted_source_identity",
+    )
+    youtube_id = helpers["_youtube_video_id"]
+    validate = helpers["_validate_extracted_source_identity"]
+
+    assert youtube_id("https://www.youtube.com/watch?v=abc_123") == "abc_123"
+    assert youtube_id("https://youtu.be/abc_123") == "abc_123"
+    with pytest.raises(ValueError, match="YouTube video URL"):
+        youtube_id("https://redirect.example.test/watch?v=abc_123")
+
+    identity = validate(
+        expected_video_id="abc_123",
+        expected_channel_id="UC_authorized",
+        requested_url="https://www.youtube.com/watch?v=abc_123",
+        actual_video_id="abc_123",
+        actual_channel_id="UC_authorized",
+        canonical_url="https://www.youtube.com/watch?v=abc_123",
+    )
+    assert identity == {
+        "video_id": "abc_123",
+        "channel_id": "UC_authorized",
+        "webpage_url": "https://www.youtube.com/watch?v=abc_123",
+    }
+
+    with pytest.raises(RuntimeError, match="URL video ID mismatch"):
+        validate(
+            expected_video_id="abc_123",
+            expected_channel_id="UC_authorized",
+            requested_url="https://www.youtube.com/watch?v=other",
+            actual_video_id="abc_123",
+            actual_channel_id="UC_authorized",
+            canonical_url="https://www.youtube.com/watch?v=abc_123",
+        )
+    with pytest.raises(RuntimeError, match="channel ID"):
+        validate(
+            expected_video_id="abc_123",
+            expected_channel_id="UC_authorized",
+            requested_url="https://www.youtube.com/watch?v=abc_123",
+            actual_video_id="abc_123",
+            actual_channel_id="UC_other",
+            canonical_url="https://www.youtube.com/watch?v=abc_123",
+        )
+    with pytest.raises(RuntimeError, match="canonical URL"):
+        validate(
+            expected_video_id="abc_123",
+            expected_channel_id="UC_authorized",
+            requested_url="https://www.youtube.com/watch?v=abc_123",
+            actual_video_id="abc_123",
+            actual_channel_id="UC_authorized",
+            canonical_url="https://www.youtube.com/watch?v=other",
+        )
+
+
+def test_source_cache_and_staging_are_identity_bound_and_concurrency_safe() -> None:
+    source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+    existing = source.split("def _existing_source(", 1)[1].split("@app.function(", 1)[0]
+    acquire = source.split("def acquire_source(", 1)[1].split("class VolumeSourceClient", 1)[0]
+    writer = source.split("def persist_source_index(", 1)[1].split("@app.function(", 1)[0]
+
+    assert "canonical_identity" in existing
+    assert 'str(identity.get("channel_id") or "") != channel_id' in existing
+    assert "_youtube_video_id(canonical_url) != video_id" in existing
+    assert 'Path(MEDIA_ROOT) / "staging" / video_id / uuid.uuid4().hex' in acquire
+    assert 'shutil.rmtree(staging, ignore_errors=True)' in acquire
+    assert "persist_source_index.remote(evidence)" in acquire
+    assert "max_containers=1" in source.split("def persist_source_index(", 1)[0][-300:]
+    assert "_atomic_write_json(index_path, evidence)" in writer
+    assert '_atomic_write_json(target.with_suffix(".source.json"), evidence)' in writer
 
 
 def test_volume_source_client_never_discovers_or_downgrades_media() -> None:
@@ -199,6 +297,7 @@ def test_modal_full_cycle_is_quality_derived_and_exact_source_verified() -> None
     failure_return = cycle.index('"status": "FAIL"')
     assert cycle.rfind("artifact_volume.commit()", 0, failure_return) != -1
     assert "pipeline did not process the Modal-acquired source hash" in cycle
+    assert "execution_id=execution_id.lower()" in cycle
     assert '"eligible_quality_moments"' in cycle
     assert '"review_status": "PENDING_ACTUAL_MP4_REVIEW" if render else "NOT_RENDERED"' in cycle
     assert "recover_finalists" not in source
