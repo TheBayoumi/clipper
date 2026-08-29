@@ -445,7 +445,7 @@ def test_pull_request_smoke_is_read_only_and_package_publish_is_main_only() -> N
     assert "branches:\n      - main" in publish
     assert "docker login ghcr.io" in publish
     assert "docker push" in publish
-    assert 'test "$source_sha" = "$GITHUB_SHA"' in publish
+    assert 'test "${source_sha}" = "${GITHUB_SHA}"' in publish
 
 
 def test_disabled_acceptance_guards_precede_any_paid_modal_work() -> None:
