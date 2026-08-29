@@ -293,7 +293,10 @@ class ModalExecutionSpy:
                 return f"editorial remote call hit its runtime timeout: {event}"
             if status == "ERROR":
                 return f"editorial remote call failed non-recoverably: {event}"
-            if status == "CAPACITY_REJECTED" and event.get("reason") == "generation_runtime_deadline":
+            if (
+                status == "CAPACITY_REJECTED"
+                and event.get("reason") == "generation_runtime_deadline"
+            ):
                 deadline = event.get("generation_deadline_seconds")
                 elapsed = event.get("elapsed_seconds")
                 if (
@@ -318,7 +321,10 @@ class ModalExecutionSpy:
                     if not math.isclose(float(deadline), 300.0, rel_tol=0.0, abs_tol=1e-9):
                         return f"acceptance deadline probe did not exercise 300 seconds: {event}"
                     if event.get("late_candidate_rejected") is not True:
-                        return f"acceptance deadline probe omitted late-candidate rejection: {event}"
+                        return (
+                            "acceptance deadline probe omitted late-candidate rejection: "
+                            f"{event}"
+                        )
                     if (
                         isinstance(forced, bool)
                         or not isinstance(forced, int)
@@ -328,7 +334,10 @@ class ModalExecutionSpy:
                         or output < 0
                         or output >= forced
                     ):
-                        return f"acceptance deadline probe omitted forced-interruption proof: {event}"
+                        return (
+                            "acceptance deadline probe omitted forced-interruption proof: "
+                            f"{event}"
+                        )
             return None
 
         if name == "editorial_execution_timeout":

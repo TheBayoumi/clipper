@@ -862,7 +862,9 @@ def _editorial_acceptance_probe(
         if deadline_details.get("deadline_probe") is not True:
             raise RuntimeError("deadline proof omitted the acceptance-probe identity marker")
         if deadline_details.get("late_candidate_rejected") is not True:
-            raise RuntimeError("deadline proof did not explicitly reject the post-deadline candidate")
+            raise RuntimeError(
+                "deadline proof did not explicitly reject the post-deadline candidate"
+            )
         deadline_input_tokens = int(deadline_details.get("input_tokens") or 0)
         deadline_target_tokens = int(deadline_details.get("runtime_safe_input_tokens") or 0)
         deadline_seconds = float(deadline_details.get("generation_deadline_seconds") or 0.0)
