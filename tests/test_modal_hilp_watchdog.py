@@ -62,6 +62,8 @@ class _Spy:
         _Spy.instance = self
 
     def run(self) -> int:
+        while not self.stopped:
+            time.sleep(0.001)
         return 0
 
     def request_stop(self, *_args) -> None:
