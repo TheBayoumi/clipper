@@ -284,6 +284,7 @@ def test_stage_record_rejects_invalid_terminal_evidence(record) -> None:
     with pytest.raises(ValueError):
         record(identity)
 
+
 def test_coordinated_dag_commits_terminal_state_before_releasing_owner(tmp_path: Path) -> None:
     events: list[str] = []
     active = {"owner": ""}
