@@ -104,13 +104,18 @@ class _QualityEditorial:
         )
 
 
-def _timeline(count: int = 30) -> CanonicalTimeline:
+def _timeline(
+    count: int = 30,
+    *,
+    video_id: str = "video",
+    source_hash: str = "source",
+) -> CanonicalTimeline:
     return CanonicalTimeline(
-        "video",
-        "source",
+        video_id,
+        source_hash,
         tuple(
             CanonicalWord(
-                f"video:w{index:07d}:x",
+                f"{video_id}:w{index:07d}:x",
                 f"word-{index}",
                 float(index),
                 float(index + 1),
@@ -204,11 +209,26 @@ def test_quality_batch_reuses_exact_dag_without_new_model_calls(tmp_path: Path) 
 def test_branding_policy_missing_visual_evidence_is_failure_not_zero_yield(tmp_path: Path) -> None:
     brief = load_brief("campaigns/reach-double-coverage-dedicated.yaml")
     timeline = _timeline()
-    with pytest.raises(RuntimeError, match="quality graph planning failed for every source"):
+    with pytest.raises(RuntimeError, match="quality graph planning failed for explicit source"):
         plan_quality_batch(
             brief,
             {timeline.video_id: timeline},
             {},
+            _QualityEditorial(),
+            dag_root=tmp_path / "dag",
+        )
+
+
+def test_any_explicit_source_quality_failure_blocks_other_successes(tmp_path: Path) -> None:
+    brief = load_brief("campaigns/reach-double-coverage-dedicated.yaml")
+    first = _timeline(video_id="video", source_hash="source")
+    second = _timeline(video_id="video-2", source_hash="source-2")
+
+    with pytest.raises(RuntimeError, match="video-2"):
+        plan_quality_batch(
+            brief,
+            {first.video_id: first, second.video_id: second},
+            {first.video_id: _visual(first)},
             _QualityEditorial(),
             dag_root=tmp_path / "dag",
         )
