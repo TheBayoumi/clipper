@@ -102,8 +102,8 @@ def editorial_provider(profile_name: str) -> EditorialProvider:
                 os.getenv("CLIPPER_EDITORIAL_MODEL_REVISION", "modal-managed"),
                 "modal-managed",
                 "modal-managed-endpoint",
-                EDITORIAL_IDENTITY,
-                EDITORIAL_SCHEMA_IDENTITY,
+                EDITORIAL_PROMPT_VERSION,
+                EDITORIAL_SCHEMA_VERSION,
             ),
         )
     raise ValueError(f"unsupported Modal editorial backend: {backend}")
