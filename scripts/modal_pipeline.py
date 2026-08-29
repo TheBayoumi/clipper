@@ -7,6 +7,7 @@ import math
 import os
 import shutil
 import subprocess
+import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -928,6 +929,91 @@ def _editorial_acceptance_probe(
     return result
 
 
+@app.function(
+    image=runner_image,
+    volumes={ARTIFACT_ROOT: artifact_volume},
+    timeout=60,
+    memory=1024,
+    max_containers=1,
+    scaledown_window=2,
+)
+def dag_execution_lease(payload: dict[str, Any]) -> dict[str, Any]:
+    """Serialize editorial DAG ownership across Modal Volume snapshots."""
+
+    _assert_expected_git_sha(payload)
+    action = str(payload.get("action") or "")
+    stage_name = str(payload.get("stage_name") or "")
+    cache_key = str(payload.get("cache_key") or "")
+    owner_id = str(payload.get("owner_id") or "")
+    ttl_seconds = float(payload.get("ttl_seconds") or 0.0)
+    if action not in {"claim", "renew", "release"}:
+        raise ValueError("unsupported DAG lease action")
+    if not stage_name or not cache_key or len(owner_id) != 32:
+        raise ValueError("DAG lease request identity is invalid")
+    if action != "release" and (
+        not math.isfinite(ttl_seconds) or ttl_seconds <= 0 or ttl_seconds > 21_600
+    ):
+        raise ValueError("DAG lease ttl must be finite and within the production timeout")
+
+    artifact_volume.reload()
+    key = hashlib.sha256(f"{stage_name}\0{cache_key}".encode("utf-8")).hexdigest()
+    lease_path = Path(ARTIFACT_ROOT) / "_dag-leases" / f"{key}.json"
+    state: dict[str, Any] = {}
+    if lease_path.is_file():
+        try:
+            loaded = json.loads(lease_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            loaded = {}
+        if isinstance(loaded, dict):
+            state = loaded
+
+    now = time.time()
+    current_owner = str(state.get("owner_id") or "")
+    expires_at = state.get("expires_at")
+    active = (
+        isinstance(expires_at, (int, float))
+        and not isinstance(expires_at, bool)
+        and math.isfinite(float(expires_at))
+        and float(expires_at) > now
+    )
+
+    if action == "release":
+        if current_owner != owner_id:
+            return {"released": False, "owner_id": current_owner}
+        lease_path.unlink(missing_ok=True)
+        artifact_volume.commit()
+        return {"released": True, "owner_id": owner_id}
+
+    if action == "claim" and active and current_owner != owner_id:
+        return {
+            "acquired": False,
+            "owner_id": current_owner,
+            "expires_at": float(expires_at),
+        }
+    if action == "renew" and current_owner != owner_id:
+        return {
+            "renewed": False,
+            "owner_id": current_owner,
+            "expires_at": float(expires_at) if active else None,
+        }
+
+    next_state = {
+        "stage_name": stage_name,
+        "cache_key": cache_key,
+        "owner_id": owner_id,
+        "claimed_at": float(state.get("claimed_at") or now)
+        if current_owner == owner_id
+        else now,
+        "expires_at": now + ttl_seconds,
+        "updated_at": now,
+    }
+    _atomic_write_json(lease_path, next_state)
+    artifact_volume.commit()
+    if action == "claim":
+        return {"acquired": True, **next_state}
+    return {"renewed": True, **next_state}
+
+
 @app.function(image=runner_image, timeout=60, scaledown_window=2)
 def deployment_identity() -> dict[str, Any]:
     return {"app": APP_NAME, "deployed_git_sha": DEPLOYED_GIT_SHA}
@@ -942,6 +1028,7 @@ def deployment_identity() -> dict[str, Any]:
 )
 def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     """Run one autonomous production DAG over all explicitly targeted source masters."""
+    from clipper.dag import DagLeaseCoordinator, DagStore
     from clipper.pipeline import PipelineSettings, run_pipeline
     from clipper.providers.factory import speech_providers
 
@@ -1029,6 +1116,50 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
         )
     asr, alignment, diarization = speech_providers(settings.compute_profile)
 
+    lease_function = modal.Function.from_name(APP_NAME, "dag_execution_lease")
+
+    def lease_action(
+        action: str,
+        identity: Any,
+        owner_id: str,
+        ttl_seconds: float = 0.0,
+    ) -> dict[str, Any]:
+        response = lease_function.remote(
+            {
+                "action": action,
+                "stage_name": identity.stage_name,
+                "cache_key": identity.cache_key,
+                "owner_id": owner_id,
+                "ttl_seconds": ttl_seconds,
+                "expected_git_sha": requested_git_sha,
+            }
+        )
+        if not isinstance(response, dict):
+            raise RuntimeError("distributed DAG lease coordinator returned invalid evidence")
+        return response
+
+    coordinator = DagLeaseCoordinator(
+        claim=lambda identity, owner_id, ttl: bool(
+            lease_action("claim", identity, owner_id, ttl).get("acquired")
+        ),
+        renew=lambda identity, owner_id, ttl: bool(
+            lease_action("renew", identity, owner_id, ttl).get("renewed")
+        ),
+        release=lambda identity, owner_id: bool(
+            lease_action("release", identity, owner_id).get("released")
+        ),
+        commit=artifact_volume.commit,
+        reload=artifact_volume.reload,
+    )
+
+    def coordinated_dag_store(root: Path) -> DagStore:
+        return DagStore(
+            root,
+            execution_lease_seconds=120.0,
+            follower_poll_seconds=0.5,
+            coordinator=coordinator,
+        )
+
     try:
         run_dir = run_pipeline(
             brief_path,
@@ -1039,6 +1170,7 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
             diarization_provider=diarization,
             render=render,
             checkpoint_commit=artifact_volume.commit,
+            dag_store_factory=coordinated_dag_store,
             execution_id=execution_id.lower(),
         )
     finally:
