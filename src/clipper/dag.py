@@ -264,7 +264,8 @@ class DagStore:
                         lease_lost.set()
                         return
                 except Exception:
-                    continue
+                    lease_lost.set()
+                    return
 
         renewal_thread = threading.Thread(target=renew_lease, daemon=True)
         renewal_thread.start()
