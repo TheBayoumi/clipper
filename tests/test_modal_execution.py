@@ -774,6 +774,76 @@ def test_invoke_remote_with_budget_cancels_exact_call_while_in_flight(
     assert call.cancel_args == [False]
 
 
+def test_invoke_remote_with_budget_caps_poll_to_remaining_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: clock["now"])
+    monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "5")
+
+    class Call:
+        def __init__(self) -> None:
+            self.timeouts: list[float] = []
+            self.cancel_args: list[bool] = []
+
+        def hydrate(self) -> None:
+            return None
+
+        def get(self, *, timeout: float) -> object:
+            self.timeouts.append(timeout)
+            clock["now"] = timeout
+            raise TimeoutError
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            self.cancel_args.append(terminate_containers)
+
+    call = Call()
+    function = SimpleNamespace(spawn=Mock(return_value=call))
+
+    with pytest.raises(RuntimeError, match="in-flight compute budget"):
+        _invoke_remote_with_budget(
+            function,
+            {},
+            max_gpu_seconds=1.0,
+            max_estimated_usd=100.0,
+        )
+
+    assert call.timeouts == [pytest.approx(0.5)]
+    assert call.cancel_args == [False]
+
+
+def test_invoke_remote_with_budget_cancels_if_hydration_fails() -> None:
+    call = Mock()
+    call.hydrate.side_effect = ServiceError("hydrate failed")
+    function = SimpleNamespace(spawn=Mock(return_value=call))
+
+    with pytest.raises(ServiceError, match="hydrate failed"):
+        _invoke_remote_with_budget(
+            function,
+            {},
+            max_gpu_seconds=10.0,
+            max_estimated_usd=1.0,
+        )
+
+    call.cancel.assert_called_once_with(terminate_containers=False)
+
+
+def test_invoke_remote_with_budget_cancels_non_timeout_poll_failure() -> None:
+    call = Mock()
+    call.get.side_effect = ServiceError("poll failed")
+    function = SimpleNamespace(spawn=Mock(return_value=call))
+
+    with pytest.raises(ServiceError, match="poll failed"):
+        _invoke_remote_with_budget(
+            function,
+            {},
+            max_gpu_seconds=10.0,
+            max_estimated_usd=1.0,
+        )
+
+    call.cancel.assert_called_once_with(terminate_containers=False)
+
+
 def test_invoke_remote_with_budget_rechecks_successful_final_poll(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
