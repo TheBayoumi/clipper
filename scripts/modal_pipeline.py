@@ -1001,9 +1001,7 @@ def dag_execution_lease(payload: dict[str, Any]) -> dict[str, Any]:
         "stage_name": stage_name,
         "cache_key": cache_key,
         "owner_id": owner_id,
-        "claimed_at": float(state.get("claimed_at") or now)
-        if current_owner == owner_id
-        else now,
+        "claimed_at": float(state.get("claimed_at") or now) if current_owner == owner_id else now,
         "expires_at": now + ttl_seconds,
         "updated_at": now,
     }
