@@ -80,7 +80,7 @@ def _validated_source_identity(
     info: dict[str, Any],
 ) -> dict[str, str]:
     requested_id = _youtube_video_id(video.url)
-    actual_id = str(info.get("id") or "")
+    actual_id = str(info.get("id") or info.get("video_id") or "")
     actual_channel_id = str(info.get("channel_id") or "")
     canonical_url = str(info.get("webpage_url") or info.get("original_url") or "")
     if requested_id != video.video_id:
