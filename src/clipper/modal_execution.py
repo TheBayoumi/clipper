@@ -140,35 +140,51 @@ def _invoke_remote_with_budget(
         raise ValueError("CLIPPER_MODAL_SPY_POLL_SECONDS must be finite and positive")
 
     call = function.spawn(request)
-    call.hydrate()
     started = time.monotonic()
+    terminal_result = False
 
     def budget_usage() -> tuple[float, float]:
         elapsed = max(0.0, time.monotonic() - started)
         return elapsed * 2.0, elapsed * 0.000444
 
-    while True:
+    def remaining_budget_wall_seconds() -> float:
         gpu_seconds, estimated_usd = budget_usage()
-        if gpu_seconds >= max_gpu_seconds or estimated_usd >= max_estimated_usd:
-            call.cancel(terminate_containers=False)
-            raise RuntimeError(
-                "CLI production call exceeded its in-flight compute budget: "
-                f"gpu_seconds={gpu_seconds:.3f}/{max_gpu_seconds:.3f} "
-                f"estimated_usd={estimated_usd:.6f}/{max_estimated_usd:.6f}"
-            )
-        try:
-            result = call.get(timeout=poll_seconds)
-        except TimeoutError:
-            continue
+        return min(
+            (max_gpu_seconds - gpu_seconds) / 2.0,
+            (max_estimated_usd - estimated_usd) / 0.000444,
+        )
 
-        gpu_seconds, estimated_usd = budget_usage()
-        if gpu_seconds >= max_gpu_seconds or estimated_usd >= max_estimated_usd:
-            raise RuntimeError(
-                "CLI production call exceeded its compute budget on the final poll: "
-                f"gpu_seconds={gpu_seconds:.3f}/{max_gpu_seconds:.3f} "
-                f"estimated_usd={estimated_usd:.6f}/{max_estimated_usd:.6f}"
-            )
-        return result
+    try:
+        call.hydrate()
+        while True:
+            gpu_seconds, estimated_usd = budget_usage()
+            remaining_seconds = remaining_budget_wall_seconds()
+            if remaining_seconds <= 0:
+                raise RuntimeError(
+                    "CLI production call exceeded its in-flight compute budget: "
+                    f"gpu_seconds={gpu_seconds:.3f}/{max_gpu_seconds:.3f} "
+                    f"estimated_usd={estimated_usd:.6f}/{max_estimated_usd:.6f}"
+                )
+            try:
+                result = call.get(timeout=min(poll_seconds, remaining_seconds))
+            except TimeoutError:
+                continue
+
+            terminal_result = True
+            gpu_seconds, estimated_usd = budget_usage()
+            if gpu_seconds > max_gpu_seconds or estimated_usd > max_estimated_usd:
+                raise RuntimeError(
+                    "CLI production call exceeded its compute budget on the final poll: "
+                    f"gpu_seconds={gpu_seconds:.3f}/{max_gpu_seconds:.3f} "
+                    f"estimated_usd={estimated_usd:.6f}/{max_estimated_usd:.6f}"
+                )
+            return result
+    finally:
+        if not terminal_result:
+            try:
+                call.cancel(terminate_containers=False)
+            except Exception:
+                LOGGER.exception("failed to cancel nonterminal Modal production call")
 
 
 def _deploy(script: Path) -> None:
