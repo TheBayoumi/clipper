@@ -229,8 +229,30 @@ def test_modal_deployment_embeds_and_verifies_exact_source_sha() -> None:
 def test_editorial_runtime_safety_is_preflighted_and_fail_closed() -> None:
     worker = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
     provider = Path("src/clipper/providers/modal.py").read_text(encoding="utf-8")
+    deploy = Path(".github/workflows/modal-workers-deploy.yml").read_text(encoding="utf-8")
     workflow = _workflow()
     watchdog = _watchdog()
+
+    assert 'EDITORIAL_OUTLINES_VERSION = "1.3.0"' in worker
+    assert 'f"outlines=={EDITORIAL_OUTLINES_VERSION}"' in worker
+    assert "def _verify_editorial_generation_runtime_contract()" in worker
+    assert "GenerationConfig(max_time=EDITORIAL_GENERATION_DEADLINE_SECONDS)" in worker
+    assert "Transformers._generate_output_seq(" in worker
+    assert 'observed_generate_kwargs.get("max_time")' in worker
+    load_start = worker.index("def load_model(self) -> None:")
+    load_end = worker.index("@modal.method()", load_start)
+    load_model = worker[load_start:load_end]
+    assert load_model.index("_verify_editorial_generation_runtime_contract()") < load_model.index(
+        "_load_editorial_model()"
+    )
+
+    runtime_contract_gate = deploy.index("Verify editorial generation runtime contract")
+    gpu_placement_gate = deploy.index("Verify editorial model spans allocated GPUs")
+    assert runtime_contract_gate < gpu_placement_gate
+    assert 'contract.get("outlines_version") != "1.3.0"' in deploy
+    assert 'contract.get("outlines_max_time_forwarded") is not True' in deploy
+    assert 'contract.get("transformers_max_time_supported") is not True' in deploy
+    assert "modal-editorial-runtime-contract.json" in deploy
 
     assert "CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS" in worker
     assert 'actual_payload.get("capacity_repartitionable") is True' in worker
