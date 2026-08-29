@@ -209,7 +209,12 @@ def test_modal_deployment_embeds_and_verifies_exact_source_sha() -> None:
     deploy = Path(".github/workflows/modal-workers-deploy.yml").read_text(encoding="utf-8")
     pipeline = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     models = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+    parsed_deploy = yaml.safe_load(deploy)
 
+    assert isinstance(parsed_deploy, dict)
+    permissions = parsed_deploy.get("permissions")
+    assert isinstance(permissions, dict)
+    assert permissions.get("actions") == "read"
     assert "CLIPPER_DEPLOYED_GIT_SHA" in deploy
     assert "Verify exact deployment checkout" in deploy
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in deploy
@@ -385,7 +390,6 @@ def test_file_cache_uses_per_writer_atomic_temporary_paths() -> None:
     assert 'f".{path.name}.{uuid.uuid4().hex}.tmp"' in cache
     assert "temporary.replace(path)" in cache
     assert "temporary.unlink(missing_ok=True)" in cache
-
 
 
 def test_editorial_capacity_state_has_one_serialized_remote_writer() -> None:
