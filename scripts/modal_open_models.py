@@ -31,6 +31,8 @@ L40S_USD_PER_SECOND = 0.000542
 EDITORIAL_MODEL_ID = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 EDITORIAL_MODEL_REVISION = "110954009be4a882781a90356c7d2b8a9e3428dc"
 EDITORIAL_OUTLINES_VERSION = "1.3.0"
+EDITORIAL_TRANSFORMERS_VERSION = "4.57.3"
+EDITORIAL_DEADLINE_PROBE_MIN_NEW_TOKENS = 65_536
 DEPLOYED_GIT_SHA = os.getenv("CLIPPER_DEPLOYED_GIT_SHA", "").strip().lower()
 EDITORIAL_EXECUTION_TIMEOUT_SECONDS = int(
     os.getenv("CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS", "900")
@@ -95,7 +97,7 @@ state_image = base_image.add_local_python_source("clipper")
 text_image = base_image.uv_pip_install(
     "torch==2.8.0",
     "torchvision==0.23.0",
-    "transformers>=4.57,<5",
+    f"transformers=={EDITORIAL_TRANSFORMERS_VERSION}",
     "accelerate>=1.14,<2",
     "sentencepiece>=0.2,<1",
     "tiktoken>=0.11,<1",
@@ -689,6 +691,11 @@ def _verify_editorial_generation_runtime_contract() -> dict[str, object]:
         raise RuntimeError(
             "editorial Outlines version drifted from the verified generation adapter: "
             f"expected={EDITORIAL_OUTLINES_VERSION} actual={outlines_version}"
+        )
+    if transformers_version != EDITORIAL_TRANSFORMERS_VERSION:
+        raise RuntimeError(
+            "editorial Transformers version drifted from the verified generation runtime: "
+            f"expected={EDITORIAL_TRANSFORMERS_VERSION} actual={transformers_version}"
         )
 
     generation_config = GenerationConfig(max_time=EDITORIAL_GENERATION_DEADLINE_SECONDS)
@@ -1292,6 +1299,69 @@ def _load_editorial_model() -> tuple[Any, Any, Any]:
     return tokenizer, model, from_transformers(model, tokenizer)
 
 
+def _editorial_generation_deadline_error(
+    *,
+    plan: dict[str, Any],
+    lifecycle_id: str,
+    task: str,
+    execution_id: str,
+    invocation_id: str,
+    cache_implementation: str,
+    input_units: int,
+    output_budget: int,
+    elapsed_seconds: float,
+    message: str,
+    output_units: int | None = None,
+    error_type: str | None = None,
+    late_candidate_parseable: bool | None = None,
+    forced_min_new_tokens: int | None = None,
+) -> Exception:
+    from clipper.providers.base import EditorialCapacityError
+
+    runtime_target = max(
+        1,
+        min(
+            EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS,
+            max(1, input_units // 2),
+        ),
+    )
+    event: dict[str, object] = {
+        "event": "editorial_generation_deadline",
+        "worker_lifecycle_id": lifecycle_id,
+        "task": task,
+        "execution_id": execution_id,
+        "invocation_id": invocation_id,
+        "cache_implementation": cache_implementation,
+        "input_tokens": input_units,
+        "generation_budget_tokens": output_budget,
+        "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
+        "elapsed_seconds": elapsed_seconds,
+        "runtime_safe_input_tokens": runtime_target,
+    }
+    details: dict[str, Any] = {
+        "reason": "generation_runtime_deadline",
+        **plan,
+        "runtime_safe_input_tokens": runtime_target,
+        "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
+        "elapsed_seconds": elapsed_seconds,
+        "cache_implementation": cache_implementation,
+    }
+    if output_units is not None:
+        event["output_tokens"] = output_units
+        details["output_tokens"] = output_units
+    if error_type is not None:
+        event["error_type"] = error_type
+        details["error_type"] = error_type
+    if late_candidate_parseable is not None:
+        event["late_candidate_parseable"] = late_candidate_parseable
+        details["late_candidate_parseable"] = late_candidate_parseable
+    if forced_min_new_tokens is not None:
+        event["forced_min_new_tokens"] = forced_min_new_tokens
+        details["forced_min_new_tokens"] = forced_min_new_tokens
+    print(json.dumps(event, sort_keys=True))
+    return EditorialCapacityError(message, details=details)
+
+
 def _editorial_infer(
     payload: dict[str, Any],
     tokenizer: Any,
@@ -1396,42 +1466,26 @@ def _editorial_infer(
                 plan.get("capacity_repartitionable") is True
                 and cache_attempt_seconds >= EDITORIAL_GENERATION_DEADLINE_SECONDS
             ):
-                runtime_target = max(
-                    1,
-                    min(
-                        EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS,
-                        max(1, input_units // 2),
-                    ),
-                )
-                print(
-                    json.dumps(
-                        {
-                            "event": "editorial_generation_deadline",
-                            "worker_lifecycle_id": lifecycle_id,
-                            "task": task,
-                            "execution_id": execution_id,
-                            "invocation_id": invocation_id,
-                            "cache_implementation": cache_policy,
-                            "input_tokens": input_units,
-                            "generation_budget_tokens": output_budget,
-                            "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
-                            "elapsed_seconds": cache_attempt_seconds,
-                            "runtime_safe_input_tokens": runtime_target,
-                            "error_type": None,
-                        },
-                        sort_keys=True,
-                    )
-                )
-                raise EditorialCapacityError(
-                    "editorial generation reached the runtime latency boundary",
-                    details={
-                        "reason": "generation_runtime_deadline",
-                        **plan,
-                        "runtime_safe_input_tokens": runtime_target,
-                        "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
-                        "elapsed_seconds": cache_attempt_seconds,
-                        "cache_implementation": cache_policy,
-                    },
+                late_candidate_parseable = False
+                if isinstance(candidate, str):
+                    try:
+                        _json_text(candidate)
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        pass
+                    else:
+                        late_candidate_parseable = True
+                raise _editorial_generation_deadline_error(
+                    plan=plan,
+                    lifecycle_id=lifecycle_id,
+                    task=task,
+                    execution_id=execution_id,
+                    invocation_id=invocation_id,
+                    cache_implementation=cache_policy,
+                    input_units=input_units,
+                    output_budget=output_budget,
+                    elapsed_seconds=cache_attempt_seconds,
+                    message="editorial generation reached the runtime latency boundary",
+                    late_candidate_parseable=late_candidate_parseable,
                 )
             if not isinstance(candidate, str):
                 raise TypeError(
@@ -1508,42 +1562,18 @@ def _editorial_infer(
                 plan.get("capacity_repartitionable") is True
                 and cache_attempt_seconds >= EDITORIAL_GENERATION_DEADLINE_SECONDS
             ):
-                runtime_target = max(
-                    1,
-                    min(
-                        EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS,
-                        max(1, input_units // 2),
-                    ),
-                )
-                print(
-                    json.dumps(
-                        {
-                            "event": "editorial_generation_deadline",
-                            "worker_lifecycle_id": lifecycle_id,
-                            "task": task,
-                            "execution_id": execution_id,
-                            "invocation_id": invocation_id,
-                            "cache_implementation": cache_policy,
-                            "input_tokens": input_units,
-                            "generation_budget_tokens": output_budget,
-                            "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
-                            "elapsed_seconds": cache_attempt_seconds,
-                            "runtime_safe_input_tokens": runtime_target,
-                            "error_type": type(exc).__name__,
-                        },
-                        sort_keys=True,
-                    )
-                )
-                raise EditorialCapacityError(
-                    "editorial generation exceeded the runtime latency budget",
-                    details={
-                        "reason": "generation_runtime_deadline",
-                        **plan,
-                        "runtime_safe_input_tokens": runtime_target,
-                        "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
-                        "elapsed_seconds": cache_attempt_seconds,
-                        "cache_implementation": cache_policy,
-                    },
+                raise _editorial_generation_deadline_error(
+                    plan=plan,
+                    lifecycle_id=lifecycle_id,
+                    task=task,
+                    execution_id=execution_id,
+                    invocation_id=invocation_id,
+                    cache_implementation=cache_policy,
+                    input_units=input_units,
+                    output_budget=output_budget,
+                    elapsed_seconds=cache_attempt_seconds,
+                    message="editorial generation exceeded the runtime latency budget",
+                    error_type=type(exc).__name__,
                 ) from exc
             raise
 
@@ -1580,43 +1610,21 @@ def _editorial_infer(
             plan.get("capacity_repartitionable") is True
             and generation_elapsed >= EDITORIAL_GENERATION_DEADLINE_SECONDS
         ):
-            runtime_target = max(
-                1,
-                min(
-                    EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS,
-                    max(1, input_units // 2),
+            raise _editorial_generation_deadline_error(
+                plan=plan,
+                lifecycle_id=lifecycle_id,
+                task=task,
+                execution_id=execution_id,
+                invocation_id=invocation_id,
+                cache_implementation=cache_implementation,
+                input_units=input_units,
+                output_budget=output_budget,
+                elapsed_seconds=generation_elapsed,
+                message=(
+                    "editorial generation hit its runtime deadline before completing valid JSON"
                 ),
-            )
-            print(
-                json.dumps(
-                    {
-                        "event": "editorial_generation_deadline",
-                        "worker_lifecycle_id": lifecycle_id,
-                        "task": task,
-                        "execution_id": execution_id,
-                        "invocation_id": invocation_id,
-                        "cache_implementation": cache_implementation,
-                        "input_tokens": input_units,
-                        "output_tokens": output_units,
-                        "generation_budget_tokens": output_budget,
-                        "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
-                        "elapsed_seconds": generation_elapsed,
-                        "runtime_safe_input_tokens": runtime_target,
-                    },
-                    sort_keys=True,
-                )
-            )
-            raise EditorialCapacityError(
-                "editorial generation hit its runtime deadline before completing valid JSON",
-                details={
-                    "reason": "generation_runtime_deadline",
-                    **plan,
-                    "runtime_safe_input_tokens": runtime_target,
-                    "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
-                    "elapsed_seconds": generation_elapsed,
-                    "output_tokens": output_units,
-                    "cache_implementation": cache_implementation,
-                },
+                output_units=output_units,
+                late_candidate_parseable=False,
             ) from exc
         if output_units >= output_budget:
             available = int(plan["available_output_tokens"])
@@ -1671,6 +1679,135 @@ def _editorial_infer(
         ),
         "runtime": runtime,
     }
+
+
+def _editorial_deadline_probe(
+    payload: dict[str, Any],
+    tokenizer: Any,
+    model: Any,
+    structured_model: Any,
+    capacity_state: dict[str, Any],
+    *,
+    lifecycle_id: str,
+) -> dict[str, Any]:
+    """Force real generation to prove the production max_time boundary on the deployed GPU."""
+
+    import torch
+
+    from clipper.providers.editorial_prompt import editorial_contract
+
+    task = str(payload.get("task") or "")
+    if not task.startswith("source_hazards:deadline_probe:"):
+        raise ValueError("editorial deadline probe is restricted to acceptance source-hazard tasks")
+    actual_payload = _editorial_payload(payload)
+    if actual_payload.get("capacity_repartitionable") is not True:
+        raise ValueError("editorial deadline probe requires a repartitionable payload")
+
+    scoped_payload = {
+        **payload,
+        "generation_minimum_output_tokens": EDITORIAL_DEADLINE_PROBE_MIN_NEW_TOKENS,
+    }
+    system_content = (
+        "You are a source-grounded multimodal short-form editor. "
+        "Never invent source evidence, spoken words, timestamps, or IDs. "
+        + editorial_contract(task)
+    )
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": json.dumps(scoped_payload, ensure_ascii=False)},
+    ]
+    rendered = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    input_units = len(tokenizer(rendered, add_special_tokens=False)["input_ids"])
+    plan = _editorial_generation_plan(
+        scoped_payload,
+        tokenizer=tokenizer,
+        model=model,
+        input_units=input_units,
+        capacity_state=capacity_state,
+    )
+    output_budget = int(plan["generation_budget_tokens"])
+    if output_budget < EDITORIAL_DEADLINE_PROBE_MIN_NEW_TOKENS:
+        raise RuntimeError(
+            "editorial deadline probe lacks enough output capacity to force the runtime boundary: "
+            f"budget={output_budget} required={EDITORIAL_DEADLINE_PROBE_MIN_NEW_TOKENS}"
+        )
+
+    execution_id = _execution_id(payload)
+    invocation_id = str(payload.get("editorial_invocation_id") or "")
+    print(
+        json.dumps(
+            {
+                "event": "editorial_request_plan",
+                "worker_lifecycle_id": lifecycle_id,
+                "task": task,
+                "execution_id": execution_id,
+                "invocation_id": invocation_id,
+                **plan,
+                **_editorial_runtime_metadata(),
+                "deadline_probe": True,
+                "forced_min_new_tokens": output_budget,
+                "cuda_memory_by_device": _cuda_memory_snapshot(),
+            },
+            sort_keys=True,
+        )
+    )
+    generation_started = time.perf_counter()
+    print(
+        json.dumps(
+            {
+                "event": "editorial_generation_start",
+                "worker_lifecycle_id": lifecycle_id,
+                "task": task,
+                "execution_id": execution_id,
+                "invocation_id": invocation_id,
+                "cache_implementation": "dynamic",
+                "input_tokens": input_units,
+                "generation_budget_tokens": output_budget,
+                "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
+                "deadline_probe": True,
+                "forced_min_new_tokens": output_budget,
+                "cuda_memory_by_device": _cuda_memory_snapshot(),
+            },
+            sort_keys=True,
+        )
+    )
+    with torch.inference_mode():
+        candidate = structured_model(
+            rendered,
+            None,
+            max_new_tokens=output_budget,
+            min_new_tokens=output_budget,
+            max_time=EDITORIAL_GENERATION_DEADLINE_SECONDS,
+            do_sample=False,
+            use_cache=True,
+            logits_to_keep=1,
+        )
+    elapsed_seconds = max(0.0, time.perf_counter() - generation_started)
+    if elapsed_seconds < EDITORIAL_GENERATION_DEADLINE_SECONDS:
+        raise RuntimeError(
+            "editorial deadline probe completed before the configured max_time boundary: "
+            f"elapsed={elapsed_seconds:.3f}s "
+            f"deadline={EDITORIAL_GENERATION_DEADLINE_SECONDS:.3f}s"
+        )
+    output_units = (
+        len(tokenizer(candidate, add_special_tokens=False)["input_ids"])
+        if isinstance(candidate, str)
+        else None
+    )
+    raise _editorial_generation_deadline_error(
+        plan=plan,
+        lifecycle_id=lifecycle_id,
+        task=task,
+        execution_id=execution_id,
+        invocation_id=invocation_id,
+        cache_implementation="dynamic",
+        input_units=input_units,
+        output_budget=output_budget,
+        elapsed_seconds=elapsed_seconds,
+        message="editorial deadline probe reached the production runtime boundary",
+        output_units=output_units,
+        forced_min_new_tokens=output_budget,
+    )
 
 
 def _editorial_capacity_probe(
@@ -1850,6 +1987,34 @@ class EditorialModel:
                 execution_id=_execution_id(payload),
                 invocation_id=str(payload.get("editorial_invocation_id") or ""),
             )
+
+    @modal.method()
+    def deadline_probe(self, payload: dict[str, Any]) -> dict[str, Any]:
+        task = str(payload.get("task") or "")
+        try:
+            _assert_expected_git_sha(payload)
+            return _editorial_deadline_probe(
+                payload,
+                self.tokenizer,
+                self.model,
+                self.structured_model,
+                self.capacity_state,
+                lifecycle_id=self.lifecycle_id,
+            )
+        except Exception as exc:
+            return _transport_error(
+                exc,
+                context=f"deadline_probe task={task or '<missing>'}",
+                execution_id=_execution_id(payload),
+                invocation_id=str(payload.get("editorial_invocation_id") or ""),
+            )
+        finally:
+            gc.collect()
+            with contextlib.suppress(Exception):
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
     @modal.method()
     def complete(self, payload: dict[str, Any]) -> dict[str, Any]:
