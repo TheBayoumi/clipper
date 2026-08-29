@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import threading
 import time
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .stage_contracts import StageIdentity, content_fingerprint
+
+LOGGER = logging.getLogger("clipper.dag")
 
 StageStatus = Literal["RUNNING", "PASS", "FAILED"]
 
@@ -298,8 +301,12 @@ class DagStore:
                 try:
                     if coordinator.release(identity, owner_id):
                         break
-                except Exception:
-                    pass
+                except Exception as exc:
+                    LOGGER.warning(
+                        "DAG PASS lease cleanup failed for %s: %s",
+                        identity.stage_name,
+                        exc,
+                    )
                 if release_attempt < 2:
                     time.sleep(0.05 * (release_attempt + 1))
             return result.output, False
