@@ -5,6 +5,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 
 def _module():
     path = Path("scripts/modal_execution_spy.py")
