@@ -464,9 +464,7 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
                     )
                 except subprocess.CalledProcessError as exc:
                     detail = "\n".join(
-                        part.strip()
-                        for part in (exc.stderr, exc.stdout)
-                        if part and part.strip()
+                        part.strip() for part in (exc.stderr, exc.stdout) if part and part.strip()
                     )[-6000:]
                     acquisition_errors.append(f"[{strategy}] {detail}")
                     continue
