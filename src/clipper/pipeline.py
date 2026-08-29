@@ -803,18 +803,23 @@ def run_pipeline(
 
     journal.start("quality_graph")
     try:
-        quality_kwargs = {
-            "editorial": editor,
-            "dag_root": cfg.cache_root or (cfg.artifact_root / "_cache"),
-            "visual_timelines": visual_timelines,
-        }
-        if dag_store_factory is not None:
-            quality_kwargs["dag_store_factory"] = dag_store_factory
-        quality = plan_quality_batch(
-            brief,
-            canonical_timelines,
-            **quality_kwargs,
-        )
+        if dag_store_factory is None:
+            quality = plan_quality_batch(
+                brief,
+                canonical_timelines,
+                editorial=editor,
+                dag_root=cfg.cache_root or (cfg.artifact_root / "_cache"),
+                visual_timelines=visual_timelines,
+            )
+        else:
+            quality = plan_quality_batch(
+                brief,
+                canonical_timelines,
+                editorial=editor,
+                dag_root=cfg.cache_root or (cfg.artifact_root / "_cache"),
+                visual_timelines=visual_timelines,
+                dag_store_factory=dag_store_factory,
+            )
     except Exception as exc:
         journal.fail("quality_graph", str(exc))
         manifest.status = "FAILED"
