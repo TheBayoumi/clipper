@@ -280,11 +280,11 @@ def plan_quality_batch(
             rejections.append(failure)
             source_evidence[video_id] = {"status": "FAILED", **failure}
 
-    if timelines and successful_sources == 0:
+    if source_failures:
         diagnostics = "; ".join(
             f"{item['video_id']}: {item['error_type']}: {item['error']}" for item in source_failures
         )
-        raise RuntimeError(f"quality graph planning failed for every source: {diagnostics}")
+        raise RuntimeError(f"quality graph planning failed for explicit source(s): {diagnostics}")
 
     if len({item.concept_id for item in concepts}) != len(concepts):
         raise RuntimeError("quality graph produced duplicate compatibility concept identities")
