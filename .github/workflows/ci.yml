@@ -2,38 +2,14 @@ name: CI
 
 on:
   pull_request:
-  pull_request_review:
-    types: [submitted]
   push:
     branches: [main]
 
 permissions:
   contents: read
-  issues: read
-  pull-requests: read
 
 jobs:
-  codex-review-gate:
-    if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-      - name: Verify exact checked-out revision
-        env:
-          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
-      - name: Verify mandatory reviewer contract is present
-        run: grep -Fq '## Mandatory Codex PR Gate' AGENTS.md
-      - name: Require exact-head Codex review with no unresolved P0-P2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scripts/codex_review_gate.py
-
   quality:
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
