@@ -15,12 +15,14 @@ from clipper.autonomous_quality_planner import (
 from clipper.canonical import CanonicalTimeline, CanonicalWord
 from clipper.dag import DagStore
 from clipper.modality_profile import SourceModalityProfile
+from clipper.models import CampaignBrief
 from clipper.providers.base import (
     EditorialCapacityError,
     InferenceUsage,
     ModelIdentity,
     ProviderResult,
 )
+from clipper.source_hazards import SourceHazardClassifier
 from clipper.story_graph import NarrativeEnvelope, SemanticCore
 from clipper.window_solver import enumerate_feasible_windows
 
@@ -311,6 +313,30 @@ def test_zero_worthwhile_cores_is_valid_zero_yield_without_downstream_calls(tmp_
     assert result.cores == ()
     assert result.quality_moments == ()
     assert len(provider.calls) == 1 and provider.calls[0].startswith("semantic_cores:")
+
+
+def test_source_hazard_cache_identity_uses_full_model_contract(tmp_path: Path) -> None:
+    timeline = _timeline()
+    brief = CampaignBrief("campaign", "Title", "Objective")
+    payload = {"words": [{"text": "evidence"}]}
+
+    first_provider = FakeEditorial()
+    first = SourceHazardClassifier(first_provider, DagStore(tmp_path / "hazards"))
+    first_identity = first._identity(timeline, brief, "source_hazards:test", payload)
+
+    second_provider = FakeEditorial()
+    second_provider.identity = ModelIdentity(
+        model_id="different-editor",
+        revision="rev-1",
+        quantization="int4",
+        inference_engine="fake",
+        prompt_version="editor",
+        schema_version="editorial-json",
+    )
+    second = SourceHazardClassifier(second_provider, DagStore(tmp_path / "hazards"))
+    second_identity = second._identity(timeline, brief, "source_hazards:test", payload)
+
+    assert first_identity.cache_key != second_identity.cache_key
 
 
 def test_dag_cache_does_not_cross_full_model_identity_with_same_revision(
