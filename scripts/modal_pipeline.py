@@ -1041,6 +1041,7 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
             diarization_provider=diarization,
             render=render,
             checkpoint_commit=artifact_volume.commit,
+            execution_id=execution_id.lower(),
         )
     finally:
         brief_path.unlink(missing_ok=True)
