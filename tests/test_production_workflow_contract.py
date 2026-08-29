@@ -62,7 +62,9 @@ def test_production_workflow_resolves_campaign_and_target_from_request_data() ->
     assert 'os.environ["CLIPPER_TARGET_VIDEO_ID"]' in watchdog
     assert 'os.environ["CLIPPER_TARGET_VIDEO_URL"]' in watchdog
     assert 'os.environ["CLIPPER_TARGET_CHANNEL_ID"]' in watchdog
-    assert 'Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"]).read_text(' in watchdog
+    assert 'brief_path = Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"])' in watchdog
+    assert 'text = brief_path.read_text(encoding="utf-8")' in watchdog
+    assert "scoped_brief_yaml = _scoped_brief_yaml()" in watchdog
 
 
 def test_production_acceptance_contains_no_campaign_specific_identity() -> None:
