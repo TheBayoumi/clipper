@@ -10,6 +10,7 @@ from unittest.mock import call as mock_call
 import pytest
 
 from clipper.modal_execution import (
+    ProductionBudgetExceeded,
     _acquire_remote_source,
     _BudgetLedger,
     _class,
@@ -21,7 +22,6 @@ from clipper.modal_execution import (
     _materialize_remote_run,
     _positive_budget,
     _runtime_source_sha,
-    ProductionBudgetExceeded,
     _validate_model_access,
     _verify_deployed_runtime_sha,
     ensure_modal_runtime,
