@@ -589,6 +589,33 @@ def test_partial_quality_yield_is_degraded_not_backfilled(tmp_path: Path) -> Non
     assert manifest["funnel"]["reserve_promotions"] == 0
 
 
+def test_reserve_recovery_removes_primary_files_rejected_by_technical_qc(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    def qc(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {"status": "FAIL", "issues": ["synthetic rejection"]}
+        return {"status": "PASS", "issues": [], "captions": {"alignment": "PASS"}}
+
+    run_dir, *_ = _run_with_quality(
+        tmp_path,
+        lambda timelines, root: _quality_result(timelines, root, reserve=True),
+        renderer=FakeRenderer(),
+        qc=qc,
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "SUCCESS"
+    assert manifest["funnel"]["reserve_promotions"] == 1
+    mp4s = list((run_dir / "clips").glob("*.mp4"))
+    assert len(mp4s) == 1
+    assert "attempt-002" in mp4s[0].name
+    assert not list((run_dir / "clips").glob("attempt-001*"))
+
+
 def test_reserve_variant_can_recover_same_quality_moment_after_primary_failure(
     tmp_path: Path,
 ) -> None:
