@@ -223,6 +223,27 @@ class _ModalSpeechBase:
 
 
 class ModalTranscriptionProvider(_ModalSpeechBase):
+    def _validated_transcription_identity(self, response: dict[str, Any]) -> ModelIdentity:
+        raw = response.get("model")
+        if not isinstance(raw, dict):
+            raise ValueError("Modal transcription provider returned no model identity")
+        observed = {
+            "model_id": str(raw.get("model_id") or ""),
+            "revision": str(raw.get("revision") or ""),
+            "quantization": str(raw.get("quantization") or ""),
+        }
+        expected = {
+            "model_id": self.identity.model_id,
+            "revision": self.identity.revision,
+            "quantization": self.identity.quantization,
+        }
+        if observed != expected:
+            raise ValueError(
+                "Modal transcription model identity mismatch: "
+                f"expected={expected!r} observed={observed!r}"
+            )
+        return self.identity
+
     def transcribe(
         self, source: Path, *, video_id: str, source_hash: str
     ) -> ProviderResult[CanonicalTimeline]:
@@ -244,7 +265,11 @@ class ModalTranscriptionProvider(_ModalSpeechBase):
             words,
             transcript_source="modal-faster-whisper-large-v3-turbo",
         )
-        return ProviderResult(timeline, self._resolved_identity(response), self._usage(response))
+        return ProviderResult(
+            timeline,
+            self._validated_transcription_identity(response),
+            self._usage(response),
+        )
 
 
 class ModalAlignmentProvider(_ModalSpeechBase):
