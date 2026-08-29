@@ -71,6 +71,7 @@ jobs:
           set -euo pipefail
           image="${{ steps.image.outputs.image }}"
           tag="${{ steps.image.outputs.tag }}"
+          source_sha="${{ steps.image.outputs.source_sha }}"
           docker run --rm "${image}:${tag}" preflight --profile balanced
           docker run --rm "${image}:${tag}" preflight --profile local-lite --allow-local-lite
           docker run --rm \

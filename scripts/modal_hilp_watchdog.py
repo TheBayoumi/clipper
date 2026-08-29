@@ -201,7 +201,6 @@ def run(*, render: bool) -> dict[str, Any]:
     scoped_brief_yaml = _scoped_brief_yaml()
     (evidence_dir / "scoped-brief.yaml").write_text(scoped_brief_yaml, encoding="utf-8")
 
-
     spy = ModalExecutionSpy(
         (
             os.environ["CLIPPER_MODAL_APP"],

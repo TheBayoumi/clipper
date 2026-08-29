@@ -314,7 +314,11 @@ class WhisperXAlignmentProvider:
         self.model_id = model_id
         self.identity = ModelIdentity(
             model_id or "whisperx-forced-alignment",
-            revision, "none", "whisperx", "none", schema_version,
+            revision,
+            "none",
+            "whisperx",
+            "none",
+            schema_version,
         )
         self.device = device
         self.language_code = language_code
@@ -336,10 +340,12 @@ class WhisperXAlignmentProvider:
                 raise ProviderUnavailable(
                     "huggingface_hub is required for pinned alignment"
                 ) from exc
-            model_name = str(hub.snapshot_download(
-                repo_id=self.model_id,
-                revision=self.identity.revision,
-            ))
+            model_name = str(
+                hub.snapshot_download(
+                    repo_id=self.model_id,
+                    revision=self.identity.revision,
+                )
+            )
         model, metadata = whisperx.load_align_model(
             language_code=self.language_code,
             device=self.device,

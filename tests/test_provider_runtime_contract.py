@@ -305,9 +305,7 @@ def test_modal_endpoint_rejects_unattested_or_mismatched_identity() -> None:
 
     with pytest.raises(ProviderUnavailable, match="immutable"):
         _endpoint(
-            identity=ModelIdentity(
-                "endpoint-model", "main", "none", "test", "editor", "schema"
-            )
+            identity=ModelIdentity("endpoint-model", "main", "none", "test", "editor", "schema")
         )
 
 

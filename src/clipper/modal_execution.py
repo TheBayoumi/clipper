@@ -73,8 +73,14 @@ def _hydrate_named_handle(app_name: str, handle_name: str, *, kind: str) -> Any:
                 LOGGER.warning(
                     "Modal control-plane request failed while hydrating %s %s/%s "
                     "(%s: %s); retrying in %.1fs (%d/%d)",
-                    kind, app_name, handle_name, type(exc).__name__, str(exc),
-                    delay, attempt + 1, _CONTROL_PLANE_ATTEMPTS,
+                    kind,
+                    app_name,
+                    handle_name,
+                    type(exc).__name__,
+                    str(exc),
+                    delay,
+                    attempt + 1,
+                    _CONTROL_PLANE_ATTEMPTS,
                 )
                 time.sleep(delay)
                 continue
@@ -133,9 +139,14 @@ def _embedded_source_sha() -> str | None:
         )
     embedded_path = _repo_root() / ".clipper-source-sha"
     if embedded_path.is_file():
-        candidates.append((str(embedded_path), _validated_source_sha(
-            embedded_path.read_text(encoding="utf-8"), origin=str(embedded_path)
-        )))
+        candidates.append(
+            (
+                str(embedded_path),
+                _validated_source_sha(
+                    embedded_path.read_text(encoding="utf-8"), origin=str(embedded_path)
+                ),
+            )
+        )
     if not candidates:
         return None
     values = {value for _origin, value in candidates}
@@ -203,18 +214,20 @@ class _BudgetLedger:
             raise ValueError(f"{name} must be finite and nonnegative")
         return resolved
 
-    def projected_usage(self, elapsed_seconds: float, *, gpu_count: float,
-                        estimated_usd_per_second: float) -> tuple[float, float]:
+    def projected_usage(
+        self, elapsed_seconds: float, *, gpu_count: float, estimated_usd_per_second: float
+    ) -> tuple[float, float]:
         elapsed = max(0.0, float(elapsed_seconds))
         gpu_rate = self._rate(gpu_count, name="gpu_count")
         cost_rate = self._rate(estimated_usd_per_second, name="estimated_usd_per_second")
-        return (self.gpu_seconds + elapsed * gpu_rate,
-                self.estimated_usd + elapsed * cost_rate)
+        return (self.gpu_seconds + elapsed * gpu_rate, self.estimated_usd + elapsed * cost_rate)
 
-    def remaining_wall_seconds(self, elapsed_seconds: float, *, gpu_count: float,
-                               estimated_usd_per_second: float) -> float:
+    def remaining_wall_seconds(
+        self, elapsed_seconds: float, *, gpu_count: float, estimated_usd_per_second: float
+    ) -> float:
         projected_gpu, projected_cost = self.projected_usage(
-            elapsed_seconds, gpu_count=gpu_count,
+            elapsed_seconds,
+            gpu_count=gpu_count,
             estimated_usd_per_second=estimated_usd_per_second,
         )
         gpu_rate = self._rate(gpu_count, name="gpu_count")
@@ -230,8 +243,9 @@ class _BudgetLedger:
             return 0.0
         return min(limits) if limits else float("inf")
 
-    def charge(self, elapsed_seconds: float, *, gpu_count: float,
-               estimated_usd_per_second: float) -> None:
+    def charge(
+        self, elapsed_seconds: float, *, gpu_count: float, estimated_usd_per_second: float
+    ) -> None:
         elapsed = max(0.0, float(elapsed_seconds))
         self.gpu_seconds += elapsed * self._rate(gpu_count, name="gpu_count")
         self.estimated_usd += elapsed * self._rate(
@@ -239,8 +253,10 @@ class _BudgetLedger:
         )
 
     def remaining_budgets(self) -> tuple[float, float]:
-        return (max(0.0, self.max_gpu_seconds - self.gpu_seconds),
-                max(0.0, self.max_estimated_usd - self.estimated_usd))
+        return (
+            max(0.0, self.max_gpu_seconds - self.gpu_seconds),
+            max(0.0, self.max_estimated_usd - self.estimated_usd),
+        )
 
     def to_dict(self) -> dict[str, float]:
         remaining_gpu, remaining_cost = self.remaining_budgets()
@@ -280,13 +296,15 @@ def _invoke_remote_with_budget(
     def budget_usage() -> tuple[float, float]:
         return budget.projected_usage(
             max(0.0, time.monotonic() - started),
-            gpu_count=gpu_count, estimated_usd_per_second=estimated_usd_per_second,
+            gpu_count=gpu_count,
+            estimated_usd_per_second=estimated_usd_per_second,
         )
 
     def remaining_budget_wall_seconds() -> float:
         return budget.remaining_wall_seconds(
             max(0.0, time.monotonic() - started),
-            gpu_count=gpu_count, estimated_usd_per_second=estimated_usd_per_second,
+            gpu_count=gpu_count,
+            estimated_usd_per_second=estimated_usd_per_second,
         )
 
     try:
@@ -314,8 +332,11 @@ def _invoke_remote_with_budget(
                 )
             return result
     finally:
-        budget.charge(max(0.0, time.monotonic() - started), gpu_count=gpu_count,
-                      estimated_usd_per_second=estimated_usd_per_second)
+        budget.charge(
+            max(0.0, time.monotonic() - started),
+            gpu_count=gpu_count,
+            estimated_usd_per_second=estimated_usd_per_second,
+        )
         if not terminal_result:
             try:
                 call.cancel(terminate_containers=False)
@@ -413,8 +434,11 @@ def _ensure_deployed_runtime(
     if missing_handle is None:
         LOGGER.info("attached to deployed Modal runtime %s", app_name)
         return
-    LOGGER.info("Modal runtime %s/%s is not deployed; repairing from local checkout",
-                app_name, missing_handle)
+    LOGGER.info(
+        "Modal runtime %s/%s is not deployed; repairing from local checkout",
+        app_name,
+        missing_handle,
+    )
     _deploy(_repo_script(deployment_script))
     _hydrate_required(app_name, functions, classes)
 
@@ -500,10 +524,14 @@ def _acquire_remote_source(
     if execution_id:
         payload["execution_id"] = execution_id
     variants = (
-        ("cloud:gcp", "cloud", "gcp"), ("cloud:aws", "cloud", "aws"),
-        ("cloud:oci", "cloud", "oci"), ("region:eu", "region", "eu"),
-        ("region:ap", "region", "ap"), ("region:sa", "region", "sa"),
-        ("region:af", "region", "af"), ("default", "default", "auto"),
+        ("cloud:gcp", "cloud", "gcp"),
+        ("cloud:aws", "cloud", "aws"),
+        ("cloud:oci", "cloud", "oci"),
+        ("region:eu", "region", "eu"),
+        ("region:ap", "region", "ap"),
+        ("region:sa", "region", "sa"),
+        ("region:af", "region", "af"),
+        ("default", "default", "auto"),
     )
     failures: list[dict[str, str]] = []
     for label, kind, value in variants:
@@ -516,34 +544,47 @@ def _acquire_remote_source(
             variant = function.with_options(timeout=1800)
         try:
             result = _invoke_remote_with_budget(
-                variant, payload, budget=budget, gpu_count=0.0,
+                variant,
+                payload,
+                budget=budget,
+                gpu_count=0.0,
                 estimated_usd_per_second=_MODAL_ACQUISITION_ESTIMATED_USD_PER_SECOND,
             )
         except ProductionBudgetExceeded:
             if attempt_evidence is not None:
-                attempt_evidence.append({
-                    "egress": label, "status": "BUDGET_EXCEEDED",
-                    "estimated_usd": budget.estimated_usd - before_cost,
-                    "gpu_seconds": budget.gpu_seconds - before_gpu,
-                })
+                attempt_evidence.append(
+                    {
+                        "egress": label,
+                        "status": "BUDGET_EXCEEDED",
+                        "estimated_usd": budget.estimated_usd - before_cost,
+                        "gpu_seconds": budget.gpu_seconds - before_gpu,
+                    }
+                )
             raise
         except Exception as exc:
-            failures.append({"egress": label, "error_type": type(exc).__name__,
-                             "error": str(exc)[-2000:]})
+            failures.append(
+                {"egress": label, "error_type": type(exc).__name__, "error": str(exc)[-2000:]}
+            )
             if attempt_evidence is not None:
-                attempt_evidence.append({
-                    "egress": label, "status": "FAIL", "error_type": type(exc).__name__,
-                    "estimated_usd": budget.estimated_usd - before_cost,
-                    "gpu_seconds": budget.gpu_seconds - before_gpu,
-                })
+                attempt_evidence.append(
+                    {
+                        "egress": label,
+                        "status": "FAIL",
+                        "error_type": type(exc).__name__,
+                        "estimated_usd": budget.estimated_usd - before_cost,
+                        "gpu_seconds": budget.gpu_seconds - before_gpu,
+                    }
+                )
             continue
         if not isinstance(result, dict):
-            failures.append({"egress": label, "error_type": "InvalidResponse",
-                             "error": repr(result)[:2000]})
+            failures.append(
+                {"egress": label, "error_type": "InvalidResponse", "error": repr(result)[:2000]}
+            )
             continue
-        if str(result.get("video_id") or "") != candidate.video_id or str(
-            result.get("channel_id") or ""
-        ) != candidate.channel_id:
+        if (
+            str(result.get("video_id") or "") != candidate.video_id
+            or str(result.get("channel_id") or "") != candidate.channel_id
+        ):
             failures.append(
                 {
                     "egress": label,
@@ -556,20 +597,35 @@ def _acquire_remote_source(
             )
             continue
         if str(result.get("quality_policy")) != "highest_available_no_transcode":
-            failures.append({"egress": label, "error_type": "QualityPolicyError",
-                             "error": str(result.get("quality_policy"))})
+            failures.append(
+                {
+                    "egress": label,
+                    "error_type": "QualityPolicyError",
+                    "error": str(result.get("quality_policy")),
+                }
+            )
             continue
         if attempt_evidence is not None:
-            attempt_evidence.append({
-                "egress": label, "status": "PASS",
-                "estimated_usd": budget.estimated_usd - before_cost,
-                "gpu_seconds": budget.gpu_seconds - before_gpu,
-            })
-        LOGGER.info("Modal acquired source %s through %s: %s bytes sha256=%s",
-                    candidate.video_id, label, result.get("bytes"), result.get("sha256"))
+            attempt_evidence.append(
+                {
+                    "egress": label,
+                    "status": "PASS",
+                    "estimated_usd": budget.estimated_usd - before_cost,
+                    "gpu_seconds": budget.gpu_seconds - before_gpu,
+                }
+            )
+        LOGGER.info(
+            "Modal acquired source %s through %s: %s bytes sha256=%s",
+            candidate.video_id,
+            label,
+            result.get("bytes"),
+            result.get("sha256"),
+        )
         return result
-    raise RuntimeError(f"Modal source acquisition failed for {candidate.video_id}: "
-                       + json.dumps(failures, ensure_ascii=False))
+    raise RuntimeError(
+        f"Modal source acquisition failed for {candidate.video_id}: "
+        + json.dumps(failures, ensure_ascii=False)
+    )
 
 
 def _materialize_remote_run(*, artifact_root: Path, volume_name: str, remote_run_path: str) -> Path:
