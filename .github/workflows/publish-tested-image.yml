@@ -60,6 +60,15 @@ jobs:
             --tag "${image}:${tag}" \
             .
 
+      - name: Preflight published CLI runtimes inside image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${{ steps.image.outputs.image }}"
+          tag="${{ steps.image.outputs.tag }}"
+          docker run --rm "${image}:${tag}" preflight --profile balanced
+          docker run --rm "${image}:${tag}" preflight --profile local-lite --allow-local-lite
+
       - name: Run end-to-end smoke test inside image
         shell: bash
         run: |
