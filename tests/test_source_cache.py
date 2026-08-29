@@ -58,7 +58,9 @@ def test_persistent_youtube_client_routes_downloads_to_shared_cache(tmp_path: Pa
 
     assert result == expected_media
 
-def test_persistent_youtube_client_rejects_cached_master_with_wrong_identity(tmp_path: Path) -> None:
+def test_persistent_youtube_client_rejects_cached_master_with_wrong_identity(
+    tmp_path: Path,
+) -> None:
     cache_root = tmp_path / "cache"
     cached_dir = cache_root / "v1"
     cached_dir.mkdir(parents=True)
@@ -81,4 +83,3 @@ def test_persistent_youtube_client_rejects_cached_master_with_wrong_identity(tmp
 
     with pytest.raises(RuntimeError, match="channel ID"):
         client.download_media(_video(), tmp_path / "run")
-
