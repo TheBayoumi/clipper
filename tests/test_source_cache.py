@@ -58,6 +58,7 @@ def test_persistent_youtube_client_routes_downloads_to_shared_cache(tmp_path: Pa
 
     assert result == expected_media
 
+
 def test_persistent_youtube_client_rejects_cached_master_with_wrong_identity(
     tmp_path: Path,
 ) -> None:
