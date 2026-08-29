@@ -458,6 +458,14 @@ def test_pull_request_smoke_is_read_only_and_package_publish_requires_exact_head
     assert "docker push" in publish
 
 
+def test_production_pipeline_rejects_prohibited_watermark_before_paid_work() -> None:
+    pipeline = Path("src/clipper/pipeline.py").read_text(encoding="utf-8")
+    brief_load = pipeline.index("brief = load_brief(brief_path)")
+    watermark_gate = pipeline.index("campaign watermark_url is prohibited by")
+    provider_resolution = pipeline.index("editor = editorial_provider or build_editorial_provider")
+    assert brief_load < watermark_gate < provider_resolution
+
+
 def test_disabled_acceptance_guards_precede_any_paid_modal_work() -> None:
     production = Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
     deploy = Path(".github/workflows/modal-workers-deploy.yml").read_text(encoding="utf-8")
