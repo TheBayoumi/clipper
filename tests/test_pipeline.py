@@ -12,8 +12,8 @@ import pytest
 
 from clipper.brief import load_brief
 from clipper.cache import FileCache
-from clipper.dag import DagStore
 from clipper.canonical import CanonicalTimeline, CanonicalWord
+from clipper.dag import DagStore
 from clipper.models import (
     ClipCandidate,
     EditPlan,
