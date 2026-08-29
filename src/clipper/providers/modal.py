@@ -53,6 +53,11 @@ class EditorialInvocation:
         "capacity_repartitionable",
         "serialized_request_bytes",
         "output_tokens",
+        "generation_deadline_seconds",
+        "elapsed_seconds",
+        "cache_implementation",
+        "late_candidate_parseable",
+        "forced_min_new_tokens",
     )
 
     def __init__(
@@ -217,6 +222,82 @@ def invoke_editorial_capacity_probe(
             f"EditorialModel.capacity_probe returned invalid status: {probe_status!r}"
         )
     return response
+
+
+def invoke_editorial_deadline_probe(
+    remote: Callable[[dict[str, Any]], Any],
+    *,
+    task: str,
+    payload: dict[str, Any],
+    expected_git_sha: str,
+    execution_id: str | None = None,
+) -> dict[str, Any]:
+    """Require the acceptance-only generation probe to close as a deadline capacity rejection."""
+
+    invocation = EditorialInvocation.start(task=task, execution_id=execution_id)
+    request: dict[str, Any] = {
+        "task": task,
+        "payload": payload,
+        "expected_git_sha": expected_git_sha,
+        **invocation.request_fields(),
+    }
+    try:
+        response = remote(request)
+    except Exception as exc:
+        status = "TIMEOUT" if type(exc).__name__ == "FunctionTimeoutError" else "ERROR"
+        invocation.terminal(
+            status,
+            error_type=type(exc).__name__,
+            reason="deadline_probe_remote_exception",
+        )
+        raise
+
+    if not isinstance(response, dict):
+        invocation.terminal(
+            "ERROR",
+            error_type=type(response).__name__,
+            reason="deadline_probe_non_object_response",
+        )
+        raise RuntimeError("EditorialModel.deadline_probe returned a non-object response")
+
+    raw_error = response.get("error")
+    error = raw_error if isinstance(raw_error, dict) else {}
+    raw_details = error.get("details")
+    details = dict(raw_details) if isinstance(raw_details, dict) else {}
+    application_status = str(
+        response.get("application_status") or details.get("application_status") or ""
+    )
+    reason = str(details.get("reason") or "")
+    error_type = str(error.get("type") or "")
+    if (
+        application_status != "CAPACITY_REJECTED"
+        or error_type != "EditorialCapacityError"
+        or reason != "generation_runtime_deadline"
+    ):
+        invocation.terminal(
+            "ERROR",
+            error_type=error_type or type(raw_error).__name__,
+            reason="deadline_probe_unexpected_result",
+            details=details,
+        )
+        raise RuntimeError(
+            "EditorialModel.deadline_probe did not prove the generation deadline: "
+            f"application_status={application_status!r} "
+            f"error_type={error_type!r} reason={reason!r}"
+        )
+
+    invocation.terminal(
+        "CAPACITY_REJECTED",
+        error_type=error_type,
+        reason=reason,
+        details=details,
+    )
+    return {
+        "invocation_id": invocation.invocation_id,
+        "application_status": application_status,
+        "error_type": error_type,
+        "details": details,
+    }
 
 
 class ModalJSONProvider:
