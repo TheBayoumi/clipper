@@ -282,7 +282,7 @@ class AutonomousQualityPlanner:
             contract,
             source_hash=timeline.source_hash,
             dependency_output_hashes=(content_fingerprint(payload), *dependency_hashes),
-            model_revision=self.editorial.identity.revision,
+            model_revision=self.editorial.identity.cache_fingerprint(),
             decoding_parameters={"do_sample": False},
         )
 
