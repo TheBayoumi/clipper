@@ -90,6 +90,7 @@ media_image = (
         "cd /root/bgutil-ytdlp-pot-provider/server && npm ci && npx tsc",
     )
 )
+state_image = base_image.add_local_python_source("clipper")
 text_image = base_image.uv_pip_install(
     "torch==2.8.0",
     "torchvision==0.23.0",
@@ -607,26 +608,37 @@ def _editorial_capacity_state_path() -> Path:
 
 
 def _load_editorial_capacity_state() -> dict[str, Any]:
-    path = _editorial_capacity_state_path()
-    if not path.is_file():
-        return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return value if isinstance(value, dict) else {}
+    from clipper.editorial_capacity_state import load_editorial_capacity_state
+
+    return load_editorial_capacity_state(_editorial_capacity_state_path())
 
 
 def _persist_editorial_capacity_state(state: dict[str, Any]) -> None:
     path = _editorial_capacity_state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(
-        json.dumps(state, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
-    model_cache.commit()
+    try:
+        merged = editorial_capacity_state_writer.remote(
+            {
+                "state_file": path.name,
+                "state": state,
+            }
+        )
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "event": "editorial_capacity_state_persist_failed",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[-2000:],
+                    "state_file": path.name,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return
+    if isinstance(merged, dict):
+        state.clear()
+        state.update(merged)
 
 
 def _editorial_history_entry(state: dict[str, Any], task: str) -> dict[str, Any]:
@@ -1645,6 +1657,41 @@ def _editorial_capacity_probe(
         "usage": _usage(started, "L4:2", input_units=input_units, output_units=0),
         "runtime": runtime,
     }
+
+
+@app.function(
+    image=state_image,
+    volumes={HF_CACHE: model_cache},
+    max_containers=1,
+    timeout=120,
+)
+def editorial_capacity_state_writer(payload: dict[str, Any]) -> dict[str, Any]:
+    """Serialize learned editorial-capacity updates across GPU containers."""
+
+    from clipper.editorial_capacity_state import (
+        load_editorial_capacity_state,
+        merge_editorial_capacity_state,
+        write_editorial_capacity_state,
+    )
+
+    state_file = str(payload.get("state_file") or "").strip()
+    incoming = payload.get("state")
+    if (
+        not state_file
+        or Path(state_file).name != state_file
+        or not state_file.endswith(".json")
+        or not isinstance(incoming, dict)
+    ):
+        raise ValueError("editorial capacity writer received an invalid state payload")
+
+    root = Path(HF_CACHE) / "clipper-editorial-capacity"
+    path = root / state_file
+    model_cache.reload()
+    current = load_editorial_capacity_state(path)
+    merged = merge_editorial_capacity_state(current, incoming)
+    write_editorial_capacity_state(path, merged)
+    model_cache.commit()
+    return merged
 
 
 @app.cls(
