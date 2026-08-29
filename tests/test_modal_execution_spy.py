@@ -354,6 +354,18 @@ def test_spy_scopes_pipeline_and_model_events_to_one_execution(tmp_path: Path) -
     }
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_spy_rejects_non_finite_generation_stall_timeout(
+    tmp_path: Path,
+    monkeypatch,
+    value: str,
+) -> None:
+    module = _module()
+    monkeypatch.setenv("CLIPPER_MODAL_GENERATION_STALL_SECONDS", value)
+    with pytest.raises(ValueError, match="finite and positive"):
+        module.ModalExecutionSpy(("app",), tmp_path / "bad-stall.ndjson")
+
+
 def test_spy_aborts_editorial_remote_call_that_exceeds_progress_deadline(
     tmp_path: Path,
     monkeypatch,
