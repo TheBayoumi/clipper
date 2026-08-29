@@ -35,10 +35,16 @@ def test_review_requires_exact_codex_head() -> None:
 
 def test_unresolved_codex_p0_p1_p2_blocks_but_p3_does_not() -> None:
     gate = _load_gate()
-    def thread(body: str, resolved: bool = False) -> dict[str, object]:
+
+    def thread(*bodies: str, resolved: bool = False) -> dict[str, object]:
         return {
             "isResolved": resolved,
-            "comments": {"nodes": [{"author": {"login": gate.CODEX_LOGIN}, "body": body}]},
+            "comments": {
+                "nodes": [
+                    {"author": {"login": gate.CODEX_LOGIN}, "body": body}
+                    for body in bodies
+                ]
+            },
         }
 
     assert gate._is_blocking_codex_thread(thread("P0 production corruption"))
@@ -46,6 +52,38 @@ def test_unresolved_codex_p0_p1_p2_blocks_but_p3_does_not() -> None:
     assert gate._is_blocking_codex_thread(thread("P2 race"))
     assert not gate._is_blocking_codex_thread(thread("P3 cleanup"))
     assert not gate._is_blocking_codex_thread(thread("P1 fixed", resolved=True))
+
+    runtime_only = thread("P1 NEEDS_RUNTIME_EVIDENCE prove real generation deadline")
+    assert not gate._is_blocking_codex_thread(
+        runtime_only,
+        allow_runtime_evidence=True,
+    )
+    assert gate._is_deferred_runtime_evidence_thread(runtime_only)
+
+    mixed = thread(
+        "P1 NEEDS_RUNTIME_EVIDENCE prove real generation deadline",
+        "P2 static acceptance can false-pass",
+    )
+    assert gate._is_blocking_codex_thread(mixed, allow_runtime_evidence=True)
+    assert not gate._is_deferred_runtime_evidence_thread(mixed)
+
+
+def test_pull_request_resolution_requires_one_exact_head_match() -> None:
+    gate = _load_gate()
+    head = "e" * 40
+    pulls = [
+        {"number": 2, "head": {"sha": head}},
+        {"number": 3, "head": {"sha": "f" * 40}},
+    ]
+    assert gate._select_pr_number_for_head(pulls, head) == 2
+
+    for ambiguous in ([], [pulls[0], {"number": 4, "head": {"sha": head}}]):
+        try:
+            gate._select_pr_number_for_head(ambiguous, head)
+        except RuntimeError as exc:
+            assert "exactly one pull request" in str(exc)
+        else:
+            raise AssertionError("exact-head PR resolution must fail closed")
 
 
 def test_clean_codex_reaction_requires_exact_head_request() -> None:
