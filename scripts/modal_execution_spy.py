@@ -687,12 +687,14 @@ class ModalExecutionSpy:
                 process.terminate()
 
     def _check_stalled_editorial_calls(self) -> None:
-        if self.abort_reason is not None or not self._active_editorial_calls:
-            return
+        with self.lock:
+            if self.abort_reason is not None or not self._active_editorial_calls:
+                return
+            active_calls = list(self._active_editorial_calls.items())
         now = time.monotonic()
         stalled = [
             (invocation_id, task, now - started)
-            for invocation_id, (task, started) in self._active_editorial_calls.items()
+            for invocation_id, (task, started) in active_calls
             if now - started >= self.generation_stall_seconds
         ]
         if stalled:
