@@ -13,7 +13,14 @@ from .base import (
     VisionProvider,
     compute_profile,
 )
-from .editorial_prompt import EDITORIAL_IDENTITY, EDITORIAL_SCHEMA_IDENTITY
+from .editorial_model_contract import (
+    EDITORIAL_INFERENCE_ENGINE,
+    EDITORIAL_MODEL_ID,
+    EDITORIAL_MODEL_REVISION,
+    EDITORIAL_PROMPT_VERSION,
+    EDITORIAL_QUANTIZATION,
+    EDITORIAL_SCHEMA_VERSION,
+)
 from .local import LocalEditorialProvider, LocalVisionProvider
 from .modal import ModalEditorialProvider, ModalVisionProvider
 from .modal_endpoint import ModalEndpointEditorialProvider
@@ -76,15 +83,12 @@ def editorial_provider(profile_name: str) -> EditorialProvider:
             class_name="EditorialModel",
             method_name="complete",
             identity=ModelIdentity(
-                "Qwen/Qwen3-30B-A3B-Instruct-2507",
-                os.getenv(
-                    "CLIPPER_EDITORIAL_MODEL_REVISION",
-                    "110954009be4a882781a90356c7d2b8a9e3428dc",
-                ),
-                os.getenv("CLIPPER_EDITORIAL_QUANTIZATION", "bnb-4bit-nf4"),
-                "modal-transformers",
-                EDITORIAL_IDENTITY,
-                EDITORIAL_SCHEMA_IDENTITY,
+                EDITORIAL_MODEL_ID,
+                EDITORIAL_MODEL_REVISION,
+                EDITORIAL_QUANTIZATION,
+                EDITORIAL_INFERENCE_ENGINE,
+                EDITORIAL_PROMPT_VERSION,
+                EDITORIAL_SCHEMA_VERSION,
             ),
         )
     if backend in {"managed", "endpoint"}:
