@@ -39,6 +39,20 @@ def test_runtime_safe_target_participates_in_capacity_repartition() -> None:
     )
 
 
+def test_live_generation_deadline_repartitions_below_observed_stall() -> None:
+    assert (
+        capacity_target_input_tokens(
+            {
+                "reason": "generation_runtime_deadline",
+                "input_tokens": 58_750,
+                "runtime_safe_input_tokens": 29_375,
+                "generation_deadline_seconds": 300,
+            }
+        )
+        == 29_375
+    )
+
+
 def test_modal_function_timeout_becomes_editorial_capacity_error(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
