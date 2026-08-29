@@ -26,12 +26,6 @@ from clipper.providers.modal_speech import (
     ModalTranscriptionProvider,
     _ModalSpeechBase,
 )
-from clipper.providers.speech_contract import (
-    ASR_COMPUTE_TYPE,
-    ASR_INFERENCE_ENGINE,
-    ASR_MODEL_ID,
-    ASR_MODEL_REVISION,
-)
 from clipper.providers.speech import (
     FasterWhisperTranscriptionProvider,
     PassthroughDiarizationProvider,
@@ -44,6 +38,12 @@ from clipper.providers.speech import (
     _replace_words,
     apply_speaker_turns,
     apply_whisperx_alignment,
+)
+from clipper.providers.speech_contract import (
+    ASR_COMPUTE_TYPE,
+    ASR_INFERENCE_ENGINE,
+    ASR_MODEL_ID,
+    ASR_MODEL_REVISION,
 )
 
 
