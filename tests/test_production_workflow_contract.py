@@ -477,8 +477,8 @@ def test_published_image_installs_and_preflights_real_cli_runtimes() -> None:
     assert 'pip install ".[asr]"' not in dockerfile
     for workflow in (smoke, publish):
         assert "Preflight published CLI runtimes inside image" in workflow
-        assert 'preflight --profile balanced' in workflow
-        assert 'preflight --profile local-lite --allow-local-lite' in workflow
+        assert "preflight --profile balanced" in workflow
+        assert "preflight --profile local-lite --allow-local-lite" in workflow
 
 
 def test_disabled_acceptance_guards_precede_any_paid_modal_work() -> None:
