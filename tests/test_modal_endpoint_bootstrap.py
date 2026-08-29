@@ -54,7 +54,11 @@ def test_modal_editorial_recovers_when_remote_reports_more_output_capacity(
                 },
             }
         },
-        {"value": {"cores": []}, "usage": {}},
+        {
+            "value": {"cores": []},
+            "model": provider.identity.to_dict(),
+            "usage": {},
+        },
     ]
     payload = {"source": "canonical words"}
 
