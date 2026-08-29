@@ -73,10 +73,7 @@ class DagStore:
         self.root = Path(root)
         self.execution_lease_seconds = float(execution_lease_seconds)
         self.follower_poll_seconds = float(follower_poll_seconds)
-        if (
-            not math.isfinite(self.execution_lease_seconds)
-            or self.execution_lease_seconds <= 0
-        ):
+        if not math.isfinite(self.execution_lease_seconds) or self.execution_lease_seconds <= 0:
             raise ValueError("DAG execution lease must be finite and positive")
         if not math.isfinite(self.follower_poll_seconds) or self.follower_poll_seconds <= 0:
             raise ValueError("DAG follower poll interval must be finite and positive")
