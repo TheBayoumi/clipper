@@ -61,7 +61,12 @@ def _format_payload(*, include_4k: bool = True) -> dict[str, object]:
             "tbr": 1900,
         }
     )
-    return {"formats": formats}
+    return {
+        "id": "v1",
+        "channel_id": "UC1",
+        "webpage_url": "https://www.youtube.com/watch?v=v1",
+        "formats": formats,
+    }
 
 
 def test_youtube_helper_edge_cases(monkeypatch) -> None:
@@ -123,7 +128,7 @@ def test_direct_video_discovery_uses_metadata_path() -> None:
         "title": "Allowed",
         "channel_id": "UC1",
         "channel": "Channel",
-        "webpage_url": "https://youtube.test/v1",
+        "webpage_url": "https://www.youtube.com/watch?v=v1",
         "duration": 42,
     }
     client = YouTubeClient(None)
@@ -180,7 +185,7 @@ def test_format_selection_ignores_non_video_formats() -> None:
 
 def test_non_403_download_failure_does_not_enter_recovery(tmp_path: Path) -> None:
     client = YouTubeClient(None)
-    video = VideoCandidate("v1", "T", "UC1", "C", "https://youtube.test/v1")
+    video = VideoCandidate("v1", "T", "UC1", "C", "https://www.youtube.com/watch?v=v1")
     calls: list[list[str]] = []
 
     def fake_run(command, **_kwargs):
@@ -201,7 +206,7 @@ def test_non_403_download_failure_does_not_enter_recovery(tmp_path: Path) -> Non
 def test_403_exhaustion_records_refresh_and_quality_lock(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("CLIPPER_YTDLP_RETRY_CLIENTS", "android_vr,web_embedded")
     client = YouTubeClient(None)
-    video = VideoCandidate("v1", "T", "UC1", "C", "https://youtube.test/v1")
+    video = VideoCandidate("v1", "T", "UC1", "C", "https://www.youtube.com/watch?v=v1")
     calls: list[list[str]] = []
 
     def fake_run(command, **_kwargs):
