@@ -456,6 +456,8 @@ def test_pull_request_smoke_is_read_only_and_package_publish_requires_exact_head
     assert 'test "${source_sha}" = "${expected_sha}"' in publish
     assert "docker login ghcr.io" in publish
     assert "docker push" in publish
+    assert ":latest" not in publish
+    assert 'tag="sha-${source_sha::12}"' in publish
 
 
 def test_production_pipeline_rejects_prohibited_watermark_before_paid_work() -> None:
