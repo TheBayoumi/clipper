@@ -38,6 +38,10 @@ from .speech_contract import (
     ASR_INFERENCE_ENGINE,
     ASR_MODEL_ID,
     ASR_MODEL_REVISION,
+    DIARIZATION_INFERENCE_ENGINE,
+    DIARIZATION_MODEL_ID,
+    DIARIZATION_MODEL_REVISION,
+    DIARIZATION_QUANTIZATION,
 )
 
 
@@ -168,10 +172,10 @@ def speech_providers(
             app_name=app,
             function_name="diarize",
             identity=ModelIdentity(
-                "pyannote/speaker-diarization-community-1",
-                os.getenv("CLIPPER_DIARIZATION_MODEL_REVISION", "main"),
-                "none",
-                "modal-pyannote",
+                DIARIZATION_MODEL_ID,
+                DIARIZATION_MODEL_REVISION,
+                DIARIZATION_QUANTIZATION,
+                DIARIZATION_INFERENCE_ENGINE,
                 "none",
                 canonical_contract,
             ),
