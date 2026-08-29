@@ -318,9 +318,10 @@ def test_modal_open_model_deploys_required_speech_handles() -> None:
     assert {"transcribe", "align", "diarize"}.issubset(functions)
 
     transcribe_source = source.split("def transcribe(", 1)[1].split("def align(", 1)[0]
-    assert 'WhisperModel("large-v3-turbo"' in transcribe_source or (
-        '"large-v3-turbo",' in transcribe_source and "WhisperModel(" in transcribe_source
-    )
+    assert "WhisperModel(" in transcribe_source
+    assert "ASR_MODEL_ID," in transcribe_source
+    assert "revision=ASR_MODEL_REVISION" in transcribe_source
+    assert "compute_type=ASR_COMPUTE_TYPE" in transcribe_source
     assert "word_timestamps=True" in transcribe_source
     assert "vad_filter=True" in transcribe_source
 
