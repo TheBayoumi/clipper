@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import ANY, Mock, call, patch
+from unittest.mock import ANY, Mock, call as mock_call, patch
 
 import pytest
 
@@ -523,10 +523,10 @@ def test_source_acquisition_records_failed_clouds_before_region_success() -> Non
     assert result["sha256"] == "a" * 64
     assert [item["status"] for item in attempts] == ["FAIL", "FAIL", "FAIL", "PASS"]
     assert function.with_options.call_args_list == [
-        call(cloud="gcp", timeout=1800),
-        call(cloud="aws", timeout=1800),
-        call(cloud="oci", timeout=1800),
-        call(region="eu", timeout=1800),
+        mock_call(cloud="gcp", timeout=1800),
+        mock_call(cloud="aws", timeout=1800),
+        mock_call(cloud="oci", timeout=1800),
+        mock_call(region="eu", timeout=1800),
     ]
     for call in failed_calls:
         call.cancel.assert_called_once_with(terminate_containers=False)
