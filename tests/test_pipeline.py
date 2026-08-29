@@ -450,9 +450,10 @@ def test_grounding_dag_allows_only_one_provider_execution_per_cache_key(
 
     assert provider.calls == 1
     assert first_result[0].to_dict() == second_result[0].to_dict()
-    assert sorted(
-        [bool(first_result[1]["cache_hit"]), bool(second_result[1]["cache_hit"])]
-    ) == [False, True]
+    assert sorted([bool(first_result[1]["cache_hit"]), bool(second_result[1]["cache_hit"])]) == [
+        False,
+        True,
+    ]
 
 
 def test_grounding_cache_reuses_exact_model_and_source_identity(tmp_path: Path) -> None:
