@@ -49,6 +49,11 @@ class FakeVision:
 class PolicyVision(FakeVision):
     def __init__(self) -> None:
         super().__init__({})
+        self.warm_calls = 0
+
+    def warm(self) -> dict[str, object]:
+        self.warm_calls += 1
+        return {}
 
     def inspect(
         self, *, task: str, frames: list[Path], context: dict[str, object]
@@ -918,9 +923,44 @@ def test_source_policy_fully_cached_resume_performs_no_inference(
             output_dir=tmp_path / "second",
             checkpoint_dir=cache,
         )
+    assert cached.warm_calls == 1
     assert not cached.calls
     extract.assert_not_called()
     assert result.usage.provider == "cache"
     assert result.usage.runtime["source_policy_cache_hits"] == int(
         timeline.coverage_summary("source_policy")["sample_count"]
     )
+
+def test_source_policy_checkpoint_commit_failure_does_not_discard_successful_inference(
+    tmp_path: Path,
+) -> None:
+    provider = PolicyVision()
+    attempts = {"count": 0}
+
+    def failing_commit() -> None:
+        attempts["count"] += 1
+        raise RuntimeError("transient volume commit failure")
+
+    with (
+        patch("clipper.visual_ai.media_duration_seconds", return_value=12.0),
+        patch(
+            "clipper.visual_ai.extract_video_frames",
+            side_effect=_prepared_source_policy_frames,
+        ),
+        patch("clipper.visual_ai.time.sleep"),
+    ):
+        timeline, result = scout_visual_timeline(
+            tmp_path / "source.mp4",
+            provider,
+            video_id="v",
+            source_hash="h",
+            duration=12.0,
+            output_dir=tmp_path / "frames-best-effort",
+            checkpoint_dir=tmp_path / "cache-best-effort",
+            checkpoint_commit=failing_commit,
+        )
+
+    assert timeline.events
+    assert result.usage.input_units > 0
+    assert attempts["count"] >= 3
+
