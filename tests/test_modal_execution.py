@@ -143,6 +143,22 @@ def test_deploy_retries_cli_failure(tmp_path: Path) -> None:
     sleep.assert_called_once_with(2.0)
 
 
+def test_deploy_raises_after_final_cli_failure(tmp_path: Path) -> None:
+    script = tmp_path / "worker.py"
+    script.write_text("# worker\n", encoding="utf-8")
+    failure = subprocess.CalledProcessError(1, ["modal", "deploy", str(script)])
+    with (
+        patch("clipper.modal_execution.shutil.which", return_value="modal"),
+        patch("clipper.modal_execution._repo_root", return_value=tmp_path),
+        patch("clipper.modal_execution._local_git_sha", return_value="a" * 40),
+        patch("clipper.modal_execution.subprocess.run", side_effect=failure) as run,
+        patch("clipper.modal_execution.time.sleep"),
+        pytest.raises(subprocess.CalledProcessError),
+    ):
+        _deploy(script)
+    assert run.call_count == 3
+
+
 def test_ensure_modal_runtime_attaches_without_deploying_when_apps_exist() -> None:
     with (
         patch("clipper.modal_execution._function", return_value=Mock()) as function,
@@ -352,6 +368,35 @@ def test_acquire_remote_source_exhausts_invalid_and_failed_egress() -> None:
             expected_git_sha="a" * 40,
             budget=_BudgetLedger(100.0, 1.0),
         )
+
+def test_acquire_remote_source_skips_invalid_response_and_uses_default_budget() -> None:
+    invalid_call = Mock()
+    invalid_call.get.return_value = "invalid"
+    success_call = Mock()
+    success_call.get.return_value = {
+        "video_id": "v1",
+        "channel_id": "UC1",
+        "quality_policy": "highest_available_no_transcode",
+        "bytes": 123,
+        "sha256": "a" * 64,
+    }
+    first_variant = SimpleNamespace(spawn=Mock(return_value=invalid_call))
+    second_variant = SimpleNamespace(spawn=Mock(return_value=success_call))
+    function = Mock()
+    function.with_options.side_effect = [first_variant, second_variant]
+
+    result = _acquire_remote_source(
+        function,
+        VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1"),
+        expected_git_sha="a" * 40,
+    )
+
+    assert result["sha256"] == "a" * 64
+    assert function.with_options.call_args_list == [
+        mock_call(cloud="gcp", timeout=1800),
+        mock_call(cloud="aws", timeout=1800),
+    ]
+
 
 def test_acquire_remote_source_rejects_wrong_resolved_identity() -> None:
     function = Mock()
@@ -1087,6 +1132,26 @@ def test_invoke_remote_with_budget_cancels_non_timeout_poll_failure() -> None:
         )
 
     call.cancel.assert_called_once_with(terminate_containers=False)
+
+
+def test_invoke_remote_with_budget_preserves_poll_failure_when_cancel_fails() -> None:
+    call_handle = Mock()
+    call_handle.get.side_effect = ServiceError("poll failed")
+    call_handle.cancel.side_effect = RuntimeError("cancel failed")
+    function = SimpleNamespace(spawn=Mock(return_value=call_handle))
+
+    with (
+        patch("clipper.modal_execution.LOGGER.exception") as logged,
+        pytest.raises(ServiceError, match="poll failed"),
+    ):
+        _invoke_remote_with_budget(
+            function,
+            {},
+            max_gpu_seconds=10.0,
+            max_estimated_usd=1.0,
+        )
+
+    logged.assert_called_once_with("failed to cancel nonterminal Modal production call")
 
 
 def test_invoke_remote_with_budget_rechecks_successful_final_poll(
