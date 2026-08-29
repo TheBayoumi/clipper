@@ -46,6 +46,9 @@ EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS = int(
 EDITORIAL_GENERATION_DEADLINE_SECONDS = float(
     os.getenv("CLIPPER_EDITORIAL_GENERATION_DEADLINE_SECONDS", "300")
 )
+EDITORIAL_GENERATION_DEADLINE_TOLERANCE_SECONDS = float(
+    os.getenv("CLIPPER_EDITORIAL_GENERATION_DEADLINE_TOLERANCE_SECONDS", "30")
+)
 if EDITORIAL_EXECUTION_TIMEOUT_SECONDS <= 0:
     raise ValueError("CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS must be positive")
 if EDITORIAL_STARTUP_TIMEOUT_SECONDS <= 0:
@@ -55,7 +58,13 @@ if EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS <= 0:
 if (
     not math.isfinite(EDITORIAL_GENERATION_DEADLINE_SECONDS)
     or EDITORIAL_GENERATION_DEADLINE_SECONDS <= 0
-    or EDITORIAL_GENERATION_DEADLINE_SECONDS >= EDITORIAL_EXECUTION_TIMEOUT_SECONDS
+    or not math.isfinite(EDITORIAL_GENERATION_DEADLINE_TOLERANCE_SECONDS)
+    or EDITORIAL_GENERATION_DEADLINE_TOLERANCE_SECONDS <= 0
+    or (
+        EDITORIAL_GENERATION_DEADLINE_SECONDS
+        + EDITORIAL_GENERATION_DEADLINE_TOLERANCE_SECONDS
+        >= EDITORIAL_EXECUTION_TIMEOUT_SECONDS
+    )
 ):
     raise ValueError(
         "CLIPPER_EDITORIAL_GENERATION_DEADLINE_SECONDS must be finite, positive, "
@@ -675,6 +684,7 @@ def _editorial_runtime_metadata() -> dict[str, object]:
         "transformers_version": importlib.metadata.version("transformers"),
         "runtime_safe_input_tokens": EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS,
         "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
+        "generation_deadline_tolerance_seconds": EDITORIAL_GENERATION_DEADLINE_TOLERANCE_SECONDS,
         "execution_timeout_seconds": EDITORIAL_EXECUTION_TIMEOUT_SECONDS,
     }
 
@@ -1789,11 +1799,26 @@ def _editorial_deadline_probe(
             f"elapsed={elapsed_seconds:.3f}s "
             f"deadline={EDITORIAL_GENERATION_DEADLINE_SECONDS:.3f}s"
         )
+    maximum_deadline_elapsed = (
+        EDITORIAL_GENERATION_DEADLINE_SECONDS
+        + EDITORIAL_GENERATION_DEADLINE_TOLERANCE_SECONDS
+    )
+    if elapsed_seconds > maximum_deadline_elapsed:
+        raise RuntimeError(
+            "editorial deadline probe returned too late to prove the primary max_time boundary: "
+            f"elapsed={elapsed_seconds:.3f}s maximum={maximum_deadline_elapsed:.3f}s"
+        )
     output_units = (
         len(tokenizer(candidate, add_special_tokens=False)["input_ids"])
         if isinstance(candidate, str)
         else None
     )
+    if output_units is None or output_units >= output_budget:
+        raise RuntimeError(
+            "editorial deadline probe satisfied the forced token target instead of proving "
+            "max_time interruption: "
+            f"output_tokens={output_units!r} forced_min_new_tokens={output_budget}"
+        )
     raise _editorial_generation_deadline_error(
         plan=plan,
         lifecycle_id=lifecycle_id,
