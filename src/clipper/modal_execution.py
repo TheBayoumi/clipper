@@ -302,7 +302,7 @@ def _explicit_candidates(brief_path: Path) -> list[VideoCandidate]:
             title=f"{brief.title} explicit target",
             channel_id=spec.channel_id,
             channel_title="Authorized explicit target",
-            url=spec.media_url or spec.url,
+            url=spec.url,
         )
         for spec in specs
     ]
