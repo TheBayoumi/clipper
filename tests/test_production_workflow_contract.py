@@ -392,7 +392,6 @@ def test_production_runtime_rechecks_deployed_identity_before_inference() -> Non
 
 
 def test_all_paid_modal_calls_carry_expected_deployed_sha() -> None:
-    workflow = _workflow()
     speech = Path("src/clipper/providers/modal_speech.py").read_text(encoding="utf-8")
     models = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
     pipeline = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")

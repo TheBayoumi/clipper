@@ -12,10 +12,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
-from clipper.modal_execution import _BudgetLedger, _acquire_remote_source
-from clipper.models import VideoCandidate
 from modal_execution_spy import ModalExecutionSpy
+
+from clipper.modal_execution import _acquire_remote_source, _BudgetLedger
+from clipper.models import VideoCandidate
 
 
 class ProductionCallCancelled(RuntimeError):

@@ -9,8 +9,8 @@ from unittest.mock import ANY, Mock, patch
 import pytest
 
 from clipper.modal_execution import (
-    _BudgetLedger,
     _acquire_remote_source,
+    _BudgetLedger,
     _class,
     _deploy,
     _explicit_candidates,

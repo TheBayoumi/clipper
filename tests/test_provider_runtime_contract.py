@@ -56,12 +56,12 @@ from clipper.providers.speech_contract import (
 )
 from clipper.providers.vision_contract import (
     VISION_INFERENCE_ENGINE,
-    VISION_MODEL_ID,
-    VISION_MODEL_REVISION,
-    VISION_QUANTIZATION,
     VISION_LARGE_MODEL_ID,
     VISION_LARGE_MODEL_REVISION,
     VISION_LARGE_QUANTIZATION,
+    VISION_MODEL_ID,
+    VISION_MODEL_REVISION,
+    VISION_QUANTIZATION,
 )
 
 
