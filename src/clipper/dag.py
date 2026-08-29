@@ -300,9 +300,7 @@ class DagStore:
         except Exception as exc:
             if not lease_lost.is_set():
                 try:
-                    owns_lease = coordinator.renew(
-                        identity, owner_id, self.execution_lease_seconds
-                    )
+                    owns_lease = coordinator.renew(identity, owner_id, self.execution_lease_seconds)
                 except Exception:
                     owns_lease = False
                 if owns_lease:
