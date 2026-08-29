@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -48,16 +49,35 @@ def _review_matches_head(review: dict[str, Any], head_sha: str) -> bool:
     return bool(match and head_sha.startswith(match.group(1).lower()))
 
 
-def _is_blocking_codex_thread(thread: dict[str, Any]) -> bool:
+def _is_blocking_codex_thread(
+    thread: dict[str, Any],
+    *,
+    allow_runtime_evidence: bool = False,
+) -> bool:
     if bool(thread.get("isResolved")):
         return False
     nodes = ((thread.get("comments") or {}).get("nodes") or [])
+    blocking_bodies: list[str] = []
     for comment in nodes:
         if str((comment.get("author") or {}).get("login") or "") != CODEX_LOGIN:
             continue
-        if BLOCKING_SEVERITY_RE.search(str(comment.get("body") or "")):
-            return True
-    return False
+        body = str(comment.get("body") or "")
+        if BLOCKING_SEVERITY_RE.search(body):
+            blocking_bodies.append(body)
+    if not blocking_bodies:
+        return False
+    if allow_runtime_evidence and all(
+        "NEEDS_RUNTIME_EVIDENCE" in body for body in blocking_bodies
+    ):
+        return False
+    return True
+
+
+def _is_deferred_runtime_evidence_thread(thread: dict[str, Any]) -> bool:
+    return not _is_blocking_codex_thread(
+        thread,
+        allow_runtime_evidence=True,
+    ) and _is_blocking_codex_thread(thread)
 
 
 def _clean_reaction_matches_head(
@@ -73,16 +93,58 @@ def _clean_reaction_matches_head(
     )
 
 
-def _load_event_pr_number() -> int:
+def _load_event_pr_context() -> tuple[int | None, str | None]:
     event_path = os.environ.get("GITHUB_EVENT_PATH", "")
     if not event_path:
-        raise RuntimeError("GITHUB_EVENT_PATH is required")
+        return None, None
     with open(event_path, encoding="utf-8") as handle:
         event = json.load(handle)
-    number = event.get("number") or (event.get("pull_request") or {}).get("number")
-    if not isinstance(number, int) or number <= 0:
-        raise RuntimeError("Codex review gate requires a pull-request event")
-    return number
+    pull_request = event.get("pull_request") or {}
+    number = event.get("number") or pull_request.get("number")
+    raw_head = (pull_request.get("head") or {}).get("sha")
+    pr_number = number if isinstance(number, int) and number > 0 else None
+    head_sha = str(raw_head or "").lower() or None
+    return pr_number, head_sha
+
+
+def _select_pr_number_for_head(pulls: list[dict[str, Any]], head_sha: str) -> int:
+    matches = []
+    for pull in pulls:
+        if str(((pull.get("head") or {}).get("sha")) or "").lower() != head_sha:
+            continue
+        number = pull.get("number")
+        if isinstance(number, int) and number > 0:
+            matches.append(number)
+    unique = sorted(set(matches))
+    if len(unique) != 1:
+        raise RuntimeError(
+            "exact-head Codex gate requires exactly one pull request: "
+            f"head={head_sha} matches={unique}"
+        )
+    return unique[0]
+
+
+def _resolve_pr_number(
+    repo: str,
+    token: str,
+    *,
+    head_sha: str,
+    explicit_pr_number: int | None,
+    event_pr_number: int | None,
+) -> int:
+    if explicit_pr_number is not None:
+        if explicit_pr_number <= 0:
+            raise ValueError("--pr-number must be positive")
+        return explicit_pr_number
+    if event_pr_number is not None:
+        return event_pr_number
+    pulls = _request_json(
+        _repo_api(repo, f"commits/{head_sha}/pulls?per_page=100"),
+        token,
+    )
+    if not isinstance(pulls, list):
+        raise RuntimeError("GitHub commit-pulls lookup did not return an array")
+    return _select_pr_number_for_head(pulls, head_sha)
 
 
 def _fetch_unresolved_threads(repo: str, pr_number: int, token: str) -> list[dict[str, Any]]:
@@ -127,19 +189,49 @@ def _fetch_unresolved_threads(repo: str, pr_number: int, token: str) -> list[dic
             raise RuntimeError("GitHub review-thread pagination returned no cursor")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--head-sha")
+    parser.add_argument("--pr-number", type=int)
+    parser.add_argument(
+        "--allow-runtime-evidence",
+        action="store_true",
+        help=(
+            "Static preflight only: allow unresolved P0-P2 threads when every blocking Codex "
+            "comment in the thread is explicitly marked NEEDS_RUNTIME_EVIDENCE."
+        ),
+    )
+    args = parser.parse_args(argv)
+
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     token = os.environ.get("GITHUB_TOKEN", "")
     if not repo or "/" not in repo:
         raise RuntimeError("GITHUB_REPOSITORY must be owner/repo")
     if not token:
         raise RuntimeError("GITHUB_TOKEN is required")
-    pr_number = _load_event_pr_number()
+
+    event_pr_number, event_head_sha = _load_event_pr_context()
+    requested_head_sha = str(args.head_sha or event_head_sha or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", requested_head_sha):
+        raise RuntimeError(
+            "Codex review gate requires an exact 40-character head SHA via "
+            "--head-sha or pull-request event"
+        )
+    pr_number = _resolve_pr_number(
+        repo,
+        token,
+        head_sha=requested_head_sha,
+        explicit_pr_number=args.pr_number,
+        event_pr_number=event_pr_number,
+    )
 
     pr = _request_json(_repo_api(repo, f"pulls/{pr_number}"), token)
     head_sha = str(((pr.get("head") or {}).get("sha")) or "").lower()
-    if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
-        raise RuntimeError(f"PR head SHA is invalid: {head_sha!r}")
+    if head_sha != requested_head_sha:
+        raise RuntimeError(
+            "pull-request head moved away from the reviewed exact head: "
+            f"requested={requested_head_sha} actual={head_sha}"
+        )
 
     reviews = _request_json(
         _repo_api(repo, f"pulls/{pr_number}/reviews?per_page=100"),
@@ -177,18 +269,35 @@ def main() -> int:
         return 1
 
     threads = _fetch_unresolved_threads(repo, pr_number, token)
-    blocking = [thread for thread in threads if _is_blocking_codex_thread(thread)]
+    blocking = [
+        thread
+        for thread in threads
+        if _is_blocking_codex_thread(
+            thread,
+            allow_runtime_evidence=args.allow_runtime_evidence,
+        )
+    ]
+    deferred = [
+        thread for thread in threads if _is_deferred_runtime_evidence_thread(thread)
+    ]
     if blocking:
+        mode = "static preflight" if args.allow_runtime_evidence else "final"
         print(
             f"::error::{len(blocking)} unresolved Codex P0/P1/P2 review thread(s) "
-            f"remain on PR #{pr_number}."
+            f"remain on PR #{pr_number} for {mode} gate."
         )
         return 1
 
-    print(
-        f"Codex review gate PASS: exact head {head_sha}; "
-        "no unresolved Codex P0/P1/P2 threads."
-    )
+    if args.allow_runtime_evidence:
+        print(
+            f"Codex static preflight PASS: exact head {head_sha}; "
+            f"deferred_runtime_threads={len(deferred)}; no unresolved static P0/P1/P2."
+        )
+    else:
+        print(
+            f"Codex review gate PASS: exact head {head_sha}; "
+            "no unresolved Codex P0/P1/P2 threads."
+        )
     return 0
 
 
