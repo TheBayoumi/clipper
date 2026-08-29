@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -62,8 +63,23 @@ class StageRecord:
 class DagStore:
     """Persistent content-addressed stage store with exact dependency reuse."""
 
-    def __init__(self, root: str | Path) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        execution_lease_seconds: float = 86_400.0,
+        follower_poll_seconds: float = 0.05,
+    ) -> None:
         self.root = Path(root)
+        self.execution_lease_seconds = float(execution_lease_seconds)
+        self.follower_poll_seconds = float(follower_poll_seconds)
+        if (
+            not math.isfinite(self.execution_lease_seconds)
+            or self.execution_lease_seconds <= 0
+        ):
+            raise ValueError("DAG execution lease must be finite and positive")
+        if not math.isfinite(self.follower_poll_seconds) or self.follower_poll_seconds <= 0:
+            raise ValueError("DAG follower poll interval must be finite and positive")
 
     def _directory(self, identity: StageIdentity) -> Path:
         safe_stage = "".join(
@@ -77,6 +93,32 @@ class DagStore:
 
     def _output_path(self, identity: StageIdentity) -> Path:
         return self._directory(identity) / "output.json"
+
+    def _execution_claim_path(self, identity: StageIdentity) -> Path:
+        return self._directory(identity) / "execution-claim.json"
+
+    def _read_execution_claim(self, identity: StageIdentity) -> dict[str, Any] | None:
+        path = self._execution_claim_path(identity)
+        if not path.is_file():
+            return None
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    @staticmethod
+    def _claim_owner(claim: dict[str, Any] | None) -> str:
+        return str(claim.get("owner_id") or "") if claim is not None else ""
+
+    @staticmethod
+    def _claim_expired(claim: dict[str, Any] | None, *, now: float) -> bool:
+        if claim is None:
+            return True
+        expires_at = claim.get("expires_at")
+        if not isinstance(expires_at, (int, float)) or isinstance(expires_at, bool):
+            return True
+        return not math.isfinite(float(expires_at)) or float(expires_at) <= now
 
     @staticmethod
     def _write_json(path: Path, payload: object) -> None:
@@ -153,36 +195,61 @@ class DagStore:
         identity: StageIdentity,
         operation: Callable[[], StageResult | object],
     ) -> tuple[object, bool]:
-        cached = self.cached_output(identity)
-        if cached is not None:
-            return cached, True
+        owner_id = uuid.uuid4().hex
+        attempt = 0
+        started = ""
 
-        with self._write_lock(identity):
+        while True:
             cached = self.cached_output(identity)
             if cached is not None:
                 return cached, True
-            attempt = self.attempt_count(identity) + 1
-            started = _now()
-            running = StageRecord(
-                identity=identity,
-                status="RUNNING",
-                attempt_count=attempt,
-                started_at=started,
-                completed_at=None,
-                output_fingerprint=None,
-                usage={},
-                cost_usd=0.0,
-            )
-            self._write_json(self._record_path(identity), running.to_dict())
+
+            claimed = False
+            with self._write_lock(identity):
+                cached = self.cached_output(identity)
+                if cached is not None:
+                    return cached, True
+
+                now = time.time()
+                claim = self._read_execution_claim(identity)
+                if self._claim_expired(claim, now=now):
+                    attempt = self.attempt_count(identity) + 1
+                    started = _now()
+                    self._write_json(
+                        self._execution_claim_path(identity),
+                        {
+                            "owner_id": owner_id,
+                            "claimed_at": now,
+                            "expires_at": now + self.execution_lease_seconds,
+                        },
+                    )
+                    running = StageRecord(
+                        identity=identity,
+                        status="RUNNING",
+                        attempt_count=attempt,
+                        started_at=started,
+                        completed_at=None,
+                        output_fingerprint=None,
+                        usage={},
+                        cost_usd=0.0,
+                    )
+                    self._write_json(self._record_path(identity), running.to_dict())
+                    claimed = True
+
+            if claimed:
+                break
+            time.sleep(self.follower_poll_seconds)
 
         try:
             raw_result = operation()
             result = raw_result if isinstance(raw_result, StageResult) else StageResult(raw_result)
             fingerprint = content_fingerprint(result.output)
             with self._write_lock(identity):
-                cached = self.cached_output(identity)
-                if cached is not None:
-                    return cached, True
+                claim = self._read_execution_claim(identity)
+                if self._claim_owner(claim) != owner_id:
+                    raise RuntimeError(
+                        f"DAG execution lease lost before PASS for {identity.stage_name}"
+                    )
                 self._write_json(self._output_path(identity), result.output)
                 passed = StageRecord(
                     identity=identity,
@@ -195,23 +262,24 @@ class DagStore:
                     cost_usd=result.cost_usd,
                 )
                 self._write_json(self._record_path(identity), passed.to_dict())
+                self._execution_claim_path(identity).unlink(missing_ok=True)
             return result.output, False
         except Exception as exc:
             with self._write_lock(identity):
-                cached = self.cached_output(identity)
-                if cached is not None:
-                    return cached, True
-                failed = StageRecord(
-                    identity=identity,
-                    status="FAILED",
-                    attempt_count=attempt,
-                    started_at=started,
-                    completed_at=_now(),
-                    output_fingerprint=None,
-                    usage={},
-                    cost_usd=0.0,
-                    error_type=type(exc).__name__,
-                    error=str(exc),
-                )
-                self._write_json(self._record_path(identity), failed.to_dict())
+                claim = self._read_execution_claim(identity)
+                if self._claim_owner(claim) == owner_id:
+                    failed = StageRecord(
+                        identity=identity,
+                        status="FAILED",
+                        attempt_count=attempt,
+                        started_at=started,
+                        completed_at=_now(),
+                        output_fingerprint=None,
+                        usage={},
+                        cost_usd=0.0,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    self._write_json(self._record_path(identity), failed.to_dict())
+                    self._execution_claim_path(identity).unlink(missing_ok=True)
             raise
