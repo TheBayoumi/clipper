@@ -387,6 +387,15 @@ class CampaignBrief:
             raise BriefValidationError("min_clip_seconds must be less than max_clip_seconds")
         if self.watermark_url and not self.watermark_url.startswith("https://"):
             raise BriefValidationError("watermark_url must use https")
+        if (
+            self.watermark_url
+            and self.acceptance_policy.enabled
+            and not self.acceptance_policy.branding.supplied_campaign_assets_allowed
+        ):
+            raise BriefValidationError(
+                "watermark_url is prohibited by acceptance_policy.branding."
+                "supplied_campaign_assets_allowed"
+            )
         for video_id, media_url in self.source_media_urls.items():
             if video_id not in self.allowed_video_ids:
                 raise BriefValidationError(
