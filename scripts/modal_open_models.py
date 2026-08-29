@@ -20,6 +20,12 @@ from typing import Any
 
 import modal
 
+from clipper.providers.speech_contract import (
+    ASR_COMPUTE_TYPE,
+    ASR_MODEL_ID,
+    ASR_MODEL_REVISION,
+)
+
 
 APP_NAME = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
 # This is a Modal resource name, not credential material.
@@ -118,7 +124,7 @@ speech_image = base_image.uv_pip_install(
     "faster-whisper>=1.2.1,<2",
     "whisperx>=3.8.6,<4",
     "pyannote.audio>=4.0.7,<5",
-)
+).add_local_python_source("clipper")
 
 app = modal.App(APP_NAME)
 _whisper_model: Any | None = None
@@ -2456,9 +2462,10 @@ def transcribe(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("source_path must be mounted media")
     if _whisper_model is None:
         _whisper_model = WhisperModel(
-            "large-v3-turbo",
+            ASR_MODEL_ID,
+            revision=ASR_MODEL_REVISION,
             device="cuda",
-            compute_type="float16",
+            compute_type=ASR_COMPUTE_TYPE,
         )
     segments, _info = _whisper_model.transcribe(
         source_path,
@@ -2484,7 +2491,10 @@ def transcribe(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("faster-whisper produced no timestamped words")
     return {
         "words": words,
-        "model": _model_evidence("mobiuslabsgmbh/faster-whisper-large-v3-turbo"),
+        "model": {
+            **_model_evidence(ASR_MODEL_ID, revision=ASR_MODEL_REVISION),
+            "quantization": ASR_COMPUTE_TYPE,
+        },
         "usage": _usage(started, "L4", output_units=len(words)),
     }
 
