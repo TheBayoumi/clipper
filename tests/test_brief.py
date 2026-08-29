@@ -116,6 +116,35 @@ def test_load_explicit_target_brief_without_output_quotas(tmp_path: Path) -> Non
     assert targets[0].media_url == "https://media.example.test/v1.mkv"
 
 
+def test_campaign_watermark_is_rejected_when_campaign_assets_are_forbidden(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "watermark-forbidden.yaml"
+    path.write_text(
+        "campaign_id: c1\n"
+        "title: Explicit campaign\n"
+        "objective: Find worthwhile moments.\n"
+        "watermark_url: https://assets.example.test/watermark.png\n"
+        "targets:\n"
+        "  mode: explicit\n"
+        "  videos:\n"
+        "    - video_id: v1\n"
+        "      url: https://www.youtube.com/watch?v=v1\n"
+        "      channel_id: UC_AUTHORIZED\n"
+        "rights:\n"
+        "  confirmed: true\n"
+        "  authorized_channels: [UC_AUTHORIZED]\n"
+        "acceptance_policy:\n"
+        "  enabled: true\n"
+        "  branding:\n"
+        "    supplied_campaign_assets_allowed: false\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BriefValidationError, match="watermark_url is prohibited"):
+        load_brief(path)
+
+
 def test_explicit_target_channel_must_be_authorized(tmp_path: Path) -> None:
     path = tmp_path / "brief.yaml"
     path.write_text(
