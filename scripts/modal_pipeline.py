@@ -467,13 +467,16 @@ def _editorial_acceptance_probe(
     brief_yaml: str,
     video_ids: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Measure the legacy raw evidence and verify token-aware repartition inside Modal."""
+    """Prove projection, token-aware repartition, and the live 300-second generation boundary."""
 
     from clipper.brief import load_brief
     from clipper.canonical import CanonicalTimeline
     from clipper.editorial_capacity import token_aware_repartition
     from clipper.multimodal_timeline import build_multimodal_timeline
-    from clipper.providers.modal import invoke_editorial_capacity_probe
+    from clipper.providers.modal import (
+        invoke_editorial_capacity_probe,
+        invoke_editorial_deadline_probe,
+    )
     from clipper.source_hazards import SourceHazardClassifier, campaign_context
     from clipper.visual import VisualTimeline
 
@@ -485,7 +488,12 @@ def _editorial_acceptance_probe(
         brief_path.unlink(missing_ok=True)
 
     worker = modal.Cls.from_name(MODEL_APP, "EditorialModel")()
+    expected_sha = os.getenv("CLIPPER_ACCEPTANCE_SHA", "")
+    execution_id = os.getenv("CLIPPER_EXECUTION_ID", "")
+    deadline_probe_min_new_tokens = 65_536
     results: list[dict[str, Any]] = []
+    deadline_evidence: dict[str, Any] | None = None
+
     for video_id in video_ids:
         timeline = CanonicalTimeline.from_dict(
             json.loads((run_dir / "canonical" / f"{video_id}.json").read_text(encoding="utf-8"))
@@ -524,8 +532,8 @@ def _editorial_acceptance_probe(
             worker.capacity_probe.remote,
             task=task,
             payload=raw_payload,
-            expected_git_sha=os.getenv("CLIPPER_ACCEPTANCE_SHA", ""),
-            execution_id=os.getenv("CLIPPER_EXECUTION_ID", ""),
+            expected_git_sha=expected_sha,
+            execution_id=execution_id,
         )
         probe = response.get("value")
         if not isinstance(probe, dict):
@@ -552,14 +560,176 @@ def _editorial_acceptance_probe(
             json.dumps(
                 {
                     "event": "editorial_acceptance_probe_result",
-                    "execution_id": os.getenv("CLIPPER_EXECUTION_ID", ""),
+                    "execution_id": execution_id,
                     **evidence,
                 },
                 sort_keys=True,
             )
         )
 
-    result = {"status": "PASS", "sources": results}
+        if deadline_evidence is not None:
+            continue
+
+        candidate_start = 0
+        candidate_end = min(len(timeline.words), 256)
+        deadline_task = f"source_hazards:deadline_probe:{video_id}"
+        if candidate_end - candidate_start <= 1:
+            raise RuntimeError("deadline probe requires at least two source words")
+
+        projected_payload: dict[str, Any] | None = None
+        preflight: dict[str, Any] | None = None
+        for preflight_attempt in range(16):
+            candidate_words = timeline.words[candidate_start:candidate_end]
+            candidate_source_start = candidate_words[0].source_start
+            candidate_source_end = candidate_words[-1].source_end
+            projection = SourceHazardClassifier._project_multimodal_payload(
+                multimodal,
+                candidate_source_start,
+                candidate_source_end,
+            )
+            projected_payload = {
+                "campaign": campaign_context(brief),
+                "instruction": (
+                    "Classify the entire supplied source interval into exhaustive chronological "
+                    "segments. Fuse speech and multimodal evidence. Ordinary source material is "
+                    "editorial_content. Use unknown when evidence is insufficient; uncertainty "
+                    "must never be converted into an automatic PASS."
+                ),
+                "words": SourceHazardClassifier._word_payload(
+                    timeline,
+                    candidate_start,
+                    candidate_end,
+                ),
+                "capacity_repartitionable": True,
+                "multimodal_evidence": list(projection.events),
+            }
+            if projection.provenance:
+                projected_payload["multimodal_provenance"] = list(projection.provenance)
+
+            preflight_task = f"{deadline_task}:preflight:{preflight_attempt}"
+            preflight_response = invoke_editorial_capacity_probe(
+                worker.capacity_probe.remote,
+                task=preflight_task,
+                payload=projected_payload,
+                expected_git_sha=expected_sha,
+                execution_id=execution_id,
+            )
+            raw_preflight = preflight_response.get("value")
+            if not isinstance(raw_preflight, dict):
+                raise RuntimeError("deadline probe preflight returned no capacity measurement")
+            preflight = {str(key): value for key, value in raw_preflight.items()}
+            input_tokens = int(preflight.get("input_tokens") or 0)
+            available_output = int(preflight.get("available_output_tokens") or 0)
+            runtime_safe = int(preflight.get("runtime_safe_input_tokens") or 0)
+            if (
+                preflight.get("status") == "FIT"
+                and input_tokens > 0
+                and runtime_safe > 0
+                and input_tokens <= runtime_safe
+                and available_output >= deadline_probe_min_new_tokens
+            ):
+                break
+
+            preflight_plan = token_aware_repartition(
+                timeline,
+                candidate_start,
+                candidate_end,
+                preflight,
+            )
+            if preflight_plan is None:
+                raise RuntimeError(
+                    "deadline probe cannot reach a runtime-safe source interval with "
+                    f"{deadline_probe_min_new_tokens} output tokens reserved: {preflight}"
+                )
+            previous_words = candidate_end - candidate_start
+            candidate_start, candidate_end = preflight_plan.ranges[0]
+            if candidate_end - candidate_start >= previous_words:
+                raise RuntimeError(
+                    "deadline probe preflight repartition did not make strict source progress"
+                )
+        else:
+            raise RuntimeError("deadline probe preflight exceeded bounded repartition attempts")
+
+        if projected_payload is None or preflight is None:
+            raise AssertionError("deadline probe preflight produced no projected payload")
+        deadline_result = invoke_editorial_deadline_probe(
+            worker.deadline_probe.remote,
+            task=deadline_task,
+            payload=projected_payload,
+            expected_git_sha=expected_sha,
+            execution_id=execution_id,
+        )
+        deadline_details = deadline_result.get("details")
+        if not isinstance(deadline_details, dict):
+            raise RuntimeError("deadline probe returned no capacity rejection details")
+        deadline_input_tokens = int(deadline_details.get("input_tokens") or 0)
+        deadline_target_tokens = int(deadline_details.get("runtime_safe_input_tokens") or 0)
+        deadline_seconds = float(deadline_details.get("generation_deadline_seconds") or 0.0)
+        elapsed_seconds = float(deadline_details.get("elapsed_seconds") or 0.0)
+        forced_min_new_tokens = int(deadline_details.get("forced_min_new_tokens") or 0)
+        if deadline_seconds != 300.0:
+            raise RuntimeError(
+                f"deadline probe did not exercise the production 300-second boundary: "
+                f"{deadline_seconds}"
+            )
+        if elapsed_seconds < deadline_seconds:
+            raise RuntimeError(
+                "deadline probe returned before the configured generation boundary: "
+                f"elapsed={elapsed_seconds} deadline={deadline_seconds}"
+            )
+        if (
+            deadline_input_tokens <= 1
+            or deadline_target_tokens <= 0
+            or deadline_target_tokens >= deadline_input_tokens
+        ):
+            raise RuntimeError(
+                "deadline rejection did not produce a strictly smaller runtime token target: "
+                f"{deadline_details}"
+            )
+        if forced_min_new_tokens < deadline_probe_min_new_tokens:
+            raise RuntimeError(
+                "deadline probe did not force enough generation to exclude natural early EOS: "
+                f"{deadline_details}"
+            )
+
+        deadline_repartition = token_aware_repartition(
+            timeline,
+            candidate_start,
+            candidate_end,
+            deadline_details,
+        )
+        if deadline_repartition is None:
+            raise RuntimeError("deadline capacity rejection did not produce a source repartition")
+        parent_words = candidate_end - candidate_start
+        if any(
+            child_end - child_start >= parent_words
+            for child_start, child_end in deadline_repartition.ranges
+        ):
+            raise RuntimeError(
+                "deadline capacity repartition failed to make strict source progress: "
+                f"{deadline_repartition.ranges}"
+            )
+        deadline_repartition_event = {
+            **deadline_repartition.telemetry(stage=deadline_task),
+            "invocation_id": str(deadline_result.get("invocation_id") or ""),
+        }
+        print(json.dumps(deadline_repartition_event, sort_keys=True))
+        deadline_evidence = {
+            "video_id": video_id,
+            "source_range": [candidate_start, candidate_end],
+            "preflight": preflight,
+            "invocation_id": str(deadline_result.get("invocation_id") or ""),
+            "capacity_rejection": deadline_details,
+            "repartition": deadline_repartition_event,
+        }
+
+    if deadline_evidence is None:
+        raise RuntimeError("editorial acceptance produced no live generation deadline evidence")
+    result = {
+        "status": "PASS",
+        "sources": results,
+        "generation_deadline_probe": deadline_evidence,
+    }
     (run_dir / "editorial-acceptance-probe.json").write_text(
         json.dumps(result, indent=2) + chr(10),
         encoding="utf-8",
