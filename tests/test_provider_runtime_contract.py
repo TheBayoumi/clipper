@@ -40,6 +40,10 @@ from clipper.providers.speech import (
     apply_whisperx_alignment,
 )
 from clipper.providers.speech_contract import (
+    ALIGNMENT_INFERENCE_ENGINE,
+    ALIGNMENT_MODEL_ID,
+    ALIGNMENT_MODEL_REVISION,
+    ALIGNMENT_QUANTIZATION,
     ASR_COMPUTE_TYPE,
     ASR_INFERENCE_ENGINE,
     ASR_MODEL_ID,
@@ -616,10 +620,37 @@ def test_modal_transcription_alignment_and_diarization_contracts(tmp_path: Path)
                     {"word": "world", "start": 1.0, "end": 1.7, "score": 0.9},
                 ]
             }
-        ]
+        ],
+        "model": {
+            "model_id": "align",
+            "revision": "rev",
+            "quantization": "none",
+        },
     }
     with patch.object(alignment, "_function", return_value=function):
         assert alignment.align(source, timeline).value.words[0].timing_mode == "aligned"
+
+    function.remote.return_value = {
+        "segments": [
+            {
+                "words": [
+                    {"word": "Hello", "start": 0.0, "end": 0.7, "score": 0.9},
+                    {"word": "world", "start": 1.0, "end": 1.7, "score": 0.9},
+                ]
+            }
+        ],
+        "model": {
+            "model_id": "wrong-align",
+            "revision": "rev",
+            "quantization": "none",
+        },
+    }
+    with (
+        patch.object(alignment, "_function", return_value=function),
+        pytest.raises(ValueError, match="alignment model identity mismatch"),
+    ):
+        alignment.align(source, timeline)
+
     function.remote.return_value = {}
     with (
         patch.object(alignment, "_function", return_value=function),
@@ -674,6 +705,10 @@ def test_provider_factory_selects_local_modal_managed_and_degraded(monkeypatch) 
     assert modal_speech[0].identity.quantization == ASR_COMPUTE_TYPE
     assert modal_speech[0].identity.inference_engine == ASR_INFERENCE_ENGINE
     assert isinstance(modal_speech[1], ModalAlignmentProvider)
+    assert modal_speech[1].identity.model_id == ALIGNMENT_MODEL_ID
+    assert modal_speech[1].identity.revision == ALIGNMENT_MODEL_REVISION
+    assert modal_speech[1].identity.quantization == ALIGNMENT_QUANTIZATION
+    assert modal_speech[1].identity.inference_engine == ALIGNMENT_INFERENCE_ENGINE
     assert isinstance(modal_speech[2], PassthroughDiarizationProvider)
 
     monkeypatch.setenv("CLIPPER_DIARIZATION_MODE", "invalid")
