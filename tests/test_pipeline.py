@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +11,8 @@ from unittest.mock import Mock, patch
 import pytest
 
 from clipper.brief import load_brief
+from clipper.cache import FileCache
+from clipper.dag import DagStore
 from clipper.canonical import CanonicalTimeline, CanonicalWord
 from clipper.models import (
     ClipCandidate,
@@ -19,6 +23,7 @@ from clipper.models import (
 )
 from clipper.pipeline import (
     PipelineSettings,
+    _cached_transcription,
     _campaign_watermark,
     _copy_render_sidecars,
     _download_asset,
@@ -403,6 +408,51 @@ def test_pipeline_planning_uses_only_explicit_target_and_writes_contract_artifac
         "eligible_quality_moments": 1,
         "accepted_quality_moments": 0,
     }
+
+
+def test_grounding_dag_allows_only_one_provider_execution_per_cache_key(
+    tmp_path: Path,
+) -> None:
+    media = tmp_path / "source.mkv"
+    media.write_bytes(b"same-source")
+    cache = FileCache(tmp_path / "cache")
+    dag = DagStore(
+        tmp_path / "grounding-dag",
+        execution_lease_seconds=10.0,
+        follower_poll_seconds=0.001,
+    )
+    manifest_a = PipelineManifest("a")
+    manifest_b = PipelineManifest("b")
+
+    class SlowTranscription(FakeTranscription):
+        def transcribe(self, source: Path, *, video_id: str, source_hash: str):
+            time.sleep(0.05)
+            return super().transcribe(source, video_id=video_id, source_hash=source_hash)
+
+    provider = SlowTranscription()
+
+    def invoke(manifest: PipelineManifest):
+        return _cached_transcription(
+            cache,
+            manifest,
+            provider,
+            media,
+            "v1",
+            "source-hash",
+            dag=dag,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(invoke, manifest_a)
+        second = pool.submit(invoke, manifest_b)
+        first_result = first.result(timeout=5)
+        second_result = second.result(timeout=5)
+
+    assert provider.calls == 1
+    assert first_result[0].to_dict() == second_result[0].to_dict()
+    assert sorted(
+        [bool(first_result[1]["cache_hit"]), bool(second_result[1]["cache_hit"])]
+    ) == [False, True]
 
 
 def test_grounding_cache_reuses_exact_model_and_source_identity(tmp_path: Path) -> None:
