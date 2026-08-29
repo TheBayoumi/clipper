@@ -320,6 +320,30 @@ def test_cli_run_returns_failure_for_failed_production_manifest(tmp_path: Path) 
         assert main(["run", "--brief", str(path), "--artifact-root", str(tmp_path / "out")]) == 1
 
 
+
+def test_cli_run_returns_failure_for_failed_analysis_only_manifest(tmp_path: Path) -> None:
+    path = make_brief(tmp_path)
+    run_dir = tmp_path / "failed-analysis"
+    write_model_manifest(run_dir, status="FAILED")
+    with (
+        patch("clipper.cli._resolved_model_plan", return_value=local_plan()),
+        patch("clipper.cli.run_pipeline", return_value=run_dir),
+    ):
+        assert (
+            main(
+                [
+                    "run",
+                    "--brief",
+                    str(path),
+                    "--artifact-root",
+                    str(tmp_path / "out"),
+                    "--no-render",
+                ]
+            )
+            == 1
+        )
+
+
 def test_cli_error_path(tmp_path: Path) -> None:
     path = make_brief(tmp_path)
     with patch("clipper.cli.load_brief", side_effect=RuntimeError("boom")):
