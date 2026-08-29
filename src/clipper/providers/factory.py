@@ -43,6 +43,15 @@ from .speech_contract import (
     DIARIZATION_MODEL_REVISION,
     DIARIZATION_QUANTIZATION,
 )
+from .vision_contract import (
+    VISION_INFERENCE_ENGINE,
+    VISION_LARGE_MODEL_ID,
+    VISION_LARGE_MODEL_REVISION,
+    VISION_LARGE_QUANTIZATION,
+    VISION_MODEL_ID,
+    VISION_MODEL_REVISION,
+    VISION_QUANTIZATION,
+)
 
 
 def _canonical_contract() -> str:
@@ -100,20 +109,22 @@ def vision_provider(profile_name: str, *, large: bool = False) -> VisionProvider
     profile = compute_profile(profile_name)  # type: ignore[arg-type]
     if large and not profile.allow_large_vlm_escalation:
         raise ValueError("large VLM escalation is disabled for this compute profile")
-    model_id = "Qwen/Qwen3-VL-30B-A3B-Instruct" if large else "Qwen/Qwen3-VL-8B-Instruct"
+    model_id = VISION_LARGE_MODEL_ID if large else VISION_MODEL_ID
     if profile.vision_location == "local":
         if large:
             raise ValueError("large VLM is not enabled for local-lite")
         return LocalVisionProvider(model_id=model_id)
+    revision = VISION_LARGE_MODEL_REVISION if large else VISION_MODEL_REVISION
+    quantization = VISION_LARGE_QUANTIZATION if large else VISION_QUANTIZATION
     return ModalVisionProvider(
         app_name=os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor"),
         class_name="VisionModelLarge" if large else "VisionModel",
         method_name="inspect",
         identity=ModelIdentity(
             model_id,
-            os.getenv("CLIPPER_VISION_MODEL_REVISION", "main"),
-            os.getenv("CLIPPER_VISION_QUANTIZATION", "none"),
-            "modal-transformers",
+            revision,
+            quantization,
+            VISION_INFERENCE_ENGINE,
             "vision",
             "structured-json",
         ),
