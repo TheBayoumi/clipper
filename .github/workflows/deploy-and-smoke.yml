@@ -14,7 +14,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: clipper-deploy-${{ github.event.pull_request.head.ref || github.ref }}
@@ -81,21 +80,7 @@ jobs:
             "${image}:${tag}" \
             /app/scripts/smoke_e2e.py --output-root /artifacts
 
-      - name: Publish tested image to GHCR
-        shell: bash
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          image="${{ steps.image.outputs.image }}"
-          tag="${{ steps.image.outputs.tag }}"
-          alias="${{ steps.image.outputs.alias }}"
-          echo "${GHCR_TOKEN}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
-          docker push "${image}:${tag}"
-          docker tag "${image}:${tag}" "${image}:${alias}"
-          docker push "${image}:${alias}"
-
-      - name: Verify registry round trip
+      - name: Record smoke evidence
         shell: bash
         run: |
           set -euo pipefail
@@ -103,13 +88,9 @@ jobs:
           tag="${{ steps.image.outputs.tag }}"
           image_ref="${image}:${tag}"
           source_sha="${{ steps.image.outputs.source_sha }}"
-          docker image rm "${image_ref}"
-          docker pull "${image_ref}"
-          docker run --rm "${image_ref}" --help
-          digest="$(docker image inspect "${image_ref}" --format '{{index .RepoDigests 0}}')"
           revision="$(docker image inspect "${image_ref}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
-          test "$revision" = "$source_sha"
-          python - "${image_ref}" "${digest}" "${source_sha}" <<'PY'
+          test "${revision}" = "${source_sha}"
+          python - "${image_ref}" "${source_sha}" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -118,10 +99,10 @@ jobs:
           path.write_text(
               json.dumps(
                   {
-                      "status": "deployed",
+                      "status": "smoke_verified",
                       "image_ref": sys.argv[1],
-                      "digest": sys.argv[2],
-                      "source_sha": sys.argv[3],
+                      "source_sha": sys.argv[2],
+                      "published": False,
                   },
                   indent=2,
               )
