@@ -99,9 +99,7 @@ def _validated_source_identity(
             f"expected={video.channel_id} actual={actual_channel_id}"
         )
     if _youtube_video_id(canonical_url) != video.video_id:
-        raise YouTubeError(
-            "YouTube extractor canonical URL does not match authorized candidate"
-        )
+        raise YouTubeError("YouTube extractor canonical URL does not match authorized candidate")
     return {
         "video_id": actual_id,
         "channel_id": actual_channel_id,
