@@ -322,8 +322,7 @@ class ModalExecutionSpy:
                         return f"acceptance deadline probe did not exercise 300 seconds: {event}"
                     if event.get("late_candidate_rejected") is not True:
                         return (
-                            "acceptance deadline probe omitted late-candidate rejection: "
-                            f"{event}"
+                            f"acceptance deadline probe omitted late-candidate rejection: {event}"
                         )
                     if (
                         isinstance(forced, bool)
@@ -335,8 +334,7 @@ class ModalExecutionSpy:
                         or output >= forced
                     ):
                         return (
-                            "acceptance deadline probe omitted forced-interruption proof: "
-                            f"{event}"
+                            f"acceptance deadline probe omitted forced-interruption proof: {event}"
                         )
             return None
 

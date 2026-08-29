@@ -644,11 +644,7 @@ def test_spy_rejects_incomplete_authoritative_deadline_evidence(
         '{"event":"editorial_remote_call_terminal","execution_id":"exec-123",'
         '"invocation_id":"inv-deadline","task":"source_hazards:deadline_probe:video",'
         '"status":"CAPACITY_REJECTED","reason":"generation_runtime_deadline",'
-        '"generation_deadline_seconds":300.0'
-        + elapsed
-        + ","
-        + terminal_suffix
-        + "}",
+        '"generation_deadline_seconds":300.0' + elapsed + "," + terminal_suffix + "}",
     )
 
     assert spy.abort_reason is not None

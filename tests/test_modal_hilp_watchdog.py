@@ -219,9 +219,7 @@ def test_source_payload_persists_failed_attempt_and_budget_evidence(
         )
 
     attempts = json.loads(
-        (tmp_path / "open-evidence" / "source-egress-attempts.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "open-evidence" / "source-egress-attempts.json").read_text(encoding="utf-8")
     )
     budget_evidence = json.loads(
         (tmp_path / "open-evidence" / "source-budget.json").read_text(encoding="utf-8")
@@ -238,9 +236,7 @@ def test_watchdog_marks_pre_root_failure_as_abort(tmp_path: Path, monkeypatch) -
     monkeypatch.setattr(
         module,
         "_source_payload",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("synthetic pre-root failure")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("synthetic pre-root failure")),
     )
     monkeypatch.setitem(sys.modules, "modal", SimpleNamespace())
 
