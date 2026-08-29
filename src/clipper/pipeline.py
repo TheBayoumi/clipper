@@ -764,8 +764,6 @@ def run_pipeline(
             _write_json(run_dir / "canonical" / f"{video.video_id}.json", timeline.to_dict())
             journal.progress("source_grounding", index, total=len(targets))
         except Exception as exc:
-            if rendered is not None:
-                _remove_render_attempt_files(rendered)
             manifest.errors.append(
                 {
                     "stage": "source_grounding",
@@ -1047,6 +1045,8 @@ def run_pipeline(
             attempt.update({"status": "ACCEPTED"})
             manifest.render_attempts.append(attempt)
         except Exception as exc:
+            if rendered is not None:
+                _remove_render_attempt_files(rendered)
             manifest.errors.append(
                 {
                     "stage": "render",
