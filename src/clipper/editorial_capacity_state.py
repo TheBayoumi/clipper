@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,7 @@ def _valid_number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
     parsed = float(value)
-    return parsed if parsed > 0 else None
+    return parsed if parsed > 0 and math.isfinite(parsed) else None
 
 
 def merge_editorial_capacity_state(
