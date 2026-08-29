@@ -1,7 +1,11 @@
 name: Publish tested image
 
 on:
-  push:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
     branches:
       - main
 
@@ -10,17 +14,21 @@ permissions:
   packages: write
 
 concurrency:
-  group: clipper-publish-${{ github.sha }}
+  group: clipper-publish-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 jobs:
   publish-tested-image:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 1
 
       - name: Resolve exact source and image tags
@@ -29,7 +37,8 @@ jobs:
         run: |
           set -euo pipefail
           source_sha="$(git rev-parse HEAD)"
-          test "${source_sha}" = "${GITHUB_SHA}"
+          expected_sha="${{ github.event.workflow_run.head_sha }}"
+          test "${source_sha}" = "${expected_sha}"
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           image="ghcr.io/${owner}/clipper"
           tag="sha-${source_sha::12}"
