@@ -10,6 +10,7 @@ import pytest
 from clipper.cli import (
     _assert_runtime_dependencies,
     _audit_model_evidence,
+    _model_cache_fingerprint,
     _model_id,
     _resolved_model_plan,
 )
@@ -126,6 +127,91 @@ def test_model_audit_rejects_non_mapping_run_metadata(tmp_path: Path) -> None:
     _write_manifest(run_dir, [])
     with pytest.raises(RuntimeError, match="missing run_metadata"):
         _audit_model_evidence(run_dir, {})
+
+
+def test_model_audit_accepts_fully_cached_editorial_resume_with_bound_identity(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "cached-editorial"
+    editorial = {
+        "model_id": "editor",
+        "revision": "rev",
+        "quantization": "int4",
+        "inference_engine": "modal-transformers",
+        "prompt_version": "p",
+        "schema_version": "s",
+    }
+    fingerprint = _model_cache_fingerprint(editorial)
+    _write_manifest(
+        run_dir,
+        {
+            "editorial_inference": {
+                "model_invocations": [],
+                "cache_summary": {
+                    "stage_cache_hits": 7,
+                    "stage_executions": 0,
+                    "editorial_model_fingerprint": fingerprint,
+                    "editorial_model": editorial,
+                },
+            },
+            "grounding_inference": {
+                "models": [
+                    {
+                        "transcription": {
+                            "cache_hit": True,
+                            "model": {"model_id": "asr"},
+                        },
+                        "alignment": {
+                            "cache_hit": True,
+                            "model": {"model_id": "align"},
+                        },
+                        "diarization": {
+                            "cache_hit": True,
+                            "model": {"model_id": "diarize"},
+                        },
+                    }
+                ]
+            },
+        },
+    )
+    audit_result = _audit_model_evidence(
+        run_dir,
+        {
+            "editorial": editorial,
+            "transcription": {"model_id": "asr"},
+            "alignment": {"model_id": "align"},
+            "diarization": {"model_id": "diarize"},
+        },
+    )
+    editorial_audit = audit_result["editorial"]
+    assert isinstance(editorial_audit, dict)
+    assert editorial_audit["fully_cached_resume"] is True
+    assert editorial_audit["invocations"] == 0
+    assert editorial_audit["cache_hits"] == 7
+
+
+def test_model_audit_rejects_fully_cached_resume_with_wrong_model_fingerprint(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "bad-cached-editorial"
+    editorial = {"model_id": "editor", "revision": "rev"}
+    _write_manifest(
+        run_dir,
+        {
+            "editorial_inference": {
+                "model_invocations": [],
+                "cache_summary": {
+                    "stage_cache_hits": 1,
+                    "stage_executions": 0,
+                    "editorial_model_fingerprint": "wrong",
+                    "editorial_model": editorial,
+                },
+            },
+            "grounding_inference": {"models": [{"transcription": {"cache_hit": True}}]},
+        },
+    )
+    with pytest.raises(RuntimeError, match="not bound to the resolved model identity"):
+        _audit_model_evidence(run_dir, {"editorial": editorial})
 
 
 def test_model_audit_rejects_missing_grounding_records(tmp_path: Path) -> None:
