@@ -956,7 +956,7 @@ def dag_execution_lease(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("DAG lease ttl must be finite and within the production timeout")
 
     artifact_volume.reload()
-    key = hashlib.sha256(f"{stage_name}\0{cache_key}".encode("utf-8")).hexdigest()
+    key = hashlib.sha256(f"{stage_name}\0{cache_key}".encode()).hexdigest()
     lease_path = Path(ARTIFACT_ROOT) / "_dag-leases" / f"{key}.json"
     state: dict[str, Any] = {}
     if lease_path.is_file():
