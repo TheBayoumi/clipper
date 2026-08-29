@@ -65,6 +65,7 @@ def test_stale_dag_lock_is_not_reclaimed_unsafely(tmp_path) -> None:
 
     assert lock.is_dir()
 
+
 def test_expired_execution_claim_is_recovered_as_new_attempt(tmp_path) -> None:
     store = DagStore(tmp_path, execution_lease_seconds=0.05, follower_poll_seconds=0.001)
     identity = _identity()
