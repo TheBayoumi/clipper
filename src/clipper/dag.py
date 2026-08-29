@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -60,6 +61,15 @@ class StageRecord:
         return payload
 
 
+@dataclass(frozen=True, slots=True)
+class DagLeaseCoordinator:
+    claim: Callable[[StageIdentity, str, float], bool]
+    renew: Callable[[StageIdentity, str, float], bool]
+    release: Callable[[StageIdentity, str], bool]
+    commit: Callable[[], None]
+    reload: Callable[[], None]
+
+
 class DagStore:
     """Persistent content-addressed stage store with exact dependency reuse."""
 
@@ -69,10 +79,12 @@ class DagStore:
         *,
         execution_lease_seconds: float = 86_400.0,
         follower_poll_seconds: float = 0.05,
+        coordinator: DagLeaseCoordinator | None = None,
     ) -> None:
         self.root = Path(root)
         self.execution_lease_seconds = float(execution_lease_seconds)
         self.follower_poll_seconds = float(follower_poll_seconds)
+        self.coordinator = coordinator
         if not math.isfinite(self.execution_lease_seconds) or self.execution_lease_seconds <= 0:
             raise ValueError("DAG execution lease must be finite and positive")
         if not math.isfinite(self.follower_poll_seconds) or self.follower_poll_seconds <= 0:
@@ -188,6 +200,132 @@ class DagStore:
         return output
 
     def execute(
+        self,
+        identity: StageIdentity,
+        operation: Callable[[], StageResult | object],
+    ) -> tuple[object, bool]:
+        if self.coordinator is not None:
+            return self._execute_coordinated(identity, operation)
+        return self._execute_local(identity, operation)
+
+    def _coordinated_cached_output(self, identity: StageIdentity) -> object | None:
+        if self.coordinator is None:
+            raise RuntimeError("DAG coordinator is unavailable")
+        self.coordinator.reload()
+        return self.cached_output(identity)
+
+    def _execute_coordinated(
+        self,
+        identity: StageIdentity,
+        operation: Callable[[], StageResult | object],
+    ) -> tuple[object, bool]:
+        coordinator = self.coordinator
+        if coordinator is None:
+            raise RuntimeError("DAG coordinator is unavailable")
+        owner_id = uuid.uuid4().hex
+        attempt = 0
+        started = ""
+
+        while True:
+            cached = self._coordinated_cached_output(identity)
+            if cached is not None:
+                return cached, True
+            if coordinator.claim(identity, owner_id, self.execution_lease_seconds):
+                coordinator.reload()
+                cached = self.cached_output(identity)
+                if cached is not None:
+                    coordinator.release(identity, owner_id)
+                    return cached, True
+                attempt = self.attempt_count(identity) + 1
+                started = _now()
+                running = StageRecord(
+                    identity=identity,
+                    status="RUNNING",
+                    attempt_count=attempt,
+                    started_at=started,
+                    completed_at=None,
+                    output_fingerprint=None,
+                    usage={},
+                    cost_usd=0.0,
+                )
+                self._write_json(self._record_path(identity), running.to_dict())
+                coordinator.commit()
+                break
+            time.sleep(self.follower_poll_seconds)
+
+        renewal_stop = threading.Event()
+        lease_lost = threading.Event()
+
+        def renew_lease() -> None:
+            interval = min(30.0, max(0.5, self.execution_lease_seconds / 3.0))
+            while not renewal_stop.wait(interval):
+                try:
+                    if not coordinator.renew(identity, owner_id, self.execution_lease_seconds):
+                        lease_lost.set()
+                        return
+                except Exception:
+                    continue
+
+        renewal_thread = threading.Thread(target=renew_lease, daemon=True)
+        renewal_thread.start()
+        try:
+            raw_result = operation()
+            result = raw_result if isinstance(raw_result, StageResult) else StageResult(raw_result)
+            if lease_lost.is_set() or not coordinator.renew(
+                identity, owner_id, self.execution_lease_seconds
+            ):
+                raise RuntimeError(
+                    f"DAG distributed execution lease lost before PASS for {identity.stage_name}"
+                )
+            fingerprint = content_fingerprint(result.output)
+            self._write_json(self._output_path(identity), result.output)
+            passed = StageRecord(
+                identity=identity,
+                status="PASS",
+                attempt_count=attempt,
+                started_at=started,
+                completed_at=_now(),
+                output_fingerprint=fingerprint,
+                usage=dict(result.usage),
+                cost_usd=result.cost_usd,
+            )
+            self._write_json(self._record_path(identity), passed.to_dict())
+            coordinator.commit()
+            if not coordinator.release(identity, owner_id):
+                raise RuntimeError(
+                    f"DAG distributed execution lease release failed for {identity.stage_name}"
+                )
+            return result.output, False
+        except Exception as exc:
+            if not lease_lost.is_set():
+                try:
+                    owns_lease = coordinator.renew(
+                        identity, owner_id, self.execution_lease_seconds
+                    )
+                except Exception:
+                    owns_lease = False
+                if owns_lease:
+                    failed = StageRecord(
+                        identity=identity,
+                        status="FAILED",
+                        attempt_count=attempt,
+                        started_at=started,
+                        completed_at=_now(),
+                        output_fingerprint=None,
+                        usage={},
+                        cost_usd=0.0,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    self._write_json(self._record_path(identity), failed.to_dict())
+                    coordinator.commit()
+                    coordinator.release(identity, owner_id)
+            raise
+        finally:
+            renewal_stop.set()
+            renewal_thread.join(timeout=1.0)
+
+    def _execute_local(
         self,
         identity: StageIdentity,
         operation: Callable[[], StageResult | object],
