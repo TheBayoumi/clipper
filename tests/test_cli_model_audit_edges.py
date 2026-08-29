@@ -111,7 +111,7 @@ def test_runtime_dependency_preflight_handles_invalid_module_spec() -> None:
     plan = {"alignment": {"inference_engine": "modal-whisperx"}}
     with (
         patch("clipper.cli.importlib.util.find_spec", side_effect=ValueError("bad spec")),
-        pytest.raises(RuntimeError, match="missing runtime module.*modal"),
+        pytest.raises(RuntimeError, match=r"missing runtime module.*modal"),
     ):
         _assert_runtime_dependencies(plan)
 
