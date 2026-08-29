@@ -215,6 +215,16 @@ def test_editorial_deadline_acceptance_forces_and_correlates_real_generation() -
     assert "elapsed_seconds < EDITORIAL_GENERATION_DEADLINE_SECONDS" in deadline_probe
     assert "_editorial_generation_deadline_error(" in deadline_probe
 
+    production_infer_start = worker.index("def _editorial_infer(")
+    production_infer_end = worker.index("def _editorial_deadline_probe(", production_infer_start)
+    production_infer = worker[production_infer_start:production_infer_end]
+    assert "late_candidate_parseable = True" in production_infer
+    deadline_rejection = production_infer.index(
+        'message="editorial generation reached the runtime latency boundary"'
+    )
+    candidate_acceptance = production_infer.index("generated_text = candidate")
+    assert deadline_rejection < candidate_acceptance
+
     assert "def invoke_editorial_deadline_probe(" in provider
     assert 'application_status != "CAPACITY_REJECTED"' in provider
     assert 'error_type != "EditorialCapacityError"' in provider
