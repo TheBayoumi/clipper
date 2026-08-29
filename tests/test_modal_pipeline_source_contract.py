@@ -158,7 +158,7 @@ def test_production_dag_lease_is_serialized_and_volume_coherent() -> None:
     assert "dag_store_factory=coordinated_dag_store" in cycle
 
     pipeline = Path("src/clipper/pipeline.py").read_text(encoding="utf-8")
-    assert 'grounding_dag = (' in pipeline
+    assert "grounding_dag = (" in pipeline
     assert 'dag_store_factory(cache_root / "grounding")' in pipeline
     assert "dag=grounding_dag" in pipeline
     assert "dag.execute(identity, execute)" in pipeline
