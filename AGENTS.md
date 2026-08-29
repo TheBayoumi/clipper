@@ -36,65 +36,64 @@ Follow the repository's concise Conventional Commit subjects: `feat:`, `fix:`, `
 
 Copy `campaign.example.yaml` for local configuration. Keep API keys (for example, `YOUTUBE_API_KEY`) in the environment or `.env`, never YAML or source control. Preserve source-rights checks and the explicit publication boundary when modifying acquisition or release behavior.
 
-## Expert Reviewer Contract
+## Mandatory Independent Reviewer Contract
 
-When acting as a reviewer, operate independently and adversarially rather than as the implementation
-agent. Review the repository in execution-path context, not only the changed lines. Do not infer
-runtime correctness from green CI, comments, README claims, acceptance markers, or historical
-artifacts.
+Codex is an independent adversarial reviewer, not an implementation agent and not a mechanism for making CI green. Every material PR head must receive a fresh Codex review after implementation and deterministic verification are complete. A review of an older SHA is historical evidence only and must never be represented as approval of a newer head.
 
-Reviewer findings must be evidence-based and prioritized P0-P3. For each actionable finding, identify
-the exact file/range, concrete failure mode, reachable execution path or reproduction, why existing
-tests or checks miss it, and the smallest safe corrective direction. Label concerns that require live
-evidence as `NEEDS_RUNTIME_EVIDENCE` instead of guessing.
+The reviewer must inspect the repository in execution-path context, including relevant callers, callees, workflows, state transitions, persistence boundaries, failure handling, and tests. Do not limit review to the changed lines. Do not infer correctness from green CI, comments, README claims, acceptance markers, prior reviews, or implementation-agent assertions.
 
-Always verify these production invariants when they are affected:
+### Review independence and anti-gaming rules
 
-- exact-head acceptance must prove the immutable SHA embedded in the deployed Modal workers;
-- Modal spy evidence must be scoped to the exact spawned production execution and its correlated
-  descendants, never global app logs;
-- source authorization and explicit-target rights gates must fail closed;
-- publication must remain behind the explicit human review boundary;
-- production open-model execution must not silently fall back to a weaker/local path;
-- fresh inference must not reuse grounding or editorial inference caches;
-- content-addressed resume must reuse only contract-compatible artifacts;
-- evidence projection must reduce LLM-facing evidence without changing canonical source truth;
-- capacity rejection must happen before unsafe generation;
-- runtime-safe token guards must be enforced in addition to raw model context limits;
-- timeout, OOM, and context failures must either repartition with measurable forward progress or fail
-  closed;
-- repartition ranges must terminate, remain contiguous and ordered, and contain no gaps or overlap;
-- a timed-out or stalled generation must never count toward a passing acceptance result;
-- watchdogs must cancel only the exact offending production call;
-- compute budgets must be enforced during execution, not only audited after completion;
-- persistent DAG writes must remain valid under concurrent writers;
-- tests must preserve the repository-wide >=95% coverage floor while asserting behavior rather than
-  implementation text alone.
+- Never modify this file, prompts, tests, comments, workflow text, or acceptance criteria merely to steer Codex toward a clean verdict.
+- Never weaken, hide, reclassify, suppress, auto-resolve, or omit a finding to satisfy an acceptance gate.
+- Never treat a Codex reaction, acknowledgement, absence of comments, or stale review as proof of correctness.
+- Never ask Codex to implement its own findings during the independent review pass. Implementation and review are separate phases.
+- Never resolve a blocking review thread solely because code changed. Verify the corrective behavior first; runtime-evidence findings remain open until the required live evidence exists.
+- A new material commit after review invalidates the prior exact-head acceptance verdict and requires another independent review.
+- If reviewer infrastructure is unavailable, fail the acceptance process closed rather than replacing independent review with self-review.
 
-For review-only requests, do not push commits, update refs, dispatch/rerun/cancel GitHub Actions, call
-production endpoints, deploy Modal workers, or start paid compute unless the user explicitly asks for
-implementation or execution after the review.
+### Required review output
 
-## Mandatory Codex PR Gate
+Classify findings P0-P3. Every actionable P0/P1/P2 finding must identify the exact file/range, concrete failure mode, reachable execution path or reproduction, affected invariant, why current tests/checks fail to prove safety, and the smallest safe corrective direction. Distinguish static defects from questions that genuinely require deployment or live execution. Mark the latter `NEEDS_RUNTIME_EVIDENCE`; do not guess either success or failure.
 
-Every pull-request head is reviewable only after an independent Codex review of that exact 40-character
-head SHA. The repository CI must fail closed when the exact-head review has not completed or while any
-Codex P0, P1, or P2 review thread remains unresolved. A Codex P1/P2 marked `NEEDS_RUNTIME_EVIDENCE`
-remains blocking until the required runtime evidence is produced and the thread is resolved; static
-reasoning alone must not clear it.
+A review is not clean while any actionable P0/P1/P2 remains. P3 findings may be non-blocking only when they cannot violate correctness, safety, acceptance integrity, cost bounds, or publication boundaries. Conflicting evidence must be called out explicitly rather than averaged into a verdict.
 
-The required check is `codex-review-gate`. It must verify both of these conditions against live GitHub
-PR state:
+### Mandatory production invariants
 
-1. Codex (`chatgpt-codex-connector`) submitted a review whose `commit_id` equals the current PR head,
-   or reacted with `+1` to an explicit `@codex review` request containing that exact full head SHA.
-2. No unresolved review thread authored by Codex contains a P0, P1, or P2 finding.
+When affected by a change, independently verify all applicable invariants:
 
-A new commit invalidates the previous Codex gate result and requires a new exact-head review. Do not
-resolve blocking Codex threads merely because implementation changed; resolve them only when the fix
-is present and verified, and keep runtime-evidence findings open until the evidence exists.
+- exact-head acceptance proves the immutable source SHA embedded in every deployed Modal worker involved in the execution;
+- runtime evidence is correlated to the exact spawned root execution and its descendants, never inferred from global or temporally adjacent logs;
+- every tracked producer has a one-to-one lifecycle with terminal evidence, and PASS is impossible while a producer remains active, lost, ambiguous, or uncorrelated;
+- source authorization and explicit-target rights gates fail closed;
+- publication remains behind the explicit human review boundary;
+- production open-model execution cannot silently fall back to a weaker, local, cached, or untracked path;
+- fresh-inference mode cannot reuse grounding or editorial inference caches that would invalidate the proof;
+- content-addressed resume reuses only artifacts whose complete contract and source identity remain compatible;
+- editorial evidence projection reduces LLM-facing evidence without mutating, dropping, duplicating, reordering, or fabricating canonical source truth;
+- generation arithmetic accounts for prompt tokens, requested output, reserved capacity, model context, runtime-safe limits, and late candidates consistently;
+- capacity rejection occurs before unsafe generation whenever the unsafe condition is knowable before invocation;
+- timeout, OOM, context, and capacity failures repartition only with measurable forward progress or fail closed;
+- repartition ranges terminate, strictly reduce unsafe work, preserve contiguous ordered source coverage, and introduce no gaps, overlap, duplication, or unbounded work amplification;
+- minimum-span failure is deterministic when further safe repartition is impossible;
+- timed-out, cancelled, stalled, over-budget, or late generation can never become accepted editorial evidence or a passing acceptance result;
+- primary generation deadlines are enforced by the real deployed generation path; watchdog cancellation is a correlated fallback, not evidence that the primary deadline works;
+- watchdogs and abort handlers cancel only the exact offending Modal function call and cannot terminate unrelated executions;
+- compute/GPU/cost budgets are finite, validated before execution, enforced while work is in flight, and checked again before PASS;
+- persistent capacity/DAG/cache state remains valid under concurrent writers, atomic replacement, retries, and partial failures;
+- a successful inference cannot be converted into an unrelated failure solely by best-effort persistence or telemetry cleanup;
+- deployment workflows use the minimum GitHub permissions required for every API they invoke and fail closed on identity mismatches;
+- editorial-only acceptance cannot cross the render, HILP, publication, or other paid-compute boundary that the run did not explicitly authorize;
+- tests maintain the repository-wide >=95% coverage floor and assert observable behavior and failure paths rather than implementation text alone.
 
-Modal deployment, production/editorial acceptance, HILP, rendering, and publication must never be used
-to bypass this gate. Workflows that require successful exact-head CI therefore inherit the Codex gate.
-Repository branch protection/rulesets should additionally mark `codex-review-gate` as a required status
-check before merge wherever repository administration permits it.
+### Runtime evidence standard
+
+Static source inspection can prove wiring and invariants that are deterministic from code, but it cannot substitute for properties of the deployed runtime. For `NEEDS_RUNTIME_EVIDENCE`, require correlated evidence from the exact accepted SHA and execution. Evidence must identify relevant deployed model/package versions and runtime identity, invocation IDs, start/terminal lifecycle, timing/deadline behavior, failure classification, repartition decisions, budget state, and final terminal barrier as applicable.
+
+For generation deadlines specifically, adapter/source inspection may prove that a parameter is forwarded, but acceptance requires live evidence that the deployed generation call actually stops at the configured boundary, rejects any late candidate, closes the producer with the correct non-success terminal state, and either makes strictly smaller repartition progress or fails deterministically at minimum span. A larger watchdog timeout is only fallback evidence.
+
+### Review and execution separation
+
+For review-only requests, Codex must not push commits, update refs, dispatch/rerun/cancel GitHub Actions, resolve review threads, call production endpoints, deploy Modal workers, start paid compute, alter acceptance markers, or publish artifacts. It may inspect existing repository state and already-produced evidence. Implementation or live execution begins only after an explicit user request outside the independent review pass.
+
+The implementation agent must not claim the PR is acceptance-ready until deterministic tests and exact-head CI are green, a fresh independent Codex review has no unresolved static P0/P1/P2 findings, and every blocking `NEEDS_RUNTIME_EVIDENCE` item has been satisfied by the required correlated runtime proof. HILP/render/full production acceptance remains disabled until those prerequisites are satisfied.
