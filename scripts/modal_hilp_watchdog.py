@@ -80,6 +80,17 @@ def _validate_result(result: object, *, render: bool) -> dict[str, Any]:
     return normalized
 
 
+def _finite_positive_env(name: str, *, default: str | None = None) -> float:
+    raw = os.environ.get(name, default) if default is not None else os.environ.get(name)
+    try:
+        value = float(raw) if raw is not None else float("nan")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be finite and positive") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be finite and positive")
+    return value
+
+
 def run(*, render: bool) -> dict[str, Any]:
     import modal
 
@@ -87,15 +98,27 @@ def run(*, render: bool) -> dict[str, Any]:
     evidence_dir.mkdir(parents=True, exist_ok=True)
     execution_id = uuid.uuid4().hex
     os.environ["CLIPPER_EXECUTION_ID"] = execution_id
-    max_gpu_seconds = float(os.environ["CLIPPER_MAX_GPU_SECONDS"])
-    max_estimated_usd = float(os.environ["CLIPPER_MAX_ESTIMATED_USD"])
-    if (
-        not math.isfinite(max_gpu_seconds)
-        or not math.isfinite(max_estimated_usd)
-        or max_gpu_seconds <= 0
-        or max_estimated_usd <= 0
-    ):
-        raise ValueError("production compute budget limits must be finite and positive")
+
+    max_gpu_seconds = _finite_positive_env("CLIPPER_MAX_GPU_SECONDS")
+    max_estimated_usd = _finite_positive_env("CLIPPER_MAX_ESTIMATED_USD")
+    poll_seconds = _finite_positive_env("CLIPPER_MODAL_SPY_POLL_SECONDS", default="5")
+    barrier_timeout_seconds = _finite_positive_env(
+        "CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS",
+        default="30",
+    )
+
+    request = {
+        "sources": [_source_payload()],
+        "brief_yaml": Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"]).read_text(encoding="utf-8"),
+        "render": render,
+        "editorial_acceptance_probe": not render,
+        "fresh_inference": os.environ["CLIPPER_FRESH_INFERENCE"] == "true",
+        "resume_from_run_id": os.environ.get("CLIPPER_RESUME_FROM_RUN_ID") or None,
+        "git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
+        "execution_id": execution_id,
+        "max_gpu_seconds": max_gpu_seconds,
+        "max_estimated_usd": max_estimated_usd,
+    }
 
     spy = ModalExecutionSpy(
         (
@@ -115,52 +138,15 @@ def run(*, render: bool) -> dict[str, Any]:
             spy_thread_failure.append(rendered)
 
     spy_thread = threading.Thread(target=run_spy, daemon=True)
-    spy_thread.start()
-
-    request = {
-        "sources": [_source_payload()],
-        "brief_yaml": Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"]).read_text(encoding="utf-8"),
-        "render": render,
-        "editorial_acceptance_probe": not render,
-        "fresh_inference": os.environ["CLIPPER_FRESH_INFERENCE"] == "true",
-        "resume_from_run_id": os.environ.get("CLIPPER_RESUME_FROM_RUN_ID") or None,
-        "git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
-        "execution_id": execution_id,
-        "max_gpu_seconds": max_gpu_seconds,
-        "max_estimated_usd": max_estimated_usd,
-    }
-    function = modal.Function.from_name(
-        os.environ["CLIPPER_MODAL_PIPELINE_APP"],
-        "run_full_cycle",
-    )
-    call = function.spawn(request)
-    call.hydrate()
-    call_id = str(call.object_id)
-    spy.root_function_call_id = call_id
-    call_started = time.monotonic()
-
-    metadata = {
-        "event": "production_call_spawned",
-        "function_call_id": call_id,
-        "execution_id": execution_id,
-        "pipeline_app": os.environ["CLIPPER_MODAL_PIPELINE_APP"],
-        "model_app": os.environ["CLIPPER_MODAL_APP"],
-        "acceptance_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
-        "resume_from_run_id": request["resume_from_run_id"],
-        "fresh_inference": request["fresh_inference"],
-        "render": render,
-        "editorial_acceptance_probe": request["editorial_acceptance_probe"],
-        "max_gpu_seconds": max_gpu_seconds,
-        "max_estimated_usd": max_estimated_usd,
-        "spawned_at": datetime.now(UTC).isoformat(),
-    }
-    _write_json(evidence_dir / "modal-function-call.json", metadata)
-    print(json.dumps(metadata, sort_keys=True), flush=True)
-
+    spy_thread_started = False
+    call: Any | None = None
+    call_id = ""
+    call_started = 0.0
+    remote_completed = False
     cancelled = threading.Event()
 
     def cancel_call(reason: str) -> None:
-        if cancelled.is_set():
+        if call is None or cancelled.is_set():
             return
         cancelled.set()
         print(
@@ -186,16 +172,38 @@ def run(*, render: bool) -> dict[str, Any]:
         previous_handlers[signum] = signal.getsignal(signum)
         signal.signal(signum, handle_signal)
 
-    poll_seconds = float(os.environ.get("CLIPPER_MODAL_SPY_POLL_SECONDS", "5"))
-    if not math.isfinite(poll_seconds) or poll_seconds <= 0:
-        raise ValueError("CLIPPER_MODAL_SPY_POLL_SECONDS must be finite and positive")
-    barrier_timeout_seconds = float(
-        os.environ.get("CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS", "30")
-    )
-    if not math.isfinite(barrier_timeout_seconds) or barrier_timeout_seconds <= 0:
-        raise ValueError("Modal spy producer barrier timeout must be finite and positive")
-
     try:
+        spy_thread.start()
+        spy_thread_started = True
+
+        function = modal.Function.from_name(
+            os.environ["CLIPPER_MODAL_PIPELINE_APP"],
+            "run_full_cycle",
+        )
+        call = function.spawn(request)
+        call.hydrate()
+        call_id = str(call.object_id)
+        spy.root_function_call_id = call_id
+        call_started = time.monotonic()
+
+        metadata = {
+            "event": "production_call_spawned",
+            "function_call_id": call_id,
+            "execution_id": execution_id,
+            "pipeline_app": os.environ["CLIPPER_MODAL_PIPELINE_APP"],
+            "model_app": os.environ["CLIPPER_MODAL_APP"],
+            "acceptance_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
+            "resume_from_run_id": request["resume_from_run_id"],
+            "fresh_inference": request["fresh_inference"],
+            "render": render,
+            "editorial_acceptance_probe": request["editorial_acceptance_probe"],
+            "max_gpu_seconds": max_gpu_seconds,
+            "max_estimated_usd": max_estimated_usd,
+            "spawned_at": datetime.now(UTC).isoformat(),
+        }
+        _write_json(evidence_dir / "modal-function-call.json", metadata)
+        print(json.dumps(metadata, sort_keys=True), flush=True)
+
         while True:
             if spy.abort_reason is not None:
                 cancel_call(spy.abort_reason)
@@ -226,6 +234,7 @@ def run(*, render: bool) -> dict[str, Any]:
                 raise RuntimeError(reason)
             try:
                 result = call.get(timeout=poll_seconds)
+                remote_completed = True
                 elapsed = max(0.0, time.monotonic() - call_started)
                 conservative_gpu_seconds = elapsed * 2.0
                 conservative_cost_usd = elapsed * 0.000444
@@ -266,8 +275,11 @@ def run(*, render: bool) -> dict[str, Any]:
         _append_github_env("CLIPPER_RUN_PATH", validated["run_path"])
         return validated
     finally:
+        if call is not None and not remote_completed and not cancelled.is_set():
+            cancel_call("watchdog exited before production call completed")
         spy.request_stop()
-        spy_thread.join(timeout=max(1.0, poll_seconds))
+        if spy_thread_started:
+            spy_thread.join(timeout=max(1.0, poll_seconds))
         for signum, previous in previous_handlers.items():
             signal.signal(signum, previous)
         summary = spy.summary()
