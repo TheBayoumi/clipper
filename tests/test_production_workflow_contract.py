@@ -339,9 +339,13 @@ def test_disabled_acceptance_guards_precede_any_paid_modal_work() -> None:
     assert "exact-head static gate failed before production compute" in production
 
     deploy_guard = deploy.index("Require enabled Modal deployment request")
+    deploy_static_gate = deploy.index("Wait for successful exact-head CI and smoke")
     deploy_install = deploy.index("Install Modal orchestration dependencies")
     deploy_open_models = deploy.index("Deploy exact-HEAD open-model workers")
-    assert deploy_guard < deploy_install < deploy_open_models
+    assert deploy_guard < deploy_static_gate < deploy_install < deploy_open_models
+    assert '"ci.yml"' in deploy
+    assert '"deploy-and-smoke.yml"' in deploy
+    assert "exact-head static gate failed before Modal deployment" in deploy
 
 
 def test_production_budget_limits_are_finite_and_cli_is_cancellable() -> None:
