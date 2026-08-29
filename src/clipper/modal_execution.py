@@ -323,6 +323,7 @@ def _acquire_remote_source(
         raise ValueError("source acquisition requires a full expected_git_sha")
     payload = {
         "video_id": candidate.video_id,
+        "channel_id": candidate.channel_id,
         "video_url": candidate.url,
         "expected_git_sha": expected_git_sha.lower(),
     }
@@ -357,6 +358,21 @@ def _acquire_remote_source(
         if not isinstance(result, dict):
             failures.append(
                 {"egress": label, "error_type": "InvalidResponse", "error": repr(result)[:2000]}
+            )
+            continue
+        if (
+            str(result.get("video_id") or "") != candidate.video_id
+            or str(result.get("channel_id") or "") != candidate.channel_id
+        ):
+            failures.append(
+                {
+                    "egress": label,
+                    "error_type": "SourceIdentityError",
+                    "error": (
+                        f"expected={candidate.video_id}/{candidate.channel_id} "
+                        f"actual={result.get('video_id')}/{result.get('channel_id')}"
+                    ),
+                }
             )
             continue
         if str(result.get("quality_policy")) != "highest_available_no_transcode":
