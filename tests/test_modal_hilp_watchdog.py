@@ -129,7 +129,12 @@ class _Spy:
             "events_seen": 1,
             "event_counts": {"production_cycle_terminal": 1},
             "terminal_seen": True,
-            "terminal_event": {"status": "PASS"},
+            "terminal_event": {
+                "status": "PASS",
+                "execution_id": self.execution_id,
+                "pipeline_status": "SUCCESS",
+                "review_status": "NOT_RENDERED",
+            },
             "active_editorial_calls": [],
         }
 
@@ -169,6 +174,87 @@ def _modal(call: _Call):
     return SimpleNamespace(Function=_Function)
 
 
+def test_source_payload_persists_failed_attempt_and_budget_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    (tmp_path / "open-evidence" / "source-master.json").unlink()
+
+    class _Function:
+        @staticmethod
+        def from_name(app: str, function: str):
+            assert app == "pipeline"
+            assert function == "acquire_source"
+            return object()
+
+    def fail_acquisition(
+        _function,
+        _candidate,
+        *,
+        budget,
+        attempt_evidence,
+        **_kwargs,
+    ):
+        attempt_evidence.append(
+            {
+                "egress": "cloud:gcp",
+                "status": "FAIL",
+                "phase": "invoke",
+                "error_type": "RuntimeError",
+            }
+        )
+        budget.charge(2.0, gpu_count=0.0, estimated_usd_per_second=0.01)
+        raise RuntimeError("synthetic acquisition failure")
+
+    monkeypatch.setattr(module, "_acquire_remote_source", fail_acquisition)
+    budget = module._BudgetLedger(100.0, 1.0)
+
+    with pytest.raises(RuntimeError, match="synthetic acquisition failure"):
+        module._source_payload(
+            SimpleNamespace(Function=_Function),
+            budget,
+            execution_id="e" * 32,
+        )
+
+    attempts = json.loads(
+        (tmp_path / "open-evidence" / "source-egress-attempts.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    budget_evidence = json.loads(
+        (tmp_path / "open-evidence" / "source-budget.json").read_text(encoding="utf-8")
+    )
+    assert attempts["reused_evidence"] is False
+    assert attempts["attempts"][0]["status"] == "FAIL"
+    assert budget_evidence["estimated_usd"] == pytest.approx(0.02)
+
+
+def test_watchdog_marks_pre_root_failure_as_abort(tmp_path: Path, monkeypatch) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
+    monkeypatch.setattr(
+        module,
+        "_source_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic pre-root failure")
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "modal", SimpleNamespace())
+
+    with pytest.raises(RuntimeError, match="synthetic pre-root failure"):
+        module.run(render=False)
+
+    summary = json.loads(
+        (tmp_path / "open-evidence" / "modal-spy-summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["status"] == "ABORT"
+    assert "synthetic pre-root failure" in summary["abort_reason"]
+    assert summary["function_call_id"] == ""
+
+
 def test_watchdog_returns_successful_editorial_only_result(tmp_path: Path, monkeypatch) -> None:
     module = _module()
     _environment(tmp_path, monkeypatch)
@@ -200,6 +286,47 @@ def test_watchdog_returns_successful_editorial_only_result(tmp_path: Path, monke
     assert metadata["render"] is False
     assert metadata["editorial_acceptance_probe"] is True
     assert call.cancel_args == []
+
+
+def test_watchdog_rejects_terminal_evidence_drift(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+
+    class DriftSpy(_Spy):
+        def summary(self) -> dict[str, object]:
+            value = super().summary()
+            terminal = dict(value["terminal_event"])
+            terminal["execution_id"] = "wrong-execution"
+            value["terminal_event"] = terminal
+            return value
+
+    monkeypatch.setattr(module, "ModalExecutionSpy", DriftSpy)
+    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
+    call = _Call(
+        {
+            "status": "PASS",
+            "execution_mode": "resume",
+            "execution_id": "e" * 32,
+            "deployed_git_sha": "a" * 40,
+            "pipeline_status": "SUCCESS",
+            "review_status": "NOT_RENDERED",
+            "run_volume": "volume",
+            "run_path": "/run",
+        }
+    )
+    monkeypatch.setitem(sys.modules, "modal", _modal(call))
+
+    with pytest.raises(RuntimeError, match="terminal evidence does not match"):
+        module.run(render=False)
+
+    summary = json.loads(
+        (tmp_path / "open-evidence" / "modal-spy-summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["status"] == "ABORT"
+    assert "field=execution_id" in summary["abort_reason"]
 
 
 def test_watchdog_cancels_exact_call_without_terminating_containers_on_spy_abort(

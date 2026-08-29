@@ -42,7 +42,10 @@ def _cached_source_evidence() -> dict[str, Any] | None:
     path = Path("open-evidence/source-master.json")
     if not path.is_file():
         return None
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
     if not isinstance(raw, dict):
         return None
     if (
@@ -64,6 +67,7 @@ def _source_payload(
 ) -> dict[str, Any]:
     evidence = _cached_source_evidence()
     attempts: list[dict[str, object]] = []
+    reused_evidence = evidence is not None
     if evidence is None:
         candidate = VideoCandidate(
             os.environ["CLIPPER_TARGET_VIDEO_ID"],
@@ -76,20 +80,29 @@ def _source_payload(
             os.environ["CLIPPER_MODAL_PIPELINE_APP"],
             "acquire_source",
         )
-        evidence = _acquire_remote_source(
-            acquire,
-            candidate,
-            expected_git_sha=os.environ["CLIPPER_ACCEPTANCE_SHA"],
-            budget=budget,
-            attempt_evidence=attempts,
-            execution_id=execution_id,
+        try:
+            evidence = _acquire_remote_source(
+                acquire,
+                candidate,
+                expected_git_sha=os.environ["CLIPPER_ACCEPTANCE_SHA"],
+                budget=budget,
+                attempt_evidence=attempts,
+                execution_id=execution_id,
+            )
+            _write_json(Path("open-evidence/source-master.json"), evidence)
+        finally:
+            _write_json(
+                Path("open-evidence/source-egress-attempts.json"),
+                {"attempts": attempts, "reused_evidence": False},
+            )
+            _write_json(Path("open-evidence/source-budget.json"), budget.to_dict())
+    else:
+        _write_json(
+            Path("open-evidence/source-egress-attempts.json"),
+            {"attempts": attempts, "reused_evidence": reused_evidence},
         )
-        _write_json(Path("open-evidence/source-master.json"), evidence)
-    _write_json(
-        Path("open-evidence/source-egress-attempts.json"),
-        {"attempts": attempts, "reused_evidence": not attempts},
-    )
-    _write_json(Path("open-evidence/source-budget.json"), budget.to_dict())
+        _write_json(Path("open-evidence/source-budget.json"), budget.to_dict())
+
     return {
         "video_id": os.environ["CLIPPER_TARGET_VIDEO_ID"],
         "channel_id": os.environ["CLIPPER_TARGET_CHANNEL_ID"],
@@ -226,6 +239,8 @@ def run(*, render: bool) -> dict[str, Any]:
     remote_completed = False
     root_budget_charged = False
     cancelled = threading.Event()
+    run_succeeded = False
+    run_failure_reason: str | None = None
 
     def cancel_call(reason: str) -> None:
         if call is None or cancelled.is_set():
@@ -400,16 +415,27 @@ def run(*, render: bool) -> dict[str, Any]:
         terminal_event = spy.summary().get("terminal_event")
         if not isinstance(terminal_event, dict):
             raise RuntimeError("Modal spy terminal evidence is missing after drain")
-        if not isinstance(result, dict) or terminal_event.get("status") != result.get("status"):
+        if not isinstance(result, dict):
             raise RuntimeError(
-                "Modal spy terminal status does not match production result: "
-                f"terminal={terminal_event} result={result}"
+                "Modal spy observed terminal evidence but production result is not an object: "
+                f"terminal={terminal_event} result={result!r}"
             )
+        for field in ("status", "execution_id", "pipeline_status", "review_status"):
+            if terminal_event.get(field) != result.get(field):
+                raise RuntimeError(
+                    "Modal spy terminal evidence does not match production result: "
+                    f"field={field} terminal={terminal_event.get(field)!r} "
+                    f"result={result.get(field)!r}"
+                )
 
         validated = _validate_result(result, render=render)
         _append_github_env("CLIPPER_RUN_VOLUME", validated["run_volume"])
         _append_github_env("CLIPPER_RUN_PATH", validated["run_path"])
+        run_succeeded = True
         return validated
+    except BaseException as exc:
+        run_failure_reason = f"{type(exc).__name__}: {exc}"
+        raise
     finally:
         if call_started > 0 and not root_budget_charged:
             budget.charge(
@@ -434,6 +460,12 @@ def run(*, render: bool) -> dict[str, Any]:
                 "budget": budget.to_dict(),
             }
         )
+        if not run_succeeded:
+            summary["status"] = "ABORT"
+            if not summary.get("abort_reason"):
+                summary["abort_reason"] = (
+                    run_failure_reason or "watchdog exited before validated production success"
+                )
         _write_json(evidence_dir / "modal-spy-summary.json", summary)
         print(
             f"[modal-spy:summary] {json.dumps(summary, sort_keys=True)}",
