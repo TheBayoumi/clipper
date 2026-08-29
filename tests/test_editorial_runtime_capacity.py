@@ -53,9 +53,15 @@ def test_live_generation_deadline_repartitions_below_observed_stall() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("safe_input_tokens", "expected_safe_input_tokens"),
+    [("65536", 65_536), (None, 32_768)],
+)
 def test_modal_function_timeout_becomes_editorial_capacity_error(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    safe_input_tokens: str | None,
+    expected_safe_input_tokens: int,
 ) -> None:
     provider = ModalEditorialProvider(
         app_name="test-app",
@@ -82,7 +88,10 @@ def test_modal_function_timeout_becomes_editorial_capacity_error(
     monkeypatch.setattr(provider, "invoke", timeout)
     monkeypatch.setattr(provider, "_modal", lambda: _ModalModule())
     monkeypatch.setenv("CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS", "900")
-    monkeypatch.setenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", "65536")
+    if safe_input_tokens is None:
+        monkeypatch.delenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", raising=False)
+    else:
+        monkeypatch.setenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", safe_input_tokens)
     monkeypatch.setenv("CLIPPER_EXECUTION_ID", "execution-1")
 
     with pytest.raises(EditorialCapacityError) as captured:
@@ -94,7 +103,7 @@ def test_modal_function_timeout_becomes_editorial_capacity_error(
     details = captured.value.details
     assert details["reason"] == "execution_timeout"
     assert details["remote_error_type"] == "FunctionTimeoutError"
-    assert details["runtime_safe_input_tokens"] == 65_536
+    assert details["runtime_safe_input_tokens"] == expected_safe_input_tokens
     assert details["timeout_seconds"] == 900
     assert details["recovery_action"] == "REPARTITION"
     assert provider._instance_handle is None
