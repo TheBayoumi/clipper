@@ -443,8 +443,9 @@ def test_production_budget_limits_are_finite_and_cli_is_cancellable() -> None:
 
     assert "math.isfinite(gpu_limit)" in workflow
     assert "math.isfinite(cost_limit)" in workflow
-    assert "math.isfinite(max_gpu_seconds)" in watchdog
-    assert "math.isfinite(max_estimated_usd)" in watchdog
+    assert "def _finite_positive_env(" in watchdog
+    assert '_finite_positive_env("CLIPPER_MAX_GPU_SECONDS")' in watchdog
+    assert '_finite_positive_env("CLIPPER_MAX_ESTIMATED_USD")' in watchdog
     assert "math.isfinite(max_gpu_seconds)" in pipeline
     assert "math.isfinite(max_estimated_usd)" in pipeline
     assert "def _invoke_remote_with_budget(" in cli_modal
@@ -496,6 +497,30 @@ def test_watchdog_fails_closed_if_spy_thread_exits() -> None:
 
     assert "active_calls = list(self._active_editorial_calls.items())" in spy
     assert "with self.lock:" in spy
+    assert "if not self.stop.is_set():" in spy
+    assert "Modal log follower exited before explicit stop" in spy
+    assert "returncode={process.returncode}" in spy
+    assert "returncode not in {0, None}" not in spy
     assert "if not spy_thread.is_alive():" in watchdog
     assert "Modal spy thread exited unexpectedly before production completion" in watchdog
     assert "cancel_call(reason)" in watchdog
+
+
+def test_watchdog_validates_all_timing_before_spawn_and_cleans_partial_setup() -> None:
+    watchdog = _watchdog()
+    run_start = watchdog.index("def run(*, render: bool)")
+    run_body = watchdog[run_start:]
+
+    poll_validation = run_body.index(
+        '_finite_positive_env("CLIPPER_MODAL_SPY_POLL_SECONDS"'
+    )
+    barrier_validation = run_body.index(
+        '"CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS"'
+    )
+    spy_start = run_body.index("spy_thread.start()")
+    spawn = run_body.index("function.spawn(request)")
+    assert poll_validation < spy_start < spawn
+    assert barrier_validation < spy_start < spawn
+    assert "try:\n        spy_thread.start()" in run_body
+    assert "if call is not None and not remote_completed and not cancelled.is_set():" in run_body
+    assert 'cancel_call("watchdog exited before production call completed")' in run_body
