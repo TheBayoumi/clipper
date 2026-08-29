@@ -253,6 +253,21 @@ def test_explicit_candidates_resolve_only_campaign_targets(tmp_path: Path) -> No
     assert candidates[0].url == "https://www.youtube.com/watch?v=v1"
     assert candidates[0].channel_id == "UC1"
 
+def test_explicit_candidate_keeps_youtube_url_when_supplemental_media_url_exists(
+    tmp_path: Path,
+) -> None:
+    brief_path = tmp_path / "brief.json"
+    _write_brief(brief_path)
+    payload = json.loads(brief_path.read_text(encoding="utf-8"))
+    payload["targets"]["videos"][0]["media_url"] = (
+        "https://drive.google.com/file/d/supplemental/view"
+    )
+    brief_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    candidates = _explicit_candidates(brief_path)
+    assert candidates[0].url == "https://www.youtube.com/watch?v=v1"
+
+
 def test_acquire_remote_source_uses_modal_egress_and_validates_quality() -> None:
     function = Mock()
     remote = Mock(
