@@ -202,7 +202,8 @@ def run(*, render: bool) -> dict[str, Any]:
                 raise RuntimeError(f"Modal spy aborted production early: {spy.abort_reason}")
             if not spy_thread.is_alive():
                 detail = spy_thread_failure[-1] if spy_thread_failure else "no exception detail"
-                reason = f"Modal spy thread exited unexpectedly before production completion: {detail}"
+                reason_prefix = "Modal spy thread exited unexpectedly before production completion"
+                reason = f"{reason_prefix}: {detail}"
                 cancel_call(reason)
                 raise RuntimeError(reason)
 
