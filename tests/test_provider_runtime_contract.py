@@ -18,6 +18,7 @@ from clipper.providers.local import (
     ProviderUnavailable,
 )
 from clipper.providers.local import _usage as local_usage
+from clipper.providers.modal import ModalVisionProvider
 from clipper.providers.modal_endpoint import ModalEndpointEditorialProvider
 from clipper.providers.modal_speech import (
     ModalAlignmentProvider,
@@ -48,6 +49,16 @@ from clipper.providers.speech_contract import (
     ASR_INFERENCE_ENGINE,
     ASR_MODEL_ID,
     ASR_MODEL_REVISION,
+    DIARIZATION_INFERENCE_ENGINE,
+    DIARIZATION_MODEL_ID,
+    DIARIZATION_MODEL_REVISION,
+    DIARIZATION_QUANTIZATION,
+)
+from clipper.providers.vision_contract import (
+    VISION_INFERENCE_ENGINE,
+    VISION_LARGE_MODEL_ID,
+    VISION_LARGE_MODEL_REVISION,
+    VISION_LARGE_QUANTIZATION,
 )
 
 
@@ -659,9 +670,30 @@ def test_modal_transcription_alignment_and_diarization_contracts(tmp_path: Path)
         alignment.align(source, timeline)
 
     diarization = _modal_provider(ModalDiarizationProvider, bridge, "diarize")
-    function.remote.return_value = {"turns": [[0, 2, "S1"]]}
+    function.remote.return_value = {
+        "turns": [[0, 2, "S1"]],
+        "model": {
+            "model_id": "diarize",
+            "revision": "rev",
+            "quantization": "none",
+        },
+    }
     with patch.object(diarization, "_function", return_value=function):
         assert diarization.diarize(source, timeline).value.words[0].speaker_id == "S1"
+
+    function.remote.return_value = {
+        "turns": [[0, 2, "S1"]],
+        "model": {
+            "model_id": "wrong-diarize",
+            "revision": "rev",
+            "quantization": "none",
+        },
+    }
+    with (
+        patch.object(diarization, "_function", return_value=function),
+        pytest.raises(ValueError, match="diarization model identity mismatch"),
+    ):
+        diarization.diarize(source, timeline)
     function.remote.return_value = {"error": {"type": "Boom", "message": "bad"}}
     with (
         patch.object(diarization, "_function", return_value=function),
@@ -693,7 +725,21 @@ def test_provider_factory_selects_local_modal_managed_and_degraded(monkeypatch) 
     modal_editor = factory.editorial_provider("balanced")
     assert modal_editor.identity.inference_engine == "modal-transformers"
     modal_vision = factory.vision_provider("quality", large=True)
-    assert modal_vision.identity.model_id == "Qwen/Qwen3-VL-30B-A3B-Instruct"
+    assert isinstance(modal_vision, ModalVisionProvider)
+    assert modal_vision.identity.model_id == VISION_LARGE_MODEL_ID
+    assert modal_vision.identity.revision == VISION_LARGE_MODEL_REVISION
+    assert modal_vision.identity.quantization == VISION_LARGE_QUANTIZATION
+    assert modal_vision.identity.inference_engine == VISION_INFERENCE_ENGINE
+    with pytest.raises(ValueError, match="vision model identity mismatch"):
+        modal_vision._response_identity(
+            {
+                "model": {
+                    "model_id": VISION_LARGE_MODEL_ID,
+                    "revision": "wrong",
+                    "quantization": VISION_LARGE_QUANTIZATION,
+                }
+            }
+        )
 
     monkeypatch.setenv("CLIPPER_DIARIZATION_MODE", "passthrough")
     local_speech = factory.speech_providers("local-lite")
@@ -710,6 +756,14 @@ def test_provider_factory_selects_local_modal_managed_and_degraded(monkeypatch) 
     assert modal_speech[1].identity.quantization == ALIGNMENT_QUANTIZATION
     assert modal_speech[1].identity.inference_engine == ALIGNMENT_INFERENCE_ENGINE
     assert isinstance(modal_speech[2], PassthroughDiarizationProvider)
+
+    monkeypatch.setenv("CLIPPER_DIARIZATION_MODE", "pyannote")
+    production_speech = factory.speech_providers("balanced")
+    assert isinstance(production_speech[2], ModalDiarizationProvider)
+    assert production_speech[2].identity.model_id == DIARIZATION_MODEL_ID
+    assert production_speech[2].identity.revision == DIARIZATION_MODEL_REVISION
+    assert production_speech[2].identity.quantization == DIARIZATION_QUANTIZATION
+    assert production_speech[2].identity.inference_engine == DIARIZATION_INFERENCE_ENGINE
 
     monkeypatch.setenv("CLIPPER_DIARIZATION_MODE", "invalid")
     with pytest.raises(ValueError, match="unsupported diarization mode"):
