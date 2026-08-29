@@ -20,6 +20,14 @@ from typing import Any
 
 import modal
 
+from clipper.providers.editorial_model_contract import (
+    EDITORIAL_INFERENCE_ENGINE,
+    EDITORIAL_MODEL_ID,
+    EDITORIAL_MODEL_REVISION,
+    EDITORIAL_PROMPT_VERSION,
+    EDITORIAL_QUANTIZATION,
+    EDITORIAL_SCHEMA_VERSION,
+)
 from clipper.providers.speech_contract import (
     ALIGNMENT_MODEL_ID,
     ALIGNMENT_MODEL_REVISION,
@@ -48,8 +56,6 @@ HF_CACHE = "/model-cache"
 MEDIA_ROOT = "/media"
 L4_USD_PER_SECOND = 0.000222
 L40S_USD_PER_SECOND = 0.000542
-EDITORIAL_MODEL_ID = "Qwen/Qwen3-30B-A3B-Instruct-2507"
-EDITORIAL_MODEL_REVISION = "110954009be4a882781a90356c7d2b8a9e3428dc"
 EDITORIAL_OUTLINES_VERSION = "1.3.0"
 EDITORIAL_TRANSFORMERS_VERSION = "4.57.3"
 EDITORIAL_DEADLINE_PROBE_MIN_NEW_TOKENS = 65_536
@@ -161,6 +167,17 @@ def _model_revision(model_id: str) -> str:
 
 def _model_evidence(model_id: str, *, revision: str | None = None) -> dict[str, str]:
     return {"model_id": model_id, "revision": revision or _model_revision(model_id)}
+
+
+def _editorial_model_evidence() -> dict[str, str]:
+    return {
+        "model_id": EDITORIAL_MODEL_ID,
+        "revision": EDITORIAL_MODEL_REVISION,
+        "quantization": EDITORIAL_QUANTIZATION,
+        "inference_engine": EDITORIAL_INFERENCE_ENGINE,
+        "prompt_version": EDITORIAL_PROMPT_VERSION,
+        "schema_version": EDITORIAL_SCHEMA_VERSION,
+    }
 
 
 def _gpu_rate(gpu: str) -> float:
@@ -1692,7 +1709,7 @@ def _editorial_infer(
     }
     return {
         "value": value,
-        "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
+        "model": _editorial_model_evidence(),
         "structured_generation": {
             "engine": "outlines-transformers",
             "schema_version": "editorial-json-v2",
@@ -1920,7 +1937,7 @@ def _editorial_capacity_probe(
     runtime["editorial_placement"] = dict(_editorial_device_distribution(model))
     return {
         "value": value,
-        "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
+        "model": _editorial_model_evidence(),
         "usage": _usage(started, "L4:2", input_units=input_units, output_units=0),
         "runtime": runtime,
     }
@@ -1985,7 +2002,7 @@ class EditorialModel:
                 {
                     "event": "editorial_model_ready",
                     "worker_lifecycle_id": self.lifecycle_id,
-                    "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
+                    "model": _editorial_model_evidence(),
                     "cuda_memory_by_device": _cuda_memory_snapshot(),
                     **self.placement,
                     "capacity_state_path": str(_editorial_capacity_state_path()),
@@ -2007,7 +2024,7 @@ class EditorialModel:
         runtime["editorial_generation_runtime_contract"] = dict(self.generation_runtime_contract)
         return {
             "value": {"ready": True},
-            "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
+            "model": _editorial_model_evidence(),
             "runtime": runtime,
         }
 
