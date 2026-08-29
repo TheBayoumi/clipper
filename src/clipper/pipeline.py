@@ -20,7 +20,7 @@ import gdown
 
 from .brief import load_brief, load_explicit_targets
 from .cache import FileCache, file_sha256, model_stage_cache_key, stable_hash
-from .dag import DagStore
+from .dag import DagStore, StageResult
 from .canonical import CanonicalTimeline, transcript_segments_from_canonical
 from .fixture import FixtureSourceClient
 from .models import (
@@ -47,6 +47,7 @@ from .quality_batch import QualityBatchResult, plan_quality_batch
 from .render import FFmpegRenderer
 from .rights import assert_campaign_authorized, assert_video_allowed
 from .runtime import StageJournal
+from .stage_contracts import StageContract, stage_identity
 from .visual import VisualTimeline
 from .visual_ai import (
     review_rendered_clip,
@@ -213,6 +214,78 @@ def _grounding_cache_key(stage: str, source_hash: str, provider: object, payload
     )
 
 
+def _grounding_stage_identity(stage: str, key: str):
+    return stage_identity(
+        StageContract(
+            stage,
+            {
+                "grounding_cache_key": key,
+                "output_contract": "canonical-timeline-with-model-evidence",
+            },
+        ),
+        source_hash=key,
+    )
+
+
+def _grounding_stage_output(result) -> dict[str, object]:
+    return {
+        "canonical": result.value.to_dict(),
+        "model": result.model.to_dict(),
+        "usage": asdict(result.usage),
+        "degraded": result.degraded,
+    }
+
+
+def _grounding_stage_value(
+    *,
+    stage: str,
+    key: str,
+    cache: FileCache,
+    dag: DagStore | None,
+    operation: Callable[[], object],
+) -> tuple[dict[str, object], bool]:
+    if dag is None:
+        result = operation()
+        payload = _grounding_stage_output(result)
+        cache.write(key, "canonical", payload["canonical"])
+        return payload, False
+
+    identity = _grounding_stage_identity(stage, key)
+
+    def execute() -> StageResult:
+        result = operation()
+        payload = _grounding_stage_output(result)
+        cache.write(key, "canonical", payload["canonical"])
+        usage = payload.get("usage")
+        usage_dict = dict(usage) if isinstance(usage, dict) else {}
+        cost = float(usage_dict.get("estimated_cost_usd") or 0.0)
+        return StageResult(payload, usage=usage_dict, cost_usd=cost)
+
+    output, cached = dag.execute(identity, execute)
+    if not isinstance(output, dict):
+        raise RuntimeError(f"{stage} grounding DAG returned invalid output")
+    return {str(key): value for key, value in output.items()}, cached
+
+
+def _grounding_payload(
+    payload: dict[str, object],
+    provider: object,
+) -> tuple[CanonicalTimeline, dict[str, object]]:
+    raw_canonical = payload.get("canonical")
+    if not isinstance(raw_canonical, dict):
+        raise RuntimeError("grounding DAG output is missing canonical timeline")
+    timeline = CanonicalTimeline.from_dict(raw_canonical)
+    raw_model = payload.get("model")
+    model = dict(raw_model) if isinstance(raw_model, dict) else getattr(provider, "identity").to_dict()
+    raw_usage = payload.get("usage")
+    usage = dict(raw_usage) if isinstance(raw_usage, dict) else {}
+    return timeline, {
+        "model": model,
+        "usage": usage,
+        "degraded": bool(payload.get("degraded", False)),
+    }
+
+
 def _cached_transcription(
     cache: FileCache,
     manifest: PipelineManifest,
@@ -220,29 +293,36 @@ def _cached_transcription(
     media_path: Path,
     video_id: str,
     source_hash: str,
+    *,
+    dag: DagStore | None = None,
 ) -> tuple[CanonicalTimeline, dict[str, object]]:
-    key = _grounding_cache_key(
-        "canonical-transcription", source_hash, provider, {"video_id": video_id}
-    )
-    cached = cache.read(key, "canonical")
-    if isinstance(cached, dict):
+    stage = "canonical-transcription"
+    key = _grounding_cache_key(stage, source_hash, provider, {"video_id": video_id})
+    cached_value = cache.read(key, "canonical")
+    if isinstance(cached_value, dict):
         try:
-            value = CanonicalTimeline.from_dict(cached)
+            value = CanonicalTimeline.from_dict(cached_value)
         except (TypeError, ValueError):
             value = None
         if value is not None:
-            _cache_event(manifest, "canonical-transcription", key, True)
+            _cache_event(manifest, stage, key, True)
             return value, {"model": provider.identity.to_dict(), "cache_hit": True}
-    result = provider.transcribe(media_path, video_id=video_id, source_hash=source_hash)
-    cache.write(key, "canonical", result.value.to_dict())
-    _cache_event(manifest, "canonical-transcription", key, False)
-    return result.value, {
-        "model": result.model.to_dict(),
-        "usage": asdict(result.usage),
-        "degraded": result.degraded,
-        "cache_hit": False,
-    }
 
+    payload, dag_cached = _grounding_stage_value(
+        stage=stage,
+        key=key,
+        cache=cache,
+        dag=dag,
+        operation=lambda: provider.transcribe(
+            media_path,
+            video_id=video_id,
+            source_hash=source_hash,
+        ),
+    )
+    value, metadata = _grounding_payload(payload, provider)
+    metadata["cache_hit"] = dag_cached
+    _cache_event(manifest, stage, key, dag_cached)
+    return value, metadata
 
 def _cached_alignment(
     cache: FileCache,
@@ -250,32 +330,37 @@ def _cached_alignment(
     provider: AlignmentProvider,
     media_path: Path,
     timeline: CanonicalTimeline,
+    *,
+    dag: DagStore | None = None,
 ) -> tuple[CanonicalTimeline, dict[str, object]]:
+    stage = "canonical-alignment"
     key = _grounding_cache_key(
-        "canonical-alignment",
+        stage,
         timeline.source_hash,
         provider,
         {"timeline_sha256": stable_hash(timeline.to_dict())},
     )
-    cached = cache.read(key, "canonical")
-    if isinstance(cached, dict):
+    cached_value = cache.read(key, "canonical")
+    if isinstance(cached_value, dict):
         try:
-            value = CanonicalTimeline.from_dict(cached)
+            value = CanonicalTimeline.from_dict(cached_value)
         except (TypeError, ValueError):
             value = None
         if value is not None:
-            _cache_event(manifest, "canonical-alignment", key, True)
+            _cache_event(manifest, stage, key, True)
             return value, {"model": provider.identity.to_dict(), "cache_hit": True}
-    result = provider.align(media_path, timeline)
-    cache.write(key, "canonical", result.value.to_dict())
-    _cache_event(manifest, "canonical-alignment", key, False)
-    return result.value, {
-        "model": result.model.to_dict(),
-        "usage": asdict(result.usage),
-        "degraded": result.degraded,
-        "cache_hit": False,
-    }
 
+    payload, dag_cached = _grounding_stage_value(
+        stage=stage,
+        key=key,
+        cache=cache,
+        dag=dag,
+        operation=lambda: provider.align(media_path, timeline),
+    )
+    value, metadata = _grounding_payload(payload, provider)
+    metadata["cache_hit"] = dag_cached
+    _cache_event(manifest, stage, key, dag_cached)
+    return value, metadata
 
 def _cached_diarization(
     cache: FileCache,
@@ -283,32 +368,37 @@ def _cached_diarization(
     provider: DiarizationProvider,
     media_path: Path,
     timeline: CanonicalTimeline,
+    *,
+    dag: DagStore | None = None,
 ) -> tuple[CanonicalTimeline, dict[str, object]]:
+    stage = "canonical-diarization"
     key = _grounding_cache_key(
-        "canonical-diarization",
+        stage,
         timeline.source_hash,
         provider,
         {"timeline_sha256": stable_hash(timeline.to_dict())},
     )
-    cached = cache.read(key, "canonical")
-    if isinstance(cached, dict):
+    cached_value = cache.read(key, "canonical")
+    if isinstance(cached_value, dict):
         try:
-            value = CanonicalTimeline.from_dict(cached)
+            value = CanonicalTimeline.from_dict(cached_value)
         except (TypeError, ValueError):
             value = None
         if value is not None:
-            _cache_event(manifest, "canonical-diarization", key, True)
+            _cache_event(manifest, stage, key, True)
             return value, {"model": provider.identity.to_dict(), "cache_hit": True}
-    result = provider.diarize(media_path, timeline)
-    cache.write(key, "canonical", result.value.to_dict())
-    _cache_event(manifest, "canonical-diarization", key, False)
-    return result.value, {
-        "model": result.model.to_dict(),
-        "usage": asdict(result.usage),
-        "degraded": result.degraded,
-        "cache_hit": False,
-    }
 
+    payload, dag_cached = _grounding_stage_value(
+        stage=stage,
+        key=key,
+        cache=cache,
+        dag=dag,
+        operation=lambda: provider.diarize(media_path, timeline),
+    )
+    value, metadata = _grounding_payload(payload, provider)
+    metadata["cache_hit"] = dag_cached
+    _cache_event(manifest, stage, key, dag_cached)
+    return value, metadata
 
 def _normalize_asset_url(url: str) -> str:
     parsed = urlparse(url)
@@ -668,6 +758,9 @@ def run_pipeline(
     journal = StageJournal(run_dir / "progress.json")
     cache_root = cfg.cache_root or (cfg.artifact_root / "_cache")
     cache = FileCache(cache_root)
+    grounding_dag = (
+        dag_store_factory(cache_root / "grounding") if dag_store_factory is not None else None
+    )
     manifest = PipelineManifest(brief.campaign_id)
     manifest.funnel = _funnel_template()
     manifest.run_metadata = {
@@ -717,6 +810,7 @@ def run_pipeline(
                 media_path,
                 video.video_id,
                 source_hash,
+                dag=grounding_dag,
             )
             aligned, alignment_meta = _cached_alignment(
                 cache,
@@ -724,6 +818,7 @@ def run_pipeline(
                 alignment_provider,
                 media_path,
                 transcribed,
+                dag=grounding_dag,
             )
             timeline, diarization_meta = _cached_diarization(
                 cache,
@@ -731,6 +826,7 @@ def run_pipeline(
                 diarization_provider,
                 media_path,
                 aligned,
+                dag=grounding_dag,
             )
             if not timeline.words:
                 raise RuntimeError("canonical grounding produced no timestamped source evidence")
