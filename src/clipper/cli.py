@@ -248,6 +248,12 @@ def _model_id(value: object) -> str | None:
     return str(model_id) if model_id else None
 
 
+def _model_cache_fingerprint(value: object) -> str | None:
+    if not isinstance(value, dict) or not value:
+        return None
+    return content_fingerprint({**value, "sampling": {}})
+
+
 def _audit_model_evidence(
     run_dir: Path,
     plan: dict[str, object],
@@ -272,12 +278,33 @@ def _audit_model_evidence(
     }
 
     editorial_meta = metadata.get("editorial_inference")
-    invocations = (
-        editorial_meta.get("model_invocations") if isinstance(editorial_meta, dict) else None
-    )
-    if not isinstance(invocations, list) or not invocations:
-        raise RuntimeError("autonomous editorial run produced no model invocation evidence")
+    if not isinstance(editorial_meta, dict):
+        raise RuntimeError("manifest is missing editorial model evidence")
+    invocations = editorial_meta.get("model_invocations")
+    if not isinstance(invocations, list):
+        raise RuntimeError("editorial model invocation evidence must be an array")
+
     expected_editorial = _model_id(plan.get("editorial"))
+    expected_fingerprint = _model_cache_fingerprint(plan.get("editorial"))
+    cache_summary = editorial_meta.get("cache_summary")
+    fully_cached = False
+    stage_cache_hits = 0
+    stage_executions = 0
+    if isinstance(cache_summary, dict):
+        raw_hits = cache_summary.get("stage_cache_hits")
+        raw_executions = cache_summary.get("stage_executions")
+        if (
+            isinstance(raw_hits, int)
+            and not isinstance(raw_hits, bool)
+            and raw_hits >= 0
+            and isinstance(raw_executions, int)
+            and not isinstance(raw_executions, bool)
+            and raw_executions >= 0
+        ):
+            stage_cache_hits = raw_hits
+            stage_executions = raw_executions
+            fully_cached = stage_executions == 0 and stage_cache_hits > 0
+
     actual_model_ids = {
         model_id
         for item in invocations
@@ -285,10 +312,27 @@ def _audit_model_evidence(
         for model_id in [_model_id(item.get("model"))]
         if model_id
     }
-    if expected_editorial and expected_editorial not in actual_model_ids:
-        raise RuntimeError(
-            f"editorial evidence does not contain the resolved editorial model {expected_editorial}"
-        )
+    if invocations:
+        if expected_editorial and expected_editorial not in actual_model_ids:
+            raise RuntimeError(
+                f"editorial evidence does not contain the resolved editorial model {expected_editorial}"
+            )
+    elif fully_cached:
+        observed_fingerprint = str(cache_summary.get("editorial_model_fingerprint") or "")
+        observed_identity = cache_summary.get("editorial_model")
+        if (
+            not expected_fingerprint
+            or observed_fingerprint != expected_fingerprint
+            or observed_identity != plan.get("editorial")
+        ):
+            raise RuntimeError(
+                "fully cached editorial resume is not bound to the resolved model identity"
+            )
+        if expected_editorial:
+            actual_model_ids.add(expected_editorial)
+    else:
+        raise RuntimeError("autonomous editorial run produced no model invocation evidence")
+
     audit["editorial"] = {
         "expected_model": expected_editorial,
         "observed_models": sorted(actual_model_ids),
@@ -296,9 +340,17 @@ def _audit_model_evidence(
         "live_invocations": sum(
             1 for item in invocations if isinstance(item, dict) and item.get("cache_hit") is False
         ),
-        "cache_hits": sum(
-            1 for item in invocations if isinstance(item, dict) and item.get("cache_hit") is True
+        "cache_hits": (
+            stage_cache_hits
+            if fully_cached
+            else sum(
+                1
+                for item in invocations
+                if isinstance(item, dict) and item.get("cache_hit") is True
+            )
         ),
+        "stage_executions": stage_executions,
+        "fully_cached_resume": fully_cached,
     }
 
     grounding_meta = metadata.get("grounding_inference")
@@ -435,7 +487,7 @@ def main(argv: list[str] | None = None) -> int:
             _log_model_summary(plan, audit)
             print(run_dir)
             manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-            if should_render and manifest.get("status") == "FAILED":
+            if manifest.get("status") == "FAILED":
                 return 1
             return 0
     except Exception as exc:
