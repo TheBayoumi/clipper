@@ -652,6 +652,18 @@ def _execution_id(payload: dict[str, Any]) -> str:
     return str(payload.get("execution_id") or "").strip()
 
 
+def _editorial_runtime_metadata() -> dict[str, object]:
+    import importlib.metadata
+
+    return {
+        "outlines_version": importlib.metadata.version("outlines"),
+        "transformers_version": importlib.metadata.version("transformers"),
+        "runtime_safe_input_tokens": EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS,
+        "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
+        "execution_timeout_seconds": EDITORIAL_EXECUTION_TIMEOUT_SECONDS,
+    }
+
+
 def _assert_expected_git_sha(payload: dict[str, Any]) -> None:
     expected = str(payload.get("expected_git_sha") or "").strip().lower()
     if not expected:
@@ -1239,6 +1251,7 @@ def _editorial_infer(
                 "execution_id": execution_id,
                 "invocation_id": invocation_id,
                 **plan,
+                **_editorial_runtime_metadata(),
                 "serialized_request_bytes": serialized_request_bytes,
                 "cuda_memory_by_device": _cuda_memory_snapshot(),
             },
@@ -1606,6 +1619,7 @@ def _editorial_capacity_probe(
             "execution_id": execution_id,
             "invocation_id": invocation_id,
             **plan,
+            **_editorial_runtime_metadata(),
             "serialized_request_bytes": serialized_request_bytes,
         }
     except EditorialCapacityError as exc:
@@ -1616,6 +1630,7 @@ def _editorial_capacity_probe(
             "execution_id": execution_id,
             "invocation_id": invocation_id,
             **exc.details,
+            **_editorial_runtime_metadata(),
             "serialized_request_bytes": serialized_request_bytes,
         }
 
