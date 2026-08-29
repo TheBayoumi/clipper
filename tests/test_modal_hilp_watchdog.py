@@ -216,6 +216,98 @@ def test_watchdog_cancels_exact_call_without_terminating_containers_on_spy_abort
     assert summary["function_call_id"] == "fc-test"
 
 
+def test_watchdog_counts_successful_hydration_against_compute_budget(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
+    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
+    monkeypatch.setenv("CLIPPER_MAX_GPU_SECONDS", "1")
+    clock = {"now": 0.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
+
+    class SlowHydrateCall(_Call):
+        def hydrate(self) -> None:
+            clock["now"] = 0.6
+
+        def get(self, *, timeout: float):
+            raise AssertionError(f"budget must fail before polling, got timeout={timeout}")
+
+    call = SlowHydrateCall({})
+    monkeypatch.setitem(sys.modules, "modal", _modal(call))
+
+    with pytest.raises(RuntimeError, match="production budget reached"):
+        module.run(render=False)
+
+    assert call.cancel_args == [False]
+
+
+def test_watchdog_caps_poll_timeout_to_remaining_compute_budget(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
+    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
+    monkeypatch.setenv("CLIPPER_MAX_GPU_SECONDS", "1")
+    monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "5")
+    clock = {"now": 0.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
+
+    class BudgetPollCall(_Call):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.timeouts: list[float] = []
+
+        def get(self, *, timeout: float):
+            self.timeouts.append(timeout)
+            clock["now"] = timeout
+            raise TimeoutError
+
+    call = BudgetPollCall()
+    monkeypatch.setitem(sys.modules, "modal", _modal(call))
+
+    with pytest.raises(RuntimeError, match="production budget reached"):
+        module.run(render=False)
+
+    assert call.timeouts == [pytest.approx(0.5)]
+    assert call.cancel_args == [False]
+
+
+def test_watchdog_retries_exact_call_cancellation_before_marking_cancelled(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
+    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
+
+    class RetryCancelCall(_Call):
+        def __init__(self) -> None:
+            super().__init__({}, abort_spy=True)
+            self.cancel_attempts = 0
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            assert terminate_containers is False
+            self.cancel_attempts += 1
+            if self.cancel_attempts == 1:
+                raise RuntimeError("transient cancel failure")
+            self.cancel_args.append(terminate_containers)
+
+    call = RetryCancelCall()
+    monkeypatch.setitem(sys.modules, "modal", _modal(call))
+
+    with pytest.raises(RuntimeError, match="Modal spy aborted production early"):
+        module.run(render=False)
+
+    assert call.cancel_attempts == 2
+    assert call.cancel_args == [False]
+
+
 def test_watchdog_rechecks_budget_after_successful_final_poll(
     tmp_path: Path,
     monkeypatch,
