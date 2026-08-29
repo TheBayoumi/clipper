@@ -140,6 +140,41 @@ def test_source_cache_and_staging_are_identity_bound_and_concurrency_safe() -> N
     assert '_atomic_write_json(target.with_suffix(".source.json"), evidence)' in writer
 
 
+def test_production_dag_lease_is_serialized_and_volume_coherent() -> None:
+    source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+    prefix = source.split("def dag_execution_lease(", 1)[0][-500:]
+    lease = source.split("def dag_execution_lease(", 1)[1].split("def deployment_identity(", 1)[0]
+    cycle = source.split("def run_full_cycle(", 1)[1]
+
+    assert "max_containers=1" in prefix
+    assert "volumes={ARTIFACT_ROOT: artifact_volume}" in prefix
+    assert "artifact_volume.reload()" in lease
+    assert "artifact_volume.commit()" in lease
+    assert "_assert_expected_git_sha(payload)" in lease
+    assert '"claim", "renew", "release"' in lease
+    assert "DagLeaseCoordinator" in cycle
+    assert 'modal.Function.from_name(APP_NAME, "dag_execution_lease")' in cycle
+    assert "coordinated_dag_store" in cycle
+    assert "dag_store_factory=coordinated_dag_store" in cycle
+
+
+def test_modal_worker_pins_diarization_and_vision_model_contracts() -> None:
+    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+
+    diarize = source.split("def diarize(", 1)[1].split("def deployment_identity(", 1)[0]
+    assert "repo_id=DIARIZATION_MODEL_ID" in diarize
+    assert "revision=DIARIZATION_MODEL_REVISION" in diarize
+    assert "Pipeline.from_pretrained(" in diarize
+    assert '"quantization": DIARIZATION_QUANTIZATION' in diarize
+
+    assert "def _vision_contract(" in source
+    assert "AutoProcessor.from_pretrained(model_id, revision=revision)" in source
+    assert '"revision": revision' in source
+    assert '"quantization": quantization' in source
+    assert "_load_vision_worker(self, VISION_MODEL_ID)" in source
+    assert "_load_vision_worker(self, VISION_LARGE_MODEL_ID)" in source
+
+
 def test_volume_source_client_never_discovers_or_downgrades_media() -> None:
     source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     client = source.split("class VolumeSourceClient", 1)[1].split("def run_full_cycle(", 1)[0]
