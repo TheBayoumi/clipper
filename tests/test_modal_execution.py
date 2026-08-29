@@ -21,6 +21,7 @@ from clipper.modal_execution import (
     _materialize_remote_run,
     _positive_budget,
     _runtime_source_sha,
+    ProductionBudgetExceeded,
     _validate_model_access,
     _verify_deployed_runtime_sha,
     ensure_modal_runtime,
@@ -93,6 +94,19 @@ def test_function_retries_transient_service_errors() -> None:
         assert _function("app", "worker") is handle
     assert from_name.call_count == 3
     assert [item.args[0] for item in sleep.call_args_list] == [2.0, 5.0]
+
+
+def test_function_does_not_retry_nontransient_hydration_failure() -> None:
+    handle = Mock()
+    handle.hydrate.side_effect = ValueError("bad handle")
+    from_name = Mock(return_value=handle)
+    modal = SimpleNamespace(Function=SimpleNamespace(from_name=from_name))
+    with (
+        patch("clipper.modal_execution.importlib.import_module", return_value=modal),
+        pytest.raises(ValueError, match="bad handle"),
+    ):
+        _function("app", "worker")
+    from_name.assert_called_once_with("app", "worker")
 
 
 def test_deploy_requires_modal_cli_and_existing_source(tmp_path: Path) -> None:
@@ -796,6 +810,43 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
         volume_name="clipper-production-artifacts",
         remote_run_path="/campaign-run",
     )
+
+
+def test_run_modal_pipeline_stops_when_acquisition_exhausts_budget(tmp_path: Path) -> None:
+    brief_path = tmp_path / "brief.json"
+    _write_brief(brief_path)
+    candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
+    acquire = Mock()
+    runner = Mock()
+
+    def fake_function(_app: str, name: str) -> Mock:
+        return acquire if name == "acquire_source" else runner
+
+    def exhaust_budget(*_args: object, **kwargs: object) -> dict[str, object]:
+        budget = kwargs["budget"]
+        assert isinstance(budget, _BudgetLedger)
+        budget.estimated_usd = budget.max_estimated_usd
+        return {"quality_policy": "highest_available_no_transcode"}
+
+    with (
+        patch("clipper.modal_execution.ensure_modal_runtime"),
+        patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
+        patch("clipper.modal_execution._verify_deployed_runtime_sha", return_value="a" * 40),
+        patch("clipper.modal_execution._function", side_effect=fake_function),
+        patch("clipper.modal_execution._acquire_remote_source", side_effect=exhaust_budget),
+        patch("clipper.modal_execution._invoke_remote_with_budget") as invoke,
+        pytest.raises(ProductionBudgetExceeded, match="source acquisition exhausted"),
+    ):
+        run_modal_pipeline(
+            brief_path,
+            artifact_root=tmp_path / "artifacts",
+            resume_from_run_id=None,
+            render=False,
+            fresh_inference=False,
+            max_gpu_seconds=100.0,
+            max_estimated_usd=1.0,
+        )
+    invoke.assert_not_called()
 
 
 def test_run_modal_pipeline_fails_closed_for_runtime_empty_targets_and_bad_runner(tmp_path: Path) -> None:
