@@ -319,6 +319,8 @@ def _audit_model_evidence(
                 f"{expected_editorial}"
             )
     elif fully_cached:
+        if not isinstance(cache_summary, dict):
+            raise RuntimeError("fully cached editorial resume is missing cache identity evidence")
         observed_fingerprint = str(cache_summary.get("editorial_model_fingerprint") or "")
         observed_identity = cache_summary.get("editorial_model")
         if (
