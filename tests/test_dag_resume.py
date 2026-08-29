@@ -400,6 +400,7 @@ def test_coordinated_dag_follower_reloads_and_reuses_terminal_cache(tmp_path: Pa
     assert calls["reload"] >= 1
     assert calls["claim"] == 0
 
+
 def test_coordinated_operation_failure_commits_failed_record_and_releases_owner(
     tmp_path: Path,
 ) -> None:
