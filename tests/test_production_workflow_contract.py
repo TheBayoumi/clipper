@@ -421,6 +421,33 @@ def test_paid_workflows_are_not_triggered_by_pull_request_synchronization() -> N
     assert isinstance(deploy_marker.get("enabled"), bool)
 
 
+def test_pull_request_smoke_is_read_only_and_package_publish_is_main_only() -> None:
+    smoke_path = Path(".github/workflows/deploy-and-smoke.yml")
+    publish_path = Path(".github/workflows/publish-tested-image.yml")
+    smoke = smoke_path.read_text(encoding="utf-8")
+    publish = publish_path.read_text(encoding="utf-8")
+    parsed_smoke = yaml.safe_load(smoke)
+    parsed_publish = yaml.safe_load(publish)
+
+    assert isinstance(parsed_smoke, dict)
+    assert parsed_smoke.get("permissions") == {"contents": "read"}
+    assert "pull_request:" in smoke
+    assert "packages: write" not in smoke
+    assert "docker login ghcr.io" not in smoke
+    assert "docker push" not in smoke
+
+    assert isinstance(parsed_publish, dict)
+    assert parsed_publish.get("permissions") == {
+        "contents": "read",
+        "packages": "write",
+    }
+    assert "pull_request:" not in publish
+    assert "branches:\n      - main" in publish
+    assert "docker login ghcr.io" in publish
+    assert "docker push" in publish
+    assert 'test "$source_sha" = "$GITHUB_SHA"' in publish
+
+
 def test_disabled_acceptance_guards_precede_any_paid_modal_work() -> None:
     production = Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
     deploy = Path(".github/workflows/modal-workers-deploy.yml").read_text(encoding="utf-8")
@@ -459,7 +486,8 @@ def test_production_budget_limits_are_finite_and_cli_is_cancellable() -> None:
     assert "math.isfinite(max_estimated_usd)" in pipeline
     assert "def _invoke_remote_with_budget(" in cli_modal
     assert "function.spawn(request)" in cli_modal
-    assert "call.get(timeout=poll_seconds)" in cli_modal
+    assert "call.get(timeout=min(poll_seconds, remaining_seconds))" in cli_modal
+    assert "remaining_budget_wall_seconds" in cli_modal
     assert "call.cancel(terminate_containers=False)" in cli_modal
     assert "math.isfinite(resolved)" in cli_modal
 
