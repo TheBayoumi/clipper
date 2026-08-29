@@ -853,10 +853,21 @@ def _editorial_acceptance_probe(
         deadline_details = deadline_result.get("details")
         if not isinstance(deadline_details, dict):
             raise RuntimeError("deadline probe returned no capacity rejection details")
+        terminal_status = str(deadline_result.get("terminal_status") or "")
+        if terminal_status != "CAPACITY_REJECTED":
+            raise RuntimeError(
+                "deadline probe did not close through the required producer terminal state: "
+                f"{terminal_status!r}"
+            )
+        if deadline_details.get("deadline_probe") is not True:
+            raise RuntimeError("deadline proof omitted the acceptance-probe identity marker")
+        if deadline_details.get("late_candidate_rejected") is not True:
+            raise RuntimeError("deadline proof did not explicitly reject the post-deadline candidate")
         deadline_input_tokens = int(deadline_details.get("input_tokens") or 0)
         deadline_target_tokens = int(deadline_details.get("runtime_safe_input_tokens") or 0)
         deadline_seconds = float(deadline_details.get("generation_deadline_seconds") or 0.0)
         elapsed_seconds = float(deadline_details.get("elapsed_seconds") or 0.0)
+        output_tokens = int(deadline_details.get("output_tokens") or 0)
         forced_min_new_tokens = int(deadline_details.get("forced_min_new_tokens") or 0)
         if deadline_seconds != 300.0:
             raise RuntimeError(
@@ -880,6 +891,11 @@ def _editorial_acceptance_probe(
         if forced_min_new_tokens < deadline_probe_min_new_tokens:
             raise RuntimeError(
                 "deadline probe did not force enough generation to exclude natural early EOS: "
+                f"{deadline_details}"
+            )
+        if output_tokens < 0 or output_tokens >= forced_min_new_tokens:
+            raise RuntimeError(
+                "deadline probe did not prove max_time interrupted the forced token target: "
                 f"{deadline_details}"
             )
 
@@ -910,6 +926,7 @@ def _editorial_acceptance_probe(
             "source_range": [candidate_start, candidate_end],
             "preflight": preflight,
             "invocation_id": str(deadline_result.get("invocation_id") or ""),
+            "terminal_status": terminal_status,
             "capacity_rejection": deadline_details,
             "repartition": deadline_repartition_event,
         }

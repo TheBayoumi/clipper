@@ -236,3 +236,5 @@ def test_editorial_generation_has_internal_deadline_before_modal_timeout() -> No
     assert '"max_time": EDITORIAL_GENERATION_DEADLINE_SECONDS' in source
     assert '"reason": "generation_runtime_deadline"' in source
     assert '"event": "editorial_generation_deadline"' in source
+    assert '"late_candidate_rejected"' in source
+    assert '"deadline_probe"' in source

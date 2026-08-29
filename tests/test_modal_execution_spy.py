@@ -583,3 +583,72 @@ def test_spy_stall_snapshot_is_safe_during_concurrent_terminal_record(tmp_path: 
     assert finished.is_set()
     assert spy.abort_reason is None
     assert spy.summary()["active_editorial_calls"] == []
+
+
+def test_spy_accepts_complete_authoritative_deadline_rejection(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "deadline-terminal.ndjson",
+        execution_id="exec-123",
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_start","execution_id":"exec-123",'
+        '"invocation_id":"inv-deadline","task":"source_hazards:deadline_probe:video"}',
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_terminal","execution_id":"exec-123",'
+        '"invocation_id":"inv-deadline","task":"source_hazards:deadline_probe:video",'
+        '"status":"CAPACITY_REJECTED","reason":"generation_runtime_deadline",'
+        '"generation_deadline_seconds":300.0,"elapsed_seconds":300.2,'
+        '"deadline_probe":true,"late_candidate_parseable":false,'
+        '"late_candidate_rejected":true,"forced_min_new_tokens":65536,'
+        '"output_tokens":123}',
+    )
+
+    assert spy.abort_reason is None
+    assert spy.summary()["active_editorial_calls"] == []
+
+
+@pytest.mark.parametrize(
+    "terminal_suffix",
+    [
+        '"deadline_probe":true,"late_candidate_parseable":true,'
+        '"late_candidate_rejected":false,"forced_min_new_tokens":65536,"output_tokens":123',
+        '"deadline_probe":true,"late_candidate_rejected":true,'
+        '"forced_min_new_tokens":65536,"output_tokens":65536',
+        '"deadline_probe":true,"late_candidate_rejected":true,'
+        '"forced_min_new_tokens":65536,"output_tokens":123,"elapsed_seconds":299.9',
+    ],
+)
+def test_spy_rejects_incomplete_authoritative_deadline_evidence(
+    tmp_path: Path,
+    terminal_suffix: str,
+) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "bad-deadline-terminal.ndjson",
+        execution_id="exec-123",
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_start","execution_id":"exec-123",'
+        '"invocation_id":"inv-deadline","task":"source_hazards:deadline_probe:video"}',
+    )
+    elapsed = "" if "elapsed_seconds" in terminal_suffix else ',"elapsed_seconds":300.2'
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_terminal","execution_id":"exec-123",'
+        '"invocation_id":"inv-deadline","task":"source_hazards:deadline_probe:video",'
+        '"status":"CAPACITY_REJECTED","reason":"generation_runtime_deadline",'
+        '"generation_deadline_seconds":300.0'
+        + elapsed
+        + ","
+        + terminal_suffix
+        + "}",
+    )
+
+    assert spy.abort_reason is not None

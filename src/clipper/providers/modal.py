@@ -57,7 +57,9 @@ class EditorialInvocation:
         "elapsed_seconds",
         "cache_implementation",
         "late_candidate_parseable",
+        "late_candidate_rejected",
         "forced_min_new_tokens",
+        "deadline_probe",
     )
 
     def __init__(
@@ -294,6 +296,7 @@ def invoke_editorial_deadline_probe(
     )
     return {
         "invocation_id": invocation.invocation_id,
+        "terminal_status": "CAPACITY_REJECTED",
         "application_status": application_status,
         "error_type": error_type,
         "details": details,

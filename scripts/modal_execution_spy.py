@@ -240,6 +240,7 @@ class ModalExecutionSpy:
             "generation_deadline_seconds",
             "elapsed_seconds",
             "late_candidate_parseable",
+            "late_candidate_rejected",
             "forced_min_new_tokens",
             "deadline_probe",
             "execution_timeout_seconds",
@@ -292,6 +293,42 @@ class ModalExecutionSpy:
                 return f"editorial remote call hit its runtime timeout: {event}"
             if status == "ERROR":
                 return f"editorial remote call failed non-recoverably: {event}"
+            if status == "CAPACITY_REJECTED" and event.get("reason") == "generation_runtime_deadline":
+                deadline = event.get("generation_deadline_seconds")
+                elapsed = event.get("elapsed_seconds")
+                if (
+                    isinstance(deadline, bool)
+                    or not isinstance(deadline, int | float)
+                    or not math.isfinite(float(deadline))
+                    or float(deadline) <= 0
+                    or isinstance(elapsed, bool)
+                    or not isinstance(elapsed, int | float)
+                    or not math.isfinite(float(elapsed))
+                    or float(elapsed) < float(deadline)
+                ):
+                    return f"deadline rejection omitted valid timing evidence: {event}"
+                if (
+                    event.get("late_candidate_parseable") is not None
+                    and event.get("late_candidate_rejected") is not True
+                ):
+                    return f"deadline rejection did not reject its late candidate: {event}"
+                if event.get("deadline_probe") is True:
+                    forced = event.get("forced_min_new_tokens")
+                    output = event.get("output_tokens")
+                    if not math.isclose(float(deadline), 300.0, rel_tol=0.0, abs_tol=1e-9):
+                        return f"acceptance deadline probe did not exercise 300 seconds: {event}"
+                    if event.get("late_candidate_rejected") is not True:
+                        return f"acceptance deadline probe omitted late-candidate rejection: {event}"
+                    if (
+                        isinstance(forced, bool)
+                        or not isinstance(forced, int)
+                        or forced <= 0
+                        or isinstance(output, bool)
+                        or not isinstance(output, int)
+                        or output < 0
+                        or output >= forced
+                    ):
+                        return f"acceptance deadline probe omitted forced-interruption proof: {event}"
             return None
 
         if name == "editorial_execution_timeout":

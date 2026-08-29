@@ -1360,7 +1360,9 @@ def _editorial_generation_deadline_error(
     output_units: int | None = None,
     error_type: str | None = None,
     late_candidate_parseable: bool | None = None,
+    late_candidate_rejected: bool | None = None,
     forced_min_new_tokens: int | None = None,
+    deadline_probe: bool = False,
 ) -> Exception:
     from clipper.providers.base import EditorialCapacityError
 
@@ -1401,9 +1403,15 @@ def _editorial_generation_deadline_error(
     if late_candidate_parseable is not None:
         event["late_candidate_parseable"] = late_candidate_parseable
         details["late_candidate_parseable"] = late_candidate_parseable
+    if late_candidate_rejected is not None:
+        event["late_candidate_rejected"] = late_candidate_rejected
+        details["late_candidate_rejected"] = late_candidate_rejected
     if forced_min_new_tokens is not None:
         event["forced_min_new_tokens"] = forced_min_new_tokens
         details["forced_min_new_tokens"] = forced_min_new_tokens
+    if deadline_probe:
+        event["deadline_probe"] = True
+        details["deadline_probe"] = True
     print(json.dumps(event, sort_keys=True))
     return EditorialCapacityError(message, details=details)
 
@@ -1532,6 +1540,7 @@ def _editorial_infer(
                     elapsed_seconds=cache_attempt_seconds,
                     message="editorial generation reached the runtime latency boundary",
                     late_candidate_parseable=late_candidate_parseable,
+                    late_candidate_rejected=True,
                 )
             if not isinstance(candidate, str):
                 raise TypeError(
@@ -1671,6 +1680,7 @@ def _editorial_infer(
                 ),
                 output_units=output_units,
                 late_candidate_parseable=False,
+                late_candidate_rejected=True,
             ) from exc
         if output_units >= output_budget:
             available = int(plan["available_output_tokens"])
@@ -1843,6 +1853,14 @@ def _editorial_deadline_probe(
             "editorial deadline probe returned too late to prove the primary max_time boundary: "
             f"elapsed={elapsed_seconds:.3f}s maximum={maximum_deadline_elapsed:.3f}s"
         )
+    late_candidate_parseable = False
+    if isinstance(candidate, str):
+        try:
+            _json_text(candidate)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+        else:
+            late_candidate_parseable = True
     output_units = (
         len(tokenizer(candidate, add_special_tokens=False)["input_ids"])
         if isinstance(candidate, str)
@@ -1866,7 +1884,10 @@ def _editorial_deadline_probe(
         elapsed_seconds=elapsed_seconds,
         message="editorial deadline probe reached the production runtime boundary",
         output_units=output_units,
+        late_candidate_parseable=late_candidate_parseable,
+        late_candidate_rejected=True,
         forced_min_new_tokens=output_budget,
+        deadline_probe=True,
     )
 
 
