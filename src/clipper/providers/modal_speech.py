@@ -320,4 +320,8 @@ class ModalDiarizationProvider(_ModalSpeechBase):
                 raise ValueError("Modal diarization turn is invalid")
             turns.append((float(raw[0]), float(raw[1]), str(raw[2])))
         value = apply_speaker_turns(timeline, turns)
-        return ProviderResult(value, self._resolved_identity(response), self._usage(response))
+        return ProviderResult(
+            value,
+            self._validated_remote_identity(response, label="diarization"),
+            self._usage(response),
+        )
