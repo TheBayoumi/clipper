@@ -1279,6 +1279,48 @@ def _editorial_infer(
             )
             with torch.inference_mode():
                 candidate = structured_model(rendered, schema, **kwargs)
+            cache_attempt_seconds = max(0.0, time.perf_counter() - cache_attempt_started)
+            if (
+                plan.get("capacity_repartitionable") is True
+                and cache_attempt_seconds >= EDITORIAL_GENERATION_DEADLINE_SECONDS
+            ):
+                runtime_target = max(
+                    1,
+                    min(
+                        EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS,
+                        max(1, input_units // 2),
+                    ),
+                )
+                print(
+                    json.dumps(
+                        {
+                            "event": "editorial_generation_deadline",
+                            "worker_lifecycle_id": lifecycle_id,
+                            "task": task,
+                            "execution_id": execution_id,
+                            "invocation_id": invocation_id,
+                            "cache_implementation": cache_policy,
+                            "input_tokens": input_units,
+                            "generation_budget_tokens": output_budget,
+                            "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
+                            "elapsed_seconds": cache_attempt_seconds,
+                            "runtime_safe_input_tokens": runtime_target,
+                            "error_type": None,
+                        },
+                        sort_keys=True,
+                    )
+                )
+                raise EditorialCapacityError(
+                    "editorial generation reached the runtime latency boundary",
+                    details={
+                        "reason": "generation_runtime_deadline",
+                        **plan,
+                        "runtime_safe_input_tokens": runtime_target,
+                        "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
+                        "elapsed_seconds": cache_attempt_seconds,
+                        "cache_implementation": cache_policy,
+                    },
+                )
             if not isinstance(candidate, str):
                 raise TypeError(
                     "Outlines transformers generation returned a non-string response: "
