@@ -59,6 +59,21 @@ def _parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--manifest", required=True, type=Path)
     benchmark.add_argument("--output", type=Path)
 
+    preflight = subparsers.add_parser(
+        "preflight",
+        help="validate model-plan runtime dependencies without starting inference",
+    )
+    preflight.add_argument(
+        "--profile",
+        choices=("balanced", "quality", "local-lite"),
+        default=os.getenv("CLIPPER_COMPUTE_PROFILE", "balanced"),
+    )
+    preflight.add_argument(
+        "--allow-local-lite",
+        action="store_true",
+        help="explicitly permit the local-lite runtime dependency preflight",
+    )
+
     run = subparsers.add_parser("run", help="execute transcription, planning, and rendering")
     run.add_argument("--brief", required=True, type=Path)
     run.add_argument("--artifact-root", type=Path, default=Path("artifacts"))
@@ -136,17 +151,39 @@ def _requires_modal(plan: dict[str, object]) -> bool:
     )
 
 
+def _required_runtime_modules(plan: dict[str, object]) -> tuple[str, ...]:
+    modules: set[str] = set()
+    for value in plan.values():
+        if not isinstance(value, dict):
+            continue
+        engine = str(value.get("inference_engine") or "").strip().lower()
+        if engine.startswith("modal-"):
+            modules.add("modal")
+        elif engine == "transformers":
+            modules.add("transformers")
+        elif engine == "faster-whisper":
+            modules.add("faster_whisper")
+        elif engine == "whisperx":
+            modules.add("whisperx")
+        elif engine == "pyannote.audio":
+            modules.add("pyannote.audio")
+    return tuple(sorted(modules))
+
+
 def _assert_runtime_dependencies(plan: dict[str, object]) -> None:
-    if not _requires_modal(plan):
-        return
-    try:
-        modal_spec = importlib.util.find_spec("modal")
-    except (ImportError, ValueError):
-        modal_spec = None
-    if modal_spec is None:
+    missing: list[str] = []
+    for module_name in _required_runtime_modules(plan):
+        try:
+            spec = importlib.util.find_spec(module_name)
+        except (ImportError, ValueError):
+            spec = None
+        if spec is None:
+            missing.append(module_name)
+    if missing:
         raise RuntimeError(
-            "resolved production model plan requires the Modal Python SDK, but 'modal' is not "
-            'installed. Install the balanced runtime with: python -m pip install -e ".[modal]"'
+            "resolved production model plan is missing runtime module(s): "
+            + ", ".join(missing)
+            + '. Install the complete runtime with: python -m pip install -e ".[open-models]"'
         )
 
 
@@ -441,6 +478,23 @@ def main(argv: list[str] | None = None) -> int:
                 args.output.write_text(output, encoding="utf-8")
             print(output, end="")
             return 0 if result.status == "PASS" else 1
+        if args.command == "preflight":
+            settings = replace(PipelineSettings.from_env(), compute_profile=args.profile)
+            _assert_production_execution(settings, args)
+            plan = _resolved_model_plan(settings)
+            _assert_runtime_dependencies(plan)
+            print(
+                json.dumps(
+                    {
+                        "status": "READY",
+                        "compute_profile": settings.compute_profile,
+                        "required_modules": list(_required_runtime_modules(plan)),
+                        "model_plan": plan,
+                    },
+                    indent=2,
+                )
+            )
+            return 0
         if args.command == "run":
             settings = _production_settings(args.artifact_root)
             if args.fresh_inference:
