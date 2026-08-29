@@ -1045,7 +1045,8 @@ def run_pipeline(
             attempt.update({"status": "ACCEPTED"})
             manifest.render_attempts.append(attempt)
         except Exception as exc:
-            if rendered is not None:
+            _remove_render_attempt_files(output)
+            if rendered is not None and rendered != output:
                 _remove_render_attempt_files(rendered)
             manifest.errors.append(
                 {
