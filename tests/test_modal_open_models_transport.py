@@ -193,9 +193,7 @@ def _load_editorial_output_template() -> Callable[[dict[str, Any]], dict[str, An
         "_editorial_output_template",
     }
     functions = [
-        item
-        for item in tree.body
-        if isinstance(item, ast.FunctionDef) and item.name in names
+        item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name in names
     ]
     isolated = ast.Module(body=functions, type_ignores=[])
     ast.fix_missing_locations(isolated)
