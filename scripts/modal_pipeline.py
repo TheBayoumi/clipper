@@ -11,6 +11,7 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import modal
 
@@ -101,11 +102,88 @@ def _probe(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _youtube_video_id(video_url: str) -> str:
+    parsed = urlparse(video_url)
+    if parsed.scheme != "https":
+        raise ValueError("source acquisition requires an https video_url")
+    host = (parsed.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    video_id = ""
+    if host == "youtu.be":
+        video_id = parsed.path.strip("/").split("/", 1)[0]
+    elif host in {"youtube.com", "m.youtube.com", "music.youtube.com"}:
+        if parsed.path == "/watch":
+            video_id = (parse_qs(parsed.query).get("v") or [""])[0]
+        else:
+            for prefix in ("/shorts/", "/live/", "/embed/"):
+                if parsed.path.startswith(prefix):
+                    video_id = parsed.path[len(prefix) :].split("/", 1)[0]
+                    break
+    else:
+        raise ValueError("source acquisition requires a YouTube video URL")
+
+    safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+    if not video_id or any(character not in safe for character in video_id):
+        raise ValueError("source acquisition URL does not identify a safe YouTube video ID")
+    return video_id
+
+
+def _validate_extracted_source_identity(
+    *,
+    expected_video_id: str,
+    expected_channel_id: str,
+    requested_url: str,
+    actual_video_id: str,
+    actual_channel_id: str,
+    canonical_url: str,
+) -> dict[str, str]:
+    requested_video_id = _youtube_video_id(requested_url)
+    if requested_video_id != expected_video_id:
+        raise RuntimeError(
+            "authorized target URL video ID mismatch: "
+            f"expected={expected_video_id} url={requested_video_id}"
+        )
+    if actual_video_id != expected_video_id:
+        raise RuntimeError(
+            "acquired media video ID does not match authorized target: "
+            f"expected={expected_video_id} actual={actual_video_id}"
+        )
+    if actual_channel_id != expected_channel_id:
+        raise RuntimeError(
+            "acquired media channel ID does not match authorized target: "
+            f"expected={expected_channel_id} actual={actual_channel_id}"
+        )
+    canonical_video_id = _youtube_video_id(canonical_url)
+    if canonical_video_id != expected_video_id:
+        raise RuntimeError(
+            "yt-dlp canonical URL does not match authorized target: "
+            f"expected={expected_video_id} canonical={canonical_video_id}"
+        )
+    return {
+        "video_id": actual_video_id,
+        "channel_id": actual_channel_id,
+        "webpage_url": canonical_url,
+    }
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _source_evidence(
     path: Path,
     *,
     video_id: str,
-    video_url: str,
+    channel_id: str,
+    requested_url: str,
+    canonical_url: str,
     volume_path: str,
     authenticated: bool,
     reused: bool,
@@ -133,7 +211,14 @@ def _source_evidence(
     fmt = raw_format if isinstance(raw_format, dict) else {}
     return {
         "video_id": video_id,
-        "source_url": video_url,
+        "channel_id": channel_id,
+        "source_url": canonical_url,
+        "requested_url": requested_url,
+        "canonical_identity": {
+            "video_id": video_id,
+            "channel_id": channel_id,
+            "webpage_url": canonical_url,
+        },
         "sha256": _sha256(path),
         "bytes": path.stat().st_size,
         "volume_path": volume_path,
@@ -159,7 +244,13 @@ def _source_evidence(
     }
 
 
-def _existing_source(video_id: str, video_url: str) -> dict[str, Any] | None:
+def _existing_source(
+    video_id: str,
+    channel_id: str,
+    video_url: str,
+) -> dict[str, Any] | None:
+    if _youtube_video_id(video_url) != video_id:
+        return None
     index_path = Path(MEDIA_ROOT) / "source-index" / f"{video_id}.json"
     if not index_path.is_file():
         return None
@@ -169,6 +260,21 @@ def _existing_source(video_id: str, video_url: str) -> dict[str, Any] | None:
         return None
     if not isinstance(index, dict):
         return None
+    identity = index.get("canonical_identity")
+    if not isinstance(identity, dict):
+        return None
+    canonical_url = str(identity.get("webpage_url") or "")
+    if (
+        str(identity.get("video_id") or "") != video_id
+        or str(identity.get("channel_id") or "") != channel_id
+    ):
+        return None
+    try:
+        if _youtube_video_id(canonical_url) != video_id:
+            return None
+    except ValueError:
+        return None
+
     volume_path = str(index.get("volume_path") or "")
     expected = str(index.get("sha256") or "")
     target = Path(MEDIA_ROOT) / volume_path.lstrip("/")
@@ -179,12 +285,53 @@ def _existing_source(video_id: str, video_url: str) -> dict[str, Any] | None:
     evidence = _source_evidence(
         target,
         video_id=video_id,
-        video_url=video_url,
+        channel_id=channel_id,
+        requested_url=video_url,
+        canonical_url=canonical_url,
         volume_path=volume_path,
         authenticated=bool(index.get("authenticated")),
         reused=True,
     )
     return evidence if evidence["sha256"] == expected else None
+
+
+@app.function(
+    image=media_image,
+    volumes={MEDIA_ROOT: media_cache},
+    timeout=120,
+    memory=1024,
+    max_containers=1,
+)
+def persist_source_index(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Serialize source-index and provenance sidecar writes across concurrent acquisitions."""
+    media_cache.reload()
+    video_id = str(evidence.get("video_id") or "")
+    channel_id = str(evidence.get("channel_id") or "")
+    identity = evidence.get("canonical_identity")
+    volume_path = str(evidence.get("volume_path") or "")
+    expected = str(evidence.get("sha256") or "")
+    if not video_id or not channel_id or not isinstance(identity, dict):
+        raise RuntimeError("source index writer requires canonical source identity")
+    if (
+        str(identity.get("video_id") or "") != video_id
+        or str(identity.get("channel_id") or "") != channel_id
+    ):
+        raise RuntimeError("source index writer rejected mismatched canonical identity")
+    canonical_url = str(identity.get("webpage_url") or "")
+    if _youtube_video_id(canonical_url) != video_id:
+        raise RuntimeError("source index writer rejected mismatched canonical URL")
+
+    target = Path(MEDIA_ROOT) / volume_path.lstrip("/")
+    if not volume_path.startswith("/inputs/") or not target.is_file() or not expected:
+        raise RuntimeError("source index writer cannot resolve content-addressed source")
+    if _sha256(target) != expected:
+        raise RuntimeError("source index writer detected source hash mismatch")
+
+    index_path = Path(MEDIA_ROOT) / "source-index" / f"{video_id}.json"
+    _atomic_write_json(index_path, evidence)
+    _atomic_write_json(target.with_suffix(".source.json"), evidence)
+    media_cache.commit()
+    return evidence
 
 
 @app.function(
@@ -200,172 +347,206 @@ def acquire_source(payload: dict[str, Any]) -> dict[str, Any]:
     _assert_expected_git_sha(payload)
     video_url = str(payload.get("video_url") or "").strip()
     video_id = str(payload.get("video_id") or "").strip()
-    if not video_url.startswith("https://"):
-        raise ValueError("source acquisition requires an https video_url")
+    channel_id = str(payload.get("channel_id") or "").strip()
     safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
     if not video_id or any(character not in safe for character in video_id):
         raise ValueError("source acquisition requires a safe video_id")
+    if not channel_id or any(character not in safe for character in channel_id):
+        raise ValueError("source acquisition requires a safe channel_id")
+    if _youtube_video_id(video_url) != video_id:
+        raise RuntimeError("source acquisition URL does not match the authorized video_id")
 
     media_cache.reload()
-    existing = _existing_source(video_id, video_url)
+    existing = _existing_source(video_id, channel_id, video_url)
     if existing is not None:
         return existing
 
-    staging = Path(MEDIA_ROOT) / "staging" / video_id
-    shutil.rmtree(staging, ignore_errors=True)
-    staging.mkdir(parents=True, exist_ok=True)
+    staging = Path(MEDIA_ROOT) / "staging" / video_id / uuid.uuid4().hex
+    staging.mkdir(parents=True, exist_ok=False)
     output_template = staging / "source.%(ext)s"
     cookie_path = staging / "youtube.cookies.txt"
-    encoded_cookies = os.getenv("CLIPPER_YOUTUBE_COOKIES_B64", "").strip()
-    cookies_available = bool(encoded_cookies)
-    if cookies_available:
-        try:
-            cookie_bytes = base64.b64decode(encoded_cookies, validate=True)
-        except ValueError as exc:
-            raise RuntimeError("CLIPPER_YOUTUBE_COOKIES_B64 is not valid base64") from exc
-        if not cookie_bytes.strip():
-            raise RuntimeError("CLIPPER_YOUTUBE_COOKIES_B64 decoded to an empty cookie file")
-        cookie_path.write_bytes(cookie_bytes)
-        cookie_path.chmod(0o600)
+    try:
+        encoded_cookies = os.getenv("CLIPPER_YOUTUBE_COOKIES_B64", "").strip()
+        cookies_available = bool(encoded_cookies)
+        if cookies_available:
+            try:
+                cookie_bytes = base64.b64decode(encoded_cookies, validate=True)
+            except ValueError as exc:
+                raise RuntimeError("CLIPPER_YOUTUBE_COOKIES_B64 is not valid base64") from exc
+            if not cookie_bytes.strip():
+                raise RuntimeError("CLIPPER_YOUTUBE_COOKIES_B64 decoded to an empty cookie file")
+            cookie_path.write_bytes(cookie_bytes)
+            cookie_path.chmod(0o600)
 
-    provider_arg = "youtubepot-bgutilscript:server_home=/root/bgutil-ytdlp-pot-provider/server"
-    attempts: list[tuple[str, list[str], bool]] = [
-        (
-            "bgutil_default_mweb",
-            [
-                "--extractor-args",
-                "youtube:player_client=default,mweb",
-                "--extractor-args",
-                provider_arg,
-            ],
-            False,
-        ),
-        ("bgutil_default_clients", ["--extractor-args", provider_arg], False),
-        (
-            "bgutil_embedded_android_vr",
-            [
-                "--extractor-args",
-                "youtube:player_client=web_embedded,android_vr",
-                "--extractor-args",
-                provider_arg,
-            ],
-            False,
-        ),
-    ]
-    if cookies_available:
-        attempts.append(
+        provider_arg = "youtubepot-bgutilscript:server_home=/root/bgutil-ytdlp-pot-provider/server"
+        attempts: list[tuple[str, list[str], bool]] = [
             (
-                "cookies_bgutil_default_mweb",
+                "bgutil_default_mweb",
                 [
                     "--extractor-args",
                     "youtube:player_client=default,mweb",
                     "--extractor-args",
                     provider_arg,
                 ],
-                True,
-            )
-        )
-
-    base_command = [
-        "yt-dlp",
-        "--verbose",
-        "--js-runtimes",
-        "node",
-        "--no-playlist",
-        "--retries",
-        "10",
-        "--fragment-retries",
-        "10",
-        "--concurrent-fragments",
-        "4",
-        "--format",
-        "bestvideo+bestaudio/best",
-        "--merge-output-format",
-        "mkv",
-        "--output",
-        str(output_template),
-        "--print",
-        "after_move:filepath",
-    ]
-    completed: subprocess.CompletedProcess[str] | None = None
-    authenticated = False
-    acquisition_errors: list[str] = []
-    try:
-        for strategy, extractor_options, use_cookies in attempts:
-            for partial in staging.glob("source.*"):
-                partial.unlink(missing_ok=True)
-            command = [*base_command, *extractor_options]
-            if use_cookies:
-                command.extend(["--cookies", str(cookie_path)])
-            command.append(video_url)
-            try:
-                candidate = subprocess.run(
-                    command,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=1500,
+                False,
+            ),
+            ("bgutil_default_clients", ["--extractor-args", provider_arg], False),
+            (
+                "bgutil_embedded_android_vr",
+                [
+                    "--extractor-args",
+                    "youtube:player_client=web_embedded,android_vr",
+                    "--extractor-args",
+                    provider_arg,
+                ],
+                False,
+            ),
+        ]
+        if cookies_available:
+            attempts.append(
+                (
+                    "cookies_bgutil_default_mweb",
+                    [
+                        "--extractor-args",
+                        "youtube:player_client=default,mweb",
+                        "--extractor-args",
+                        provider_arg,
+                    ],
+                    True,
                 )
-            except subprocess.CalledProcessError as exc:
-                detail = "\n".join(
-                    part.strip() for part in (exc.stderr, exc.stdout) if part and part.strip()
-                )[-6000:]
-                acquisition_errors.append(f"[{strategy}] {detail}")
-                continue
-            completed = candidate
-            authenticated = use_cookies
-            break
-    finally:
-        cookie_path.unlink(missing_ok=True)
+            )
 
-    if completed is None:
-        detail = "\n\n".join(acquisition_errors)[-12000:]
-        raise RuntimeError(
-            "yt-dlp source acquisition exhausted all configured strategies"
-            + (" including authenticated fallback" if cookies_available else "")
-            + f":\n{detail}"
+        base_command = [
+            "yt-dlp",
+            "--verbose",
+            "--js-runtimes",
+            "node",
+            "--no-playlist",
+            "--retries",
+            "10",
+            "--fragment-retries",
+            "10",
+            "--concurrent-fragments",
+            "4",
+            "--format",
+            "bestvideo+bestaudio/best",
+            "--merge-output-format",
+            "mkv",
+            "--output",
+            str(output_template),
+            "--print",
+            "after_move:clipper_path:%(filepath)s",
+            "--print",
+            "after_move:clipper_video_id:%(id)s",
+            "--print",
+            "after_move:clipper_channel_id:%(channel_id)s",
+            "--print",
+            "after_move:clipper_webpage_url:%(webpage_url)s",
+        ]
+        completed: subprocess.CompletedProcess[str] | None = None
+        authenticated = False
+        acquisition_errors: list[str] = []
+        try:
+            for strategy, extractor_options, use_cookies in attempts:
+                for partial in staging.glob("source.*"):
+                    partial.unlink(missing_ok=True)
+                command = [*base_command, *extractor_options]
+                if use_cookies:
+                    command.extend(["--cookies", str(cookie_path)])
+                command.append(video_url)
+                try:
+                    candidate = subprocess.run(
+                        command,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=1500,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    detail = "\n".join(
+                        part.strip()
+                        for part in (exc.stderr, exc.stdout)
+                        if part and part.strip()
+                    )[-6000:]
+                    acquisition_errors.append(f"[{strategy}] {detail}")
+                    continue
+                completed = candidate
+                authenticated = use_cookies
+                break
+        finally:
+            cookie_path.unlink(missing_ok=True)
+
+        if completed is None:
+            detail = "\n\n".join(acquisition_errors)[-12000:]
+            raise RuntimeError(
+                "yt-dlp source acquisition exhausted all configured strategies"
+                + (" including authenticated fallback" if cookies_available else "")
+                + f":\n{detail}"
+            )
+
+        extracted: dict[str, str] = {}
+        prefixes = {
+            "clipper_path:": "path",
+            "clipper_video_id:": "video_id",
+            "clipper_channel_id:": "channel_id",
+            "clipper_webpage_url:": "webpage_url",
+        }
+        for raw_line in completed.stdout.splitlines():
+            line = raw_line.strip()
+            for prefix, key in prefixes.items():
+                if line.startswith(prefix):
+                    extracted[key] = line[len(prefix) :].strip()
+                    break
+
+        source = Path(extracted.get("path") or "")
+        if not source.is_file() or source.stat().st_size <= 0:
+            candidates = [path for path in staging.glob("source.*") if path.is_file()]
+            if not candidates:
+                raise RuntimeError("yt-dlp completed without creating a source master")
+            source = max(candidates, key=lambda item: item.stat().st_size)
+
+        identity = _validate_extracted_source_identity(
+            expected_video_id=video_id,
+            expected_channel_id=channel_id,
+            requested_url=video_url,
+            actual_video_id=extracted.get("video_id") or "",
+            actual_channel_id=extracted.get("channel_id") or "",
+            canonical_url=extracted.get("webpage_url") or "",
         )
 
-    printed = [Path(line.strip()) for line in completed.stdout.splitlines() if line.strip()]
-    source = printed[-1] if printed else Path()
-    if not source.is_file() or source.stat().st_size <= 0:
-        candidates = [path for path in staging.glob("source.*") if path.is_file()]
-        if not candidates:
-            raise RuntimeError("yt-dlp completed without creating a source master")
-        source = max(candidates, key=lambda item: item.stat().st_size)
+        digest = _sha256(source)
+        suffix = source.suffix.lower() or ".mkv"
+        volume_path = f"/inputs/{digest}{suffix}"
+        target = Path(MEDIA_ROOT) / volume_path.lstrip("/")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_file():
+            if _sha256(target) != digest:
+                raise RuntimeError("content-addressed source master hash mismatch")
+            source.unlink(missing_ok=True)
+        else:
+            source.replace(target)
 
-    digest = _sha256(source)
-    suffix = source.suffix.lower() or ".mkv"
-    volume_path = f"/inputs/{digest}{suffix}"
-    target = Path(MEDIA_ROOT) / volume_path.lstrip("/")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.is_file():
-        if _sha256(target) != digest:
-            raise RuntimeError("content-addressed source master hash mismatch")
-        source.unlink(missing_ok=True)
-    else:
-        source.replace(target)
+        evidence = _source_evidence(
+            target,
+            video_id=video_id,
+            channel_id=channel_id,
+            requested_url=video_url,
+            canonical_url=identity["webpage_url"],
+            volume_path=volume_path,
+            authenticated=authenticated,
+            reused=False,
+        )
+        if evidence["video"]["width"] <= 0 or evidence["video"]["height"] <= 0:
+            raise RuntimeError("source master has no decodable video stream")
 
-    evidence = _source_evidence(
-        target,
-        video_id=video_id,
-        video_url=video_url,
-        volume_path=volume_path,
-        authenticated=authenticated,
-        reused=False,
-    )
-    if evidence["video"]["width"] <= 0 or evidence["video"]["height"] <= 0:
-        raise RuntimeError("source master has no decodable video stream")
-    index_path = Path(MEDIA_ROOT) / "source-index" / f"{video_id}.json"
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-    index_path.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
-    target.with_suffix(".source.json").write_text(
-        json.dumps(evidence, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    media_cache.commit()
-    shutil.rmtree(staging, ignore_errors=True)
-    return evidence
+        shutil.rmtree(staging, ignore_errors=True)
+        media_cache.commit()
+        persisted = persist_source_index.remote(evidence)
+        if not isinstance(persisted, dict):
+            raise RuntimeError("source index writer returned invalid evidence")
+        return {str(key): value for key, value in persisted.items()}
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 class VolumeSourceClient:
@@ -390,6 +571,17 @@ class VolumeSourceClient:
             duration = float(evidence.get("duration_seconds") or 0.0)
             if not video_id or not channel_id or not canonical_url.startswith("https://"):
                 raise ValueError("source item requires video_id, channel_id, and canonical_url")
+            identity = evidence.get("canonical_identity")
+            if not isinstance(identity, dict):
+                raise RuntimeError("mounted source is missing canonical source identity")
+            if (
+                str(identity.get("video_id") or "") != video_id
+                or str(identity.get("channel_id") or "") != channel_id
+                or _youtube_video_id(canonical_url) != video_id
+                or _youtube_video_id(str(identity.get("webpage_url") or "")) != video_id
+            ):
+                raise RuntimeError(f"mounted source identity mismatch: {video_id}")
+            canonical_url = str(identity["webpage_url"])
             if video_id in self._records:
                 raise ValueError(f"duplicate mounted source video_id: {video_id}")
             if evidence.get("quality_policy") != "highest_available_no_transcode":
