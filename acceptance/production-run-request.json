@@ -1,12 +1,12 @@
 {
-  "confirm_production": false,
+  "confirm_production": true,
   "campaign_brief": "campaigns/reach-double-coverage-clix.yaml",
   "target_video_id": "2Y4LP85PTak",
   "max_gpu_seconds": 21600,
   "max_estimated_usd": 10,
-  "request_reason": "Disabled while Codex-reviewed editorial runtime-capacity, watchdog, and acceptance hardening is in progress",
+  "request_reason": "Editorial-only live acceptance for runtime guard/deadline/repartition proof; render and HILP remain disabled",
   "fresh_inference": false,
   "resume_from_run_id": "33069659182",
   "editorial_acceptance_only": true,
-  "enabled": false
+  "enabled": true
 }

@@ -1,6 +1,6 @@
 {
-  "request_reason": "Disabled while Codex-reviewed editorial runtime-capacity, watchdog, and acceptance hardening is in progress",
-  "requested_from_sha": "955797ae10be418b4c7dab2fe5d31bd69c773ed5",
+  "request_reason": "Editorial-only live proof of 32768-token runtime guard, 300s generation deadline, token-aware repartition, and exact-call watchdog fallback",
+  "requested_from_sha": "a2a720f6d4604a9e4b4162a0785bb88e7a010fc2",
   "resume_from_production_run_id": "33169878733",
   "fresh_inference": false,
   "live_acceptance_required": {
@@ -11,5 +11,5 @@
     "two_gpu_editorial_placement": true,
     "editorial_acceptance_only": true
   },
-  "enabled": false
+  "enabled": true
 }
