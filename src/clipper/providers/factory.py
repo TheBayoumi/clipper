@@ -30,6 +30,10 @@ from .speech import (
     WhisperXAlignmentProvider,
 )
 from .speech_contract import (
+    ALIGNMENT_INFERENCE_ENGINE,
+    ALIGNMENT_MODEL_ID,
+    ALIGNMENT_MODEL_REVISION,
+    ALIGNMENT_QUANTIZATION,
     ASR_COMPUTE_TYPE,
     ASR_INFERENCE_ENGINE,
     ASR_MODEL_ID,
@@ -149,10 +153,10 @@ def speech_providers(
             app_name=app,
             function_name="align",
             identity=ModelIdentity(
-                "whisperx-forced-alignment",
-                os.getenv("CLIPPER_ALIGNMENT_MODEL_REVISION", "main"),
-                "none",
-                "modal-whisperx",
+                ALIGNMENT_MODEL_ID,
+                ALIGNMENT_MODEL_REVISION,
+                ALIGNMENT_QUANTIZATION,
+                ALIGNMENT_INFERENCE_ENGINE,
                 "none",
                 canonical_contract,
             ),
