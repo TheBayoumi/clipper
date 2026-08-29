@@ -134,11 +134,13 @@ def plan_quality_batch(
     *,
     dag_root: str | Path,
     progress_callback: ProgressCallback | None = None,
+    dag_store_factory: Callable[[Path], DagStore] | None = None,
 ) -> QualityBatchResult:
     """Plan evidence-derived quality yield without any clip-count or render-budget quota."""
 
     recorder = RecordingEditorialProvider(editorial, progress_callback=progress_callback)
     root = Path(dag_root)
+    build_dag_store = dag_store_factory or DagStore
     story_moments: list[StoryMoment] = []
     concepts: list[ClipConcept] = []
     variants: list[HookVariant] = []
@@ -176,7 +178,7 @@ def plan_quality_batch(
 
             hazard_classifier = SourceHazardClassifier(
                 recorder,
-                DagStore(root / video_id / "source-hazards"),
+                build_dag_store(root / video_id / "source-hazards"),
             )
             hazard_result = hazard_classifier.classify(
                 brief,
@@ -190,7 +192,7 @@ def plan_quality_batch(
 
             planner = AutonomousQualityPlanner(
                 recorder,
-                DagStore(root / video_id / "quality"),
+                build_dag_store(root / video_id / "quality"),
             )
             planning = planner.plan(
                 timeline,
