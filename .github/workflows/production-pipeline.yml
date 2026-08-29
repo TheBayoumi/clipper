@@ -509,6 +509,19 @@ jobs:
               raise RuntimeError(f"editorial schema smoke failed: {schema}")
           if int(schema.get("task_families", 0)) != 4:
               raise RuntimeError(f"expected exactly four production editorial task families: {schema}")
+          contract = schema.get("generation_runtime_contract")
+          if not isinstance(contract, dict):
+              raise RuntimeError(f"deployed editorial runtime contract is missing: {schema}")
+          if (
+              contract.get("outlines_version") != "1.3.0"
+              or contract.get("transformers_version") != "4.57.3"
+              or contract.get("outlines_max_time_forwarded") is not True
+              or contract.get("transformers_max_time_supported") is not True
+              or float(contract.get("max_time_seconds") or 0.0) != 300.0
+          ):
+              raise RuntimeError(
+                  f"deployed editorial generation runtime contract drifted: {contract}"
+              )
           Path("open-evidence/modal-editorial-schema-smoke.json").write_text(
               json.dumps(schema, indent=2) + "\n", encoding="utf-8"
           )
