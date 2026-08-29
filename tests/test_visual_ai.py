@@ -931,6 +931,7 @@ def test_source_policy_fully_cached_resume_performs_no_inference(
         timeline.coverage_summary("source_policy")["sample_count"]
     )
 
+
 def test_source_policy_checkpoint_commit_failure_does_not_discard_successful_inference(
     tmp_path: Path,
 ) -> None:
