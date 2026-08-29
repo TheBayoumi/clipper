@@ -195,6 +195,52 @@ def test_modal_editorial_capacity_probe_is_non_generating() -> None:
     assert "editorial-acceptance-probe.json" in pipeline
 
 
+def test_editorial_deadline_acceptance_forces_and_correlates_real_generation() -> None:
+    worker = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+    provider = Path("src/clipper/providers/modal.py").read_text(encoding="utf-8")
+    pipeline = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+    spy = Path("scripts/modal_execution_spy.py").read_text(encoding="utf-8")
+    workflow = _workflow()
+
+    assert "EDITORIAL_DEADLINE_PROBE_MIN_NEW_TOKENS = 65_536" in worker
+    assert "def _editorial_deadline_probe(" in worker
+    assert "def deadline_probe(self, payload:" in worker
+    deadline_start = worker.index("def _editorial_deadline_probe(")
+    deadline_end = worker.index("def _editorial_capacity_probe(", deadline_start)
+    deadline_probe = worker[deadline_start:deadline_end]
+    assert "structured_model(" in deadline_probe
+    assert "rendered,\n            None," in deadline_probe
+    assert "min_new_tokens=output_budget" in deadline_probe
+    assert "max_time=EDITORIAL_GENERATION_DEADLINE_SECONDS" in deadline_probe
+    assert "elapsed_seconds < EDITORIAL_GENERATION_DEADLINE_SECONDS" in deadline_probe
+    assert "_editorial_generation_deadline_error(" in deadline_probe
+
+    assert "def invoke_editorial_deadline_probe(" in provider
+    assert 'application_status != "CAPACITY_REJECTED"' in provider
+    assert 'error_type != "EditorialCapacityError"' in provider
+    assert 'reason != "generation_runtime_deadline"' in provider
+
+    assert "invoke_editorial_deadline_probe(" in pipeline
+    assert "worker.deadline_probe.remote" in pipeline
+    assert "deadline_probe_min_new_tokens = 65_536" in pipeline
+    assert "deadline_seconds != 300.0" in pipeline
+    assert "deadline_target_tokens >= deadline_input_tokens" in pipeline
+    assert '"generation_deadline_probe": deadline_evidence' in pipeline
+    assert '"invocation_id": str(deadline_result.get("invocation_id") or "")' in pipeline
+
+    assert '"editorial_generation_deadline"' in spy
+    assert '"elapsed_seconds"' in spy
+    assert '"forced_min_new_tokens"' in spy
+    assert 'counts.get("editorial_generation_deadline")' in workflow
+    assert 'event.get("reason") == "generation_runtime_deadline"' in workflow
+    assert "len(deadline_terminals) != 1" in workflow
+    assert "len(matching_deadlines) != 1 or len(matching_repartitions) != 1" in workflow
+    assert "deadline_seconds != 300.0 or elapsed_seconds < deadline_seconds" in workflow
+    assert "forced_min_new_tokens < 65_536" in workflow
+    assert "target_repartition_tokens >= observed_repartition_tokens" in workflow
+    assert 'probe.get("generation_deadline_probe")' in workflow
+
+
 def test_production_workflow_waits_for_exact_head_modal_deploy() -> None:
     workflow = Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
     assert "Wait for successful exact-head Modal deployment" in workflow
@@ -234,7 +280,9 @@ def test_editorial_runtime_safety_is_preflighted_and_fail_closed() -> None:
     watchdog = _watchdog()
 
     assert 'EDITORIAL_OUTLINES_VERSION = "1.3.0"' in worker
+    assert 'EDITORIAL_TRANSFORMERS_VERSION = "4.57.3"' in worker
     assert 'f"outlines=={EDITORIAL_OUTLINES_VERSION}"' in worker
+    assert 'f"transformers=={EDITORIAL_TRANSFORMERS_VERSION}"' in worker
     assert "def _verify_editorial_generation_runtime_contract()" in worker
     assert "GenerationConfig(max_time=EDITORIAL_GENERATION_DEADLINE_SECONDS)" in worker
     assert "Transformers._generate_output_seq(" in worker
@@ -250,6 +298,7 @@ def test_editorial_runtime_safety_is_preflighted_and_fail_closed() -> None:
     gpu_placement_gate = deploy.index("Verify editorial model spans allocated GPUs")
     assert runtime_contract_gate < gpu_placement_gate
     assert 'contract.get("outlines_version") != "1.3.0"' in deploy
+    assert 'contract.get("transformers_version") != "4.57.3"' in deploy
     assert 'contract.get("outlines_max_time_forwarded") is not True' in deploy
     assert 'contract.get("transformers_max_time_supported") is not True' in deploy
     assert "modal-editorial-runtime-contract.json" in deploy
@@ -306,6 +355,7 @@ def test_modal_spy_is_bound_to_spawned_call_and_execution_id() -> None:
     assert '"outlines_version"' in spy
     assert '"transformers_version"' in spy
     assert '"generation_deadline_seconds"' in spy
+    assert '"editorial_generation_deadline"' in spy
 
 
 def test_production_runtime_rechecks_deployed_identity_before_inference() -> None:
