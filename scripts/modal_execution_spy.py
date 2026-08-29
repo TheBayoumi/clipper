@@ -85,8 +85,11 @@ class ModalExecutionSpy:
             if generation_stall_seconds is not None
             else float(os.getenv("CLIPPER_MODAL_GENERATION_STALL_SECONDS", "720"))
         )
-        if self.generation_stall_seconds <= 0:
-            raise ValueError("generation stall timeout must be positive")
+        if (
+            not math.isfinite(self.generation_stall_seconds)
+            or self.generation_stall_seconds <= 0
+        ):
+            raise ValueError("generation stall timeout must be finite and positive")
 
     @staticmethod
     def _positive_int(value: object) -> int | None:
