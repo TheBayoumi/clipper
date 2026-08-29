@@ -4,7 +4,12 @@ from unittest.mock import patch
 
 import pytest
 
-from clipper.cli import _audit_model_evidence, _seed_resume_source_cache, main
+from clipper.cli import (
+    _audit_model_evidence,
+    _required_runtime_modules,
+    _seed_resume_source_cache,
+    main,
+)
 from clipper.models import VideoCandidate
 from clipper.pipeline import PipelineSettings
 
@@ -107,6 +112,38 @@ def write_model_manifest(run_dir: Path, *, status: str = "SUCCESS") -> None:
         },
     }
     (run_dir / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_runtime_module_plan_covers_modal_and_local_open_model_engines() -> None:
+    plan = {
+        "modal": {"inference_engine": "modal-transformers"},
+        "editorial": {"inference_engine": "transformers"},
+        "transcription": {"inference_engine": "faster-whisper"},
+        "alignment": {"inference_engine": "whisperx"},
+        "diarization": {"inference_engine": "pyannote.audio"},
+    }
+    assert _required_runtime_modules(plan) == (
+        "faster_whisper",
+        "modal",
+        "pyannote.audio",
+        "transformers",
+        "whisperx",
+    )
+
+
+def test_cli_preflight_resolves_plan_without_starting_inference(capsys) -> None:
+    plan = local_plan(profile="balanced")
+    with (
+        patch("clipper.cli._resolved_model_plan", return_value=plan) as resolve,
+        patch("clipper.cli._assert_runtime_dependencies") as dependencies,
+    ):
+        assert main(["preflight", "--profile", "balanced"]) == 0
+
+    resolve.assert_called_once()
+    dependencies.assert_called_once_with(plan)
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "READY"
+    assert output["compute_profile"] == "balanced"
 
 
 def test_cli_validate_explicit_target_brief(tmp_path: Path, capsys) -> None:
