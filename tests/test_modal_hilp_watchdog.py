@@ -245,21 +245,64 @@ def test_watchdog_rejects_nonfinite_production_budgets(
         module.run(render=False)
 
 
-@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
-def test_watchdog_rejects_nonfinite_poll_interval(
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("CLIPPER_MODAL_SPY_POLL_SECONDS", "nan"),
+        ("CLIPPER_MODAL_SPY_POLL_SECONDS", "inf"),
+        ("CLIPPER_MODAL_SPY_POLL_SECONDS", "-inf"),
+        ("CLIPPER_MODAL_SPY_POLL_SECONDS", "0"),
+        ("CLIPPER_MODAL_SPY_POLL_SECONDS", "-1"),
+        ("CLIPPER_MODAL_SPY_POLL_SECONDS", "not-a-number"),
+        ("CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS", "nan"),
+        ("CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS", "inf"),
+        ("CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS", "-inf"),
+        ("CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS", "0"),
+        ("CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS", "-1"),
+        ("CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS", "not-a-number"),
+    ],
+)
+def test_watchdog_rejects_invalid_timing_before_spawning(
     tmp_path: Path,
     monkeypatch,
+    name: str,
     value: str,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    monkeypatch.setenv(name, value)
+
+    class _ForbiddenFunction:
+        @staticmethod
+        def from_name(*_args, **_kwargs):
+            raise AssertionError("Modal function lookup must not occur before timing validation")
+
+    monkeypatch.setitem(sys.modules, "modal", SimpleNamespace(Function=_ForbiddenFunction))
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        module.run(render=False)
+
+
+def test_watchdog_cancels_spawned_call_if_hydration_fails(
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     module = _module()
     _environment(tmp_path, monkeypatch)
     monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
     monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
-    monkeypatch.setitem(sys.modules, "modal", _modal(_Call({})))
-    monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", value)
 
-    with pytest.raises(ValueError, match="finite and positive"):
+    class HydrationFailureCall(_Call):
+        def hydrate(self) -> None:
+            raise RuntimeError("synthetic hydration failure")
+
+    call = HydrationFailureCall({})
+    monkeypatch.setitem(sys.modules, "modal", _modal(call))
+
+    with pytest.raises(RuntimeError, match="synthetic hydration failure"):
         module.run(render=False)
+
+    assert call.cancel_args == [False]
 
 
 def test_watchdog_cancels_exact_call_if_spy_thread_dies(
