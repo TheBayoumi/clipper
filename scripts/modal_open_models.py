@@ -31,6 +31,14 @@ from clipper.providers.speech_contract import (
     DIARIZATION_MODEL_REVISION,
     DIARIZATION_QUANTIZATION,
 )
+from clipper.providers.vision_contract import (
+    VISION_LARGE_MODEL_ID,
+    VISION_LARGE_MODEL_REVISION,
+    VISION_LARGE_QUANTIZATION,
+    VISION_MODEL_ID,
+    VISION_MODEL_REVISION,
+    VISION_QUANTIZATION,
+)
 
 
 APP_NAME = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
@@ -2085,6 +2093,14 @@ class EditorialModel:
                     torch.cuda.empty_cache()
 
 
+def _vision_contract(model_id: str) -> tuple[str, str]:
+    if model_id == VISION_MODEL_ID:
+        return VISION_MODEL_REVISION, VISION_QUANTIZATION
+    if model_id == VISION_LARGE_MODEL_ID:
+        return VISION_LARGE_MODEL_REVISION, VISION_LARGE_QUANTIZATION
+    raise ValueError(f"unsupported pinned vision model: {model_id}")
+
+
 def _load_vision_model(model_id: str) -> tuple[Any, Any]:
     import torch
     from transformers import (
@@ -2093,12 +2109,14 @@ def _load_vision_model(model_id: str) -> tuple[Any, Any]:
         BitsAndBytesConfig,
     )
 
-    processor = AutoProcessor.from_pretrained(model_id)
+    revision, _quantization = _vision_contract(model_id)
+    processor = AutoProcessor.from_pretrained(model_id, revision=revision)
     kwargs: dict[str, Any] = {
+        "revision": revision,
         "device_map": "balanced" if torch.cuda.device_count() > 1 else "auto",
         "dtype": torch.bfloat16,
     }
-    if "30B" in model_id:
+    if model_id == VISION_LARGE_MODEL_ID:
         kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
@@ -2303,9 +2321,13 @@ def _vision_infer(
                         sort_keys=True,
                     )
                 )
+                revision, quantization = _vision_contract(model_id)
                 return {
                     "value": value,
-                    "model": _model_evidence(model_id),
+                    "model": {
+                        **_model_evidence(model_id, revision=revision),
+                        "quantization": quantization,
+                    },
                     "usage": _usage(
                         started,
                         gpu,
@@ -2341,7 +2363,10 @@ def _load_vision_worker(worker: Any, model_id: str) -> None:
             {
                 "event": "vision_model_ready",
                 "worker_lifecycle_id": worker.lifecycle_id,
-                "model": _model_evidence(model_id),
+                "model": {
+                    **_model_evidence(model_id, revision=_vision_contract(model_id)[0]),
+                    "quantization": _vision_contract(model_id)[1],
+                },
                 "cuda_memory_by_device": _cuda_memory_snapshot(),
             },
             sort_keys=True,
@@ -2350,9 +2375,13 @@ def _load_vision_worker(worker: Any, model_id: str) -> None:
 
 
 def _vision_worker_ready(worker: Any, model_id: str) -> dict[str, Any]:
+    revision, quantization = _vision_contract(model_id)
     return {
         "value": {"ready": True},
-        "model": _model_evidence(model_id),
+        "model": {
+            **_model_evidence(model_id, revision=revision),
+            "quantization": quantization,
+        },
         "runtime": _worker_runtime(worker.lifecycle_id, model_load_count=1),
     }
 
@@ -2412,15 +2441,15 @@ def _vision_worker_inspect(
 class VisionModel:
     @modal.enter()
     def load_model(self) -> None:
-        _load_vision_worker(self, "Qwen/Qwen3-VL-8B-Instruct")
+        _load_vision_worker(self, VISION_MODEL_ID)
 
     @modal.method()
     def ready(self) -> dict[str, Any]:
-        return _vision_worker_ready(self, "Qwen/Qwen3-VL-8B-Instruct")
+        return _vision_worker_ready(self, VISION_MODEL_ID)
 
     @modal.method()
     def inspect(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return _vision_worker_inspect(self, payload, "Qwen/Qwen3-VL-8B-Instruct")
+        return _vision_worker_inspect(self, payload, VISION_MODEL_ID)
 
 
 @app.cls(
@@ -2434,18 +2463,18 @@ class VisionModel:
 class VisionModelLarge:
     @modal.enter()
     def load_model(self) -> None:
-        _load_vision_worker(self, "Qwen/Qwen3-VL-30B-A3B-Instruct")
+        _load_vision_worker(self, VISION_LARGE_MODEL_ID)
 
     @modal.method()
     def ready(self) -> dict[str, Any]:
-        return _vision_worker_ready(self, "Qwen/Qwen3-VL-30B-A3B-Instruct")
+        return _vision_worker_ready(self, VISION_LARGE_MODEL_ID)
 
     @modal.method()
     def inspect(self, payload: dict[str, Any]) -> dict[str, Any]:
         return _vision_worker_inspect(
             self,
             payload,
-            "Qwen/Qwen3-VL-30B-A3B-Instruct",
+            VISION_LARGE_MODEL_ID,
         )
 
 
