@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import math
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -17,6 +19,7 @@ Severity = Literal["LOW", "MEDIUM", "HIGH"]
 VISUAL_SAMPLE_MAX_EDGE = 960
 SOURCE_POLICY_SAMPLE_INTERVAL_SECONDS = 4.0
 SOURCE_POLICY_SINGLE_FRAME_RETRIES = 2
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -785,6 +788,26 @@ def _load_capacity_state(
     return key, good, bad, history
 
 
+def _best_effort_checkpoint_commit(
+    checkpoint_commit: Callable[[], None] | None,
+) -> None:
+    if checkpoint_commit is None:
+        return
+    for attempt in range(1, 4):
+        try:
+            checkpoint_commit()
+            return
+        except Exception as exc:
+            LOGGER.warning(
+                "vision checkpoint commit failed (attempt %d/3): %s: %s",
+                attempt,
+                type(exc).__name__,
+                exc,
+            )
+            if attempt < 3:
+                time.sleep(0.1 * attempt)
+
+
 def _persist_capacity_state(
     cache: FileCache | None,
     key: str | None,
@@ -805,8 +828,7 @@ def _persist_capacity_state(
             "observed_output_tokens_per_item": observed_output_tokens_per_item,
         },
     )
-    if checkpoint_commit is not None:
-        checkpoint_commit()
+    _best_effort_checkpoint_commit(checkpoint_commit)
 
 
 def _learn_generation_output_tokens_per_item(
@@ -950,6 +972,9 @@ def scout_visual_timeline(
         times = tuple(sorted(set(times) | set(dense_candidate_times)))
     spans = visual_evidence_spans_from_samples(times, effective_duration, scope="source_policy")
     spans_by_sample = {round(span.sample_time, 3): span for span in spans}
+    warm = getattr(provider, "warm", None)
+    if callable(warm):
+        warm()
     requested_identity = provider.identity
     cache = FileCache(checkpoint_dir) if checkpoint_dir is not None else None
     namespace = _source_policy_cache_namespace(
@@ -987,9 +1012,6 @@ def scout_visual_timeline(
         if len(prepared_frames) != len(pending_times):
             raise RuntimeError("source-policy frame extraction returned incomplete prepared jobs")
 
-        warm = getattr(provider, "warm", None)
-        if callable(warm):
-            warm()
         if cached_model is not None and provider.identity != cached_model:
             events.clear()
             cached_times.clear()
@@ -997,8 +1019,6 @@ def scout_visual_timeline(
             pending_times = times
             prepared_dir = output_dir / "source-policy-revalidated"
             prepared_frames = extract_video_frames(video_path, pending_times, prepared_dir)
-            if callable(warm):
-                warm()
 
         work = [
             (timestamp, frame, spans_by_sample[round(timestamp, 3)])
@@ -1024,8 +1044,7 @@ def scout_visual_timeline(
                     model=model,
                 )
             cached_model = model
-            if checkpoint_commit is not None:
-                checkpoint_commit()
+            _best_effort_checkpoint_commit(checkpoint_commit)
 
         capacity_key, largest_good, smallest_bad, observed_output_tokens_per_item = (
             _load_capacity_state(cache, requested_identity=requested_identity)
