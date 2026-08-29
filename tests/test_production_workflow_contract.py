@@ -511,12 +511,8 @@ def test_watchdog_validates_all_timing_before_spawn_and_cleans_partial_setup() -
     run_start = watchdog.index("def run(*, render: bool)")
     run_body = watchdog[run_start:]
 
-    poll_validation = run_body.index(
-        '_finite_positive_env("CLIPPER_MODAL_SPY_POLL_SECONDS"'
-    )
-    barrier_validation = run_body.index(
-        '"CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS"'
-    )
+    poll_validation = run_body.index('_finite_positive_env("CLIPPER_MODAL_SPY_POLL_SECONDS"')
+    barrier_validation = run_body.index('"CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS"')
     spy_start = run_body.index("spy_thread.start()")
     spawn = run_body.index("function.spawn(request)")
     assert poll_validation < spy_start < spawn
