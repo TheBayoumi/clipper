@@ -30,6 +30,7 @@ L4_USD_PER_SECOND = 0.000222
 L40S_USD_PER_SECOND = 0.000542
 EDITORIAL_MODEL_ID = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 EDITORIAL_MODEL_REVISION = "110954009be4a882781a90356c7d2b8a9e3428dc"
+EDITORIAL_OUTLINES_VERSION = "1.3.0"
 DEPLOYED_GIT_SHA = os.getenv("CLIPPER_DEPLOYED_GIT_SHA", "").strip().lower()
 EDITORIAL_EXECUTION_TIMEOUT_SECONDS = int(
     os.getenv("CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS", "900")
@@ -100,7 +101,7 @@ text_image = base_image.uv_pip_install(
     "tiktoken>=0.11,<1",
     "bitsandbytes>=0.47,<1",
     "pillow>=11,<13",
-    "outlines>=1.3,<2",
+    f"outlines=={EDITORIAL_OUTLINES_VERSION}",
 ).add_local_python_source("clipper")
 speech_image = base_image.uv_pip_install(
     "torch>=2.8,<3",
@@ -673,6 +674,92 @@ def _editorial_runtime_metadata() -> dict[str, object]:
         "runtime_safe_input_tokens": EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS,
         "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
         "execution_timeout_seconds": EDITORIAL_EXECUTION_TIMEOUT_SECONDS,
+    }
+
+
+def _verify_editorial_generation_runtime_contract() -> dict[str, object]:
+    import importlib.metadata
+
+    from outlines.models.transformers import Transformers
+    from transformers import GenerationConfig
+
+    outlines_version = importlib.metadata.version("outlines")
+    transformers_version = importlib.metadata.version("transformers")
+    if outlines_version != EDITORIAL_OUTLINES_VERSION:
+        raise RuntimeError(
+            "editorial Outlines version drifted from the verified generation adapter: "
+            f"expected={EDITORIAL_OUTLINES_VERSION} actual={outlines_version}"
+        )
+
+    generation_config = GenerationConfig(max_time=EDITORIAL_GENERATION_DEADLINE_SECONDS)
+    configured_max_time = getattr(generation_config, "max_time", None)
+    try:
+        configured_max_time_value = float(configured_max_time)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RuntimeError(
+            "installed Transformers does not expose a numeric max_time generation setting"
+        ) from exc
+    if not math.isclose(
+        configured_max_time_value,
+        EDITORIAL_GENERATION_DEADLINE_SECONDS,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        raise RuntimeError(
+            "installed Transformers changed the configured max_time generation deadline: "
+            f"expected={EDITORIAL_GENERATION_DEADLINE_SECONDS} "
+            f"actual={configured_max_time_value}"
+        )
+
+    observed_generate_kwargs: dict[str, object] = {}
+    sentinel = object()
+
+    class _FakeConfig:
+        is_encoder_decoder = True
+
+    class _FakeTransformersModel:
+        config = _FakeConfig()
+
+        def generate(self, **kwargs: object) -> object:
+            observed_generate_kwargs.update(kwargs)
+            return sentinel
+
+    class _AdapterHarness:
+        model = _FakeTransformersModel()
+
+    returned = Transformers._generate_output_seq(
+        _AdapterHarness(),
+        "deadline-contract-probe",
+        {"input_ids": object()},
+        max_time=EDITORIAL_GENERATION_DEADLINE_SECONDS,
+    )
+    forwarded_max_time = observed_generate_kwargs.get("max_time")
+    try:
+        forwarded_max_time_value = float(forwarded_max_time)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RuntimeError(
+            "Outlines transformers adapter did not forward a numeric max_time to model.generate"
+        ) from exc
+    if not math.isclose(
+        forwarded_max_time_value,
+        EDITORIAL_GENERATION_DEADLINE_SECONDS,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        raise RuntimeError(
+            "Outlines transformers adapter changed the max_time generation deadline: "
+            f"expected={EDITORIAL_GENERATION_DEADLINE_SECONDS} "
+            f"actual={forwarded_max_time_value}"
+        )
+    if returned is not sentinel:
+        raise RuntimeError("Outlines transformers adapter altered the fake model generation result")
+
+    return {
+        "outlines_version": outlines_version,
+        "transformers_version": transformers_version,
+        "max_time_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
+        "outlines_max_time_forwarded": True,
+        "transformers_max_time_supported": True,
     }
 
 
@@ -1709,6 +1796,7 @@ class EditorialModel:
         import importlib.metadata
 
         self.lifecycle_id = uuid.uuid4().hex
+        self.generation_runtime_contract = _verify_editorial_generation_runtime_contract()
         self.tokenizer, self.model, self.structured_model = _load_editorial_model()
         self.placement = _editorial_device_distribution(self.model)
         self.capacity_state = _load_editorial_capacity_state()
@@ -1726,6 +1814,7 @@ class EditorialModel:
                     "runtime_safe_input_tokens": EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS,
                     "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
                     "execution_timeout_seconds": EDITORIAL_EXECUTION_TIMEOUT_SECONDS,
+                    "generation_runtime_contract": self.generation_runtime_contract,
                 },
                 sort_keys=True,
             )
@@ -1735,6 +1824,9 @@ class EditorialModel:
     def ready(self) -> dict[str, Any]:
         runtime = _worker_runtime(self.lifecycle_id, model_load_count=1)
         runtime["editorial_placement"] = dict(self.placement)
+        runtime["editorial_generation_runtime_contract"] = dict(
+            self.generation_runtime_contract
+        )
         return {
             "value": {"ready": True},
             "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
@@ -2336,6 +2428,7 @@ def editorial_schema_smoke() -> dict[str, Any]:
     from clipper.providers.editorial_prompt import editorial_json_schema
     from outlines.types import JsonSchema
 
+    generation_runtime_contract = _verify_editorial_generation_runtime_contract()
     tasks = [
         "source_hazards:smoke",
         "semantic_cores:smoke",
@@ -2349,6 +2442,7 @@ def editorial_schema_smoke() -> dict[str, Any]:
         "ok": True,
         "engine": "outlines-transformers",
         "task_families": len(tasks),
+        "generation_runtime_contract": generation_runtime_contract,
     }
 
 
