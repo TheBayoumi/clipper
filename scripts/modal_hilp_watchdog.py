@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from modal_execution_spy import ModalExecutionSpy
 
 
@@ -42,6 +44,42 @@ def _source_payload() -> dict[str, Any]:
         "canonical_url": os.environ["CLIPPER_TARGET_VIDEO_URL"],
         "evidence": evidence,
     }
+
+
+def _scoped_brief_yaml() -> str:
+    brief_path = Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"])
+    text = brief_path.read_text(encoding="utf-8")
+    data = json.loads(text) if brief_path.suffix.lower() == ".json" else yaml.safe_load(text)
+    if not isinstance(data, dict):
+        raise RuntimeError("campaign brief root must be an object")
+    targets = data.get("targets")
+    if not isinstance(targets, dict) or str(targets.get("mode") or "").lower() != "explicit":
+        raise RuntimeError("production execution requires explicit targets")
+    videos = targets.get("videos")
+    if not isinstance(videos, list) or not all(isinstance(item, dict) for item in videos):
+        raise RuntimeError("production execution requires explicit target videos")
+
+    video_id = os.environ["CLIPPER_TARGET_VIDEO_ID"]
+    channel_id = os.environ["CLIPPER_TARGET_CHANNEL_ID"]
+    video_url = os.environ["CLIPPER_TARGET_VIDEO_URL"]
+    matches = [
+        item
+        for item in videos
+        if str(item.get("video_id") or "").strip() == video_id
+        and str(item.get("channel_id") or "").strip() == channel_id
+        and str(item.get("url") or "").strip() == video_url
+    ]
+    if len(matches) != 1:
+        raise RuntimeError("selected production target does not exactly match the campaign brief")
+
+    scoped = dict(data)
+    scoped_targets = dict(targets)
+    scoped_targets["videos"] = [dict(matches[0])]
+    scoped["targets"] = scoped_targets
+    rendered = yaml.safe_dump(scoped, sort_keys=False, allow_unicode=True)
+    if not rendered.strip():
+        raise RuntimeError("selected production target produced an empty scoped brief")
+    return rendered
 
 
 def _validate_result(result: object, *, render: bool) -> dict[str, Any]:
@@ -107,9 +145,11 @@ def run(*, render: bool) -> dict[str, Any]:
         default="30",
     )
 
+    scoped_brief_yaml = _scoped_brief_yaml()
+    (evidence_dir / "scoped-brief.yaml").write_text(scoped_brief_yaml, encoding="utf-8")
     request = {
         "sources": [_source_payload()],
-        "brief_yaml": Path(os.environ["CLIPPER_CAMPAIGN_BRIEF"]).read_text(encoding="utf-8"),
+        "brief_yaml": scoped_brief_yaml,
         "render": render,
         "editorial_acceptance_probe": not render,
         "fresh_inference": os.environ["CLIPPER_FRESH_INFERENCE"] == "true",
