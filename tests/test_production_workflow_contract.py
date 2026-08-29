@@ -474,6 +474,9 @@ def test_published_image_installs_and_preflights_real_cli_runtimes() -> None:
     publish = Path(".github/workflows/publish-tested-image.yml").read_text(encoding="utf-8")
 
     assert 'pip install ".[open-models]"' in dockerfile
+    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+    assert pyproject.count('"transformers==4.57.3"') >= 3
+    assert '"transformers>=5.14,<6"' not in pyproject
     assert 'pip install ".[asr]"' not in dockerfile
     for workflow in (smoke, publish):
         assert "Preflight published CLI runtimes inside image" in workflow
