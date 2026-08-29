@@ -207,6 +207,7 @@ def test_stage_result_and_contract_validation_are_strict() -> None:
     with pytest.raises(ValueError, match="cannot be empty"):
         StageContract("stage", {})
 
+
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [
