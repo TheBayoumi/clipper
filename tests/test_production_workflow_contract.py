@@ -31,6 +31,9 @@ def test_production_workflow_is_single_pass_resumable_and_exact_head() -> None:
     assert '"fresh_inference": os.environ["CLIPPER_FRESH_INFERENCE"] == "true"' in watchdog
     assert '"resume_from_run_id": os.environ.get("CLIPPER_RESUME_FROM_RUN_ID") or None' in watchdog
     assert '"sources": [_source_payload()]' in watchdog
+    assert "scoped_brief_yaml = _scoped_brief_yaml()" in watchdog
+    assert '"brief_yaml": scoped_brief_yaml' in watchdog
+    assert '"videos"] = [dict(matches[0])]' in watchdog
     assert '"git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"]' in watchdog
     assert "function.spawn(request)" in watchdog
     assert "call.get(timeout=poll_seconds)" in watchdog
@@ -140,7 +143,7 @@ def test_production_workflow_has_cancellable_modal_spy_and_editorial_acceptance(
     assert isinstance(parsed, dict)
 
     assert "issues: write" in workflow
-    assert "pull-requests: write" in workflow
+    assert "pull-requests: read" in workflow
     assert "editorial_acceptance_only:" in workflow
     assert "REQUEST_EDITORIAL_ACCEPTANCE_ONLY" in workflow
     assert 'os.environ.get("REQUEST_EDITORIAL_ACCEPTANCE_ONLY", "").lower() == "true"' in workflow
@@ -213,6 +216,8 @@ def test_editorial_deadline_acceptance_forces_and_correlates_real_generation() -
     assert "min_new_tokens=output_budget" in deadline_probe
     assert "max_time=EDITORIAL_GENERATION_DEADLINE_SECONDS" in deadline_probe
     assert "elapsed_seconds < EDITORIAL_GENERATION_DEADLINE_SECONDS" in deadline_probe
+    assert "elapsed_seconds > maximum_deadline_elapsed" in deadline_probe
+    assert "output_units is None or output_units >= output_budget" in deadline_probe
     assert "_editorial_generation_deadline_error(" in deadline_probe
 
     production_infer_start = worker.index("def _editorial_infer(")
@@ -245,8 +250,9 @@ def test_editorial_deadline_acceptance_forces_and_correlates_real_generation() -
     assert 'event.get("reason") == "generation_runtime_deadline"' in workflow
     assert "len(deadline_terminals) != 1" in workflow
     assert "len(matching_deadlines) != 1 or len(matching_repartitions) != 1" in workflow
-    assert "deadline_seconds != 300.0 or elapsed_seconds < deadline_seconds" in workflow
+    assert "elapsed_seconds > deadline_seconds + deadline_tolerance_seconds" in workflow
     assert "forced_min_new_tokens < 65_536" in workflow
+    assert "output_tokens <= 0 or output_tokens >= forced_min_new_tokens" in workflow
     assert "target_repartition_tokens >= observed_repartition_tokens" in workflow
     assert 'probe.get("generation_deadline_probe")' in workflow
 
@@ -325,6 +331,7 @@ def test_editorial_runtime_safety_is_preflighted_and_fail_closed() -> None:
 
     assert "CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS: 32768" in workflow
     assert "CLIPPER_EDITORIAL_GENERATION_DEADLINE_SECONDS: 300" in workflow
+    assert "CLIPPER_EDITORIAL_GENERATION_DEADLINE_TOLERANCE_SECONDS: 30" in workflow
     assert "CLIPPER_MODAL_GENERATION_STALL_SECONDS: 720" in workflow
     assert 'authoritative_counts.get("editorial_remote_call_start")' in workflow
     assert 'authoritative_counts.get("editorial_remote_call_terminal")' in workflow
