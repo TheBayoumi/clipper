@@ -157,6 +157,12 @@ def test_production_dag_lease_is_serialized_and_volume_coherent() -> None:
     assert "coordinated_dag_store" in cycle
     assert "dag_store_factory=coordinated_dag_store" in cycle
 
+    pipeline = Path("src/clipper/pipeline.py").read_text(encoding="utf-8")
+    assert 'grounding_dag = (' in pipeline
+    assert 'dag_store_factory(cache_root / "grounding")' in pipeline
+    assert "dag=grounding_dag" in pipeline
+    assert "dag.execute(identity, execute)" in pipeline
+
 
 def test_modal_worker_pins_diarization_and_vision_model_contracts() -> None:
     source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
