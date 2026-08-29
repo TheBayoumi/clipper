@@ -455,9 +455,6 @@ def _editorial_output_template(payload: dict[str, Any]) -> dict[str, Any]:
     actual = _editorial_payload(payload)
     units = _editorial_discourse_units(payload)
 
-    def unit_text(unit: list[dict[str, Any]]) -> str:
-        return " ".join(str(item.get("text") or "") for item in unit).strip()
-
     def first_ref(unit: list[dict[str, Any]]) -> str:
         return str(unit[0].get("word_ref") or "word-start") if unit else "word-start"
 
@@ -491,7 +488,6 @@ def _editorial_output_template(payload: dict[str, Any]) -> dict[str, Any]:
                 for unit in units[:64]
             ]
         }
-    context_text = " ".join(unit_text(unit) for unit in units).strip()
     core = actual.get("core") if isinstance(actual.get("core"), dict) else {}
     if family == "narrative_envelope":
         context_words = actual.get("source_context_words")
@@ -1283,7 +1279,6 @@ def _editorial_infer(
             )
             with torch.inference_mode():
                 candidate = structured_model(rendered, schema, **kwargs)
-            cache_attempt_seconds = max(0.0, time.perf_counter() - cache_attempt_started)
             if not isinstance(candidate, str):
                 raise TypeError(
                     "Outlines transformers generation returned a non-string response: "
