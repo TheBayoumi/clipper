@@ -41,7 +41,7 @@ def test_ytdlp_discovery_and_downloads_preserve_highest_source_quality(tmp_path:
                 "title": "T",
                 "channel_id": "UC1",
                 "channel": "C",
-                "webpage_url": "https://youtube.test/v1",
+                "webpage_url": "https://www.youtube.com/watch?v=v1",
                 "duration": 30,
                 "view_count": 99,
             }
@@ -54,7 +54,7 @@ def test_ytdlp_discovery_and_downloads_preserve_highest_source_quality(tmp_path:
     ):
         assert client._discover_ytdlp(request())[0].duration_seconds == 30
 
-    video = VideoCandidate("v1", "T", "UC1", "C", "https://youtube.test/v1")
+    video = VideoCandidate("v1", "T", "UC1", "C", "https://www.youtube.com/watch?v=v1")
     subtitle = tmp_path / "v1.en.vtt"
 
     def fake_subtitles(*_args, **_kwargs):
@@ -66,6 +66,9 @@ def test_ytdlp_discovery_and_downloads_preserve_highest_source_quality(tmp_path:
 
     media = tmp_path / "v1.mkv"
     format_payload = {
+        "id": "v1",
+        "channel_id": "UC1",
+        "webpage_url": "https://www.youtube.com/watch?v=v1",
         "formats": [
             {
                 "format_id": "401",
@@ -112,11 +115,52 @@ def test_ytdlp_discovery_and_downloads_preserve_highest_source_quality(tmp_path:
     assert evidence["recovered_after_http_403"] is False
 
 
+def test_media_download_rejects_extractor_identity_mismatch_before_download(
+    tmp_path: Path,
+) -> None:
+    client = YouTubeClient(None)
+    video = VideoCandidate(
+        "v1",
+        "T",
+        "UC1",
+        "C",
+        "https://www.youtube.com/watch?v=v1",
+    )
+    payload = {
+        "id": "other",
+        "channel_id": "UC1",
+        "webpage_url": "https://www.youtube.com/watch?v=other",
+        "formats": [
+            {
+                "format_id": "137",
+                "height": 1080,
+                "width": 1920,
+                "fps": 24,
+                "vcodec": "avc1",
+                "acodec": "none",
+                "ext": "mp4",
+                "tbr": 1900,
+            }
+        ],
+    }
+    with (
+        patch("clipper.youtube._run", return_value=Mock(stdout=json.dumps(payload))) as run,
+        pytest.raises(YouTubeError, match="video ID"),
+    ):
+        client.download_media(video, tmp_path)
+
+    assert run.call_count == 1
+    assert "--dump-single-json" in run.call_args.args[0]
+
+
 def test_ytdlp_403_refreshes_and_uses_same_quality_alternate(tmp_path: Path) -> None:
     client = YouTubeClient(None)
-    video = VideoCandidate("v1", "T", "UC1", "C", "https://youtube.test/v1")
+    video = VideoCandidate("v1", "T", "UC1", "C", "https://www.youtube.com/watch?v=v1")
     media = tmp_path / "v1.mkv"
     payload = {
+        "id": "v1",
+        "channel_id": "UC1",
+        "webpage_url": "https://www.youtube.com/watch?v=v1",
         "formats": [
             {
                 "format_id": "313",
@@ -289,12 +333,15 @@ def test_run_command_failures() -> None:
 
 def test_download_subtitle_and_media_failure_paths(tmp_path: Path) -> None:
     client = YouTubeClient(None)
-    video = VideoCandidate("v1", "T", "UC1", "C", "https://youtube.test/v1")
+    video = VideoCandidate("v1", "T", "UC1", "C", "https://www.youtube.com/watch?v=v1")
     with patch("clipper.youtube._run", side_effect=YouTubeError("no captions")):
         assert client.download_subtitles(video, tmp_path, "en") is None
     with patch("clipper.youtube._run", return_value=Mock(stdout="")):
         assert client.download_subtitles(video, tmp_path, "en") is None
     format_payload = {
+        "id": "v1",
+        "channel_id": "UC1",
+        "webpage_url": "https://www.youtube.com/watch?v=v1",
         "formats": [
             {
                 "format_id": "137",
@@ -320,6 +367,9 @@ def test_download_subtitle_and_media_failure_paths(tmp_path: Path) -> None:
 
 def test_format_selection_prefers_quality_without_container_bias() -> None:
     payload = {
+        "id": "v1",
+        "channel_id": "UC1",
+        "webpage_url": "https://www.youtube.com/watch?v=v1",
         "formats": [
             {
                 "format_id": "313",
