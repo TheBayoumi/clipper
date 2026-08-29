@@ -336,6 +336,9 @@ class ModalJSONProvider:
             self.identity.schema_version,
         )
 
+    def _response_identity(self, response: dict[str, Any]) -> ModelIdentity:
+        return self._resolved_identity(response)
+
     def _modal(self) -> Any:
         try:
             return importlib.import_module("modal")
@@ -365,7 +368,7 @@ class ModalJSONProvider:
         if not isinstance(response, dict):
             raise ValueError("Modal class warmup returned an invalid response")
         self._raise_remote_error(response)
-        self.identity = self._resolved_identity(response)
+        self.identity = self._response_identity(response)
         raw_runtime = response.get("runtime")
         return dict(raw_runtime) if isinstance(raw_runtime, dict) else {}
 
@@ -409,7 +412,7 @@ class ModalJSONProvider:
             runtime["peak_vram_mb_by_device"] = dict(peak_by_device)
         return ProviderResult(
             response["value"],
-            self._resolved_identity(response),
+            self._response_identity(response),
             InferenceUsage(
                 provider="modal",
                 started_at=str(usage.get("started_at") or "unknown"),
@@ -585,6 +588,27 @@ class ModalEditorialProvider(ModalJSONProvider):
 
 
 class ModalVisionProvider(ModalJSONProvider):
+    def _response_identity(self, response: dict[str, Any]) -> ModelIdentity:
+        raw = response.get("model")
+        if not isinstance(raw, dict):
+            raise ValueError("Modal vision provider returned no model identity")
+        observed = {
+            "model_id": str(raw.get("model_id") or ""),
+            "revision": str(raw.get("revision") or ""),
+            "quantization": str(raw.get("quantization") or ""),
+        }
+        expected = {
+            "model_id": self.identity.model_id,
+            "revision": self.identity.revision,
+            "quantization": self.identity.quantization,
+        }
+        if observed != expected:
+            raise ValueError(
+                "Modal vision model identity mismatch: "
+                f"expected={expected!r} observed={observed!r}"
+            )
+        return self.identity
+
     def inspect(
         self, *, task: str, frames: list[Path], context: dict[str, Any]
     ) -> ProviderResult[dict[str, Any]]:
