@@ -203,6 +203,32 @@ class _ModalSpeechBase:
             self.identity.schema_version,
         )
 
+    def _validated_remote_identity(
+        self,
+        response: dict[str, Any],
+        *,
+        label: str,
+    ) -> ModelIdentity:
+        raw = response.get("model")
+        if not isinstance(raw, dict):
+            raise ValueError(f"Modal {label} provider returned no model identity")
+        observed = {
+            "model_id": str(raw.get("model_id") or ""),
+            "revision": str(raw.get("revision") or ""),
+            "quantization": str(raw.get("quantization") or ""),
+        }
+        expected = {
+            "model_id": self.identity.model_id,
+            "revision": self.identity.revision,
+            "quantization": self.identity.quantization,
+        }
+        if observed != expected:
+            raise ValueError(
+                f"Modal {label} model identity mismatch: "
+                f"expected={expected!r} observed={observed!r}"
+            )
+        return self.identity
+
     @staticmethod
     def _usage(response: dict[str, Any]) -> InferenceUsage:
         raw = response.get("usage")
@@ -223,27 +249,6 @@ class _ModalSpeechBase:
 
 
 class ModalTranscriptionProvider(_ModalSpeechBase):
-    def _validated_transcription_identity(self, response: dict[str, Any]) -> ModelIdentity:
-        raw = response.get("model")
-        if not isinstance(raw, dict):
-            raise ValueError("Modal transcription provider returned no model identity")
-        observed = {
-            "model_id": str(raw.get("model_id") or ""),
-            "revision": str(raw.get("revision") or ""),
-            "quantization": str(raw.get("quantization") or ""),
-        }
-        expected = {
-            "model_id": self.identity.model_id,
-            "revision": self.identity.revision,
-            "quantization": self.identity.quantization,
-        }
-        if observed != expected:
-            raise ValueError(
-                "Modal transcription model identity mismatch: "
-                f"expected={expected!r} observed={observed!r}"
-            )
-        return self.identity
-
     def transcribe(
         self, source: Path, *, video_id: str, source_hash: str
     ) -> ProviderResult[CanonicalTimeline]:
@@ -267,7 +272,7 @@ class ModalTranscriptionProvider(_ModalSpeechBase):
         )
         return ProviderResult(
             timeline,
-            self._validated_transcription_identity(response),
+            self._validated_remote_identity(response, label="transcription"),
             self._usage(response),
         )
 
@@ -287,7 +292,11 @@ class ModalAlignmentProvider(_ModalSpeechBase):
             raise ValueError("Modal alignment provider returned an invalid response")
         segments = [item for item in raw_segments if isinstance(item, dict)]
         value = apply_whisperx_alignment(timeline, segments)
-        return ProviderResult(value, self._resolved_identity(response), self._usage(response))
+        return ProviderResult(
+            value,
+            self._validated_remote_identity(response, label="alignment"),
+            self._usage(response),
+        )
 
 
 class ModalDiarizationProvider(_ModalSpeechBase):
