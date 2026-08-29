@@ -963,4 +963,3 @@ def test_source_policy_checkpoint_commit_failure_does_not_discard_successful_inf
     assert timeline.events
     assert result.usage.input_units > 0
     assert attempts["count"] >= 3
-
