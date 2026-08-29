@@ -234,14 +234,11 @@ class FasterWhisperTranscriptionProvider:
         *,
         device: str = "auto",
         compute_type: str = "int8_float16",
+        schema_version: str = "canonical-timeline-v1",
     ) -> None:
+        identity_model_id = model_id if "/" in model_id else f"faster-whisper/{model_id}"
         self.identity = ModelIdentity(
-            f"faster-whisper/{model_id}",
-            revision,
-            compute_type,
-            "faster-whisper",
-            "none",
-            "canonical-timeline-v1",
+            identity_model_id, revision, compute_type, "faster-whisper", "none", schema_version
         )
         self.model_id = model_id
         self.device = device
@@ -258,6 +255,7 @@ class FasterWhisperTranscriptionProvider:
                 self.model_id,
                 device=self.device,
                 compute_type=self.compute_type,
+                revision=self.identity.revision,
             )
         return self._model
 
@@ -306,18 +304,17 @@ class FasterWhisperTranscriptionProvider:
 class WhisperXAlignmentProvider:
     def __init__(
         self,
+        model_id: str | None = None,
         revision: str = "main",
         *,
         device: str = "cuda",
         language_code: str = "en",
+        schema_version: str = "canonical-timeline-v1",
     ) -> None:
+        self.model_id = model_id
         self.identity = ModelIdentity(
-            "whisperx-forced-alignment",
-            revision,
-            "none",
-            "whisperx",
-            "none",
-            "canonical-timeline-v1",
+            model_id or "whisperx-forced-alignment",
+            revision, "none", "whisperx", "none", schema_version,
         )
         self.device = device
         self.language_code = language_code
@@ -331,9 +328,23 @@ class WhisperXAlignmentProvider:
         except ImportError as exc:
             raise ProviderUnavailable("install clipper[alignment]") from exc
         audio = whisperx.load_audio(str(source))
+        model_name: str | None = None
+        if self.model_id is not None:
+            try:
+                hub = importlib.import_module("huggingface_hub")
+            except ImportError as exc:
+                raise ProviderUnavailable(
+                    "huggingface_hub is required for pinned alignment"
+                ) from exc
+            model_name = str(hub.snapshot_download(
+                repo_id=self.model_id,
+                revision=self.identity.revision,
+            ))
         model, metadata = whisperx.load_align_model(
             language_code=self.language_code,
             device=self.device,
+            model_name=model_name,
+            model_cache_only=model_name is not None,
         )
         segments = _alignment_segments(timeline)
         payload = [{k: v for k, v in item.items() if k != "word_ids"} for item in segments]
@@ -360,14 +371,10 @@ class PyannoteDiarizationProvider:
         *,
         token: str | None = None,
         device: str | None = None,
+        schema_version: str = "canonical-timeline-v1",
     ) -> None:
         self.identity = ModelIdentity(
-            model_id,
-            revision,
-            "none",
-            "pyannote.audio",
-            "none",
-            "canonical-timeline-v1",
+            model_id, revision, "none", "pyannote.audio", "none", schema_version
         )
         self.token = token or os.getenv("HF_TOKEN")
         self.device = device

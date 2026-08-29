@@ -993,3 +993,50 @@ def test_rendered_clip_records_exact_output_hash(tmp_path: Path) -> None:
 def test_campaign_watermark_no_policy_returns_none(tmp_path: Path) -> None:
     brief = load_brief(_write_brief(tmp_path / "brief.json"))
     assert _campaign_watermark(brief, Mock(), tmp_path) is None
+
+
+def test_grounding_cache_publication_failure_does_not_discard_authoritative_dag_result(
+    tmp_path: Path,
+) -> None:
+    cache = FileCache(tmp_path / "cache")
+    dag = DagStore(tmp_path / "dag")
+    timeline = CanonicalTimeline("v1", "source", _words("v1", 1))
+    operation = Mock(
+        return_value=ProviderResult(
+            timeline,
+            FakeTranscription.identity,
+            _usage(),
+        )
+    )
+    with (
+        patch.object(cache, "write", side_effect=OSError("cache unavailable")) as write,
+        patch("clipper.pipeline.time.sleep"),
+    ):
+        output, cached = _grounding_stage_value(
+            stage="canonical-transcription",
+            key="k",
+            cache=cache,
+            dag=dag,
+            operation=operation,
+        )
+
+    assert cached is False
+    assert output["canonical"] == timeline.to_dict()
+    operation.assert_called_once_with()
+    assert write.call_count == 3
+
+    second_operation = Mock(side_effect=AssertionError("DAG result must be authoritative"))
+    with (
+        patch.object(cache, "write", side_effect=OSError("cache unavailable")),
+        patch("clipper.pipeline.time.sleep"),
+    ):
+        reused, reused_cached = _grounding_stage_value(
+            stage="canonical-transcription",
+            key="k",
+            cache=cache,
+            dag=dag,
+            operation=second_operation,
+        )
+    assert reused_cached is True
+    assert reused["canonical"] == timeline.to_dict()
+    second_operation.assert_not_called()

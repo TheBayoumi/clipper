@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,12 +25,17 @@ _REQUIRED_MODEL_FUNCTIONS = (
     "transcribe",
     "align",
     "diarize",
-    "editorial",
-    "vision",
+    "editorial_schema_smoke",
     "hf_access_smoke",
     "deployment_identity",
 )
+_REQUIRED_MODEL_CLASSES = ("EditorialModel", "VisionModel", "VisionModelLarge")
 _REQUIRED_PIPELINE_FUNCTIONS = ("acquire_source", "run_full_cycle", "deployment_identity")
+_MODAL_ROOT_GPU_COUNT = 2.0
+_MODAL_ROOT_ESTIMATED_USD_PER_SECOND = 0.000444
+# Conservative 4-GiB CPU acquisition rate, including the highest configured
+# regional premium. GPU cost is zero because acquire_source has no GPU request.
+_MODAL_ACQUISITION_ESTIMATED_USD_PER_SECOND = 0.000019
 _CONTROL_PLANE_ATTEMPTS = 3
 _DEPLOY_ATTEMPTS = 3
 _RETRY_DELAYS_SECONDS = (2.0, 5.0)
@@ -53,32 +59,36 @@ def _retry_delay(attempt: int) -> float:
     return _RETRY_DELAYS_SECONDS[index]
 
 
-def _function(app_name: str, function_name: str) -> Any:
-    """Hydrate a deployed Modal Function with bounded retries for control-plane flakes."""
+def _hydrate_named_handle(app_name: str, handle_name: str, *, kind: str) -> Any:
+    """Hydrate a deployed Modal Function or Cls with bounded control-plane retries."""
     modal = importlib.import_module("modal")
+    namespace = modal.Function if kind == "function" else modal.Cls
     for attempt in range(1, _CONTROL_PLANE_ATTEMPTS + 1):
-        handle = modal.Function.from_name(app_name, function_name)
+        handle = namespace.from_name(app_name, handle_name)
         try:
             handle.hydrate()
         except Exception as exc:
             if _is_retryable_modal_control_plane_error(exc) and attempt < _CONTROL_PLANE_ATTEMPTS:
                 delay = _retry_delay(attempt)
                 LOGGER.warning(
-                    "Modal control-plane request failed while hydrating %s/%s "
+                    "Modal control-plane request failed while hydrating %s %s/%s "
                     "(%s: %s); retrying in %.1fs (%d/%d)",
-                    app_name,
-                    function_name,
-                    type(exc).__name__,
-                    str(exc),
-                    delay,
-                    attempt + 1,
-                    _CONTROL_PLANE_ATTEMPTS,
+                    kind, app_name, handle_name, type(exc).__name__, str(exc),
+                    delay, attempt + 1, _CONTROL_PLANE_ATTEMPTS,
                 )
                 time.sleep(delay)
                 continue
             raise
         return handle
-    raise RuntimeError(f"failed to hydrate Modal function {app_name}/{function_name}")
+    raise RuntimeError(f"failed to hydrate Modal {kind} {app_name}/{handle_name}")
+
+
+def _function(app_name: str, function_name: str) -> Any:
+    return _hydrate_named_handle(app_name, function_name, kind="function")
+
+
+def _class(app_name: str, class_name: str) -> Any:
+    return _hydrate_named_handle(app_name, class_name, kind="class")
 
 
 def _repo_root() -> Path:
@@ -104,8 +114,53 @@ def _local_git_sha() -> str:
     return sha
 
 
+def _validated_source_sha(value: object, *, origin: str) -> str:
+    sha = str(value or "").strip().lower()
+    if len(sha) != 40 or any(character not in "0123456789abcdef" for character in sha):
+        raise RuntimeError(f"{origin} did not provide a full immutable source SHA: {sha!r}")
+    return sha
+
+
+def _embedded_source_sha() -> str | None:
+    candidates: list[tuple[str, str]] = []
+    environment_sha = os.getenv("CLIPPER_SOURCE_SHA", "").strip()
+    if environment_sha:
+        candidates.append(
+            (
+                "CLIPPER_SOURCE_SHA",
+                _validated_source_sha(environment_sha, origin="CLIPPER_SOURCE_SHA"),
+            )
+        )
+    embedded_path = _repo_root() / ".clipper-source-sha"
+    if embedded_path.is_file():
+        candidates.append((str(embedded_path), _validated_source_sha(
+            embedded_path.read_text(encoding="utf-8"), origin=str(embedded_path)
+        )))
+    if not candidates:
+        return None
+    values = {value for _origin, value in candidates}
+    if len(values) != 1:
+        raise RuntimeError(f"embedded source SHA evidence disagrees: {candidates!r}")
+    return candidates[0][1]
+
+
+def _runtime_source_sha() -> str:
+    embedded = _embedded_source_sha()
+    try:
+        checkout = _local_git_sha()
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        if embedded is not None:
+            return embedded
+        raise RuntimeError(
+            "runtime source SHA is unavailable: no embedded image SHA and no Git checkout"
+        ) from exc
+    if embedded is not None and embedded != checkout:
+        raise RuntimeError(f"runtime source SHA mismatch: embedded={embedded} checkout={checkout}")
+    return checkout
+
+
 def _verify_deployed_runtime_sha(*, model_app: str, pipeline_app: str) -> str:
-    expected = _local_git_sha()
+    expected = _runtime_source_sha()
     for label, app_name in (("model", model_app), ("pipeline", pipeline_app)):
         identity = _function(app_name, "deployment_identity").remote()
         if not isinstance(identity, dict):
@@ -126,32 +181,112 @@ def _positive_budget(value: float, *, name: str) -> float:
     return resolved
 
 
+class ProductionBudgetExceeded(RuntimeError):
+    pass
+
+
+@dataclass(slots=True)
+class _BudgetLedger:
+    max_gpu_seconds: float
+    max_estimated_usd: float
+    gpu_seconds: float = 0.0
+    estimated_usd: float = 0.0
+
+    def __post_init__(self) -> None:
+        self.max_gpu_seconds = _positive_budget(self.max_gpu_seconds, name="max_gpu_seconds")
+        self.max_estimated_usd = _positive_budget(self.max_estimated_usd, name="max_estimated_usd")
+
+    @staticmethod
+    def _rate(value: float, *, name: str) -> float:
+        resolved = float(value)
+        if not math.isfinite(resolved) or resolved < 0:
+            raise ValueError(f"{name} must be finite and nonnegative")
+        return resolved
+
+    def projected_usage(self, elapsed_seconds: float, *, gpu_count: float,
+                        estimated_usd_per_second: float) -> tuple[float, float]:
+        elapsed = max(0.0, float(elapsed_seconds))
+        gpu_rate = self._rate(gpu_count, name="gpu_count")
+        cost_rate = self._rate(estimated_usd_per_second, name="estimated_usd_per_second")
+        return (self.gpu_seconds + elapsed * gpu_rate,
+                self.estimated_usd + elapsed * cost_rate)
+
+    def remaining_wall_seconds(self, elapsed_seconds: float, *, gpu_count: float,
+                               estimated_usd_per_second: float) -> float:
+        projected_gpu, projected_cost = self.projected_usage(
+            elapsed_seconds, gpu_count=gpu_count,
+            estimated_usd_per_second=estimated_usd_per_second,
+        )
+        gpu_rate = self._rate(gpu_count, name="gpu_count")
+        cost_rate = self._rate(estimated_usd_per_second, name="estimated_usd_per_second")
+        limits: list[float] = []
+        if gpu_rate > 0:
+            limits.append((self.max_gpu_seconds - projected_gpu) / gpu_rate)
+        elif projected_gpu > self.max_gpu_seconds:
+            return 0.0
+        if cost_rate > 0:
+            limits.append((self.max_estimated_usd - projected_cost) / cost_rate)
+        elif projected_cost > self.max_estimated_usd:
+            return 0.0
+        return min(limits) if limits else float("inf")
+
+    def charge(self, elapsed_seconds: float, *, gpu_count: float,
+               estimated_usd_per_second: float) -> None:
+        elapsed = max(0.0, float(elapsed_seconds))
+        self.gpu_seconds += elapsed * self._rate(gpu_count, name="gpu_count")
+        self.estimated_usd += elapsed * self._rate(
+            estimated_usd_per_second, name="estimated_usd_per_second"
+        )
+
+    def remaining_budgets(self) -> tuple[float, float]:
+        return (max(0.0, self.max_gpu_seconds - self.gpu_seconds),
+                max(0.0, self.max_estimated_usd - self.estimated_usd))
+
+    def to_dict(self) -> dict[str, float]:
+        remaining_gpu, remaining_cost = self.remaining_budgets()
+        return {
+            "max_gpu_seconds": self.max_gpu_seconds,
+            "max_estimated_usd": self.max_estimated_usd,
+            "gpu_seconds": self.gpu_seconds,
+            "estimated_usd": self.estimated_usd,
+            "remaining_gpu_seconds": remaining_gpu,
+            "remaining_estimated_usd": remaining_cost,
+        }
+
+
 def _invoke_remote_with_budget(
     function: Any,
     request: dict[str, Any],
     *,
-    max_gpu_seconds: float,
-    max_estimated_usd: float,
+    max_gpu_seconds: float | None = None,
+    max_estimated_usd: float | None = None,
+    budget: _BudgetLedger | None = None,
+    gpu_count: float = _MODAL_ROOT_GPU_COUNT,
+    estimated_usd_per_second: float = _MODAL_ROOT_ESTIMATED_USD_PER_SECOND,
 ) -> object:
-    max_gpu_seconds = _positive_budget(max_gpu_seconds, name="max_gpu_seconds")
-    max_estimated_usd = _positive_budget(max_estimated_usd, name="max_estimated_usd")
+    if budget is None:
+        if max_gpu_seconds is None or max_estimated_usd is None:
+            raise ValueError("remote invocation requires a complete compute budget")
+        budget = _BudgetLedger(max_gpu_seconds, max_estimated_usd)
     poll_seconds = float(os.getenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "5"))
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("CLIPPER_MODAL_SPY_POLL_SECONDS must be finite and positive")
-
+    budget._rate(gpu_count, name="gpu_count")
+    budget._rate(estimated_usd_per_second, name="estimated_usd_per_second")
     call = function.spawn(request)
     started = time.monotonic()
     terminal_result = False
 
     def budget_usage() -> tuple[float, float]:
-        elapsed = max(0.0, time.monotonic() - started)
-        return elapsed * 2.0, elapsed * 0.000444
+        return budget.projected_usage(
+            max(0.0, time.monotonic() - started),
+            gpu_count=gpu_count, estimated_usd_per_second=estimated_usd_per_second,
+        )
 
     def remaining_budget_wall_seconds() -> float:
-        gpu_seconds, estimated_usd = budget_usage()
-        return min(
-            (max_gpu_seconds - gpu_seconds) / 2.0,
-            (max_estimated_usd - estimated_usd) / 0.000444,
+        return budget.remaining_wall_seconds(
+            max(0.0, time.monotonic() - started),
+            gpu_count=gpu_count, estimated_usd_per_second=estimated_usd_per_second,
         )
 
     try:
@@ -160,26 +295,27 @@ def _invoke_remote_with_budget(
             gpu_seconds, estimated_usd = budget_usage()
             remaining_seconds = remaining_budget_wall_seconds()
             if remaining_seconds <= 0:
-                raise RuntimeError(
+                raise ProductionBudgetExceeded(
                     "CLI production call exceeded its in-flight compute budget: "
-                    f"gpu_seconds={gpu_seconds:.3f}/{max_gpu_seconds:.3f} "
-                    f"estimated_usd={estimated_usd:.6f}/{max_estimated_usd:.6f}"
+                    f"gpu_seconds={gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
+                    f"estimated_usd={estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
                 )
             try:
                 result = call.get(timeout=min(poll_seconds, remaining_seconds))
             except TimeoutError:
                 continue
-
             terminal_result = True
             gpu_seconds, estimated_usd = budget_usage()
-            if gpu_seconds > max_gpu_seconds or estimated_usd > max_estimated_usd:
-                raise RuntimeError(
+            if gpu_seconds > budget.max_gpu_seconds or estimated_usd > budget.max_estimated_usd:
+                raise ProductionBudgetExceeded(
                     "CLI production call exceeded its compute budget on the final poll: "
-                    f"gpu_seconds={gpu_seconds:.3f}/{max_gpu_seconds:.3f} "
-                    f"estimated_usd={estimated_usd:.6f}/{max_estimated_usd:.6f}"
+                    f"gpu_seconds={gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
+                    f"estimated_usd={estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
                 )
             return result
     finally:
+        budget.charge(max(0.0, time.monotonic() - started), gpu_count=gpu_count,
+                      estimated_usd_per_second=estimated_usd_per_second)
         if not terminal_result:
             try:
                 call.cancel(terminate_containers=False)
@@ -229,46 +365,58 @@ def _deploy(script: Path) -> None:
         return
 
 
-def _hydrate_required(app_name: str, functions: tuple[str, ...]) -> None:
-    for function_name in functions:
-        try:
-            _function(app_name, function_name)
-        except Exception as exc:
-            raise RuntimeError(
-                f"required Modal function {app_name}/{function_name} is unavailable after runtime "
-                f"repair ({type(exc).__name__}: {exc})"
-            ) from exc
+def _hydrate_required(
+    app_name: str,
+    functions: tuple[str, ...],
+    classes: tuple[str, ...] = (),
+) -> None:
+    for kind, names, resolver in (
+        ("function", functions, _function),
+        ("class", classes, _class),
+    ):
+        for handle_name in names:
+            try:
+                resolver(app_name, handle_name)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"required Modal {kind} {app_name}/{handle_name} is unavailable after "
+                    f"runtime repair ({type(exc).__name__}: {exc})"
+                ) from exc
 
 
 def _ensure_deployed_runtime(
     *,
     app_name: str,
     functions: tuple[str, ...],
+    classes: tuple[str, ...] = (),
     deployment_script: str,
 ) -> None:
-    missing_function: str | None = None
-    for function_name in functions:
-        try:
-            _function(app_name, function_name)
-        except Exception as exc:
-            if _is_modal_not_found(exc):
-                missing_function = function_name
-                break
-            raise RuntimeError(
-                "Modal control-plane validation failed while checking "
-                f"{app_name}/{function_name} ({type(exc).__name__}: {exc}); "
-                "refusing to misclassify this as a missing deployment"
-            ) from exc
-    if missing_function is None:
+    missing_handle: str | None = None
+    for kind, names, resolver in (
+        ("function", functions, _function),
+        ("class", classes, _class),
+    ):
+        for handle_name in names:
+            try:
+                resolver(app_name, handle_name)
+            except Exception as exc:
+                if _is_modal_not_found(exc):
+                    missing_handle = f"{kind}:{handle_name}"
+                    break
+                raise RuntimeError(
+                    "Modal control-plane validation failed while checking "
+                    f"{kind} {app_name}/{handle_name} ({type(exc).__name__}: {exc}); "
+                    "refusing to misclassify this as a missing deployment"
+                ) from exc
+        if missing_handle is not None:
+            break
+    if missing_handle is None:
         LOGGER.info("attached to deployed Modal runtime %s", app_name)
         return
-    LOGGER.info(
-        "Modal runtime %s/%s is not deployed; repairing from local checkout",
-        app_name,
-        missing_function,
-    )
+    LOGGER.info("Modal runtime %s/%s is not deployed; repairing from local checkout",
+                app_name, missing_handle)
     _deploy(_repo_script(deployment_script))
-    _hydrate_required(app_name, functions)
+    _hydrate_required(app_name, functions, classes)
 
 
 def _validate_model_access(app_name: str) -> None:
@@ -298,6 +446,7 @@ def ensure_modal_runtime() -> None:
     _ensure_deployed_runtime(
         app_name=model_app,
         functions=_REQUIRED_MODEL_FUNCTIONS,
+        classes=_REQUIRED_MODEL_CLASSES,
         deployment_script="modal_open_models.py",
     )
     _ensure_deployed_runtime(
@@ -332,54 +481,69 @@ def _acquire_remote_source(
     candidate: VideoCandidate,
     *,
     expected_git_sha: str,
+    budget: _BudgetLedger | None = None,
+    attempt_evidence: list[dict[str, object]] | None = None,
+    execution_id: str | None = None,
 ) -> dict[str, Any]:
     if len(expected_git_sha) != 40 or any(
         character not in "0123456789abcdef" for character in expected_git_sha.lower()
     ):
         raise ValueError("source acquisition requires a full expected_git_sha")
-    payload = {
+    if budget is None:
+        budget = _BudgetLedger(21600.0, 10.0)
+    payload: dict[str, Any] = {
         "video_id": candidate.video_id,
         "channel_id": candidate.channel_id,
         "video_url": candidate.url,
         "expected_git_sha": expected_git_sha.lower(),
     }
+    if execution_id:
+        payload["execution_id"] = execution_id
     variants = (
-        ("cloud:gcp", "cloud", "gcp"),
-        ("cloud:aws", "cloud", "aws"),
-        ("cloud:oci", "cloud", "oci"),
-        ("region:eu", "region", "eu"),
-        ("region:ap", "region", "ap"),
-        ("region:sa", "region", "sa"),
-        ("region:af", "region", "af"),
-        ("default", "default", "auto"),
+        ("cloud:gcp", "cloud", "gcp"), ("cloud:aws", "cloud", "aws"),
+        ("cloud:oci", "cloud", "oci"), ("region:eu", "region", "eu"),
+        ("region:ap", "region", "ap"), ("region:sa", "region", "sa"),
+        ("region:af", "region", "af"), ("default", "default", "auto"),
     )
     failures: list[dict[str, str]] = []
     for label, kind, value in variants:
+        before_gpu, before_cost = budget.gpu_seconds, budget.estimated_usd
+        if kind == "cloud":
+            variant = function.with_options(cloud=value, timeout=1800)
+        elif kind == "region":
+            variant = function.with_options(region=value, timeout=1800)
+        else:
+            variant = function.with_options(timeout=1800)
         try:
-            if kind == "cloud":
-                result = function.with_options(cloud=value, timeout=1800).remote(payload)
-            elif kind == "region":
-                result = function.with_options(region=value, timeout=1800).remote(payload)
-            else:
-                result = function.remote(payload)
-        except Exception as exc:
-            failures.append(
-                {
-                    "egress": label,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc)[-2000:],
-                }
+            result = _invoke_remote_with_budget(
+                variant, payload, budget=budget, gpu_count=0.0,
+                estimated_usd_per_second=_MODAL_ACQUISITION_ESTIMATED_USD_PER_SECOND,
             )
+        except ProductionBudgetExceeded:
+            if attempt_evidence is not None:
+                attempt_evidence.append({
+                    "egress": label, "status": "BUDGET_EXCEEDED",
+                    "estimated_usd": budget.estimated_usd - before_cost,
+                    "gpu_seconds": budget.gpu_seconds - before_gpu,
+                })
+            raise
+        except Exception as exc:
+            failures.append({"egress": label, "error_type": type(exc).__name__,
+                             "error": str(exc)[-2000:]})
+            if attempt_evidence is not None:
+                attempt_evidence.append({
+                    "egress": label, "status": "FAIL", "error_type": type(exc).__name__,
+                    "estimated_usd": budget.estimated_usd - before_cost,
+                    "gpu_seconds": budget.gpu_seconds - before_gpu,
+                })
             continue
         if not isinstance(result, dict):
-            failures.append(
-                {"egress": label, "error_type": "InvalidResponse", "error": repr(result)[:2000]}
-            )
+            failures.append({"egress": label, "error_type": "InvalidResponse",
+                             "error": repr(result)[:2000]})
             continue
-        if (
-            str(result.get("video_id") or "") != candidate.video_id
-            or str(result.get("channel_id") or "") != candidate.channel_id
-        ):
+        if str(result.get("video_id") or "") != candidate.video_id or str(
+            result.get("channel_id") or ""
+        ) != candidate.channel_id:
             failures.append(
                 {
                     "egress": label,
@@ -392,26 +556,20 @@ def _acquire_remote_source(
             )
             continue
         if str(result.get("quality_policy")) != "highest_available_no_transcode":
-            failures.append(
-                {
-                    "egress": label,
-                    "error_type": "QualityPolicyError",
-                    "error": str(result.get("quality_policy")),
-                }
-            )
+            failures.append({"egress": label, "error_type": "QualityPolicyError",
+                             "error": str(result.get("quality_policy"))})
             continue
-        LOGGER.info(
-            "Modal acquired source %s through %s: %s bytes sha256=%s",
-            candidate.video_id,
-            label,
-            result.get("bytes"),
-            result.get("sha256"),
-        )
+        if attempt_evidence is not None:
+            attempt_evidence.append({
+                "egress": label, "status": "PASS",
+                "estimated_usd": budget.estimated_usd - before_cost,
+                "gpu_seconds": budget.gpu_seconds - before_gpu,
+            })
+        LOGGER.info("Modal acquired source %s through %s: %s bytes sha256=%s",
+                    candidate.video_id, label, result.get("bytes"), result.get("sha256"))
         return result
-    raise RuntimeError(
-        f"Modal source acquisition failed for {candidate.video_id}: "
-        + json.dumps(failures, ensure_ascii=False)
-    )
+    raise RuntimeError(f"Modal source acquisition failed for {candidate.video_id}: "
+                       + json.dumps(failures, ensure_ascii=False))
 
 
 def _materialize_remote_run(*, artifact_root: Path, volume_name: str, remote_run_path: str) -> Path:
@@ -490,8 +648,7 @@ def run_modal_pipeline(
         pipeline_app=pipeline_app,
     )
     execution_id = uuid.uuid4().hex
-    max_gpu_seconds = _positive_budget(max_gpu_seconds, name="max_gpu_seconds")
-    max_estimated_usd = _positive_budget(max_estimated_usd, name="max_estimated_usd")
+    budget = _BudgetLedger(max_gpu_seconds, max_estimated_usd)
     acquire = _function(pipeline_app, "acquire_source")
     runner = _function(pipeline_app, "run_full_cycle")
 
@@ -500,9 +657,16 @@ def run_modal_pipeline(
             acquire,
             candidate,
             expected_git_sha=verified_git_sha,
+            budget=budget,
+            execution_id=execution_id,
         )
         for candidate in candidates
     ]
+    remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
+    if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
+        raise ProductionBudgetExceeded(
+            "source acquisition exhausted the production compute budget before pipeline execution"
+        )
     source_payloads = [
         {
             "evidence": evidence,
@@ -520,14 +684,13 @@ def run_modal_pipeline(
         "resume_from_run_id": resume_from_run_id,
         "git_sha": verified_git_sha,
         "execution_id": execution_id,
-        "max_gpu_seconds": max_gpu_seconds,
-        "max_estimated_usd": max_estimated_usd,
+        "max_gpu_seconds": remaining_gpu_seconds,
+        "max_estimated_usd": remaining_estimated_usd,
     }
     response = _invoke_remote_with_budget(
         runner,
         request,
-        max_gpu_seconds=max_gpu_seconds,
-        max_estimated_usd=max_estimated_usd,
+        budget=budget,
     )
     if not isinstance(response, dict):
         raise RuntimeError("Modal production runner returned an invalid response")

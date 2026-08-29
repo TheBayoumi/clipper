@@ -559,76 +559,14 @@ jobs:
           )
           PY
 
-      - name: Acquire or reuse highest-quality content-addressed source master
+      - name: Prepare budget-accounted source acquisition
         run: |
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          import modal
-
-          payload = {
-              "video_id": os.environ["CLIPPER_TARGET_VIDEO_ID"],
-              "channel_id": os.environ["CLIPPER_TARGET_CHANNEL_ID"],
-              "video_url": os.environ["CLIPPER_TARGET_VIDEO_URL"],
-              "expected_git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
-          }
-          base = modal.Function.from_name(os.environ["CLIPPER_MODAL_PIPELINE_APP"], "acquire_source")
-          variants = [
-              ("cloud:gcp", "cloud", "gcp"),
-              ("cloud:aws", "cloud", "aws"),
-              ("cloud:oci", "cloud", "oci"),
-              ("region:eu", "region", "eu"),
-              ("region:ap", "region", "ap"),
-              ("region:sa", "region", "sa"),
-              ("region:af", "region", "af"),
-              ("default", "default", "auto"),
-          ]
-          attempts = []
-          result = None
-          winner = None
-          for label, kind, value in variants:
-              try:
-                  if kind == "cloud":
-                      candidate = base.with_options(cloud=value, timeout=1800).remote(payload)
-                  elif kind == "region":
-                      candidate = base.with_options(region=value, timeout=1800).remote(payload)
-                  else:
-                      candidate = base.remote(payload)
-              except Exception as exc:
-                  attempts.append({"egress": label, "status": "FAIL", "error": str(exc)[-6000:]})
-                  continue
-              if isinstance(candidate, dict):
-                  result = candidate
-                  winner = label
-                  attempts.append({"egress": label, "status": "PASS"})
-                  break
-          Path("open-evidence/source-egress-attempts.json").write_text(
-              json.dumps({"winner": winner, "attempts": attempts}, indent=2) + "\n",
-              encoding="utf-8",
-          )
-          if result is None:
-              raise RuntimeError("all autonomous source egress pools failed")
-          if result.get("video_id") != os.environ["CLIPPER_TARGET_VIDEO_ID"]:
-              raise RuntimeError("source acquisition returned the wrong explicit target")
-          if result.get("channel_id") != os.environ["CLIPPER_TARGET_CHANNEL_ID"]:
-              raise RuntimeError("source acquisition returned the wrong authorized channel")
-          identity = result.get("canonical_identity")
-          if not isinstance(identity, dict):
-              raise RuntimeError("source acquisition returned no canonical source identity")
-          if (
-              identity.get("video_id") != os.environ["CLIPPER_TARGET_VIDEO_ID"]
-              or identity.get("channel_id") != os.environ["CLIPPER_TARGET_CHANNEL_ID"]
-          ):
-              raise RuntimeError("source acquisition canonical identity mismatched the target")
-          if result.get("quality_policy") != "highest_available_no_transcode":
-              raise RuntimeError("source acquisition violated highest-available/no-transcode policy")
-          if int(result.get("bytes") or 0) <= 0 or len(str(result.get("sha256") or "")) != 64:
-              raise RuntimeError("source master evidence is invalid")
-          Path("open-evidence/source-master.json").write_text(
-              json.dumps(result, indent=2) + "\n", encoding="utf-8"
-          )
-          PY
+          set -euo pipefail
+          mkdir -p open-evidence
+          rm -f \
+            open-evidence/source-master.json \
+            open-evidence/source-egress-attempts.json \
+            open-evidence/source-budget.json
 
       - name: Run current-model pipeline with cancellable Modal spy
         env:

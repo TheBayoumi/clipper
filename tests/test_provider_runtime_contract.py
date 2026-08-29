@@ -56,6 +56,9 @@ from clipper.providers.speech_contract import (
 )
 from clipper.providers.vision_contract import (
     VISION_INFERENCE_ENGINE,
+    VISION_MODEL_ID,
+    VISION_MODEL_REVISION,
+    VISION_QUANTIZATION,
     VISION_LARGE_MODEL_ID,
     VISION_LARGE_MODEL_REVISION,
     VISION_LARGE_QUANTIZATION,
@@ -259,6 +262,8 @@ def _http_error(code: int, detail: bytes = b"detail") -> HTTPError:
 def test_modal_endpoint_success_retry_and_usage() -> None:
     provider = _endpoint()
     payload = {
+        "model": "endpoint-model",
+        "model_revision": "rev",
         "choices": [{"message": {"content": '{"cores": []}'}}],
         "usage": {"prompt_tokens": 11, "completion_tokens": 7},
     }
@@ -277,6 +282,35 @@ def test_modal_endpoint_success_retry_and_usage() -> None:
     sleep.assert_called_once_with(1.0)
 
 
+def test_modal_endpoint_rejects_unattested_or_mismatched_identity() -> None:
+    provider = _endpoint()
+    for payload in (
+        {"choices": [{"message": {"content": "{}"}}]},
+        {
+            "model": "other",
+            "model_revision": "rev",
+            "choices": [{"message": {"content": "{}"}}],
+        },
+        {
+            "model": "endpoint-model",
+            "model_revision": "other-rev",
+            "choices": [{"message": {"content": "{}"}}],
+        },
+    ):
+        with (
+            patch("clipper.providers.modal_endpoint.urlopen", return_value=_HTTPResponse(payload)),
+            pytest.raises(RuntimeError, match="identity mismatch"),
+        ):
+            provider.complete_json(task="semantic_cores:0", payload={})
+
+    with pytest.raises(ProviderUnavailable, match="immutable"):
+        _endpoint(
+            identity=ModelIdentity(
+                "endpoint-model", "main", "none", "test", "editor", "schema"
+            )
+        )
+
+
 def test_modal_endpoint_network_and_response_failures() -> None:
     provider = _endpoint()
     with (
@@ -285,8 +319,15 @@ def test_modal_endpoint_network_and_response_failures() -> None:
     ):
         provider.complete_json(task="semantic_cores:0", payload={})
     for payload, match in (
-        ({}, "no choices"),
-        ({"choices": [{}]}, "no message content"),
+        ({"model": "endpoint-model", "model_revision": "rev"}, "no choices"),
+        (
+            {
+                "model": "endpoint-model",
+                "model_revision": "rev",
+                "choices": [{}],
+            },
+            "no message content",
+        ),
     ):
         with (
             patch("clipper.providers.modal_endpoint.urlopen", return_value=_HTTPResponse(payload)),
@@ -371,6 +412,12 @@ def test_faster_whisper_provider_load_and_transcribe_paths(tmp_path: Path) -> No
     module = SimpleNamespace(WhisperModel=Mock(return_value=whisper_model))
     with patch("clipper.providers.speech.importlib.import_module", return_value=module):
         assert provider._load() is whisper_model
+    module.WhisperModel.assert_called_once_with(
+        "tiny",
+        device="cpu",
+        compute_type="int8",
+        revision="main",
+    )
     raw = SimpleNamespace(start=0.0, end=0.5, word=" hello ", probability=0.8)
     whisper_model.transcribe.return_value = ([SimpleNamespace(words=[raw])], object())
     source = tmp_path / "audio.wav"
@@ -751,6 +798,7 @@ def test_provider_factory_selects_local_modal_managed_and_degraded(monkeypatch) 
     monkeypatch.setenv("CLIPPER_MODAL_EDITORIAL_ENDPOINT_URL", "https://example.modal.run")
     monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "id")
     monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "secret")
+    monkeypatch.setenv("CLIPPER_EDITORIAL_MODEL_REVISION", "a" * 40)
     managed = factory.editorial_provider("balanced")
     assert isinstance(managed, ModalEndpointEditorialProvider)
 
@@ -803,4 +851,33 @@ def test_provider_factory_selects_local_modal_managed_and_degraded(monkeypatch) 
         factory.speech_providers("balanced")
     monkeypatch.setenv("CLIPPER_MODAL_EDITORIAL_BACKEND", "invalid")
     with pytest.raises(ValueError, match="unsupported Modal editorial backend"):
+        factory.editorial_provider("balanced")
+
+
+def test_local_lite_factory_pins_shared_immutable_model_contracts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPPER_DIARIZATION_MODE", "pyannote")
+    vision = factory.vision_provider("local-lite")
+    assert vision.identity.model_id == VISION_MODEL_ID
+    assert vision.identity.revision == VISION_MODEL_REVISION
+    assert vision.identity.quantization == VISION_QUANTIZATION
+
+    transcription, alignment, diarization = factory.speech_providers("local-lite")
+    assert transcription.identity.model_id == ASR_MODEL_ID
+    assert transcription.identity.revision == ASR_MODEL_REVISION
+    assert transcription.identity.quantization == ASR_COMPUTE_TYPE
+    assert alignment.identity.model_id == ALIGNMENT_MODEL_ID
+    assert alignment.identity.revision == ALIGNMENT_MODEL_REVISION
+    assert diarization.identity.model_id == DIARIZATION_MODEL_ID
+    assert diarization.identity.revision == DIARIZATION_MODEL_REVISION
+
+
+def test_managed_factory_requires_immutable_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLIPPER_MODAL_EDITORIAL_BACKEND", "managed")
+    monkeypatch.setenv("CLIPPER_MODAL_EDITORIAL_ENDPOINT_URL", "https://example.modal.run")
+    monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "id")
+    monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "secret")
+    monkeypatch.delenv("CLIPPER_EDITORIAL_MODEL_REVISION", raising=False)
+    with pytest.raises(ProviderUnavailable, match="immutable"):
         factory.editorial_provider("balanced")

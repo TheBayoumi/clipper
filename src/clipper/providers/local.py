@@ -162,12 +162,13 @@ class LocalVisionProvider:
         model_id: str = "Qwen/Qwen3-VL-8B-Instruct",
         revision: str = "main",
         *,
+        quantization: str = "none",
         device_map: str = "auto",
     ) -> None:
         self.identity = ModelIdentity(
             model_id,
             revision,
-            "none",
+            quantization,
             "transformers",
             "vision",
             "structured-json",

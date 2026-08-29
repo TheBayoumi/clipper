@@ -100,16 +100,23 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--max-gpu-seconds",
         type=float,
-        default=float(os.getenv("CLIPPER_MAX_GPU_SECONDS", "21600")),
-        help="hard production GPU-seconds budget (default: env or 21600)",
+        default=os.getenv("CLIPPER_MAX_GPU_SECONDS"),
+        help="hard Modal production GPU-seconds budget (default: env or 21600)",
     )
     run.add_argument(
         "--max-estimated-usd",
         type=float,
-        default=float(os.getenv("CLIPPER_MAX_ESTIMATED_USD", "10")),
-        help="hard production estimated-cost budget in USD (default: env or 10)",
+        default=os.getenv("CLIPPER_MAX_ESTIMATED_USD"),
+        help="hard Modal production estimated-cost budget in USD (default: env or 10)",
     )
     return parser
+
+
+def _modal_budget_limits(args: argparse.Namespace) -> tuple[float, float]:
+    return (
+        float(args.max_gpu_seconds) if args.max_gpu_seconds is not None else 21600.0,
+        float(args.max_estimated_usd) if args.max_estimated_usd is not None else 10.0,
+    )
 
 
 def _production_settings(artifact_root: Path) -> PipelineSettings:
@@ -514,6 +521,7 @@ def main(argv: list[str] | None = None) -> int:
                 "CLIPPER_SOURCE_FIXTURE_DIR"
             )
             if default_modal_pipeline:
+                max_gpu_seconds, max_estimated_usd = _modal_budget_limits(args)
                 resume_run: Path | None = None
                 if args.resume:
                     resume_run = _validate_resume_run(
@@ -525,10 +533,16 @@ def main(argv: list[str] | None = None) -> int:
                     resume_from_run_id=resume_run.name if resume_run is not None else None,
                     render=should_render,
                     fresh_inference=args.fresh_inference,
-                    max_gpu_seconds=args.max_gpu_seconds,
-                    max_estimated_usd=args.max_estimated_usd,
+                    max_gpu_seconds=max_gpu_seconds,
+                    max_estimated_usd=max_estimated_usd,
                 )
             else:
+                if args.max_gpu_seconds is not None or args.max_estimated_usd is not None:
+                    raise RuntimeError(
+                        "this execution path cannot enforce hard in-flight GPU/cost budgets; "
+                        "omit the budget flags for local/fixture diagnostics or use the "
+                        "cancellable Modal production pipeline"
+                    )
                 _assert_modal_functions_available(plan)
                 if args.resume:
                     _seed_resume_source_cache(settings, args.resume, campaign_id=brief.campaign_id)

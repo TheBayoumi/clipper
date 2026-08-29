@@ -29,6 +29,11 @@ class ModalEndpointEditorialProvider:
             raise ProviderUnavailable("Modal editorial endpoint must use https")
         if not proxy_token_id or not proxy_token_secret:
             raise ProviderUnavailable("Modal endpoint proxy token is required")
+        revision = identity.revision.strip()
+        if not revision or revision.casefold() in {"main", "master", "latest", "modal-managed"}:
+            raise ProviderUnavailable(
+                "managed editorial endpoint requires an immutable model/deployment revision"
+            )
         self.endpoint_url = endpoint_url.rstrip("/")
         self.proxy_token_id = proxy_token_id
         self.proxy_token_secret = proxy_token_secret
@@ -102,6 +107,14 @@ class ModalEndpointEditorialProvider:
                 ) from exc
         if not isinstance(raw, dict):
             raise ValueError("managed editorial endpoint returned an invalid response")
+        observed_model = str(raw.get("model") or "").strip()
+        observed_revision = str(raw.get("model_revision") or raw.get("revision") or "").strip()
+        if observed_model != self.identity.model_id or observed_revision != self.identity.revision:
+            raise RuntimeError(
+                "managed editorial endpoint identity mismatch: "
+                f"expected={self.identity.model_id}@{self.identity.revision} "
+                f"observed={observed_model or '<missing>'}@{observed_revision or '<missing>'}"
+            )
         choices = raw.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
             raise ValueError("managed editorial endpoint returned no choices")

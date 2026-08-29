@@ -4,12 +4,14 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import pytest
 
 from clipper.modal_execution import (
+    _BudgetLedger,
     _acquire_remote_source,
+    _class,
     _deploy,
     _explicit_candidates,
     _function,
@@ -17,6 +19,7 @@ from clipper.modal_execution import (
     _local_git_sha,
     _materialize_remote_run,
     _positive_budget,
+    _runtime_source_sha,
     _validate_model_access,
     _verify_deployed_runtime_sha,
     ensure_modal_runtime,
@@ -64,6 +67,16 @@ def test_function_hydrates_deployed_handle() -> None:
     with patch("clipper.modal_execution.importlib.import_module", return_value=modal):
         assert _function("app", "worker") is handle
     from_name.assert_called_once_with("app", "worker")
+    handle.hydrate.assert_called_once_with()
+
+
+def test_class_hydrates_deployed_handle() -> None:
+    handle = Mock()
+    from_name = Mock(return_value=handle)
+    modal = SimpleNamespace(Cls=SimpleNamespace(from_name=from_name))
+    with patch("clipper.modal_execution.importlib.import_module", return_value=modal):
+        assert _class("app", "Worker") is handle
+    from_name.assert_called_once_with("app", "Worker")
     handle.hydrate.assert_called_once_with()
 
 
@@ -132,15 +145,16 @@ def test_deploy_retries_cli_failure(tmp_path: Path) -> None:
 def test_ensure_modal_runtime_attaches_without_deploying_when_apps_exist() -> None:
     with (
         patch("clipper.modal_execution._function", return_value=Mock()) as function,
+        patch("clipper.modal_execution._class", return_value=Mock()) as cls,
         patch("clipper.modal_execution._deploy") as deploy,
         patch("clipper.modal_execution._repo_script", side_effect=lambda name: Path(name)),
         patch("clipper.modal_execution._validate_model_access") as validate,
     ):
         ensure_modal_runtime()
-    assert function.call_count == 10
+    assert function.call_count == 9
+    assert cls.call_count == 3
     deploy.assert_not_called()
     validate.assert_called_once_with("clipper-open-editor")
-
 
 def test_ensure_modal_runtime_repairs_missing_model_without_redeploying_pipeline() -> None:
     calls: list[tuple[str, str]] = []
@@ -156,6 +170,7 @@ def test_ensure_modal_runtime_repairs_missing_model_without_redeploying_pipeline
 
     with (
         patch("clipper.modal_execution._function", side_effect=fake_function),
+        patch("clipper.modal_execution._class", return_value=Mock()),
         patch("clipper.modal_execution._deploy") as deploy,
         patch("clipper.modal_execution._repo_script", side_effect=lambda name: Path(name)),
         patch("clipper.modal_execution._validate_model_access") as validate,
@@ -168,7 +183,6 @@ def test_ensure_modal_runtime_repairs_missing_model_without_redeploying_pipeline
     assert ("clipper-open-editor", "hf_access_smoke") in calls
     assert ("clipper-production-pipeline", "run_full_cycle") in calls
     validate.assert_called_once_with("clipper-open-editor")
-
 
 def test_ensure_modal_runtime_repairs_missing_pipeline_only() -> None:
     calls: list[tuple[str, str]] = []
@@ -184,6 +198,7 @@ def test_ensure_modal_runtime_repairs_missing_pipeline_only() -> None:
 
     with (
         patch("clipper.modal_execution._function", side_effect=fake_function),
+        patch("clipper.modal_execution._class", return_value=Mock()),
         patch("clipper.modal_execution._deploy") as deploy,
         patch("clipper.modal_execution._repo_script", side_effect=lambda name: Path(name)),
         patch("clipper.modal_execution._validate_model_access") as validate,
@@ -192,20 +207,19 @@ def test_ensure_modal_runtime_repairs_missing_pipeline_only() -> None:
 
     assert pipeline_failed is True
     deploy.assert_called_once_with(Path("modal_pipeline.py"))
-    assert ("clipper-open-editor", "vision") in calls
+    assert ("clipper-open-editor", "editorial_schema_smoke") in calls
     assert ("clipper-production-pipeline", "run_full_cycle") in calls
     validate.assert_called_once_with("clipper-open-editor")
-
 
 def test_ensure_modal_runtime_does_not_redeploy_on_connectivity_failure() -> None:
     with (
         patch("clipper.modal_execution._function", side_effect=ServiceError("unavailable")),
+        patch("clipper.modal_execution._class", return_value=Mock()),
         patch("clipper.modal_execution._deploy") as deploy,
         pytest.raises(RuntimeError, match="control-plane validation failed"),
     ):
         ensure_modal_runtime()
     deploy.assert_not_called()
-
 
 def test_ensure_modal_runtime_fails_closed_after_unsuccessful_redeploy() -> None:
     with (
@@ -213,11 +227,11 @@ def test_ensure_modal_runtime_fails_closed_after_unsuccessful_redeploy() -> None
             "clipper.modal_execution._function",
             side_effect=[NotFoundError("missing"), RuntimeError("still missing")],
         ),
+        patch("clipper.modal_execution._class", return_value=Mock()),
         patch("clipper.modal_execution._deploy"),
         pytest.raises(RuntimeError, match="unavailable after runtime repair"),
     ):
         ensure_modal_runtime()
-
 
 def test_validate_model_access_requires_successful_remote_smoke() -> None:
     smoke = Mock()
@@ -270,21 +284,22 @@ def test_explicit_candidate_keeps_youtube_url_when_supplemental_media_url_exists
 
 def test_acquire_remote_source_uses_modal_egress_and_validates_quality() -> None:
     function = Mock()
-    remote = Mock(
-        return_value={
-            "video_id": "v1",
-            "channel_id": "UC1",
-            "quality_policy": "highest_available_no_transcode",
-            "bytes": 123,
-            "sha256": "abc",
-        }
-    )
-    function.with_options.return_value.remote = remote
+    call = Mock()
+    call.get.return_value = {
+        "video_id": "v1",
+        "channel_id": "UC1",
+        "quality_policy": "highest_available_no_transcode",
+        "bytes": 123,
+        "sha256": "abc",
+    }
+    function.with_options.return_value.spawn.return_value = call
     candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
-    result = _acquire_remote_source(function, candidate, expected_git_sha="a" * 40)
+    result = _acquire_remote_source(
+        function, candidate, expected_git_sha="a" * 40, budget=_BudgetLedger(100.0, 1.0)
+    )
     assert result["sha256"] == "abc"
     function.with_options.assert_called_once_with(cloud="gcp", timeout=1800)
-    remote.assert_called_once_with(
+    function.with_options.return_value.spawn.assert_called_once_with(
         {
             "video_id": "v1",
             "channel_id": "UC1",
@@ -293,46 +308,105 @@ def test_acquire_remote_source_uses_modal_egress_and_validates_quality() -> None
         }
     )
 
-
 def test_acquire_remote_source_exhausts_invalid_and_failed_egress() -> None:
+    class FailedCall:
+        def hydrate(self) -> None:
+            return None
+
+        def get(self, *, timeout: float) -> object:
+            assert timeout > 0
+            raise RuntimeError("blocked")
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            assert terminate_containers is False
+
     class AlwaysBad:
         def with_options(self, **_kwargs: object) -> AlwaysBad:
             return self
 
-        def remote(self, _payload: dict[str, str]) -> object:
-            raise RuntimeError("blocked")
+        def spawn(self, _payload: dict[str, object]) -> FailedCall:
+            return FailedCall()
 
     candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
     with pytest.raises(RuntimeError, match="source acquisition failed"):
-        _acquire_remote_source(AlwaysBad(), candidate, expected_git_sha="a" * 40)
+        _acquire_remote_source(
+            AlwaysBad(),
+            candidate,
+            expected_git_sha="a" * 40,
+            budget=_BudgetLedger(100.0, 1.0),
+        )
 
     function = Mock()
-    function.with_options.return_value.remote.return_value = {
+    call = Mock()
+    call.get.return_value = {
         "video_id": "v1",
         "channel_id": "UC1",
         "quality_policy": "downgraded",
     }
-    function.remote.return_value = "invalid"
+    function.with_options.return_value.spawn.return_value = call
     with pytest.raises(RuntimeError, match="source acquisition failed"):
-        _acquire_remote_source(function, candidate, expected_git_sha="a" * 40)
-
+        _acquire_remote_source(
+            function,
+            candidate,
+            expected_git_sha="a" * 40,
+            budget=_BudgetLedger(100.0, 1.0),
+        )
 
 def test_acquire_remote_source_rejects_wrong_resolved_identity() -> None:
     function = Mock()
-    function.with_options.return_value.remote.return_value = {
+    call = Mock()
+    call.get.return_value = {
         "video_id": "v1",
         "channel_id": "UC-other",
         "quality_policy": "highest_available_no_transcode",
     }
-    function.remote.return_value = {
-        "video_id": "other",
-        "channel_id": "UC1",
-        "quality_policy": "highest_available_no_transcode",
-    }
+    function.with_options.return_value.spawn.return_value = call
     candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
     with pytest.raises(RuntimeError, match="source acquisition failed"):
-        _acquire_remote_source(function, candidate, expected_git_sha="a" * 40)
+        _acquire_remote_source(
+            function,
+            candidate,
+            expected_git_sha="a" * 40,
+            budget=_BudgetLedger(100.0, 1.0),
+        )
 
+
+def test_source_acquisition_cost_is_deducted_before_root_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: clock["now"])
+
+    class Call:
+        def hydrate(self) -> None:
+            return None
+
+        def get(self, *, timeout: float) -> object:
+            assert timeout > 0
+            clock["now"] = 10.0
+            return {
+                "video_id": "v1",
+                "channel_id": "UC1",
+                "quality_policy": "highest_available_no_transcode",
+                "bytes": 123,
+                "sha256": "a" * 64,
+            }
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            raise AssertionError(terminate_containers)
+
+    function = Mock()
+    function.with_options.return_value.spawn.return_value = Call()
+    budget = _BudgetLedger(100.0, 1.0)
+    _acquire_remote_source(
+        function,
+        VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1"),
+        expected_git_sha="a" * 40,
+        budget=budget,
+    )
+    assert budget.gpu_seconds == 0.0
+    assert budget.estimated_usd > 0.0
+    assert budget.remaining_budgets()[1] < 1.0
 
 def test_materialize_remote_run_downloads_only_artifact_directory(tmp_path: Path) -> None:
     artifact_root = tmp_path / "artifacts"
@@ -489,11 +563,15 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
         acquire,
         candidate,
         expected_git_sha="a" * 40,
+        budget=ANY,
+        execution_id="e" * 32,
     )
     assert invoke.call_args.args[0] is runner
     payload = invoke.call_args.args[1]
-    assert invoke.call_args.kwargs["max_gpu_seconds"] == 21600.0
-    assert invoke.call_args.kwargs["max_estimated_usd"] == 10.0
+    ledger = invoke.call_args.kwargs["budget"]
+    assert isinstance(ledger, _BudgetLedger)
+    assert ledger.max_gpu_seconds == 21600.0
+    assert ledger.max_estimated_usd == 10.0
     assert payload["resume_from_run_id"] == "old-run"
     assert payload["render"] is True
     assert payload["fresh_inference"] is True
@@ -942,3 +1020,20 @@ def test_failed_runner_response_is_authenticated_and_materialized(
         volume_name="clipper-production-artifacts",
         remote_run_path="/failed-run",
     )
+
+
+def test_runtime_source_sha_uses_embedded_image_identity_without_git(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPPER_SOURCE_SHA", "a" * 40)
+    monkeypatch.setattr("clipper.modal_execution._repo_root", lambda: tmp_path)
+    with patch(
+        "clipper.modal_execution.subprocess.run",
+        side_effect=FileNotFoundError("git missing"),
+    ):
+        assert _runtime_source_sha() == "a" * 40
+
+    (tmp_path / ".clipper-source-sha").write_text("b" * 40 + "\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="disagrees"):
+        _runtime_source_sha()

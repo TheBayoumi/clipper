@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from clipper.modal_execution import _BudgetLedger, _acquire_remote_source
+from clipper.models import VideoCandidate
 from modal_execution_spy import ModalExecutionSpy
 
 
@@ -35,8 +38,58 @@ def _append_github_env(name: str, value: object) -> None:
         handle.write(f"{name}={value}" + chr(10))
 
 
-def _source_payload() -> dict[str, Any]:
-    evidence = json.loads(Path("open-evidence/source-master.json").read_text(encoding="utf-8"))
+def _cached_source_evidence() -> dict[str, Any] | None:
+    path = Path("open-evidence/source-master.json")
+    if not path.is_file():
+        return None
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        return None
+    if (
+        str(raw.get("video_id") or "") != os.environ["CLIPPER_TARGET_VIDEO_ID"]
+        or str(raw.get("channel_id") or "") != os.environ["CLIPPER_TARGET_CHANNEL_ID"]
+        or str(raw.get("quality_policy") or "") != "highest_available_no_transcode"
+        or len(str(raw.get("sha256") or "")) != 64
+        or not str(raw.get("volume_path") or "").startswith("/inputs/")
+    ):
+        return None
+    return {str(key): value for key, value in raw.items()}
+
+
+def _source_payload(
+    modal: Any,
+    budget: _BudgetLedger,
+    *,
+    execution_id: str,
+) -> dict[str, Any]:
+    evidence = _cached_source_evidence()
+    attempts: list[dict[str, object]] = []
+    if evidence is None:
+        candidate = VideoCandidate(
+            os.environ["CLIPPER_TARGET_VIDEO_ID"],
+            "Authorized production target",
+            os.environ["CLIPPER_TARGET_CHANNEL_ID"],
+            "Authorized production channel",
+            os.environ["CLIPPER_TARGET_VIDEO_URL"],
+        )
+        acquire = modal.Function.from_name(
+            os.environ["CLIPPER_MODAL_PIPELINE_APP"],
+            "acquire_source",
+        )
+        evidence = _acquire_remote_source(
+            acquire,
+            candidate,
+            expected_git_sha=os.environ["CLIPPER_ACCEPTANCE_SHA"],
+            budget=budget,
+            attempt_evidence=attempts,
+            execution_id=execution_id,
+        )
+        _write_json(Path("open-evidence/source-master.json"), evidence)
+    _write_json(
+        Path("open-evidence/source-egress-attempts.json"),
+        {"attempts": attempts, "reused_evidence": not attempts},
+    )
+    _write_json(Path("open-evidence/source-budget.json"), budget.to_dict())
     return {
         "video_id": os.environ["CLIPPER_TARGET_VIDEO_ID"],
         "channel_id": os.environ["CLIPPER_TARGET_CHANNEL_ID"],
@@ -138,6 +191,7 @@ def run(*, render: bool) -> dict[str, Any]:
 
     max_gpu_seconds = _finite_positive_env("CLIPPER_MAX_GPU_SECONDS")
     max_estimated_usd = _finite_positive_env("CLIPPER_MAX_ESTIMATED_USD")
+    budget = _BudgetLedger(max_gpu_seconds, max_estimated_usd)
     poll_seconds = _finite_positive_env("CLIPPER_MODAL_SPY_POLL_SECONDS", default="5")
     barrier_timeout_seconds = _finite_positive_env(
         "CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS",
@@ -146,18 +200,7 @@ def run(*, render: bool) -> dict[str, Any]:
 
     scoped_brief_yaml = _scoped_brief_yaml()
     (evidence_dir / "scoped-brief.yaml").write_text(scoped_brief_yaml, encoding="utf-8")
-    request = {
-        "sources": [_source_payload()],
-        "brief_yaml": scoped_brief_yaml,
-        "render": render,
-        "editorial_acceptance_probe": not render,
-        "fresh_inference": os.environ["CLIPPER_FRESH_INFERENCE"] == "true",
-        "resume_from_run_id": os.environ.get("CLIPPER_RESUME_FROM_RUN_ID") or None,
-        "git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
-        "execution_id": execution_id,
-        "max_gpu_seconds": max_gpu_seconds,
-        "max_estimated_usd": max_estimated_usd,
-    }
+
 
     spy = ModalExecutionSpy(
         (
@@ -182,6 +225,7 @@ def run(*, render: bool) -> dict[str, Any]:
     call_id = ""
     call_started = 0.0
     remote_completed = False
+    root_budget_charged = False
     cancelled = threading.Event()
 
     def cancel_call(reason: str) -> None:
@@ -242,6 +286,25 @@ def run(*, render: bool) -> dict[str, Any]:
         spy_thread.start()
         spy_thread_started = True
 
+        source_payload = _source_payload(modal, budget, execution_id=execution_id)
+        remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
+        if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
+            raise RuntimeError(
+                "source acquisition exhausted the production budget before root execution"
+            )
+        request = {
+            "sources": [source_payload],
+            "brief_yaml": scoped_brief_yaml,
+            "render": render,
+            "editorial_acceptance_probe": not render,
+            "fresh_inference": os.environ["CLIPPER_FRESH_INFERENCE"] == "true",
+            "resume_from_run_id": os.environ.get("CLIPPER_RESUME_FROM_RUN_ID") or None,
+            "git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
+            "execution_id": execution_id,
+            "max_gpu_seconds": remaining_gpu_seconds,
+            "max_estimated_usd": remaining_estimated_usd,
+        }
+
         function = modal.Function.from_name(
             os.environ["CLIPPER_MODAL_PIPELINE_APP"],
             "run_full_cycle",
@@ -282,11 +345,15 @@ def run(*, render: bool) -> dict[str, Any]:
                 raise RuntimeError(reason)
 
             elapsed = max(0.0, time.monotonic() - call_started)
-            conservative_gpu_seconds = elapsed * 2.0
-            conservative_cost_usd = elapsed * 0.000444
-            remaining_wall_seconds = min(
-                (max_gpu_seconds - conservative_gpu_seconds) / 2.0,
-                (max_estimated_usd - conservative_cost_usd) / 0.000444,
+            conservative_gpu_seconds, conservative_cost_usd = budget.projected_usage(
+                elapsed,
+                gpu_count=2.0,
+                estimated_usd_per_second=0.000444,
+            )
+            remaining_wall_seconds = budget.remaining_wall_seconds(
+                elapsed,
+                gpu_count=2.0,
+                estimated_usd_per_second=0.000444,
             )
             if remaining_wall_seconds <= 0:
                 reason = (
@@ -300,8 +367,14 @@ def run(*, render: bool) -> dict[str, Any]:
                 result = call.get(timeout=min(poll_seconds, remaining_wall_seconds))
                 remote_completed = True
                 elapsed = max(0.0, time.monotonic() - call_started)
-                conservative_gpu_seconds = elapsed * 2.0
-                conservative_cost_usd = elapsed * 0.000444
+                budget.charge(
+                    elapsed,
+                    gpu_count=2.0,
+                    estimated_usd_per_second=0.000444,
+                )
+                root_budget_charged = True
+                conservative_gpu_seconds = budget.gpu_seconds
+                conservative_cost_usd = budget.estimated_usd
                 if conservative_gpu_seconds >= max_gpu_seconds:
                     raise RuntimeError(
                         "conservative GPU budget exceeded by completed production call: "
@@ -339,6 +412,13 @@ def run(*, render: bool) -> dict[str, Any]:
         _append_github_env("CLIPPER_RUN_PATH", validated["run_path"])
         return validated
     finally:
+        if call_started > 0 and not root_budget_charged:
+            budget.charge(
+                max(0.0, time.monotonic() - call_started),
+                gpu_count=2.0,
+                estimated_usd_per_second=0.000444,
+            )
+            root_budget_charged = True
         if call is not None and not remote_completed and not cancelled.is_set():
             cancel_call("watchdog exited before production call completed")
         spy.request_stop()
@@ -352,6 +432,7 @@ def run(*, render: bool) -> dict[str, Any]:
                 "function_call_id": call_id,
                 "call_cancelled": cancelled.is_set(),
                 "render": render,
+                "budget": budget.to_dict(),
             }
         )
         _write_json(evidence_dir / "modal-spy-summary.json", summary)

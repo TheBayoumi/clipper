@@ -239,6 +239,32 @@ def _grounding_stage_output(
     }
 
 
+def _publish_grounding_cache_best_effort(
+    cache: FileCache,
+    key: str,
+    canonical: dict[str, object],
+    *,
+    stage: str,
+) -> bool:
+    for attempt in range(1, 4):
+        try:
+            cache.write(key, "canonical", canonical)
+            return True
+        except Exception as exc:
+            if attempt < 3:
+                time.sleep(0.05 * attempt)
+                continue
+            LOGGER.warning(
+                "best-effort grounding cache publication failed after authoritative "
+                "inference success: stage=%s key=%s error=%s: %s",
+                stage,
+                key,
+                type(exc).__name__,
+                exc,
+            )
+    return False
+
+
 def _grounding_stage_value(
     *,
     stage: str,
@@ -250,7 +276,9 @@ def _grounding_stage_value(
     if dag is None:
         result = operation()
         payload = _grounding_stage_output(result)
-        cache.write(key, "canonical", payload["canonical"])
+        canonical = payload.get("canonical")
+        if isinstance(canonical, dict):
+            _publish_grounding_cache_best_effort(cache, key, canonical, stage=stage)
         return payload, False
 
     identity = _grounding_stage_identity(stage, key)
@@ -258,7 +286,6 @@ def _grounding_stage_value(
     def execute() -> StageResult:
         result = operation()
         payload = _grounding_stage_output(result)
-        cache.write(key, "canonical", payload["canonical"])
         usage = payload.get("usage")
         usage_dict = dict(usage) if isinstance(usage, dict) else {}
         cost = float(usage_dict.get("estimated_cost_usd") or 0.0)
@@ -267,6 +294,9 @@ def _grounding_stage_value(
     output, cached = dag.execute(identity, execute)
     if not isinstance(output, dict):
         raise RuntimeError(f"{stage} grounding DAG returned invalid output")
+    canonical = output.get("canonical")
+    if isinstance(canonical, dict):
+        _publish_grounding_cache_best_effort(cache, key, canonical, stage=stage)
     return {str(key): value for key, value in output.items()}, cached
 
 

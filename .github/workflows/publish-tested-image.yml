@@ -55,6 +55,7 @@ jobs:
           source_sha="${{ steps.image.outputs.source_sha }}"
           docker build \
             --pull \
+            --build-arg "CLIPPER_SOURCE_SHA=${source_sha}" \
             --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${source_sha}" \
             --tag "${image}:${tag}" \
@@ -68,6 +69,11 @@ jobs:
           tag="${{ steps.image.outputs.tag }}"
           docker run --rm "${image}:${tag}" preflight --profile balanced
           docker run --rm "${image}:${tag}" preflight --profile local-lite --allow-local-lite
+          docker run --rm \
+            --env "EXPECTED_SOURCE_SHA=${source_sha}" \
+            --entrypoint python \
+            "${image}:${tag}" \
+            -c 'import os; from clipper.modal_execution import _runtime_source_sha; assert _runtime_source_sha() == os.environ["EXPECTED_SOURCE_SHA"]'
 
       - name: Run end-to-end smoke test inside image
         shell: bash

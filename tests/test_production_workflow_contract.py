@@ -30,7 +30,7 @@ def test_production_workflow_is_single_pass_resumable_and_exact_head() -> None:
     assert '"fresh_inference": True' not in workflow
     assert '"fresh_inference": os.environ["CLIPPER_FRESH_INFERENCE"] == "true"' in watchdog
     assert '"resume_from_run_id": os.environ.get("CLIPPER_RESUME_FROM_RUN_ID") or None' in watchdog
-    assert '"sources": [_source_payload()]' in watchdog
+    assert '"sources": [source_payload]' in watchdog
     assert "scoped_brief_yaml = _scoped_brief_yaml()" in watchdog
     assert '"brief_yaml": scoped_brief_yaml' in watchdog
     assert '"videos"] = [dict(matches[0])]' in watchdog
@@ -397,7 +397,8 @@ def test_all_paid_modal_calls_carry_expected_deployed_sha() -> None:
     models = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
     pipeline = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
 
-    assert '"expected_git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"]' in workflow
+    watchdog = _watchdog()
+    assert 'expected_git_sha=os.environ["CLIPPER_ACCEPTANCE_SHA"]' in watchdog
     assert '"expected_git_sha"' in speech
     assert "_assert_expected_git_sha(payload)" in models
     assert "_assert_expected_git_sha(payload)" in pipeline
@@ -482,6 +483,10 @@ def test_published_image_installs_and_preflights_real_cli_runtimes() -> None:
         assert "Preflight published CLI runtimes inside image" in workflow
         assert "preflight --profile balanced" in workflow
         assert "preflight --profile local-lite --allow-local-lite" in workflow
+        assert '--build-arg "CLIPPER_SOURCE_SHA=${source_sha}"' in workflow
+        assert "_runtime_source_sha" in workflow
+    assert "ARG CLIPPER_SOURCE_SHA" in dockerfile
+    assert ".clipper-source-sha" in dockerfile
 
 
 def test_disabled_acceptance_guards_precede_any_paid_modal_work() -> None:
@@ -593,3 +598,20 @@ def test_watchdog_validates_all_timing_before_spawn_and_cleans_partial_setup() -
     assert "try:\n        spy_thread.start()" in run_body
     assert "if call is not None and not remote_completed and not cancelled.is_set():" in run_body
     assert 'cancel_call("watchdog exited before production call completed")' in run_body
+
+
+def test_source_acquisition_is_inside_watchdog_budget_envelope() -> None:
+    workflow = _workflow()
+    watchdog = _watchdog()
+    prepare = workflow.index("Prepare budget-accounted source acquisition")
+    execution = workflow.index("Run current-model pipeline with cancellable Modal spy")
+    assert prepare < execution
+    between_steps = workflow[prepare:execution]
+    assert ".remote(" not in between_steps
+    assert ".spawn(" not in between_steps
+    assert "_acquire_remote_source(" in watchdog
+    assert "budget=budget" in watchdog
+    assert "source-budget.json" in watchdog
+    assert "remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()" in watchdog
+    assert '"max_gpu_seconds": remaining_gpu_seconds' in watchdog
+    assert '"max_estimated_usd": remaining_estimated_usd' in watchdog

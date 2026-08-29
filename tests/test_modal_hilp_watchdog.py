@@ -26,7 +26,20 @@ def _module():
 
 def _environment(tmp_path: Path, monkeypatch) -> None:
     evidence = tmp_path / "source-master.json"
-    evidence.write_text('{"sha256":"source"}\n', encoding="utf-8")
+    evidence.write_text(
+        json.dumps(
+            {
+                "video_id": "video",
+                "channel_id": "channel",
+                "canonical_url": "https://www.youtube.com/watch?v=video",
+                "quality_policy": "highest_available_no_transcode",
+                "sha256": "s" * 64,
+                "volume_path": "/inputs/source.mkv",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     brief = tmp_path / "brief.yaml"
     brief.write_text(
         "campaign_id: test\n"

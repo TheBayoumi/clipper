@@ -99,7 +99,7 @@ def editorial_provider(profile_name: str) -> EditorialProvider:
             proxy_token_secret=os.getenv("MODAL_PROXY_TOKEN_SECRET", ""),
             identity=ModelIdentity(
                 os.getenv("CLIPPER_EDITORIAL_MODEL_ID", default_model),
-                os.getenv("CLIPPER_EDITORIAL_MODEL_REVISION", "modal-managed"),
+                os.getenv("CLIPPER_EDITORIAL_MODEL_REVISION", "").strip(),
                 "modal-managed",
                 "modal-managed-endpoint",
                 EDITORIAL_PROMPT_VERSION,
@@ -117,7 +117,11 @@ def vision_provider(profile_name: str, *, large: bool = False) -> VisionProvider
     if profile.vision_location == "local":
         if large:
             raise ValueError("large VLM is not enabled for local-lite")
-        return LocalVisionProvider(model_id=model_id)
+        return LocalVisionProvider(
+            model_id=model_id,
+            revision=VISION_MODEL_REVISION,
+            quantization=VISION_QUANTIZATION,
+        )
     revision = VISION_LARGE_MODEL_REVISION if large else VISION_MODEL_REVISION
     quantization = VISION_LARGE_QUANTIZATION if large else VISION_QUANTIZATION
     return ModalVisionProvider(
@@ -143,17 +147,30 @@ def speech_providers(
     degraded_diarization = diarization_mode in {"passthrough", "none", "disabled"}
     if not degraded_diarization and diarization_mode != "pyannote":
         raise ValueError(f"unsupported diarization mode: {diarization_mode}")
+    canonical_contract = _canonical_contract()
     if profile.editorial_location == "local":
         return (
-            FasterWhisperTranscriptionProvider(),
-            WhisperXAlignmentProvider(),
+            FasterWhisperTranscriptionProvider(
+                model_id=ASR_MODEL_ID,
+                revision=ASR_MODEL_REVISION,
+                compute_type=ASR_COMPUTE_TYPE,
+                schema_version=canonical_contract,
+            ),
+            WhisperXAlignmentProvider(
+                model_id=ALIGNMENT_MODEL_ID,
+                revision=ALIGNMENT_MODEL_REVISION,
+                schema_version=canonical_contract,
+            ),
             PassthroughDiarizationProvider()
             if degraded_diarization
-            else PyannoteDiarizationProvider(),
+            else PyannoteDiarizationProvider(
+                model_id=DIARIZATION_MODEL_ID,
+                revision=DIARIZATION_MODEL_REVISION,
+                schema_version=canonical_contract,
+            ),
         )
     app = os.getenv("CLIPPER_MODAL_APP", "clipper-open-editor")
     bridge = ModalMediaBridge(os.getenv("CLIPPER_MODAL_MEDIA_VOLUME", "clipper-media-cache"))
-    canonical_contract = _canonical_contract()
     return (
         ModalTranscriptionProvider(
             app_name=app,

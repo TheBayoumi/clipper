@@ -423,3 +423,32 @@ def test_cli_benchmark_writes_report_and_returns_threshold_status(tmp_path: Path
     assert main(["benchmark", "--manifest", str(manifest), "--output", str(output)]) == 0
     assert json.loads(output.read_text())["status"] == "PASS"
     assert '"status": "PASS"' in capsys.readouterr().out
+
+
+def test_local_lite_hard_budget_request_fails_closed_before_pipeline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = make_brief(tmp_path)
+    monkeypatch.setenv("CLIPPER_COMPUTE_PROFILE", "local-lite")
+    with (
+        patch("clipper.cli._resolved_model_plan", return_value=local_plan(profile="local-lite")),
+        patch("clipper.cli.run_pipeline") as run,
+    ):
+        assert (
+            main(
+                [
+                    "run",
+                    "--brief",
+                    str(path),
+                    "--no-render",
+                    "--allow-local-lite",
+                    "--max-gpu-seconds",
+                    "1",
+                    "--max-estimated-usd",
+                    "0.01",
+                ]
+            )
+            == 1
+        )
+    run.assert_not_called()
