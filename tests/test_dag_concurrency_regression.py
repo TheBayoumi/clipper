@@ -99,4 +99,3 @@ def test_expired_execution_claim_is_recovered_as_new_attempt(tmp_path) -> None:
     assert record["status"] == "PASS"
     assert record["attempt_count"] == 2
     assert not store._execution_claim_path(identity).exists()
-
