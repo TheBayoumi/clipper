@@ -20,6 +20,7 @@ import gdown
 
 from .brief import load_brief, load_explicit_targets
 from .cache import FileCache, file_sha256, model_stage_cache_key, stable_hash
+from .dag import DagStore
 from .canonical import CanonicalTimeline, transcript_segments_from_canonical
 from .fixture import FixtureSourceClient
 from .models import (
@@ -618,6 +619,7 @@ def run_pipeline(
     diarization_provider: DiarizationProvider | None = None,
     render: bool = True,
     checkpoint_commit: Callable[[], None] | None = None,
+    dag_store_factory: Callable[[Path], DagStore] | None = None,
     execution_id: str | None = None,
 ) -> Path:
     """Execute the single supported production architecture over exact campaign targets."""
@@ -798,6 +800,7 @@ def run_pipeline(
             editorial=editor,
             dag_root=cfg.cache_root or (cfg.artifact_root / "_cache"),
             visual_timelines=visual_timelines,
+            dag_store_factory=dag_store_factory,
         )
     except Exception as exc:
         journal.fail("quality_graph", str(exc))
