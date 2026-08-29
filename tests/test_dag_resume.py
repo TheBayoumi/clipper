@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from clipper.dag import DagStore, StageResult
+from clipper.dag import DagStore, StageRecord, StageResult
 from clipper.stage_contracts import StageContract, content_fingerprint, stage_identity
 
 
@@ -206,3 +206,80 @@ def test_stage_result_and_contract_validation_are_strict() -> None:
         StageContract("", {"x": 1})
     with pytest.raises(ValueError, match="cannot be empty"):
         StageContract("stage", {})
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"execution_lease_seconds": 0.0}, "execution lease"),
+        ({"follower_poll_seconds": float("nan")}, "follower poll"),
+    ],
+)
+def test_dag_store_rejects_invalid_execution_timing(
+    tmp_path: Path,
+    kwargs: dict[str, float],
+    match: str,
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        DagStore(tmp_path, **kwargs)
+
+
+def test_execution_claim_validation_and_corruption_are_fail_closed(tmp_path: Path) -> None:
+    store = DagStore(tmp_path)
+    identity = _identity("claim")
+    claim_path = store._execution_claim_path(identity)
+    claim_path.parent.mkdir(parents=True, exist_ok=True)
+
+    assert store._claim_expired(None, now=1.0) is True
+    assert store._claim_expired({"expires_at": "bad"}, now=1.0) is True
+    assert store._claim_expired({"expires_at": float("inf")}, now=1.0) is True
+    valid = {"owner_id": "owner", "expires_at": 2.0}
+    assert store._claim_owner(valid) == "owner"
+    assert store._claim_expired(valid, now=1.0) is False
+
+    claim_path.write_text("not-json", encoding="utf-8")
+    assert store._read_execution_claim(identity) is None
+
+
+def test_corrupt_cached_output_is_not_reused(tmp_path: Path) -> None:
+    store = DagStore(tmp_path)
+    identity = _identity("corrupt-output")
+    store.execute(identity, lambda: {"value": 1})
+    store._output_path(identity).write_text("not-json", encoding="utf-8")
+
+    output, cached = store.execute(identity, lambda: {"value": 2})
+
+    assert cached is False
+    assert output == {"value": 2}
+
+
+def test_owner_that_loses_execution_lease_cannot_publish_pass(tmp_path: Path) -> None:
+    store = DagStore(tmp_path)
+    identity = _identity("lost-lease")
+
+    def operation() -> dict[str, int]:
+        store._write_json(
+            store._execution_claim_path(identity),
+            {"owner_id": "replacement-owner", "claimed_at": 0.0, "expires_at": 9e9},
+        )
+        return {"value": 1}
+
+    with pytest.raises(RuntimeError, match="execution lease lost"):
+        store.execute(identity, operation)
+
+    assert store.cached_output(identity) is None
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        lambda identity: StageRecord(identity, "RUNNING", 0, "now", None, None, {}, 0.0),
+        lambda identity: StageRecord(identity, "RUNNING", 1, "now", None, None, {}, -1.0),
+        lambda identity: StageRecord(identity, "PASS", 1, "now", None, None, {}, 0.0),
+        lambda identity: StageRecord(identity, "FAILED", 1, "now", "done", None, {}, 0.0),
+    ],
+)
+def test_stage_record_rejects_invalid_terminal_evidence(record) -> None:
+    identity = _identity("invalid-record")
+    with pytest.raises(ValueError):
+        record(identity)
+
