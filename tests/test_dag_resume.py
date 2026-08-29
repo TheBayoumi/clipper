@@ -330,6 +330,51 @@ def test_coordinated_dag_commits_terminal_state_before_releasing_owner(tmp_path:
     assert store.cached_output(identity) == {"value": 4}
 
 
+@pytest.mark.parametrize("mode", ["false", "raise"])
+def test_coordinated_committed_pass_survives_release_cleanup_failure(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    active = {"owner": ""}
+
+    def claim(_identity, owner: str, _ttl: float) -> bool:
+        active["owner"] = owner
+        return True
+
+    def renew(_identity, owner: str, _ttl: float) -> bool:
+        return active["owner"] == owner
+
+    def release(_identity, owner: str) -> bool:
+        assert active["owner"] == owner
+        if mode == "raise":
+            raise RuntimeError("release RPC response lost")
+        return False
+
+    coordinator = DagLeaseCoordinator(
+        claim=claim,
+        renew=renew,
+        release=release,
+        commit=lambda: None,
+        reload=lambda: None,
+    )
+    store = DagStore(
+        tmp_path,
+        execution_lease_seconds=10.0,
+        follower_poll_seconds=0.001,
+        coordinator=coordinator,
+    )
+    identity = _identity(f"distributed-release-{mode}")
+
+    output, cached = store.execute(identity, lambda: {"value": 9})
+
+    assert output == {"value": 9}
+    assert cached is False
+    record = store._read_record_payload(identity)
+    assert record is not None
+    assert record["status"] == "PASS"
+    assert store.cached_output(identity) == {"value": 9}
+
+
 def test_coordinated_dag_follower_reloads_and_reuses_terminal_cache(tmp_path: Path) -> None:
     identity = _identity("distributed-cache")
     first = DagStore(tmp_path)
