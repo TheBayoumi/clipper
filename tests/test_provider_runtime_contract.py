@@ -26,6 +26,12 @@ from clipper.providers.modal_speech import (
     ModalTranscriptionProvider,
     _ModalSpeechBase,
 )
+from clipper.providers.speech_contract import (
+    ASR_COMPUTE_TYPE,
+    ASR_INFERENCE_ENGINE,
+    ASR_MODEL_ID,
+    ASR_MODEL_REVISION,
+)
 from clipper.providers.speech import (
     FasterWhisperTranscriptionProvider,
     PassthroughDiarizationProvider,
@@ -563,11 +569,37 @@ def test_modal_transcription_alignment_and_diarization_contracts(tmp_path: Path)
                 "end": 0.5,
                 "confidence": 0.9,
             }
-        ]
+        ],
+        "model": {
+            "model_id": "transcribe",
+            "revision": "rev",
+            "quantization": "none",
+        },
     }
     with patch.object(transcription, "_function", return_value=function):
         result = transcription.transcribe(source, video_id="video", source_hash="source")
     assert result.value.words[0].text == "hello"
+    function.remote.return_value = {
+        "words": [
+            {
+                "text": "hello",
+                "start": 0.0,
+                "end": 0.5,
+                "confidence": 0.9,
+            }
+        ],
+        "model": {
+            "model_id": "wrong-model",
+            "revision": "rev",
+            "quantization": "none",
+        },
+    }
+    with (
+        patch.object(transcription, "_function", return_value=function),
+        pytest.raises(ValueError, match="model identity mismatch"),
+    ):
+        transcription.transcribe(source, video_id="video", source_hash="source")
+
     function.remote.return_value = {"words": "bad"}
     with (
         patch.object(transcription, "_function", return_value=function),
@@ -637,6 +669,10 @@ def test_provider_factory_selects_local_modal_managed_and_degraded(monkeypatch) 
     assert isinstance(local_speech[2], PassthroughDiarizationProvider)
     modal_speech = factory.speech_providers("balanced")
     assert isinstance(modal_speech[0], ModalTranscriptionProvider)
+    assert modal_speech[0].identity.model_id == ASR_MODEL_ID
+    assert modal_speech[0].identity.revision == ASR_MODEL_REVISION
+    assert modal_speech[0].identity.quantization == ASR_COMPUTE_TYPE
+    assert modal_speech[0].identity.inference_engine == ASR_INFERENCE_ENGINE
     assert isinstance(modal_speech[1], ModalAlignmentProvider)
     assert isinstance(modal_speech[2], PassthroughDiarizationProvider)
 
