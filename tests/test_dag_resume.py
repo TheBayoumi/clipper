@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from clipper.dag import DagStore, StageRecord, StageResult
+from clipper.dag import DagLeaseCoordinator, DagStore, StageRecord, StageResult
 from clipper.stage_contracts import StageContract, content_fingerprint, stage_identity
 
 
@@ -283,3 +283,74 @@ def test_stage_record_rejects_invalid_terminal_evidence(record) -> None:
     identity = _identity("invalid-record")
     with pytest.raises(ValueError):
         record(identity)
+
+def test_coordinated_dag_commits_terminal_state_before_releasing_owner(tmp_path: Path) -> None:
+    events: list[str] = []
+    active = {"owner": ""}
+
+    def claim(_identity, owner: str, _ttl: float) -> bool:
+        if active["owner"] and active["owner"] != owner:
+            return False
+        active["owner"] = owner
+        events.append("claim")
+        return True
+
+    def renew(_identity, owner: str, _ttl: float) -> bool:
+        return active["owner"] == owner
+
+    def release(_identity, owner: str) -> bool:
+        if active["owner"] != owner:
+            return False
+        events.append("release")
+        active["owner"] = ""
+        return True
+
+    coordinator = DagLeaseCoordinator(
+        claim=claim,
+        renew=renew,
+        release=release,
+        commit=lambda: events.append("commit"),
+        reload=lambda: events.append("reload"),
+    )
+    store = DagStore(
+        tmp_path,
+        execution_lease_seconds=10.0,
+        follower_poll_seconds=0.001,
+        coordinator=coordinator,
+    )
+    identity = _identity("distributed")
+
+    output, cached = store.execute(identity, lambda: {"value": 4})
+
+    assert output == {"value": 4}
+    assert cached is False
+    assert events.count("commit") == 2
+    assert events.index("commit", events.index("claim")) < events.index("release")
+    assert store.cached_output(identity) == {"value": 4}
+
+
+def test_coordinated_dag_follower_reloads_and_reuses_terminal_cache(tmp_path: Path) -> None:
+    identity = _identity("distributed-cache")
+    first = DagStore(tmp_path)
+    first.execute(identity, lambda: {"value": 5})
+    calls = {"claim": 0, "reload": 0}
+
+    coordinator = DagLeaseCoordinator(
+        claim=lambda *_args: calls.__setitem__("claim", calls["claim"] + 1) or False,
+        renew=lambda *_args: False,
+        release=lambda *_args: False,
+        commit=lambda: None,
+        reload=lambda: calls.__setitem__("reload", calls["reload"] + 1),
+    )
+    follower = DagStore(tmp_path, coordinator=coordinator)
+
+    output, cached = follower.execute(
+        identity,
+        lambda: (_ for _ in ()).throw(AssertionError("cached follower must not execute")),
+    )
+
+    assert output == {"value": 5}
+    assert cached is True
+    assert calls["reload"] >= 1
+    assert calls["claim"] == 0
+
