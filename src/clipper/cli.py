@@ -315,7 +315,8 @@ def _audit_model_evidence(
     if invocations:
         if expected_editorial and expected_editorial not in actual_model_ids:
             raise RuntimeError(
-                f"editorial evidence does not contain the resolved editorial model {expected_editorial}"
+                "editorial evidence does not contain the resolved editorial model "
+                f"{expected_editorial}"
             )
     elif fully_cached:
         observed_fingerprint = str(cache_summary.get("editorial_model_fingerprint") or "")
