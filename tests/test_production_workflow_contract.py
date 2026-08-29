@@ -330,9 +330,13 @@ def test_disabled_acceptance_guards_precede_any_paid_modal_work() -> None:
     deploy = Path(".github/workflows/modal-workers-deploy.yml").read_text(encoding="utf-8")
 
     production_guard = production.index("Require enabled production acceptance request")
+    static_gate = production.index("Wait for successful exact-head CI and smoke")
     production_compute = production.index("Verify Modal credentials before compute")
     production_spawn = production.index("Run current-model pipeline with cancellable Modal spy")
-    assert production_guard < production_compute < production_spawn
+    assert production_guard < static_gate < production_compute < production_spawn
+    assert '"ci.yml"' in production
+    assert '"deploy-and-smoke.yml"' in production
+    assert "exact-head static gate failed before production compute" in production
 
     deploy_guard = deploy.index("Require enabled Modal deployment request")
     deploy_install = deploy.index("Install Modal orchestration dependencies")
