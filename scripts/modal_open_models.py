@@ -1644,6 +1644,8 @@ def _editorial_capacity_probe(
 class EditorialModel:
     @modal.enter()
     def load_model(self) -> None:
+        import importlib.metadata
+
         self.lifecycle_id = uuid.uuid4().hex
         self.tokenizer, self.model, self.structured_model = _load_editorial_model()
         self.placement = _editorial_device_distribution(self.model)
@@ -1657,6 +1659,11 @@ class EditorialModel:
                     "cuda_memory_by_device": _cuda_memory_snapshot(),
                     **self.placement,
                     "capacity_state_path": str(_editorial_capacity_state_path()),
+                    "outlines_version": importlib.metadata.version("outlines"),
+                    "transformers_version": importlib.metadata.version("transformers"),
+                    "runtime_safe_input_tokens": EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS,
+                    "generation_deadline_seconds": EDITORIAL_GENERATION_DEADLINE_SECONDS,
+                    "execution_timeout_seconds": EDITORIAL_EXECUTION_TIMEOUT_SECONDS,
                 },
                 sort_keys=True,
             )
