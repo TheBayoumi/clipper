@@ -283,4 +283,3 @@ def test_stage_record_rejects_invalid_terminal_evidence(record) -> None:
     identity = _identity("invalid-record")
     with pytest.raises(ValueError):
         record(identity)
-
