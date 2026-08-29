@@ -184,7 +184,6 @@ def test_capacity_probe_diagnostic_carries_editorial_invocation_id() -> None:
     assert "payload.get('editorial_invocation_id')" in rendered
 
 
-
 def _load_editorial_output_template() -> Callable[[dict[str, Any]], dict[str, Any]]:
     tree = _tree()
     names = {
