@@ -262,7 +262,6 @@ def test_watchdog_rejects_nonfinite_poll_interval(
         module.run(render=False)
 
 
-
 def test_watchdog_cancels_exact_call_if_spy_thread_dies(
     tmp_path: Path,
     monkeypatch,
