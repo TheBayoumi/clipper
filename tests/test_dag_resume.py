@@ -399,3 +399,91 @@ def test_coordinated_dag_follower_reloads_and_reuses_terminal_cache(tmp_path: Pa
     assert cached is True
     assert calls["reload"] >= 1
     assert calls["claim"] == 0
+
+def test_coordinated_operation_failure_commits_failed_record_and_releases_owner(
+    tmp_path: Path,
+) -> None:
+    active = {"owner": ""}
+    events: list[str] = []
+
+    def claim(_identity, owner: str, _ttl: float) -> bool:
+        active["owner"] = owner
+        return True
+
+    def renew(_identity, owner: str, _ttl: float) -> bool:
+        return active["owner"] == owner
+
+    def release(_identity, owner: str) -> bool:
+        assert active["owner"] == owner
+        active["owner"] = ""
+        events.append("release")
+        return True
+
+    coordinator = DagLeaseCoordinator(
+        claim=claim,
+        renew=renew,
+        release=release,
+        commit=lambda: events.append("commit"),
+        reload=lambda: None,
+    )
+    store = DagStore(tmp_path, coordinator=coordinator)
+    identity = _identity("distributed-failure")
+
+    with pytest.raises(RuntimeError, match="paid stage failed"):
+        store.execute(
+            identity,
+            lambda: (_ for _ in ()).throw(RuntimeError("paid stage failed")),
+        )
+
+    record = store._read_record_payload(identity)
+    assert record is not None
+    assert record["status"] == "FAILED"
+    assert record["error_type"] == "RuntimeError"
+    assert record["error"] == "paid stage failed"
+    assert events.count("commit") == 2
+    assert events[-1] == "release"
+    assert active["owner"] == ""
+
+
+def test_coordinated_claim_rechecks_cache_before_paid_operation(tmp_path: Path) -> None:
+    identity = _identity("claim-recheck")
+    cache_writer = DagStore(tmp_path)
+    active = {"owner": ""}
+
+    def claim(_identity, owner: str, _ttl: float) -> bool:
+        active["owner"] = owner
+        cache_writer.execute(identity, lambda: {"value": 17})
+        return True
+
+    def release(_identity, owner: str) -> bool:
+        assert active["owner"] == owner
+        active["owner"] = ""
+        return True
+
+    coordinator = DagLeaseCoordinator(
+        claim=claim,
+        renew=lambda *_args: True,
+        release=release,
+        commit=lambda: None,
+        reload=lambda: None,
+    )
+    follower = DagStore(tmp_path, coordinator=coordinator)
+
+    output, cached = follower.execute(
+        identity,
+        lambda: (_ for _ in ()).throw(AssertionError("paid operation must not execute")),
+    )
+
+    assert output == {"value": 17}
+    assert cached is True
+    assert active["owner"] == ""
+
+
+def test_coordinated_helpers_fail_closed_without_coordinator(tmp_path: Path) -> None:
+    store = DagStore(tmp_path)
+    identity = _identity("missing-coordinator")
+    with pytest.raises(RuntimeError, match="coordinator is unavailable"):
+        store._coordinated_cached_output(identity)
+    with pytest.raises(RuntimeError, match="coordinator is unavailable"):
+        store._execute_coordinated(identity, lambda: {"value": 1})
+
