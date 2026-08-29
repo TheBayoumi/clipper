@@ -408,7 +408,7 @@ class ModalEditorialProvider(ModalJSONProvider):
             self._instance_handle = None
             timeout_seconds = int(os.getenv("CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS", "900"))
             runtime_safe_input_tokens = int(
-                os.getenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", "65536")
+                os.getenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", "32768")
             )
             invocation.terminal(
                 "TIMEOUT",
