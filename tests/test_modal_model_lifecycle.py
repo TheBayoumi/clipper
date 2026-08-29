@@ -94,6 +94,7 @@ def test_modal_editorial_provider_can_use_persistent_class_method() -> None:
         remote=Mock(
             return_value={
                 "value": {"ok": True},
+                "model": _identity("editor").to_dict(),
                 "usage": {},
                 "runtime": {
                     "worker_lifecycle_id": "editor-a",
