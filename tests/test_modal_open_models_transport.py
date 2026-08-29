@@ -182,3 +182,60 @@ def test_capacity_probe_diagnostic_carries_editorial_invocation_id() -> None:
 
     rendered = ast.unparse(function)
     assert "payload.get('editorial_invocation_id')" in rendered
+
+
+
+def _load_editorial_output_template() -> Callable[[dict[str, Any]], dict[str, Any]]:
+    tree = _tree()
+    names = {
+        "_editorial_payload",
+        "_editorial_discourse_units",
+        "_editorial_output_template",
+    }
+    functions = [
+        item
+        for item in tree.body
+        if isinstance(item, ast.FunctionDef) and item.name in names
+    ]
+    isolated = ast.Module(body=functions, type_ignores=[])
+    ast.fix_missing_locations(isolated)
+    namespace: dict[str, Any] = {"Any": Any}
+    exec(compile(isolated, "scripts/modal_open_models.py", "exec"), namespace)  # noqa: S102
+    loaded = namespace["_editorial_output_template"]
+    assert callable(loaded)
+    return loaded
+
+
+def test_source_hazard_structural_floor_is_bounded_and_does_not_echo_source_prose() -> None:
+    output_template = _load_editorial_output_template()
+    marker = "VERY_LONG_SOURCE_PROSE_SHOULD_NOT_BE_IN_OUTPUT_FLOOR"
+    words = [
+        {
+            "word_ref": f"w{index:04d}",
+            "text": f"{marker}-{index}.",
+            "speaker_id": "speaker",
+        }
+        for index in range(100)
+    ]
+
+    template = output_template(
+        {
+            "task": "source_hazards:test",
+            "payload": {"words": words},
+        }
+    )
+
+    segments = template["segments"]
+    assert len(segments) == 64
+    assert all(segment["evidence"] == ["source evidence"] for segment in segments)
+    assert marker not in json.dumps(template)
+
+
+def test_editorial_generation_has_internal_deadline_before_modal_timeout() -> None:
+    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+
+    assert 'CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", "32768"' in source
+    assert 'CLIPPER_EDITORIAL_GENERATION_DEADLINE_SECONDS", "300"' in source
+    assert '"max_time": EDITORIAL_GENERATION_DEADLINE_SECONDS' in source
+    assert '"reason": "generation_runtime_deadline"' in source
+    assert '"event": "editorial_generation_deadline"' in source
