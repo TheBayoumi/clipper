@@ -292,10 +292,16 @@ class DagStore:
             )
             self._write_json(self._record_path(identity), passed.to_dict())
             coordinator.commit()
-            if not coordinator.release(identity, owner_id):
-                raise RuntimeError(
-                    f"DAG distributed execution lease release failed for {identity.stage_name}"
-                )
+            renewal_stop.set()
+            renewal_thread.join(timeout=1.0)
+            for release_attempt in range(3):
+                try:
+                    if coordinator.release(identity, owner_id):
+                        break
+                except Exception:
+                    pass
+                if release_attempt < 2:
+                    time.sleep(0.05 * (release_attempt + 1))
             return result.output, False
         except Exception as exc:
             if not lease_lost.is_set():
