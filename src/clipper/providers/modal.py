@@ -604,8 +604,7 @@ class ModalVisionProvider(ModalJSONProvider):
         }
         if observed != expected:
             raise ValueError(
-                "Modal vision model identity mismatch: "
-                f"expected={expected!r} observed={observed!r}"
+                f"Modal vision model identity mismatch: expected={expected!r} observed={observed!r}"
             )
         return self.identity
 
