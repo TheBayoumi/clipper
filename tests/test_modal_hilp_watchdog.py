@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 
 def _module():
@@ -27,7 +28,21 @@ def _environment(tmp_path: Path, monkeypatch) -> None:
     evidence = tmp_path / "source-master.json"
     evidence.write_text('{"sha256":"source"}\n', encoding="utf-8")
     brief = tmp_path / "brief.yaml"
-    brief.write_text("campaign_id: test\n", encoding="utf-8")
+    brief.write_text(
+        "campaign_id: test\n"
+        "title: Test\n"
+        "objective: Test production target\n"
+        "targets:\n"
+        "  mode: explicit\n"
+        "  videos:\n"
+        "    - video_id: video\n"
+        "      channel_id: channel\n"
+        "      url: https://www.youtube.com/watch?v=video\n"
+        "rights:\n"
+        "  confirmed: true\n"
+        "  authorized_channels: [channel]\n",
+        encoding="utf-8",
+    )
     monkeypatch.chdir(tmp_path)
     (tmp_path / "open-evidence").mkdir(exist_ok=True)
     (tmp_path / "open-evidence" / "source-master.json").write_text(
@@ -36,7 +51,7 @@ def _environment(tmp_path: Path, monkeypatch) -> None:
     )
     monkeypatch.setenv("CLIPPER_TARGET_VIDEO_ID", "video")
     monkeypatch.setenv("CLIPPER_TARGET_CHANNEL_ID", "channel")
-    monkeypatch.setenv("CLIPPER_TARGET_VIDEO_URL", "https://example.test/video")
+    monkeypatch.setenv("CLIPPER_TARGET_VIDEO_URL", "https://www.youtube.com/watch?v=video")
     monkeypatch.setenv("CLIPPER_CAMPAIGN_BRIEF", str(brief))
     monkeypatch.setenv("CLIPPER_FRESH_INFERENCE", "false")
     monkeypatch.setenv("CLIPPER_RESUME_FROM_RUN_ID", "prior-run")
@@ -47,6 +62,28 @@ def _environment(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("CLIPPER_MODAL_APP", "models")
     monkeypatch.setenv("CLIPPER_MODAL_PIPELINE_APP", "pipeline")
     monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "0.001")
+
+
+def test_scoped_brief_keeps_only_selected_authorized_target(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    brief_path = Path(str(module.os.environ["CLIPPER_CAMPAIGN_BRIEF"]))
+    payload = yaml.safe_load(brief_path.read_text(encoding="utf-8"))
+    payload["targets"]["videos"].append(
+        {
+            "video_id": "other",
+            "channel_id": "channel",
+            "url": "https://www.youtube.com/watch?v=other",
+        }
+    )
+    brief_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    scoped = yaml.safe_load(module._scoped_brief_yaml())
+    assert [item["video_id"] for item in scoped["targets"]["videos"]] == ["video"]
+    assert scoped["rights"]["authorized_channels"] == ["channel"]
 
 
 class _Spy:
