@@ -105,7 +105,16 @@ def run(*, render: bool) -> dict[str, Any]:
         evidence_dir / "modal-spy.ndjson",
         execution_id=execution_id,
     )
-    spy_thread = threading.Thread(target=spy.run, daemon=True)
+    spy_thread_failure: list[str] = []
+
+    def run_spy() -> None:
+        try:
+            spy.run()
+        except BaseException as exc:
+            rendered = f"{type(exc).__name__}: {exc}"
+            spy_thread_failure.append(rendered)
+
+    spy_thread = threading.Thread(target=run_spy, daemon=True)
     spy_thread.start()
 
     request = {
@@ -191,6 +200,11 @@ def run(*, render: bool) -> dict[str, Any]:
             if spy.abort_reason is not None:
                 cancel_call(spy.abort_reason)
                 raise RuntimeError(f"Modal spy aborted production early: {spy.abort_reason}")
+            if not spy_thread.is_alive():
+                detail = spy_thread_failure[-1] if spy_thread_failure else "no exception detail"
+                reason = f"Modal spy thread exited unexpectedly before production completion: {detail}"
+                cancel_call(reason)
+                raise RuntimeError(reason)
 
             elapsed = max(0.0, time.monotonic() - call_started)
             conservative_gpu_seconds = elapsed * 2.0
