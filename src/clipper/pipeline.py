@@ -625,6 +625,15 @@ def run_pipeline(
     """Execute the single supported production architecture over exact campaign targets."""
     brief = load_brief(brief_path)
     assert_campaign_authorized(brief)
+    if (
+        render
+        and brief.watermark_url
+        and not brief.acceptance_policy.branding.supplied_campaign_assets_allowed
+    ):
+        raise ValueError(
+            "campaign watermark_url is prohibited by "
+            "acceptance_policy.branding.supplied_campaign_assets_allowed"
+        )
     cfg = settings or PipelineSettings.from_env()
     source = source_client or _client(cfg)
     source_is_authoritative = source_client is not None
