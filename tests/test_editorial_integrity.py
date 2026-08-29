@@ -382,6 +382,22 @@ def test_20_low_confidence_unknown_hazard_escalates() -> None:
     assert "policy_uncertain" in result.reasons
 
 
+def test_low_confidence_allowed_hazard_escalates_instead_of_passing() -> None:
+    hazards = (
+        SourceHazardSegment(
+            10.0,
+            37.0,
+            HazardClassification.EDITORIAL_CONTENT,
+            0.0,
+            ("weak model classification",),
+            {"model_id": "hazard-test", "revision": "fixed"},
+        ),
+    )
+    result = evaluate_campaign_policy(_brief(), 10.0, 37.0, hazards, ())
+    assert result.decision == GateDecision.ESCALATE
+    assert "policy_uncertain" in result.reasons
+
+
 def test_21_approved_campaign_watermark_passes() -> None:
     branding = (
         BrandingEvidence(
