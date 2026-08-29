@@ -676,9 +676,9 @@ class ModalExecutionSpy:
                     break
                 self._record(app, line.rstrip("\n"))
             process.wait()
-            if not self.stop.is_set() and process.returncode not in {0, None}:
+            if not self.stop.is_set():
                 self._set_abort(
-                    f"Modal log follower exited unexpectedly: app={app} "
+                    f"Modal log follower exited before explicit stop: app={app} "
                     f"returncode={process.returncode}"
                 )
         except BaseException as exc:
