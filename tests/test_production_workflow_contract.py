@@ -276,6 +276,9 @@ def test_modal_spy_is_bound_to_spawned_call_and_execution_id() -> None:
     assert "active_editorial_calls" in spy
     assert "authoritative_event_counts" in spy
     assert "wait_for_terminal_and_quiet" not in spy
+    assert '"outlines_version"' in spy
+    assert '"transformers_version"' in spy
+    assert '"generation_deadline_seconds"' in spy
 
 
 def test_production_runtime_rechecks_deployed_identity_before_inference() -> None:
