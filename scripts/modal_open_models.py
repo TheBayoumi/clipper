@@ -1824,9 +1824,7 @@ class EditorialModel:
     def ready(self) -> dict[str, Any]:
         runtime = _worker_runtime(self.lifecycle_id, model_load_count=1)
         runtime["editorial_placement"] = dict(self.placement)
-        runtime["editorial_generation_runtime_contract"] = dict(
-            self.generation_runtime_contract
-        )
+        runtime["editorial_generation_runtime_contract"] = dict(self.generation_runtime_contract)
         return {
             "value": {"ready": True},
             "model": _model_evidence(EDITORIAL_MODEL_ID, revision=EDITORIAL_MODEL_REVISION),
