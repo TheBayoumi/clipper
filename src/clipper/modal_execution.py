@@ -292,6 +292,7 @@ def _invoke_remote_with_budget(
     call = function.spawn(request)
     started = time.monotonic()
     terminal_result = False
+    budget_charged = False
 
     def budget_usage() -> tuple[float, float]:
         return budget.projected_usage(
@@ -306,6 +307,17 @@ def _invoke_remote_with_budget(
             gpu_count=gpu_count,
             estimated_usd_per_second=estimated_usd_per_second,
         )
+
+    def charge_elapsed() -> None:
+        nonlocal budget_charged
+        if budget_charged:
+            return
+        budget.charge(
+            max(0.0, time.monotonic() - started),
+            gpu_count=gpu_count,
+            estimated_usd_per_second=estimated_usd_per_second,
+        )
+        budget_charged = True
 
     try:
         call.hydrate()
@@ -323,7 +335,9 @@ def _invoke_remote_with_budget(
             except TimeoutError:
                 continue
             terminal_result = True
-            gpu_seconds, estimated_usd = budget_usage()
+            charge_elapsed()
+            gpu_seconds = budget.gpu_seconds
+            estimated_usd = budget.estimated_usd
             if gpu_seconds > budget.max_gpu_seconds or estimated_usd > budget.max_estimated_usd:
                 raise ProductionBudgetExceeded(
                     "CLI production call exceeded its compute budget on the final poll: "
@@ -332,11 +346,7 @@ def _invoke_remote_with_budget(
                 )
             return result
     finally:
-        budget.charge(
-            max(0.0, time.monotonic() - started),
-            gpu_count=gpu_count,
-            estimated_usd_per_second=estimated_usd_per_second,
-        )
+        charge_elapsed()
         if not terminal_result:
             try:
                 call.cancel(terminate_containers=False)
@@ -534,14 +544,57 @@ def _acquire_remote_source(
         ("default", "default", "auto"),
     )
     failures: list[dict[str, str]] = []
+
+    def record_failure(
+        *,
+        label: str,
+        error_type: str,
+        error: object,
+        phase: str,
+        before_gpu: float,
+        before_cost: float,
+    ) -> None:
+        rendered_error = str(error)[-2000:]
+        failures.append(
+            {
+                "egress": label,
+                "error_type": error_type,
+                "error": rendered_error,
+            }
+        )
+        if attempt_evidence is not None:
+            attempt_evidence.append(
+                {
+                    "egress": label,
+                    "status": "FAIL",
+                    "phase": phase,
+                    "error_type": error_type,
+                    "error": rendered_error,
+                    "estimated_usd": budget.estimated_usd - before_cost,
+                    "gpu_seconds": budget.gpu_seconds - before_gpu,
+                }
+            )
+
     for label, kind, value in variants:
         before_gpu, before_cost = budget.gpu_seconds, budget.estimated_usd
-        if kind == "cloud":
-            variant = function.with_options(cloud=value, timeout=1800)
-        elif kind == "region":
-            variant = function.with_options(region=value, timeout=1800)
-        else:
-            variant = function.with_options(timeout=1800)
+        try:
+            if kind == "cloud":
+                variant = function.with_options(cloud=value, timeout=1800)
+            elif kind == "region":
+                variant = function.with_options(region=value, timeout=1800)
+            else:
+                variant = function.with_options(timeout=1800)
+        except Exception as exc:
+            record_failure(
+                label=label,
+                error_type=type(exc).__name__,
+                error=exc,
+                phase="configuration",
+                before_gpu=before_gpu,
+                before_cost=before_cost,
+            )
+            continue
+
         try:
             result = _invoke_remote_with_budget(
                 variant,
@@ -556,53 +609,57 @@ def _acquire_remote_source(
                     {
                         "egress": label,
                         "status": "BUDGET_EXCEEDED",
+                        "phase": "invoke",
                         "estimated_usd": budget.estimated_usd - before_cost,
                         "gpu_seconds": budget.gpu_seconds - before_gpu,
                     }
                 )
             raise
         except Exception as exc:
-            failures.append(
-                {"egress": label, "error_type": type(exc).__name__, "error": str(exc)[-2000:]}
+            record_failure(
+                label=label,
+                error_type=type(exc).__name__,
+                error=exc,
+                phase="invoke",
+                before_gpu=before_gpu,
+                before_cost=before_cost,
             )
-            if attempt_evidence is not None:
-                attempt_evidence.append(
-                    {
-                        "egress": label,
-                        "status": "FAIL",
-                        "error_type": type(exc).__name__,
-                        "estimated_usd": budget.estimated_usd - before_cost,
-                        "gpu_seconds": budget.gpu_seconds - before_gpu,
-                    }
-                )
             continue
+
         if not isinstance(result, dict):
-            failures.append(
-                {"egress": label, "error_type": "InvalidResponse", "error": repr(result)[:2000]}
+            record_failure(
+                label=label,
+                error_type="InvalidResponse",
+                error=repr(result),
+                phase="validation",
+                before_gpu=before_gpu,
+                before_cost=before_cost,
             )
             continue
         if (
             str(result.get("video_id") or "") != candidate.video_id
             or str(result.get("channel_id") or "") != candidate.channel_id
         ):
-            failures.append(
-                {
-                    "egress": label,
-                    "error_type": "SourceIdentityError",
-                    "error": (
-                        f"expected={candidate.video_id}/{candidate.channel_id} "
-                        f"actual={result.get('video_id')}/{result.get('channel_id')}"
-                    ),
-                }
+            record_failure(
+                label=label,
+                error_type="SourceIdentityError",
+                error=(
+                    f"expected={candidate.video_id}/{candidate.channel_id} "
+                    f"actual={result.get('video_id')}/{result.get('channel_id')}"
+                ),
+                phase="validation",
+                before_gpu=before_gpu,
+                before_cost=before_cost,
             )
             continue
         if str(result.get("quality_policy")) != "highest_available_no_transcode":
-            failures.append(
-                {
-                    "egress": label,
-                    "error_type": "QualityPolicyError",
-                    "error": str(result.get("quality_policy")),
-                }
+            record_failure(
+                label=label,
+                error_type="QualityPolicyError",
+                error=result.get("quality_policy"),
+                phase="validation",
+                before_gpu=before_gpu,
+                before_cost=before_cost,
             )
             continue
         if attempt_evidence is not None:
@@ -610,6 +667,7 @@ def _acquire_remote_source(
                 {
                     "egress": label,
                     "status": "PASS",
+                    "phase": "complete",
                     "estimated_usd": budget.estimated_usd - before_cost,
                     "gpu_seconds": budget.gpu_seconds - before_gpu,
                 }

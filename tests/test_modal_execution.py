@@ -549,6 +549,96 @@ def test_remote_invocation_requires_complete_budget() -> None:
     function.spawn.assert_not_called()
 
 
+def test_remote_invocation_charges_terminal_usage_before_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timestamps = iter((0.0, 0.49, 0.49, 0.51))
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: next(timestamps))
+    monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "5")
+    call = Mock()
+    call.get.return_value = {"status": "PASS"}
+    function = SimpleNamespace(spawn=Mock(return_value=call))
+    budget = _BudgetLedger(1.0, 10.0)
+
+    with pytest.raises(ProductionBudgetExceeded, match="final poll"):
+        _invoke_remote_with_budget(
+            function,
+            {},
+            budget=budget,
+            gpu_count=2.0,
+            estimated_usd_per_second=0.0,
+        )
+
+    assert budget.gpu_seconds == pytest.approx(1.02)
+    call.cancel.assert_not_called()
+
+
+def test_source_acquisition_evidences_configuration_and_semantic_failures() -> None:
+    candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
+    invalid_call = Mock()
+    invalid_call.get.return_value = "invalid"
+    identity_call = Mock()
+    identity_call.get.return_value = {
+        "video_id": "v1",
+        "channel_id": "wrong",
+        "quality_policy": "highest_available_no_transcode",
+    }
+    quality_call = Mock()
+    quality_call.get.return_value = {
+        "video_id": "v1",
+        "channel_id": "UC1",
+        "quality_policy": "downgraded",
+    }
+    success_call = Mock()
+    success_call.get.return_value = {
+        "video_id": "v1",
+        "channel_id": "UC1",
+        "quality_policy": "highest_available_no_transcode",
+        "sha256": "a" * 64,
+    }
+    function = Mock()
+    function.with_options.side_effect = [
+        RuntimeError("gcp option unavailable"),
+        SimpleNamespace(spawn=Mock(return_value=invalid_call)),
+        SimpleNamespace(spawn=Mock(return_value=identity_call)),
+        SimpleNamespace(spawn=Mock(return_value=quality_call)),
+        SimpleNamespace(spawn=Mock(return_value=success_call)),
+    ]
+    attempts: list[dict[str, object]] = []
+
+    result = _acquire_remote_source(
+        function,
+        candidate,
+        expected_git_sha="a" * 40,
+        budget=_BudgetLedger(100.0, 1.0),
+        attempt_evidence=attempts,
+    )
+
+    assert result["sha256"] == "a" * 64
+    assert [attempt["status"] for attempt in attempts] == [
+        "FAIL",
+        "FAIL",
+        "FAIL",
+        "FAIL",
+        "PASS",
+    ]
+    assert [attempt.get("phase") for attempt in attempts] == [
+        "configuration",
+        "validation",
+        "validation",
+        "validation",
+        "complete",
+    ]
+    assert [attempt.get("error_type") for attempt in attempts[:-1]] == [
+        "RuntimeError",
+        "InvalidResponse",
+        "SourceIdentityError",
+        "QualityPolicyError",
+    ]
+    assert attempts[0]["estimated_usd"] == pytest.approx(0.0)
+    assert attempts[0]["gpu_seconds"] == pytest.approx(0.0)
+
+
 def test_source_acquisition_records_failed_clouds_before_region_success() -> None:
     candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
     failed_calls = []
