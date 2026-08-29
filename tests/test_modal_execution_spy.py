@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import threading
+import time
 from pathlib import Path
 
 
@@ -492,3 +494,49 @@ def test_spy_retains_execution_scoped_editorial_runtime_metadata(tmp_path: Path)
     assert latest["generation_deadline_seconds"] == 300
     assert latest["execution_timeout_seconds"] == 900
     assert summary["diagnostic_event_counts"]["editorial_request_plan"] == 1
+
+
+
+def test_spy_stall_snapshot_is_safe_during_concurrent_terminal_record(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(
+        ("clipper-production-pipeline",),
+        tmp_path / "concurrent-stall.ndjson",
+        generation_stall_seconds=999,
+        execution_id="exec-123",
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_start","execution_id":"exec-123",'
+        '"invocation_id":"inv-1","task":"source_hazards:x"}',
+    )
+
+    started = threading.Event()
+    finished = threading.Event()
+
+    class SlowItemsDict(dict):
+        def items(self):
+            started.set()
+            time.sleep(0.02)
+            return super().items()
+
+    with spy.lock:
+        spy._active_editorial_calls = SlowItemsDict(spy._active_editorial_calls)
+
+    def terminal() -> None:
+        started.wait(timeout=1)
+        spy._record(
+            "clipper-production-pipeline",
+            '{"event":"editorial_remote_call_terminal","execution_id":"exec-123",'
+            '"invocation_id":"inv-1","task":"source_hazards:x","status":"COMPLETE"}',
+        )
+        finished.set()
+
+    worker = threading.Thread(target=terminal)
+    worker.start()
+    spy._check_stalled_editorial_calls()
+    worker.join(timeout=1)
+
+    assert finished.is_set()
+    assert spy.abort_reason is None
+    assert spy.summary()["active_editorial_calls"] == []
