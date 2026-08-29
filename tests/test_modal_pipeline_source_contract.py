@@ -25,9 +25,7 @@ def _modal_pipeline_helpers(*names: str) -> dict[str, Any]:
     source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     selected = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name in set(names)
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in set(names)
     ]
     namespace: dict[str, Any] = {
         "Any": Any,
@@ -135,7 +133,7 @@ def test_source_cache_and_staging_are_identity_bound_and_concurrency_safe() -> N
     assert 'str(identity.get("channel_id") or "") != channel_id' in existing
     assert "_youtube_video_id(canonical_url) != video_id" in existing
     assert 'Path(MEDIA_ROOT) / "staging" / video_id / uuid.uuid4().hex' in acquire
-    assert 'shutil.rmtree(staging, ignore_errors=True)' in acquire
+    assert "shutil.rmtree(staging, ignore_errors=True)" in acquire
     assert "persist_source_index.remote(evidence)" in acquire
     assert "max_containers=1" in source.split("def persist_source_index(", 1)[0][-300:]
     assert "_atomic_write_json(index_path, evidence)" in writer
