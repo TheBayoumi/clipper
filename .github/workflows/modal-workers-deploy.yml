@@ -316,6 +316,11 @@ jobs:
                   "deployed Outlines version does not match verified adapter: "
                   f"{contract.get('outlines_version')!r}"
               )
+          if contract.get("transformers_version") != "4.57.3":
+              raise RuntimeError(
+                  "deployed Transformers version does not match verified runtime: "
+                  f"{contract.get('transformers_version')!r}"
+              )
           if contract.get("outlines_max_time_forwarded") is not True:
               raise RuntimeError(
                   f"Outlines max_time forwarding contract failed: {contract!r}"
