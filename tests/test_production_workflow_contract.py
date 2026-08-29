@@ -347,7 +347,7 @@ def test_editorial_runtime_safety_is_preflighted_and_fail_closed() -> None:
     assert "if not projections or not capacity_probes or not probe_results:" not in workflow
     assert '"max_gpu_seconds": max_gpu_seconds' in watchdog
     assert '"max_estimated_usd": max_estimated_usd' in watchdog
-    assert "conservative in-flight GPU budget reached" in watchdog
+    assert "conservative in-flight production budget reached before completion" in watchdog
     pipeline = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     assert "invoke_editorial_capacity_probe(" in pipeline
     assert "_run_editorial_capacity_probe(" not in pipeline
