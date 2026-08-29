@@ -279,7 +279,7 @@ def _audit_model_evidence(
 
     editorial_meta = metadata.get("editorial_inference")
     if not isinstance(editorial_meta, dict):
-        raise RuntimeError("manifest is missing editorial model evidence")
+        raise RuntimeError("autonomous editorial run produced no model invocation evidence")
     invocations = editorial_meta.get("model_invocations")
     if not isinstance(invocations, list):
         raise RuntimeError("editorial model invocation evidence must be an array")
