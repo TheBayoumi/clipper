@@ -36,7 +36,10 @@ def test_production_workflow_is_single_pass_resumable_and_exact_head() -> None:
     assert '"videos"] = [dict(matches[0])]' in watchdog
     assert '"git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"]' in watchdog
     assert "function.spawn(request)" in watchdog
-    assert "call.get(timeout=poll_seconds)" in watchdog
+    assert "call_started = time.monotonic()" in watchdog
+    assert "call.get(timeout=min(poll_seconds, remaining_wall_seconds))" in watchdog
+    assert "production_call_cancel_retry" in watchdog
+    assert "cancelled.set()" in watchdog
     assert "call.cancel(terminate_containers=False)" in watchdog
     assert "modal-function-call.json" in watchdog
     assert "content-addressed-resume" in workflow
@@ -421,7 +424,7 @@ def test_paid_workflows_are_not_triggered_by_pull_request_synchronization() -> N
     assert isinstance(deploy_marker.get("enabled"), bool)
 
 
-def test_pull_request_smoke_is_read_only_and_package_publish_is_main_only() -> None:
+def test_pull_request_smoke_is_read_only_and_package_publish_requires_exact_head_ci() -> None:
     smoke_path = Path(".github/workflows/deploy-and-smoke.yml")
     publish_path = Path(".github/workflows/publish-tested-image.yml")
     smoke = smoke_path.read_text(encoding="utf-8")
@@ -441,11 +444,18 @@ def test_pull_request_smoke_is_read_only_and_package_publish_is_main_only() -> N
         "contents": "read",
         "packages": "write",
     }
-    assert "pull_request:" not in publish
+    assert "workflow_run:" in publish
+    assert "workflows:\n      - CI" in publish
+    assert "types:\n      - completed" in publish
     assert "branches:\n      - main" in publish
+    assert "github.event.workflow_run.conclusion == 'success'" in publish
+    assert "github.event.workflow_run.event == 'push'" in publish
+    assert "github.event.workflow_run.head_branch == 'main'" in publish
+    assert "ref: ${{ github.event.workflow_run.head_sha }}" in publish
+    assert 'expected_sha="${{ github.event.workflow_run.head_sha }}"' in publish
+    assert 'test "${source_sha}" = "${expected_sha}"' in publish
     assert "docker login ghcr.io" in publish
     assert "docker push" in publish
-    assert 'test "${source_sha}" = "${GITHUB_SHA}"' in publish
 
 
 def test_disabled_acceptance_guards_precede_any_paid_modal_work() -> None:
