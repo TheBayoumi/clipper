@@ -53,7 +53,7 @@ permissions:
   actions: read
   contents: read
   issues: write
-  pull-requests: write
+  pull-requests: read
 
 env:
   MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -64,6 +64,7 @@ env:
   CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS: 900
   CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS: 32768
   CLIPPER_EDITORIAL_GENERATION_DEADLINE_SECONDS: 300
+  CLIPPER_EDITORIAL_GENERATION_DEADLINE_TOLERANCE_SECONDS: 30
   CLIPPER_MODAL_GENERATION_STALL_SECONDS: 720
 
 jobs:
@@ -841,18 +842,30 @@ jobs:
           deadline_seconds = float(deadline_event.get("generation_deadline_seconds") or 0.0)
           elapsed_seconds = float(deadline_event.get("elapsed_seconds") or 0.0)
           forced_min_new_tokens = int(deadline_event.get("forced_min_new_tokens") or 0)
+          output_tokens = int(deadline_event.get("output_tokens") or 0)
+          deadline_tolerance_seconds = 30.0
           deadline_input_tokens = int(deadline_terminal.get("input_tokens") or 0)
           deadline_target_tokens = int(
               deadline_terminal.get("runtime_safe_input_tokens") or 0
           )
-          if deadline_seconds != 300.0 or elapsed_seconds < deadline_seconds:
+          if (
+              deadline_seconds != 300.0
+              or elapsed_seconds < deadline_seconds
+              or elapsed_seconds > deadline_seconds + deadline_tolerance_seconds
+          ):
               raise RuntimeError(
-                  "real model generation did not stop at the production 300-second boundary: "
+                  "real model generation did not stop within the bounded production "
+                  "300-second deadline window: "
                   f"{deadline_event}"
               )
           if forced_min_new_tokens < 65_536:
               raise RuntimeError(
                   "deadline probe could have ended through natural EOS: "
+                  f"{deadline_event}"
+              )
+          if output_tokens <= 0 or output_tokens >= forced_min_new_tokens:
+              raise RuntimeError(
+                  "deadline probe did not prove interruption before the forced token target: "
                   f"{deadline_event}"
               )
           if (
