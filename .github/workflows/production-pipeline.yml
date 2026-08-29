@@ -648,6 +648,8 @@ jobs:
               raise RuntimeError("live editorial acceptance observed no evidence projection")
           if int(counts.get("editorial_acceptance_probe_result") or 0) <= 0:
               raise RuntimeError("live editorial acceptance observed no repartition probe result")
+          if int(counts.get("editorial_generation_deadline") or 0) <= 0:
+              raise RuntimeError("live editorial acceptance observed no generation deadline")
           if int(authoritative_counts.get("editorial_execution_timeout") or 0) != 0:
               raise RuntimeError("live editorial acceptance observed an editorial execution timeout")
           call_starts = int(authoritative_counts.get("editorial_remote_call_start") or 0)
@@ -760,6 +762,11 @@ jobs:
               for event in records
               if event.get("event") == "editorial_request_plan"
           ]
+          generation_deadlines = [
+              event
+              for event in records
+              if event.get("event") == "editorial_generation_deadline"
+          ]
           timeouts = [
               event
               for event in records
@@ -770,6 +777,85 @@ jobs:
               raise RuntimeError("live authoritative editorial telemetry records are incomplete")
           if timeouts:
               raise RuntimeError(f"editorial acceptance contained execution timeouts: {timeouts}")
+
+          deadline_terminals = [
+              event
+              for event in producer_terminals
+              if event.get("status") == "CAPACITY_REJECTED"
+              and event.get("reason") == "generation_runtime_deadline"
+          ]
+          deadline_repartitions = [
+              event
+              for event in repartitions
+              if event.get("reason") == "generation_runtime_deadline"
+          ]
+          if not generation_deadlines or len(deadline_terminals) != 1:
+              raise RuntimeError(
+                  "live acceptance requires exactly one producer-closed generation deadline: "
+                  f"deadlines={generation_deadlines} terminals={deadline_terminals}"
+              )
+          deadline_terminal = deadline_terminals[0]
+          deadline_invocation_id = str(deadline_terminal.get("invocation_id") or "")
+          matching_deadlines = [
+              event
+              for event in generation_deadlines
+              if str(event.get("invocation_id") or "") == deadline_invocation_id
+          ]
+          matching_repartitions = [
+              event
+              for event in deadline_repartitions
+              if str(event.get("invocation_id") or "") == deadline_invocation_id
+          ]
+          if len(matching_deadlines) != 1 or len(matching_repartitions) != 1:
+              raise RuntimeError(
+                  "deadline telemetry is not correlated end-to-end by invocation ID: "
+                  f"invocation={deadline_invocation_id!r} "
+                  f"deadlines={matching_deadlines} repartitions={matching_repartitions}"
+              )
+          deadline_event = matching_deadlines[0]
+          deadline_repartition = matching_repartitions[0]
+          deadline_seconds = float(deadline_event.get("generation_deadline_seconds") or 0.0)
+          elapsed_seconds = float(deadline_event.get("elapsed_seconds") or 0.0)
+          forced_min_new_tokens = int(deadline_event.get("forced_min_new_tokens") or 0)
+          deadline_input_tokens = int(deadline_terminal.get("input_tokens") or 0)
+          deadline_target_tokens = int(
+              deadline_terminal.get("runtime_safe_input_tokens") or 0
+          )
+          if deadline_seconds != 300.0 or elapsed_seconds < deadline_seconds:
+              raise RuntimeError(
+                  "real model generation did not stop at the production 300-second boundary: "
+                  f"{deadline_event}"
+              )
+          if forced_min_new_tokens < 65_536:
+              raise RuntimeError(
+                  "deadline probe could have ended through natural EOS: "
+                  f"{deadline_event}"
+              )
+          if (
+              deadline_input_tokens <= 1
+              or deadline_target_tokens <= 0
+              or deadline_target_tokens >= deadline_input_tokens
+          ):
+              raise RuntimeError(
+                  "deadline producer terminal did not carry a strictly smaller token target: "
+                  f"{deadline_terminal}"
+              )
+          observed_repartition_tokens = int(
+              deadline_repartition.get("observed_input_tokens") or 0
+          )
+          target_repartition_tokens = int(
+              deadline_repartition.get("target_input_tokens") or 0
+          )
+          if (
+              observed_repartition_tokens != deadline_input_tokens
+              or target_repartition_tokens <= 0
+              or target_repartition_tokens >= observed_repartition_tokens
+          ):
+              raise RuntimeError(
+                  "deadline source repartition did not make measured token progress: "
+                  f"{deadline_repartition}"
+              )
+
           # Model-app request-plan logs are diagnostic only. Acceptance uses the measured
           # capacity echoed by the pipeline-side editorial_remote_call_terminal barrier.
           if not any(
@@ -801,6 +887,26 @@ jobs:
           sources = probe.get("sources")
           if not isinstance(sources, list) or not sources:
               raise RuntimeError("editorial capacity probe returned no source evidence")
+          deadline_probe = probe.get("generation_deadline_probe")
+          if not isinstance(deadline_probe, dict):
+              raise RuntimeError("editorial acceptance artifact lacks generation deadline proof")
+          if str(deadline_probe.get("invocation_id") or "") != deadline_invocation_id:
+              raise RuntimeError(
+                  "cycle deadline artifact does not match producer/model telemetry: "
+                  f"{deadline_probe}"
+              )
+          deadline_capacity = deadline_probe.get("capacity_rejection")
+          deadline_partition = deadline_probe.get("repartition")
+          if not isinstance(deadline_capacity, dict) or not isinstance(
+              deadline_partition, dict
+          ):
+              raise RuntimeError(
+                  f"cycle deadline artifact is incomplete: {deadline_probe}"
+              )
+          if deadline_capacity.get("reason") != "generation_runtime_deadline":
+              raise RuntimeError(
+                  f"cycle deadline artifact has the wrong recovery reason: {deadline_probe}"
+              )
           measured_partition_counts = []
           for source_probe in sources:
               if not isinstance(source_probe, dict):
@@ -831,6 +937,13 @@ jobs:
               "capacity_probe_events": len(capacity_probes),
               "acceptance_probe_events": len(probe_results),
               "generation_complete_events_diagnostic": len(generations),
+              "generation_deadline_events": len(generation_deadlines),
+              "deadline_invocation_id": deadline_invocation_id,
+              "deadline_seconds": deadline_seconds,
+              "deadline_elapsed_seconds": elapsed_seconds,
+              "deadline_input_tokens": deadline_input_tokens,
+              "deadline_target_tokens": deadline_target_tokens,
+              "deadline_forced_min_new_tokens": forced_min_new_tokens,
               "producer_call_start_events": len(producer_starts),
               "producer_call_terminal_events": len(producer_terminals),
               "producer_complete_events": terminal_statuses.count("COMPLETE"),
