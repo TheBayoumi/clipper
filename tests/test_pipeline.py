@@ -25,6 +25,7 @@ from clipper.pipeline import (
     _normalize_asset_url,
     _record_source_media_metadata,
     _rendered_clip,
+    _run_id,
     _renderer_for_source,
     _source_media,
     _speaker_focus_for_source,
@@ -428,6 +429,16 @@ def test_grounding_cache_reuses_exact_model_and_source_identity(tmp_path: Path) 
     assert (t.calls, a.calls, d.calls) == (1, 1, 1)
     second_manifest = json.loads((settings.artifact_root / "second" / "manifest.json").read_text())
     assert second_manifest["cache"]["hits"] == 3
+
+
+def test_run_id_is_execution_unique_and_traceable() -> None:
+    first_execution = "a" * 32
+    second_execution = "b" * 32
+    first = _run_id("campaign", first_execution)
+    second = _run_id("campaign", second_execution)
+    assert first != second
+    assert first.endswith(first_execution)
+    assert second.endswith(second_execution)
 
 
 def test_pipeline_rejects_partial_grounding_provider_override(tmp_path: Path) -> None:
