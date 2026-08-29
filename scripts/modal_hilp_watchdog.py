@@ -187,19 +187,46 @@ def run(*, render: bool) -> dict[str, Any]:
     def cancel_call(reason: str) -> None:
         if call is None or cancelled.is_set():
             return
-        cancelled.set()
-        print(
-            json.dumps(
-                {
-                    "event": "production_call_cancel",
-                    "function_call_id": call_id,
-                    "reason": reason,
-                },
-                sort_keys=True,
-            ),
-            flush=True,
+        last_error: BaseException | None = None
+        for attempt in range(1, 4):
+            try:
+                call.cancel(terminate_containers=False)
+            except BaseException as exc:
+                last_error = exc
+                print(
+                    json.dumps(
+                        {
+                            "event": "production_call_cancel_retry",
+                            "function_call_id": call_id,
+                            "reason": reason,
+                            "attempt": attempt,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+                if attempt < 3:
+                    time.sleep(0.25 * attempt)
+                continue
+            cancelled.set()
+            print(
+                json.dumps(
+                    {
+                        "event": "production_call_cancelled",
+                        "function_call_id": call_id,
+                        "reason": reason,
+                        "attempt": attempt,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            return
+        raise RuntimeError(
+            "failed to confirm cancellation of exact Modal production call: "
+            f"{type(last_error).__name__}: {last_error}"
         )
-        call.cancel(terminate_containers=False)
 
     previous_handlers: dict[int, Any] = {}
 
@@ -220,10 +247,10 @@ def run(*, render: bool) -> dict[str, Any]:
             "run_full_cycle",
         )
         call = function.spawn(request)
+        call_started = time.monotonic()
         call.hydrate()
         call_id = str(call.object_id)
         spy.root_function_call_id = call_id
-        call_started = time.monotonic()
 
         metadata = {
             "event": "production_call_spawned",
@@ -257,22 +284,20 @@ def run(*, render: bool) -> dict[str, Any]:
             elapsed = max(0.0, time.monotonic() - call_started)
             conservative_gpu_seconds = elapsed * 2.0
             conservative_cost_usd = elapsed * 0.000444
-            if conservative_gpu_seconds >= max_gpu_seconds:
+            remaining_wall_seconds = min(
+                (max_gpu_seconds - conservative_gpu_seconds) / 2.0,
+                (max_estimated_usd - conservative_cost_usd) / 0.000444,
+            )
+            if remaining_wall_seconds <= 0:
                 reason = (
-                    "conservative in-flight GPU budget reached before completion: "
-                    f"{conservative_gpu_seconds:.1f} >= {max_gpu_seconds:.1f}"
-                )
-                cancel_call(reason)
-                raise RuntimeError(reason)
-            if conservative_cost_usd >= max_estimated_usd:
-                reason = (
-                    "conservative in-flight cost budget reached before completion: "
-                    f"{conservative_cost_usd:.4f} >= {max_estimated_usd:.4f}"
+                    "conservative in-flight production budget reached before completion: "
+                    f"gpu_seconds={conservative_gpu_seconds:.3f}/{max_gpu_seconds:.3f} "
+                    f"estimated_usd={conservative_cost_usd:.6f}/{max_estimated_usd:.6f}"
                 )
                 cancel_call(reason)
                 raise RuntimeError(reason)
             try:
-                result = call.get(timeout=poll_seconds)
+                result = call.get(timeout=min(poll_seconds, remaining_wall_seconds))
                 remote_completed = True
                 elapsed = max(0.0, time.monotonic() - call_started)
                 conservative_gpu_seconds = elapsed * 2.0
