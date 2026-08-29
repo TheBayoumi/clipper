@@ -425,13 +425,12 @@ def evaluate_campaign_policy(
         intersection_payload = hazard.to_dict()
         intersection_payload["overlap_seconds"] = round(overlap, 6)
         intersections.append(intersection_payload)
-        if classification in segment_policy.forbid:
-            if hazard.confidence < policy.editorial.minimum_boundary_confidence:
-                decisions.append(GateDecision.ESCALATE)
-                reasons.append("policy_uncertain")
-            else:
-                decisions.append(GateDecision.REJECT)
-                reasons.append("forbidden_source_segment")
+        if hazard.confidence < policy.editorial.minimum_boundary_confidence:
+            decisions.append(GateDecision.ESCALATE)
+            reasons.append("policy_uncertain")
+        elif classification in segment_policy.forbid:
+            decisions.append(GateDecision.REJECT)
+            reasons.append("forbidden_source_segment")
         elif classification not in segment_policy.allow:
             decision = _decision_for_action(segment_policy.unknown)
             decisions.append(decision)
