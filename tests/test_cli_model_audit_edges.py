@@ -78,12 +78,12 @@ def test_resolved_model_plan_has_no_legacy_provider_disable_switches() -> None:
     assert plan["architecture"] == "autonomous-multimodal-quality-graph"
 
 
-def test_runtime_dependency_preflight_skips_non_modal_plans() -> None:
-    with patch("clipper.cli.importlib.util.find_spec") as find_spec:
+def test_runtime_dependency_preflight_checks_resolved_local_runtime_modules() -> None:
+    with patch("clipper.cli.importlib.util.find_spec", return_value=object()) as find_spec:
         _assert_runtime_dependencies(
             {"editorial": {"inference_engine": "transformers"}, "compute_profile": "local-lite"}
         )
-    find_spec.assert_not_called()
+    find_spec.assert_called_once_with("transformers")
 
 
 def test_runtime_dependency_preflight_accepts_installed_modal_sdk() -> None:
@@ -100,17 +100,18 @@ def test_runtime_dependency_preflight_rejects_missing_modal_sdk() -> None:
     }
     with (
         patch("clipper.cli.importlib.util.find_spec", return_value=None),
-        pytest.raises(RuntimeError, match="requires the Modal Python SDK") as captured,
+        pytest.raises(RuntimeError, match="missing runtime module") as captured,
     ):
         _assert_runtime_dependencies(plan)
-    assert 'pip install -e ".[modal]"' in str(captured.value)
+    assert "modal" in str(captured.value)
+    assert 'pip install -e ".[open-models]"' in str(captured.value)
 
 
 def test_runtime_dependency_preflight_handles_invalid_module_spec() -> None:
     plan = {"alignment": {"inference_engine": "modal-whisperx"}}
     with (
         patch("clipper.cli.importlib.util.find_spec", side_effect=ValueError("bad spec")),
-        pytest.raises(RuntimeError, match="Modal Python SDK"),
+        pytest.raises(RuntimeError, match="missing runtime module.*modal"),
     ):
         _assert_runtime_dependencies(plan)
 
