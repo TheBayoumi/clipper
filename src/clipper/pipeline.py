@@ -862,6 +862,8 @@ def run_pipeline(
     manifest.run_metadata["editorial_inference"]["cache_summary"] = {
         "stage_cache_hits": quality.stage_cache_hits,
         "stage_executions": quality.stage_executions,
+        "editorial_model_fingerprint": editor.identity.cache_fingerprint(),
+        "editorial_model": editor.identity.to_dict(),
     }
     manifest.cache["quality_graph"] = {
         "stage_cache_hits": quality.stage_cache_hits,
