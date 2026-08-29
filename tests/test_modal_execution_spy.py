@@ -258,6 +258,36 @@ def test_spy_log_follow_uses_live_stream_without_historical_range(
     assert "--show-function-call-id" in command
 
 
+def test_spy_aborts_if_active_log_follower_reaches_clean_eof(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(("app",), tmp_path / "spy-eof.ndjson")
+
+    class _Process:
+        stdout = iter(())
+        returncode = 0
+
+        def wait(self) -> int:
+            return 0
+
+        def poll(self) -> int:
+            return 0
+
+        def terminate(self) -> None:
+            raise AssertionError("completed process should not be terminated")
+
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *_args, **_kwargs: _Process())
+
+    spy._follow("app")
+
+    assert spy.abort_reason is not None
+    assert "exited before explicit stop" in spy.abort_reason
+    assert "returncode=0" in spy.abort_reason
+    assert spy.stop.is_set()
+
+
 def test_spy_accepts_measured_capacity_probe(tmp_path: Path) -> None:
     module = _module()
     spy = module.ModalExecutionSpy(("app",), tmp_path / "probe.ndjson")
