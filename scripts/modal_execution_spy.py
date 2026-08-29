@@ -234,6 +234,10 @@ class ModalExecutionSpy:
             "model_gpu_indices",
             "model_bytes_by_device",
             "placement_policy",
+            "outlines_version",
+            "transformers_version",
+            "generation_deadline_seconds",
+            "execution_timeout_seconds",
             "pipeline_status",
             "review_status",
         }
