@@ -6,16 +6,23 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 import urllib.request
 from typing import Any
+from urllib.parse import urlparse
 
 CODEX_LOGIN = "chatgpt-codex-connector"
 BLOCKING_SEVERITY_RE = re.compile(r"\bP[012]\b")
 REVIEWED_COMMIT_RE = re.compile(r"Reviewed commit:\*\*\s*`([0-9a-f]{7,40})`", re.IGNORECASE)
 
 
+def _validate_github_api_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.netloc != "api.github.com":
+        raise RuntimeError(f"refusing non-GitHub API URL: {url!r}")
+
+
 def _request_json(url: str, token: str, *, payload: dict[str, Any] | None = None) -> Any:
+    _validate_github_api_url(url)
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=data)
     request.add_header("Accept", "application/vnd.github+json")
@@ -100,7 +107,12 @@ def _fetch_unresolved_threads(repo: str, pr_number: int, token: str) -> list[dic
     while True:
         payload = {
             "query": query,
-            "variables": {"owner": owner, "name": name, "number": pr_number, "cursor": cursor},
+            "variables": {
+                "owner": owner,
+                "name": name,
+                "number": pr_number,
+                "cursor": cursor,
+            },
         }
         result = _request_json("https://api.github.com/graphql", token, payload=payload)
         if result.get("errors"):
@@ -129,11 +141,17 @@ def main() -> int:
     if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
         raise RuntimeError(f"PR head SHA is invalid: {head_sha!r}")
 
-    reviews = _request_json(_repo_api(repo, f"pulls/{pr_number}/reviews?per_page=100"), token)
+    reviews = _request_json(
+        _repo_api(repo, f"pulls/{pr_number}/reviews?per_page=100"),
+        token,
+    )
     has_exact_review = any(_review_matches_head(review, head_sha) for review in reviews)
 
     if not has_exact_review:
-        comments = _request_json(_repo_api(repo, f"issues/{pr_number}/comments?per_page=100"), token)
+        comments = _request_json(
+            _repo_api(repo, f"issues/{pr_number}/comments?per_page=100"),
+            token,
+        )
         for comment in comments:
             body = str(comment.get("body") or "")
             if "@codex review" not in body.lower() or head_sha not in body.lower():
@@ -141,7 +159,10 @@ def main() -> int:
             reactions_url = str(comment.get("reactions", {}).get("url") or "")
             if not reactions_url:
                 comment_id = int(comment["id"])
-                reactions_url = _repo_api(repo, f"issues/comments/{comment_id}/reactions?per_page=100")
+                reactions_url = _repo_api(
+                    repo,
+                    f"issues/comments/{comment_id}/reactions?per_page=100",
+                )
             reactions = _request_json(reactions_url, token)
             if _clean_reaction_matches_head(comment, reactions, head_sha):
                 has_exact_review = True
@@ -150,7 +171,8 @@ def main() -> int:
     if not has_exact_review:
         print(
             f"::error::Codex has not completed a review of exact PR head {head_sha}. "
-            f"Comment '@codex review' with this exact SHA and rerun this failed gate after Codex responds."
+            "Comment '@codex review' with this exact SHA and rerun this failed gate "
+            "after Codex responds."
         )
         return 1
 
@@ -158,11 +180,15 @@ def main() -> int:
     blocking = [thread for thread in threads if _is_blocking_codex_thread(thread)]
     if blocking:
         print(
-            f"::error::{len(blocking)} unresolved Codex P0/P1/P2 review thread(s) remain on PR #{pr_number}."
+            f"::error::{len(blocking)} unresolved Codex P0/P1/P2 review thread(s) "
+            f"remain on PR #{pr_number}."
         )
         return 1
 
-    print(f"Codex review gate PASS: exact head {head_sha}; no unresolved Codex P0/P1/P2 threads.")
+    print(
+        f"Codex review gate PASS: exact head {head_sha}; "
+        "no unresolved Codex P0/P1/P2 threads."
+    )
     return 0
 
 
