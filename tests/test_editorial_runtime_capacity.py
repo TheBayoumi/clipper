@@ -11,6 +11,7 @@ from clipper.providers.modal import (
     EditorialInvocation,
     ModalEditorialProvider,
     invoke_editorial_capacity_probe,
+    invoke_editorial_deadline_probe,
 )
 
 
@@ -398,6 +399,88 @@ def test_capacity_probe_remote_timeout_closes_fail_closed(
     )
     assert terminal["status"] == "TIMEOUT"
     assert terminal["error_type"] == "FunctionTimeoutError"
+
+
+def test_deadline_probe_requires_capacity_rejection_and_preserves_evidence(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    captured: dict[str, object] = {}
+
+    def remote(request: dict[str, object]) -> dict[str, object]:
+        captured.update(request)
+        return {
+            "application_status": "CAPACITY_REJECTED",
+            "error": {
+                "type": "EditorialCapacityError",
+                "message": "deadline",
+                "details": {
+                    "reason": "generation_runtime_deadline",
+                    "input_tokens": 8_000,
+                    "context_limit_tokens": 262_144,
+                    "generation_budget_tokens": 65_536,
+                    "runtime_safe_input_tokens": 4_000,
+                    "capacity_repartitionable": True,
+                    "generation_deadline_seconds": 300.0,
+                    "elapsed_seconds": 300.4,
+                    "cache_implementation": "dynamic",
+                    "forced_min_new_tokens": 65_536,
+                },
+            },
+        }
+
+    result = invoke_editorial_deadline_probe(
+        remote,
+        task="source_hazards:deadline_probe:video",
+        payload={"capacity_repartitionable": True},
+        execution_id="exec-deadline",
+        expected_git_sha="f" * 40,
+    )
+
+    assert result["application_status"] == "CAPACITY_REJECTED"
+    assert result["error_type"] == "EditorialCapacityError"
+    assert result["details"]["reason"] == "generation_runtime_deadline"
+    events = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
+    ]
+    start = next(event for event in events if event.get("event") == "editorial_remote_call_start")
+    terminal = next(
+        event for event in events if event.get("event") == "editorial_remote_call_terminal"
+    )
+    assert result["invocation_id"] == start["invocation_id"] == terminal["invocation_id"]
+    assert captured["editorial_invocation_id"] == start["invocation_id"]
+    assert captured["expected_git_sha"] == "f" * 40
+    assert terminal["status"] == "CAPACITY_REJECTED"
+    assert terminal["reason"] == "generation_runtime_deadline"
+    assert terminal["generation_deadline_seconds"] == 300.0
+    assert terminal["elapsed_seconds"] == 300.4
+    assert terminal["input_tokens"] == 8_000
+    assert terminal["runtime_safe_input_tokens"] == 4_000
+    assert terminal["forced_min_new_tokens"] == 65_536
+
+
+def test_deadline_probe_rejects_unexpected_success(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def remote(_request: dict[str, object]) -> dict[str, object]:
+        return {"value": {"segments": []}}
+
+    with pytest.raises(RuntimeError, match="did not prove the generation deadline"):
+        invoke_editorial_deadline_probe(
+            remote,
+            task="source_hazards:deadline_probe:unexpected-success",
+            payload={"capacity_repartitionable": True},
+            execution_id="exec-deadline-fail",
+            expected_git_sha="a" * 40,
+        )
+
+    events = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
+    ]
+    terminal = next(
+        event for event in events if event.get("event") == "editorial_remote_call_terminal"
+    )
+    assert terminal["status"] == "ERROR"
+    assert terminal["reason"] == "deadline_probe_unexpected_result"
 
 
 def test_editorial_invocation_rejects_second_terminal(
