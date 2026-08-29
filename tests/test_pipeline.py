@@ -114,9 +114,16 @@ class FakeVision:
 
 
 class FakeRenderer:
-    def __init__(self, *, fail_calls: set[int] | None = None, omit_sidecars: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_calls: set[int] | None = None,
+        fail_after_write_calls: set[int] | None = None,
+        omit_sidecars: bool = False,
+    ) -> None:
         self.calls = 0
         self.fail_calls = fail_calls or set()
+        self.fail_after_write_calls = fail_after_write_calls or set()
         self.omit_sidecars = omit_sidecars
         self.watermarks: list[Path | None] = []
 
@@ -147,6 +154,8 @@ class FakeRenderer:
             output_path.with_suffix(".tracking.json").write_text(
                 json.dumps({"transitions": []}), encoding="utf-8"
             )
+        if self.calls in self.fail_after_write_calls:
+            raise RuntimeError(f"render failure after write {self.calls}")
         return output_path
 
 
@@ -606,6 +615,24 @@ def test_reserve_recovery_removes_primary_files_rejected_by_technical_qc(
         lambda timelines, root: _quality_result(timelines, root, reserve=True),
         renderer=FakeRenderer(),
         qc=qc,
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["status"] == "SUCCESS"
+    assert manifest["funnel"]["reserve_promotions"] == 1
+    mp4s = list((run_dir / "clips").glob("*.mp4"))
+    assert len(mp4s) == 1
+    assert "attempt-002" in mp4s[0].name
+    assert not list((run_dir / "clips").glob("attempt-001*"))
+
+
+def test_reserve_recovery_removes_partial_primary_files_when_renderer_raises(
+    tmp_path: Path,
+) -> None:
+    renderer = FakeRenderer(fail_after_write_calls={1})
+    run_dir, *_ = _run_with_quality(
+        tmp_path,
+        lambda timelines, root: _quality_result(timelines, root, reserve=True),
+        renderer=renderer,
     )
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["status"] == "SUCCESS"
