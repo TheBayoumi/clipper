@@ -486,4 +486,3 @@ def test_coordinated_helpers_fail_closed_without_coordinator(tmp_path: Path) -> 
         store._coordinated_cached_output(identity)
     with pytest.raises(RuntimeError, match="coordinator is unavailable"):
         store._execute_coordinated(identity, lambda: {"value": 1})
-
