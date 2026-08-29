@@ -36,7 +36,6 @@ Follow the repository's concise Conventional Commit subjects: `feat:`, `fix:`, `
 
 Copy `campaign.example.yaml` for local configuration. Keep API keys (for example, `YOUTUBE_API_KEY`) in the environment or `.env`, never YAML or source control. Preserve source-rights checks and the explicit publication boundary when modifying acquisition or release behavior.
 
-
 ## Expert Reviewer Contract
 
 When acting as a reviewer, operate independently and adversarially rather than as the implementation
@@ -75,3 +74,27 @@ Always verify these production invariants when they are affected:
 For review-only requests, do not push commits, update refs, dispatch/rerun/cancel GitHub Actions, call
 production endpoints, deploy Modal workers, or start paid compute unless the user explicitly asks for
 implementation or execution after the review.
+
+## Mandatory Codex PR Gate
+
+Every pull-request head is reviewable only after an independent Codex review of that exact 40-character
+head SHA. The repository CI must fail closed when the exact-head review has not completed or while any
+Codex P0, P1, or P2 review thread remains unresolved. A Codex P1/P2 marked `NEEDS_RUNTIME_EVIDENCE`
+remains blocking until the required runtime evidence is produced and the thread is resolved; static
+reasoning alone must not clear it.
+
+The required check is `codex-review-gate`. It must verify both of these conditions against live GitHub
+PR state:
+
+1. Codex (`chatgpt-codex-connector`) submitted a review whose `commit_id` equals the current PR head,
+   or reacted with `+1` to an explicit `@codex review` request containing that exact full head SHA.
+2. No unresolved review thread authored by Codex contains a P0, P1, or P2 finding.
+
+A new commit invalidates the previous Codex gate result and requires a new exact-head review. Do not
+resolve blocking Codex threads merely because implementation changed; resolve them only when the fix
+is present and verified, and keep runtime-evidence findings open until the evidence exists.
+
+Modal deployment, production/editorial acceptance, HILP, rendering, and publication must never be used
+to bypass this gate. Workflows that require successful exact-head CI therefore inherit the Codex gate.
+Repository branch protection/rulesets should additionally mark `codex-review-gate` as a required status
+check before merge wherever repository administration permits it.
