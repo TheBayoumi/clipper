@@ -21,6 +21,9 @@ from typing import Any
 import modal
 
 from clipper.providers.speech_contract import (
+    ALIGNMENT_MODEL_ID,
+    ALIGNMENT_MODEL_REVISION,
+    ALIGNMENT_QUANTIZATION,
     ASR_COMPUTE_TYPE,
     ASR_MODEL_ID,
     ASR_MODEL_REVISION,
@@ -2517,8 +2520,21 @@ def align(payload: dict[str, Any]) -> dict[str, Any]:
     timeline = payload.get("timeline")
     if not isinstance(timeline, dict) or not isinstance(timeline.get("words"), list):
         raise ValueError("alignment requires canonical timeline")
+    from huggingface_hub import snapshot_download
+
     audio = whisperx.load_audio(source_path)
-    model, metadata = whisperx.load_align_model(language_code="en", device="cuda")
+    alignment_snapshot = snapshot_download(
+        repo_id=ALIGNMENT_MODEL_ID,
+        revision=ALIGNMENT_MODEL_REVISION,
+        cache_dir=HF_CACHE,
+    )
+    model, metadata = whisperx.load_align_model(
+        language_code="en",
+        device="cuda",
+        model_name=alignment_snapshot,
+        model_dir=HF_CACHE,
+        model_cache_only=True,
+    )
     raw_words = timeline["words"]
     segments: list[dict[str, Any]] = []
     current: list[dict[str, Any]] = []
@@ -2549,6 +2565,10 @@ def align(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("WhisperX returned no aligned segments")
     return {
         "segments": raw_segments,
+        "model": {
+            **_model_evidence(ALIGNMENT_MODEL_ID, revision=ALIGNMENT_MODEL_REVISION),
+            "quantization": ALIGNMENT_QUANTIZATION,
+        },
         "usage": _usage(started, "L4", output_units=len(raw_segments)),
     }
 
