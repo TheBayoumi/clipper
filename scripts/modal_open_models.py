@@ -27,6 +27,9 @@ from clipper.providers.speech_contract import (
     ASR_COMPUTE_TYPE,
     ASR_MODEL_ID,
     ASR_MODEL_REVISION,
+    DIARIZATION_MODEL_ID,
+    DIARIZATION_MODEL_REVISION,
+    DIARIZATION_QUANTIZATION,
 )
 
 
@@ -2598,8 +2601,17 @@ def diarize(payload: dict[str, Any]) -> dict[str, Any]:
         if not token:
             raise RuntimeError("HF_TOKEN is required for pyannote community-1")
         if _diarization_pipeline is None:
+            from huggingface_hub import snapshot_download
+
+            diarization_snapshot = snapshot_download(
+                repo_id=DIARIZATION_MODEL_ID,
+                revision=DIARIZATION_MODEL_REVISION,
+                cache_dir=HF_CACHE,
+                token=token,
+            )
             _diarization_pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-community-1", token=token
+                diarization_snapshot,
+                token=token,
             )
             _diarization_pipeline.to(torch.device("cuda"))
         diarization_source, should_cleanup = _diarization_audio_source(source_path)
@@ -2615,7 +2627,10 @@ def diarize(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("pyannote produced no speaker turns")
         return {
             "turns": turns,
-            "model": _model_evidence("pyannote/speaker-diarization-community-1"),
+            "model": {
+                **_model_evidence(DIARIZATION_MODEL_ID, revision=DIARIZATION_MODEL_REVISION),
+                "quantization": DIARIZATION_QUANTIZATION,
+            },
             "usage": _usage(started, "L4", output_units=len(turns)),
         }
     except Exception as exc:
@@ -2674,7 +2689,22 @@ def hf_access_smoke() -> dict[str, Any]:
     token = os.environ.get("HF_TOKEN")
     if not token:
         raise RuntimeError("HF_TOKEN is not available inside Modal")
-    model_id = "pyannote/speaker-diarization-community-1"
-    info = HfApi(token=token).model_info(model_id)
-    hf_hub_download(repo_id=model_id, filename="config.yaml", token=token)
-    return {"ok": True, "model_id": info.id, "revision": info.sha, "gated_file": "config.yaml"}
+    model_id = DIARIZATION_MODEL_ID
+    info = HfApi(token=token).model_info(model_id, revision=DIARIZATION_MODEL_REVISION)
+    hf_hub_download(
+        repo_id=model_id,
+        filename="config.yaml",
+        revision=DIARIZATION_MODEL_REVISION,
+        token=token,
+    )
+    if str(info.sha or "") != DIARIZATION_MODEL_REVISION:
+        raise RuntimeError(
+            "pinned diarization revision did not resolve exactly: "
+            f"expected={DIARIZATION_MODEL_REVISION} actual={info.sha}"
+        )
+    return {
+        "ok": True,
+        "model_id": info.id,
+        "revision": info.sha,
+        "gated_file": "config.yaml",
+    }
