@@ -257,6 +257,8 @@ def test_acquire_remote_source_uses_modal_egress_and_validates_quality() -> None
     function = Mock()
     remote = Mock(
         return_value={
+            "video_id": "v1",
+            "channel_id": "UC1",
             "quality_policy": "highest_available_no_transcode",
             "bytes": 123,
             "sha256": "abc",
@@ -270,6 +272,7 @@ def test_acquire_remote_source_uses_modal_egress_and_validates_quality() -> None
     remote.assert_called_once_with(
         {
             "video_id": "v1",
+            "channel_id": "UC1",
             "video_url": "https://youtu.be/v1",
             "expected_git_sha": "a" * 40,
         }
@@ -289,8 +292,29 @@ def test_acquire_remote_source_exhausts_invalid_and_failed_egress() -> None:
         _acquire_remote_source(AlwaysBad(), candidate, expected_git_sha="a" * 40)
 
     function = Mock()
-    function.with_options.return_value.remote.return_value = {"quality_policy": "downgraded"}
+    function.with_options.return_value.remote.return_value = {
+        "video_id": "v1",
+        "channel_id": "UC1",
+        "quality_policy": "downgraded",
+    }
     function.remote.return_value = "invalid"
+    with pytest.raises(RuntimeError, match="source acquisition failed"):
+        _acquire_remote_source(function, candidate, expected_git_sha="a" * 40)
+
+
+def test_acquire_remote_source_rejects_wrong_resolved_identity() -> None:
+    function = Mock()
+    function.with_options.return_value.remote.return_value = {
+        "video_id": "v1",
+        "channel_id": "UC-other",
+        "quality_policy": "highest_available_no_transcode",
+    }
+    function.remote.return_value = {
+        "video_id": "other",
+        "channel_id": "UC1",
+        "quality_policy": "highest_available_no_transcode",
+    }
+    candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
     with pytest.raises(RuntimeError, match="source acquisition failed"):
         _acquire_remote_source(function, candidate, expected_git_sha="a" * 40)
 
