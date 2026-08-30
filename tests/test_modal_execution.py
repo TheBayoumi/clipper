@@ -12,7 +12,7 @@ import pytest
 from clipper.modal_execution import (
     ProductionBudgetExceeded,
     ProductionCallNotTerminated,
-    ProductionCallSubmissionUnknown,
+    ProductionCallSubmissionFailed,
     _acquire_remote_source,
     _BudgetLedger,
     _class,
@@ -24,6 +24,7 @@ from clipper.modal_execution import (
     _materialize_remote_run,
     _positive_budget,
     _runtime_source_sha,
+    _spawn_recoverable_modal_call,
     _validate_model_access,
     _verify_deployed_runtime_sha,
     ensure_modal_runtime,
@@ -38,6 +39,15 @@ class NotFoundError(RuntimeError):
 
 class ServiceError(RuntimeError):
     pass
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_recoverable_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
+    def spawn(function: Any, request: dict[str, Any]) -> tuple[Any, float, None]:
+        started = __import__("time").monotonic()
+        return function.spawn(request), started, None
+
+    monkeypatch.setattr("clipper.modal_execution._spawn_recoverable_modal_call", spawn)
 
 
 def _write_brief(path: Path) -> None:
@@ -1338,40 +1348,51 @@ def test_invoke_remote_with_budget_charges_delayed_spawn_before_call_handle(
     assert budget.remaining_budgets()[0] == pytest.approx(0.0)
 
 
-def test_source_acquisition_fails_closed_on_ambiguous_submission(
+def test_invoke_remote_with_budget_reconciles_lost_input_submission(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = {"now": 0.0}
     monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: clock["now"])
 
-    variant = Mock()
-
-    def ambiguous_spawn(_request: dict[str, object]) -> object:
-        clock["now"] = 3.0
-        raise ServiceError("submission response lost")
-
-    variant.spawn.side_effect = ambiguous_spawn
+    call = Mock()
+    call.object_id = "fc-recovered"
     function = Mock()
-    function.with_options.return_value = variant
-    attempts: list[dict[str, object]] = []
     budget = _BudgetLedger(100.0, 1.0)
 
-    with pytest.raises(ProductionCallSubmissionUnknown, match="fallback is forbidden"):
-        _acquire_remote_source(
-            function,
-            VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1"),
-            expected_git_sha="a" * 40,
-            budget=budget,
-            attempt_evidence=attempts,
+    def recovered_spawn(
+        _function: Any,
+        _request: dict[str, Any],
+    ) -> tuple[Any, float, ProductionCallSubmissionFailed]:
+        clock["now"] = 0.25
+        return (
+            call,
+            0.0,
+            ProductionCallSubmissionFailed(
+                "fc-recovered",
+                "ServiceError",
+                "input acknowledgement lost after acceptance",
+            ),
         )
 
-    function.with_options.assert_called_once_with(cloud="gcp", timeout=1800)
-    assert attempts[0]["status"] == "AMBIGUOUS_SUBMISSION"
-    assert attempts[0]["error_type"] == "ProductionCallSubmissionUnknown"
-    assert attempts[0]["estimated_usd"] == pytest.approx(
-        budget.estimated_usd
+    monkeypatch.setattr(
+        "clipper.modal_execution._spawn_recoverable_modal_call",
+        recovered_spawn,
     )
-    assert budget.estimated_usd > 0.0
+
+    with pytest.raises(ProductionCallSubmissionFailed, match="fc-recovered"):
+        _invoke_remote_with_budget(
+            function,
+            {"request": True},
+            budget=budget,
+            gpu_count=1.0,
+            estimated_usd_per_second=0.01,
+        )
+
+    call.cancel.assert_called_once_with(terminate_containers=False)
+    assert budget.gpu_seconds == pytest.approx(0.25)
+    assert budget.estimated_usd == pytest.approx(0.0025)
+
+
 
 
 def test_invoke_remote_with_budget_charges_until_cancellation_acknowledgement(

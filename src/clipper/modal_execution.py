@@ -209,8 +209,17 @@ class ProductionCallNotTerminated(RuntimeError):
         )
 
 
-class ProductionCallSubmissionUnknown(RuntimeError):
-    """A producer submission may have started, but no exact call handle was returned."""
+class ProductionCallSubmissionFailed(RuntimeError):
+    """Input submission failed after an exact recoverable Modal call ID was allocated."""
+
+    def __init__(self, call_id: str, error_type: str, error: str) -> None:
+        self.call_id = call_id
+        self.error_type = error_type
+        self.error = error
+        super().__init__(
+            "Modal producer input submission failed after recoverable call allocation: "
+            f"call_id={call_id} error_type={error_type} error={error}"
+        )
 
 
 @dataclass(slots=True)
@@ -304,6 +313,85 @@ def _cancel_remote_call(call: Any) -> None:
     raise ProductionCallNotTerminated(call_id, errors)
 
 
+def _spawn_recoverable_modal_call(
+    function: Any,
+    request: dict[str, Any],
+) -> tuple[Any, float, ProductionCallSubmissionFailed | None]:
+    """Allocate a Modal call ID before attaching the producer input.
+
+    FunctionMap is intentionally issued with zero pipelined inputs. A failed or lost
+    FunctionMap response therefore cannot have started producer work. Once the exact
+    function_call_id is known, a recoverable FunctionCall handle is created locally,
+    the budget clock starts, and only then is FunctionPutInputs allowed to submit work.
+    """
+    modal = importlib.import_module("modal")
+    async_utils = importlib.import_module("modal._utils.async_utils")
+    function_utils = importlib.import_module("modal._utils.function_utils")
+    api_pb2 = importlib.import_module("modal_proto.api_pb2")
+    synchronizer = async_utils.synchronizer
+    internal_function = synchronizer._translate_in(function)
+
+    async def allocate_call() -> tuple[str, str]:
+        await internal_function.hydrate()
+        function_id = str(internal_function.object_id)
+        response = await internal_function.client.stub.FunctionMap(
+            api_pb2.FunctionMapRequest(
+                function_id=function_id,
+                parent_input_id="",
+                function_call_type=api_pb2.FUNCTION_CALL_TYPE_UNARY,
+                function_call_invocation_type=api_pb2.FUNCTION_CALL_INVOCATION_TYPE_ASYNC,
+            )
+        )
+        call_id = str(response.function_call_id or "")
+        if not call_id:
+            raise RuntimeError("Modal FunctionMap did not allocate a recoverable function_call_id")
+        if response.pipelined_inputs:
+            raise RuntimeError(
+                "Modal FunctionMap unexpectedly attached producer inputs during call allocation"
+            )
+        return function_id, call_id
+
+    allocate = synchronizer.create_blocking(allocate_call)
+    function_id, call_id = allocate()
+    call = modal.FunctionCall.from_id(call_id)
+    started = time.monotonic()
+
+    async def submit_input() -> None:
+        item = await function_utils._create_input(
+            (request,),
+            {},
+            internal_function.client.stub,
+            function=internal_function,
+            function_call_invocation_type=api_pb2.FUNCTION_CALL_INVOCATION_TYPE_ASYNC,
+        )
+        response = await internal_function.client.stub.FunctionPutInputs(
+            api_pb2.FunctionPutInputsRequest(
+                function_id=function_id,
+                function_call_id=call_id,
+                inputs=[item],
+            )
+        )
+        if len(response.inputs) != 1:
+            raise RuntimeError(
+                "Modal FunctionPutInputs did not acknowledge exactly one producer input"
+            )
+
+    submit = synchronizer.create_blocking(submit_input)
+    try:
+        submit()
+    except Exception as exc:
+        return (
+            call,
+            started,
+            ProductionCallSubmissionFailed(
+                call_id,
+                type(exc).__name__,
+                str(exc)[-2000:],
+            ),
+        )
+    return call, started, None
+
+
 def _invoke_remote_with_budget(
     function: Any,
     request: dict[str, Any],
@@ -323,7 +411,7 @@ def _invoke_remote_with_budget(
         raise ValueError("CLIPPER_MODAL_SPY_POLL_SECONDS must be finite and positive")
     budget._rate(gpu_count, name="gpu_count")
     budget._rate(estimated_usd_per_second, name="estimated_usd_per_second")
-    started = time.monotonic()
+    call, started, submission_error = _spawn_recoverable_modal_call(function, request)
     terminal_result = False
     charged_elapsed_seconds = 0.0
 
@@ -359,15 +447,8 @@ def _invoke_remote_with_budget(
         charged_elapsed_seconds = elapsed
 
     try:
-        call = function.spawn(request)
-    except Exception as exc:
-        charge_elapsed()
-        raise ProductionCallSubmissionUnknown(
-            "Modal producer submission failed before an exact call handle was returned; "
-            "submission state is ambiguous and fallback is forbidden"
-        ) from exc
-
-    try:
+        if submission_error is not None:
+            raise submission_error
         call.hydrate()
         while True:
             gpu_seconds, estimated_usd = budget_usage()
@@ -686,20 +767,16 @@ def _acquire_remote_source(
                     }
                 )
             raise
-        except ProductionCallSubmissionUnknown as exc:
-            if attempt_evidence is not None:
-                attempt_evidence.append(
-                    {
-                        "egress": label,
-                        "status": "AMBIGUOUS_SUBMISSION",
-                        "phase": "invoke",
-                        "error_type": type(exc).__name__,
-                        "error": str(exc)[-2000:],
-                        "estimated_usd": budget.estimated_usd - before_cost,
-                        "gpu_seconds": budget.gpu_seconds - before_gpu,
-                    }
-                )
-            raise
+        except ProductionCallSubmissionFailed as exc:
+            record_failure(
+                label=label,
+                error_type=type(exc).__name__,
+                error=exc,
+                phase="invoke",
+                before_gpu=before_gpu,
+                before_cost=before_cost,
+            )
+            continue
         except Exception as exc:
             record_failure(
                 label=label,

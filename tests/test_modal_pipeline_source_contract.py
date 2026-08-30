@@ -55,6 +55,21 @@ def test_public_youtube_acquisition_uses_bgutil_before_optional_cookies() -> Non
     assert source.index('"bgutil_default_mweb"') < source.index('"cookies_bgutil_default_mweb"')
 
 
+def test_modal_submission_allocates_recoverable_call_before_input() -> None:
+    source = Path("src/clipper/modal_execution.py").read_text(encoding="utf-8")
+    helper = source.split("def _spawn_recoverable_modal_call(", 1)[1].split(
+        "def _invoke_remote_with_budget(", 1
+    )[0]
+
+    assert "FunctionMapRequest(" in helper
+    assert "pipelined_inputs=" not in helper
+    assert "FunctionPutInputsRequest(" in helper
+    assert "function_call_id=call_id" in helper
+    assert "modal.FunctionCall.from_id(call_id)" in helper
+    assert helper.index("FunctionCall.from_id(call_id)") < helper.index("FunctionPutInputsRequest(")
+    assert helper.index("started = time.monotonic()") < helper.index("FunctionPutInputsRequest(")
+
+
 def test_source_acquisition_is_exact_and_content_addressed() -> None:
     source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     acquire = source.split("def acquire_source(", 1)[1].split("class VolumeSourceClient", 1)[0]
