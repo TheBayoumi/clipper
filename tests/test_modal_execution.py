@@ -151,6 +151,83 @@ def test_recoverable_modal_submission_allocates_handle_before_input(
     assert put_request.inputs == ["serialized-input"]
 
 
+@pytest.mark.parametrize(
+    ("map_response", "error_match"),
+    [
+        (
+            SimpleNamespace(function_call_id="", pipelined_inputs=[]),
+            "did not allocate a recoverable function_call_id",
+        ),
+        (
+            SimpleNamespace(
+                function_call_id="fc-recoverable",
+                pipelined_inputs=[SimpleNamespace(input_id="unexpected")],
+            ),
+            "unexpectedly attached producer inputs",
+        ),
+    ],
+)
+def test_recoverable_modal_submission_rejects_unsafe_call_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+    map_response: object,
+    error_match: str,
+) -> None:
+    modal, async_utils, function_utils, api_pb2, stub, events = _fake_modal_submission_modules(
+        map_response=map_response,
+        put_response=SimpleNamespace(inputs=[SimpleNamespace(input_id="in-1")]),
+    )
+    modules = {
+        "modal": modal,
+        "modal._utils.async_utils": async_utils,
+        "modal._utils.function_utils": function_utils,
+        "modal_proto.api_pb2": api_pb2,
+    }
+    monkeypatch.setattr(
+        "clipper.modal_execution.importlib.import_module",
+        lambda name: modules[name],
+    )
+
+    with pytest.raises(RuntimeError, match=error_match):
+        _real_spawn_recoverable_modal_call(object(), {"request": True})
+
+    stub.FunctionPutInputs.assert_not_awaited()
+    function_utils._create_input.assert_not_awaited()
+    assert events == []
+
+
+def test_recoverable_modal_submission_reconciles_missing_input_ack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    map_response = SimpleNamespace(
+        function_call_id="fc-recoverable",
+        pipelined_inputs=[],
+    )
+    modal, async_utils, function_utils, api_pb2, _stub, events = _fake_modal_submission_modules(
+        map_response=map_response,
+        put_response=SimpleNamespace(inputs=[]),
+    )
+    modules = {
+        "modal": modal,
+        "modal._utils.async_utils": async_utils,
+        "modal._utils.function_utils": function_utils,
+        "modal_proto.api_pb2": api_pb2,
+    }
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: 3.0)
+    monkeypatch.setattr(
+        "clipper.modal_execution.importlib.import_module",
+        lambda name: modules[name],
+    )
+
+    call, started, error = _real_spawn_recoverable_modal_call(object(), {"request": True})
+
+    assert call.object_id == "fc-recoverable"
+    assert started == pytest.approx(3.0)
+    assert isinstance(error, ProductionCallSubmissionFailed)
+    assert error.call_id == "fc-recoverable"
+    assert "did not acknowledge exactly one producer input" in error.error
+    assert events == ["from-id", "put-input"]
+
+
 def test_recoverable_modal_submission_keeps_exact_call_on_lost_ack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
