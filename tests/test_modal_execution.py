@@ -31,6 +31,9 @@ from clipper.modal_execution import (
     ensure_modal_runtime,
     run_modal_pipeline,
 )
+from clipper.modal_execution import (
+    _spawn_recoverable_modal_call as _real_spawn_recoverable_modal_call,
+)
 from clipper.models import VideoCandidate
 
 
