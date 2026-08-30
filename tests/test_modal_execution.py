@@ -1193,17 +1193,22 @@ def test_invoke_remote_with_budget_cancels_exact_call_while_in_flight(
 
     call = Call()
     function = SimpleNamespace(spawn=Mock(return_value=call))
+    budget = _BudgetLedger(1.0, 100.0)
 
-    with pytest.raises(RuntimeError, match="in-flight compute budget"):
+    with pytest.raises(
+        ProductionBudgetExceeded,
+        match="through cancellation acknowledgement",
+    ):
         _invoke_remote_with_budget(
             function,
             {"request": True},
-            max_gpu_seconds=1.0,
-            max_estimated_usd=100.0,
+            budget=budget,
         )
 
     function.spawn.assert_called_once_with({"request": True})
     assert call.cancel_args == [False]
+    assert budget.gpu_seconds == pytest.approx(2.0)
+    assert budget.remaining_budgets()[0] == pytest.approx(0.0)
 
 
 def test_invoke_remote_with_budget_caps_poll_to_remaining_budget(
