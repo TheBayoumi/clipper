@@ -1,6 +1,6 @@
 {
-  "request_reason": "Disabled after exact-head acceptance preflight exposed marker-state CI contract defect; runtime proof not started",
-  "requested_from_sha": "a2a720f6d4604a9e4b4162a0785bb88e7a010fc2",
+  "request_reason": "Deploy exact operational marker head for resumed editorial-only runtime proof after clean Codex static review of implementation parent a3ba27c7b4f790aea29b69857d90efbe8fd42977",
+  "requested_from_sha": "a3ba27c7b4f790aea29b69857d90efbe8fd42977",
   "resume_from_production_run_id": "33169878733",
   "fresh_inference": false,
   "live_acceptance_required": {
@@ -11,5 +11,5 @@
     "two_gpu_editorial_placement": true,
     "editorial_acceptance_only": true
   },
-  "enabled": false
+  "enabled": true
 }
