@@ -129,11 +129,11 @@ def test_recoverable_modal_submission_allocates_handle_before_input(
         "modal._utils.function_utils": function_utils,
         "modal_proto.api_pb2": api_pb2,
     }
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: 12.5)
     monkeypatch.setattr(
         "clipper.modal_execution.importlib.import_module",
         lambda name: modules[name],
     )
-    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: 12.5)
 
     call, started, error = _real_spawn_recoverable_modal_call(object(), {"request": True})
 
@@ -168,11 +168,11 @@ def test_recoverable_modal_submission_keeps_exact_call_on_lost_ack(
         "modal._utils.function_utils": function_utils,
         "modal_proto.api_pb2": api_pb2,
     }
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: 4.0)
     monkeypatch.setattr(
         "clipper.modal_execution.importlib.import_module",
         lambda name: modules[name],
     )
-    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: 4.0)
 
     call, started, error = _real_spawn_recoverable_modal_call(object(), {"request": True})
 
