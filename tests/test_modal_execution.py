@@ -250,6 +250,57 @@ def test_recoverable_modal_submission_reconciles_missing_input_ack(
     assert events == ["from-id", "put-input"]
 
 
+def test_recoverable_modal_submission_reconciles_serialization_failure_before_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+    map_response = SimpleNamespace(
+        function_call_id="fc-recoverable",
+        pipelined_inputs=[],
+    )
+    modal, async_utils, function_utils, api_pb2, stub, events = _fake_modal_submission_modules(
+        map_response=map_response,
+        put_response=SimpleNamespace(inputs=[SimpleNamespace(input_id="in-1")]),
+    )
+
+    async def fail_serialize(*_args: object, **_kwargs: object) -> object:
+        clock["now"] = 0.5
+        raise ServiceError("serialization failed")
+
+    function_utils._create_input.side_effect = fail_serialize
+    modules = {
+        "modal": modal,
+        "modal._utils.async_utils": async_utils,
+        "modal._utils.function_utils": function_utils,
+        "modal_proto.api_pb2": api_pb2,
+    }
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        "clipper.modal_execution.importlib.import_module",
+        lambda name: modules[name],
+    )
+    budget = _BudgetLedger(10.0, 100.0)
+
+    call, started, error = _real_spawn_recoverable_modal_call(
+        object(),
+        {"request": True},
+        budget=budget,
+        gpu_count=1.0,
+        estimated_usd_per_second=0.01,
+    )
+
+    assert call.object_id == "fc-recoverable"
+    assert started == pytest.approx(0.5)
+    assert isinstance(error, ProductionCallSubmissionFailed)
+    assert error.call_id == "fc-recoverable"
+    assert error.error_type == "ServiceError"
+    assert "serialization failed" in error.error
+    stub.FunctionPutInputs.assert_not_awaited()
+    assert events == ["from-id"]
+    assert budget.gpu_seconds == pytest.approx(0.5)
+    assert budget.estimated_usd == pytest.approx(0.005)
+
+
 def test_recoverable_modal_submission_rejects_before_input_when_serialization_exhausts_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
