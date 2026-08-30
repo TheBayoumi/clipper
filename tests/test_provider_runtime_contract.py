@@ -299,7 +299,9 @@ def test_modal_endpoint_rejects_unattested_or_mismatched_identity() -> None:
             "choices": [{"message": {"content": "{}"}}],
         },
         {
-            "model_identity": {key: value for key, value in expected.items() if key != "schema_version"},
+            "model_identity": {
+                key: value for key, value in expected.items() if key != "schema_version"
+            },
             "choices": [{"message": {"content": "{}"}}],
         },
     ):
