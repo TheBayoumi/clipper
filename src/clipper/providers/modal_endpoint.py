@@ -107,13 +107,17 @@ class ModalEndpointEditorialProvider:
                 ) from exc
         if not isinstance(raw, dict):
             raise ValueError("managed editorial endpoint returned an invalid response")
-        observed_model = str(raw.get("model") or "").strip()
-        observed_revision = str(raw.get("model_revision") or raw.get("revision") or "").strip()
-        if observed_model != self.identity.model_id or observed_revision != self.identity.revision:
+        raw_identity = raw.get("model_identity")
+        observed_identity = (
+            {str(key): str(value) for key, value in raw_identity.items()}
+            if isinstance(raw_identity, dict)
+            else {}
+        )
+        expected_identity = self.identity.to_dict()
+        if observed_identity != expected_identity:
             raise RuntimeError(
                 "managed editorial endpoint identity mismatch: "
-                f"expected={self.identity.model_id}@{self.identity.revision} "
-                f"observed={observed_model or '<missing>'}@{observed_revision or '<missing>'}"
+                f"expected={expected_identity} observed={observed_identity or '<missing>'}"
             )
         choices = raw.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):

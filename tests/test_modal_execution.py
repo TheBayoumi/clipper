@@ -11,6 +11,7 @@ import pytest
 
 from clipper.modal_execution import (
     ProductionBudgetExceeded,
+    ProductionCallNotTerminated,
     _acquire_remote_source,
     _BudgetLedger,
     _class,
@@ -1275,14 +1276,15 @@ def test_invoke_remote_with_budget_cancels_non_timeout_poll_failure() -> None:
     call.cancel.assert_called_once_with(terminate_containers=False)
 
 
-def test_invoke_remote_with_budget_preserves_poll_failure_when_cancel_fails() -> None:
+def test_invoke_remote_with_budget_retries_cancellation_then_preserves_poll_failure() -> None:
     call_handle = Mock()
+    call_handle.object_id = "fc-retry"
     call_handle.get.side_effect = ServiceError("poll failed")
-    call_handle.cancel.side_effect = RuntimeError("cancel failed")
+    call_handle.cancel.side_effect = [RuntimeError("cancel unavailable"), None]
     function = SimpleNamespace(spawn=Mock(return_value=call_handle))
 
     with (
-        patch("clipper.modal_execution.LOGGER.exception") as logged,
+        patch("clipper.modal_execution.time.sleep") as sleep,
         pytest.raises(ServiceError, match="poll failed"),
     ):
         _invoke_remote_with_budget(
@@ -1292,7 +1294,68 @@ def test_invoke_remote_with_budget_preserves_poll_failure_when_cancel_fails() ->
             max_estimated_usd=1.0,
         )
 
-    logged.assert_called_once_with("failed to cancel nonterminal Modal production call")
+    assert call_handle.cancel.call_count == 2
+    sleep.assert_called_once_with(2.0)
+
+
+def test_invoke_remote_with_budget_fails_closed_when_cancellation_is_unconfirmed() -> None:
+    call_handle = Mock()
+    call_handle.object_id = "fc-stuck"
+    call_handle.get.side_effect = ServiceError("poll failed")
+    call_handle.cancel.side_effect = RuntimeError("cancel unavailable")
+    function = SimpleNamespace(spawn=Mock(return_value=call_handle))
+
+    with (
+        patch("clipper.modal_execution.time.sleep") as sleep,
+        pytest.raises(ProductionCallNotTerminated, match="fc-stuck") as caught,
+    ):
+        _invoke_remote_with_budget(
+            function,
+            {},
+            max_gpu_seconds=10.0,
+            max_estimated_usd=1.0,
+        )
+
+    assert caught.value.call_id == "fc-stuck"
+    assert call_handle.cancel.call_count == 3
+    assert sleep.call_args_list == [mock_call(2.0), mock_call(5.0)]
+
+
+def test_source_acquisition_does_not_fallback_when_cancellation_is_unconfirmed() -> None:
+    candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
+    stuck = Mock()
+    stuck.object_id = "fc-acquire-stuck"
+    stuck.get.side_effect = ServiceError("poll failed")
+    stuck.cancel.side_effect = RuntimeError("cancel unavailable")
+    function = Mock()
+    function.with_options.return_value.spawn.return_value = stuck
+    attempts: list[dict[str, object]] = []
+
+    with (
+        patch("clipper.modal_execution.time.sleep"),
+        pytest.raises(ProductionCallNotTerminated, match="fc-acquire-stuck"),
+    ):
+        _acquire_remote_source(
+            function,
+            candidate,
+            expected_git_sha="a" * 40,
+            budget=_BudgetLedger(100.0, 1.0),
+            attempt_evidence=attempts,
+        )
+
+    function.with_options.assert_called_once_with(cloud="gcp", timeout=1800)
+    assert attempts == [
+        {
+            "egress": "cloud:gcp",
+            "status": "NONTERMINAL_CALL",
+            "phase": "invoke",
+            "error_type": "ProductionCallNotTerminated",
+            "error": attempts[0]["error"],
+            "call_id": "fc-acquire-stuck",
+            "estimated_usd": attempts[0]["estimated_usd"],
+            "gpu_seconds": attempts[0]["gpu_seconds"],
+        }
+    ]
 
 
 def test_invoke_remote_with_budget_rechecks_successful_final_poll(

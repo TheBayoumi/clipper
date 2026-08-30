@@ -264,6 +264,7 @@ def test_modal_endpoint_success_retry_and_usage() -> None:
     payload = {
         "model": "endpoint-model",
         "model_revision": "rev",
+        "model_identity": provider.identity.to_dict(),
         "choices": [{"message": {"content": '{"cores": []}'}}],
         "usage": {"prompt_tokens": 11, "completion_tokens": 7},
     }
@@ -284,16 +285,21 @@ def test_modal_endpoint_success_retry_and_usage() -> None:
 
 def test_modal_endpoint_rejects_unattested_or_mismatched_identity() -> None:
     provider = _endpoint()
+    expected = provider.identity.to_dict()
+    mismatched_quantization = {**expected, "quantization": "other"}
+    mismatched_engine = {**expected, "inference_engine": "other"}
     for payload in (
         {"choices": [{"message": {"content": "{}"}}]},
         {
-            "model": "other",
-            "model_revision": "rev",
+            "model_identity": mismatched_quantization,
             "choices": [{"message": {"content": "{}"}}],
         },
         {
-            "model": "endpoint-model",
-            "model_revision": "other-rev",
+            "model_identity": mismatched_engine,
+            "choices": [{"message": {"content": "{}"}}],
+        },
+        {
+            "model_identity": {key: value for key, value in expected.items() if key != "schema_version"},
             "choices": [{"message": {"content": "{}"}}],
         },
     ):
@@ -317,11 +323,10 @@ def test_modal_endpoint_network_and_response_failures() -> None:
     ):
         provider.complete_json(task="semantic_cores:0", payload={})
     for payload, match in (
-        ({"model": "endpoint-model", "model_revision": "rev"}, "no choices"),
+        ({"model_identity": provider.identity.to_dict()}, "no choices"),
         (
             {
-                "model": "endpoint-model",
-                "model_revision": "rev",
+                "model_identity": provider.identity.to_dict(),
                 "choices": [{}],
             },
             "no message content",

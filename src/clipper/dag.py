@@ -217,6 +217,25 @@ class DagStore:
         self.coordinator.reload()
         return self.cached_output(identity)
 
+    def _release_lease_best_effort(
+        self,
+        coordinator: DagLeaseCoordinator,
+        identity: StageIdentity,
+        owner_id: str,
+    ) -> None:
+        for release_attempt in range(3):
+            try:
+                if coordinator.release(identity, owner_id):
+                    return
+            except Exception as exc:
+                LOGGER.warning(
+                    "DAG lease cleanup failed for %s: %s",
+                    identity.stage_name,
+                    exc,
+                )
+            if release_attempt < 2:
+                time.sleep(0.05 * (release_attempt + 1))
+
     def _execute_coordinated(
         self,
         identity: StageIdentity,
@@ -237,7 +256,7 @@ class DagStore:
                 coordinator.reload()
                 cached = self.cached_output(identity)
                 if cached is not None:
-                    coordinator.release(identity, owner_id)
+                    self._release_lease_best_effort(coordinator, identity, owner_id)
                     return cached, True
                 attempt = self.attempt_count(identity) + 1
                 started = _now()
@@ -297,18 +316,7 @@ class DagStore:
             coordinator.commit()
             renewal_stop.set()
             renewal_thread.join(timeout=1.0)
-            for release_attempt in range(3):
-                try:
-                    if coordinator.release(identity, owner_id):
-                        break
-                except Exception as exc:
-                    LOGGER.warning(
-                        "DAG PASS lease cleanup failed for %s: %s",
-                        identity.stage_name,
-                        exc,
-                    )
-                if release_attempt < 2:
-                    time.sleep(0.05 * (release_attempt + 1))
+            self._release_lease_best_effort(coordinator, identity, owner_id)
             return result.output, False
         except Exception as exc:
             if not lease_lost.is_set():

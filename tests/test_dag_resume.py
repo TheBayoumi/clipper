@@ -480,6 +480,42 @@ def test_coordinated_claim_rechecks_cache_before_paid_operation(tmp_path: Path) 
     assert active["owner"] == ""
 
 
+def test_coordinated_claim_recheck_preserves_cached_pass_when_release_fails(
+    tmp_path: Path,
+) -> None:
+    identity = _identity("claim-recheck-release-failure")
+    cache_writer = DagStore(tmp_path)
+    release_calls = {"count": 0}
+
+    def claim(_identity, _owner: str, _ttl: float) -> bool:
+        cache_writer.execute(identity, lambda: {"value": 23})
+        return True
+
+    def release(_identity, _owner: str) -> bool:
+        release_calls["count"] += 1
+        raise RuntimeError("release unavailable")
+
+    coordinator = DagLeaseCoordinator(
+        claim=claim,
+        renew=lambda *_args: True,
+        release=release,
+        commit=lambda: None,
+        reload=lambda: None,
+    )
+    follower = DagStore(tmp_path, coordinator=coordinator)
+
+    with patch("clipper.dag.time.sleep"):
+        output, cached = follower.execute(
+            identity,
+            lambda: (_ for _ in ()).throw(AssertionError("paid operation must not execute")),
+        )
+
+    assert output == {"value": 23}
+    assert cached is True
+    assert release_calls["count"] == 3
+    assert follower.cached_output(identity) == {"value": 23}
+
+
 def test_coordinated_helpers_fail_closed_without_coordinator(tmp_path: Path) -> None:
     store = DagStore(tmp_path)
     identity = _identity("missing-coordinator")

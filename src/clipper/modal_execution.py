@@ -196,6 +196,19 @@ class ProductionBudgetExceeded(RuntimeError):
     pass
 
 
+class ProductionCallNotTerminated(RuntimeError):
+    """Cancellation could not be confirmed for an exact spawned Modal call."""
+
+    def __init__(self, call_id: str, errors: list[str]) -> None:
+        self.call_id = call_id
+        self.errors = tuple(errors)
+        detail = "; ".join(errors) if errors else "no cancellation acknowledgement"
+        super().__init__(
+            "Modal production call remained nonterminal after bounded cancellation: "
+            f"call_id={call_id or '<unknown>'} errors={detail}"
+        )
+
+
 @dataclass(slots=True)
 class _BudgetLedger:
     max_gpu_seconds: float
@@ -268,6 +281,23 @@ class _BudgetLedger:
             "remaining_gpu_seconds": remaining_gpu,
             "remaining_estimated_usd": remaining_cost,
         }
+
+
+def _cancel_remote_call(call: Any) -> None:
+    """Cancel one exact Modal call and fail closed unless the API confirms cancellation."""
+    call_id = str(getattr(call, "object_id", "") or getattr(call, "id", "") or "")
+    errors: list[str] = []
+    for attempt in range(1, _CONTROL_PLANE_ATTEMPTS + 1):
+        try:
+            call.cancel(terminate_containers=False)
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+            if attempt < _CONTROL_PLANE_ATTEMPTS:
+                time.sleep(_retry_delay(attempt))
+                continue
+            raise ProductionCallNotTerminated(call_id, errors) from exc
+        return
+    raise ProductionCallNotTerminated(call_id, errors)
 
 
 def _invoke_remote_with_budget(
@@ -348,10 +378,7 @@ def _invoke_remote_with_budget(
     finally:
         charge_elapsed()
         if not terminal_result:
-            try:
-                call.cancel(terminate_containers=False)
-            except Exception:
-                LOGGER.exception("failed to cancel nonterminal Modal production call")
+            _cancel_remote_call(call)
 
 
 def _deploy(script: Path) -> None:
@@ -610,6 +637,21 @@ def _acquire_remote_source(
                         "egress": label,
                         "status": "BUDGET_EXCEEDED",
                         "phase": "invoke",
+                        "estimated_usd": budget.estimated_usd - before_cost,
+                        "gpu_seconds": budget.gpu_seconds - before_gpu,
+                    }
+                )
+            raise
+        except ProductionCallNotTerminated as exc:
+            if attempt_evidence is not None:
+                attempt_evidence.append(
+                    {
+                        "egress": label,
+                        "status": "NONTERMINAL_CALL",
+                        "phase": "invoke",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[-2000:],
+                        "call_id": exc.call_id,
                         "estimated_usd": budget.estimated_usd - before_cost,
                         "gpu_seconds": budget.gpu_seconds - before_gpu,
                     }
