@@ -349,6 +349,48 @@ def test_recoverable_modal_submission_rejects_before_input_when_serialization_ex
     assert budget.gpu_seconds == pytest.approx(1.0)
 
 
+def test_recoverable_modal_submission_rechecks_budget_at_attachment_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    map_response = SimpleNamespace(
+        function_call_id="fc-recoverable",
+        pipelined_inputs=[],
+    )
+    modal, async_utils, function_utils, api_pb2, stub, events = _fake_modal_submission_modules(
+        map_response=map_response,
+        put_response=SimpleNamespace(inputs=[SimpleNamespace(input_id="in-1")]),
+    )
+    modules = {
+        "modal": modal,
+        "modal._utils.async_utils": async_utils,
+        "modal._utils.function_utils": function_utils,
+        "modal_proto.api_pb2": api_pb2,
+    }
+    times = iter([0.0, 0.0, 0.0, 1.0])
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: next(times))
+    monkeypatch.setattr(
+        "clipper.modal_execution.importlib.import_module",
+        lambda name: modules[name],
+    )
+    budget = _BudgetLedger(1.0, 100.0)
+
+    call, started, error = _real_spawn_recoverable_modal_call(
+        object(),
+        {"request": True},
+        budget=budget,
+        gpu_count=1.0,
+        estimated_usd_per_second=0.0,
+    )
+
+    assert call.object_id == "fc-recoverable"
+    assert started == pytest.approx(1.0)
+    assert isinstance(error, ProductionBudgetExceeded)
+    assert "input attachment boundary" in str(error)
+    stub.FunctionPutInputs.assert_not_awaited()
+    assert events == ["from-id"]
+    assert budget.gpu_seconds == pytest.approx(1.0)
+
+
 def test_recoverable_modal_submission_keeps_exact_call_on_lost_ack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -409,6 +409,21 @@ def _spawn_recoverable_modal_call(
         )
 
     async def submit_input() -> None:
+        nonlocal started
+        attachment_boundary = time.monotonic()
+        budget.charge(
+            max(0.0, attachment_boundary - started),
+            gpu_count=gpu_count,
+            estimated_usd_per_second=estimated_usd_per_second,
+        )
+        started = attachment_boundary
+        remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
+        if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
+            raise ProductionBudgetExceeded(
+                "production budget exhausted at Modal producer input attachment boundary: "
+                f"gpu_seconds={budget.gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
+                f"estimated_usd={budget.estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
+            )
         response = await internal_function.client.stub.FunctionPutInputs(
             api_pb2.FunctionPutInputsRequest(
                 function_id=function_id,
@@ -424,6 +439,8 @@ def _spawn_recoverable_modal_call(
     submit = synchronizer.create_blocking(submit_input)
     try:
         submit()
+    except ProductionBudgetExceeded as exc:
+        return call, started, exc
     except Exception as exc:
         return (
             call,
