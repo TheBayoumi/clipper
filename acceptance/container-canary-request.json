@@ -1,0 +1,11 @@
+{
+  "requested_for_sha": "4b089454ec638f168d9d542ea90a3fc5c0afcded",
+  "reason": "Rerun exact-head canary after aligning deterministic quality-window opening strategy",
+  "requirements": [
+    "build deployment image",
+    "run current end-to-end smoke inside image",
+    "publish tested image",
+    "verify registry round trip",
+    "upload deployment evidence"
+  ]
+}

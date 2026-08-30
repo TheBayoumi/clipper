@@ -1,0 +1,1215 @@
+# Exact-head autonomous multimodal production acceptance.
+name: Production render and HILP evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_production:
+        description: Confirm that this run may invoke already-deployed exact-head Modal workers and perform production inference
+        required: true
+        type: boolean
+        default: false
+      fresh_inference:
+        description: Explicitly bypass reusable inference caches; keep false for resumable production
+        required: true
+        type: boolean
+        default: false
+      resume_from_run_id:
+        description: Optional prior pipeline run ID recorded as resume provenance
+        required: false
+        type: string
+      campaign_brief:
+        description: Repository-relative campaign brief under campaigns/
+        required: true
+        type: string
+      target_video_id:
+        description: Optional explicit target video ID; required when the brief has multiple targets
+        required: false
+        type: string
+      editorial_acceptance_only:
+        description: Run live editorial projection/repartition acceptance without rendering MP4
+        required: true
+        type: boolean
+        default: false
+      max_gpu_seconds:
+        description: Maximum aggregate recorded GPU seconds for the acceptance run
+        required: true
+        type: number
+        default: 21600
+      max_estimated_usd:
+        description: Maximum aggregate recorded estimated inference cost in USD
+        required: true
+        type: number
+        default: 10
+  push:
+    paths:
+      - "acceptance/production-run-request.json"
+
+concurrency:
+  group: production-hilp-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+env:
+  MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+  MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+  CLIPPER_YOUTUBE_COOKIES_B64: ${{ secrets.CLIPPER_YOUTUBE_COOKIES_B64 }}
+  CLIPPER_MODAL_APP: clipper-open-editor
+  CLIPPER_MODAL_PIPELINE_APP: clipper-production-pipeline
+  CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS: 900
+  CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS: 32768
+  CLIPPER_EDITORIAL_GENERATION_DEADLINE_SECONDS: 300
+  CLIPPER_EDITORIAL_GENERATION_DEADLINE_TOLERANCE_SECONDS: 30
+  CLIPPER_MODAL_GENERATION_STALL_SECONDS: 720
+
+jobs:
+  production-render-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Require enabled production acceptance request
+        if: github.event_name != 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          marker = json.loads(
+              Path("acceptance/production-run-request.json").read_text(encoding="utf-8")
+          )
+          if not isinstance(marker, dict) or marker.get("enabled") is not True:
+              raise SystemExit("production acceptance request is disabled")
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Resolve exact checked-out source SHA
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_SOURCE_SHA"
+          echo "CLIPPER_ACCEPTANCE_SHA=$actual" >> "$GITHUB_ENV"
+          printf '%s\n' "$actual" > exact-head-sha.txt
+
+      - name: Install orchestration dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[modal]'
+
+      - name: Resolve campaign, explicit target, confirmation, and budget
+        env:
+          REQUEST_CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
+          REQUEST_FRESH_INFERENCE: ${{ inputs.fresh_inference }}
+          REQUEST_RESUME_FROM_RUN_ID: ${{ inputs.resume_from_run_id }}
+          REQUEST_CAMPAIGN_BRIEF: ${{ inputs.campaign_brief }}
+          REQUEST_TARGET_VIDEO_ID: ${{ inputs.target_video_id }}
+          REQUEST_EDITORIAL_ACCEPTANCE_ONLY: ${{ inputs.editorial_acceptance_only }}
+          REQUEST_MAX_GPU_SECONDS: ${{ inputs.max_gpu_seconds }}
+          REQUEST_MAX_ESTIMATED_USD: ${{ inputs.max_estimated_usd }}
+        run: |
+          set -euo pipefail
+          mkdir -p open-evidence
+          python - <<'PY'
+          import hashlib
+          import json
+          import math
+          import os
+          from pathlib import Path
+          import yaml
+
+          if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+              confirmed = os.environ.get("REQUEST_CONFIRM_PRODUCTION", "").lower() == "true"
+              fresh_inference = os.environ.get("REQUEST_FRESH_INFERENCE", "").lower() == "true"
+              resume_from_run_id = (
+                  os.environ.get("REQUEST_RESUME_FROM_RUN_ID", "").strip() or None
+              )
+              brief_value = os.environ.get("REQUEST_CAMPAIGN_BRIEF", "").strip()
+              target_value = os.environ.get("REQUEST_TARGET_VIDEO_ID", "").strip()
+              gpu_limit_raw = os.environ.get("REQUEST_MAX_GPU_SECONDS", "21600")
+              cost_limit_raw = os.environ.get("REQUEST_MAX_ESTIMATED_USD", "10")
+              editorial_acceptance_only = (
+                  os.environ.get("REQUEST_EDITORIAL_ACCEPTANCE_ONLY", "").lower() == "true"
+              )
+          else:
+              marker = json.loads(
+                  Path("acceptance/production-run-request.json").read_text(encoding="utf-8")
+              )
+              if not isinstance(marker, dict):
+                  raise RuntimeError("production acceptance marker must be an object")
+              confirmed = marker.get("confirm_production") is True
+              fresh_inference = marker.get("fresh_inference") is True
+              resume_from_run_id = str(marker.get("resume_from_run_id") or "").strip() or None
+              brief_value = str(marker.get("campaign_brief") or "").strip()
+              target_value = str(marker.get("target_video_id") or "").strip()
+              gpu_limit_raw = marker.get("max_gpu_seconds", 21600)
+              cost_limit_raw = marker.get("max_estimated_usd", 10)
+              editorial_acceptance_only = marker.get("editorial_acceptance_only") is True
+
+          if not confirmed:
+              raise RuntimeError("production acceptance requires confirm_production=true")
+          if fresh_inference and resume_from_run_id is not None:
+              raise RuntimeError("fresh inference cannot be combined with a resume_from_run_id")
+          execution_mode = "fresh-inference" if fresh_inference else "content-addressed-resume"
+          gpu_limit = float(gpu_limit_raw)
+          cost_limit = float(cost_limit_raw)
+          if (
+              not math.isfinite(gpu_limit)
+              or not math.isfinite(cost_limit)
+              or gpu_limit <= 0
+              or cost_limit <= 0
+          ):
+              raise RuntimeError("production acceptance budget limits must be finite and positive")
+
+          brief_path = Path(brief_value)
+          if (
+              not brief_value
+              or brief_path.is_absolute()
+              or ".." in brief_path.parts
+              or not brief_path.parts
+              or brief_path.parts[0] != "campaigns"
+              or brief_path.suffix.lower() not in {".yaml", ".yml", ".json"}
+              or not brief_path.is_file()
+          ):
+              raise RuntimeError("campaign_brief must name an existing YAML/JSON file under campaigns/")
+          text = brief_path.read_text(encoding="utf-8")
+          data = json.loads(text) if brief_path.suffix.lower() == ".json" else yaml.safe_load(text)
+          if not isinstance(data, dict):
+              raise RuntimeError("campaign brief root must be an object")
+          targets = data.get("targets")
+          if not isinstance(targets, dict) or str(targets.get("mode") or "").lower() != "explicit":
+              raise RuntimeError("production acceptance requires targets.mode=explicit")
+          videos = targets.get("videos")
+          if not isinstance(videos, list) or not videos or not all(isinstance(v, dict) for v in videos):
+              raise RuntimeError("production acceptance requires explicit target videos")
+          if target_value:
+              matches = [v for v in videos if str(v.get("video_id") or "").strip() == target_value]
+              if len(matches) != 1:
+                  raise RuntimeError("target_video_id must identify exactly one target in the brief")
+              target = matches[0]
+          elif len(videos) == 1:
+              target = videos[0]
+          else:
+              raise RuntimeError("target_video_id is required for a multi-target acceptance brief")
+
+          video_id = str(target.get("video_id") or "").strip()
+          video_url = str(target.get("url") or "").strip()
+          channel_id = str(target.get("channel_id") or "").strip()
+          rights = data.get("rights")
+          if not video_id or not channel_id or not video_url.startswith("https://"):
+              raise RuntimeError("selected target requires video_id, channel_id, and https url")
+          if not isinstance(rights, dict) or rights.get("confirmed") is not True:
+              raise RuntimeError("production acceptance requires confirmed rights")
+          authorized = rights.get("authorized_channels")
+          if not isinstance(authorized, list) or channel_id not in authorized:
+              raise RuntimeError("selected target channel is not authorized")
+
+          campaign_id = str(data.get("campaign_id") or "").strip()
+          if not campaign_id:
+              raise RuntimeError("campaign_id is required")
+          resume_provenance = None
+          if resume_from_run_id is not None:
+              registry = json.loads(
+                  Path("acceptance/resume-provenance.json").read_text(encoding="utf-8")
+              )
+              if not isinstance(registry, dict):
+                  raise RuntimeError("resume provenance registry must be an object")
+              records = registry.get("records")
+              if not isinstance(records, dict):
+                  raise RuntimeError("resume provenance registry records must be an object")
+              record = records.get(resume_from_run_id)
+              if not isinstance(record, dict):
+                  raise RuntimeError(
+                      "resume_from_run_id has no reviewed compatible artifact provenance"
+                  )
+              if str(record.get("workflow_run_id") or "") != resume_from_run_id:
+                  raise RuntimeError("resume provenance registry key does not match workflow run ID")
+              if str(record.get("campaign_id") or "") != campaign_id:
+                  raise RuntimeError("resume provenance campaign does not match selected campaign")
+              if str(record.get("campaign_brief_sha256") or "") != hashlib.sha256(
+                  text.encode()
+              ).hexdigest():
+                  raise RuntimeError("resume provenance campaign brief digest does not match")
+              if str(record.get("target_video_id") or "") != video_id:
+                  raise RuntimeError("resume provenance target does not match selected video")
+              resume_provenance = {str(key): value for key, value in record.items()}
+              Path("open-evidence/resume-provenance-request.json").write_text(
+                  json.dumps(resume_provenance, indent=2) + "\n",
+                  encoding="utf-8",
+              )
+
+          evidence = {
+              "acceptance_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
+              "campaign_id": campaign_id,
+              "campaign_brief": brief_path.as_posix(),
+              "campaign_brief_sha256": hashlib.sha256(text.encode()).hexdigest(),
+              "target_video_id": video_id,
+              "target_video_url": video_url,
+              "target_channel_id": channel_id,
+              "fresh_inference": fresh_inference,
+              "resume_from_run_id": resume_from_run_id,
+              "resume_provenance": resume_provenance,
+              "execution_mode": execution_mode,
+              "max_gpu_seconds": gpu_limit,
+              "max_estimated_usd": cost_limit,
+              "editorial_acceptance_only": editorial_acceptance_only,
+              "render": not editorial_acceptance_only,
+          }
+          Path("open-evidence/acceptance-request.json").write_text(
+              json.dumps(evidence, indent=2) + "\n", encoding="utf-8"
+          )
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as handle:
+              handle.write(f"CLIPPER_CAMPAIGN_BRIEF={brief_path.as_posix()}\n")
+              handle.write(f"CLIPPER_TARGET_VIDEO_ID={video_id}\n")
+              handle.write(f"CLIPPER_TARGET_VIDEO_URL={video_url}\n")
+              handle.write(f"CLIPPER_TARGET_CHANNEL_ID={channel_id}\n")
+              handle.write(f"CLIPPER_FRESH_INFERENCE={'true' if fresh_inference else 'false'}\n")
+              handle.write(f"CLIPPER_RESUME_FROM_RUN_ID={resume_from_run_id or ''}\n")
+              handle.write(
+                  "CLIPPER_RESUME_PROVENANCE_PATH="
+                  f"{'open-evidence/resume-provenance-request.json' if resume_provenance else ''}\n"
+              )
+              handle.write(f"CLIPPER_EXECUTION_MODE={execution_mode}\n")
+              handle.write(f"CLIPPER_MAX_GPU_SECONDS={gpu_limit}\n")
+              handle.write(f"CLIPPER_MAX_ESTIMATED_USD={cost_limit}\n")
+              handle.write(
+                  f"CLIPPER_RENDER={'false' if editorial_acceptance_only else 'true'}\n"
+              )
+          PY
+
+      - name: Wait for successful exact-head CI and smoke
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.parse
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["CLIPPER_ACCEPTANCE_SHA"]
+          workflows = ("ci.yml", "deploy-and-smoke.yml")
+
+          def runs_for(workflow: str) -> list[dict[str, object]]:
+              query = urllib.parse.urlencode({"head_sha": sha, "per_page": 20})
+              url = (
+                  f"https://api.github.com/repos/{repository}/actions/workflows/"
+                  f"{workflow}/runs?{query}"
+              )
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  payload = json.load(response)
+              return [
+                  item
+                  for item in payload.get("workflow_runs", [])
+                  if isinstance(item, dict) and item.get("head_sha") == sha
+              ]
+
+          pending = set(workflows)
+          for _attempt in range(180):
+              for workflow in tuple(pending):
+                  runs = runs_for(workflow)
+                  successful = [
+                      item
+                      for item in runs
+                      if item.get("status") == "completed"
+                      and item.get("conclusion") == "success"
+                  ]
+                  if successful:
+                      pending.remove(workflow)
+                      continue
+                  running = [
+                      item
+                      for item in runs
+                      if item.get("status") in {"queued", "in_progress", "waiting", "pending"}
+                  ]
+                  failed = [
+                      item
+                      for item in runs
+                      if item.get("status") == "completed"
+                      and item.get("conclusion") not in {None, "success"}
+                  ]
+                  if failed and not running:
+                      latest = max(
+                          failed,
+                          key=lambda item: int(item.get("run_number") or 0),
+                      )
+                      raise RuntimeError(
+                          "exact-head static gate failed before production compute: "
+                          f"workflow={workflow} sha={sha} "
+                          f"run_id={latest.get('id')} conclusion={latest.get('conclusion')}"
+                      )
+              if not pending:
+                  print(
+                      json.dumps(
+                          {
+                              "status": "PASS",
+                              "acceptance_sha": sha,
+                              "workflows": list(workflows),
+                          },
+                          sort_keys=True,
+                      )
+                  )
+                  break
+              time.sleep(10)
+          else:
+              raise RuntimeError(
+                  "timed out waiting for exact-head static gates before production compute: "
+                  f"sha={sha} pending={sorted(pending)}"
+              )
+          PY
+
+      - name: Verify Modal credentials before compute
+        run: |
+          test -n "$MODAL_TOKEN_ID"
+          test -n "$MODAL_TOKEN_SECRET"
+
+      - name: Wait for successful exact-head Modal deployment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["CLIPPER_ACCEPTANCE_SHA"]
+          workflow = "modal-workers-deploy.yml"
+          query = urllib.parse.urlencode(
+              {
+                  "head_sha": sha,
+                  "per_page": 20,
+              }
+          )
+          url = (
+              f"https://api.github.com/repos/{repository}/actions/workflows/"
+              f"{workflow}/runs?{query}"
+          )
+
+          selected = None
+          terminal_failure = None
+          for _attempt in range(180):
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  payload = json.load(response)
+
+              exact_head_runs = [
+                  item
+                  for item in payload.get("workflow_runs", [])
+                  if isinstance(item, dict) and item.get("head_sha") == sha
+              ]
+              successful = [
+                  item
+                  for item in exact_head_runs
+                  if item.get("status") == "completed"
+                  and item.get("conclusion") == "success"
+              ]
+              if successful:
+                  selected = max(
+                      successful,
+                      key=lambda item: int(item.get("run_number") or 0),
+                  )
+                  break
+
+              completed = [
+                  item
+                  for item in exact_head_runs
+                  if item.get("status") == "completed"
+              ]
+              running = [
+                  item
+                  for item in exact_head_runs
+                  if item.get("status") in {"queued", "in_progress", "waiting", "pending"}
+              ]
+              failed = [
+                  item
+                  for item in completed
+                  if item.get("conclusion") not in {None, "success"}
+              ]
+              if failed and not running:
+                  terminal_failure = max(
+                      failed,
+                      key=lambda item: int(item.get("run_number") or 0),
+                  )
+                  break
+              time.sleep(15)
+
+          if selected is None:
+              if terminal_failure is not None:
+                  raise RuntimeError(
+                      "exact-head Deploy Modal workers completed unsuccessfully: "
+                      f"sha={sha} run_id={terminal_failure.get('id')} "
+                      f"conclusion={terminal_failure.get('conclusion')}"
+                  )
+              raise RuntimeError(
+                  "timed out waiting for successful exact-head Deploy Modal workers run "
+                  f"before inference: sha={sha}"
+              )
+
+          evidence = {
+              "status": "PASS",
+              "acceptance_sha": sha,
+              "workflow": workflow,
+              "run_id": selected.get("id"),
+              "run_number": selected.get("run_number"),
+              "html_url": selected.get("html_url"),
+              "head_sha": selected.get("head_sha"),
+          }
+          Path("open-evidence/modal-deployment-prerequisite.json").write_text(
+              json.dumps(evidence, indent=2) + chr(10),
+              encoding="utf-8",
+          )
+          print(json.dumps(evidence, indent=2))
+          PY
+
+      - name: Verify immutable deployed Modal SHA identities
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import modal
+
+          expected = os.environ["CLIPPER_ACCEPTANCE_SHA"].lower()
+          identities = {
+              "model": modal.Function.from_name(
+                  os.environ["CLIPPER_MODAL_APP"], "deployment_identity"
+              ).remote(),
+              "pipeline": modal.Function.from_name(
+                  os.environ["CLIPPER_MODAL_PIPELINE_APP"], "deployment_identity"
+              ).remote(),
+          }
+          for name, value in identities.items():
+              if not isinstance(value, dict):
+                  raise RuntimeError(f"{name} deployment identity is not an object: {value!r}")
+              actual = str(value.get("deployed_git_sha") or "").lower()
+              if actual != expected:
+                  raise RuntimeError(
+                      f"{name} deployed SHA mismatch before inference: "
+                      f"expected={expected} actual={actual}"
+                  )
+          Path("open-evidence/modal-deployed-sha-identities.json").write_text(
+              json.dumps(identities, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Verify four production editorial schemas and gated-model access
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import modal
+
+          app = os.environ["CLIPPER_MODAL_APP"]
+          schema = modal.Function.from_name(app, "editorial_schema_smoke").remote()
+          if not isinstance(schema, dict) or schema.get("ok") is not True:
+              raise RuntimeError(f"editorial schema smoke failed: {schema}")
+          if int(schema.get("task_families", 0)) != 4:
+              raise RuntimeError(f"expected exactly four production editorial task families: {schema}")
+          contract = schema.get("generation_runtime_contract")
+          if not isinstance(contract, dict):
+              raise RuntimeError(f"deployed editorial runtime contract is missing: {schema}")
+          if (
+              contract.get("outlines_version") != "1.3.0"
+              or contract.get("transformers_version") != "4.57.3"
+              or contract.get("outlines_max_time_forwarded") is not True
+              or contract.get("transformers_max_time_supported") is not True
+              or float(contract.get("max_time_seconds") or 0.0) != 300.0
+          ):
+              raise RuntimeError(
+                  f"deployed editorial generation runtime contract drifted: {contract}"
+              )
+          Path("open-evidence/modal-editorial-schema-smoke.json").write_text(
+              json.dumps(schema, indent=2) + "\n", encoding="utf-8"
+          )
+          access = modal.Function.from_name(app, "hf_access_smoke").remote()
+          if not isinstance(access, dict) or access.get("ok") is not True:
+              raise RuntimeError(f"HF access smoke failed: {access}")
+          Path("open-evidence/modal-hf-access.json").write_text(
+              json.dumps(access, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Verify deployed production function handles
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import modal
+
+          app = os.environ["CLIPPER_MODAL_PIPELINE_APP"]
+          for name in ("acquire_source", "run_full_cycle", "deployment_identity"):
+              modal.Function.from_name(app, name).hydrate()
+          Path("open-evidence/modal-deployment.json").write_text(
+              json.dumps(
+                  {
+                      "status": "PASS",
+                      "acceptance_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
+                      "model_app": os.environ["CLIPPER_MODAL_APP"],
+                      "pipeline_app": app,
+                  },
+                  indent=2,
+              ) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Prepare budget-accounted source acquisition
+        run: |
+          set -euo pipefail
+          mkdir -p open-evidence
+          rm -f \
+            open-evidence/source-master.json \
+            open-evidence/source-egress-attempts.json \
+            open-evidence/source-budget.json
+
+      - name: Run current-model pipeline with cancellable Modal spy
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/modal_hilp_watchdog.py
+
+      - name: Materialize exact production run from Modal volume
+        run: |
+          rm -rf cycle-evidence
+          modal volume get --force "$CLIPPER_RUN_VOLUME" "$CLIPPER_RUN_PATH" cycle-evidence
+
+      - name: Validate live editorial projection and token-aware repartition
+        if: env.CLIPPER_RENDER == 'false'
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          summary = json.loads(
+              Path("open-evidence/modal-spy-summary.json").read_text(encoding="utf-8")
+          )
+          if summary.get("status") != "PASS":
+              raise RuntimeError(f"Modal spy did not pass editorial acceptance: {summary}")
+          if summary.get("call_cancelled") is not False:
+              raise RuntimeError(f"editorial acceptance call was cancelled: {summary}")
+          if summary.get("active_editorial_calls"):
+              raise RuntimeError(
+                  f"editorial acceptance ended with active producer calls: {summary}"
+              )
+          if summary.get("terminal_seen") is not True:
+              raise RuntimeError(f"editorial acceptance lacks scoped terminal telemetry: {summary}")
+          terminal = summary.get("terminal_event")
+          if not isinstance(terminal, dict) or terminal.get("status") != "PASS":
+              raise RuntimeError(f"editorial acceptance terminal event is invalid: {summary}")
+          counts = summary.get("event_counts")
+          authoritative_counts = summary.get("authoritative_event_counts")
+          if not isinstance(counts, dict):
+              raise RuntimeError("Modal spy event counts are missing")
+          if not isinstance(authoritative_counts, dict):
+              raise RuntimeError("Modal spy authoritative event counts are missing")
+          if int(counts.get("editorial_evidence_projection") or 0) <= 0:
+              raise RuntimeError("live editorial acceptance observed no evidence projection")
+          if int(counts.get("editorial_acceptance_probe_result") or 0) <= 0:
+              raise RuntimeError("live editorial acceptance observed no repartition probe result")
+          if int(counts.get("editorial_generation_deadline") or 0) <= 0:
+              raise RuntimeError("live editorial acceptance observed no generation deadline")
+          if int(authoritative_counts.get("editorial_execution_timeout") or 0) != 0:
+              raise RuntimeError("live editorial acceptance observed an editorial execution timeout")
+          call_starts = int(authoritative_counts.get("editorial_remote_call_start") or 0)
+          call_terminals = int(authoritative_counts.get("editorial_remote_call_terminal") or 0)
+          if call_starts <= 0 or call_terminals != call_starts:
+              raise RuntimeError(
+                  "live editorial acceptance lacks a closed producer-side editorial call set: "
+                  f"starts={call_starts} terminals={call_terminals}"
+              )
+          if int(authoritative_counts.get("production_cycle_terminal") or 0) != 1:
+              raise RuntimeError(
+                  "live editorial acceptance requires exactly one scoped production terminal event"
+              )
+
+          records = []
+          for line in Path("open-evidence/modal-spy.ndjson").read_text(
+              encoding="utf-8"
+          ).splitlines():
+              event = json.loads(line)
+              if isinstance(event, dict):
+                  records.append(event)
+
+          producer_starts = [
+              event
+              for event in records
+              if event.get("event") == "editorial_remote_call_start"
+              and event.get("authoritative") is True
+          ]
+          producer_terminals = [
+              event
+              for event in records
+              if event.get("event") == "editorial_remote_call_terminal"
+              and event.get("authoritative") is True
+          ]
+          start_ids = {
+              str(event.get("invocation_id") or "")
+              for event in producer_starts
+          }
+          terminal_ids = {
+              str(event.get("invocation_id") or "")
+              for event in producer_terminals
+          }
+          if "" in start_ids or "" in terminal_ids or start_ids != terminal_ids:
+              raise RuntimeError(
+                  "producer-side editorial invocation IDs are not one-to-one closed: "
+                  f"starts={sorted(start_ids)} terminals={sorted(terminal_ids)}"
+              )
+          terminal_statuses = [str(event.get("status") or "") for event in producer_terminals]
+          if any(status in {"TIMEOUT", "ERROR"} for status in terminal_statuses):
+              raise RuntimeError(
+                  f"producer-side editorial calls contained terminal failures: {producer_terminals}"
+              )
+          producer_completes = [
+              event for event in producer_terminals if event.get("status") == "COMPLETE"
+          ]
+          if not producer_completes:
+              raise RuntimeError("editorial acceptance produced no completed remote inference")
+          safe_completes = []
+          for event in producer_completes:
+              input_tokens = int(event.get("input_tokens") or 0)
+              context_limit = int(event.get("context_limit_tokens") or 0)
+              runtime_safe = int(event.get("runtime_safe_input_tokens") or 0)
+              generation_budget = int(event.get("generation_budget_tokens") or 0)
+              if event.get("capacity_repartitionable") is not True:
+                  continue
+              if (
+                  input_tokens <= 0
+                  or context_limit <= input_tokens
+                  or runtime_safe <= 0
+                  or input_tokens > runtime_safe
+                  or generation_budget <= 0
+              ):
+                  raise RuntimeError(
+                      f"producer terminal carried unsafe runtime capacity evidence: {event}"
+                  )
+              safe_completes.append(event)
+          if not safe_completes:
+              raise RuntimeError(
+                  "editorial acceptance produced no completed repartitionable inference "
+                  "with measured runtime-safe capacity evidence"
+              )
+
+          projections = [
+              event
+              for event in records
+              if event.get("event") == "editorial_evidence_projection"
+          ]
+          repartitions = [
+              event
+              for event in records
+              if event.get("event") == "editorial_repartition"
+          ]
+          capacity_probes = [
+              event
+              for event in records
+              if event.get("event") == "editorial_capacity_probe"
+          ]
+          probe_results = [
+              event
+              for event in records
+              if event.get("event") == "editorial_acceptance_probe_result"
+          ]
+          generations = [
+              event
+              for event in records
+              if event.get("event") == "editorial_generation_complete"
+          ]
+          request_plans = [
+              event
+              for event in records
+              if event.get("event") == "editorial_request_plan"
+          ]
+          generation_deadlines = [
+              event
+              for event in records
+              if event.get("event") == "editorial_generation_deadline"
+          ]
+          timeouts = [
+              event
+              for event in records
+              if event.get("event") == "editorial_execution_timeout"
+              and event.get("authoritative") is True
+          ]
+          if not projections or not probe_results:
+              raise RuntimeError("live authoritative editorial telemetry records are incomplete")
+          if timeouts:
+              raise RuntimeError(f"editorial acceptance contained execution timeouts: {timeouts}")
+
+          deadline_terminals = [
+              event
+              for event in producer_terminals
+              if event.get("status") == "CAPACITY_REJECTED"
+              and event.get("reason") == "generation_runtime_deadline"
+          ]
+          deadline_repartitions = [
+              event
+              for event in repartitions
+              if event.get("reason") == "generation_runtime_deadline"
+          ]
+          if not generation_deadlines or len(deadline_terminals) != 1:
+              raise RuntimeError(
+                  "live acceptance requires exactly one producer-closed generation deadline: "
+                  f"deadlines={generation_deadlines} terminals={deadline_terminals}"
+              )
+          deadline_terminal = deadline_terminals[0]
+          deadline_invocation_id = str(deadline_terminal.get("invocation_id") or "")
+          matching_deadlines = [
+              event
+              for event in generation_deadlines
+              if str(event.get("invocation_id") or "") == deadline_invocation_id
+          ]
+          matching_repartitions = [
+              event
+              for event in deadline_repartitions
+              if str(event.get("invocation_id") or "") == deadline_invocation_id
+          ]
+          if len(matching_deadlines) != 1 or len(matching_repartitions) != 1:
+              raise RuntimeError(
+                  "deadline telemetry is not correlated end-to-end by invocation ID: "
+                  f"invocation={deadline_invocation_id!r} "
+                  f"deadlines={matching_deadlines} repartitions={matching_repartitions}"
+              )
+          deadline_event = matching_deadlines[0]
+          deadline_repartition = matching_repartitions[0]
+          deadline_seconds = float(deadline_event.get("generation_deadline_seconds") or 0.0)
+          elapsed_seconds = float(deadline_event.get("elapsed_seconds") or 0.0)
+          forced_min_new_tokens = int(deadline_event.get("forced_min_new_tokens") or 0)
+          output_tokens = int(deadline_event.get("output_tokens") or 0)
+          deadline_tolerance_seconds = 30.0
+          deadline_input_tokens = int(deadline_terminal.get("input_tokens") or 0)
+          deadline_target_tokens = int(
+              deadline_terminal.get("runtime_safe_input_tokens") or 0
+          )
+          if (
+              deadline_seconds != 300.0
+              or elapsed_seconds < deadline_seconds
+              or elapsed_seconds > deadline_seconds + deadline_tolerance_seconds
+          ):
+              raise RuntimeError(
+                  "real model generation did not stop within the bounded production "
+                  "300-second deadline window: "
+                  f"{deadline_event}"
+              )
+          if forced_min_new_tokens < 65_536:
+              raise RuntimeError(
+                  "deadline probe could have ended through natural EOS: "
+                  f"{deadline_event}"
+              )
+          if output_tokens <= 0 or output_tokens >= forced_min_new_tokens:
+              raise RuntimeError(
+                  "deadline probe did not prove interruption before the forced token target: "
+                  f"{deadline_event}"
+              )
+          if (
+              deadline_input_tokens <= 1
+              or deadline_target_tokens <= 0
+              or deadline_target_tokens >= deadline_input_tokens
+          ):
+              raise RuntimeError(
+                  "deadline producer terminal did not carry a strictly smaller token target: "
+                  f"{deadline_terminal}"
+              )
+          observed_repartition_tokens = int(
+              deadline_repartition.get("observed_input_tokens") or 0
+          )
+          target_repartition_tokens = int(
+              deadline_repartition.get("target_input_tokens") or 0
+          )
+          if (
+              observed_repartition_tokens != deadline_input_tokens
+              or target_repartition_tokens <= 0
+              or target_repartition_tokens >= observed_repartition_tokens
+          ):
+              raise RuntimeError(
+                  "deadline source repartition did not make measured token progress: "
+                  f"{deadline_repartition}"
+              )
+
+          # Model-app request-plan logs are diagnostic only. Acceptance uses the measured
+          # capacity echoed by the pipeline-side editorial_remote_call_terminal barrier.
+          if not any(
+              int(item.get("raw_event_count") or 0)
+              > int(item.get("projected_event_count") or 0)
+              for item in projections
+          ):
+              raise RuntimeError(
+                  "live projection did not reduce word-segmented event cardinality"
+              )
+          if not any(
+              int(item.get("raw_serialized_bytes") or 0)
+              > int(item.get("projected_serialized_bytes") or 0)
+              for item in projections
+          ):
+              raise RuntimeError("live projection did not reduce serialized evidence")
+          cycle = json.loads(
+              Path("open-evidence/cycle-result.json").read_text(encoding="utf-8")
+          )
+          if (
+              cycle.get("status") != "PASS"
+              or cycle.get("review_status") != "NOT_RENDERED"
+          ):
+              raise RuntimeError(f"editorial-only cycle did not complete: {cycle}")
+
+          probe = cycle.get("editorial_acceptance_probe")
+          if not isinstance(probe, dict) or probe.get("status") != "PASS":
+              raise RuntimeError(f"editorial capacity probe did not pass: {probe}")
+          sources = probe.get("sources")
+          if not isinstance(sources, list) or not sources:
+              raise RuntimeError("editorial capacity probe returned no source evidence")
+          deadline_probe = probe.get("generation_deadline_probe")
+          if not isinstance(deadline_probe, dict):
+              raise RuntimeError("editorial acceptance artifact lacks generation deadline proof")
+          if str(deadline_probe.get("invocation_id") or "") != deadline_invocation_id:
+              raise RuntimeError(
+                  "cycle deadline artifact does not match producer/model telemetry: "
+                  f"{deadline_probe}"
+              )
+          deadline_capacity = deadline_probe.get("capacity_rejection")
+          deadline_partition = deadline_probe.get("repartition")
+          if not isinstance(deadline_capacity, dict) or not isinstance(
+              deadline_partition, dict
+          ):
+              raise RuntimeError(
+                  f"cycle deadline artifact is incomplete: {deadline_probe}"
+              )
+          if deadline_capacity.get("reason") != "generation_runtime_deadline":
+              raise RuntimeError(
+                  f"cycle deadline artifact has the wrong recovery reason: {deadline_probe}"
+              )
+          measured_partition_counts = []
+          for source_probe in sources:
+              if not isinstance(source_probe, dict):
+                  raise RuntimeError(f"invalid source capacity probe: {source_probe!r}")
+              capacity = source_probe.get("capacity_probe")
+              repartition = source_probe.get("repartition")
+              if not isinstance(capacity, dict) or not isinstance(repartition, dict):
+                  raise RuntimeError(f"incomplete source capacity probe: {source_probe}")
+              input_tokens = int(capacity.get("input_tokens") or 0)
+              context_limit = int(capacity.get("context_limit_tokens") or 0)
+              partition_count = int(repartition.get("partition_count") or 0)
+              if input_tokens <= context_limit:
+                  raise RuntimeError(
+                      "legacy raw negative-control payload unexpectedly fit model context: "
+                      f"{source_probe}"
+                  )
+              if partition_count <= 2:
+                  raise RuntimeError(
+                      "token-aware repartitioner did not produce measured multi-way recovery: "
+                      f"{source_probe}"
+                  )
+              measured_partition_counts.append(partition_count)
+
+          evidence = {
+              "status": "PASS",
+              "projection_events": len(projections),
+              "repartition_events": len(repartitions),
+              "capacity_probe_events": len(capacity_probes),
+              "acceptance_probe_events": len(probe_results),
+              "generation_complete_events_diagnostic": len(generations),
+              "generation_deadline_events": len(generation_deadlines),
+              "deadline_invocation_id": deadline_invocation_id,
+              "deadline_seconds": deadline_seconds,
+              "deadline_elapsed_seconds": elapsed_seconds,
+              "deadline_input_tokens": deadline_input_tokens,
+              "deadline_target_tokens": deadline_target_tokens,
+              "deadline_forced_min_new_tokens": forced_min_new_tokens,
+              "producer_call_start_events": len(producer_starts),
+              "producer_call_terminal_events": len(producer_terminals),
+              "producer_complete_events": terminal_statuses.count("COMPLETE"),
+              "execution_timeout_events": len(timeouts),
+              "maximum_executable_input_tokens": max(
+                  int(item.get("input_tokens") or 0) for item in safe_completes
+              ),
+              "best_event_count_reduction": max(
+                  int(item.get("raw_event_count") or 0)
+                  - int(item.get("projected_event_count") or 0)
+                  for item in projections
+              ),
+              "best_byte_reduction": max(
+                  int(item.get("raw_serialized_bytes") or 0)
+                  - int(item.get("projected_serialized_bytes") or 0)
+                  for item in projections
+              ),
+              "maximum_partition_count": max(measured_partition_counts),
+              "natural_repartition_events": len(repartitions),
+          }
+          Path("open-evidence/editorial-acceptance-validation.json").write_text(
+              json.dumps(evidence, indent=2) + chr(10),
+              encoding="utf-8",
+          )
+          print(json.dumps(evidence, indent=2))
+          PY
+
+      - name: Validate dynamic yield, resumable inference, cost bounds, and actual media
+        if: env.CLIPPER_RENDER == 'true'
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          from clipper.acceptance import validate_live_run
+
+          manifests = list(Path("cycle-evidence").rglob("manifest.json"))
+          if len(manifests) != 1:
+              raise RuntimeError(f"expected exactly one production manifest: {manifests}")
+          run_dir = manifests[0].parent
+          manifest = validate_live_run(run_dir)
+          metadata = manifest.get("run_metadata")
+          if not isinstance(metadata, dict) or metadata.get("git_sha") != os.environ["CLIPPER_ACCEPTANCE_SHA"]:
+              raise RuntimeError("manifest does not identify the exact acceptance SHA")
+          if manifest.get("publication_state") != "READY_FOR_HUMAN_REVIEW":
+              raise RuntimeError(f"pipeline crossed or missed HILP boundary: {manifest.get('publication_state')}")
+          if manifest.get("publication_state") == "READY_TO_PUBLISH":
+              raise RuntimeError("pipeline must never self-authorize publication")
+
+          targets = manifest.get("targets")
+          if not isinstance(targets, dict):
+              raise RuntimeError("manifest targets evidence is missing")
+          eligible = targets["eligible_quality_moments"]
+          if not isinstance(eligible, int) or isinstance(eligible, bool) or eligible < 0:
+              raise RuntimeError("eligible quality yield is invalid")
+          rendered = manifest.get("rendered_clips") or []
+          if not isinstance(rendered, list) or not rendered:
+              raise RuntimeError(
+                  "contract permits zero quality yield, but this acceptance run produced no MP4 to review"
+              )
+
+          if metadata.get("execution_mode") != os.environ["CLIPPER_EXECUTION_MODE"]:
+              raise RuntimeError(
+                  f"manifest execution mode mismatch: {metadata.get('execution_mode')}"
+              )
+          resume = metadata.get("resume")
+          if os.environ["CLIPPER_EXECUTION_MODE"] == "content-addressed-resume":
+              if not isinstance(resume, dict) or resume.get("mode") != "content-addressed-stage-resume":
+                  raise RuntimeError(f"resumable production evidence is missing: {resume}")
+          elif resume is not None:
+              raise RuntimeError("fresh inference must not claim resume evidence")
+
+          cache = manifest.get("cache")
+          if not isinstance(cache, dict):
+              raise RuntimeError("grounding cache evidence is missing")
+          hits = int(cache.get("hits") or 0)
+          if hits < 0:
+              raise RuntimeError(f"grounding cache hit count is invalid: {cache}")
+          events = cache.get("events") or []
+          if not isinstance(events, list) or any(
+              not isinstance(item, dict) or not isinstance(item.get("hit"), bool)
+              for item in events
+          ):
+              raise RuntimeError("grounding cache evidence is incomplete")
+          if os.environ["CLIPPER_EXECUTION_MODE"] == "fresh-inference" and hits != 0:
+              raise RuntimeError(f"fresh inference unexpectedly reused grounding cache: {cache}")
+
+          editorial = metadata.get("editorial_inference")
+          if not isinstance(editorial, dict):
+              raise RuntimeError("editorial inference evidence is missing")
+          cache_summary = editorial.get("cache_summary")
+          if not isinstance(cache_summary, dict):
+              raise RuntimeError("editorial cache summary is missing")
+          stage_cache_hits = int(cache_summary.get("stage_cache_hits") or 0)
+          stage_executions = int(cache_summary.get("stage_executions") or 0)
+          if stage_cache_hits < 0 or stage_executions < 0:
+              raise RuntimeError("editorial cache counters are invalid")
+          if stage_cache_hits + stage_executions <= 0:
+              raise RuntimeError("production produced no editorial stage evidence")
+          if os.environ["CLIPPER_EXECUTION_MODE"] == "fresh-inference" and stage_cache_hits != 0:
+              raise RuntimeError("fresh inference unexpectedly reused editorial DAG cache")
+          invocations = editorial.get("model_invocations")
+          if not isinstance(invocations, list):
+              raise RuntimeError("editorial invocation/cache evidence is invalid")
+          if stage_executions > 0 and not invocations:
+              raise RuntimeError("executed editorial stages lack invocation evidence")
+          allowed = {"source_hazards", "semantic_cores", "narrative_envelope", "quality_windows"}
+          observed = set()
+          for invocation in invocations:
+              if not isinstance(invocation, dict) or not isinstance(
+                  invocation.get("cache_hit"), bool
+              ):
+                  raise RuntimeError(f"invalid editorial invocation/cache evidence: {invocation}")
+              if (
+                  os.environ["CLIPPER_EXECUTION_MODE"] == "fresh-inference"
+                  and invocation.get("cache_hit") is not False
+              ):
+                  raise RuntimeError(f"fresh inference reused editorial cache: {invocation}")
+              family = str(invocation.get("stage") or "").split(":", 1)[0]
+              if family not in allowed:
+                  raise RuntimeError(f"unknown production editorial task family: {family}")
+              observed.add(family)
+          if (
+              os.environ["CLIPPER_EXECUTION_MODE"] == "fresh-inference"
+              and not {"semantic_cores", "narrative_envelope", "quality_windows"}.issubset(observed)
+          ):
+              raise RuntimeError(f"required current editorial stages were not executed: {observed}")
+
+          usage_records = []
+          def collect(value):
+              if isinstance(value, dict):
+                  if (
+                      isinstance(value.get("provider"), str)
+                      and isinstance(value.get("duration_seconds"), (int, float))
+                      and isinstance(value.get("gpu_seconds"), (int, float))
+                      and isinstance(value.get("estimated_cost_usd"), (int, float))
+                  ):
+                      usage_records.append(value)
+                  for child in value.values():
+                      collect(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      collect(child)
+          collect(metadata)
+          if not usage_records and os.environ["CLIPPER_EXECUTION_MODE"] == "fresh-inference":
+              raise RuntimeError("fresh inference persisted no current-model usage records")
+          gpu_seconds = sum(float(item.get("gpu_seconds") or 0) for item in usage_records)
+          estimated_usd = sum(float(item.get("estimated_cost_usd") or 0) for item in usage_records)
+          gpu_limit = float(os.environ["CLIPPER_MAX_GPU_SECONDS"])
+          cost_limit = float(os.environ["CLIPPER_MAX_ESTIMATED_USD"])
+          if gpu_seconds > gpu_limit:
+              raise RuntimeError(f"GPU budget exceeded: {gpu_seconds} > {gpu_limit}")
+          if estimated_usd > cost_limit:
+              raise RuntimeError(f"estimated cost budget exceeded: {estimated_usd} > {cost_limit}")
+
+          review_root = Path("hilp-review")
+          review_root.mkdir(parents=True, exist_ok=True)
+          queue = []
+          for item in rendered:
+              if not isinstance(item, dict):
+                  raise RuntimeError("rendered clip evidence must be an object")
+              clip = run_dir / "clips" / Path(str(item.get("output_path") or "")).name
+              if not clip.is_file() or clip.stat().st_size <= 0:
+                  raise RuntimeError(f"accepted MP4 is missing: {clip}")
+              subprocess.run(
+                  ["ffmpeg", "-v", "error", "-i", str(clip), "-f", "null", "-"],
+                  check=True,
+                  timeout=900,
+              )
+              probe = subprocess.run(
+                  [
+                      "ffprobe", "-v", "error",
+                      "-show_entries", "stream=codec_type,codec_name,width,height",
+                      "-show_entries", "format=duration", "-of", "json", str(clip),
+                  ],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+                  timeout=120,
+              )
+              probe_data = json.loads(probe.stdout)
+              streams = probe_data.get("streams") or []
+              videos = [s for s in streams if isinstance(s, dict) and s.get("codec_type") == "video"]
+              audios = [s for s in streams if isinstance(s, dict) and s.get("codec_type") == "audio"]
+              if len(videos) != 1 or len(audios) != 1:
+                  raise RuntimeError(f"accepted MP4 stream inventory is invalid: {clip}")
+              if (videos[0].get("width"), videos[0].get("height"), videos[0].get("codec_name")) != (1080, 1920, "h264"):
+                  raise RuntimeError(f"accepted MP4 video contract failed: {clip}")
+              if audios[0].get("codec_name") != "aac":
+                  raise RuntimeError(f"accepted MP4 audio contract failed: {clip}")
+              duration = float((probe_data.get("format") or {}).get("duration") or 0)
+              frame_dir = review_root / clip.stem
+              frame_dir.mkdir(parents=True, exist_ok=True)
+              frames = []
+              for frame_index, timestamp in enumerate(
+                  (0.5, duration * 0.25, duration * 0.5, duration * 0.75, max(0.5, duration - 0.5)),
+                  start=1,
+              ):
+                  frame = frame_dir / f"frame-{frame_index:02d}.jpg"
+                  subprocess.run(
+                      [
+                          "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                          "-ss", f"{timestamp:.3f}", "-i", str(clip),
+                          "-frames:v", "1", "-q:v", "2", str(frame),
+                      ],
+                      check=True,
+                      timeout=120,
+                  )
+                  frames.append(str(frame))
+              digest = hashlib.sha256(clip.read_bytes()).hexdigest()
+              if digest != str(item.get("render_sha256") or ""):
+                  raise RuntimeError(f"materialized MP4 hash disagrees with manifest: {clip}")
+              queue.append(
+                  {
+                      "plan_id": item.get("plan_id"),
+                      "mp4": str(clip),
+                      "sha256": digest,
+                      "frames": frames,
+                      "human_review": "PENDING_ACTUAL_REVIEW",
+                  }
+              )
+
+          editorial_review = json.loads((run_dir / "editorial-review.json").read_text(encoding="utf-8"))
+          if editorial_review.get("status") != "PENDING_HUMAN_REVIEW":
+              raise RuntimeError(f"HILP boundary was bypassed: {editorial_review}")
+          summary = {
+              "status": "PASS_PENDING_ACTUAL_REVIEW",
+              "acceptance_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
+              "eligible_quality_moments": eligible,
+              "accepted_mp4s": len(rendered),
+              "editorial_task_families": sorted(observed),
+              "gpu_seconds": gpu_seconds,
+              "estimated_cost_usd": estimated_usd,
+              "automated_hilp_allowed": False,
+              "actual_review_status": "PENDING_ACTUAL_REVIEW",
+          }
+          Path("open-evidence/production-validation.json").write_text(
+              json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+          )
+          Path("hilp-review/manual-review-queue.json").write_text(
+              json.dumps(queue, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Upload exact-head production evidence and MP4 review bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-review-${{ github.sha }}
+          path: |
+            exact-head-sha.txt
+            open-evidence
+            cycle-evidence
+            hilp-review
+          if-no-files-found: warn
+          retention-days: 14

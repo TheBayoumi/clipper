@@ -57,9 +57,14 @@ def test_faster_whisper_adapter_filters_invalid_segments(tmp_path: Path) -> None
         def transcribe(self, *_args, **_kwargs):
             return (
                 [
-                    SimpleNamespace(start=0, end=2, text=" hello "),
-                    SimpleNamespace(start=2, end=2, text="bad"),
-                    SimpleNamespace(start=3, end=4, text=" "),
+                    SimpleNamespace(
+                        start=0,
+                        end=2,
+                        text=" hello ",
+                        words=[SimpleNamespace(start=0.1, end=0.7, word=" hello")],
+                    ),
+                    SimpleNamespace(start=2, end=2, text="bad", words=[]),
+                    SimpleNamespace(start=3, end=4, text=" ", words=[]),
                 ],
                 object(),
             )
@@ -74,6 +79,7 @@ def test_faster_whisper_adapter_filters_invalid_segments(tmp_path: Path) -> None
             language="en",
         )
     assert [(s.start, s.end, s.text) for s in segments] == [(0.0, 2.0, "hello")]
+    assert [(w.start, w.end, w.text) for w in segments[0].words] == [(0.1, 0.7, "hello")]
 
 
 def test_parse_youtube_rolling_vtt_drops_snapshots_and_repeated_leading_line() -> None:
@@ -106,3 +112,6 @@ damage<00:00:04.480><c> or</c><00:00:04.720><c> you're</c><00:00:04.960><c> gone
         "damage or you're gone.",
     ]
     assert all(segment.duration > 0.05 for segment in segments)
+    assert [word.text for word in segments[0].words] == ["Like", "you", "ever"]
+    assert segments[0].words[1].start == 0.4
+    assert [word.text for word in segments[2].words] == ["damage", "or", "you're", "gone."]

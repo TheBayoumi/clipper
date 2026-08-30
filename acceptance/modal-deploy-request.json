@@ -1,0 +1,15 @@
+{
+  "request_reason": "Deploy exact operational marker head for resumed editorial-only runtime proof after clean Codex static review of implementation parent a3ba27c7b4f790aea29b69857d90efbe8fd42977",
+  "requested_from_sha": "a3ba27c7b4f790aea29b69857d90efbe8fd42977",
+  "resume_from_production_run_id": "33169878733",
+  "fresh_inference": false,
+  "live_acceptance_required": {
+    "editorial_evidence_projection": true,
+    "live_raw_capacity_probe": true,
+    "token_aware_multiway_repartition": true,
+    "cancellable_modal_spy": true,
+    "two_gpu_editorial_placement": true,
+    "editorial_acceptance_only": true
+  },
+  "enabled": true
+}
