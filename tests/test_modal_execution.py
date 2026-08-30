@@ -4,6 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import ANY, Mock, patch
 from unittest.mock import call as mock_call
 
@@ -24,7 +25,6 @@ from clipper.modal_execution import (
     _materialize_remote_run,
     _positive_budget,
     _runtime_source_sha,
-    _spawn_recoverable_modal_call,
     _validate_model_access,
     _verify_deployed_runtime_sha,
     ensure_modal_runtime,
