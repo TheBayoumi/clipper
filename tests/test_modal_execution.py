@@ -366,8 +366,22 @@ def test_recoverable_modal_submission_rechecks_budget_at_attachment_boundary(
         "modal._utils.function_utils": function_utils,
         "modal_proto.api_pb2": api_pb2,
     }
-    times = iter([0.0, 0.0, 0.0, 1.0])
-    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: next(times))
+    clock = {"now": 0.0}
+    create_blocking = async_utils.synchronizer.create_blocking
+
+    def delayed_create_blocking(async_function: Any) -> Any:
+        blocking = create_blocking(async_function)
+        if async_function.__name__ != "submit_input":
+            return blocking
+
+        def delayed_submit() -> object:
+            clock["now"] = 1.0
+            return blocking()
+
+        return delayed_submit
+
+    async_utils.synchronizer.create_blocking = delayed_create_blocking
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: clock["now"])
     monkeypatch.setattr(
         "clipper.modal_execution.importlib.import_module",
         lambda name: modules[name],
