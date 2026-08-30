@@ -1298,6 +1298,46 @@ def test_invoke_remote_with_budget_retries_cancellation_then_preserves_poll_fail
     sleep.assert_called_once_with(2.0)
 
 
+def test_invoke_remote_with_budget_charges_until_cancellation_acknowledgement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        "clipper.modal_execution.time.sleep",
+        lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+    )
+
+    call_handle = Mock()
+    call_handle.object_id = "fc-budget-retry"
+
+    def fail_poll(*, timeout: float) -> object:
+        assert timeout > 0
+        clock["now"] = 0.1
+        raise ServiceError("poll failed")
+
+    call_handle.get.side_effect = fail_poll
+    call_handle.cancel.side_effect = [RuntimeError("cancel unavailable"), None]
+    function = SimpleNamespace(spawn=Mock(return_value=call_handle))
+    budget = _BudgetLedger(1.0, 100.0)
+
+    with pytest.raises(
+        ProductionBudgetExceeded,
+        match="through cancellation acknowledgement",
+    ):
+        _invoke_remote_with_budget(
+            function,
+            {},
+            budget=budget,
+            gpu_count=1.0,
+            estimated_usd_per_second=0.0,
+        )
+
+    assert call_handle.cancel.call_count == 2
+    assert budget.gpu_seconds == pytest.approx(2.1)
+    assert budget.remaining_budgets()[0] == pytest.approx(0.0)
+
+
 def test_invoke_remote_with_budget_fails_closed_when_cancellation_is_unconfirmed() -> None:
     call_handle = Mock()
     call_handle.object_id = "fc-stuck"

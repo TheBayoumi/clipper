@@ -322,32 +322,38 @@ def _invoke_remote_with_budget(
     call = function.spawn(request)
     started = time.monotonic()
     terminal_result = False
-    budget_charged = False
+    charged_elapsed_seconds = 0.0
+
+    def uncharged_elapsed_seconds() -> float:
+        elapsed = max(0.0, time.monotonic() - started)
+        return max(0.0, elapsed - charged_elapsed_seconds)
 
     def budget_usage() -> tuple[float, float]:
         return budget.projected_usage(
-            max(0.0, time.monotonic() - started),
+            uncharged_elapsed_seconds(),
             gpu_count=gpu_count,
             estimated_usd_per_second=estimated_usd_per_second,
         )
 
     def remaining_budget_wall_seconds() -> float:
         return budget.remaining_wall_seconds(
-            max(0.0, time.monotonic() - started),
+            uncharged_elapsed_seconds(),
             gpu_count=gpu_count,
             estimated_usd_per_second=estimated_usd_per_second,
         )
 
     def charge_elapsed() -> None:
-        nonlocal budget_charged
-        if budget_charged:
+        nonlocal charged_elapsed_seconds
+        elapsed = max(0.0, time.monotonic() - started)
+        delta = max(0.0, elapsed - charged_elapsed_seconds)
+        if delta <= 0:
             return
         budget.charge(
-            max(0.0, time.monotonic() - started),
+            delta,
             gpu_count=gpu_count,
             estimated_usd_per_second=estimated_usd_per_second,
         )
-        budget_charged = True
+        charged_elapsed_seconds = elapsed
 
     try:
         call.hydrate()
@@ -376,9 +382,20 @@ def _invoke_remote_with_budget(
                 )
             return result
     finally:
-        charge_elapsed()
         if not terminal_result:
-            _cancel_remote_call(call)
+            try:
+                _cancel_remote_call(call)
+            finally:
+                charge_elapsed()
+            gpu_seconds = budget.gpu_seconds
+            estimated_usd = budget.estimated_usd
+            if gpu_seconds > budget.max_gpu_seconds or estimated_usd > budget.max_estimated_usd:
+                raise ProductionBudgetExceeded(
+                    "CLI production call exceeded its compute budget through cancellation "
+                    "acknowledgement: "
+                    f"gpu_seconds={gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
+                    f"estimated_usd={estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
+                )
 
 
 def _deploy(script: Path) -> None:
