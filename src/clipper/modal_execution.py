@@ -209,6 +209,10 @@ class ProductionCallNotTerminated(RuntimeError):
         )
 
 
+class ProductionCallSubmissionUnknown(RuntimeError):
+    """A producer submission may have started, but no exact call handle was returned."""
+
+
 @dataclass(slots=True)
 class _BudgetLedger:
     max_gpu_seconds: float
@@ -319,7 +323,6 @@ def _invoke_remote_with_budget(
         raise ValueError("CLIPPER_MODAL_SPY_POLL_SECONDS must be finite and positive")
     budget._rate(gpu_count, name="gpu_count")
     budget._rate(estimated_usd_per_second, name="estimated_usd_per_second")
-    call = function.spawn(request)
     started = time.monotonic()
     terminal_result = False
     charged_elapsed_seconds = 0.0
@@ -354,6 +357,15 @@ def _invoke_remote_with_budget(
             estimated_usd_per_second=estimated_usd_per_second,
         )
         charged_elapsed_seconds = elapsed
+
+    try:
+        call = function.spawn(request)
+    except Exception as exc:
+        charge_elapsed()
+        raise ProductionCallSubmissionUnknown(
+            "Modal producer submission failed before an exact call handle was returned; "
+            "submission state is ambiguous and fallback is forbidden"
+        ) from exc
 
     try:
         call.hydrate()
@@ -669,6 +681,20 @@ def _acquire_remote_source(
                         "error_type": type(exc).__name__,
                         "error": str(exc)[-2000:],
                         "call_id": exc.call_id,
+                        "estimated_usd": budget.estimated_usd - before_cost,
+                        "gpu_seconds": budget.gpu_seconds - before_gpu,
+                    }
+                )
+            raise
+        except ProductionCallSubmissionUnknown as exc:
+            if attempt_evidence is not None:
+                attempt_evidence.append(
+                    {
+                        "egress": label,
+                        "status": "AMBIGUOUS_SUBMISSION",
+                        "phase": "invoke",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[-2000:],
                         "estimated_usd": budget.estimated_usd - before_cost,
                         "gpu_seconds": budget.gpu_seconds - before_gpu,
                     }

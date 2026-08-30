@@ -12,6 +12,7 @@ import pytest
 from clipper.modal_execution import (
     ProductionBudgetExceeded,
     ProductionCallNotTerminated,
+    ProductionCallSubmissionUnknown,
     _acquire_remote_source,
     _BudgetLedger,
     _class,
@@ -1301,6 +1302,76 @@ def test_invoke_remote_with_budget_retries_cancellation_then_preserves_poll_fail
 
     assert call_handle.cancel.call_count == 2
     sleep.assert_called_once_with(2.0)
+
+
+def test_invoke_remote_with_budget_charges_delayed_spawn_before_call_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: clock["now"])
+
+    call_handle = Mock()
+    call_handle.object_id = "fc-delayed-spawn"
+
+    def delayed_spawn(_request: dict[str, object]) -> object:
+        clock["now"] = 2.0
+        return call_handle
+
+    function = SimpleNamespace(spawn=Mock(side_effect=delayed_spawn))
+    budget = _BudgetLedger(1.0, 100.0)
+
+    with pytest.raises(
+        ProductionBudgetExceeded,
+        match="through cancellation acknowledgement",
+    ):
+        _invoke_remote_with_budget(
+            function,
+            {"request": True},
+            budget=budget,
+            gpu_count=1.0,
+            estimated_usd_per_second=0.0,
+        )
+
+    call_handle.get.assert_not_called()
+    call_handle.cancel.assert_called_once_with(terminate_containers=False)
+    assert budget.gpu_seconds == pytest.approx(2.0)
+    assert budget.remaining_budgets()[0] == pytest.approx(0.0)
+
+
+def test_source_acquisition_fails_closed_on_ambiguous_submission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: clock["now"])
+
+    variant = Mock()
+
+    def ambiguous_spawn(_request: dict[str, object]) -> object:
+        clock["now"] = 3.0
+        raise ServiceError("submission response lost")
+
+    variant.spawn.side_effect = ambiguous_spawn
+    function = Mock()
+    function.with_options.return_value = variant
+    attempts: list[dict[str, object]] = []
+    budget = _BudgetLedger(100.0, 1.0)
+
+    with pytest.raises(ProductionCallSubmissionUnknown, match="fallback is forbidden"):
+        _acquire_remote_source(
+            function,
+            VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1"),
+            expected_git_sha="a" * 40,
+            budget=budget,
+            attempt_evidence=attempts,
+        )
+
+    function.with_options.assert_called_once_with(cloud="gcp", timeout=1800)
+    assert attempts[0]["status"] == "AMBIGUOUS_SUBMISSION"
+    assert attempts[0]["error_type"] == "ProductionCallSubmissionUnknown"
+    assert attempts[0]["estimated_usd"] == pytest.approx(
+        budget.estimated_usd
+    )
+    assert budget.estimated_usd > 0.0
 
 
 def test_invoke_remote_with_budget_charges_until_cancellation_acknowledgement(
