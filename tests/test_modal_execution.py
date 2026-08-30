@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import ANY, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 from unittest.mock import call as mock_call
 
 import pytest
@@ -25,6 +26,7 @@ from clipper.modal_execution import (
     _materialize_remote_run,
     _positive_budget,
     _runtime_source_sha,
+    _spawn_recoverable_modal_call as _real_spawn_recoverable_modal_call,
     _validate_model_access,
     _verify_deployed_runtime_sha,
     ensure_modal_runtime,
@@ -48,6 +50,137 @@ def _synthetic_recoverable_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
         return function.spawn(request), started, None
 
     monkeypatch.setattr("clipper.modal_execution._spawn_recoverable_modal_call", spawn)
+
+
+def _fake_modal_submission_modules(
+    *,
+    map_response: object,
+    put_response: object | None = None,
+    put_error: Exception | None = None,
+) -> tuple[object, object, object, object, object, list[str]]:
+    events: list[str] = []
+    stub = SimpleNamespace(
+        FunctionMap=AsyncMock(return_value=map_response),
+        FunctionPutInputs=AsyncMock(),
+    )
+    if put_error is not None:
+        stub.FunctionPutInputs.side_effect = put_error
+    else:
+        stub.FunctionPutInputs.return_value = put_response
+    internal_function = SimpleNamespace(
+        object_id="fu-recoverable",
+        client=SimpleNamespace(stub=stub),
+        hydrate=AsyncMock(),
+    )
+
+    class Synchronizer:
+        def _translate_in(self, _function: object) -> object:
+            return internal_function
+
+        def create_blocking(self, async_function: Any) -> Any:
+            return lambda: asyncio.run(async_function())
+
+    synchronizer = Synchronizer()
+    async_utils = SimpleNamespace(synchronizer=synchronizer)
+    function_utils = SimpleNamespace(_create_input=AsyncMock(return_value="serialized-input"))
+
+    def map_request(**kwargs: object) -> object:
+        return SimpleNamespace(**kwargs)
+
+    def put_request(**kwargs: object) -> object:
+        events.append("put-input")
+        return SimpleNamespace(**kwargs)
+
+    api_pb2 = SimpleNamespace(
+        FUNCTION_CALL_TYPE_UNARY=1,
+        FUNCTION_CALL_INVOCATION_TYPE_ASYNC=2,
+        FunctionMapRequest=map_request,
+        FunctionPutInputsRequest=put_request,
+    )
+    call = Mock()
+    call.object_id = "fc-recoverable"
+
+    def from_id(call_id: str) -> object:
+        events.append("from-id")
+        assert call_id == "fc-recoverable"
+        return call
+
+    modal = SimpleNamespace(FunctionCall=SimpleNamespace(from_id=from_id))
+    return modal, async_utils, function_utils, api_pb2, stub, events
+
+
+def test_recoverable_modal_submission_allocates_handle_before_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    map_response = SimpleNamespace(
+        function_call_id="fc-recoverable",
+        pipelined_inputs=[],
+    )
+    put_response = SimpleNamespace(inputs=[SimpleNamespace(input_id="in-1")])
+    modal, async_utils, function_utils, api_pb2, stub, events = _fake_modal_submission_modules(
+        map_response=map_response,
+        put_response=put_response,
+    )
+    modules = {
+        "modal": modal,
+        "modal._utils.async_utils": async_utils,
+        "modal._utils.function_utils": function_utils,
+        "modal_proto.api_pb2": api_pb2,
+    }
+    monkeypatch.setattr(
+        "clipper.modal_execution.importlib.import_module",
+        lambda name: modules[name],
+    )
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: 12.5)
+
+    call, started, error = _real_spawn_recoverable_modal_call(object(), {"request": True})
+
+    assert call.object_id == "fc-recoverable"
+    assert started == pytest.approx(12.5)
+    assert error is None
+    assert events == ["from-id", "put-input"]
+    function_utils._create_input.assert_awaited_once()
+    map_request = stub.FunctionMap.await_args.args[0]
+    assert map_request.function_id == "fu-recoverable"
+    assert not hasattr(map_request, "pipelined_inputs")
+    put_request = stub.FunctionPutInputs.await_args.args[0]
+    assert put_request.function_call_id == "fc-recoverable"
+    assert put_request.function_id == "fu-recoverable"
+    assert put_request.inputs == ["serialized-input"]
+
+
+def test_recoverable_modal_submission_keeps_exact_call_on_lost_ack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    map_response = SimpleNamespace(
+        function_call_id="fc-recoverable",
+        pipelined_inputs=[],
+    )
+    modal, async_utils, function_utils, api_pb2, _stub, events = _fake_modal_submission_modules(
+        map_response=map_response,
+        put_error=ServiceError("input acknowledgement lost"),
+    )
+    modules = {
+        "modal": modal,
+        "modal._utils.async_utils": async_utils,
+        "modal._utils.function_utils": function_utils,
+        "modal_proto.api_pb2": api_pb2,
+    }
+    monkeypatch.setattr(
+        "clipper.modal_execution.importlib.import_module",
+        lambda name: modules[name],
+    )
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: 4.0)
+
+    call, started, error = _real_spawn_recoverable_modal_call(object(), {"request": True})
+
+    assert call.object_id == "fc-recoverable"
+    assert started == pytest.approx(4.0)
+    assert isinstance(error, ProductionCallSubmissionFailed)
+    assert error.call_id == "fc-recoverable"
+    assert error.error_type == "ServiceError"
+    assert "acknowledgement lost" in error.error
+    assert events == ["from-id", "put-input"]
 
 
 def _write_brief(path: Path) -> None:

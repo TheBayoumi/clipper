@@ -525,7 +525,11 @@ def test_production_budget_limits_are_finite_and_cli_is_cancellable() -> None:
     assert "math.isfinite(max_gpu_seconds)" in pipeline
     assert "math.isfinite(max_estimated_usd)" in pipeline
     assert "def _invoke_remote_with_budget(" in cli_modal
-    assert "function.spawn(request)" in cli_modal
+    assert "def _spawn_recoverable_modal_call(" in cli_modal
+    assert "FunctionMapRequest(" in cli_modal
+    assert "FunctionPutInputsRequest(" in cli_modal
+    assert "modal.FunctionCall.from_id(call_id)" in cli_modal
+    assert "function.spawn(request)" not in cli_modal
     assert "call.get(timeout=min(poll_seconds, remaining_seconds))" in cli_modal
     assert "remaining_budget_wall_seconds" in cli_modal
     assert "call.cancel(terminate_containers=False)" in cli_modal
