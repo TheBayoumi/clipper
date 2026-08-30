@@ -21,7 +21,7 @@ VISION = {**EDITOR, "model_id": "vision"}
 
 def _write_prior(root: Path, *, editorial: dict[str, str] | None = None) -> None:
     run = root / "prior-run"
-    run.mkdir(parents=True)
+    run.mkdir(parents=True, exist_ok=True)
     brief = {"campaign_id": "campaign", "targets": {"mode": "explicit"}}
     (run / "brief.normalized.json").write_text(json.dumps(brief), encoding="utf-8")
     manifest = {
