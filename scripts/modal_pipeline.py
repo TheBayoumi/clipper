@@ -51,7 +51,10 @@ media_image = (
 )
 
 runner_image = (
-    modal.Image.from_dockerfile("Dockerfile")
+    modal.Image.from_dockerfile(
+        "Dockerfile",
+        build_args={"CLIPPER_SOURCE_SHA": DEPLOYED_GIT_SHA},
+    )
     .entrypoint([])
     .apt_install("git")
     .uv_pip_install("modal==1.5.5", "huggingface-hub>=1.24,<2")

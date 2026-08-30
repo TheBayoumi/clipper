@@ -41,6 +41,16 @@ def _modal_pipeline_helpers(*names: str) -> dict[str, Any]:
     return {name: namespace[name] for name in names}
 
 
+def test_modal_runner_image_forwards_exact_source_sha_to_docker_build() -> None:
+    source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+    runner = source.split("runner_image = (", 1)[1].split("\n\n\ndef _assert_expected_git_sha", 1)[0]
+
+    assert 'modal.Image.from_dockerfile(' in runner
+    assert '"Dockerfile"' in runner
+    assert 'build_args={"CLIPPER_SOURCE_SHA": DEPLOYED_GIT_SHA}' in runner
+    assert '.env({"CLIPPER_DEPLOYED_GIT_SHA": DEPLOYED_GIT_SHA})' in runner
+
+
 def test_public_youtube_acquisition_uses_bgutil_before_optional_cookies() -> None:
     source = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
     assert "youtubepot-bgutilscript:" in source
