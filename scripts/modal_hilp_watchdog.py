@@ -14,7 +14,12 @@ from typing import Any
 import yaml
 from modal_execution_spy import ModalExecutionSpy
 
-from clipper.modal_execution import _acquire_remote_source, _BudgetLedger
+from clipper.modal_execution import (
+    _acquire_remote_source,
+    _BudgetLedger,
+    _spawn_recoverable_modal_call,
+    ProductionCallSubmissionFailed,
+)
 from clipper.models import VideoCandidate
 
 
@@ -323,11 +328,18 @@ def run(*, render: bool) -> dict[str, Any]:
             os.environ["CLIPPER_MODAL_PIPELINE_APP"],
             "run_full_cycle",
         )
-        call = function.spawn(request)
-        call_started = time.monotonic()
-        call.hydrate()
+        call, call_started, submission_error = _spawn_recoverable_modal_call(
+            function,
+            request,
+            budget=budget,
+            gpu_count=2.0,
+            estimated_usd_per_second=0.000444,
+        )
         call_id = str(call.object_id)
         spy.root_function_call_id = call_id
+        if submission_error is not None:
+            raise submission_error
+        call.hydrate()
 
         metadata = {
             "event": "production_call_spawned",
@@ -437,15 +449,17 @@ def run(*, render: bool) -> dict[str, Any]:
         run_failure_reason = f"{type(exc).__name__}: {exc}"
         raise
     finally:
-        if call_started > 0 and not root_budget_charged:
-            budget.charge(
-                max(0.0, time.monotonic() - call_started),
-                gpu_count=2.0,
-                estimated_usd_per_second=0.000444,
-            )
-            root_budget_charged = True
-        if call is not None and not remote_completed and not cancelled.is_set():
-            cancel_call("watchdog exited before production call completed")
+        try:
+            if call is not None and not remote_completed and not cancelled.is_set():
+                cancel_call("watchdog exited before production call completed")
+        finally:
+            if call_started > 0 and not root_budget_charged:
+                budget.charge(
+                    max(0.0, time.monotonic() - call_started),
+                    gpu_count=2.0,
+                    estimated_usd_per_second=0.000444,
+                )
+                root_budget_charged = True
         spy.request_stop()
         if spy_thread_started:
             spy_thread.join(timeout=max(1.0, poll_seconds))

@@ -316,7 +316,11 @@ def _cancel_remote_call(call: Any) -> None:
 def _spawn_recoverable_modal_call(
     function: Any,
     request: dict[str, Any],
-) -> tuple[Any, float, ProductionCallSubmissionFailed | None]:
+    *,
+    budget: _BudgetLedger,
+    gpu_count: float,
+    estimated_usd_per_second: float,
+) -> tuple[Any, float, RuntimeError | None]:
     """Allocate a Modal call ID before attaching the producer input.
 
     FunctionMap is intentionally issued with zero pipelined inputs. A failed or lost
@@ -354,16 +358,57 @@ def _spawn_recoverable_modal_call(
     allocate = synchronizer.create_blocking(allocate_call)
     function_id, call_id = allocate()
     call = modal.FunctionCall.from_id(call_id)
-    started = time.monotonic()
 
-    async def submit_input() -> None:
-        item = await function_utils._create_input(
+    async def serialize_input() -> Any:
+        return await function_utils._create_input(
             (request,),
             {},
             internal_function.client.stub,
             function=internal_function,
             function_call_invocation_type=api_pb2.FUNCTION_CALL_INVOCATION_TYPE_ASYNC,
         )
+
+    serialization_started = time.monotonic()
+    serialize = synchronizer.create_blocking(serialize_input)
+    try:
+        item = serialize()
+    except Exception as exc:
+        elapsed = max(0.0, time.monotonic() - serialization_started)
+        budget.charge(
+            elapsed,
+            gpu_count=gpu_count,
+            estimated_usd_per_second=estimated_usd_per_second,
+        )
+        return (
+            call,
+            time.monotonic(),
+            ProductionCallSubmissionFailed(
+                call_id,
+                type(exc).__name__,
+                str(exc)[-2000:],
+            ),
+        )
+
+    elapsed = max(0.0, time.monotonic() - serialization_started)
+    budget.charge(
+        elapsed,
+        gpu_count=gpu_count,
+        estimated_usd_per_second=estimated_usd_per_second,
+    )
+    remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
+    started = time.monotonic()
+    if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
+        return (
+            call,
+            started,
+            ProductionBudgetExceeded(
+                "production budget exhausted before Modal producer input attachment: "
+                f"gpu_seconds={budget.gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
+                f"estimated_usd={budget.estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
+            ),
+        )
+
+    async def submit_input() -> None:
         response = await internal_function.client.stub.FunctionPutInputs(
             api_pb2.FunctionPutInputsRequest(
                 function_id=function_id,
@@ -411,7 +456,18 @@ def _invoke_remote_with_budget(
         raise ValueError("CLIPPER_MODAL_SPY_POLL_SECONDS must be finite and positive")
     budget._rate(gpu_count, name="gpu_count")
     budget._rate(estimated_usd_per_second, name="estimated_usd_per_second")
-    call, started, submission_error = _spawn_recoverable_modal_call(function, request)
+    remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
+    if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
+        raise ProductionBudgetExceeded(
+            "production budget exhausted before recoverable Modal call allocation"
+        )
+    call, started, submission_error = _spawn_recoverable_modal_call(
+        function,
+        request,
+        budget=budget,
+        gpu_count=gpu_count,
+        estimated_usd_per_second=estimated_usd_per_second,
+    )
     terminal_result = False
     charged_elapsed_seconds = 0.0
 

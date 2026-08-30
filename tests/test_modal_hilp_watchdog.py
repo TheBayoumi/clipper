@@ -21,6 +21,12 @@ def _module():
         raise RuntimeError("failed to load modal HILP watchdog")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+
+    def synthetic_recoverable_call(function, request, *, budget, **_kwargs):
+        call = function._test_call
+        return call, module.time.monotonic(), None
+
+    module._spawn_recoverable_modal_call = synthetic_recoverable_call
     return module
 
 
@@ -169,7 +175,7 @@ def _modal(call: _Call):
         def from_name(app: str, function: str):
             assert app == "pipeline"
             assert function == "run_full_cycle"
-            return SimpleNamespace(spawn=lambda request: call)
+            return SimpleNamespace(_test_call=call)
 
     return SimpleNamespace(Function=_Function)
 
@@ -249,6 +255,44 @@ def test_watchdog_marks_pre_root_failure_as_abort(tmp_path: Path, monkeypatch) -
     assert summary["status"] == "ABORT"
     assert "synthetic pre-root failure" in summary["abort_reason"]
     assert summary["function_call_id"] == ""
+
+
+def test_watchdog_reconciles_root_submission_with_lost_ack(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
+    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
+    call = _Call({})
+
+    def lost_ack(function, request, *, budget, **_kwargs):
+        assert function._test_call is call
+        assert request["resume_from_run_id"] == "prior-run"
+        return (
+            call,
+            module.time.monotonic(),
+            module.ProductionCallSubmissionFailed(
+                "fc-test",
+                "ServiceError",
+                "root input acknowledgement lost",
+            ),
+        )
+
+    monkeypatch.setattr(module, "_spawn_recoverable_modal_call", lost_ack)
+    monkeypatch.setitem(sys.modules, "modal", _modal(call))
+
+    with pytest.raises(module.ProductionCallSubmissionFailed, match="fc-test"):
+        module.run(render=False)
+
+    assert call.cancel_args == [False]
+    summary = json.loads(
+        (tmp_path / "open-evidence" / "modal-spy-summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["status"] == "ABORT"
+    assert summary["function_call_id"] == "fc-test"
+    assert summary["call_cancelled"] is True
 
 
 def test_watchdog_returns_successful_editorial_only_result(tmp_path: Path, monkeypatch) -> None:

@@ -534,6 +534,10 @@ def test_production_budget_limits_are_finite_and_cli_is_cancellable() -> None:
     assert "remaining_budget_wall_seconds" in cli_modal
     assert "call.cancel(terminate_containers=False)" in cli_modal
     assert "math.isfinite(resolved)" in cli_modal
+    assert "_spawn_recoverable_modal_call(" in watchdog
+    assert "function.spawn(request)" not in watchdog
+    assert "FunctionPutInputsRequest(" in cli_modal
+    assert "before Modal producer input attachment" in cli_modal
 
 
 def test_failed_runner_response_keeps_verified_execution_identity() -> None:

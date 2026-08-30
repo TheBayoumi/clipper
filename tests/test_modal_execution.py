@@ -47,7 +47,11 @@ class ServiceError(RuntimeError):
 
 @pytest.fixture(autouse=True)
 def _synthetic_recoverable_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
-    def spawn(function: Any, request: dict[str, Any]) -> tuple[Any, float, None]:
+    def spawn(
+        function: Any,
+        request: dict[str, Any],
+        **_kwargs: object,
+    ) -> tuple[Any, float, None]:
         started = __import__("time").monotonic()
         return function.spawn(request), started, None
 
@@ -135,7 +139,13 @@ def test_recoverable_modal_submission_allocates_handle_before_input(
         lambda name: modules[name],
     )
 
-    call, started, error = _real_spawn_recoverable_modal_call(object(), {"request": True})
+    call, started, error = _real_spawn_recoverable_modal_call(
+        object(),
+        {"request": True},
+        budget=_BudgetLedger(100.0, 100.0),
+        gpu_count=1.0,
+        estimated_usd_per_second=0.01,
+    )
 
     assert call.object_id == "fc-recoverable"
     assert started == pytest.approx(12.5)
@@ -226,6 +236,54 @@ def test_recoverable_modal_submission_reconciles_missing_input_ack(
     assert error.call_id == "fc-recoverable"
     assert "did not acknowledge exactly one producer input" in error.error
     assert events == ["from-id", "put-input"]
+
+
+def test_recoverable_modal_submission_rejects_before_input_when_serialization_exhausts_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+    map_response = SimpleNamespace(
+        function_call_id="fc-recoverable",
+        pipelined_inputs=[],
+    )
+    modal, async_utils, function_utils, api_pb2, stub, events = _fake_modal_submission_modules(
+        map_response=map_response,
+        put_response=SimpleNamespace(inputs=[SimpleNamespace(input_id="in-1")]),
+    )
+
+    async def slow_serialize(*_args: object, **_kwargs: object) -> object:
+        clock["now"] = 1.0
+        return "serialized-input"
+
+    function_utils._create_input.side_effect = slow_serialize
+    modules = {
+        "modal": modal,
+        "modal._utils.async_utils": async_utils,
+        "modal._utils.function_utils": function_utils,
+        "modal_proto.api_pb2": api_pb2,
+    }
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        "clipper.modal_execution.importlib.import_module",
+        lambda name: modules[name],
+    )
+    budget = _BudgetLedger(1.0, 100.0)
+
+    call, started, error = _real_spawn_recoverable_modal_call(
+        object(),
+        {"request": True},
+        budget=budget,
+        gpu_count=1.0,
+        estimated_usd_per_second=0.0,
+    )
+
+    assert call.object_id == "fc-recoverable"
+    assert started == pytest.approx(1.0)
+    assert isinstance(error, ProductionBudgetExceeded)
+    assert "before Modal producer input attachment" in str(error)
+    stub.FunctionPutInputs.assert_not_awaited()
+    assert events == ["from-id"]
+    assert budget.gpu_seconds == pytest.approx(1.0)
 
 
 def test_recoverable_modal_submission_keeps_exact_call_on_lost_ack(
@@ -1504,6 +1562,30 @@ def test_invoke_remote_with_budget_cancels_non_timeout_poll_failure() -> None:
     call.cancel.assert_called_once_with(terminate_containers=False)
 
 
+def test_invoke_remote_with_budget_rejects_exhausted_shared_budget_before_call_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    function = Mock()
+    budget = _BudgetLedger(1.0, 1.0)
+    budget.gpu_seconds = 1.0
+    allocate = Mock()
+    monkeypatch.setattr("clipper.modal_execution._spawn_recoverable_modal_call", allocate)
+
+    with pytest.raises(
+        ProductionBudgetExceeded,
+        match="before recoverable Modal call allocation",
+    ):
+        _invoke_remote_with_budget(
+            function,
+            {},
+            budget=budget,
+            gpu_count=1.0,
+            estimated_usd_per_second=0.0,
+        )
+
+    allocate.assert_not_called()
+
+
 def test_invoke_remote_with_budget_retries_cancellation_then_preserves_poll_failure() -> None:
     call_handle = Mock()
     call_handle.object_id = "fc-retry"
@@ -1574,6 +1656,7 @@ def test_invoke_remote_with_budget_reconciles_lost_input_submission(
     def recovered_spawn(
         _function: Any,
         _request: dict[str, Any],
+        **_kwargs: object,
     ) -> tuple[Any, float, ProductionCallSubmissionFailed]:
         clock["now"] = 0.25
         return (
