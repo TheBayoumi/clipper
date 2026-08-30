@@ -18,7 +18,6 @@ from clipper.modal_execution import (
     _acquire_remote_source,
     _BudgetLedger,
     _spawn_recoverable_modal_call,
-    ProductionCallSubmissionFailed,
 )
 from clipper.models import VideoCandidate
 

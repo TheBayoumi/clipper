@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from clipper.modal_execution import ProductionCallSubmissionFailed
+
 
 def _module():
     scripts = str(Path("scripts").resolve())
@@ -273,7 +275,7 @@ def test_watchdog_reconciles_root_submission_with_lost_ack(
         return (
             call,
             module.time.monotonic(),
-            module.ProductionCallSubmissionFailed(
+            ProductionCallSubmissionFailed(
                 "fc-test",
                 "ServiceError",
                 "root input acknowledgement lost",
@@ -283,7 +285,7 @@ def test_watchdog_reconciles_root_submission_with_lost_ack(
     monkeypatch.setattr(module, "_spawn_recoverable_modal_call", lost_ack)
     monkeypatch.setitem(sys.modules, "modal", _modal(call))
 
-    with pytest.raises(module.ProductionCallSubmissionFailed, match="fc-test"):
+    with pytest.raises(ProductionCallSubmissionFailed, match="fc-test"):
         module.run(render=False)
 
     assert call.cancel_args == [False]
