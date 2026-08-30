@@ -198,7 +198,13 @@ def test_recoverable_modal_submission_rejects_unsafe_call_allocation(
     )
 
     with pytest.raises(RuntimeError, match=error_match):
-        _real_spawn_recoverable_modal_call(object(), {"request": True})
+        _real_spawn_recoverable_modal_call(
+            object(),
+            {"request": True},
+            budget=_BudgetLedger(100.0, 100.0),
+            gpu_count=1.0,
+            estimated_usd_per_second=0.01,
+        )
 
     stub.FunctionPutInputs.assert_not_awaited()
     function_utils._create_input.assert_not_awaited()
@@ -228,7 +234,13 @@ def test_recoverable_modal_submission_reconciles_missing_input_ack(
         lambda name: modules[name],
     )
 
-    call, started, error = _real_spawn_recoverable_modal_call(object(), {"request": True})
+    call, started, error = _real_spawn_recoverable_modal_call(
+            object(),
+            {"request": True},
+            budget=_BudgetLedger(100.0, 100.0),
+            gpu_count=1.0,
+            estimated_usd_per_second=0.01,
+        )
 
     assert call.object_id == "fc-recoverable"
     assert started == pytest.approx(3.0)
@@ -309,7 +321,13 @@ def test_recoverable_modal_submission_keeps_exact_call_on_lost_ack(
         lambda name: modules[name],
     )
 
-    call, started, error = _real_spawn_recoverable_modal_call(object(), {"request": True})
+    call, started, error = _real_spawn_recoverable_modal_call(
+            object(),
+            {"request": True},
+            budget=_BudgetLedger(100.0, 100.0),
+            gpu_count=1.0,
+            estimated_usd_per_second=0.01,
+        )
 
     assert call.object_id == "fc-recoverable"
     assert started == pytest.approx(4.0)

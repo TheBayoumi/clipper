@@ -35,8 +35,9 @@ def test_production_workflow_is_single_pass_resumable_and_exact_head() -> None:
     assert '"brief_yaml": scoped_brief_yaml' in watchdog
     assert '"videos"] = [dict(matches[0])]' in watchdog
     assert '"git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"]' in watchdog
-    assert "function.spawn(request)" in watchdog
-    assert "call_started = time.monotonic()" in watchdog
+    assert "_spawn_recoverable_modal_call(" in watchdog
+    assert "function.spawn(request)" not in watchdog
+    assert "call, call_started, submission_error = _spawn_recoverable_modal_call(" in watchdog
     assert "call.get(timeout=min(poll_seconds, remaining_wall_seconds))" in watchdog
     assert "production_call_cancel_retry" in watchdog
     assert "cancelled.set()" in watchdog
@@ -164,7 +165,8 @@ def test_production_workflow_has_cancellable_modal_spy_and_editorial_acceptance(
     assert "if: env.CLIPPER_RENDER == 'false'" in workflow
     assert "if: env.CLIPPER_RENDER == 'true'" in workflow
 
-    assert "function.spawn(request)" in watchdog
+    assert "_spawn_recoverable_modal_call(" in watchdog
+    assert "function.spawn(request)" not in watchdog
     assert '"editorial_acceptance_probe": not render' in watchdog
     assert "call.cancel(terminate_containers=False)" in watchdog
     assert "production_call_spawned" in watchdog
@@ -362,8 +364,11 @@ def test_modal_spy_is_bound_to_spawned_call_and_execution_id() -> None:
     assert "spy.root_function_call_id = call_id" in watchdog
     assert "execution_id=execution_id" in watchdog
     assert "spy_thread.start()" in watchdog
-    assert watchdog.index("spy_thread.start()") < watchdog.index("function.spawn(request)")
-    assert watchdog.index("call.hydrate()") < watchdog.index("spy.root_function_call_id = call_id")
+    assert watchdog.index("spy_thread.start()") < watchdog.index("_spawn_recoverable_modal_call(")
+    assert watchdog.index("_spawn_recoverable_modal_call(") < watchdog.index(
+        "spy.root_function_call_id = call_id"
+    )
+    assert watchdog.index("spy.root_function_call_id = call_id") < watchdog.index("call.hydrate()")
 
     assert "root_function_call_id" in spy
     assert "_belongs_to_execution" in spy
@@ -599,9 +604,9 @@ def test_watchdog_validates_all_timing_before_spawn_and_cleans_partial_setup() -
     poll_validation = run_body.index('_finite_positive_env("CLIPPER_MODAL_SPY_POLL_SECONDS"')
     barrier_validation = run_body.index('"CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS"')
     spy_start = run_body.index("spy_thread.start()")
-    spawn = run_body.index("function.spawn(request)")
-    assert poll_validation < spy_start < spawn
-    assert barrier_validation < spy_start < spawn
+    submission = run_body.index("_spawn_recoverable_modal_call(")
+    assert poll_validation < spy_start < submission
+    assert barrier_validation < spy_start < submission
     assert "try:\n        spy_thread.start()" in run_body
     assert "if call is not None and not remote_completed and not cancelled.is_set():" in run_body
     assert 'cancel_call("watchdog exited before production call completed")' in run_body
