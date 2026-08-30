@@ -1,0 +1,27 @@
+{
+  "schema_version": "clipper-resume-provenance-registry-v1",
+  "records": {
+    "33169878733": {
+      "schema_version": "clipper-resume-provenance-v1",
+      "workflow_run_id": "33169878733",
+      "workflow_head_sha": "955797ae10be418b4c7dab2fe5d31bd69c773ed5",
+      "workflow_artifact_id": "9685205698",
+      "workflow_artifact_digest": "sha256:afd05de62a32c9530b6be59ec3ad219de3bf4a43fb4f3cc8a0f01c03edea1235",
+      "parent_resume_from_run_id": "33069659182",
+      "artifact_run_path": "/reach-double-coverage-clix-04640c98-20260827T120003Z",
+      "artifact_origin_workflow_run_id": "33069659182",
+      "artifact_origin_head_sha": "04d7a154c04348bbc35288484c7f87d906cc8fcc",
+      "artifact_origin_artifact_id": "9646872965",
+      "artifact_origin_artifact_digest": "sha256:84c7eb2f66638e0ad25f901a0144b8dba07af8146bba783d3f12f71fc88878be",
+      "campaign_id": "reach-double-coverage-clix-04640c98",
+      "campaign_brief_sha256": "989ea0bd53a31978947d30127102d54be4ef41d50a02d50e5b6f1900d7b6dcf5",
+      "target_video_id": "2Y4LP85PTak",
+      "source_hashes": {
+        "2Y4LP85PTak": "54369b201b9f38ce8348f18644475c195e570359f4752e4693b4008665a0cd8a"
+      },
+      "cache_root": "/artifacts/_cache",
+      "prior_pipeline_status": "FAILED",
+      "prior_status_reason": "explicit_target_grounding_failed"
+    }
+  }
+}

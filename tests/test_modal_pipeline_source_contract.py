@@ -376,6 +376,10 @@ def test_modal_full_cycle_defaults_to_content_addressed_resume() -> None:
     assert 'cache_root=Path(ARTIFACT_ROOT) / "_fresh-cache" / uuid.uuid4().hex' in cycle
     assert 'metadata["execution_mode"] = execution_mode' in cycle
     assert '"mode": "content-addressed-stage-resume"' in cycle
+    assert '"validated_provenance": resume_validation' in cycle
+    assert "validate_resume_artifact(" in cycle
+    assert "editorial_provider=editor" in cycle
+    assert "visual_scout_provider=scout" in cycle
     assert '"execution_mode": execution_mode' in cycle
 
 

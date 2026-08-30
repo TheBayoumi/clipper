@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -76,6 +77,19 @@ def _environment(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("CLIPPER_CAMPAIGN_BRIEF", str(brief))
     monkeypatch.setenv("CLIPPER_FRESH_INFERENCE", "false")
     monkeypatch.setenv("CLIPPER_RESUME_FROM_RUN_ID", "prior-run")
+    provenance = tmp_path / "resume-provenance.json"
+    provenance.write_text(
+        json.dumps(
+            {
+                "schema_version": "clipper-resume-provenance-v1",
+                "workflow_run_id": "prior-run",
+                "artifact_run_path": "/prior-artifact",
+                "source_hashes": {"video": "s" * 64},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLIPPER_RESUME_PROVENANCE_PATH", str(provenance))
     monkeypatch.setenv("CLIPPER_ACCEPTANCE_SHA", "a" * 40)
     monkeypatch.setenv("CLIPPER_EXECUTION_MODE", "resume")
     monkeypatch.setenv("CLIPPER_MAX_GPU_SECONDS", "1000")
@@ -235,6 +249,25 @@ def test_source_payload_persists_failed_attempt_and_budget_evidence(
     assert attempts["reused_evidence"] is False
     assert attempts["attempts"][0]["status"] == "FAIL"
     assert budget_evidence["estimated_usd"] == pytest.approx(0.02)
+
+
+def test_watchdog_resume_provenance_must_match_source_hash(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    provenance_path = Path(os.environ["CLIPPER_RESUME_PROVENANCE_PATH"])
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    provenance["source_hashes"]["video"] = "x" * 64
+    provenance_path.write_text(json.dumps(provenance), encoding="utf-8")
+
+    source_payload = {
+        "video_id": "video",
+        "evidence": {"sha256": "s" * 64},
+    }
+    with pytest.raises(RuntimeError, match="source hash"):
+        module._validated_resume_provenance(source_payload)
 
 
 def test_watchdog_marks_pre_root_failure_as_abort(tmp_path: Path, monkeypatch) -> None:

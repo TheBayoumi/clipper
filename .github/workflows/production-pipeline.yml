@@ -223,6 +223,37 @@ jobs:
           campaign_id = str(data.get("campaign_id") or "").strip()
           if not campaign_id:
               raise RuntimeError("campaign_id is required")
+          resume_provenance = None
+          if resume_from_run_id is not None:
+              registry = json.loads(
+                  Path("acceptance/resume-provenance.json").read_text(encoding="utf-8")
+              )
+              if not isinstance(registry, dict):
+                  raise RuntimeError("resume provenance registry must be an object")
+              records = registry.get("records")
+              if not isinstance(records, dict):
+                  raise RuntimeError("resume provenance registry records must be an object")
+              record = records.get(resume_from_run_id)
+              if not isinstance(record, dict):
+                  raise RuntimeError(
+                      "resume_from_run_id has no reviewed compatible artifact provenance"
+                  )
+              if str(record.get("workflow_run_id") or "") != resume_from_run_id:
+                  raise RuntimeError("resume provenance registry key does not match workflow run ID")
+              if str(record.get("campaign_id") or "") != campaign_id:
+                  raise RuntimeError("resume provenance campaign does not match selected campaign")
+              if str(record.get("campaign_brief_sha256") or "") != hashlib.sha256(
+                  text.encode()
+              ).hexdigest():
+                  raise RuntimeError("resume provenance campaign brief digest does not match")
+              if str(record.get("target_video_id") or "") != video_id:
+                  raise RuntimeError("resume provenance target does not match selected video")
+              resume_provenance = {str(key): value for key, value in record.items()}
+              Path("open-evidence/resume-provenance-request.json").write_text(
+                  json.dumps(resume_provenance, indent=2) + "\n",
+                  encoding="utf-8",
+              )
+
           evidence = {
               "acceptance_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
               "campaign_id": campaign_id,
@@ -233,6 +264,7 @@ jobs:
               "target_channel_id": channel_id,
               "fresh_inference": fresh_inference,
               "resume_from_run_id": resume_from_run_id,
+              "resume_provenance": resume_provenance,
               "execution_mode": execution_mode,
               "max_gpu_seconds": gpu_limit,
               "max_estimated_usd": cost_limit,
@@ -249,6 +281,10 @@ jobs:
               handle.write(f"CLIPPER_TARGET_CHANNEL_ID={channel_id}\n")
               handle.write(f"CLIPPER_FRESH_INFERENCE={'true' if fresh_inference else 'false'}\n")
               handle.write(f"CLIPPER_RESUME_FROM_RUN_ID={resume_from_run_id or ''}\n")
+              handle.write(
+                  "CLIPPER_RESUME_PROVENANCE_PATH="
+                  f"{'open-evidence/resume-provenance-request.json' if resume_provenance else ''}\n"
+              )
               handle.write(f"CLIPPER_EXECUTION_MODE={execution_mode}\n")
               handle.write(f"CLIPPER_MAX_GPU_SECONDS={gpu_limit}\n")
               handle.write(f"CLIPPER_MAX_ESTIMATED_USD={cost_limit}\n")

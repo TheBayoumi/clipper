@@ -1048,9 +1048,11 @@ def deployment_identity() -> dict[str, Any]:
 )
 def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     """Run one autonomous production DAG over all explicitly targeted source masters."""
+    from clipper.brief import load_brief
     from clipper.dag import DagLeaseCoordinator, DagStore
     from clipper.pipeline import PipelineSettings, run_pipeline
-    from clipper.providers.factory import speech_providers
+    from clipper.providers.factory import editorial_provider, speech_providers, vision_provider
+    from clipper.resume import validate_resume_artifact
 
     raw_sources = payload.get("sources")
     if (
@@ -1134,7 +1136,42 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
             settings,
             cache_root=Path(ARTIFACT_ROOT) / "_fresh-cache" / uuid.uuid4().hex,
         )
+    editor = editorial_provider(settings.compute_profile)
+    scout = vision_provider(settings.compute_profile)
     asr, alignment, diarization = speech_providers(settings.compute_profile)
+
+    resume_validation: dict[str, Any] | None = None
+    if resume_from_run_id is not None:
+        raw_provenance = payload.get("resume_provenance")
+        if not isinstance(raw_provenance, dict):
+            raise RuntimeError("resume execution requires explicit compatible artifact provenance")
+        current_brief = load_brief(brief_path).to_dict()
+        current_source_hashes: dict[str, str] = {}
+        for item in source_items:
+            video_id = str(item.get("video_id") or "")
+            evidence = item.get("evidence")
+            if not video_id or not isinstance(evidence, dict):
+                raise RuntimeError("resume source evidence is incomplete")
+            source_hash = str(evidence.get("sha256") or "")
+            if len(source_hash) != 64:
+                raise RuntimeError("resume source evidence is missing a content hash")
+            current_source_hashes[video_id] = source_hash
+        resume_validation = validate_resume_artifact(
+            artifact_root=ARTIFACT_ROOT,
+            requested_run_id=resume_from_run_id,
+            provenance={str(key): value for key, value in raw_provenance.items()},
+            current_brief=current_brief,
+            current_source_hashes=current_source_hashes,
+            current_compute_profile=settings.compute_profile,
+            current_cache_root=settings.cache_root,
+            current_models={
+                "editorial": editor.identity.to_dict(),
+                "transcription": asr.identity.to_dict(),
+                "alignment": alignment.identity.to_dict(),
+                "diarization": diarization.identity.to_dict(),
+                "vision_scout": scout.identity.to_dict(),
+            },
+        )
 
     lease_function = modal.Function.from_name(APP_NAME, "dag_execution_lease")
 
@@ -1185,6 +1222,9 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
             brief_path,
             settings=settings,
             source_client=source,
+            editorial_provider=editor,
+            visual_scout_provider=scout,
+            visual_review_provider=scout,
             transcription_provider=asr,
             alignment_provider=alignment,
             diarization_provider=diarization,
@@ -1284,7 +1324,13 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
             "from_run_id": resume_from_run_id,
             "mode": "content-addressed-stage-resume",
             "cache_root": str(settings.cache_root),
+            "validated_provenance": resume_validation,
         }
+        if resume_validation is not None:
+            (run_dir / "resume-provenance-validation.json").write_text(
+                json.dumps(resume_validation, indent=2) + chr(10),
+                encoding="utf-8",
+            )
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     artifact_volume.commit()

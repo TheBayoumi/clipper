@@ -187,6 +187,34 @@ def _validate_result(result: object, *, render: bool) -> dict[str, Any]:
     return normalized
 
 
+def _validated_resume_provenance(source_payload: dict[str, Any]) -> dict[str, Any] | None:
+    requested = os.environ.get("CLIPPER_RESUME_FROM_RUN_ID", "").strip()
+    if not requested:
+        return None
+    path_value = os.environ.get("CLIPPER_RESUME_PROVENANCE_PATH", "").strip()
+    if not path_value:
+        raise RuntimeError("resume execution is missing reviewed artifact provenance")
+    path = Path(path_value)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise RuntimeError("resume provenance request must be an object")
+    provenance = {str(key): value for key, value in raw.items()}
+    if str(provenance.get("workflow_run_id") or "") != requested:
+        raise RuntimeError("resume provenance workflow run ID does not match request")
+
+    evidence = source_payload.get("evidence")
+    if not isinstance(evidence, dict):
+        raise RuntimeError("resume source payload is missing source evidence")
+    video_id = str(source_payload.get("video_id") or "")
+    source_hash = str(evidence.get("sha256") or "")
+    source_hashes = provenance.get("source_hashes")
+    if not isinstance(source_hashes, dict):
+        raise RuntimeError("resume provenance source hashes must be an object")
+    if str(source_hashes.get(video_id) or "") != source_hash:
+        raise RuntimeError("resume provenance source hash does not match acquired source master")
+    return provenance
+
+
 def _finite_positive_env(name: str, *, default: str | None = None) -> float:
     raw = os.environ.get(name, default) if default is not None else os.environ.get(name)
     try:
@@ -305,6 +333,9 @@ def run(*, render: bool) -> dict[str, Any]:
         spy_thread_started = True
 
         source_payload = _source_payload(modal, budget, execution_id=execution_id)
+        resume_provenance = _validated_resume_provenance(source_payload)
+        if resume_provenance is not None:
+            _write_json(evidence_dir / "resume-provenance-validated.json", resume_provenance)
         remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
         if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
             raise RuntimeError(
@@ -317,6 +348,7 @@ def run(*, render: bool) -> dict[str, Any]:
             "editorial_acceptance_probe": not render,
             "fresh_inference": os.environ["CLIPPER_FRESH_INFERENCE"] == "true",
             "resume_from_run_id": os.environ.get("CLIPPER_RESUME_FROM_RUN_ID") or None,
+            "resume_provenance": resume_provenance,
             "git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
             "execution_id": execution_id,
             "max_gpu_seconds": remaining_gpu_seconds,
@@ -348,6 +380,9 @@ def run(*, render: bool) -> dict[str, Any]:
             "model_app": os.environ["CLIPPER_MODAL_APP"],
             "acceptance_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
             "resume_from_run_id": request["resume_from_run_id"],
+            "resume_artifact_run_path": (
+                str((resume_provenance or {}).get("artifact_run_path") or "") or None
+            ),
             "fresh_inference": request["fresh_inference"],
             "render": render,
             "editorial_acceptance_probe": request["editorial_acceptance_probe"],
