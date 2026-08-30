@@ -447,6 +447,55 @@ def test_coordinated_operation_failure_commits_failed_record_and_releases_owner(
     assert active["owner"] == ""
 
 
+@pytest.mark.parametrize("mode", ["false", "raise"])
+def test_coordinated_failed_stage_preserves_original_error_when_release_cleanup_fails(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    active = {"owner": ""}
+    release_calls = {"count": 0}
+
+    def claim(_identity, owner: str, _ttl: float) -> bool:
+        active["owner"] = owner
+        return True
+
+    def renew(_identity, owner: str, _ttl: float) -> bool:
+        return active["owner"] == owner
+
+    def release(_identity, owner: str) -> bool:
+        assert active["owner"] == owner
+        release_calls["count"] += 1
+        if mode == "raise":
+            raise RuntimeError("release RPC unavailable")
+        return False
+
+    coordinator = DagLeaseCoordinator(
+        claim=claim,
+        renew=renew,
+        release=release,
+        commit=lambda: None,
+        reload=lambda: None,
+    )
+    store = DagStore(tmp_path, coordinator=coordinator)
+    identity = _identity(f"distributed-failure-release-{mode}")
+
+    with (
+        patch("clipper.dag.time.sleep"),
+        pytest.raises(RuntimeError, match="paid stage failed"),
+    ):
+        store.execute(
+            identity,
+            lambda: (_ for _ in ()).throw(RuntimeError("paid stage failed")),
+        )
+
+    record = store._read_record_payload(identity)
+    assert record is not None
+    assert record["status"] == "FAILED"
+    assert record["error_type"] == "RuntimeError"
+    assert record["error"] == "paid stage failed"
+    assert release_calls["count"] == 3
+
+
 def test_coordinated_claim_rechecks_cache_before_paid_operation(tmp_path: Path) -> None:
     identity = _identity("claim-recheck")
     cache_writer = DagStore(tmp_path)

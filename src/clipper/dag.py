@@ -339,7 +339,7 @@ class DagStore:
                     )
                     self._write_json(self._record_path(identity), failed.to_dict())
                     coordinator.commit()
-                    coordinator.release(identity, owner_id)
+                    self._release_lease_best_effort(coordinator, identity, owner_id)
             raise
         finally:
             renewal_stop.set()
