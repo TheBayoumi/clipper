@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 _RESUME_SCHEMA = "clipper-resume-provenance-v1"
 _ARCHITECTURE = "autonomous-multimodal-quality-graph"
 
@@ -71,7 +70,9 @@ def validate_resume_artifact(
     if str(provenance.get("campaign_id") or "") != campaign_id:
         raise RuntimeError("resume registry campaign does not match the current campaign")
     if prior_brief != current_brief:
-        raise RuntimeError("resume artifact normalized brief is not compatible with the current brief")
+        raise RuntimeError(
+            "resume artifact normalized brief is not compatible with the current brief"
+        )
 
     metadata = _object(manifest.get("run_metadata"), label="prior resume run_metadata")
     if str(metadata.get("architecture") or "") != _ARCHITECTURE:
@@ -87,7 +88,10 @@ def validate_resume_artifact(
     normalized_current_hashes = {
         str(key): str(value) for key, value in current_source_hashes.items()
     }
-    registry_hashes = _object(provenance.get("source_hashes"), label="resume registry source hashes")
+    registry_hashes = _object(
+        provenance.get("source_hashes"),
+        label="resume registry source hashes",
+    )
     normalized_registry_hashes = {key: str(value) for key, value in registry_hashes.items()}
     if normalized_prior_hashes != normalized_current_hashes:
         raise RuntimeError("resume artifact source hashes do not match the current source masters")

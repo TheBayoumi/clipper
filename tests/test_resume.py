@@ -7,7 +7,6 @@ import pytest
 
 from clipper.resume import validate_resume_artifact
 
-
 EDITOR = {
     "model_id": "editor",
     "revision": "rev",
