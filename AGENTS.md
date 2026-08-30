@@ -36,6 +36,19 @@ Follow the repository's concise Conventional Commit subjects: `feat:`, `fix:`, `
 
 Copy `campaign.example.yaml` for local configuration. Keep API keys (for example, `YOUTUBE_API_KEY`) in the environment or `.env`, never YAML or source control. Preserve source-rights checks and the explicit publication boundary when modifying acquisition or release behavior.
 
+## Implementation Discipline & Commit Readiness
+
+These rules govern implementation hygiene and are not acceptance criteria for steering an independent reviewer.
+
+- A material change is not commit-ready until the implementation agent has applied the repository formatter/linter rules to the touched code and checked the deterministic gate in this order: `ruff check .`, `ruff format --check .`, strict `mypy`, targeted regression tests for every changed behavior, then the coverage-sensitive pytest gate. The full suite must remain at or above 95% coverage.
+- Before a commit is pushed, use Ruff's actual formatter/import rules rather than hand-guessing style. Do not intentionally push known import-order, unused-import, line-length, formatting, typing, or trivial test-harness defects and rely on CI to discover them.
+- Fold formatting/import cleanup into the same logical implementation change whenever possible. Avoid chains of style-only repair commits caused by skipping the deterministic pre-commit gate.
+- Green workflow metadata is insufficient when raw pytest output contradicts it. Verify the raw test total and measured coverage before representing deterministic verification as PASS.
+- Do not poll an unchanged PR or workflow indefinitely. Poll only while a known asynchronous transition is in progress, use bounded checks, and stop polling when there is no state change to act on.
+- After a static Codex P0/P1/P2 finding is corrected and the corrective behavior is deterministically verified on the current code, resolve that review thread. Never leave fixed static findings unresolved merely as historical clutter.
+- Do not resolve `NEEDS_RUNTIME_EVIDENCE` threads until the required correlated exact-SHA live evidence exists.
+- Do not request a fresh Codex acceptance review until implementation is complete and the deterministic exact-head gate is green. Any material commit after that review requires a new exact-head review.
+
 ## Mandatory Independent Reviewer Contract
 
 Codex is the mandatory independent adversarial reviewer for the current repository workflow. The repository custom agent `Clipper Adversarial Reviewer` is optional and dormant while GitHub Copilot agent access is unavailable; its absence must not block review or acceptance. Every material PR head must receive a fresh Codex review after implementation and deterministic verification are complete. A review of an older SHA is historical evidence only and must never be represented as approval of a newer head.
