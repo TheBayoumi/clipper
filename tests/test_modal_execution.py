@@ -26,7 +26,6 @@ from clipper.modal_execution import (
     _materialize_remote_run,
     _positive_budget,
     _runtime_source_sha,
-    _spawn_recoverable_modal_call as _real_spawn_recoverable_modal_call,
     _validate_model_access,
     _verify_deployed_runtime_sha,
     ensure_modal_runtime,
