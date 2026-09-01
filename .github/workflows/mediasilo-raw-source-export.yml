@@ -1,0 +1,136 @@
+name: MW4 raw MediaSilo source export
+
+on:
+  push:
+    branches:
+      - probe/mediasilo-mw4
+    paths:
+      - .github/workflows/mediasilo-raw-source-export.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install resolver dependencies
+        run: |
+          pip install 'playwright==1.55.0'
+          python -m playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg curl
+
+      - name: Resolve official MediaSilo reels
+        env:
+          MEDIASILO_URL: https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          holder = [None]
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage"])
+              context = browser.new_context(
+                  viewport={"width":1440,"height":1000},
+                  user_agent=(
+                      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/139.0.0.0 Safari/537.36"
+                  ),
+              )
+              page = context.new_page()
+              def handle(resp):
+                  if "/folders/3b199368-5974-4eb1-a450-327a4e84c260/assets" not in resp.url or resp.status != 200:
+                      return
+                  try:
+                      data = resp.json()
+                  except Exception:
+                      return
+                  if isinstance(data, list) and data:
+                      holder[0] = data
+              page.on("response", handle)
+              page.goto(os.environ["MEDIASILO_URL"], wait_until="domcontentloaded", timeout=90000)
+              page.wait_for_timeout(25000)
+              browser.close()
+
+          if not holder[0]:
+              raise RuntimeError("MediaSilo assets were not resolved")
+
+          wanted = {
+              "MW4_BetaTopPlays_Stringout_16X9_R1.mp4": "r1",
+              "BestOfBeta_Stringout_Batch2.mp4": "batch2",
+              "BestOfBeta_Week2_Stringout_1_8.28.mp4": "week2",
+          }
+          resolved = {}
+          for a in holder[0]:
+              title = a.get("title")
+              if title not in wanted:
+                  continue
+              ds = {d.get("type"): d for d in a.get("derivatives", [])}
+              d = ds.get("x1080") or ds.get("proxy") or {}
+              url = d.get("url") or (d.get("properties") or {}).get("url")
+              if not url:
+                  raise RuntimeError(f"No usable derivative for {title}")
+              resolved[wanted[title]] = {"id":a["id"],"title":title,"url":url}
+          missing = set(wanted.values()) - set(resolved)
+          if missing:
+              raise RuntimeError(f"Missing assets: {sorted(missing)}")
+          Path("/tmp/resolved.json").write_text(json.dumps(resolved), encoding="utf-8")
+          print(json.dumps({k:{"id":v["id"],"title":v["title"]} for k,v in resolved.items()}, indent=2))
+          PY
+
+      - name: Download official raw reels
+        run: |
+          mkdir -p raw_sources/contact_sheets
+          python - <<'PY'
+          import json, urllib.request, hashlib
+          from pathlib import Path
+
+          r = json.loads(Path("/tmp/resolved.json").read_text())
+          out = Path("raw_sources")
+          manifest = {}
+          for key, meta in r.items():
+              target = out / f"{key}.mp4"
+              req = urllib.request.Request(meta["url"], headers={"User-Agent":"Mozilla/5.0"})
+              with urllib.request.urlopen(req, timeout=300) as src, target.open("wb") as dst:
+                  while True:
+                      b = src.read(8*1024*1024)
+                      if not b:
+                          break
+                      dst.write(b)
+              manifest[key] = {
+                  "title": meta["title"],
+                  "asset_id": meta["id"],
+                  "bytes": target.stat().st_size,
+                  "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+              }
+              print(key, target.stat().st_size)
+          Path("raw_sources/source_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+          PY
+
+          curl -fL --retry 3             'https://imgs.callofduty.com/content/dam/atvi/callofduty/cod-touchui/mw4/common/CODMW4_LOGO_PRIMARY.webp'             -o raw_sources/CODMW4_LOGO_PRIMARY.webp
+
+          for f in raw_sources/r1.mp4 raw_sources/batch2.mp4 raw_sources/week2.mp4; do
+            ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,avg_frame_rate:format=duration,size               -of json "$f" > "${f%.mp4}_ffprobe.json"
+            ffmpeg -hide_banner -loglevel error -y -i "$f"               -vf "fps=1/2,scale=320:-1,tile=5x5" -frames:v 1               "raw_sources/contact_sheets/$(basename "${f%.mp4}")_sheet.jpg"
+          done
+
+      - name: Upload official raw source package
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-official-MediaSilo-raw-sources
+          path: raw_sources/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
