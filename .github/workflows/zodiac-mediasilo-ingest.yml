@@ -33,40 +33,38 @@ jobs:
       - name: Validate session capture
         run: python -m py_compile scripts/capture_mediasilo_session.py
 
-      - name: Capture Gameplay Edit folder APIs
+      - name: Download official Gameplay Edit sources
         run: |
           rm -rf mediasilo-session
           python scripts/capture_mediasilo_session.py \
             "$MEDIASILO_URL" \
             --folder "__NO_CHILD_FOLDER__" \
-            --output-dir mediasilo-session
+            --output-dir mediasilo-session \
+            --download-sources
 
-      - name: Print captured API endpoints and folder text
-        if: always()
+      - name: Verify source payloads
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          req=Path('mediasilo-session/requests.json')
-          if req.exists():
-              rows=json.loads(req.read_text())
-              for row in rows:
-                  print(row['status'], row['url'])
-          for label, filename in (
-              ('STATE','state.json'),
-              ('GAMEPLAY FOLDER','root-after-12s.txt'),
-          ):
-              print(f'\n--- {label} ---')
-              p=Path('mediasilo-session') / filename
-              print(p.read_text()[:16000] if p.exists() else '<none>')
+          manifest_path = Path('mediasilo-session/downloads-manifest.json')
+          manifest = json.loads(manifest_path.read_text())
+          if len(manifest) != 2:
+              raise SystemExit(f'expected 2 source videos, got {len(manifest)}')
+          for item in manifest:
+              path = Path('mediasilo-session/downloads') / item['file_name']
+              if not path.exists() or path.stat().st_size != item['bytes']:
+                  raise SystemExit(f'invalid source payload: {path}')
+              print(item['file_name'], item['bytes'], item['sha256'])
           PY
 
-      - name: Upload session evidence
-        if: always()
+      - name: Upload source videos
         uses: actions/upload-artifact@v4
         with:
-          name: zodiac-gameplay-folder-${{ github.sha }}
-          path: mediasilo-session/
+          name: zodiac-gameplay-sources-${{ github.sha }}
+          path: |
+            mediasilo-session/downloads/
+            mediasilo-session/downloads-manifest.json
           if-no-files-found: error
           retention-days: 3
           compression-level: 0
