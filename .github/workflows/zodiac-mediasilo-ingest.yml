@@ -5,6 +5,7 @@ on:
     branches:
       - feat/zodiac-mediasilo-ingest
     paths:
+      - "scripts/probe_mediasilo_api.py"
       - "scripts/fetch_mediasilo_public.py"
       - "scripts/fetch_mediasilo_quicklink.py"
       - ".github/workflows/zodiac-mediasilo-ingest.yml"
@@ -16,9 +17,10 @@ permissions:
 jobs:
   ingest:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
     env:
-      MEDIASILO_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/c8de980b-1330-4c46-971e-1013acd2ad28
+      QUICKLINK_ID: 6a8e379525a8e55a51c595fc
+      ROOT_FOLDER_ID: c8de980b-1330-4c46-971e-1013acd2ad28
     steps:
       - uses: actions/checkout@v4
 
@@ -26,41 +28,35 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install acquisition runtime
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install "playwright>=1.55,<2"
-          python -m playwright install --with-deps chromium
+      - name: Validate API probe
+        run: python -m py_compile scripts/probe_mediasilo_api.py
 
-      - name: Validate helpers
+      - name: Crawl authorized Zodiac MediaSilo API
         run: |
-          python -m py_compile scripts/fetch_mediasilo_public.py
-          python -m py_compile scripts/fetch_mediasilo_quicklink.py
+          rm -rf mediasilo-api
+          python scripts/probe_mediasilo_api.py \
+            "$QUICKLINK_ID" "$ROOT_FOLDER_ID" \
+            --output-dir mediasilo-api
 
-      - name: Fetch authorized Zodiac campaign content
-        id: fetch
-        continue-on-error: true
+      - name: Summarize inventory
         run: |
-          rm -rf mediasilo-output
-          python scripts/fetch_mediasilo_quicklink.py \
-            "$MEDIASILO_URL" \
-            --output-dir mediasilo-output
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('mediasilo-api/inventory.json').read_text())
+          print('folders:', len(data['folders']))
+          for folder in data['folders']:
+              print('FOLDER', folder['id'], folder['path'])
+          print('assets:', len(data['assets']))
+          for asset in data['assets']:
+              print('ASSET', asset['id'], asset['folder_path'], asset['name'])
+          PY
 
-      - name: Inspect acquired content
-        if: always()
-        run: |
-          find mediasilo-output -type f -printf '%P %s bytes\n' | sort || true
-
-      - name: Upload source and diagnostics
-        if: always()
+      - name: Upload API inventory
         uses: actions/upload-artifact@v4
         with:
-          name: zodiac-mediasilo-source-${{ github.sha }}
-          path: mediasilo-output/
+          name: zodiac-mediasilo-api-${{ github.sha }}
+          path: mediasilo-api/
           if-no-files-found: error
           retention-days: 3
           compression-level: 0
-
-      - name: Fail if content was not acquired
-        if: steps.fetch.outcome != 'success'
-        run: exit 1
