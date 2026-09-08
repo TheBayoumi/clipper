@@ -42,21 +42,28 @@ jobs:
             --output-dir mediasilo-session
 
       - name: Print captured API endpoints
+        if: always()
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          rows=json.loads(Path('mediasilo-session/requests.json').read_text())
-          for row in rows:
-              print(row['status'], row['url'])
-          print('\n--- FOLDER TEXT ---')
-          print(Path('mediasilo-session/Gameplay_Edit.txt').read_text()[:12000])
-          print('\n--- DOWNLOAD DIALOG ---')
-          p=Path('mediasilo-session/download-dialog.txt')
-          print(p.read_text()[:12000] if p.exists() else '<none>')
+          req=Path('mediasilo-session/requests.json')
+          if req.exists():
+              rows=json.loads(req.read_text())
+              for row in rows:
+                  print(row['status'], row['url'])
+          for label, filename in (
+              ('STATE','state.json'),
+              ('FOLDER TEXT','Gameplay_Edit.txt'),
+              ('DOWNLOAD DIALOG','download-dialog.txt'),
+          ):
+              print(f'\n--- {label} ---')
+              p=Path('mediasilo-session') / filename
+              print(p.read_text()[:12000] if p.exists() else '<none>')
           PY
 
       - name: Upload session evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: zodiac-mediasilo-session-${{ github.sha }}
