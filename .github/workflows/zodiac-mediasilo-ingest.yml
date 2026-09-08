@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      MEDIASILO_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/c8de980b-1330-4c46-971e-1013acd2ad28
+      MEDIASILO_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/5f8106f9-fa72-4a68-93d9-2ea8f05495eb
     steps:
       - uses: actions/checkout@v4
 
@@ -33,15 +33,15 @@ jobs:
       - name: Validate session capture
         run: python -m py_compile scripts/capture_mediasilo_session.py
 
-      - name: Capture Gameplay Edit APIs and download UI
+      - name: Capture Gameplay Edit folder APIs
         run: |
           rm -rf mediasilo-session
           python scripts/capture_mediasilo_session.py \
             "$MEDIASILO_URL" \
-            --folder "Gameplay Edit" \
+            --folder "__NO_CHILD_FOLDER__" \
             --output-dir mediasilo-session
 
-      - name: Print captured API endpoints
+      - name: Print captured API endpoints and folder text
         if: always()
         run: |
           python - <<'PY'
@@ -54,19 +54,18 @@ jobs:
                   print(row['status'], row['url'])
           for label, filename in (
               ('STATE','state.json'),
-              ('FOLDER TEXT','Gameplay_Edit.txt'),
-              ('DOWNLOAD DIALOG','download-dialog.txt'),
+              ('GAMEPLAY FOLDER','root-after-12s.txt'),
           ):
               print(f'\n--- {label} ---')
               p=Path('mediasilo-session') / filename
-              print(p.read_text()[:12000] if p.exists() else '<none>')
+              print(p.read_text()[:16000] if p.exists() else '<none>')
           PY
 
       - name: Upload session evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zodiac-mediasilo-session-${{ github.sha }}
+          name: zodiac-gameplay-folder-${{ github.sha }}
           path: mediasilo-session/
           if-no-files-found: error
           retention-days: 3
