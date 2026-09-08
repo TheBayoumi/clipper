@@ -5,9 +5,7 @@ on:
     branches:
       - feat/zodiac-mediasilo-ingest
     paths:
-      - "scripts/probe_mediasilo_api.py"
-      - "scripts/fetch_mediasilo_public.py"
-      - "scripts/fetch_mediasilo_quicklink.py"
+      - "scripts/capture_mediasilo_session.py"
       - ".github/workflows/zodiac-mediasilo-ingest.yml"
   workflow_dispatch:
 
@@ -19,8 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      QUICKLINK_ID: 6a8e379525a8e55a51c595fc
-      ROOT_FOLDER_ID: c8de980b-1330-4c46-971e-1013acd2ad28
+      MEDIASILO_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/c8de980b-1330-4c46-971e-1013acd2ad28
     steps:
       - uses: actions/checkout@v4
 
@@ -28,35 +25,42 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Validate API probe
-        run: python -m py_compile scripts/probe_mediasilo_api.py
-
-      - name: Crawl authorized Zodiac MediaSilo API
+      - name: Install browser runtime
         run: |
-          rm -rf mediasilo-api
-          python scripts/probe_mediasilo_api.py \
-            "$QUICKLINK_ID" "$ROOT_FOLDER_ID" \
-            --output-dir mediasilo-api
+          python -m pip install "playwright>=1.55,<2"
+          python -m playwright install --with-deps chromium
 
-      - name: Summarize inventory
+      - name: Validate session capture
+        run: python -m py_compile scripts/capture_mediasilo_session.py
+
+      - name: Capture Gameplay Edit APIs and download UI
+        run: |
+          rm -rf mediasilo-session
+          python scripts/capture_mediasilo_session.py \
+            "$MEDIASILO_URL" \
+            --folder "Gameplay Edit" \
+            --output-dir mediasilo-session
+
+      - name: Print captured API endpoints
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          data = json.loads(Path('mediasilo-api/inventory.json').read_text())
-          print('folders:', len(data['folders']))
-          for folder in data['folders']:
-              print('FOLDER', folder['id'], folder['path'])
-          print('assets:', len(data['assets']))
-          for asset in data['assets']:
-              print('ASSET', asset['id'], asset['folder_path'], asset['name'])
+          rows=json.loads(Path('mediasilo-session/requests.json').read_text())
+          for row in rows:
+              print(row['status'], row['url'])
+          print('\n--- FOLDER TEXT ---')
+          print(Path('mediasilo-session/Gameplay_Edit.txt').read_text()[:12000])
+          print('\n--- DOWNLOAD DIALOG ---')
+          p=Path('mediasilo-session/download-dialog.txt')
+          print(p.read_text()[:12000] if p.exists() else '<none>')
           PY
 
-      - name: Upload API inventory
+      - name: Upload session evidence
         uses: actions/upload-artifact@v4
         with:
-          name: zodiac-mediasilo-api-${{ github.sha }}
-          path: mediasilo-api/
+          name: zodiac-mediasilo-session-${{ github.sha }}
+          path: mediasilo-session/
           if-no-files-found: error
           retention-days: 3
           compression-level: 0
