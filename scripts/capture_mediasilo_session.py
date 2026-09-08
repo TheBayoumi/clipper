@@ -34,6 +34,7 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     captured: list[dict[str, object]] = []
     bodies: dict[str, object] = {}
+    state: dict[str, object] = {"folder_visible": False, "folder_clicked": False}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -45,15 +46,23 @@ def main() -> int:
             if "api.mediasilo.com" not in url or "/v3/quicklinks/" not in url:
                 return
             request = getattr(response, "request")
+            try:
+                request_headers = dict(request.all_headers())
+            except Exception:
+                request_headers = dict(getattr(request, "headers", {}))
+            try:
+                response_headers = dict(getattr(response, "all_headers")())
+            except Exception:
+                response_headers = dict(getattr(response, "headers", {}))
             entry = {
                 "url": url,
                 "status": int(getattr(response, "status", 0)),
-                "request_headers": safe_headers(dict(getattr(request, "headers", {}))),
-                "response_headers": safe_headers(dict(getattr(response, "headers", {}))),
+                "request_headers": safe_headers(request_headers),
+                "response_headers": safe_headers(response_headers),
             }
             captured.append(entry)
             try:
-                content_type = str(entry["response_headers"].get("content-type", ""))
+                content_type = str(response_headers.get("content-type", ""))
                 if "json" in content_type.lower():
                     bodies[url] = getattr(response, "json")()
             except Exception as exc:
@@ -62,38 +71,47 @@ def main() -> int:
         page.on("response", on_response)
         page.goto(args.url, wait_until="domcontentloaded", timeout=60_000)
 
+        # MediaSilo's QuickLink API can be slow/intermittent on fresh cloud IPs.
+        # Preserve evidence even if the UI never hydrates.
+        page.wait_for_timeout(15_000)
+        page.screenshot(path=str(out / "root-after-15s.png"), full_page=True)
+        (out / "root-after-15s.html").write_text(page.content(), encoding="utf-8")
+        (out / "root-after-15s.txt").write_text(page.locator("body").inner_text(), encoding="utf-8")
+
         folder = page.locator(f'[aria-label="{args.folder}"]')
-        folder.wait_for(state="visible", timeout=40_000)
-        page.wait_for_timeout(1_500)
-        page.screenshot(path=str(out / "root-loaded.png"), full_page=True)
-        folder.click(force=True)
-
-        page.wait_for_timeout(8_000)
-        page.screenshot(path=str(out / f"{safe_name(args.folder)}.png"), full_page=True)
-        (out / f"{safe_name(args.folder)}.html").write_text(page.content(), encoding="utf-8")
-        (out / f"{safe_name(args.folder)}.txt").write_text(
-            page.locator("body").inner_text(), encoding="utf-8"
-        )
-
-        # Exercise the QuickLink Download control after the target folder is loaded.
-        download_control = page.locator('[aria-label="Download"]')
-        if download_control.count():
+        if folder.count() and folder.first.is_visible():
+            state["folder_visible"] = True
             try:
-                download_control.first.click(force=True, timeout=3_000)
-                page.wait_for_timeout(3_000)
-                page.screenshot(path=str(out / "download-dialog.png"), full_page=True)
-                (out / "download-dialog.txt").write_text(
+                folder.first.click(force=True, timeout=3_000)
+                state["folder_clicked"] = True
+                page.wait_for_timeout(8_000)
+                page.screenshot(path=str(out / f"{safe_name(args.folder)}.png"), full_page=True)
+                (out / f"{safe_name(args.folder)}.html").write_text(page.content(), encoding="utf-8")
+                (out / f"{safe_name(args.folder)}.txt").write_text(
                     page.locator("body").inner_text(), encoding="utf-8"
                 )
+
+                download_control = page.locator('[aria-label="Download"]')
+                if download_control.count():
+                    try:
+                        download_control.first.click(force=True, timeout=3_000)
+                        page.wait_for_timeout(4_000)
+                        page.screenshot(path=str(out / "download-dialog.png"), full_page=True)
+                        (out / "download-dialog.txt").write_text(
+                            page.locator("body").inner_text(), encoding="utf-8"
+                        )
+                    except Exception as exc:
+                        (out / "download-error.txt").write_text(repr(exc), encoding="utf-8")
             except Exception as exc:
-                (out / "download-error.txt").write_text(repr(exc), encoding="utf-8")
+                state["folder_click_error"] = repr(exc)
 
         page.wait_for_timeout(2_000)
         browser.close()
 
     (out / "requests.json").write_text(json.dumps(captured, indent=2), encoding="utf-8")
     (out / "bodies.json").write_text(json.dumps(bodies, indent=2), encoding="utf-8")
-    print(json.dumps({"responses": len(captured), "json_bodies": len(bodies)}))
+    (out / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    print(json.dumps({"responses": len(captured), "json_bodies": len(bodies), **state}))
     return 0
 
 
