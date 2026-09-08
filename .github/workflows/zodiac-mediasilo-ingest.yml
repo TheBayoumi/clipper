@@ -58,13 +58,29 @@ jobs:
               print(item['file_name'], item['bytes'], item['sha256'])
           PY
 
-      - name: Upload source videos
+      - name: Upload vertical source
         uses: actions/upload-artifact@v4
         with:
-          name: zodiac-gameplay-sources-${{ github.sha }}
-          path: |
-            mediasilo-session/downloads/
-            mediasilo-session/downloads-manifest.json
+          name: zodiac-gameplay-vertical-${{ github.sha }}
+          path: mediasilo-session/downloads/Zodiac_Resurgence_9x16_Organic_This_WKND.mp4
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
+      - name: Upload horizontal source
+        uses: actions/upload-artifact@v4
+        with:
+          name: zodiac-gameplay-horizontal-${{ github.sha }}
+          path: mediasilo-session/downloads/Zodiac_Resurgance_16x9_Organic_This_WKND.mp4
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
+      - name: Upload source manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: zodiac-gameplay-manifest-${{ github.sha }}
+          path: mediasilo-session/downloads-manifest.json
           if-no-files-found: error
           retention-days: 3
           compression-level: 0
