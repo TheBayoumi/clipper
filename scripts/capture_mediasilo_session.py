@@ -7,6 +7,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 SENSITIVE = {"authorization", "cookie", "set-cookie", "x-api-key"}
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/140.0.0.0 Safari/537.36"
+)
 
 
 def safe_headers(headers: dict[str, str]) -> dict[str, str]:
@@ -38,7 +43,11 @@ def main() -> int:
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(viewport={"width": 1440, "height": 900})
+        context = browser.new_context(
+            viewport={"width": 1440, "height": 900},
+            user_agent=USER_AGENT,
+            locale="en-US",
+        )
         page = context.new_page()
 
         def on_response(response: object) -> None:
@@ -71,12 +80,12 @@ def main() -> int:
         page.on("response", on_response)
         page.goto(args.url, wait_until="domcontentloaded", timeout=60_000)
 
-        # MediaSilo's QuickLink API can be slow/intermittent on fresh cloud IPs.
-        # Preserve evidence even if the UI never hydrates.
-        page.wait_for_timeout(15_000)
-        page.screenshot(path=str(out / "root-after-15s.png"), full_page=True)
-        (out / "root-after-15s.html").write_text(page.content(), encoding="utf-8")
-        (out / "root-after-15s.txt").write_text(page.locator("body").inner_text(), encoding="utf-8")
+        # Match the successful public QuickLink acquisition path: allow the
+        # application to hydrate before touching its React controls.
+        page.wait_for_timeout(12_000)
+        page.screenshot(path=str(out / "root-after-12s.png"), full_page=True)
+        (out / "root-after-12s.html").write_text(page.content(), encoding="utf-8")
+        (out / "root-after-12s.txt").write_text(page.locator("body").inner_text(), encoding="utf-8")
 
         folder = page.locator(f'[aria-label="{args.folder}"]')
         if folder.count() and folder.first.is_visible():
