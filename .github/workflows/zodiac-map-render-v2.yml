@@ -19,7 +19,7 @@ jobs:
     env:
       MAP_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/6567edb9-06f5-4994-a81c-841694958797
       GAMEPLAY_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/5f8106f9-fa72-4a68-93d9-2ea8f05495eb
-      THUMBS_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/f197b127-5ca7-4e63-84a0-9874b864f75f
+      ART_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/dcb4eed7-aed3-4c8a-b733-3ee390bc44ac
     steps:
       - uses: actions/checkout@v4
 
@@ -38,14 +38,14 @@ jobs:
         run: |
           python scripts/capture_mediasilo_session.py "$MAP_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-map
           python scripts/capture_mediasilo_session.py "$GAMEPLAY_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-gameplay
-          python scripts/capture_mediasilo_session.py "$THUMBS_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-thumbs
+          python scripts/capture_mediasilo_session.py "$ART_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-art
 
       - name: Render native 9x16 map-first creative
         run: |
           python scripts/render_zodiac_map_creative_v2.py \
             --map-bodies inspect-map/bodies.json \
             --gameplay-bodies inspect-gameplay/bodies.json \
-            --thumbs-bodies inspect-thumbs/bodies.json \
+            --thumbs-bodies inspect-art/bodies.json \
             --work-dir zodiac-map-render-v2 \
             --output Zodiac_NEW_WARZONE_MAP_9x16_250M_FINAL.mp4
 
