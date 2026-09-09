@@ -1,0 +1,53 @@
+name: Prepare Lovable production trigger
+
+on:
+  push:
+    branches:
+      - feat/contentrewards-campaign-factory
+    paths:
+      - .github/workflows/prepare-lovable-production.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/contentrewards-campaign-factory
+          fetch-depth: 0
+      - name: Patch deployment trigger and self-remove
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/modal-workers-deploy.yml')
+          text = path.read_text(encoding='utf-8')
+          old = '''  push:
+    branches:
+      - feat/word-reveal-face-tracking
+    paths:
+      - "acceptance/modal-deploy-request.json"
+'''
+          new = '''  push:
+    branches:
+      - feat/word-reveal-face-tracking
+      - feat/contentrewards-campaign-factory
+    paths:
+      - "acceptance/modal-deploy-request.json"
+      - "acceptance/production-run-request.json"
+'''
+          if text.count(old) != 1:
+              raise SystemExit('Modal deploy trigger anchor drifted')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          Path('.github/workflows/prepare-lovable-production.yml').unlink()
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/modal-workers-deploy.yml .github/workflows/prepare-lovable-production.yml
+          git commit -m 'ci: deploy Modal workers for Lovable production heads'
+          git push origin HEAD:feat/contentrewards-campaign-factory
