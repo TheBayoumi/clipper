@@ -163,12 +163,56 @@ def render_vertical_art_segment(art: Path, audio_source: Path, destination: Path
     ])
 
 
-def concat_segments(segments: list[Path], destination: Path) -> None:
+def concat_video_only(segments: list[Path], destination: Path) -> None:
     manifest = destination.with_suffix(".concat.txt")
     manifest.write_text("".join(f"file '{segment.resolve()}'\n" for segment in segments))
     run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(manifest),
-        "-c", "copy", "-movflags", "+faststart", str(destination),
+        "-map", "0:v:0", "-c:v", "copy", "-an", "-movflags", "+faststart", str(destination),
+    ])
+
+
+def render_continuous_audio(
+    map_file: Path,
+    gameplay_file: Path,
+    timeline: list[dict[str, object]],
+    destination: Path,
+) -> None:
+    # Build ONE final AAC track instead of concatenating independently encoded AAC chunks.
+    # The CTA keeps the gameplay audio rolling from 16.70 s so the visual jump at 8.90 s
+    # does not create the audible 4.2 s discontinuity that existed in the previous render.
+    filters: list[str] = []
+    labels: list[str] = []
+    for index, item in enumerate(timeline):
+        source_kind = str(item.get("audio_kind") or ("map" if item["kind"] in ("art", "map") else "gameplay"))
+        input_index = 0 if source_kind == "map" else 1
+        audio_start = float(item.get("audio_start", item.get("source_start") or 0.0))
+        duration = float(item["duration"])
+        label = f"a{index}"
+        filters.append(
+            f"[{input_index}:a:0]atrim=start={audio_start:.3f}:duration={duration:.3f},"
+            f"asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo[{label}]"
+        )
+        labels.append(f"[{label}]")
+
+    total = sum(float(item["duration"]) for item in timeline)
+    filters.append(
+        "".join(labels)
+        + f"concat=n={len(labels)}:v=0:a=1,"
+          f"afade=t=out:st={max(0.0, total - 0.18):.3f}:d=0.18[aout]"
+    )
+    run([
+        "ffmpeg", "-y", "-i", str(map_file), "-i", str(gameplay_file),
+        "-filter_complex", ";".join(filters), "-map", "[aout]",
+        *audio_args(), str(destination),
+    ])
+
+
+def mux_video_and_audio(video_only: Path, audio_track: Path, destination: Path) -> None:
+    run([
+        "ffmpeg", "-y", "-i", str(video_only), "-i", str(audio_track),
+        "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "copy",
+        "-shortest", "-movflags", "+faststart", str(destination),
     ])
 
 
@@ -211,15 +255,15 @@ def main() -> int:
     }
 
     timeline = [
-        {"id": "S0", "kind": "art", "source": art_name, "source_start": None, "duration": 0.60, "final": [0.00, 0.60], "text": "NEW WARZONE MAP?"},
-        {"id": "S1", "kind": "map", "source": map_name, "source_start": 0.60, "duration": 1.00, "final": [0.60, 1.60], "text": "ZODIAC - FREE BETA WEEKEND 2"},
-        {"id": "S2", "kind": "map", "source": map_name, "source_start": 24.15, "duration": 1.40, "final": [1.60, 3.00], "text": None},
-        {"id": "S3", "kind": "gameplay", "source": gameplay_name, "source_start": 11.50, "duration": 1.60, "final": [3.00, 4.60], "text": None},
-        {"id": "S4a", "kind": "map", "source": map_name, "source_start": 31.00, "duration": 0.70, "final": [4.60, 5.30], "text": None},
-        {"id": "S4b", "kind": "map", "source": map_name, "source_start": 33.55, "duration": 0.70, "final": [5.30, 6.00], "text": None},
-        {"id": "S4c", "kind": "map", "source": map_name, "source_start": 35.05, "duration": 0.70, "final": [6.00, 6.70], "text": None},
-        {"id": "S5", "kind": "gameplay", "source": gameplay_name, "source_start": 14.50, "duration": 2.20, "final": [6.70, 8.90], "text": None},
-        {"id": "S6", "kind": "cta", "source": gameplay_name, "source_start": 20.90, "duration": 1.70, "final": [8.90, 10.60], "text": None},
+        {"id": "S0", "kind": "art", "source": art_name, "source_start": None, "audio_kind": "map", "audio_start": 0.00, "duration": 0.60, "final": [0.00, 0.60], "text": "NEW WARZONE MAP?"},
+        {"id": "S1", "kind": "map", "source": map_name, "source_start": 0.60, "audio_kind": "map", "audio_start": 0.60, "duration": 1.00, "final": [0.60, 1.60], "text": "ZODIAC - FREE BETA WEEKEND 2"},
+        {"id": "S2", "kind": "map", "source": map_name, "source_start": 24.15, "audio_kind": "map", "audio_start": 24.15, "duration": 1.40, "final": [1.60, 3.00], "text": None},
+        {"id": "S3", "kind": "gameplay", "source": gameplay_name, "source_start": 11.50, "audio_kind": "gameplay", "audio_start": 11.50, "duration": 1.60, "final": [3.00, 4.60], "text": None},
+        {"id": "S4a", "kind": "map", "source": map_name, "source_start": 31.00, "audio_kind": "map", "audio_start": 31.00, "duration": 0.70, "final": [4.60, 5.30], "text": None},
+        {"id": "S4b", "kind": "map", "source": map_name, "source_start": 33.55, "audio_kind": "map", "audio_start": 33.55, "duration": 0.70, "final": [5.30, 6.00], "text": None},
+        {"id": "S4c", "kind": "map", "source": map_name, "source_start": 35.05, "audio_kind": "map", "audio_start": 35.05, "duration": 0.70, "final": [6.00, 6.70], "text": None},
+        {"id": "S5", "kind": "gameplay", "source": gameplay_name, "source_start": 14.50, "audio_kind": "gameplay", "audio_start": 14.50, "duration": 2.20, "final": [6.70, 8.90], "text": None},
+        {"id": "S6", "kind": "cta", "source": gameplay_name, "source_start": 20.90, "audio_kind": "gameplay", "audio_start": 16.70, "duration": 1.70, "final": [8.90, 10.60], "text": None},
     ]
 
     rendered: list[Path] = []
@@ -240,8 +284,13 @@ def main() -> int:
             )
         rendered.append(destination)
 
+    video_only = work / "final-video-only.mp4"
+    audio_track = work / "final-continuous-audio.m4a"
+    concat_video_only(rendered, video_only)
+    render_continuous_audio(map_file, gameplay_file, timeline, audio_track)
+
     output = args.output.resolve()
-    concat_segments(rendered, output)
+    mux_video_and_audio(video_only, audio_track, output)
     final_probe = probe(output)
 
     report = {
@@ -249,6 +298,13 @@ def main() -> int:
         "timeline": timeline,
         "downloads": downloads,
         "probe": final_probe,
+        "audio_fix": {
+            "single_final_aac_encode": True,
+            "cta_visual_source_start": 20.90,
+            "cta_audio_source_start": 16.70,
+            "cta_audio_continues_from_previous_gameplay": True,
+            "final_fade_seconds": 0.18,
+        },
         "requirements": {
             "official_assets_only": True,
             "native_9x16_opening_art": True,
