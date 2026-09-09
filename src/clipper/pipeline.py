@@ -66,6 +66,9 @@ _VISUAL_CHECKPOINT_DIR: ContextVar[Path | None] = ContextVar(
 _VISUAL_CHECKPOINT_COMMIT: ContextVar[Callable[[], None] | None] = ContextVar(
     "clipper_visual_checkpoint_commit", default=None
 )
+_REQUIRED_VISUAL_ENTITIES: ContextVar[tuple[str, ...]] = ContextVar(
+    "clipper_required_visual_entities", default=()
+)
 
 
 class SourceClient(Protocol):
@@ -453,7 +456,7 @@ def _download_google_drive_media(url: str, output_path: Path, *, max_bytes: int)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(output_path.suffix + ".part")
     try:
-        downloaded = gdown.download(url=url, output=str(temporary), quiet=True)  # type: ignore[attr-defined]
+        downloaded = gdown.download(url=url, output=str(temporary), quiet=True)
         if not downloaded or not temporary.is_file():
             raise RuntimeError("Google Drive media download did not create a file")
         size = temporary.stat().st_size
@@ -591,6 +594,7 @@ def _visual_timeline(
         output_dir=run_dir / "visual-scout" / video.video_id / "frames",
         checkpoint_dir=_VISUAL_CHECKPOINT_DIR.get(),
         checkpoint_commit=_VISUAL_CHECKPOINT_COMMIT.get(),
+        required_visual_entities=_REQUIRED_VISUAL_ENTITIES.get(),
     )
     _write_json(
         run_dir / "visual-scout" / f"{video.video_id}.json",
@@ -868,6 +872,9 @@ def run_pipeline(
                 raise RuntimeError("canonical timeline produced no transcript segments")
             checkpoint_dir_token = _VISUAL_CHECKPOINT_DIR.set(cache_root / "source-policy-vision")
             checkpoint_commit_token = _VISUAL_CHECKPOINT_COMMIT.set(checkpoint_commit)
+            required_visual_entities_token = _REQUIRED_VISUAL_ENTITIES.set(
+                brief.acceptance_policy.visual_presence.require_any
+            )
             try:
                 visual, visual_meta = _visual_timeline(
                     media_path,
@@ -877,6 +884,7 @@ def run_pipeline(
                     run_dir,
                 )
             finally:
+                _REQUIRED_VISUAL_ENTITIES.reset(required_visual_entities_token)
                 _VISUAL_CHECKPOINT_COMMIT.reset(checkpoint_commit_token)
                 _VISUAL_CHECKPOINT_DIR.reset(checkpoint_dir_token)
 

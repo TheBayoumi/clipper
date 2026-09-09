@@ -169,6 +169,36 @@ class BrandingPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class VisualPresencePolicy:
+    require_any: tuple[str, ...] = ()
+    minimum_confidence: float = 0.75
+
+    @classmethod
+    def from_dict(cls, value: object) -> VisualPresencePolicy:
+        if value is None:
+            return cls()
+        if not isinstance(value, dict):
+            raise BriefValidationError("acceptance_policy.visual_presence must be an object")
+        unknown_fields = set(value) - {"require_any", "minimum_confidence"}
+        if unknown_fields:
+            raise BriefValidationError(
+                f"unsupported acceptance_policy.visual_presence rule: {sorted(unknown_fields)[0]}"
+            )
+        raw = value.get("require_any", [])
+        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+            raise BriefValidationError(
+                "acceptance_policy.visual_presence.require_any must be a list of strings"
+            )
+        required = tuple(dict.fromkeys(item.strip() for item in raw if item.strip()))
+        confidence = float(value.get("minimum_confidence", 0.75))
+        if not 0.0 <= confidence <= 1.0:
+            raise BriefValidationError(
+                "acceptance_policy.visual_presence.minimum_confidence must be between 0 and 1"
+            )
+        return cls(require_any=required, minimum_confidence=confidence)
+
+
+@dataclass(frozen=True, slots=True)
 class EditorialAcceptancePolicy:
     require_standalone_context: bool = True
     require_resolved_ending: bool = True
@@ -206,6 +236,7 @@ class AcceptancePolicy:
     enabled: bool = False
     source_segments: SourceSegmentPolicy = field(default_factory=SourceSegmentPolicy)
     branding: BrandingPolicy = field(default_factory=BrandingPolicy)
+    visual_presence: VisualPresencePolicy = field(default_factory=VisualPresencePolicy)
     ai_generated_source_video: PolicyAction = "escalate"
     negative_creator_portrayal: PolicyAction = "escalate"
     on_screen_text_language: str | None = None
@@ -221,6 +252,7 @@ class AcceptancePolicy:
             "enabled",
             "source_segments",
             "branding",
+            "visual_presence",
             "generated_media",
             "portrayal",
             "language",
@@ -268,6 +300,7 @@ class AcceptancePolicy:
             enabled=bool(value.get("enabled", True)),
             source_segments=SourceSegmentPolicy.from_dict(value.get("source_segments")),
             branding=BrandingPolicy.from_dict(value.get("branding")),
+            visual_presence=VisualPresencePolicy.from_dict(value.get("visual_presence")),
             ai_generated_source_video=_policy_action(
                 generated.get("ai_generated_source_video", "escalate"),
                 "acceptance_policy.generated_media.ai_generated_source_video",
@@ -290,6 +323,10 @@ class AcceptancePolicy:
                 "safety_buffer_seconds": self.source_segments.safety_buffer_seconds,
             },
             "branding": asdict(self.branding),
+            "visual_presence": {
+                "require_any": list(self.visual_presence.require_any),
+                "minimum_confidence": self.visual_presence.minimum_confidence,
+            },
             "generated_media": {
                 "ai_generated_source_video": self.ai_generated_source_video,
             },

@@ -491,6 +491,7 @@ def _source_policy_context(
     frame_timestamps: tuple[float, ...],
     recovery_attempt: int,
     generation_capacity: dict[str, object] | None = None,
+    required_visual_entities: tuple[str, ...] = (),
 ) -> dict[str, object]:
     instruction = (
         "Inspect every supplied source frame independently for source-visible branding, "
@@ -504,12 +505,20 @@ def _source_policy_context(
             "was missing or invalid. Return one observation for each supplied timestamp even "
             "when no policy-relevant label is visible."
         )
+    if required_visual_entities:
+        instruction += (
+            " Campaign-required visual entities are supplied in required_visual_entities. "
+            "When one is visibly evidenced, preserve the exact supplied term in "
+            "visible_speakers for a person or in a branding:/ocr: event label as appropriate. "
+            "Never infer a person or brand from audio, transcript, filename, or campaign context."
+        )
     context: dict[str, object] = {
         "video_id": video_id,
         "source_hash": source_hash,
         "frame_timestamps": list(frame_timestamps),
         "inspection_scope": "source_policy",
         "source_policy_recovery_attempt": recovery_attempt,
+        "required_visual_entities": list(required_visual_entities),
         "instruction": instruction,
     }
     if generation_capacity is not None:
@@ -528,6 +537,7 @@ def _inspect_source_policy_batch(
     on_observations: Callable[[tuple[VisualEvent, ...], tuple[float, ...], ModelIdentity], None]
     | None = None,
     generation_capacity: dict[str, object] | None = None,
+    required_visual_entities: tuple[str, ...] = (),
 ) -> tuple[tuple[VisualEvent, ...], list[ProviderResult[dict[str, Any]]]]:
     if not frame_timestamps:
         raise ValueError("source-policy inspection batch cannot be empty")
@@ -556,6 +566,7 @@ def _inspect_source_policy_batch(
                 frame_timestamps=subset_times,
                 recovery_attempt=recovery_attempt,
                 generation_capacity=generation_capacity,
+                required_visual_entities=required_visual_entities,
             ),
         )
         results.append(result)
@@ -658,6 +669,7 @@ def _source_policy_cache_namespace(
     *,
     source_hash: str,
     requested_identity: ModelIdentity,
+    required_visual_entities: tuple[str, ...] = (),
 ) -> str:
     instruction = str(
         _source_policy_context(
@@ -665,6 +677,7 @@ def _source_policy_cache_namespace(
             source_hash=source_hash,
             frame_timestamps=(),
             recovery_attempt=0,
+            required_visual_entities=required_visual_entities,
         )["instruction"]
     )
     return content_fingerprint(
@@ -673,6 +686,7 @@ def _source_policy_cache_namespace(
             "source_hash": source_hash,
             "model_identity": requested_identity.to_dict(),
             "inspection_contract": instruction,
+            "required_visual_entities": list(required_visual_entities),
             "frame_contract": {"max_edge": VISUAL_SAMPLE_MAX_EDGE},
         }
     )
@@ -958,6 +972,7 @@ def scout_visual_timeline(
     candidate_ranges: tuple[tuple[float, float], ...] = (),
     checkpoint_dir: Path | None = None,
     checkpoint_commit: Callable[[], None] | None = None,
+    required_visual_entities: tuple[str, ...] = (),
 ) -> tuple[VisualTimeline, ProviderResult[dict[str, Any]]]:
     """Build source-wide policy evidence with resumable, runtime-learned capacity."""
     media_duration = media_duration_seconds(video_path)
@@ -980,6 +995,7 @@ def scout_visual_timeline(
     namespace = _source_policy_cache_namespace(
         source_hash=source_hash,
         requested_identity=requested_identity,
+        required_visual_entities=required_visual_entities,
     )
 
     events: list[VisualEvent] = []
@@ -1071,6 +1087,7 @@ def scout_visual_timeline(
                         if observed_output_tokens_per_item is not None
                         else None
                     ),
+                    required_visual_entities=required_visual_entities,
                 )
             except Exception as exc:
                 if not _is_vision_capacity_error(exc):

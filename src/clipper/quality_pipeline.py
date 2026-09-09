@@ -168,6 +168,7 @@ def adapt_quality_moment(
     *,
     hazards: tuple[SourceHazardSegment, ...],
     branding: tuple[BrandingEvidence, ...],
+    multimodal: MultimodalTimeline | None = None,
 ) -> AdaptedQualityMoment | None:
     """Compile one accepted QualityMoment into the renderer compatibility contract."""
     if moment.core.video_id != timeline.video_id or moment.core.source_hash != timeline.source_hash:
@@ -180,6 +181,7 @@ def adapt_quality_moment(
         window.source_end,
         hazards,
         branding,
+        multimodal=multimodal,
     )
     eligibility = evaluate_pre_render_eligibility(brief, boundary, policy, repaired=False)
     if eligibility.decision != GateDecision.PASS:

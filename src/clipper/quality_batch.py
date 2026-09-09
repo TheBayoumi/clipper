@@ -123,7 +123,9 @@ def _story_moment(adapted: AdaptedQualityMoment) -> StoryMoment:
 
 def _requires_source_visual_policy(brief: CampaignBrief) -> bool:
     policy = brief.acceptance_policy
-    return policy.enabled and policy.branding.foreign_logos != "allow"
+    return policy.enabled and (
+        policy.branding.foreign_logos != "allow" or bool(policy.visual_presence.require_any)
+    )
 
 
 def plan_quality_batch(
@@ -214,6 +216,7 @@ def plan_quality_batch(
                     moment,
                     hazards=hazards,
                     branding=branded,
+                    multimodal=multimodal,
                 )
                 if adapted is None:
                     rejections.append(

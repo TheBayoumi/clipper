@@ -6,6 +6,7 @@ from typing import Any
 
 from .canonical import CanonicalTimeline
 from .models import AcceptancePolicy, CampaignBrief
+from .multimodal_timeline import MultimodalTimeline
 from .stage_contracts import structural_contract_fingerprint
 
 
@@ -379,12 +380,119 @@ def _decision_for_action(action: str) -> GateDecision:
     return GateDecision.PASS
 
 
+def _normalize_visual_presence(value: str) -> str:
+    normalized = "".join(
+        character.casefold() if character.isalnum() else " " for character in value
+    )
+    return " ".join(normalized.split())
+
+
+def _required_visual_presence_gate(
+    brief: CampaignBrief,
+    source_start: float,
+    source_end: float,
+    multimodal: MultimodalTimeline | None,
+) -> tuple[GateDecision, tuple[str, ...], dict[str, object]]:
+    visual_policy = brief.acceptance_policy.visual_presence
+    required = tuple(item for item in visual_policy.require_any if item.strip())
+    if not required:
+        return GateDecision.PASS, (), {"enabled": False, "require_any": []}
+    checks: dict[str, object] = {
+        "enabled": True,
+        "require_any": list(required),
+        "minimum_confidence": visual_policy.minimum_confidence,
+        "matched_terms": [],
+        "matched_evidence": [],
+    }
+    if multimodal is None:
+        checks["visual_evidence_available"] = False
+        return GateDecision.ESCALATE, ("required_visual_presence_uncertain",), checks
+
+    required_normalized = {item: _normalize_visual_presence(item) for item in required}
+    overlapping = tuple(
+        event
+        for event in multimodal.events
+        if event.end > source_start and event.start < source_end and event.visual_salience > 0
+    )
+    matches: list[dict[str, object]] = []
+    low_confidence_matches: list[dict[str, object]] = []
+    for event in overlapping:
+        evidence_values = tuple(
+            dict.fromkeys(
+                (
+                    *event.visible_people,
+                    *event.branding,
+                    *event.ocr_text,
+                    *event.visual_summaries,
+                )
+            )
+        )
+        for evidence in evidence_values:
+            normalized_evidence = _normalize_visual_presence(evidence)
+            for required_text, normalized_required in required_normalized.items():
+                if not normalized_required or normalized_required not in normalized_evidence:
+                    continue
+                item = {
+                    "required": required_text,
+                    "evidence": evidence,
+                    "start": event.start,
+                    "end": event.end,
+                    "confidence": event.visual_salience,
+                }
+                if event.visual_salience >= visual_policy.minimum_confidence:
+                    matches.append(item)
+                else:
+                    low_confidence_matches.append(item)
+
+    if matches:
+        checks["matched_terms"] = list(dict.fromkeys(str(item["required"]) for item in matches))
+        checks["matched_evidence"] = matches
+        checks["visual_evidence_available"] = True
+        return GateDecision.PASS, (), checks
+
+    spans = sorted(
+        (
+            max(source_start, span.start),
+            min(source_end, span.end),
+        )
+        for span in multimodal.visual_evidence_spans
+        if span.scope == "source_policy" and span.end > source_start and span.start < source_end
+    )
+    merged: list[tuple[float, float]] = []
+    for start, end in spans:
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1] + 0.05:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    covered = sum(end - start for start, end in merged)
+    duration = source_end - source_start
+    coverage_complete = covered + 0.05 >= duration
+    high_confidence_events = sum(
+        1 for event in overlapping if event.visual_salience >= visual_policy.minimum_confidence
+    )
+    checks.update(
+        {
+            "visual_evidence_available": bool(overlapping),
+            "source_policy_coverage_seconds": round(covered, 6),
+            "source_policy_coverage_complete": coverage_complete,
+            "high_confidence_visual_events": high_confidence_events,
+            "low_confidence_matches": low_confidence_matches,
+        }
+    )
+    if low_confidence_matches or not coverage_complete or high_confidence_events == 0:
+        return GateDecision.ESCALATE, ("required_visual_presence_uncertain",), checks
+    return GateDecision.REJECT, ("required_visual_presence_missing",), checks
+
+
 def evaluate_campaign_policy(
     brief: CampaignBrief,
     source_start: float,
     source_end: float,
     hazards: tuple[SourceHazardSegment, ...],
     branding: tuple[BrandingEvidence, ...],
+    multimodal: MultimodalTimeline | None = None,
 ) -> PolicyAudit:
     policy = brief.acceptance_policy
     if source_start < 0 or source_end <= source_start:
@@ -472,6 +580,13 @@ def evaluate_campaign_policy(
         elif decision == GateDecision.ESCALATE:
             reasons.append("policy_uncertain")
 
+    presence_decision, presence_reasons, presence_checks = _required_visual_presence_gate(
+        brief, source_start, source_end, multimodal
+    )
+    if presence_decision != GateDecision.PASS:
+        decisions.append(presence_decision)
+        reasons.extend(presence_reasons)
+
     if GateDecision.REJECT in decisions:
         final = GateDecision.REJECT
     elif GateDecision.ESCALATE in decisions:
@@ -489,6 +604,7 @@ def evaluate_campaign_policy(
             "structured_policy_enabled": True,
             "source_segment_policy": asdict(segment_policy),
             "branding_policy": asdict(policy.branding),
+            "visual_presence_policy": presence_checks,
             "generated_media_policy": policy.ai_generated_source_video,
             "portrayal_policy": policy.negative_creator_portrayal,
             "on_screen_text_language": policy.on_screen_text_language,
