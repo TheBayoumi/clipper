@@ -22,30 +22,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path('.github/workflows/modal-workers-deploy.yml')
-          text = path.read_text(encoding='utf-8')
-          old = '''  push:
-    branches:
-      - feat/word-reveal-face-tracking
-    paths:
-      - "acceptance/modal-deploy-request.json"
-'''
-          new = '''  push:
-    branches:
-      - feat/word-reveal-face-tracking
-      - feat/contentrewards-campaign-factory
-    paths:
-      - "acceptance/modal-deploy-request.json"
-      - "acceptance/production-run-request.json"
-'''
-          if text.count(old) != 1:
-              raise SystemExit('Modal deploy trigger anchor drifted')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
-          Path('.github/workflows/prepare-lovable-production.yml').unlink()
-          PY
+          python -c "from pathlib import Path; p=Path('.github/workflows/modal-workers-deploy.yml'); s=p.read_text(encoding='utf-8'); old='  push:\n    branches:\n      - feat/word-reveal-face-tracking\n    paths:\n      - \"acceptance/modal-deploy-request.json\"\n'; new='  push:\n    branches:\n      - feat/word-reveal-face-tracking\n      - feat/contentrewards-campaign-factory\n    paths:\n      - \"acceptance/modal-deploy-request.json\"\n      - \"acceptance/production-run-request.json\"\n'; assert s.count(old) == 1, 'Modal deploy trigger anchor drifted'; p.write_text(s.replace(old,new,1),encoding='utf-8')"
+          rm .github/workflows/prepare-lovable-production.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add .github/workflows/modal-workers-deploy.yml .github/workflows/prepare-lovable-production.yml
