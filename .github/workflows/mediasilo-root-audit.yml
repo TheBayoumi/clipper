@@ -1,0 +1,66 @@
+name: MediaSilo root audit
+
+on:
+  push:
+    branches: [feat/zodiac-map-creative]
+    paths:
+      - '.github/workflows/mediasilo-root-audit.yml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install browser capture dependencies
+        run: |
+          python -m pip install "playwright>=1.55,<2"
+          python -m playwright install --with-deps chromium
+      - name: Capture full campaign root
+        run: |
+          python scripts/capture_mediasilo_session.py \
+            'https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc' \
+            --folder '__NO_CHILD_FOLDER__' \
+            --output-dir mediasilo-root-audit
+      - name: Print root UI and discovered asset/folder names
+        run: |
+          echo '===== ROOT UI TEXT ====='
+          cat mediasilo-root-audit/root-after-12s.txt || true
+          echo
+          echo '===== DISCOVERED NAMES ====='
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          bodies = json.loads(Path('mediasilo-root-audit/bodies.json').read_text())
+          rows = []
+          seen = set()
+          interesting = {'name','title','fileName','filename','label','type','id','folderName'}
+
+          def walk(x, path='root'):
+              if isinstance(x, dict):
+                  vals = {k: x.get(k) for k in interesting if k in x}
+                  if any(v not in (None, '', [], {}) for v in vals.values()):
+                      key = tuple(sorted((k, str(v)) for k, v in vals.items()))
+                      if key not in seen:
+                          seen.add(key)
+                          rows.append((path, vals))
+                  for k, v in x.items():
+                      walk(v, f'{path}.{k}')
+              elif isinstance(x, list):
+                  for i, v in enumerate(x):
+                      walk(v, f'{path}[{i}]')
+
+          walk(bodies)
+          for path, vals in rows:
+              print(path, json.dumps(vals, ensure_ascii=False))
+          PY
+      - name: Upload audit package
+        uses: actions/upload-artifact@v4
+        with:
+          name: mediasilo-root-audit-${{ github.sha }}
+          path: mediasilo-root-audit/
+          retention-days: 3
