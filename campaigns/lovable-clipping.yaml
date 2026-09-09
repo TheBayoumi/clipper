@@ -1,0 +1,79 @@
+campaign_id: lovable-clipping-2026
+title: Lovable Clipping
+objective: >-
+  Produce every genuinely worthwhile, self-contained short-form moment about Lovable from
+  explicitly authorized campaign podcast sources. Preserve source truth and narrative
+  completeness, and require visible evidence of Anton and/or Lovable in every accepted clip.
+language: en
+region_code: US
+
+targets:
+  mode: explicit
+  videos:
+    - video_id: DZtGxNs9AVg
+      url: https://www.youtube.com/watch?v=DZtGxNs9AVg
+      channel_id: UC6t1O76G0jYXOAoYCm153dA
+    - video_id: DHLczPQj9rA
+      url: https://www.youtube.com/watch?v=DHLczPQj9rA
+      channel_id: UC9jkoB5oKe1eAGZ5zOW6iZA
+
+rights:
+  confirmed: true
+  authorized_channels:
+    - UC6t1O76G0jYXOAoYCm153dA
+    - UC9jkoB5oKe1eAGZ5zOW6iZA
+
+# The current Lovable campaign brief does not impose a clip-duration rule.
+# These bounds therefore remain the engine's established editorial delivery envelope,
+# not a claimed campaign requirement.
+content_constraints:
+  min_clip_seconds: 20
+  max_clip_seconds: 45
+
+attribution_required: true
+watermark_text: null
+watermark_url: null
+required_hashtags:
+  - "#LovablePartner"
+posting_requirements:
+  - Majority Tier-1 viewership is required.
+  - Anton and/or Lovable must be visibly present; clips cannot be unrelated podcast excerpts.
+  - Only campaign-provided podcast sources may be used.
+  - Use either a brand-new account or an AI/startup-themed account.
+  - Include #LovablePartner.
+  - Keep comments permanently enabled and have at least one comment.
+  - Submit the video to the campaign within 10 minutes of posting.
+  - Join the Lovable Clipping Discord.
+
+acceptance_policy:
+  source_segments:
+    allow:
+      - editorial_content
+    forbid:
+      - advertisement
+      - sponsor_read
+      - promo
+      - intro
+      - outro
+      - housekeeping
+    unknown: escalate
+    safety_buffer_seconds: 0.25
+  branding:
+    supplied_campaign_assets_allowed: true
+    foreign_logos: allow
+    minimum_confidence: 0.75
+  visual_presence:
+    require_any:
+      - Anton
+      - Lovable
+    minimum_confidence: 0.75
+  generated_media:
+    ai_generated_source_video: escalate
+  portrayal:
+    negative_creator_portrayal: escalate
+  language:
+    on_screen_text: en
+  editorial:
+    require_standalone_context: true
+    require_resolved_ending: true
+    minimum_boundary_confidence: 0.75
