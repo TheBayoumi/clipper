@@ -1,0 +1,101 @@
+name: Zodiac map asset inspection
+
+on:
+  push:
+    branches:
+      - feat/zodiac-map-creative
+    paths:
+      - ".github/workflows/zodiac-map-inspect.yml"
+      - "scripts/capture_mediasilo_session.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      MAP_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/6567edb9-06f5-4994-a81c-841694958797
+      TAC_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/dcb4eed7-aed3-4c8a-b733-3ee390bc44ac
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install browser runtime
+        run: |
+          python -m pip install "playwright>=1.55,<2"
+          python -m playwright install --with-deps chromium
+
+      - name: Inspect Map Flythrough
+        run: |
+          python scripts/capture_mediasilo_session.py "$MAP_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-map
+
+      - name: Inspect Tac Map
+        run: |
+          python scripts/capture_mediasilo_session.py "$TAC_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-tac
+
+      - name: Build compact asset index
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          def summarize(path):
+              bodies=json.loads(Path(path).read_text())
+              out=[]
+              seen=set()
+              for url, body in bodies.items():
+                  if not isinstance(body, list):
+                      continue
+                  for item in body:
+                      if not isinstance(item, dict) or not item.get('id') or item['id'] in seen:
+                          continue
+                      seen.add(item['id'])
+                      derivatives=[]
+                      for d in item.get('derivatives') or []:
+                          if not isinstance(d, dict):
+                              continue
+                          derivatives.append({
+                              'type': d.get('type'),
+                              'width': d.get('width'),
+                              'height': d.get('height'),
+                              'url': d.get('downloadUrlWithAssetTitle') or d.get('url'),
+                          })
+                      out.append({
+                          'id': item.get('id'),
+                          'type': item.get('type'),
+                          'title': item.get('title'),
+                          'fileName': item.get('fileName'),
+                          'duration': item.get('duration'),
+                          'derivatives': derivatives,
+                      })
+              return out
+
+          result={
+              'map_flythrough': summarize('inspect-map/bodies.json'),
+              'tac_map': summarize('inspect-tac/bodies.json'),
+          }
+          Path('zodiac-asset-index.json').write_text(json.dumps(result, indent=2))
+          print(json.dumps(result, indent=2)[:30000])
+          PY
+
+      - name: Upload inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: zodiac-map-inspection-${{ github.sha }}
+          path: |
+            zodiac-asset-index.json
+            inspect-map/bodies.json
+            inspect-map/root-after-12s.txt
+            inspect-map/root-after-12s.png
+            inspect-tac/bodies.json
+            inspect-tac/root-after-12s.txt
+            inspect-tac/root-after-12s.png
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
