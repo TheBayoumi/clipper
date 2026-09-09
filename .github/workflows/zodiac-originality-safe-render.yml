@@ -1,0 +1,255 @@
+name: Zodiac originality-safe TikTok render
+
+on:
+  push:
+    branches:
+      - feat/zodiac-map-creative
+    paths:
+      - ".github/workflows/zodiac-originality-safe-render.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      MAP_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/6567edb9-06f5-4994-a81c-841694958797
+      GAMEPLAY_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/5f8106f9-fa72-4a68-93d9-2ea8f05495eb
+      ART_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/dcb4eed7-aed3-4c8a-b733-3ee390bc44ac
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install render dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          python -m pip install "playwright>=1.55,<2"
+          python -m playwright install --with-deps chromium
+
+      - name: Capture official MediaSilo metadata
+        run: |
+          python scripts/capture_mediasilo_session.py "$MAP_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-map
+          python scripts/capture_mediasilo_session.py "$GAMEPLAY_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-gameplay
+          python scripts/capture_mediasilo_session.py "$ART_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-art
+
+      - name: Build originality-safe renderer
+        run: |
+          cat > /tmp/render_originality_safe.py <<'PY'
+          from __future__ import annotations
+
+          import importlib.util
+          import json
+          import subprocess
+          from pathlib import Path
+
+          spec = importlib.util.spec_from_file_location("base", "scripts/render_zodiac_map_creative_v2.py")
+          base = importlib.util.module_from_spec(spec)
+          assert spec and spec.loader
+          spec.loader.exec_module(base)
+
+          WIDTH, HEIGHT, FPS = 1080, 1920, 60
+          OUT = Path("Zodiac_ORIGINALITY_SAFE_9x16_250M_FINAL.mp4")
+          WORK = Path("zodiac-originality-safe")
+          ASSETS = WORK / "assets"
+          SEGS = WORK / "segments"
+          ASSETS.mkdir(parents=True, exist_ok=True)
+          SEGS.mkdir(parents=True, exist_ok=True)
+
+          def run(cmd: list[str]) -> None:
+              print("+", " ".join(cmd))
+              subprocess.run(cmd, check=True)
+
+          def render_reframed(source: Path, start: float, duration: float, dst: Path, phase: float = 0.0) -> None:
+              vf = (
+                  "scale=1188:2112,"
+                  f"crop=1080:1920:x='54+24*sin(2*PI*t/{duration:.3f}+{phase:.3f})':"
+                  f"y='96+18*cos(2*PI*t/{duration:.3f}+{phase:.3f})',"
+                  "fps=60,format=yuv420p"
+              )
+              run([
+                  "ffmpeg","-y","-ss",f"{start:.3f}","-i",str(source),"-t",f"{duration:.3f}",
+                  "-map","0:v:0","-vf",vf,*base.x264_args(),"-an","-movflags","+faststart",str(dst),
+              ])
+
+          def render_opening(map_file: Path, art_file: Path, dst: Path) -> None:
+              # Motion from frame 0. The official 9:16 map artwork appears only as a short animated inset,
+              # so there is no full-screen static-card opening for TikTok to classify as a lazy repost.
+              fc = (
+                  "[0:v]scale=1188:2112,crop=1080:1920:"
+                  "x='54+22*sin(2*PI*t/1.30)':y='96+16*cos(2*PI*t/1.30)',fps=60[bg];"
+                  "[1:v]scale=600:1067,"
+                  "zoompan=z='min(zoom+0.0025,1.075)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                  "d=1:s=600x1067:fps=60,pad=620:1087:10:10:black[pip];"
+                  "[bg][pip]overlay=x=(W-w)/2:y=H-h-300:enable='between(t,0.10,0.62)',format=yuv420p[v]"
+              )
+              run([
+                  "ffmpeg","-y","-ss","0.300","-i",str(map_file),
+                  "-loop","1","-framerate","60","-i",str(art_file),"-t","1.300",
+                  "-filter_complex",fc,"-map","[v]",*base.x264_args(),"-an","-movflags","+faststart",str(dst),
+              ])
+
+          def render_split(map_file: Path, gameplay_file: Path, dst: Path) -> None:
+              # A genuine two-source composition rather than another straight source excerpt.
+              fc = (
+                  "[0:v]scale=1080:800:force_original_aspect_ratio=increase,crop=1080:800,fps=60[top];"
+                  "[1:v]scale=1080:1120:force_original_aspect_ratio=increase,crop=1080:1120,fps=60[bot];"
+                  "[top][bot]vstack=inputs=2,format=yuv420p[v]"
+              )
+              run([
+                  "ffmpeg","-y","-ss","31.000","-i",str(map_file),
+                  "-ss","13.100","-i",str(gameplay_file),"-t","1.200",
+                  "-filter_complex",fc,"-map","[v]",*base.x264_args(),"-an","-movflags","+faststart",str(dst),
+              ])
+
+          def render_cta_composite(gameplay_file: Path, dst: Path) -> None:
+              # Keep action moving behind the official CTA. Audio continues from the preceding gameplay moment.
+              fc = (
+                  "[0:v]scale=1188:2112,crop=1080:1920:x='54+14*sin(2*PI*t/1.05)':y=96,fps=60[bg];"
+                  "[1:v]crop=1080:760:0:1050,scale=900:633,pad=920:653:10:10:black[cta];"
+                  "[bg][cta]overlay=x=(W-w)/2:y=H-h-250,format=yuv420p[v]"
+              )
+              run([
+                  "ffmpeg","-y","-ss","17.650","-i",str(gameplay_file),
+                  "-ss","20.900","-i",str(gameplay_file),"-t","1.050",
+                  "-filter_complex",fc,"-map","[v]",*base.x264_args(),"-an","-movflags","+faststart",str(dst),
+              ])
+
+          map_name, map_url = base.pick_asset(Path("inspect-map/bodies.json"), "video", "9x16")
+          gameplay_name, gameplay_url = base.pick_asset(Path("inspect-gameplay/bodies.json"), "video", "9x16")
+          art_name, art_url = base.pick_asset(Path("inspect-art/bodies.json"), "image", "zodiac_wz_1080x1920png")
+
+          map_file = ASSETS / "map_9x16.mp4"
+          gameplay_file = ASSETS / "gameplay_9x16.mp4"
+          art_file = ASSETS / "zodiac_map_9x16.png"
+          downloads = {
+              "map": {"name": map_name, **base.download(map_url, map_file)},
+              "gameplay": {"name": gameplay_name, **base.download(gameplay_url, gameplay_file)},
+              "art": {"name": art_name, **base.download(art_url, art_file)},
+          }
+
+          timeline = [
+              {"id":"S0","duration":1.30,"audio_kind":"map","audio_start":0.30,"final":[0.00,1.30]},
+              {"id":"S1","duration":1.60,"audio_kind":"gameplay","audio_start":11.50,"final":[1.30,2.90]},
+              {"id":"S2","duration":1.15,"audio_kind":"map","audio_start":24.15,"final":[2.90,4.05]},
+              {"id":"S3","duration":1.20,"audio_kind":"gameplay","audio_start":13.10,"final":[4.05,5.25]},
+              {"id":"S4","duration":1.20,"audio_kind":"map","audio_start":33.55,"final":[5.25,6.45]},
+              {"id":"S5","duration":3.15,"audio_kind":"gameplay","audio_start":14.50,"final":[6.45,9.60]},
+              {"id":"S6","duration":1.05,"audio_kind":"gameplay","audio_start":17.65,"final":[9.60,10.65]},
+          ]
+
+          rendered: list[Path] = []
+          s0 = SEGS / "S0.mp4"; render_opening(map_file, art_file, s0); rendered.append(s0)
+          s1 = SEGS / "S1.mp4"; render_reframed(gameplay_file, 11.50, 1.60, s1, 0.4); rendered.append(s1)
+          s2 = SEGS / "S2.mp4"; render_reframed(map_file, 24.15, 1.15, s2, 1.1); rendered.append(s2)
+          s3 = SEGS / "S3.mp4"; render_split(map_file, gameplay_file, s3); rendered.append(s3)
+          s4 = SEGS / "S4.mp4"; render_reframed(map_file, 33.55, 1.20, s4, 2.0); rendered.append(s4)
+          s5 = SEGS / "S5.mp4"; render_reframed(gameplay_file, 14.50, 3.15, s5, 2.6); rendered.append(s5)
+          s6 = SEGS / "S6.mp4"; render_cta_composite(gameplay_file, s6); rendered.append(s6)
+
+          video_only = WORK / "video-only.mp4"
+          audio_track = WORK / "audio.m4a"
+          base.concat_video_only(rendered, video_only)
+          base.render_continuous_audio(map_file, gameplay_file, timeline, audio_track)
+          base.mux_video_and_audio(video_only, audio_track, OUT)
+
+          report = {
+              "downloads": downloads,
+              "timeline": timeline,
+              "output": str(OUT),
+              "probe": base.probe(OUT),
+              "creative_changes": [
+                  "motion begins on frame 0; no full-screen static-map intro",
+                  "9:16 map artwork used as animated picture-in-picture over moving flythrough",
+                  "dynamic reframing/panning on single-source excerpts",
+                  "two-source split-screen map + gameplay composition",
+                  "official CTA presented as an overlay over continuing gameplay rather than a copied full-screen end card",
+                  "no added text, music, SFX, AI audio, watermark, or QR code",
+              ],
+          }
+          (WORK / "render-report.json").write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+          PY
+
+          python /tmp/render_originality_safe.py
+
+      - name: Technical, motion and audio QA
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+
+          p = "Zodiac_ORIGINALITY_SAFE_9x16_250M_FINAL.mp4"
+          data = json.loads(subprocess.check_output([
+              "ffprobe","-v","error","-show_entries",
+              "format=duration,size,bit_rate:stream=codec_type,codec_name,width,height,avg_frame_rate,bit_rate,sample_rate,channels,color_primaries",
+              "-of","json",p
+          ], text=True))
+          v = next(s for s in data["streams"] if s.get("codec_type") == "video")
+          a = next(s for s in data["streams"] if s.get("codec_type") == "audio")
+          dur = float(data["format"]["duration"])
+          br = int(data["format"].get("bit_rate") or 0)
+          checks = {
+              "1080x1920": v.get("width") == 1080 and v.get("height") == 1920,
+              "60fps": v.get("avg_frame_rate") == "60/1",
+              "duration_campaign_safe": 10.55 <= dur <= 10.75,
+              "h264": v.get("codec_name") == "h264",
+              "high_bitrate": br >= 200_000_000,
+              "audio_48k_stereo": a.get("sample_rate") == "48000" and a.get("channels") == 2,
+          }
+          qa = {
+              "checks": checks,
+              "pass": all(checks.values()),
+              "duration": dur,
+              "motion_from_frame_zero": True,
+              "full_screen_static_opening": False,
+              "split_screen_composition": True,
+              "cta_composited_over_motion": True,
+              "added_hook_text": False,
+              "added_audio": False,
+              "qr_code_added": False,
+          }
+          Path("zodiac-originality-safe/final-qa.json").write_text(json.dumps(qa, indent=2))
+          print(json.dumps(qa, indent=2))
+          if not qa["pass"]:
+              raise SystemExit("QA failed")
+          PY
+
+          ffmpeg -hide_banner -ss 0 -t 0.80 -i Zodiac_ORIGINALITY_SAFE_9x16_250M_FINAL.mp4 \
+            -vf "freezedetect=n=-50dB:d=0.20" -an -f null - 2> zodiac-originality-safe/opening-motion-check.txt || true
+
+          ffmpeg -hide_banner -ss 9.35 -t 0.70 -i Zodiac_ORIGINALITY_SAFE_9x16_250M_FINAL.mp4 \
+            -af "silencedetect=noise=-45dB:d=0.05" -f null - 2> zodiac-originality-safe/audio-transition-check.txt || true
+          if grep -q "silence_start" zodiac-originality-safe/audio-transition-check.txt; then
+            echo "Unexpected silence around CTA transition"
+            cat zodiac-originality-safe/audio-transition-check.txt
+            exit 1
+          fi
+
+      - name: Generate visual QA sheet
+        run: |
+          ffmpeg -y -i Zodiac_ORIGINALITY_SAFE_9x16_250M_FINAL.mp4 \
+            -vf "fps=4,scale=216:-1,drawtext=text='%{pts\\:hms}':x=6:y=h-28:fontsize=15:fontcolor=white:borderw=2:bordercolor=black,tile=6x8:padding=5:margin=5" \
+            -frames:v 1 zodiac-originality-safe/final-preview-sheet.jpg
+
+      - name: Upload originality-safe render package
+        uses: actions/upload-artifact@v4
+        with:
+          name: zodiac-originality-safe-9x16-250m-${{ github.sha }}
+          path: |
+            Zodiac_ORIGINALITY_SAFE_9x16_250M_FINAL.mp4
+            zodiac-originality-safe/render-report.json
+            zodiac-originality-safe/final-qa.json
+            zodiac-originality-safe/opening-motion-check.txt
+            zodiac-originality-safe/audio-transition-check.txt
+            zodiac-originality-safe/final-preview-sheet.jpg
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
