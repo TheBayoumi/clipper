@@ -12,119 +12,126 @@ on:
 permissions:
   contents: read
 
-env:
-  CLIPPER_YOUTUBE_COOKIES_B64: ${{ secrets.CLIPPER_YOUTUBE_COOKIES_B64 }}
-
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install yt-dlp
-        run: python -m pip install --disable-pip-version-check 'yt-dlp[default]>=2026.7.4,<2027'
-      - name: Resolve candidate metadata with authenticated fallback
+      - name: Resolve canonical channel identities
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import base64
           import json
-          import os
-          import pathlib
-          import subprocess
-          import tempfile
+          import re
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
 
-          video_ids = [
-              "lJX8VkZg-Vw",
-              "DZtGxNs9AVg",
-              "DHLczPQj9rA",
+          sources = [
+              {
+                  "video_id": "lJX8VkZg-Vw",
+                  "expected_handle": "BenAI92",
+                  "expected_author": "Ben AI",
+              },
+              {
+                  "video_id": "DZtGxNs9AVg",
+                  "expected_handle": "LennysPodcast",
+                  "expected_author": "Lenny's Podcast",
+              },
+              {
+                  "video_id": "DHLczPQj9rA",
+                  "expected_handle": "20VC",
+                  "expected_author": "20VC with Harry Stebbings",
+              },
           ]
-          encoded = os.environ.get("CLIPPER_YOUTUBE_COOKIES_B64", "").strip()
-          cookie_path = None
-          if encoded:
-              raw_cookies = base64.b64decode(encoded, validate=True)
-              if not raw_cookies.strip():
-                  raise RuntimeError("configured YouTube cookie secret decodes to an empty file")
-              handle = tempfile.NamedTemporaryFile(prefix="clipper-youtube-", suffix=".txt", delete=False)
-              handle.write(raw_cookies)
-              handle.close()
-              pathlib.Path(handle.name).chmod(0o600)
-              cookie_path = handle.name
+          headers = {
+              "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36",
+              "Accept-Language": "en-US,en;q=0.9",
+          }
 
-          strategies = [
-              ("default_mweb", ["--extractor-args", "youtube:player_client=default,mweb"], False),
-              ("embedded_android_vr", ["--extractor-args", "youtube:player_client=web_embedded,android_vr"], False),
-          ]
-          if cookie_path:
-              strategies.extend(
-                  [
-                      ("cookies_default_mweb", ["--extractor-args", "youtube:player_client=default,mweb"], True),
-                      ("cookies_default", [], True),
-                  ]
-              )
+          def get_text(url: str) -> str:
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return response.read().decode("utf-8", "replace")
+
+          def resolve_channel_id(handle: str) -> tuple[str | None, list[str]]:
+              url = f"https://www.youtube.com/@{handle}"
+              html = get_text(url)
+              patterns = [
+                  r'"channelId":"(UC[0-9A-Za-z_-]{20,})"',
+                  r'"externalId":"(UC[0-9A-Za-z_-]{20,})"',
+                  r'channel_id=(UC[0-9A-Za-z_-]{20,})',
+                  r'https://www\.youtube\.com/channel/(UC[0-9A-Za-z_-]{20,})',
+              ]
+              matches = []
+              for pattern in patterns:
+                  matches.extend(re.findall(pattern, html))
+              unique = list(dict.fromkeys(matches))
+              return (unique[0] if unique else None, unique)
 
           rows = []
           failures = []
-          try:
-              for video_id in video_ids:
-                  url = f"https://www.youtube.com/watch?v={video_id}"
-                  resolved = None
-                  video_failures = []
-                  for strategy, args, use_cookies in strategies:
-                      command = [
-                          "yt-dlp",
-                          "--dump-single-json",
-                          "--skip-download",
-                          "--no-warnings",
-                          *args,
-                      ]
-                      if use_cookies and cookie_path:
-                          command.extend(["--cookies", cookie_path])
-                      command.append(url)
-                      completed = subprocess.run(
-                          command,
-                          text=True,
-                          capture_output=True,
-                          timeout=180,
-                          check=False,
-                      )
-                      if completed.returncode != 0:
-                          detail = (completed.stderr or completed.stdout or "unknown yt-dlp failure")[-1200:]
-                          video_failures.append({"strategy": strategy, "error": detail})
-                          continue
-                      info = json.loads(completed.stdout)
-                      resolved = {
-                          "video_id": info.get("id"),
-                          "title": info.get("title"),
-                          "channel_id": info.get("channel_id"),
-                          "channel": info.get("channel"),
-                          "uploader_id": info.get("uploader_id"),
-                          "duration": info.get("duration"),
-                          "webpage_url": info.get("webpage_url"),
-                          "strategy": strategy,
-                          "authenticated": use_cookies,
+          for item in sources:
+              video_id = item["video_id"]
+              video_url = f"https://www.youtube.com/watch?v={video_id}"
+              oembed_url = "https://www.youtube.com/oembed?" + urllib.parse.urlencode(
+                  {"url": video_url, "format": "json"}
+              )
+              try:
+                  oembed = json.loads(get_text(oembed_url))
+                  author_name = str(oembed.get("author_name") or "")
+                  author_url = str(oembed.get("author_url") or "")
+              except Exception as exc:
+                  author_name = ""
+                  author_url = ""
+                  failures.append(
+                      {
+                          "video_id": video_id,
+                          "stage": "oembed",
+                          "error": f"{type(exc).__name__}: {exc}",
                       }
-                      break
-                  if resolved is None:
-                      failures.append({"video_id": video_id, "attempts": video_failures})
-                  else:
-                      rows.append(resolved)
-          finally:
-              if cookie_path:
-                  pathlib.Path(cookie_path).unlink(missing_ok=True)
+                  )
+
+              handle = item["expected_handle"]
+              try:
+                  channel_id, candidates = resolve_channel_id(handle)
+              except Exception as exc:
+                  channel_id = None
+                  candidates = []
+                  failures.append(
+                      {
+                          "video_id": video_id,
+                          "stage": "channel_page",
+                          "handle": handle,
+                          "error": f"{type(exc).__name__}: {exc}",
+                      }
+                  )
+              rows.append(
+                  {
+                      "video_id": video_id,
+                      "handle": handle,
+                      "expected_author": item["expected_author"],
+                      "oembed_author_name": author_name,
+                      "oembed_author_url": author_url,
+                      "channel_id": channel_id,
+                      "channel_id_candidates": candidates,
+                  }
+              )
 
           result = {"sources": rows, "failures": failures}
-          pathlib.Path("lovable-source-probe.json").write_text(
+          Path("lovable-source-probe.json").write_text(
               json.dumps(result, indent=2, ensure_ascii=False) + "\n",
               encoding="utf-8",
           )
           print(json.dumps(result, indent=2, ensure_ascii=False))
-          if not rows:
-              raise SystemExit("no candidate source metadata could be resolved")
+          unresolved = [row["video_id"] for row in rows if not row["channel_id"]]
+          if unresolved:
+              raise SystemExit(f"unresolved channel IDs: {unresolved}")
           PY
       - uses: actions/upload-artifact@v4
         if: always()
