@@ -1,0 +1,151 @@
+name: Zodiac fast-opening creative render
+
+on:
+  push:
+    branches:
+      - feat/zodiac-map-creative
+    paths:
+      - ".github/workflows/zodiac-fast-opening-render.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      MAP_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/6567edb9-06f5-4994-a81c-841694958797
+      GAMEPLAY_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/5f8106f9-fa72-4a68-93d9-2ea8f05495eb
+      ART_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/dcb4eed7-aed3-4c8a-b733-3ee390bc44ac
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install render dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          python -m pip install "playwright>=1.55,<2"
+          python -m playwright install --with-deps chromium
+
+      - name: Capture official MediaSilo metadata
+        run: |
+          python scripts/capture_mediasilo_session.py "$MAP_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-map
+          python scripts/capture_mediasilo_session.py "$GAMEPLAY_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-gameplay
+          python scripts/capture_mediasilo_session.py "$ART_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-art
+
+      - name: Build fast-opening no-text renderer
+        run: |
+          cp scripts/render_zodiac_map_creative_v2.py /tmp/render_zodiac_fast_opening.py
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('/tmp/render_zodiac_fast_opening.py')
+          s = p.read_text()
+
+          art_fn = '''def render_vertical_art_segment(art: Path, audio_source: Path, destination: Path) -> None:\n    # Native 9:16 map flash. Intentionally no added text; official artwork remains untouched.\n    filter_complex = (\n        f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT},"\n        f"zoompan=z='min(zoom+0.0012,1.035)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"\n        f"d=1:s={WIDTH}x{HEIGHT}:fps={FPS},format=yuv420p[v]"\n    )\n    run([\n        "ffmpeg", "-y", "-loop", "1", "-i", str(art), "-ss", "0", "-i", str(audio_source), "-t", "0.300",\n        "-filter_complex", filter_complex, "-map", "[v]", "-map", "1:a:0",\n        "-af", "aresample=48000,aformat=channel_layouts=stereo",\n        *x264_args(), *audio_args(), "-movflags", "+faststart", str(destination),\n    ])\n\n\n'''
+          s, n = re.subn(
+              r'def render_vertical_art_segment\(.*?\n\n\ndef concat_video_only',
+              art_fn + 'def concat_video_only',
+              s,
+              count=1,
+              flags=re.S,
+          )
+          if n != 1:
+              raise SystemExit('Could not replace art-render function')
+
+          timeline = '''    timeline = [\n        {"id": "S0", "kind": "art", "source": art_name, "source_start": None, "audio_kind": "map", "audio_start": 0.00, "duration": 0.30, "final": [0.00, 0.30], "text": None},\n        {"id": "S1", "kind": "map", "source": map_name, "source_start": 0.30, "audio_kind": "map", "audio_start": 0.30, "duration": 1.35, "final": [0.30, 1.65], "text": None},\n        {"id": "S2", "kind": "map", "source": map_name, "source_start": 24.15, "audio_kind": "map", "audio_start": 24.15, "duration": 1.40, "final": [1.65, 3.05], "text": None},\n        {"id": "S3", "kind": "gameplay", "source": gameplay_name, "source_start": 11.50, "audio_kind": "gameplay", "audio_start": 11.50, "duration": 1.60, "final": [3.05, 4.65], "text": None},\n        {"id": "S4a", "kind": "map", "source": map_name, "source_start": 31.00, "audio_kind": "map", "audio_start": 31.00, "duration": 0.70, "final": [4.65, 5.35], "text": None},\n        {"id": "S4b", "kind": "map", "source": map_name, "source_start": 33.55, "audio_kind": "map", "audio_start": 33.55, "duration": 0.70, "final": [5.35, 6.05], "text": None},\n        {"id": "S4c", "kind": "map", "source": map_name, "source_start": 35.05, "audio_kind": "map", "audio_start": 35.05, "duration": 0.70, "final": [6.05, 6.75], "text": None},\n        {"id": "S5", "kind": "gameplay", "source": gameplay_name, "source_start": 14.50, "audio_kind": "gameplay", "audio_start": 14.50, "duration": 2.20, "final": [6.75, 8.95], "text": None},\n        {"id": "S6", "kind": "cta", "source": gameplay_name, "source_start": 20.90, "audio_kind": "gameplay", "audio_start": 16.70, "duration": 1.70, "final": [8.95, 10.65], "text": None},\n    ]\n'''
+          s, n = re.subn(
+              r'    timeline = \[.*?\n    \]\n\n    rendered:',
+              timeline + '\n    rendered:',
+              s,
+              count=1,
+              flags=re.S,
+          )
+          if n != 1:
+              raise SystemExit('Could not replace timeline')
+
+          s = s.replace(
+              'Path("Zodiac_NEW_WARZONE_MAP_9x16_250M_FINAL.mp4")',
+              'Path("Zodiac_FAST_OPEN_9x16_250M_NO_HOOK_TEXT_FINAL.mp4")',
+          )
+          p.write_text(s)
+          PY
+
+      - name: Render fast-opening full-quality master
+        run: |
+          python /tmp/render_zodiac_fast_opening.py \
+            --map-bodies inspect-map/bodies.json \
+            --gameplay-bodies inspect-gameplay/bodies.json \
+            --thumbs-bodies inspect-art/bodies.json \
+            --work-dir zodiac-fast-opening \
+            --output Zodiac_FAST_OPEN_9x16_250M_NO_HOOK_TEXT_FINAL.mp4
+
+      - name: Technical and audio QA
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+
+          p = 'Zodiac_FAST_OPEN_9x16_250M_NO_HOOK_TEXT_FINAL.mp4'
+          raw = subprocess.check_output([
+              'ffprobe','-v','error','-show_entries',
+              'format=duration,size,bit_rate:stream=index,codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,bit_rate,sample_rate,channels,color_space,color_transfer,color_primaries,color_range',
+              '-of','json',p
+          ], text=True)
+          data = json.loads(raw)
+          video = next(s for s in data['streams'] if s.get('codec_type') == 'video')
+          audio = next(s for s in data['streams'] if s.get('codec_type') == 'audio')
+          duration = float(data['format']['duration'])
+          overall_bitrate = int(data['format'].get('bit_rate') or 0)
+          checks = {
+              'width_1080': video.get('width') == 1080,
+              'height_1920': video.get('height') == 1920,
+              'fps_60': video.get('avg_frame_rate') in ('60/1','60000/1000'),
+              'duration_safe': 10.55 <= duration <= 10.75,
+              'h264': video.get('codec_name') == 'h264',
+              'high_bitrate': overall_bitrate >= 200_000_000,
+              'audio_present': audio is not None,
+              'audio_48k': audio.get('sample_rate') == '48000',
+              'bt709': video.get('color_primaries') in ('bt709', None),
+          }
+          qa = {'probe': data, 'checks': checks, 'pass': all(checks.values()), 'opening_map_seconds': 0.30, 'first_motion_seconds': 1.35, 'added_hook_text': False}
+          Path('zodiac-fast-opening/final-qa.json').write_text(json.dumps(qa, indent=2))
+          print(json.dumps(qa, indent=2))
+          if not qa['pass']:
+              raise SystemExit('Technical QA failed')
+          PY
+
+          ffmpeg -hide_banner -i Zodiac_FAST_OPEN_9x16_250M_NO_HOOK_TEXT_FINAL.mp4 \
+            -ss 8.75 -t 0.50 -af "silencedetect=noise=-45dB:d=0.05" -f null - 2> zodiac-fast-opening/audio-transition-check.txt || true
+          if grep -q "silence_start" zodiac-fast-opening/audio-transition-check.txt; then
+            echo "Unexpected silence detected around CTA transition"
+            cat zodiac-fast-opening/audio-transition-check.txt
+            exit 1
+          fi
+
+      - name: Generate visual QA sheet
+        run: |
+          ffmpeg -y -i Zodiac_FAST_OPEN_9x16_250M_NO_HOOK_TEXT_FINAL.mp4 \
+            -vf "fps=4,scale=216:-1,drawtext=text='%{pts\\:hms}':x=6:y=h-28:fontsize=15:fontcolor=white:borderw=2:bordercolor=black,tile=6x8:padding=5:margin=5" \
+            -frames:v 1 zodiac-fast-opening/final-preview-sheet.jpg
+
+      - name: Upload fast-opening full-quality render package
+        uses: actions/upload-artifact@v4
+        with:
+          name: zodiac-fast-opening-9x16-250m-${{ github.sha }}
+          path: |
+            Zodiac_FAST_OPEN_9x16_250M_NO_HOOK_TEXT_FINAL.mp4
+            zodiac-fast-opening/render-report.json
+            zodiac-fast-opening/final-qa.json
+            zodiac-fast-opening/audio-transition-check.txt
+            zodiac-fast-opening/final-preview-sheet.jpg
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
