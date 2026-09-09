@@ -1,0 +1,67 @@
+name: Lovable source probe
+
+on:
+  push:
+    branches:
+      - feat/contentrewards-campaign-factory
+    paths:
+      - .github/workflows/lovable-source-probe.yml
+      - acceptance/lovable-source-probe-request.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install yt-dlp
+        run: python -m pip install --disable-pip-version-check 'yt-dlp>=2025.1.0'
+      - name: Resolve candidate metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import subprocess
+
+          video_ids = [
+              "lJX8VkZg-Vw",
+              "DZtGxNs9AVg",
+              "DHLczPQj9rA",
+          ]
+          rows = []
+          for video_id in video_ids:
+              url = f"https://www.youtube.com/watch?v={video_id}"
+              raw = subprocess.check_output(
+                  ["yt-dlp", "--dump-single-json", "--skip-download", "--no-warnings", url],
+                  text=True,
+                  timeout=180,
+              )
+              info = json.loads(raw)
+              rows.append(
+                  {
+                      "video_id": info.get("id"),
+                      "title": info.get("title"),
+                      "channel_id": info.get("channel_id"),
+                      "channel": info.get("channel"),
+                      "uploader_id": info.get("uploader_id"),
+                      "duration": info.get("duration"),
+                      "webpage_url": info.get("webpage_url"),
+                  }
+              )
+          with open("lovable-source-probe.json", "w", encoding="utf-8") as handle:
+              json.dump(rows, handle, indent=2, ensure_ascii=False)
+          print(json.dumps(rows, indent=2, ensure_ascii=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lovable-source-probe
+          path: lovable-source-probe.json
+          if-no-files-found: error
