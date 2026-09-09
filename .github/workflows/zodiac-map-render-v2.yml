@@ -6,6 +6,7 @@ on:
       - feat/zodiac-map-creative
     paths:
       - "scripts/render_zodiac_map_creative_v2.py"
+      - "scripts/remove_zodiac_hook_text.py"
       - ".github/workflows/zodiac-map-render-v2.yml"
   workflow_dispatch:
 
@@ -40,21 +41,28 @@ jobs:
           python scripts/capture_mediasilo_session.py "$GAMEPLAY_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-gameplay
           python scripts/capture_mediasilo_session.py "$ART_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-art
 
-      - name: Render native 9x16 map-first creative
+      - name: Render approved full-quality master
         run: |
           python scripts/render_zodiac_map_creative_v2.py \
             --map-bodies inspect-map/bodies.json \
             --gameplay-bodies inspect-gameplay/bodies.json \
             --thumbs-bodies inspect-art/bodies.json \
             --work-dir zodiac-map-render-v2 \
-            --output Zodiac_NEW_WARZONE_MAP_9x16_250M_FINAL.mp4
+            --output Zodiac_NEW_WARZONE_MAP_9x16_250M_BASE.mp4
+
+      - name: Remove added hook text without changing the edit or fixed audio
+        run: |
+          python scripts/remove_zodiac_hook_text.py \
+            --work-dir zodiac-map-render-v2 \
+            --master Zodiac_NEW_WARZONE_MAP_9x16_250M_BASE.mp4 \
+            --output Zodiac_NEW_WARZONE_MAP_9x16_250M_NO_HOOK_TEXT_FINAL.mp4
 
       - name: Technical QA
         run: |
           python - <<'PY'
           import json, subprocess
           from pathlib import Path
-          p='Zodiac_NEW_WARZONE_MAP_9x16_250M_FINAL.mp4'
+          p='Zodiac_NEW_WARZONE_MAP_9x16_250M_NO_HOOK_TEXT_FINAL.mp4'
           raw=subprocess.check_output([
               'ffprobe','-v','error','-show_entries',
               'format=duration,size,bit_rate:stream=index,codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,bit_rate,sample_rate,channels,color_space,color_transfer,color_primaries,color_range',
@@ -76,8 +84,8 @@ jobs:
               'audio_48k': audio.get('sample_rate')=='48000',
               'bt709_primaries': video.get('color_primaries') in ('bt709', None),
           }
-          qa={'probe':data,'checks':checks,'pass':all(checks.values())}
-          Path('zodiac-map-render-v2/final-qa.json').write_text(json.dumps(qa,indent=2))
+          qa={'probe':data,'checks':checks,'pass':all(checks.values()),'added_hook_text':False}
+          Path('zodiac-map-render-v2/final-textless-qa.json').write_text(json.dumps(qa,indent=2))
           print(json.dumps(qa,indent=2))
           if not qa['pass']:
               raise SystemExit('Technical QA failed')
@@ -85,19 +93,18 @@ jobs:
 
       - name: Generate visual QA sheet
         run: |
-          ffmpeg -y -i Zodiac_NEW_WARZONE_MAP_9x16_250M_FINAL.mp4 \
+          ffmpeg -y -i Zodiac_NEW_WARZONE_MAP_9x16_250M_NO_HOOK_TEXT_FINAL.mp4 \
             -vf "fps=2,scale=216:-1,drawtext=text='%{pts\\:hms}':x=6:y=h-28:fontsize=15:fontcolor=white:borderw=2:bordercolor=black,tile=5x5:padding=5:margin=5" \
-            -frames:v 1 zodiac-map-render-v2/final-preview-sheet.jpg
+            -frames:v 1 zodiac-map-render-v2/final-textless-preview-sheet.jpg
 
-      - name: Upload final render package
+      - name: Upload final textless full-quality render package
         uses: actions/upload-artifact@v4
         with:
-          name: zodiac-map-9x16-250m-final-${{ github.sha }}
+          name: zodiac-map-9x16-250m-no-hook-text-${{ github.sha }}
           path: |
-            Zodiac_NEW_WARZONE_MAP_9x16_250M_FINAL.mp4
-            zodiac-map-render-v2/render-report.json
-            zodiac-map-render-v2/final-qa.json
-            zodiac-map-render-v2/final-preview-sheet.jpg
+            Zodiac_NEW_WARZONE_MAP_9x16_250M_NO_HOOK_TEXT_FINAL.mp4
+            zodiac-map-render-v2/final-textless-qa.json
+            zodiac-map-render-v2/final-textless-preview-sheet.jpg
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
