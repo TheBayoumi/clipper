@@ -1,0 +1,231 @@
+name: Apply required visual presence policy
+
+on:
+  push:
+    branches:
+      - feat/contentrewards-campaign-factory
+    paths:
+      - .github/workflows/apply-lovable-engine-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/contentrewards-campaign-factory
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Apply generic visual-presence policy patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{path}: expected one replacement anchor, found {count}")
+              target.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          def insert_before(path: str, anchor: str, block: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              if block.strip() in text:
+                  return
+              count = text.count(anchor)
+              if count != 1:
+                  raise RuntimeError(f"{path}: expected one insertion anchor, found {count}")
+              target.write_text(text.replace(anchor, block + anchor, 1), encoding="utf-8")
+
+          models = "src/clipper/models.py"
+          insert_before(
+              models,
+              "@dataclass(frozen=True, slots=True)\nclass EditorialAcceptancePolicy:",
+              '''@dataclass(frozen=True, slots=True)\nclass VisualPresencePolicy:\n    require_any: tuple[str, ...] = ()\n    minimum_confidence: float = 0.75\n\n    @classmethod\n    def from_dict(cls, value: object) -> VisualPresencePolicy:\n        if value is None:\n            return cls()\n        if not isinstance(value, dict):\n            raise BriefValidationError("acceptance_policy.visual_presence must be an object")\n        unknown_fields = set(value) - {"require_any", "minimum_confidence"}\n        if unknown_fields:\n            raise BriefValidationError(\n                "unsupported acceptance_policy.visual_presence rule: "\n                f"{sorted(unknown_fields)[0]}"\n            )\n        raw = value.get("require_any", [])\n        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):\n            raise BriefValidationError(\n                "acceptance_policy.visual_presence.require_any must be a list of strings"\n            )\n        required = tuple(dict.fromkeys(item.strip() for item in raw if item.strip()))\n        confidence = float(value.get("minimum_confidence", 0.75))\n        if not 0.0 <= confidence <= 1.0:\n            raise BriefValidationError(\n                "acceptance_policy.visual_presence.minimum_confidence must be between 0 and 1"\n            )\n        return cls(require_any=required, minimum_confidence=confidence)\n\n\n''',
+          )
+          replace_once(
+              models,
+              '    branding: BrandingPolicy = field(default_factory=BrandingPolicy)\n    ai_generated_source_video: PolicyAction = "escalate"\n',
+              '    branding: BrandingPolicy = field(default_factory=BrandingPolicy)\n    visual_presence: VisualPresencePolicy = field(default_factory=VisualPresencePolicy)\n    ai_generated_source_video: PolicyAction = "escalate"\n',
+          )
+          replace_once(
+              models,
+              '            "branding",\n            "generated_media",\n',
+              '            "branding",\n            "visual_presence",\n            "generated_media",\n',
+          )
+          replace_once(
+              models,
+              '            branding=BrandingPolicy.from_dict(value.get("branding")),\n            ai_generated_source_video=_policy_action(\n',
+              '            branding=BrandingPolicy.from_dict(value.get("branding")),\n            visual_presence=VisualPresencePolicy.from_dict(value.get("visual_presence")),\n            ai_generated_source_video=_policy_action(\n',
+          )
+          replace_once(
+              models,
+              '            "branding": asdict(self.branding),\n            "generated_media": {\n',
+              '            "branding": asdict(self.branding),\n            "visual_presence": {\n                "require_any": list(self.visual_presence.require_any),\n                "minimum_confidence": self.visual_presence.minimum_confidence,\n            },\n            "generated_media": {\n',
+          )
+
+          integrity = "src/clipper/editorial_integrity.py"
+          replace_once(
+              integrity,
+              'from .models import AcceptancePolicy, CampaignBrief\nfrom .stage_contracts import structural_contract_fingerprint\n',
+              'from .models import AcceptancePolicy, CampaignBrief\nfrom .multimodal_timeline import MultimodalTimeline\nfrom .stage_contracts import structural_contract_fingerprint\n',
+          )
+          insert_before(
+              integrity,
+              'def evaluate_campaign_policy(\n',
+              '''def _normalize_visual_presence(value: str) -> str:\n    normalized = "".join(character.casefold() if character.isalnum() else " " for character in value)\n    return " ".join(normalized.split())\n\n\ndef _required_visual_presence_gate(\n    brief: CampaignBrief,\n    source_start: float,\n    source_end: float,\n    multimodal: MultimodalTimeline | None,\n) -> tuple[GateDecision, tuple[str, ...], dict[str, object]]:\n    visual_policy = brief.acceptance_policy.visual_presence\n    required = tuple(item for item in visual_policy.require_any if item.strip())\n    if not required:\n        return GateDecision.PASS, (), {"enabled": False, "require_any": []}\n    checks: dict[str, object] = {\n        "enabled": True,\n        "require_any": list(required),\n        "minimum_confidence": visual_policy.minimum_confidence,\n        "matched_terms": [],\n        "matched_evidence": [],\n    }\n    if multimodal is None:\n        checks["visual_evidence_available"] = False\n        return GateDecision.ESCALATE, ("required_visual_presence_uncertain",), checks\n\n    required_normalized = {item: _normalize_visual_presence(item) for item in required}\n    overlapping = tuple(\n        event\n        for event in multimodal.events\n        if event.end > source_start and event.start < source_end and event.visual_salience > 0\n    )\n    matches: list[dict[str, object]] = []\n    low_confidence_matches: list[dict[str, object]] = []\n    for event in overlapping:\n        evidence_values = tuple(\n            dict.fromkeys(\n                (\n                    *event.visible_people,\n                    *event.branding,\n                    *event.ocr_text,\n                    *event.visual_summaries,\n                )\n            )\n        )\n        for evidence in evidence_values:\n            normalized_evidence = _normalize_visual_presence(evidence)\n            for required_text, normalized_required in required_normalized.items():\n                if not normalized_required or normalized_required not in normalized_evidence:\n                    continue\n                item = {\n                    "required": required_text,\n                    "evidence": evidence,\n                    "start": event.start,\n                    "end": event.end,\n                    "confidence": event.visual_salience,\n                }\n                if event.visual_salience >= visual_policy.minimum_confidence:\n                    matches.append(item)\n                else:\n                    low_confidence_matches.append(item)\n\n    if matches:\n        checks["matched_terms"] = list(dict.fromkeys(str(item["required"]) for item in matches))\n        checks["matched_evidence"] = matches\n        checks["visual_evidence_available"] = True\n        return GateDecision.PASS, (), checks\n\n    spans = sorted(\n        (\n            max(source_start, span.start),\n            min(source_end, span.end),\n        )\n        for span in multimodal.visual_evidence_spans\n        if span.scope == "source_policy" and span.end > source_start and span.start < source_end\n    )\n    merged: list[tuple[float, float]] = []\n    for start, end in spans:\n        if end <= start:\n            continue\n        if merged and start <= merged[-1][1] + 0.05:\n            merged[-1] = (merged[-1][0], max(merged[-1][1], end))\n        else:\n            merged.append((start, end))\n    covered = sum(end - start for start, end in merged)\n    duration = source_end - source_start\n    coverage_complete = covered + 0.05 >= duration\n    high_confidence_events = sum(\n        1\n        for event in overlapping\n        if event.visual_salience >= visual_policy.minimum_confidence\n    )\n    checks.update(\n        {\n            "visual_evidence_available": bool(overlapping),\n            "source_policy_coverage_seconds": round(covered, 6),\n            "source_policy_coverage_complete": coverage_complete,\n            "high_confidence_visual_events": high_confidence_events,\n            "low_confidence_matches": low_confidence_matches,\n        }\n    )\n    if low_confidence_matches or not coverage_complete or high_confidence_events == 0:\n        return GateDecision.ESCALATE, ("required_visual_presence_uncertain",), checks\n    return GateDecision.REJECT, ("required_visual_presence_missing",), checks\n\n\n''',
+          )
+          replace_once(
+              integrity,
+              '    branding: tuple[BrandingEvidence, ...],\n) -> PolicyAudit:\n',
+              '    branding: tuple[BrandingEvidence, ...],\n    multimodal: MultimodalTimeline | None = None,\n) -> PolicyAudit:\n',
+          )
+          replace_once(
+              integrity,
+              '    if GateDecision.REJECT in decisions:\n',
+              '    presence_decision, presence_reasons, presence_checks = _required_visual_presence_gate(\n        brief, source_start, source_end, multimodal\n    )\n    if presence_decision != GateDecision.PASS:\n        decisions.append(presence_decision)\n        reasons.extend(presence_reasons)\n\n    if GateDecision.REJECT in decisions:\n',
+          )
+          replace_once(
+              integrity,
+              '            "branding_policy": asdict(policy.branding),\n            "generated_media_policy": policy.ai_generated_source_video,\n',
+              '            "branding_policy": asdict(policy.branding),\n            "visual_presence_policy": presence_checks,\n            "generated_media_policy": policy.ai_generated_source_video,\n',
+          )
+
+          quality_pipeline = "src/clipper/quality_pipeline.py"
+          replace_once(
+              quality_pipeline,
+              '    branding: tuple[BrandingEvidence, ...],\n) -> AdaptedQualityMoment | None:\n',
+              '    branding: tuple[BrandingEvidence, ...],\n    multimodal: MultimodalTimeline | None = None,\n) -> AdaptedQualityMoment | None:\n',
+          )
+          replace_once(
+              quality_pipeline,
+              '        hazards,\n        branding,\n    )\n',
+              '        hazards,\n        branding,\n        multimodal=multimodal,\n    )\n',
+          )
+
+          quality_batch = "src/clipper/quality_batch.py"
+          replace_once(
+              quality_batch,
+              '    return policy.enabled and policy.branding.foreign_logos != "allow"\n',
+              '    return policy.enabled and (\n        policy.branding.foreign_logos != "allow" or bool(policy.visual_presence.require_any)\n    )\n',
+          )
+          replace_once(
+              quality_batch,
+              '                    hazards=hazards,\n                    branding=branded,\n                )\n',
+              '                    hazards=hazards,\n                    branding=branded,\n                    multimodal=multimodal,\n                )\n',
+          )
+
+          visual_ai = "src/clipper/visual_ai.py"
+          replace_once(
+              visual_ai,
+              '    recovery_attempt: int,\n    generation_capacity: dict[str, object] | None = None,\n) -> dict[str, object]:\n',
+              '    recovery_attempt: int,\n    generation_capacity: dict[str, object] | None = None,\n    required_visual_entities: tuple[str, ...] = (),\n) -> dict[str, object]:\n',
+          )
+          replace_once(
+              visual_ai,
+              '    context: dict[str, object] = {\n        "video_id": video_id,\n',
+              '    if required_visual_entities:\n        instruction += (\n            " Campaign-required visual entities are supplied in required_visual_entities. "\n            "When one is visibly evidenced, preserve the exact supplied term in "\n            "visible_speakers for a person or in a branding:/ocr: event label as appropriate. "\n            "Never infer a person or brand from audio, transcript, filename, or campaign context."\n        )\n    context: dict[str, object] = {\n        "video_id": video_id,\n',
+          )
+          replace_once(
+              visual_ai,
+              '        "source_policy_recovery_attempt": recovery_attempt,\n        "instruction": instruction,\n    }\n',
+              '        "source_policy_recovery_attempt": recovery_attempt,\n        "required_visual_entities": list(required_visual_entities),\n        "instruction": instruction,\n    }\n',
+          )
+          replace_once(
+              visual_ai,
+              '    requested_identity: ModelIdentity,\n) -> str:\n',
+              '    requested_identity: ModelIdentity,\n    required_visual_entities: tuple[str, ...] = (),\n) -> str:\n',
+          )
+          replace_once(
+              visual_ai,
+              '            recovery_attempt=0,\n        )["instruction"]\n',
+              '            recovery_attempt=0,\n            required_visual_entities=required_visual_entities,\n        )["instruction"]\n',
+          )
+          replace_once(
+              visual_ai,
+              '            "inspection_contract": instruction,\n            "frame_contract": {"max_edge": VISUAL_SAMPLE_MAX_EDGE},\n',
+              '            "inspection_contract": instruction,\n            "required_visual_entities": list(required_visual_entities),\n            "frame_contract": {"max_edge": VISUAL_SAMPLE_MAX_EDGE},\n',
+          )
+          replace_once(
+              visual_ai,
+              '    generation_capacity: dict[str, object] | None = None,\n) -> tuple[tuple[VisualEvent, ...], list[ProviderResult[dict[str, Any]]]]:\n',
+              '    generation_capacity: dict[str, object] | None = None,\n    required_visual_entities: tuple[str, ...] = (),\n) -> tuple[tuple[VisualEvent, ...], list[ProviderResult[dict[str, Any]]]]:\n',
+          )
+          replace_once(
+              visual_ai,
+              '                recovery_attempt=recovery_attempt,\n                generation_capacity=generation_capacity,\n            ),\n',
+              '                recovery_attempt=recovery_attempt,\n                generation_capacity=generation_capacity,\n                required_visual_entities=required_visual_entities,\n            ),\n',
+          )
+          replace_once(
+              visual_ai,
+              '    checkpoint_dir: Path | None = None,\n    checkpoint_commit: Callable[[], None] | None = None,\n) -> tuple[VisualTimeline, ProviderResult[dict[str, Any]]]:\n',
+              '    checkpoint_dir: Path | None = None,\n    checkpoint_commit: Callable[[], None] | None = None,\n    required_visual_entities: tuple[str, ...] = (),\n) -> tuple[VisualTimeline, ProviderResult[dict[str, Any]]]:\n',
+          )
+          replace_once(
+              visual_ai,
+              '        requested_identity=requested_identity,\n    )\n',
+              '        requested_identity=requested_identity,\n        required_visual_entities=required_visual_entities,\n    )\n',
+          )
+          replace_once(
+              visual_ai,
+              '                    generation_capacity=(\n                        {"observed_output_tokens_per_item": observed_output_tokens_per_item}\n                        if observed_output_tokens_per_item is not None\n                        else None\n                    ),\n                )\n',
+              '                    generation_capacity=(\n                        {"observed_output_tokens_per_item": observed_output_tokens_per_item}\n                        if observed_output_tokens_per_item is not None\n                        else None\n                    ),\n                    required_visual_entities=required_visual_entities,\n                )\n',
+          )
+
+          pipeline = "src/clipper/pipeline.py"
+          replace_once(
+              pipeline,
+              '    provider: VisionProvider,\n    run_dir: Path,\n) -> tuple[VisualTimeline, dict[str, object]]:\n',
+              '    provider: VisionProvider,\n    run_dir: Path,\n    required_visual_entities: tuple[str, ...] = (),\n) -> tuple[VisualTimeline, dict[str, object]]:\n',
+          )
+          replace_once(
+              pipeline,
+              '        checkpoint_dir=_VISUAL_CHECKPOINT_DIR.get(),\n        checkpoint_commit=_VISUAL_CHECKPOINT_COMMIT.get(),\n    )\n',
+              '        checkpoint_dir=_VISUAL_CHECKPOINT_DIR.get(),\n        checkpoint_commit=_VISUAL_CHECKPOINT_COMMIT.get(),\n        required_visual_entities=required_visual_entities,\n    )\n',
+          )
+          replace_once(
+              pipeline,
+              '                    scout,\n                    run_dir,\n                )\n',
+              '                    scout,\n                    run_dir,\n                    required_visual_entities=brief.acceptance_policy.visual_presence.require_any,\n                )\n',
+          )
+
+          test_path = Path("tests/test_visual_presence_policy.py")
+          test_path.write_text(
+              '''from __future__ import annotations\n\nfrom clipper.editorial_integrity import (\n    GateDecision,\n    HazardClassification,\n    SourceHazardSegment,\n    evaluate_campaign_policy,\n)\nfrom clipper.models import AcceptancePolicy, CampaignBrief\nfrom clipper.multimodal_timeline import MultimodalEvent, MultimodalTimeline\nfrom clipper.visual import VisualEvidenceSpan\n\n\ndef _brief(*required: str, minimum_confidence: float = 0.75) -> CampaignBrief:\n    policy = AcceptancePolicy.from_dict(\n        {\n            "enabled": True,\n            "source_segments": {\n                "allow": ["editorial_content"],\n                "forbid": [],\n                "unknown": "escalate",\n            },\n            "branding": {"foreign_logos": "allow"},\n            "visual_presence": {\n                "require_any": list(required),\n                "minimum_confidence": minimum_confidence,\n            },\n        }\n    )\n    return CampaignBrief(\n        campaign_id="lovable-test",\n        title="Lovable test",\n        objective="Test required visual presence",\n        allowed_video_ids=["video"],\n        acceptance_policy=policy,\n    )\n\n\ndef _hazards() -> tuple[SourceHazardSegment, ...]:\n    return (\n        SourceHazardSegment(\n            start=0.0,\n            end=10.0,\n            classification=HazardClassification.EDITORIAL_CONTENT,\n            confidence=0.99,\n            evidence=("editorial",),\n            model_identity={"model": "test"},\n        ),\n    )\n\n\ndef _timeline(\n    *,\n    visible_people: tuple[str, ...] = (),\n    branding: tuple[str, ...] = (),\n    ocr_text: tuple[str, ...] = (),\n    confidence: float = 0.95,\n    covered: bool = True,\n) -> MultimodalTimeline:\n    spans = (\n        (VisualEvidenceSpan(0.0, 10.0, 5.0, "source_policy"),)\n        if covered\n        else (VisualEvidenceSpan(0.0, 4.0, 2.0, "source_policy"),)\n    )\n    return MultimodalTimeline(\n        video_id="video",\n        source_hash="a" * 64,\n        duration=10.0,\n        events=(\n            MultimodalEvent(\n                start=0.0,\n                end=10.0,\n                visible_people=visible_people,\n                branding=branding,\n                ocr_text=ocr_text,\n                visual_summaries=("inspected source frame",),\n                visual_salience=confidence,\n                confidence=confidence,\n            ),\n        ),\n        visual_evidence_spans=spans,\n    )\n\n\ndef test_visual_presence_policy_parses_and_serializes() -> None:\n    policy = AcceptancePolicy.from_dict(\n        {"visual_presence": {"require_any": ["Anton", "Lovable"], "minimum_confidence": 0.8}}\n    )\n    assert policy.visual_presence.require_any == ("Anton", "Lovable")\n    assert policy.to_dict()["visual_presence"] == {\n        "require_any": ["Anton", "Lovable"],\n        "minimum_confidence": 0.8,\n    }\n\n\ndef test_required_visual_presence_passes_on_visible_person() -> None:\n    audit = evaluate_campaign_policy(\n        _brief("Anton", "Lovable"),\n        0.0,\n        10.0,\n        _hazards(),\n        (),\n        multimodal=_timeline(visible_people=("Anton Osika",)),\n    )\n    assert audit.decision == GateDecision.PASS\n    checks = audit.campaign_policy_checks["visual_presence_policy"]\n    assert checks["matched_terms"] == ["Anton"]\n\n\ndef test_required_visual_presence_passes_on_branding() -> None:\n    audit = evaluate_campaign_policy(\n        _brief("Anton", "Lovable"),\n        0.0,\n        10.0,\n        _hazards(),\n        (),\n        multimodal=_timeline(branding=("Lovable",)),\n    )\n    assert audit.decision == GateDecision.PASS\n\n\ndef test_required_visual_presence_rejects_when_absent_with_full_coverage() -> None:\n    audit = evaluate_campaign_policy(\n        _brief("Anton", "Lovable"),\n        0.0,\n        10.0,\n        _hazards(),\n        (),\n        multimodal=_timeline(visible_people=("Ben",)),\n    )\n    assert audit.decision == GateDecision.REJECT\n    assert "required_visual_presence_missing" in audit.reasons\n\n\ndef test_required_visual_presence_escalates_low_confidence_match() -> None:\n    audit = evaluate_campaign_policy(\n        _brief("Anton", "Lovable", minimum_confidence=0.8),\n        0.0,\n        10.0,\n        _hazards(),\n        (),\n        multimodal=_timeline(branding=("Lovable",), confidence=0.6),\n    )\n    assert audit.decision == GateDecision.ESCALATE\n    assert "required_visual_presence_uncertain" in audit.reasons\n\n\ndef test_required_visual_presence_escalates_incomplete_visual_coverage() -> None:\n    audit = evaluate_campaign_policy(\n        _brief("Anton", "Lovable"),\n        0.0,\n        10.0,\n        _hazards(),\n        (),\n        multimodal=_timeline(visible_people=("Ben",), covered=False),\n    )\n    assert audit.decision == GateDecision.ESCALATE\n    assert "required_visual_presence_uncertain" in audit.reasons\n''',
+              encoding="utf-8",
+          )
+          PY
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+      - name: Format and validate
+        run: |
+          ruff format src/clipper/models.py src/clipper/editorial_integrity.py src/clipper/quality_pipeline.py src/clipper/quality_batch.py src/clipper/visual_ai.py src/clipper/pipeline.py tests/test_visual_presence_policy.py
+          ruff check src/clipper/models.py src/clipper/editorial_integrity.py src/clipper/quality_pipeline.py src/clipper/quality_batch.py src/clipper/visual_ai.py src/clipper/pipeline.py tests/test_visual_presence_policy.py
+          mypy
+          pytest -q tests/test_visual_presence_policy.py tests/test_models.py tests/test_editorial_integrity.py tests/test_quality_pipeline.py tests/test_quality_batch.py tests/test_visual_ai.py tests/test_pipeline.py
+      - name: Commit validated patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/clipper tests/test_visual_presence_policy.py
+          if git diff --cached --quiet; then
+            echo 'No source changes to commit'
+            exit 0
+          fi
+          git commit -m 'feat: enforce required visual presence'
+          git push origin HEAD:feat/contentrewards-campaign-factory
