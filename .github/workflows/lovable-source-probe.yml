@@ -12,55 +12,122 @@ on:
 permissions:
   contents: read
 
+env:
+  CLIPPER_YOUTUBE_COOKIES_B64: ${{ secrets.CLIPPER_YOUTUBE_COOKIES_B64 }}
+
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install yt-dlp
-        run: python -m pip install --disable-pip-version-check 'yt-dlp>=2025.1.0'
-      - name: Resolve candidate metadata
+        run: python -m pip install --disable-pip-version-check 'yt-dlp[default]>=2026.7.4,<2027'
+      - name: Resolve candidate metadata with authenticated fallback
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
+          import base64
           import json
+          import os
+          import pathlib
           import subprocess
+          import tempfile
 
           video_ids = [
               "lJX8VkZg-Vw",
               "DZtGxNs9AVg",
               "DHLczPQj9rA",
           ]
+          encoded = os.environ.get("CLIPPER_YOUTUBE_COOKIES_B64", "").strip()
+          cookie_path = None
+          if encoded:
+              raw_cookies = base64.b64decode(encoded, validate=True)
+              if not raw_cookies.strip():
+                  raise RuntimeError("configured YouTube cookie secret decodes to an empty file")
+              handle = tempfile.NamedTemporaryFile(prefix="clipper-youtube-", suffix=".txt", delete=False)
+              handle.write(raw_cookies)
+              handle.close()
+              pathlib.Path(handle.name).chmod(0o600)
+              cookie_path = handle.name
+
+          strategies = [
+              ("default_mweb", ["--extractor-args", "youtube:player_client=default,mweb"], False),
+              ("embedded_android_vr", ["--extractor-args", "youtube:player_client=web_embedded,android_vr"], False),
+          ]
+          if cookie_path:
+              strategies.extend(
+                  [
+                      ("cookies_default_mweb", ["--extractor-args", "youtube:player_client=default,mweb"], True),
+                      ("cookies_default", [], True),
+                  ]
+              )
+
           rows = []
-          for video_id in video_ids:
-              url = f"https://www.youtube.com/watch?v={video_id}"
-              raw = subprocess.check_output(
-                  ["yt-dlp", "--dump-single-json", "--skip-download", "--no-warnings", url],
-                  text=True,
-                  timeout=180,
-              )
-              info = json.loads(raw)
-              rows.append(
-                  {
-                      "video_id": info.get("id"),
-                      "title": info.get("title"),
-                      "channel_id": info.get("channel_id"),
-                      "channel": info.get("channel"),
-                      "uploader_id": info.get("uploader_id"),
-                      "duration": info.get("duration"),
-                      "webpage_url": info.get("webpage_url"),
-                  }
-              )
-          with open("lovable-source-probe.json", "w", encoding="utf-8") as handle:
-              json.dump(rows, handle, indent=2, ensure_ascii=False)
-          print(json.dumps(rows, indent=2, ensure_ascii=False))
+          failures = []
+          try:
+              for video_id in video_ids:
+                  url = f"https://www.youtube.com/watch?v={video_id}"
+                  resolved = None
+                  video_failures = []
+                  for strategy, args, use_cookies in strategies:
+                      command = [
+                          "yt-dlp",
+                          "--dump-single-json",
+                          "--skip-download",
+                          "--no-warnings",
+                          *args,
+                      ]
+                      if use_cookies and cookie_path:
+                          command.extend(["--cookies", cookie_path])
+                      command.append(url)
+                      completed = subprocess.run(
+                          command,
+                          text=True,
+                          capture_output=True,
+                          timeout=180,
+                          check=False,
+                      )
+                      if completed.returncode != 0:
+                          detail = (completed.stderr or completed.stdout or "unknown yt-dlp failure")[-1200:]
+                          video_failures.append({"strategy": strategy, "error": detail})
+                          continue
+                      info = json.loads(completed.stdout)
+                      resolved = {
+                          "video_id": info.get("id"),
+                          "title": info.get("title"),
+                          "channel_id": info.get("channel_id"),
+                          "channel": info.get("channel"),
+                          "uploader_id": info.get("uploader_id"),
+                          "duration": info.get("duration"),
+                          "webpage_url": info.get("webpage_url"),
+                          "strategy": strategy,
+                          "authenticated": use_cookies,
+                      }
+                      break
+                  if resolved is None:
+                      failures.append({"video_id": video_id, "attempts": video_failures})
+                  else:
+                      rows.append(resolved)
+          finally:
+              if cookie_path:
+                  pathlib.Path(cookie_path).unlink(missing_ok=True)
+
+          result = {"sources": rows, "failures": failures}
+          pathlib.Path("lovable-source-probe.json").write_text(
+              json.dumps(result, indent=2, ensure_ascii=False) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(result, indent=2, ensure_ascii=False))
+          if not rows:
+              raise SystemExit("no candidate source metadata could be resolved")
           PY
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: lovable-source-probe
           path: lovable-source-probe.json
