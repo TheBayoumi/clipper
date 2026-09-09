@@ -1,12 +1,12 @@
 {
   "confirm_production": true,
-  "campaign_brief": "campaigns/reach-double-coverage-clix.yaml",
-  "target_video_id": "2Y4LP85PTak",
+  "campaign_brief": "campaigns/lovable-clipping.yaml",
+  "target_video_id": "DZtGxNs9AVg",
   "max_gpu_seconds": 21600,
   "max_estimated_usd": 10,
-  "request_reason": "Resume exact-head editorial-only runtime proof after clean Codex static review; preserve content-addressed state and prove the 300-second live generation deadline without render/HILP",
+  "request_reason": "Render and review the verified current Lovable clipping campaign source from Lenny's Podcast with deterministic Anton/Lovable visual-presence enforcement",
   "fresh_inference": false,
-  "resume_from_run_id": "33169878733",
-  "editorial_acceptance_only": true,
+  "resume_from_run_id": null,
+  "editorial_acceptance_only": false,
   "enabled": true
 }
