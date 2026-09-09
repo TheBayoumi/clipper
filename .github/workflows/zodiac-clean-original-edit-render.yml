@@ -1,0 +1,243 @@
+name: Zodiac clean full-frame original edit
+
+on:
+  push:
+    branches:
+      - feat/zodiac-map-creative
+    paths:
+      - ".github/workflows/zodiac-clean-original-edit-render.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      MAP_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/6567edb9-06f5-4994-a81c-841694958797
+      GAMEPLAY_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/5f8106f9-fa72-4a68-93d9-2ea8f05495eb
+      ART_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/dcb4eed7-aed3-4c8a-b733-3ee390bc44ac
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m pip install "playwright>=1.55,<2"
+          python -m playwright install --with-deps chromium
+
+      - name: Capture official MediaSilo metadata
+        run: |
+          python scripts/capture_mediasilo_session.py "$MAP_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-map
+          python scripts/capture_mediasilo_session.py "$GAMEPLAY_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-gameplay
+          python scripts/capture_mediasilo_session.py "$ART_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-art
+
+      - name: Render clean full-frame edit
+        run: |
+          cat > /tmp/render_clean_original.py <<'PY'
+          from __future__ import annotations
+
+          import importlib.util
+          import json
+          import subprocess
+          from pathlib import Path
+
+          spec = importlib.util.spec_from_file_location("base", "scripts/render_zodiac_map_creative_v2.py")
+          base = importlib.util.module_from_spec(spec)
+          assert spec and spec.loader
+          spec.loader.exec_module(base)
+
+          WIDTH, HEIGHT, FPS = 1080, 1920, 60
+          OUT = Path("Zodiac_CLEAN_ORIGINAL_EDIT_9x16_250M_FINAL.mp4")
+          WORK = Path("zodiac-clean-original")
+          ASSETS = WORK / "assets"
+          SEGS = WORK / "segments"
+          ASSETS.mkdir(parents=True, exist_ok=True)
+          SEGS.mkdir(parents=True, exist_ok=True)
+
+          def run(cmd: list[str]) -> None:
+              print("+", " ".join(cmd))
+              subprocess.run(cmd, check=True)
+
+          def full_frame_filter() -> str:
+              # Preserve the ENTIRE native 9:16 frame. No zoom, crop, split-screen, PIP, or warped framing.
+              return (
+                  f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,"
+                  f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:black,"
+                  f"fps={FPS},format=yuv420p"
+              )
+
+          def render_video(source: Path, start: float, duration: float, dst: Path) -> None:
+              run([
+                  "ffmpeg","-y","-ss",f"{start:.3f}","-i",str(source),"-t",f"{duration:.3f}",
+                  "-map","0:v:0","-vf",full_frame_filter(),*base.x264_args(),"-an",
+                  "-movflags","+faststart",str(dst),
+              ])
+
+          def render_art(art: Path, duration: float, dst: Path) -> None:
+              run([
+                  "ffmpeg","-y","-loop","1","-framerate",str(FPS),"-i",str(art),"-t",f"{duration:.3f}",
+                  "-vf",full_frame_filter(),*base.x264_args(),"-an",
+                  "-movflags","+faststart",str(dst),
+              ])
+
+          map_name, map_url = base.pick_asset(Path("inspect-map/bodies.json"), "video", "9x16")
+          gameplay_name, gameplay_url = base.pick_asset(Path("inspect-gameplay/bodies.json"), "video", "9x16")
+          art_name, art_url = base.pick_asset(Path("inspect-art/bodies.json"), "image", "zodiac_wz_1080x1920png")
+
+          map_file = ASSETS / "map_9x16.mp4"
+          gameplay_file = ASSETS / "gameplay_9x16.mp4"
+          art_file = ASSETS / "zodiac_map_9x16.png"
+          downloads = {
+              "map": {"name": map_name, **base.download(map_url, map_file)},
+              "gameplay": {"name": gameplay_name, **base.download(gameplay_url, gameplay_file)},
+              "art": {"name": art_name, **base.download(art_url, art_file)},
+          }
+
+          # Clean narrative edit: motion immediately, action before 1 s, a brief FULL uncropped map card,
+          # then rapid alternation between map locations and gameplay. No fake detector tricks.
+          timeline = [
+              ("S0", "map",      0.30, 0.85),
+              ("S1", "gameplay",11.50, 1.55),
+              ("S2", "art",      0.00, 0.20),
+              ("S3", "map",     24.15, 0.90),
+              ("S4", "gameplay",13.20, 1.10),
+              ("S5", "map",     31.00, 0.75),
+              ("S6", "map",     35.05, 0.75),
+              ("S7", "gameplay",14.50, 2.50),
+              ("S8", "gameplay",17.00, 1.20),
+              ("S9", "gameplay",18.50, 0.80),
+          ]
+
+          rendered = []
+          cursor = 0.0
+          report_timeline = []
+          for sid, kind, start, duration in timeline:
+              dst = SEGS / f"{sid}.mp4"
+              if kind == "art":
+                  render_art(art_file, duration, dst)
+                  source_name = art_name
+                  source_start = None
+              else:
+                  src = map_file if kind == "map" else gameplay_file
+                  render_video(src, start, duration, dst)
+                  source_name = map_name if kind == "map" else gameplay_name
+                  source_start = start
+              rendered.append(dst)
+              report_timeline.append({
+                  "id": sid, "kind": kind, "source": source_name,
+                  "source_start": source_start, "duration": duration,
+                  "final": [round(cursor, 3), round(cursor + duration, 3)],
+              })
+              cursor += duration
+
+          video_only = WORK / "video-only.mp4"
+          base.concat_video_only(rendered, video_only)
+
+          # One continuous piece of ORIGINAL gameplay audio across the whole edit.
+          # This avoids the audible source-jumps from the earlier version while adding no music/SFX/AI audio.
+          audio_track = WORK / "audio.m4a"
+          run([
+              "ffmpeg","-y","-ss","11.500","-i",str(gameplay_file),"-t","10.600",
+              "-vn","-af","aresample=48000,aformat=channel_layouts=stereo,afade=t=out:st=10.450:d=0.150",
+              *base.audio_args(),str(audio_track),
+          ])
+
+          base.mux_video_and_audio(video_only, audio_track, OUT)
+
+          report = {
+              "downloads": downloads,
+              "timeline": report_timeline,
+              "output": str(OUT),
+              "probe": base.probe(OUT),
+              "creative_direction": [
+                  "full-frame native 9:16 presentation throughout",
+                  "no crop/zoom/PIP/split-screen/warping",
+                  "motion begins at frame 0",
+                  "first gameplay action begins at 0.85 s",
+                  "full 9:16 Zodiac map image shown uncropped for 0.20 s as an insert, not as the opening card",
+                  "rapid map/gameplay intercut is the original editorial treatment",
+                  "single continuous official gameplay-audio excerpt; no added audio",
+                  "no added hook text, watermark, QR code, or decorative overlays",
+              ],
+          }
+          (WORK / "render-report.json").write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+          PY
+
+          python /tmp/render_clean_original.py
+
+      - name: Technical and composition QA
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+
+          p = "Zodiac_CLEAN_ORIGINAL_EDIT_9x16_250M_FINAL.mp4"
+          data = json.loads(subprocess.check_output([
+              "ffprobe","-v","error","-show_entries",
+              "format=duration,size,bit_rate:stream=codec_type,codec_name,width,height,avg_frame_rate,bit_rate,sample_rate,channels,color_primaries",
+              "-of","json",p
+          ], text=True))
+          v = next(s for s in data["streams"] if s.get("codec_type") == "video")
+          a = next(s for s in data["streams"] if s.get("codec_type") == "audio")
+          dur = float(data["format"]["duration"])
+          checks = {
+              "1080x1920": v.get("width") == 1080 and v.get("height") == 1920,
+              "60fps": v.get("avg_frame_rate") == "60/1",
+              "duration_campaign_safe": 10.55 <= dur <= 10.70,
+              "h264": v.get("codec_name") == "h264",
+              "audio_48k_stereo": a.get("sample_rate") == "48000" and a.get("channels") == 2,
+          }
+          qa = {
+              "checks": checks,
+              "pass": all(checks.values()),
+              "duration": dur,
+              "first_action_at_seconds": 0.85,
+              "full_frame_only": True,
+              "crop_used": False,
+              "pip_used": False,
+              "split_screen_used": False,
+              "added_hook_text": False,
+              "added_audio": False,
+          }
+          Path("zodiac-clean-original/final-qa.json").write_text(json.dumps(qa, indent=2))
+          print(json.dumps(qa, indent=2))
+          if not qa["pass"]:
+              raise SystemExit("QA failed")
+          PY
+
+          ffmpeg -hide_banner -ss 0 -t 0.80 -i Zodiac_CLEAN_ORIGINAL_EDIT_9x16_250M_FINAL.mp4 \
+            -vf "freezedetect=n=-50dB:d=0.20" -an -f null - 2> zodiac-clean-original/opening-motion-check.txt || true
+
+          ffmpeg -hide_banner -i Zodiac_CLEAN_ORIGINAL_EDIT_9x16_250M_FINAL.mp4 \
+            -af "silencedetect=noise=-45dB:d=0.08" -f null - 2> zodiac-clean-original/audio-check.txt || true
+
+      - name: Generate visual QA sheet
+        run: |
+          ffmpeg -y -i Zodiac_CLEAN_ORIGINAL_EDIT_9x16_250M_FINAL.mp4 \
+            -vf "fps=4,scale=216:-1,drawtext=text='%{pts\\:hms}':x=6:y=h-28:fontsize=15:fontcolor=white:borderw=2:bordercolor=black,tile=6x8:padding=5:margin=5" \
+            -frames:v 1 zodiac-clean-original/final-preview-sheet.jpg
+
+      - name: Upload clean full-frame package
+        uses: actions/upload-artifact@v4
+        with:
+          name: zodiac-clean-original-fullframe-${{ github.sha }}
+          path: |
+            Zodiac_CLEAN_ORIGINAL_EDIT_9x16_250M_FINAL.mp4
+            zodiac-clean-original/render-report.json
+            zodiac-clean-original/final-qa.json
+            zodiac-clean-original/opening-motion-check.txt
+            zodiac-clean-original/audio-check.txt
+            zodiac-clean-original/final-preview-sheet.jpg
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
