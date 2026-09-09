@@ -1,0 +1,103 @@
+name: Zodiac map creative render v2
+
+on:
+  push:
+    branches:
+      - feat/zodiac-map-creative
+    paths:
+      - "scripts/render_zodiac_map_creative_v2.py"
+      - ".github/workflows/zodiac-map-render-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      MAP_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/6567edb9-06f5-4994-a81c-841694958797
+      GAMEPLAY_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/5f8106f9-fa72-4a68-93d9-2ea8f05495eb
+      THUMBS_URL: https://app.mediasilo.com/review/6a8e379525a8e55a51c595fc/f/f197b127-5ca7-4e63-84a0-9874b864f75f
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install render dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          python -m pip install "playwright>=1.55,<2"
+          python -m playwright install --with-deps chromium
+
+      - name: Capture official MediaSilo metadata
+        run: |
+          python scripts/capture_mediasilo_session.py "$MAP_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-map
+          python scripts/capture_mediasilo_session.py "$GAMEPLAY_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-gameplay
+          python scripts/capture_mediasilo_session.py "$THUMBS_URL" --folder "__NO_CHILD_FOLDER__" --output-dir inspect-thumbs
+
+      - name: Render native 9x16 map-first creative
+        run: |
+          python scripts/render_zodiac_map_creative_v2.py \
+            --map-bodies inspect-map/bodies.json \
+            --gameplay-bodies inspect-gameplay/bodies.json \
+            --thumbs-bodies inspect-thumbs/bodies.json \
+            --work-dir zodiac-map-render-v2 \
+            --output Zodiac_NEW_WARZONE_MAP_9x16_250M_FINAL.mp4
+
+      - name: Technical QA
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          p='Zodiac_NEW_WARZONE_MAP_9x16_250M_FINAL.mp4'
+          raw=subprocess.check_output([
+              'ffprobe','-v','error','-show_entries',
+              'format=duration,size,bit_rate:stream=index,codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,bit_rate,sample_rate,channels,color_space,color_transfer,color_primaries,color_range',
+              '-of','json',p
+          ],text=True)
+          data=json.loads(raw)
+          video=next(s for s in data['streams'] if s.get('codec_type')=='video')
+          audio=next(s for s in data['streams'] if s.get('codec_type')=='audio')
+          duration=float(data['format']['duration'])
+          overall_bitrate=int(data['format'].get('bit_rate') or 0)
+          checks={
+              'width_1080': video.get('width')==1080,
+              'height_1920': video.get('height')==1920,
+              'fps_60': video.get('avg_frame_rate') in ('60/1','60000/1000'),
+              'duration_10_to_11': 10.45 <= duration <= 10.85,
+              'h264': video.get('codec_name')=='h264',
+              'high_bitrate': overall_bitrate >= 200_000_000,
+              'audio_present': audio is not None,
+              'audio_48k': audio.get('sample_rate')=='48000',
+              'bt709_primaries': video.get('color_primaries') in ('bt709', None),
+          }
+          qa={'probe':data,'checks':checks,'pass':all(checks.values())}
+          Path('zodiac-map-render-v2/final-qa.json').write_text(json.dumps(qa,indent=2))
+          print(json.dumps(qa,indent=2))
+          if not qa['pass']:
+              raise SystemExit('Technical QA failed')
+          PY
+
+      - name: Generate visual QA sheet
+        run: |
+          ffmpeg -y -i Zodiac_NEW_WARZONE_MAP_9x16_250M_FINAL.mp4 \
+            -vf "fps=2,scale=216:-1,drawtext=text='%{pts\\:hms}':x=6:y=h-28:fontsize=15:fontcolor=white:borderw=2:bordercolor=black,tile=5x5:padding=5:margin=5" \
+            -frames:v 1 zodiac-map-render-v2/final-preview-sheet.jpg
+
+      - name: Upload final render package
+        uses: actions/upload-artifact@v4
+        with:
+          name: zodiac-map-9x16-250m-final-${{ github.sha }}
+          path: |
+            Zodiac_NEW_WARZONE_MAP_9x16_250M_FINAL.mp4
+            zodiac-map-render-v2/render-report.json
+            zodiac-map-render-v2/final-qa.json
+            zodiac-map-render-v2/final-preview-sheet.jpg
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
