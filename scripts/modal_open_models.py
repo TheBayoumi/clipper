@@ -126,6 +126,7 @@ media_image = (
         "/root/bgutil-ytdlp-pot-provider",
         "cd /root/bgutil-ytdlp-pot-provider/server && npm ci && npx tsc",
     )
+    .add_local_python_source("clipper")
 )
 state_image = base_image.add_local_python_source("clipper")
 text_image = base_image.uv_pip_install(
@@ -2708,7 +2709,7 @@ def diarize(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.function(
-    image=modal.Image.debian_slim().env({"CLIPPER_DEPLOYED_GIT_SHA": DEPLOYED_GIT_SHA}),
+    image=state_image,
     timeout=60,
     scaledown_window=2,
 )
@@ -2716,7 +2717,7 @@ def deployment_identity() -> dict[str, Any]:
     return {"app": APP_NAME, "deployed_git_sha": DEPLOYED_GIT_SHA}
 
 
-@app.function(image=modal.Image.debian_slim(), timeout=120, scaledown_window=2)
+@app.function(image=state_image, timeout=120, scaledown_window=2)
 def credential_smoke() -> dict[str, Any]:
     return {"app": APP_NAME, "ok": True}
 
@@ -2745,7 +2746,7 @@ def editorial_schema_smoke() -> dict[str, Any]:
 
 
 @app.function(
-    image=base_image.uv_pip_install("huggingface_hub>=0.35,<2"),
+    image=base_image.uv_pip_install("huggingface_hub>=0.35,<2").add_local_python_source("clipper"),
     secrets=[hf_secret],
     timeout=180,
     scaledown_window=2,
