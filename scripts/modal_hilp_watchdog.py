@@ -366,11 +366,14 @@ def run(*, render: bool) -> dict[str, Any]:
             gpu_count=2.0,
             estimated_usd_per_second=0.000444,
         )
+        # FunctionCall.from_id(...) is intentionally recoverable but unhydrated.
+        # Hydrate it before reading object_id; Modal 1.5.x raises AttributeError
+        # when object_id is accessed on the unhydrated recovery handle.
+        call.hydrate()
         call_id = str(call.object_id)
         spy.root_function_call_id = call_id
         if submission_error is not None:
             raise submission_error
-        call.hydrate()
 
         metadata = {
             "event": "production_call_spawned",
