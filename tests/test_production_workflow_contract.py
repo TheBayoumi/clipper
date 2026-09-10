@@ -365,10 +365,11 @@ def test_modal_spy_is_bound_to_spawned_call_and_execution_id() -> None:
     assert "execution_id=execution_id" in watchdog
     assert "spy_thread.start()" in watchdog
     assert watchdog.index("spy_thread.start()") < watchdog.index("_spawn_recoverable_modal_call(")
-    assert watchdog.index("_spawn_recoverable_modal_call(") < watchdog.index(
+    assert watchdog.index("_spawn_recoverable_modal_call(") < watchdog.index("call.hydrate()")
+    assert watchdog.index("call.hydrate()") < watchdog.index("call_id = str(call.object_id)")
+    assert watchdog.index("call_id = str(call.object_id)") < watchdog.index(
         "spy.root_function_call_id = call_id"
     )
-    assert watchdog.index("spy.root_function_call_id = call_id") < watchdog.index("call.hydrate()")
 
     assert "root_function_call_id" in spy
     assert "_belongs_to_execution" in spy
