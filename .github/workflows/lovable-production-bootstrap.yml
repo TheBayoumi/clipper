@@ -73,6 +73,18 @@ jobs:
               tests += '''\n\ndef test_modal_worker_vision_task_and_model_contracts_are_distinct() -> None:\n    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")\n    tree = ast.parse(source)\n    names = [node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]\n    duplicates = sorted({name for name in names if names.count(name) > 1})\n\n    assert duplicates == []\n    assert "def _vision_task_contract(task: str) -> str:" in source\n    assert source.count("def _vision_contract(") == 1\n    prompt_start = source.index("def _vision_prompt(")\n    prompt_end = source.index("\\n\\nclass VisionOutputCapacityError", prompt_start)\n    prompt_source = source[prompt_start:prompt_end]\n    assert "_vision_task_contract(task)" in prompt_source\n    assert "_vision_contract(task)" not in prompt_source\n'''
           test_path.write_text(tests, encoding="utf-8")
 
+          source_contract_test = Path("tests/test_modal_pipeline_source_contract.py")
+          contract_tests = source_contract_test.read_text(encoding="utf-8")
+          old_assertion = 'assert "def _vision_contract(task: str)" in source'
+          new_assertion = 'assert "def _vision_task_contract(task: str)" in source'
+          if contract_tests.count(old_assertion) != 1:
+              raise RuntimeError(
+                  f"expected exactly one legacy vision task-contract assertion, found {contract_tests.count(old_assertion)}"
+              )
+          source_contract_test.write_text(
+              contract_tests.replace(old_assertion, new_assertion, 1), encoding="utf-8"
+          )
+
           deploy = Path(".github/workflows/modal-workers-deploy.yml")
           workflow = deploy.read_text(encoding="utf-8")
           handle_anchor = '''          required_functions = [\n              "transcribe",\n'''
@@ -97,11 +109,11 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
-          ruff format tests/test_modal_model_lifecycle.py
+          ruff format tests/test_modal_model_lifecycle.py tests/test_modal_pipeline_source_contract.py
           ruff check .
           ruff format --check .
           mypy
-          pytest --no-cov tests/test_modal_model_lifecycle.py tests/test_modal_speech_cuda_runtime.py
+          pytest --no-cov tests/test_modal_model_lifecycle.py tests/test_modal_speech_cuda_runtime.py tests/test_modal_pipeline_source_contract.py
           pytest
 
       - name: Commit repaired exact-head source
@@ -117,6 +129,7 @@ jobs:
           git add \
             scripts/modal_open_models.py \
             tests/test_modal_model_lifecycle.py \
+            tests/test_modal_pipeline_source_contract.py \
             .github/workflows/modal-workers-deploy.yml \
             .github/workflows/lovable-production-bootstrap.yml
           git diff --cached --check
