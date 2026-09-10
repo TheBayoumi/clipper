@@ -279,7 +279,7 @@ def test_modal_vision_derives_runtime_capacity_without_fixed_vram_or_batch_limit
 
 def test_modal_vision_enforces_schema_and_recovers_invalid_json_once() -> None:
     source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
-    assert "def _vision_contract(task: str)" in source
+    assert "def _vision_task_contract(task: str)" in source
     assert 'if task == "visual_timeline_scout"' in source
     assert '"decision":"PASS"' in source
     assert "VISION_MAX_ATTEMPTS" not in source

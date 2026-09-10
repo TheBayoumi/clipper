@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -153,3 +154,21 @@ def test_modal_worker_source_uses_enter_loaded_classes_and_dynamic_capacity() ->
     assert "SOURCE_POLICY_BATCH_SIZE" not in visual_source
     assert "_is_vision_capacity_error" in visual_source
     assert "checkpoint_commit" in visual_source
+
+
+def test_modal_worker_vision_task_and_model_contracts_are_distinct() -> None:
+    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    names = [
+        node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+
+    assert duplicates == []
+    assert "def _vision_task_contract(task: str) -> str:" in source
+    assert source.count("def _vision_contract(") == 1
+    prompt_start = source.index("def _vision_prompt(")
+    prompt_end = source.index("\n\nclass VisionOutputCapacityError", prompt_start)
+    prompt_source = source[prompt_start:prompt_end]
+    assert "_vision_task_contract(task)" in prompt_source
+    assert "_vision_contract(task)" not in prompt_source

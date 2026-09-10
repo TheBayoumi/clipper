@@ -286,7 +286,7 @@ def _json_text(text: str) -> dict[str, Any]:
     return value
 
 
-def _vision_contract(task: str) -> str:
+def _vision_task_contract(task: str) -> str:
     if task == "source_policy_visual_scout":
         return (
             'Schema: {"observations":[{"timestamp":0.0,"scene_id":"scene-1",'
@@ -327,7 +327,7 @@ def _vision_prompt(payload: dict[str, Any], attempt: int) -> str:
         )
     return (
         "Return only one complete valid JSON object. Do not retranscribe audio. "
-        + _vision_contract(task)
+        + _vision_task_contract(task)
         + recovery
         + " Payload: "
         + json.dumps({"task": task, "context": payload.get("context")}, ensure_ascii=False)
