@@ -118,20 +118,17 @@ jobs:
 
       - name: Commit repaired exact-head source
         env:
-          ORIGINAL_HEAD: 9affed64571d2b9026e91f9a843a8f14d5391179
           BRANCH: ${{ github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
-          git checkout "$ORIGINAL_HEAD" -- .github/workflows/lovable-production-bootstrap.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
             scripts/modal_open_models.py \
             tests/test_modal_model_lifecycle.py \
             tests/test_modal_pipeline_source_contract.py \
-            .github/workflows/modal-workers-deploy.yml \
-            .github/workflows/lovable-production-bootstrap.yml
+            .github/workflows/modal-workers-deploy.yml
           git diff --cached --check
           git commit -m "fix: separate vision task and model contracts"
           git push origin "HEAD:${BRANCH}"
