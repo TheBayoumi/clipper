@@ -97,6 +97,7 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
+          ruff format tests/test_modal_model_lifecycle.py
           ruff check .
           ruff format --check .
           mypy
