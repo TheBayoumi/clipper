@@ -1,0 +1,57 @@
+name: Prepare bounded Modal identity verification patch
+
+on:
+  push:
+    branches:
+      - feat/contentrewards-campaign-factory
+    paths:
+      - ".github/workflows/prepare-bounded-modal-identity.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/contentrewards-campaign-factory
+          fetch-depth: 1
+
+      - name: Patch bounded identity calls in working tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          deploy = Path('.github/workflows/modal-workers-deploy.yml')
+          text = deploy.read_text(encoding='utf-8')
+          old = '''      - name: Verify immutable deployed SHA identities\n        shell: bash\n        run: |\n          set -euo pipefail\n          python - <<'PY'\n          import json\n          import os\n          from pathlib import Path\n\n          import modal\n\n          expected = os.environ["CLIPPER_DEPLOYED_GIT_SHA"].lower()\n          model_identity = modal.Function.from_name(\n              os.environ["CLIPPER_MODAL_APP"], "deployment_identity"\n          ).remote()\n          pipeline_identity = modal.Function.from_name(\n              os.environ["CLIPPER_MODAL_PIPELINE_APP"], "deployment_identity"\n          ).remote()\n          identities = {\n              "model": model_identity,\n              "pipeline": pipeline_identity,\n          }\n'''
+          new = '''      - name: Verify immutable deployed SHA identities\n        timeout-minutes: 5\n        shell: bash\n        run: |\n          set -euo pipefail\n          python - <<'PY'\n          import json\n          import os\n          from pathlib import Path\n\n          import modal\n\n          expected = os.environ["CLIPPER_DEPLOYED_GIT_SHA"].lower()\n          calls = {\n              "model": modal.Function.from_name(\n                  os.environ["CLIPPER_MODAL_APP"], "deployment_identity"\n              ).spawn(),\n              "pipeline": modal.Function.from_name(\n                  os.environ["CLIPPER_MODAL_PIPELINE_APP"], "deployment_identity"\n              ).spawn(),\n          }\n          identities = {name: call.get(timeout=180) for name, call in calls.items()}\n'''
+          if text.count(old) != 1:
+              raise SystemExit('deploy identity seam changed')
+          deploy.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          production = Path('.github/workflows/production-pipeline.yml')
+          text = production.read_text(encoding='utf-8')
+          old = '''      - name: Verify immutable deployed Modal SHA identities\n        run: |\n          python - <<'PY'\n          import json\n          import os\n          from pathlib import Path\n          import modal\n\n          expected = os.environ["CLIPPER_ACCEPTANCE_SHA"].lower()\n          identities = {\n              "model": modal.Function.from_name(\n                  os.environ["CLIPPER_MODAL_APP"], "deployment_identity"\n              ).remote(),\n              "pipeline": modal.Function.from_name(\n                  os.environ["CLIPPER_MODAL_PIPELINE_APP"], "deployment_identity"\n              ).remote(),\n          }\n'''
+          new = '''      - name: Verify immutable deployed Modal SHA identities\n        timeout-minutes: 5\n        run: |\n          python - <<'PY'\n          import json\n          import os\n          from pathlib import Path\n          import modal\n\n          expected = os.environ["CLIPPER_ACCEPTANCE_SHA"].lower()\n          calls = {\n              "model": modal.Function.from_name(\n                  os.environ["CLIPPER_MODAL_APP"], "deployment_identity"\n              ).spawn(),\n              "pipeline": modal.Function.from_name(\n                  os.environ["CLIPPER_MODAL_PIPELINE_APP"], "deployment_identity"\n              ).spawn(),\n          }\n          identities = {name: call.get(timeout=180) for name, call in calls.items()}\n'''
+          if text.count(old) != 1:
+              raise SystemExit('production identity seam changed')
+          production.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+          grep -q 'call.get(timeout=180)' .github/workflows/modal-workers-deploy.yml
+          grep -q 'call.get(timeout=180)' .github/workflows/production-pipeline.yml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bounded-modal-identity-workflows
+          path: |
+            .github/workflows/modal-workers-deploy.yml
+            .github/workflows/production-pipeline.yml
+          if-no-files-found: error
+          retention-days: 2
