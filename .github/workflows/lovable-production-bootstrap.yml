@@ -101,7 +101,7 @@ jobs:
           ruff check .
           ruff format --check .
           mypy
-          pytest tests/test_modal_model_lifecycle.py tests/test_modal_speech_cuda_runtime.py
+          pytest --no-cov tests/test_modal_model_lifecycle.py tests/test_modal_speech_cuda_runtime.py
           pytest
 
       - name: Commit repaired exact-head source
