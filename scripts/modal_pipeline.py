@@ -1034,7 +1034,12 @@ def dag_execution_lease(payload: dict[str, Any]) -> dict[str, Any]:
     return {"renewed": True, **next_state}
 
 
-@app.function(image=runner_image, timeout=60, scaledown_window=2)
+PIPELINE_IDENTITY_IMAGE = modal.Image.debian_slim(python_version="3.12").env(
+    {"CLIPPER_DEPLOYED_GIT_SHA": DEPLOYED_GIT_SHA}
+)
+
+
+@app.function(image=PIPELINE_IDENTITY_IMAGE, timeout=60, scaledown_window=2)
 def deployment_identity() -> dict[str, Any]:
     return {"app": APP_NAME, "deployed_git_sha": DEPLOYED_GIT_SHA}
 

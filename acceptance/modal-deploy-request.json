@@ -1,6 +1,6 @@
 {
-  "request_reason": "Deploy exact operational marker head for resumed editorial-only runtime proof after clean Codex static review of implementation parent a3ba27c7b4f790aea29b69857d90efbe8fd42977",
-  "requested_from_sha": "a3ba27c7b4f790aea29b69857d90efbe8fd42977",
+  "request_reason": "Deploy exact head after replacing heavyweight pipeline identity cold start with a dedicated slim immutable SHA probe",
+  "requested_from_sha": "next_exact_head",
   "resume_from_production_run_id": "33169878733",
   "fresh_inference": false,
   "live_acceptance_required": {
