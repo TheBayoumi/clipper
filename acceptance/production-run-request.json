@@ -4,10 +4,10 @@
   "target_video_id": "DZtGxNs9AVg",
   "max_gpu_seconds": 21600,
   "max_estimated_usd": 10,
-  "request_reason": "Resume Lovable production after provisioning CUDA 12 cuBLAS/cuDNN in the remote speech worker; reuse the content-addressed authorized source and require actual MP4 render/review evidence.",
+  "request_reason": "Execute Lovable production at the CUDA 12 speech-runtime fix head; reuse the content-addressed authorized source and require actual MP4 render, automated QC, and review evidence before accepting the run.",
   "fresh_inference": false,
   "resume_from_run_id": null,
   "editorial_acceptance_only": false,
   "enabled": true,
-  "request_nonce": "cuda-speech-runtime-20260910-v3"
+  "request_nonce": "lovable-render-after-cuda-fix-20260910-v4"
 }
