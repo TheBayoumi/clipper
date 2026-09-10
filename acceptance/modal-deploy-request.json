@@ -1,6 +1,6 @@
 {
-  "request_reason": "Deploy exact head after replacing heavyweight pipeline identity cold start with a dedicated slim immutable SHA probe; connector-authored head for normal PR gate scheduling",
-  "requested_from_sha": "a71f63515717116b4c8a85816426aee505724f23",
+  "request_reason": "Deploy exact head with both immutable Modal identity calls bounded via spawn/get and a five-minute verification step; preserve exact-head CI/smoke gating before any production inference",
+  "requested_from_sha": "ccbae91d2154c0819be72c677181ca9681b664c2",
   "resume_from_production_run_id": "33169878733",
   "fresh_inference": false,
   "live_acceptance_required": {
