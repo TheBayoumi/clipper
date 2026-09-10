@@ -1,0 +1,215 @@
+name: Apply CUDA speech runtime hotfix
+
+on:
+  push:
+    branches:
+      - feat/contentrewards-campaign-factory
+    paths:
+      - ".github/workflows/apply-cuda-speech-hotfix.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/contentrewards-campaign-factory
+          fetch-depth: 0
+
+      - name: Patch speech CUDA runtime and acceptance gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          source_path = Path("scripts/modal_open_models.py")
+          source = source_path.read_text(encoding="utf-8")
+          old = '''speech_image = base_image.uv_pip_install(
+              "torch>=2.8,<3",
+              "faster-whisper>=1.2.1,<2",
+              "whisperx>=3.8.6,<4",
+              "pyannote.audio>=4.0.7,<5",
+          ).add_local_python_source("clipper")
+          '''
+          new = '''speech_base_image = (
+              modal.Image.from_registry(
+                  "nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04",
+                  add_python="3.12",
+              )
+              .entrypoint([])
+              .apt_install("ffmpeg")
+              .env(
+                  {
+                      "HF_HOME": HF_CACHE,
+                      "HF_HUB_CACHE": HF_CACHE,
+                      "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+                      "CLIPPER_DEPLOYED_GIT_SHA": DEPLOYED_GIT_SHA,
+                  }
+              )
+          )
+          speech_image = speech_base_image.uv_pip_install(
+              "torch>=2.8,<3",
+              "faster-whisper>=1.2.1,<2",
+              "whisperx>=3.8.6,<4",
+              "pyannote.audio>=4.0.7,<5",
+          ).add_local_python_source("clipper")
+          '''
+          if old not in source:
+              raise SystemExit("speech_image anchor not found; refusing blind patch")
+          source = source.replace(old, new, 1)
+
+          anchor = '''_model_revisions: dict[str, str] = {}
+
+
+'''
+          smoke = '''_model_revisions: dict[str, str] = {}
+
+
+@app.function(
+    image=speech_image,
+    gpu="L4",
+    timeout=120,
+    memory=4096,
+    max_containers=1,
+)
+def speech_cuda_smoke() -> dict[str, Any]:
+    """Fail deployment before production if the speech CUDA runtime is incomplete."""
+    import ctypes
+
+    import torch
+
+    ctypes.CDLL("libcublas.so.12")
+    ctypes.CDLL("libcudnn.so.9")
+    if not torch.cuda.is_available():
+        raise RuntimeError("speech CUDA smoke did not detect an allocated CUDA device")
+    return {
+        "ok": True,
+        "cuda_available": True,
+        "cuda_version": str(torch.version.cuda or "unknown"),
+        "device_count": int(torch.cuda.device_count()),
+        "cublas": "libcublas.so.12",
+        "cudnn": "libcudnn.so.9",
+        "deployed_git_sha": DEPLOYED_GIT_SHA,
+    }
+
+
+'''
+          if anchor not in source:
+              raise SystemExit("model globals anchor not found; refusing blind patch")
+          source = source.replace(anchor, smoke, 1)
+          source_path.write_text(source, encoding="utf-8")
+
+          deploy_path = Path(".github/workflows/modal-workers-deploy.yml")
+          deploy = deploy_path.read_text(encoding="utf-8")
+          old_trigger = '''    branches:
+              - feat/word-reveal-face-tracking
+            paths:
+              - "acceptance/modal-deploy-request.json"
+          '''
+          new_trigger = '''    branches:
+              - feat/word-reveal-face-tracking
+              - feat/contentrewards-campaign-factory
+            paths:
+              - "acceptance/modal-deploy-request.json"
+              - "scripts/modal_open_models.py"
+              - "scripts/modal_pipeline.py"
+              - ".github/workflows/modal-workers-deploy.yml"
+          '''
+          if old_trigger not in deploy:
+              raise SystemExit("Modal deploy trigger anchor not found")
+          deploy = deploy.replace(old_trigger, new_trigger, 1)
+
+          old_functions = '''          required_functions = [
+              "transcribe",
+              "align",
+              "diarize",
+              "editorial_schema_smoke",
+              "hf_access_smoke",
+              "deployment_identity",
+          ]
+          '''
+          new_functions = '''          required_functions = [
+              "transcribe",
+              "align",
+              "diarize",
+              "speech_cuda_smoke",
+              "editorial_schema_smoke",
+              "hf_access_smoke",
+              "deployment_identity",
+          ]
+          '''
+          if old_functions not in deploy:
+              raise SystemExit("required_functions anchor not found")
+          deploy = deploy.replace(old_functions, new_functions, 1)
+
+          step_anchor = '''      - name: Verify immutable deployed SHA identities
+          '''
+          smoke_step = '''      - name: Verify speech CUDA runtime before production
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          import modal
+
+          result = modal.Function.from_name(
+              os.environ["CLIPPER_MODAL_APP"], "speech_cuda_smoke"
+          ).remote()
+          if not isinstance(result, dict) or result.get("ok") is not True:
+              raise RuntimeError(f"speech CUDA runtime smoke failed: {result!r}")
+          if result.get("cublas") != "libcublas.so.12":
+              raise RuntimeError(f"speech CUDA runtime did not resolve cuBLAS 12: {result!r}")
+          Path("modal-speech-cuda-runtime.json").write_text(
+              json.dumps(result, indent=2) + "\\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Verify immutable deployed SHA identities
+          '''
+          if step_anchor not in deploy:
+              raise SystemExit("deployment smoke insertion anchor not found")
+          deploy = deploy.replace(step_anchor, smoke_step, 1)
+          deploy_path.write_text(deploy, encoding="utf-8")
+
+          test_path = Path("tests/test_modal_speech_cuda_runtime.py")
+          test_path.write_text('''from pathlib import Path\n\n\ndef test_speech_image_has_cuda12_cublas_runtime_and_deploy_smoke() -> None:\n    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")\n    workflow = Path(".github/workflows/modal-workers-deploy.yml").read_text(encoding="utf-8")\n\n    assert "nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04" in source\n    assert "def speech_cuda_smoke()" in source\n    assert 'ctypes.CDLL("libcublas.so.12")' in source\n    assert 'ctypes.CDLL("libcudnn.so.9")' in source\n    assert '"speech_cuda_smoke"' in workflow\n    assert "Verify speech CUDA runtime before production" in workflow\n''', encoding="utf-8")
+
+          for marker_name, nonce in (
+              ("acceptance/modal-deploy-request.json", "cuda-speech-runtime-20260910"),
+              ("acceptance/production-run-request.json", "cuda-speech-runtime-20260910"),
+          ):
+              path = Path(marker_name)
+              data = json.loads(path.read_text(encoding="utf-8"))
+              data["enabled"] = True
+              data["request_nonce"] = nonce
+              if marker_name.endswith("production-run-request.json"):
+                  data["confirm_production"] = True
+                  data["fresh_inference"] = False
+                  data["editorial_acceptance_only"] = False
+              path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+          Path(".github/workflows/apply-cuda-speech-hotfix.yml").unlink()
+          PY
+
+          python -m py_compile scripts/modal_open_models.py
+          git diff --check
+
+      - name: Commit hotfix to campaign branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(modal): provision CUDA 12 speech runtime"
+          git push origin HEAD:feat/contentrewards-campaign-factory
