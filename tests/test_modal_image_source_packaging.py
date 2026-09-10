@@ -1,7 +1,9 @@
-from pathlib import Path
+SOURCE = "scripts/modal_open_models.py"
 
 
-SOURCE = Path("scripts/modal_open_models.py")
+def _read_source() -> str:
+    with open(SOURCE, encoding="utf-8") as handle:
+        return handle.read()
 
 
 def _function_decorator(source: str, function_name: str) -> str:
@@ -13,7 +15,7 @@ def _function_decorator(source: str, function_name: str) -> str:
 
 
 def test_all_custom_modal_images_package_clipper_source() -> None:
-    source = SOURCE.read_text(encoding="utf-8")
+    source = _read_source()
 
     media_block = source.split("media_image = (", 1)[1].split("\nstate_image =", 1)[0]
     assert '.add_local_python_source("clipper")' in media_block
