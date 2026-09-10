@@ -4,10 +4,10 @@
   "target_video_id": "DZtGxNs9AVg",
   "max_gpu_seconds": 21600,
   "max_estimated_usd": 10,
-  "request_reason": "Execute Lovable production at the CUDA 12 speech-runtime fix head; reuse the content-addressed authorized source and require actual MP4 render, automated QC, and review evidence before accepting the run.",
+  "request_reason": "Repair the confirmed duplicate vision task/model contract dispatch defect from production run 34503920530, verify the speech CUDA runtime before production, then execute Lovable production for the approved target and require actual MP4 render, automated QC, and review evidence before accepting the run.",
   "fresh_inference": false,
   "resume_from_run_id": null,
   "editorial_acceptance_only": false,
   "enabled": true,
-  "request_nonce": "lovable-render-after-cuda-fix-20260910-v4"
+  "request_nonce": "lovable-render-after-vision-contract-fix-20260911-v5"
 }
