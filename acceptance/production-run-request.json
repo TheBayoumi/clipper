@@ -4,7 +4,7 @@
   "target_video_id": "DZtGxNs9AVg",
   "max_gpu_seconds": 21600,
   "max_estimated_usd": 10,
-  "request_reason": "Redeploy and rerun the verified Lovable Lenny production render after packaging the local clipper package into every Modal worker image and adding a lint-clean regression guard; preserve the exact-head deployment identity gate, content-addressed source reuse, exact authorized YouTube identity, semantic integrity, and deterministic Anton/Lovable visual-presence enforcement",
+  "request_reason": "Redeploy and rerun the verified Lovable Lenny production render after removing the CI lint blocker that prevented the Modal packaging fix from ever deploying; preserve the exact-head deployment identity gate, content-addressed source reuse, exact authorized YouTube identity, semantic integrity, and deterministic Anton/Lovable visual-presence enforcement",
   "fresh_inference": false,
   "resume_from_run_id": null,
   "editorial_acceptance_only": false,
