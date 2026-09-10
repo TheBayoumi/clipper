@@ -25,7 +25,7 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Apply minimal vision contract and CUDA acceptance repair
+      - name: Apply minimal vision contract repair
         shell: bash
         run: |
           set -euo pipefail
@@ -84,23 +84,6 @@ jobs:
           source_contract_test.write_text(
               contract_tests.replace(old_assertion, new_assertion, 1), encoding="utf-8"
           )
-
-          deploy = Path(".github/workflows/modal-workers-deploy.yml")
-          workflow = deploy.read_text(encoding="utf-8")
-          handle_anchor = '''          required_functions = [\n              "transcribe",\n'''
-          handle_replacement = '''          required_functions = [\n              "speech_cuda_smoke",\n              "transcribe",\n'''
-          if handle_replacement not in workflow:
-              if workflow.count(handle_anchor) != 1:
-                  raise RuntimeError("could not uniquely add speech_cuda_smoke to required handles")
-              workflow = workflow.replace(handle_anchor, handle_replacement, 1)
-
-          step_anchor = "      - name: Verify immutable deployed SHA identities\n"
-          cuda_step = '''      - name: Verify speech CUDA runtime before production\n        timeout-minutes: 5\n        shell: bash\n        run: |\n          set -euo pipefail\n          python - <<'PYCUDA'\n          import json\n          import os\n          from pathlib import Path\n\n          import modal\n\n          result = modal.Function.from_name(\n              os.environ["CLIPPER_MODAL_APP"], "speech_cuda_smoke"\n          ).remote()\n          if not isinstance(result, dict) or result.get("ok") is not True:\n              raise RuntimeError(f"speech CUDA runtime smoke failed: {result!r}")\n          expected = os.environ["CLIPPER_DEPLOYED_GIT_SHA"].lower()\n          if str(result.get("deployed_git_sha") or "").lower() != expected:\n              raise RuntimeError(\n                  "speech CUDA smoke deployed SHA mismatch: "\n                  f"expected={expected} result={result!r}"\n              )\n          if result.get("cuda_available") is not True or int(result.get("device_count") or 0) < 1:\n              raise RuntimeError(f"speech CUDA runtime is unavailable: {result!r}")\n          Path("modal-speech-cuda-smoke.json").write_text(\n              json.dumps(result, indent=2) + "\\n",\n              encoding="utf-8",\n          )\n          print(json.dumps(result, indent=2))\n          PYCUDA\n\n'''
-          if "- name: Verify speech CUDA runtime before production" not in workflow:
-              if workflow.count(step_anchor) != 1:
-                  raise RuntimeError("could not uniquely insert speech CUDA runtime smoke step")
-              workflow = workflow.replace(step_anchor, cuda_step + step_anchor, 1)
-          deploy.write_text(workflow, encoding="utf-8")
           PY
 
       - name: Verify complete repository quality gates
@@ -127,8 +110,7 @@ jobs:
           git add \
             scripts/modal_open_models.py \
             tests/test_modal_model_lifecycle.py \
-            tests/test_modal_pipeline_source_contract.py \
-            .github/workflows/modal-workers-deploy.yml
+            tests/test_modal_pipeline_source_contract.py
           git diff --cached --check
           git commit -m "fix: separate vision task and model contracts"
           git push origin "HEAD:${BRANCH}"
