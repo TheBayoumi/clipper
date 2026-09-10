@@ -8,110 +8,28 @@ on:
       - acceptance/production-run-request.json
 
 permissions:
-  actions: read
-  contents: write
+  actions: write
+  contents: read
 
 jobs:
-  repair-vision-runtime:
+  dispatch-modal-workers:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref_name }}
-          fetch-depth: 5
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Apply minimal vision contract repair
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import ast
-          from pathlib import Path
-
-          worker = Path("scripts/modal_open_models.py")
-          source = worker.read_text(encoding="utf-8")
-          old_task_def = "def _vision_contract(task: str) -> str:"
-          new_task_def = "def _vision_task_contract(task: str) -> str:"
-          if source.count(old_task_def) != 1:
-              raise RuntimeError(
-                  f"expected exactly one task-side _vision_contract definition, found {source.count(old_task_def)}"
-              )
-          source = source.replace(old_task_def, new_task_def, 1)
-          old_prompt_call = "+ _vision_contract(task)"
-          new_prompt_call = "+ _vision_task_contract(task)"
-          if source.count(old_prompt_call) != 1:
-              raise RuntimeError(
-                  f"expected exactly one task-side _vision_contract prompt call, found {source.count(old_prompt_call)}"
-              )
-          source = source.replace(old_prompt_call, new_prompt_call, 1)
-          tree = ast.parse(source)
-          names = [
-              node.name
-              for node in tree.body
-              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-          ]
-          duplicates = sorted({name for name in names if names.count(name) > 1})
-          if duplicates:
-              raise RuntimeError(f"duplicate module-level worker functions remain: {duplicates}")
-          worker.write_text(source, encoding="utf-8")
-
-          test_path = Path("tests/test_modal_model_lifecycle.py")
-          tests = test_path.read_text(encoding="utf-8")
-          if "import ast\n" not in tests:
-              tests = tests.replace(
-                  "from __future__ import annotations\n\n",
-                  "from __future__ import annotations\n\nimport ast\n",
-                  1,
-              )
-          marker = "def test_modal_worker_vision_task_and_model_contracts_are_distinct() -> None:"
-          if marker not in tests:
-              tests += '''\n\ndef test_modal_worker_vision_task_and_model_contracts_are_distinct() -> None:\n    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")\n    tree = ast.parse(source)\n    names = [node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]\n    duplicates = sorted({name for name in names if names.count(name) > 1})\n\n    assert duplicates == []\n    assert "def _vision_task_contract(task: str) -> str:" in source\n    assert source.count("def _vision_contract(") == 1\n    prompt_start = source.index("def _vision_prompt(")\n    prompt_end = source.index("\\n\\nclass VisionOutputCapacityError", prompt_start)\n    prompt_source = source[prompt_start:prompt_end]\n    assert "_vision_task_contract(task)" in prompt_source\n    assert "_vision_contract(task)" not in prompt_source\n'''
-          test_path.write_text(tests, encoding="utf-8")
-
-          source_contract_test = Path("tests/test_modal_pipeline_source_contract.py")
-          contract_tests = source_contract_test.read_text(encoding="utf-8")
-          old_assertion = 'assert "def _vision_contract(task: str)" in source'
-          new_assertion = 'assert "def _vision_task_contract(task: str)" in source'
-          if contract_tests.count(old_assertion) != 1:
-              raise RuntimeError(
-                  f"expected exactly one legacy vision task-contract assertion, found {contract_tests.count(old_assertion)}"
-              )
-          source_contract_test.write_text(
-              contract_tests.replace(old_assertion, new_assertion, 1), encoding="utf-8"
-          )
-          PY
-
-      - name: Verify complete repository quality gates
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
-          ruff format tests/test_modal_model_lifecycle.py tests/test_modal_pipeline_source_contract.py
-          ruff check .
-          ruff format --check .
-          mypy
-          pytest --no-cov tests/test_modal_model_lifecycle.py tests/test_modal_speech_cuda_runtime.py tests/test_modal_pipeline_source_contract.py
-          pytest
-
-      - name: Commit repaired exact-head source
+      - name: Dispatch existing Modal deployment workflow at this exact branch head
         env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
           BRANCH: ${{ github.ref_name }}
+          EXPECTED_SHA: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            scripts/modal_open_models.py \
-            tests/test_modal_model_lifecycle.py \
-            tests/test_modal_pipeline_source_contract.py
-          git diff --cached --check
-          git commit -m "fix: separate vision task and model contracts"
-          git push origin "HEAD:${BRANCH}"
-          echo "Created repaired head $(git rev-parse HEAD)"
+          payload="$(python -c 'import json,os; print(json.dumps({"ref": os.environ["BRANCH"]}))')"
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPOSITORY}/actions/workflows/modal-workers-deploy.yml/dispatches" \
+            --data "${payload}"
+          echo "Dispatched modal-workers-deploy.yml for ${BRANCH} at expected head ${EXPECTED_SHA}."
