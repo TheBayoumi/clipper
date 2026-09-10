@@ -140,7 +140,23 @@ text_image = base_image.uv_pip_install(
     "pillow>=11,<13",
     f"outlines=={EDITORIAL_OUTLINES_VERSION}",
 ).add_local_python_source("clipper")
-speech_image = base_image.uv_pip_install(
+speech_base_image = (
+    modal.Image.from_registry(
+        "nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04",
+        add_python="3.12",
+    )
+    .entrypoint([])
+    .apt_install("ffmpeg")
+    .env(
+        {
+            "HF_HOME": HF_CACHE,
+            "HF_HUB_CACHE": HF_CACHE,
+            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+            "CLIPPER_DEPLOYED_GIT_SHA": DEPLOYED_GIT_SHA,
+        }
+    )
+)
+speech_image = speech_base_image.uv_pip_install(
     "torch>=2.8,<3",
     "faster-whisper>=1.2.1,<2",
     "whisperx>=3.8.6,<4",
@@ -151,6 +167,34 @@ app = modal.App(APP_NAME)
 _whisper_model: Any | None = None
 _diarization_pipeline: Any | None = None
 _model_revisions: dict[str, str] = {}
+
+
+@app.function(
+    image=speech_image,
+    gpu="L4",
+    timeout=120,
+    memory=4096,
+    max_containers=1,
+)
+def speech_cuda_smoke() -> dict[str, Any]:
+    # Fail deployment before production if the speech CUDA runtime is incomplete.
+    import ctypes
+
+    import torch
+
+    ctypes.CDLL("libcublas.so.12")
+    ctypes.CDLL("libcudnn.so.9")
+    if not torch.cuda.is_available():
+        raise RuntimeError("speech CUDA smoke did not detect an allocated CUDA device")
+    return {
+        "ok": True,
+        "cuda_available": True,
+        "cuda_version": str(torch.version.cuda or "unknown"),
+        "device_count": int(torch.cuda.device_count()),
+        "cublas": "libcublas.so.12",
+        "cudnn": "libcudnn.so.9",
+        "deployed_git_sha": DEPLOYED_GIT_SHA,
+    }
 
 
 def _model_revision(model_id: str) -> str:
