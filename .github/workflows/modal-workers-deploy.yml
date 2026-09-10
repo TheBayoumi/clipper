@@ -254,6 +254,7 @@ jobs:
           PY
 
       - name: Verify immutable deployed SHA identities
+        timeout-minutes: 5
         shell: bash
         run: |
           set -euo pipefail
@@ -265,16 +266,15 @@ jobs:
           import modal
 
           expected = os.environ["CLIPPER_DEPLOYED_GIT_SHA"].lower()
-          model_identity = modal.Function.from_name(
-              os.environ["CLIPPER_MODAL_APP"], "deployment_identity"
-          ).remote()
-          pipeline_identity = modal.Function.from_name(
-              os.environ["CLIPPER_MODAL_PIPELINE_APP"], "deployment_identity"
-          ).remote()
-          identities = {
-              "model": model_identity,
-              "pipeline": pipeline_identity,
+          calls = {
+              "model": modal.Function.from_name(
+                  os.environ["CLIPPER_MODAL_APP"], "deployment_identity"
+              ).spawn(),
+              "pipeline": modal.Function.from_name(
+                  os.environ["CLIPPER_MODAL_PIPELINE_APP"], "deployment_identity"
+              ).spawn(),
           }
+          identities = {name: call.get(timeout=180) for name, call in calls.items()}
           for name, value in identities.items():
               if not isinstance(value, dict):
                   raise RuntimeError(f"{name} deployment identity is not an object: {value!r}")
