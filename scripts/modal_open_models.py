@@ -2518,7 +2518,9 @@ def _vision_worker_inspect(
     gpu="L4:2",
     volumes={HF_CACHE: model_cache},
     secrets=[hf_secret],
-    timeout=1800,
+    # Client cancellation is 360s and the independent watchdog is 420s.
+    # Keep the Modal hard ceiling close behind them; never allow 30-minute vision calls.
+    timeout=480,
     memory=32768,
 )
 class VisionModel:
@@ -2540,7 +2542,9 @@ class VisionModel:
     gpu="L4:2",
     volumes={HF_CACHE: model_cache},
     secrets=[hf_secret],
-    timeout=1800,
+    # Client cancellation is 360s and the independent watchdog is 420s.
+    # Keep the Modal hard ceiling close behind them; never allow 30-minute vision calls.
+    timeout=480,
     memory=32768,
 )
 class VisionModelLarge:

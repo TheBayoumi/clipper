@@ -78,9 +78,7 @@ class ModalExecutionSpy:
         self.started_at = datetime.now(UTC).isoformat()
         self._last_request_plan_signature: tuple[object, ...] | None = None
         self._active_editorial_calls: dict[str, tuple[str, float]] = {}
-        self._active_vision_generations: dict[
-            str, tuple[str, int | None, int | None, float]
-        ] = {}
+        self._active_vision_generations: dict[str, tuple[str, int | None, int | None, float]] = {}
         self._diagnostic_event_counts: dict[str, int] = {}
         self._terminal_event: dict[str, Any] | None = None
         self._terminal_seen_at: float | None = None

@@ -212,3 +212,12 @@ def test_production_workflow_grants_spy_comment_permission_and_sets_vision_bound
     assert "pull-requests: write" in workflow
     assert "CLIPPER_VISION_CALL_DEADLINE_SECONDS: 360" in workflow
     assert "CLIPPER_MODAL_VISION_STALL_SECONDS: 420" in workflow
+
+
+def test_modal_vision_workers_have_eight_minute_hard_ceiling() -> None:
+    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+    for class_name in ("VisionModel", "VisionModelLarge"):
+        prefix = source.split(f"class {class_name}:", 1)[0]
+        decorator = prefix.rsplit("@app.cls(", 1)[-1]
+        assert "timeout=480" in decorator
+        assert "timeout=1800" not in decorator
