@@ -40,7 +40,7 @@
   },
   "semantic_analysis": {
     "base_engine": "deterministic-gameplay-v1",
-    "engine": "deterministic-gameplay-v3.1-refined",
+    "engine": "deterministic-gameplay-v3.1-final",
     "sample_fps": 6.0,
     "sample_width": 256,
     "sample_height": 144,
@@ -58,6 +58,22 @@
   },
   "finishing_move_detector": {
     "enabled": true,
+    "allow_unverified_automatic": false,
+    "automatic_high_precision_confidence": 0.86,
+    "automatic_minimum_span_seconds": 1.25,
+    "automatic_maximum_span_seconds": 3.80,
+    "verified_spans": {
+      "r1": [],
+      "week2": [],
+      "batch2": [
+        {
+          "start": 148.35,
+          "payoff": 149.45,
+          "end": 150.05,
+          "verification": "2fps official-reel visual index shows a third-person execution sequence; V3.1 must use it only as an opening hero event"
+        }
+      ]
+    },
     "minimum_span_seconds": 1.05,
     "maximum_span_seconds": 4.60,
     "minimum_confidence": 0.64,
@@ -66,10 +82,10 @@
     "minimum_terminal_outcome": 0.50,
     "maximum_internal_dull_fraction": 0.34,
     "maximum_gap_between_choreography_bins_seconds": 0.50,
-    "notes": "Heuristic finishing-move-like span detector. It is a gameplay hypothesis, not a guaranteed named Finishing Move classification. Detected choreography is protected from dull cuts/speedups and must open the clip."
+    "notes": "Production fails closed on Finishing Moves. Motion-only hypotheses are not trusted. Visually verified execution spans may open a clip; unverified automatic detections are disabled until a high-precision verifier is validated."
   },
   "semantic_editor": {
-    "engine": "semantic-editor-v3.1-refined",
+    "engine": "semantic-editor-v3.1-final",
     "minimum_output_seconds": 10.0,
     "maximum_output_seconds": 20.0,
     "preferred_output_seconds": 12.5,
@@ -91,9 +107,12 @@
     },
     "dull": {
       "low_interest_threshold": 0.30,
+      "explained_interest_floor": 0.26,
+      "engagement_explanation_lead_seconds": 0.35,
+      "engagement_explanation_tail_seconds": 0.30,
       "maximum_unexplained_low_interest_run_seconds": 0.90,
       "maximum_low_interest_fraction": 0.38,
-      "minimum_weak_quarter_interest": 0.30,
+      "minimum_weak_quarter_interest": 0.27,
       "minimum_action_seconds": 0.70,
       "maximum_single_action_seconds": 1.60,
       "maximum_editorial_actions": 2,
@@ -103,7 +122,7 @@
       "prefer_boundary_trim_before_internal_edit": true
     },
     "selection": {
-      "candidate_mode": "engagement_driven_natural_boundaries",
+      "candidate_mode": "engagement_driven_explained_dullness",
       "story_diversity_bonus": 0.06,
       "finishing_move_bonus": 0.14,
       "opening_weight": 0.20,
@@ -112,6 +131,26 @@
       "retention_quality_weight": 0.24,
       "payoff_quality_weight": 0.17,
       "weakest_section_weight": 0.10
+    }
+  },
+  "story_quality_gates": {
+    "opening_min": {
+      "default": 0.42,
+      "finishing_move_open": 0.50
+    },
+    "ending_min": {
+      "default": 0.40,
+      "sustained_pressure": 0.50
+    },
+    "retention_min": {
+      "default": 0.36,
+      "sustained_pressure": 0.44
+    },
+    "payoff_min": {
+      "default": 0.34,
+      "engagement_chain": 0.28,
+      "sustained_pressure": 0.16,
+      "finishing_move_open": 0.34
     }
   },
   "performance_targets": {
@@ -133,6 +172,6 @@
   "duplicate_policy": {
     "allow_overlap_with_prior_work": true,
     "allow_overlap_with_new_batch": false,
-    "notes": "V3.1 intentionally re-evaluates the complete official source reels so semantic-game-understanding can choose the best stories rather than being forced into leftover timestamp territories. Within the new V3.1 batch, neighboring variants around the same opening engagement and overlapping selected clips remain rejected."
+    "notes": "V3.1 re-evaluates the complete official reels. Selection suppresses neighboring variants around the same opening engagement and overlapping outputs, but does not assume the source scenes themselves are duplicates."
   }
 }
