@@ -40,13 +40,14 @@
   },
   "semantic_analysis": {
     "base_engine": "deterministic-gameplay-v1",
-    "engine": "deterministic-gameplay-v3.1",
+    "engine": "deterministic-gameplay-v3.1-refined",
     "sample_fps": 6.0,
     "sample_width": 256,
     "sample_height": 144,
     "audio_sample_rate": 12000,
-    "shot_cut_threshold": 0.82,
-    "shot_cut_guard_seconds": 0.35,
+    "scene_change_fps": 6.0,
+    "scene_change_threshold": 0.34,
+    "scene_change_guard_seconds": 0.12,
     "engagement_join_seconds": 2.25,
     "engagement_context_seconds": 0.55,
     "minimum_engagement_confidence": 0.56,
@@ -68,11 +69,13 @@
     "notes": "Heuristic finishing-move-like span detector. It is a gameplay hypothesis, not a guaranteed named Finishing Move classification. Detected choreography is protected from dull cuts/speedups and must open the clip."
   },
   "semantic_editor": {
-    "engine": "semantic-editor-v3.1",
+    "engine": "semantic-editor-v3.1-refined",
     "minimum_output_seconds": 10.0,
     "maximum_output_seconds": 20.0,
     "preferred_output_seconds": 12.5,
     "maximum_output_target_seconds": 15.5,
+    "maximum_inter_engagement_gap_seconds": 4.0,
+    "maximum_engagements_per_story": 7,
     "opening": {
       "max_time_to_meaningful_action_seconds": 0.90,
       "max_unexplained_dead_open_seconds": 0.50,
@@ -100,7 +103,7 @@
       "prefer_boundary_trim_before_internal_edit": true
     },
     "selection": {
-      "candidate_mode": "engagement_driven",
+      "candidate_mode": "engagement_driven_natural_boundaries",
       "story_diversity_bonus": 0.06,
       "finishing_move_bonus": 0.14,
       "opening_weight": 0.20,
@@ -118,13 +121,18 @@
     "notes": "retention_quality is an internal editorial quality score and must not be interpreted as literal TikTok retention percentage."
   },
   "excluded_windows": {
+    "week2": [],
+    "batch2": [],
+    "r1": []
+  },
+  "legacy_prior_windows_reference": {
     "week2": [[0.0, 13.8], [17.0, 41.6], [42.2, 88.15], [105.3, 133.4], [147.2, 203.2], [230.96, 250.65]],
     "batch2": [[0.0, 25.0], [45.0, 75.0]],
     "r1": [[95.0, 120.0], [145.0, 175.0]]
   },
   "duplicate_policy": {
-    "allow_overlap_with_prior_work": false,
+    "allow_overlap_with_prior_work": true,
     "allow_overlap_with_new_batch": false,
-    "notes": "V3.1 improves semantic selection quality. It does not assume the repeated-clip issue is source duplication; it prevents neighboring windows around the same engagement from dominating selection."
+    "notes": "V3.1 intentionally re-evaluates the complete official source reels so semantic-game-understanding can choose the best stories rather than being forced into leftover timestamp territories. Within the new V3.1 batch, neighboring variants around the same opening engagement and overlapping selected clips remain rejected."
   }
 }
