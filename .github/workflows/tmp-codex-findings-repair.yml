@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/tmp-codex-findings-repair.yml
       - scripts/tmp_codex_findings_repair.py
+      - scripts/tmp_align_codex_repair.py
 
 permissions:
   contents: write
@@ -29,67 +30,21 @@ jobs:
         run: python -m pip install -e ".[dev]"
 
       - name: Align temporary repair script with current head
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("scripts/tmp_codex_findings_repair.py")
-          text = path.read_text(encoding="utf-8")
-          text = text.replace(
-              '            "Modal spy did not observe a closed pipeline editorial-call set "\n'
-              '            "before the production terminal barrier"',
-              '                "Modal spy did not observe a closed pipeline editorial-call set "\n'
-              '                "before the production terminal barrier"',
-          )
-          text = text.replace(
-              '    ensure_modal_runtime()\n    candidates = _explicit_candidates(brief)\n',
-              '    ensure_modal_runtime()\n\n    candidates = _explicit_candidates(brief_path)\n',
-          )
-          text = text.replace(
-              'campaign brief has no explicit authorized targets',
-              'campaign contains no explicit authorized targets',
-          )
-          old = '''    """    source_payloads = [
-        {
-            "evidence": evidence,
-            "video_id": candidate.video_id,
-            "channel_id": candidate.channel_id,
-            "canonical_url": candidate.url,
-        }
-        for candidate, evidence in zip(candidates, sources, strict=True)
-    ]
-    remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
-""",'''
-          new = '''    """    remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
-    source_payloads = [
-        {
-            "evidence": evidence,
-            "video_id": candidate.video_id,
-            "channel_id": candidate.channel_id,
-            "canonical_url": candidate.url,
-        }
-        for candidate, evidence in zip(candidates, sources, strict=True)
-    ]
-""",'''
-          if old not in text:
-              raise RuntimeError("temporary repair script source-payload pattern drifted")
-          text = text.replace(old, new, 1)
-          path.write_text(text, encoding="utf-8")
-          PY
+        run: python scripts/tmp_align_codex_repair.py
 
       - name: Apply all unresolved Codex fixes and regression tests
         run: python scripts/tmp_codex_findings_repair.py
 
       - name: Normalize touched files
         run: |
-          ruff check . --fix --exclude scripts/tmp_codex_findings_repair.py
+          ruff check . --fix --exclude scripts/tmp_codex_findings_repair.py --exclude scripts/tmp_align_codex_repair.py
           ruff format src/clipper/providers/modal.py src/clipper/modal_execution.py src/clipper/editorial_integrity.py scripts/modal_execution_spy.py scripts/modal_hilp_watchdog.py tests/test_modal_execution.py tests/test_modal_execution_spy.py tests/test_vision_runtime_recovery.py tests/test_visual_presence_policy.py tests/test_production_workflow_contract.py
 
       - name: Ruff
-        run: ruff check . --exclude scripts/tmp_codex_findings_repair.py
+        run: ruff check . --exclude scripts/tmp_codex_findings_repair.py --exclude scripts/tmp_align_codex_repair.py
 
       - name: Ruff format check
-        run: ruff format --check . --exclude scripts/tmp_codex_findings_repair.py
+        run: ruff format --check . --exclude scripts/tmp_codex_findings_repair.py --exclude scripts/tmp_align_codex_repair.py
 
       - name: Mypy
         run: mypy
@@ -102,7 +57,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .github/workflows/tmp-codex-findings-repair.yml scripts/tmp_codex_findings_repair.py
+          git rm .github/workflows/tmp-codex-findings-repair.yml scripts/tmp_codex_findings_repair.py scripts/tmp_align_codex_repair.py
           git add src/clipper/providers/modal.py src/clipper/modal_execution.py src/clipper/editorial_integrity.py scripts/modal_execution_spy.py scripts/modal_hilp_watchdog.py .github/workflows/production-pipeline.yml tests/test_modal_execution.py tests/test_modal_execution_spy.py tests/test_vision_runtime_recovery.py tests/test_visual_presence_policy.py tests/test_production_workflow_contract.py
           git commit -m "fix: close Codex production safety findings"
           git push origin HEAD:feat/contentrewards-campaign-factory
