@@ -35,22 +35,21 @@ def test_modal_vision_provider_reuses_class_handle_and_surfaces_runtime(
             }
         )
     )
-    inspect = SimpleNamespace(
-        remote=Mock(
-            return_value={
-                "value": {"observations": []},
-                "model": {"model_id": "vision", "revision": "requested", "quantization": "none"},
-                "usage": {
-                    "duration_seconds": 1.0,
-                    "peak_vram_mb_by_device": {"0": 10.0, "1": 11.0},
-                },
-                "runtime": {
-                    "worker_lifecycle_id": "worker-a",
-                    "model_load_count": 1,
-                },
-            }
-        )
-    )
+    response = {
+        "value": {"observations": []},
+        "model": {"model_id": "vision", "revision": "requested", "quantization": "none"},
+        "usage": {
+            "duration_seconds": 1.0,
+            "peak_vram_mb_by_device": {"0": 10.0, "1": 11.0},
+        },
+        "runtime": {
+            "worker_lifecycle_id": "worker-a",
+            "model_load_count": 1,
+        },
+    }
+    first_call = SimpleNamespace(get=Mock(return_value=response), cancel=Mock())
+    second_call = SimpleNamespace(get=Mock(return_value=response), cancel=Mock())
+    inspect = SimpleNamespace(spawn=Mock(side_effect=[first_call, second_call]))
     instance = SimpleNamespace(ready=ready, inspect=inspect)
     class_handle = Mock(return_value=instance)
     modal = SimpleNamespace(Cls=SimpleNamespace(from_name=Mock(return_value=class_handle)))
@@ -82,7 +81,9 @@ def test_modal_vision_provider_reuses_class_handle_and_surfaces_runtime(
     assert runtime["worker_lifecycle_id"] == "worker-a"
     assert modal.Cls.from_name.call_count == 1
     class_handle.assert_called_once_with()
-    assert inspect.remote.call_count == 2
+    assert inspect.spawn.call_count == 2
+    first_call.get.assert_called_once_with(timeout=360.0)
+    second_call.get.assert_called_once_with(timeout=360.0)
     assert result.usage.runtime["worker_lifecycle_id"] == "worker-a"
     assert result.usage.runtime["peak_vram_mb_by_device"] == {
         "0": 10.0,
