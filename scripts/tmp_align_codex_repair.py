@@ -42,6 +42,16 @@ text = text.replace(
             raise ModalRemoteError(''',
 )
 
+# The resume regression fixture must use a real hexadecimal SHA-256 value.
+text = text.replace(
+    '"source_hashes": {"v1": "s" * 64},',
+    '"source_hashes": {"v1": "b" * 64},',
+)
+text = text.replace(
+    '"sha256": "s" * 64,',
+    '"sha256": "b" * 64,',
+)
+
 # Replace the repair-script source-payload mutation with a pattern that matches
 # the current runner without moving the existing budget-exhaustion guard.
 start_marker = '''replace_once(
