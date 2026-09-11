@@ -1,0 +1,228 @@
+name: MW4 Week2 recovery
+
+on:
+  push:
+    branches:
+      - feat/mw4-fullframe-retention-v3
+    paths:
+      - .github/workflows/mw4-week2-recovery.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render-week2:
+    name: render-week2
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install renderer dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy==2.1.3' 'playwright==1.55.0'
+          python -m playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Resolve official Week2 MediaSilo source
+        env:
+          MEDIASILO_URL: https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          wanted = 'BestOfBeta_Week2_Stringout_1_8.28.mp4'
+          holder = [None]
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(
+                  headless=True,
+                  args=['--no-sandbox', '--disable-dev-shm-usage'],
+              )
+              page = browser.new_page(
+                  viewport={'width': 1440, 'height': 1000},
+                  user_agent=(
+                      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                      'AppleWebKit/537.36 (KHTML, like Gecko) '
+                      'Chrome/139.0.0.0 Safari/537.36'
+                  ),
+              )
+
+              def handle(response):
+                  if (
+                      '/folders/3b199368-5974-4eb1-a450-327a4e84c260/assets'
+                      not in response.url
+                      or response.status != 200
+                  ):
+                      return
+                  try:
+                      data = response.json()
+                  except Exception:
+                      return
+                  if isinstance(data, list) and data:
+                      holder[0] = data
+
+              page.on('response', handle)
+              page.goto(os.environ['MEDIASILO_URL'], wait_until='domcontentloaded', timeout=90000)
+              page.wait_for_timeout(25000)
+              browser.close()
+
+          if not holder[0]:
+              raise RuntimeError('MediaSilo assets were not resolved')
+
+          for asset in holder[0]:
+              if asset.get('title') != wanted:
+                  continue
+              derivatives = {item.get('type'): item for item in asset.get('derivatives', [])}
+              derivative = derivatives.get('x1080') or derivatives.get('proxy') or {}
+              url = derivative.get('url') or (derivative.get('properties') or {}).get('url')
+              if not url:
+                  raise RuntimeError('No usable Week2 derivative')
+              Path('/tmp/resolved_source.json').write_text(
+                  json.dumps({'asset_id': asset['id'], 'title': asset['title'], 'url': url}),
+                  encoding='utf-8',
+              )
+              print(asset['title'])
+              break
+          else:
+              raise RuntimeError(f'Official source not found: {wanted}')
+          PY
+
+      - name: Download and verify official Week2 full-frame source
+        run: |
+          mkdir -p raw_sources
+          python - <<'PY'
+          import hashlib
+          import json
+          import subprocess
+          import urllib.request
+          from pathlib import Path
+
+          selected = json.loads(Path('/tmp/resolved_source.json').read_text(encoding='utf-8'))
+          target = Path('raw_sources/week2.mp4')
+          request = urllib.request.Request(selected['url'], headers={'User-Agent': 'Mozilla/5.0'})
+          digest = hashlib.sha256()
+          with urllib.request.urlopen(request, timeout=300) as source, target.open('wb') as output:
+              while True:
+                  block = source.read(8 * 1024 * 1024)
+                  if not block:
+                      break
+                  output.write(block)
+                  digest.update(block)
+
+          probe = json.loads(
+              subprocess.check_output(
+                  [
+                      'ffprobe', '-v', 'error',
+                      '-show_entries',
+                      'stream=codec_name,width,height,r_frame_rate,avg_frame_rate:format=duration,size',
+                      '-of', 'json', str(target),
+                  ],
+                  text=True,
+              )
+          )
+          video = next(item for item in probe['streams'] if item.get('width'))
+          if (video['width'], video['height']) != (1920, 1080):
+              raise RuntimeError(f'Unexpected source resolution: {video}')
+          if video['avg_frame_rate'] != '60000/1001':
+              raise RuntimeError(f'Unexpected source cadence: {video}')
+
+          Path('raw_sources/source_manifest.json').write_text(
+              json.dumps(
+                  {
+                      'source_key': 'week2',
+                      'title': selected['title'],
+                      'asset_id': selected['asset_id'],
+                      'sha256': digest.hexdigest(),
+                      'probe': probe,
+                  },
+                  indent=2,
+              ),
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Build Week2 recovery config without lowering quality gates
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          src = Path('campaigns/mw4-fullframe-retention-v3.json')
+          config = json.loads(src.read_text(encoding='utf-8'))
+          # The first Week2 run proved that exactly two mutually non-overlapping
+          # candidates clear the V3 quality gates. Render those two instead of
+          # weakening the gates just to force four outputs from this source.
+          config['target_count'] = 2
+          config['count_per_source'] = 2
+          config['recovery'] = {
+              'source': 'week2',
+              'reason': 'Only two unique Week2 windows cleared the existing V3 retention/engagement gates.',
+              'quality_gates_lowered': False,
+              'forced_output_count': False,
+          }
+          Path('/tmp/mw4-week2-recovery.json').write_text(
+              json.dumps(config, indent=2), encoding='utf-8'
+          )
+          PY
+
+      - name: Render only the two qualifying Week2 full-frame masters
+        run: |
+          python scripts/mw4_fullframe_retention_v3.py \
+            --source-key week2 \
+            --source raw_sources/week2.mp4 \
+            --config /tmp/mw4-week2-recovery.json \
+            --output-dir renders/week2
+
+      - name: Verify Week2 recovery contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path('renders/week2/week2_manifest.json').read_text(encoding='utf-8'))
+          assert manifest['source_key'] == 'week2'
+          assert manifest['full_source_frame'] is True
+          assert manifest['hook_text_added'] is False
+          assert manifest['campaign_text_added'] is False
+          assert manifest['campaign_logo_added'] is False
+          assert manifest['source_audio_only'] is True
+          assert manifest['prior_work_overlap_allowed'] is False
+          assert manifest['new_batch_overlap_allowed'] is False
+          assert len(manifest['outputs']) == 2
+          assert manifest['output_settings']['width'] == 1920
+          assert manifest['output_settings']['height'] == 1080
+          assert manifest['output_settings']['video_bitrate_kbps'] == 250000
+          assert manifest['output_settings']['rate_control'] == 'CBR'
+          for output in manifest['outputs']:
+              source = output['source']
+              assert source['retention_proxy'] >= 0.30
+              assert source['engagement_proxy'] >= 0.30
+              assert source['weakest_quarter_activity'] >= 0.18
+              assert source['low_activity_fraction'] <= 0.55
+              assert source['max_low_run_seconds'] <= 3.0
+              assert all(output['qa']['checks'].values())
+          print('week2: two qualifying full-frame outputs passed without lowering V3 gates')
+          PY
+
+      - name: Upload Week2 recovery masters and full-video QA sheets
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-fullframe-retention-v3-week2-recovery-250M
+          path: |
+            renders/week2/*.mp4
+            renders/week2/*.json
+            renders/week2/contact_sheets/*.jpg
+            raw_sources/source_manifest.json
+          retention-days: 1
+          compression-level: 0
