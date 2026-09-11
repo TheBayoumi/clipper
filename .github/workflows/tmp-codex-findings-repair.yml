@@ -6,6 +6,7 @@ on:
       - feat/contentrewards-campaign-factory
     paths:
       - .github/workflows/tmp-codex-findings-repair.yml
+      - scripts/tmp_codex_findings_repair.py
 
 permissions:
   contents: write
@@ -48,6 +49,31 @@ jobs:
               'campaign brief has no explicit authorized targets',
               'campaign contains no explicit authorized targets',
           )
+          old = '''    """    source_payloads = [
+        {
+            "evidence": evidence,
+            "video_id": candidate.video_id,
+            "channel_id": candidate.channel_id,
+            "canonical_url": candidate.url,
+        }
+        for candidate, evidence in zip(candidates, sources, strict=True)
+    ]
+    remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
+""",'''
+          new = '''    """    remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
+    source_payloads = [
+        {
+            "evidence": evidence,
+            "video_id": candidate.video_id,
+            "channel_id": candidate.channel_id,
+            "canonical_url": candidate.url,
+        }
+        for candidate, evidence in zip(candidates, sources, strict=True)
+    ]
+""",'''
+          if old not in text:
+              raise RuntimeError("temporary repair script source-payload pattern drifted")
+          text = text.replace(old, new, 1)
           path.write_text(text, encoding="utf-8")
           PY
 
