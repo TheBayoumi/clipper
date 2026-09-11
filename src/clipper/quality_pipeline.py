@@ -81,7 +81,9 @@ def forbidden_spans_for_campaign(
     segment_policy = policy.source_segments
     for hazard in hazards:
         classification = hazard.classification.value
-        if classification in segment_policy.allow:
+        if classification in segment_policy.allow or (
+            classification not in segment_policy.forbid and segment_policy.unknown == "allow"
+        ):
             continue
         buffer = (
             segment_policy.safety_buffer_seconds if classification in segment_policy.forbid else 0.0

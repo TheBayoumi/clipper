@@ -34,3 +34,5 @@ jobs:
       - run: ruff format --check .
       - run: mypy
       - run: pytest
+      - name: Enforce measured package coverage floor
+        run: coverage report --fail-under=95

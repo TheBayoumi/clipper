@@ -8,11 +8,13 @@ import pytest
 from clipper.autonomous_quality_planner import AutonomousQualityPlanner
 from clipper.canonical import CanonicalTimeline, CanonicalWord
 from clipper.dag import DagStore
+from clipper.editorial_integrity import HazardClassification, SourceHazardSegment
 from clipper.modality_profile import _covered_duration
 from clipper.models import CampaignBrief
 from clipper.multimodal_timeline import MultimodalTimeline
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
 from clipper.quality_batch import RecordingEditorialProvider, plan_quality_batch
+from clipper.quality_pipeline import forbidden_spans_for_campaign
 from clipper.source_hazards import SourceHazardClassifier
 from clipper.stage_contracts import StageContract, StageIdentity
 from clipper.story_graph import NarrativeEnvelope, SemanticCore
@@ -282,3 +284,61 @@ def test_quality_batch_fails_closed_on_insufficient_required_visual_coverage(
             _UnusedEditorial(),
             dag_root=tmp_path / "visual-policy",
         )
+
+
+def test_unknown_hazard_allow_excludes_unlisted_spans_but_preserves_explicit_forbid() -> None:
+    brief = CampaignBrief.from_dict(
+        {
+            "campaign_id": "unknown-allow",
+            "title": "Unknown allow",
+            "objective": "Honor source segment policy",
+            "allowed_video_ids": ["video"],
+            "rights_confirmed": True,
+            "min_clip_seconds": 8,
+            "max_clip_seconds": 20,
+            "acceptance_policy": {
+                "enabled": True,
+                "source_segments": {
+                    "allow": ["editorial_content"],
+                    "forbid": ["advertisement"],
+                    "unknown": "allow",
+                    "safety_buffer_seconds": 1,
+                },
+            },
+        }
+    )
+
+    def hazard(kind: HazardClassification, start: float) -> SourceHazardSegment:
+        return SourceHazardSegment(
+            start=start,
+            end=start + 2,
+            classification=kind,
+            confidence=0.9,
+            evidence=("grounded",),
+            model_identity={"model": "test"},
+        )
+
+    spans = forbidden_spans_for_campaign(
+        brief,
+        (
+            hazard(HazardClassification.UNKNOWN, 2),
+            hazard(HazardClassification.GRAPHIC_HEAVY, 6),
+            hazard(HazardClassification.ADVERTISEMENT, 10),
+        ),
+        (),
+    )
+    assert [(item.start, item.end) for item in spans] == [(9.0, 13.0)]
+
+
+def test_unknown_hazard_default_escalation_remains_non_passable() -> None:
+    brief = _acceptance_brief()
+    hazard = SourceHazardSegment(
+        start=2,
+        end=4,
+        classification=HazardClassification.UNKNOWN,
+        confidence=0.5,
+        evidence=("uncertain",),
+        model_identity={"model": "test"},
+    )
+    spans = forbidden_spans_for_campaign(brief, (hazard,), ())
+    assert [(item.start, item.end) for item in spans] == [(2.0, 4.0)]

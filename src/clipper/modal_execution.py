@@ -40,6 +40,35 @@ _MODAL_ACQUISITION_ESTIMATED_USD_PER_SECOND = 0.000019
 _CONTROL_PLANE_ATTEMPTS = 3
 _DEPLOY_ATTEMPTS = 3
 _RETRY_DELAYS_SECONDS = (2.0, 5.0)
+_CANCEL_CONFIRM_TERMINAL_MODAL_ERRORS = frozenset(
+    {
+        "DeserializationError",
+        "ExecutionError",
+        "FunctionTimeoutError",
+        "InputCancellation",
+        "InternalFailure",
+        "OutputExpiredError",
+        "RemoteError",
+    }
+)
+_CANCEL_CONFIRM_UNCONFIRMED_MODAL_ERRORS = frozenset(
+    {
+        "AuthError",
+        "ClientClosed",
+        "ConflictError",
+        "ConnectionError",
+        "DataLossError",
+        "InternalError",
+        "InvalidError",
+        "NotFoundError",
+        "PermissionDeniedError",
+        "RequestSizeError",
+        "ResourceExhaustedError",
+        "ServiceError",
+        "UnimplementedError",
+        "VersionError",
+    }
+)
 
 
 def _exception_class_names(exc: BaseException) -> set[str]:
@@ -58,6 +87,22 @@ def _is_retryable_modal_control_plane_error(exc: BaseException) -> bool:
 def _retry_delay(attempt: int) -> float:
     index = max(0, min(attempt - 1, len(_RETRY_DELAYS_SECONDS) - 1))
     return _RETRY_DELAYS_SECONDS[index]
+
+
+def _cancel_confirmation_seconds() -> float:
+    timeout = float(os.getenv("CLIPPER_MODAL_CANCEL_CONFIRM_SECONDS", "30"))
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Modal cancellation confirmation timeout must be finite and positive")
+    return timeout
+
+
+def _cancellation_confirmation_is_terminal(exc: BaseException) -> bool:
+    names = _exception_class_names(exc)
+    if names & _CANCEL_CONFIRM_TERMINAL_MODAL_ERRORS:
+        return True
+    if names & _CANCEL_CONFIRM_UNCONFIRMED_MODAL_ERRORS:
+        return False
+    return False
 
 
 def _hydrate_named_handle(app_name: str, handle_name: str, *, kind: str) -> Any:
@@ -298,20 +343,36 @@ class _BudgetLedger:
 
 
 def _cancel_remote_call(call: Any) -> None:
-    """Cancel one exact Modal call and fail closed unless the API confirms cancellation."""
+    """Cancel one exact Modal call and return only after terminal state is confirmed."""
     call_id = str(getattr(call, "object_id", "") or getattr(call, "id", "") or "")
     errors: list[str] = []
+    requested = False
     for attempt in range(1, _CONTROL_PLANE_ATTEMPTS + 1):
         try:
             call.cancel(terminate_containers=False)
         except Exception as exc:
-            errors.append(f"{type(exc).__name__}: {exc}")
+            errors.append(f"cancel {type(exc).__name__}: {exc}")
             if attempt < _CONTROL_PLANE_ATTEMPTS:
                 time.sleep(_retry_delay(attempt))
                 continue
             raise ProductionCallNotTerminated(call_id, errors) from exc
-        return
-    raise ProductionCallNotTerminated(call_id, errors)
+        requested = True
+        break
+    if not requested:
+        raise ProductionCallNotTerminated(call_id, errors)
+
+    confirmation_seconds = _cancel_confirmation_seconds()
+    try:
+        call.get(timeout=confirmation_seconds)
+    except TimeoutError as exc:
+        errors.append(f"terminal confirmation timed out after {confirmation_seconds:.3f}s")
+        raise ProductionCallNotTerminated(call_id, errors) from exc
+    except BaseException as exc:
+        if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+            raise
+        if not _cancellation_confirmation_is_terminal(exc):
+            errors.append(f"confirmation {type(exc).__name__}: {exc}")
+            raise ProductionCallNotTerminated(call_id, errors) from exc
 
 
 def _spawn_recoverable_modal_call(

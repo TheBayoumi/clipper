@@ -17,11 +17,15 @@ from clipper.modal_execution import (
     ProductionCallSubmissionFailed,
     _acquire_remote_source,
     _BudgetLedger,
+    _cancel_confirmation_seconds,
+    _cancel_remote_call,
+    _cancellation_confirmation_is_terminal,
     _class,
     _deploy,
     _explicit_candidates,
     _function,
     _invoke_remote_with_budget,
+    _load_reviewed_resume_provenance,
     _local_git_sha,
     _materialize_remote_run,
     _positive_budget,
@@ -42,6 +46,10 @@ class NotFoundError(RuntimeError):
 
 
 class ServiceError(RuntimeError):
+    pass
+
+
+class InputCancellation(RuntimeError):
     pass
 
 
@@ -760,15 +768,21 @@ def test_acquire_remote_source_uses_modal_egress_and_validates_quality() -> None
 
 def test_acquire_remote_source_exhausts_invalid_and_failed_egress() -> None:
     class FailedCall:
+        def __init__(self) -> None:
+            self.cancelled = False
+
         def hydrate(self) -> None:
             return None
 
         def get(self, *, timeout: float) -> object:
             assert timeout > 0
+            if self.cancelled:
+                raise InputCancellation("cancelled")
             raise RuntimeError("blocked")
 
         def cancel(self, *, terminate_containers: bool) -> None:
             assert terminate_containers is False
+            self.cancelled = True
 
     class AlwaysBad:
         def with_options(self, **_kwargs: object) -> AlwaysBad:
@@ -1067,7 +1081,7 @@ def test_source_acquisition_records_failed_clouds_before_region_success() -> Non
     variants = []
     for label in ("gcp", "aws", "oci"):
         call = Mock()
-        call.get.side_effect = RuntimeError(f"{label} blocked")
+        call.get.side_effect = [RuntimeError(f"{label} blocked"), InputCancellation("cancelled")]
         failed_calls.append(call)
         variants.append(SimpleNamespace(spawn=Mock(return_value=call)))
     success_call = Mock()
@@ -1121,6 +1135,8 @@ def test_source_acquisition_budget_exhaustion_is_evidenced_and_cancelled(
             return None
 
         def get(self, *, timeout: float) -> object:
+            if self.cancelled:
+                raise InputCancellation("cancelled")
             assert 0.0 < timeout < 1.0
             clock["now"] = 1.0
             raise TimeoutError
@@ -1633,6 +1649,8 @@ def test_invoke_remote_with_budget_cancels_exact_call_while_in_flight(
             return None
 
         def get(self, *, timeout: float) -> object:
+            if self.cancel_args:
+                raise InputCancellation("cancelled")
             assert timeout == 0.1
             clock["now"] = 1.0
             raise TimeoutError
@@ -1676,6 +1694,8 @@ def test_invoke_remote_with_budget_caps_poll_to_remaining_budget(
             return None
 
         def get(self, *, timeout: float) -> object:
+            if self.cancel_args:
+                raise InputCancellation("cancelled")
             self.timeouts.append(timeout)
             clock["now"] = timeout
             raise TimeoutError
@@ -1716,7 +1736,7 @@ def test_invoke_remote_with_budget_cancels_if_hydration_fails() -> None:
 
 def test_invoke_remote_with_budget_cancels_non_timeout_poll_failure() -> None:
     call = Mock()
-    call.get.side_effect = ServiceError("poll failed")
+    call.get.side_effect = [ServiceError("poll failed"), InputCancellation("cancelled")]
     function = SimpleNamespace(spawn=Mock(return_value=call))
 
     with pytest.raises(ServiceError, match="poll failed"):
@@ -1757,7 +1777,7 @@ def test_invoke_remote_with_budget_rejects_exhausted_shared_budget_before_call_a
 def test_invoke_remote_with_budget_retries_cancellation_then_preserves_poll_failure() -> None:
     call_handle = Mock()
     call_handle.object_id = "fc-retry"
-    call_handle.get.side_effect = ServiceError("poll failed")
+    call_handle.get.side_effect = [ServiceError("poll failed"), InputCancellation("cancelled")]
     call_handle.cancel.side_effect = [RuntimeError("cancel unavailable"), None]
     function = SimpleNamespace(spawn=Mock(return_value=call_handle))
 
@@ -1784,6 +1804,7 @@ def test_invoke_remote_with_budget_charges_delayed_spawn_before_call_handle(
 
     call_handle = Mock()
     call_handle.object_id = "fc-delayed-spawn"
+    call_handle.get.side_effect = InputCancellation("cancelled")
 
     def delayed_spawn(_request: dict[str, object]) -> object:
         clock["now"] = 2.0
@@ -1804,7 +1825,7 @@ def test_invoke_remote_with_budget_charges_delayed_spawn_before_call_handle(
             estimated_usd_per_second=0.0,
         )
 
-    call_handle.get.assert_not_called()
+    call_handle.get.assert_called_once_with(timeout=30.0)
     call_handle.cancel.assert_called_once_with(terminate_containers=False)
     assert budget.gpu_seconds == pytest.approx(2.0)
     assert budget.remaining_budgets()[0] == pytest.approx(0.0)
@@ -1871,6 +1892,8 @@ def test_invoke_remote_with_budget_charges_until_cancellation_acknowledgement(
 
     def fail_poll(*, timeout: float) -> object:
         assert timeout > 0
+        if call_handle.cancel.call_count:
+            raise InputCancellation("cancelled")
         clock["now"] = 0.1
         raise ServiceError("poll failed")
 
@@ -2191,3 +2214,153 @@ def test_run_modal_pipeline_rejects_missing_resume_provenance_before_modal_work(
         )
     ensure.assert_not_called()
     function.assert_not_called()
+
+
+
+def test_cancel_remote_call_requires_exact_terminal_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPPER_MODAL_CANCEL_CONFIRM_SECONDS", "7")
+    call = Mock()
+    call.object_id = "fc-confirmed"
+    call.get.side_effect = InputCancellation("cancelled")
+    _cancel_remote_call(call)
+    call.cancel.assert_called_once_with(terminate_containers=False)
+    call.get.assert_called_once_with(timeout=7.0)
+
+
+def test_cancel_remote_call_rejects_timeout_and_transport_uncertainty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPPER_MODAL_CANCEL_CONFIRM_SECONDS", "2")
+    for error in (TimeoutError(), ServiceError("control plane unavailable")):
+        call = Mock()
+        call.object_id = "fc-unconfirmed"
+        call.get.side_effect = error
+        with pytest.raises(ProductionCallNotTerminated, match="remained nonterminal"):
+            _cancel_remote_call(call)
+        call.cancel.assert_called_once_with(terminate_containers=False)
+
+
+def test_cancel_remote_call_retries_cancel_request_and_validates_confirmation_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPPER_MODAL_CANCEL_CONFIRM_SECONDS", "3")
+    call = Mock()
+    call.object_id = "fc-retry"
+    call.cancel.side_effect = [ServiceError("retry"), None]
+    call.get.side_effect = InputCancellation("cancelled")
+    with patch("clipper.modal_execution.time.sleep") as sleep:
+        _cancel_remote_call(call)
+    assert call.cancel.call_count == 2
+    sleep.assert_called_once_with(2.0)
+    monkeypatch.setenv("CLIPPER_MODAL_CANCEL_CONFIRM_SECONDS", "nan")
+    with pytest.raises(ValueError, match="finite and positive"):
+        _cancel_confirmation_seconds()
+
+
+def _valid_resume_registry(tmp_path: Path) -> tuple[Path, dict[str, object], list[VideoCandidate]]:
+    brief_path = tmp_path / "brief.yaml"
+    brief_path.write_text("campaign: reviewed\n", encoding="utf-8")
+    digest = __import__("hashlib").sha256(brief_path.read_bytes()).hexdigest()
+    record: dict[str, object] = {
+        "schema_version": "clipper-resume-provenance-v1",
+        "workflow_run_id": "123",
+        "campaign_id": "campaign",
+        "campaign_brief_sha256": digest,
+        "artifact_run_path": "/run-123",
+        "artifact_origin_workflow_run_id": "122",
+        "artifact_origin_head_sha": "a" * 40,
+        "cache_root": "/artifacts/_cache",
+        "source_hashes": {"v1": "B" * 64},
+        "target_video_id": "v1",
+    }
+    registry: dict[str, object] = {
+        "schema_version": "clipper-resume-provenance-registry-v1",
+        "records": {"123": record},
+    }
+    acceptance = tmp_path / "acceptance"
+    acceptance.mkdir()
+    (acceptance / "resume-provenance.json").write_text(json.dumps(registry), encoding="utf-8")
+    candidates = [VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")]
+    return brief_path, registry, candidates
+
+
+def _write_resume_registry(tmp_path: Path, registry: dict[str, object]) -> None:
+    (tmp_path / "acceptance" / "resume-provenance.json").write_text(
+        json.dumps(registry), encoding="utf-8"
+    )
+
+
+def test_reviewed_resume_provenance_normalizes_source_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    brief_path, _registry, candidates = _valid_resume_registry(tmp_path)
+    monkeypatch.setattr("clipper.modal_execution._repo_root", lambda: tmp_path)
+    result = _load_reviewed_resume_provenance(
+        requested_run_id="123", brief_path=brief_path, campaign_id="campaign", candidates=candidates
+    )
+    assert result is not None
+    assert result["source_hashes"] == {"v1": "b" * 64}
+
+
+def test_reviewed_resume_provenance_rejects_missing_or_malformed_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    brief_path = tmp_path / "brief.yaml"
+    brief_path.write_text("campaign: reviewed\n", encoding="utf-8")
+    candidates = [VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")]
+    monkeypatch.setattr("clipper.modal_execution._repo_root", lambda: tmp_path)
+    with pytest.raises(RuntimeError, match="valid reviewed provenance registry"):
+        _load_reviewed_resume_provenance(
+            requested_run_id="123", brief_path=brief_path, campaign_id="campaign", candidates=candidates
+        )
+    acceptance = tmp_path / "acceptance"
+    acceptance.mkdir()
+    (acceptance / "resume-provenance.json").write_text("{bad-json", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="valid reviewed provenance registry"):
+        _load_reviewed_resume_provenance(
+            requested_run_id="123", brief_path=brief_path, campaign_id="campaign", candidates=candidates
+        )
+
+
+def test_reviewed_resume_provenance_rejects_identity_and_compatibility_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    brief_path, base, candidates = _valid_resume_registry(tmp_path)
+    monkeypatch.setattr("clipper.modal_execution._repo_root", lambda: tmp_path)
+    cases = [
+        (("schema_version",), "bad", "registry schema"),
+        (("records",), [], "records must be an object"),
+        (("records",), {}, "no reviewed compatible"),
+        (("record", "schema_version"), "bad", "record schema"),
+        (("record", "workflow_run_id"), "other", "does not match workflow run ID"),
+        (("record", "campaign_id"), "other", "campaign does not match"),
+        (("record", "campaign_brief_sha256"), "0" * 64, "brief digest"),
+        (("record", "artifact_run_path"), "run-123", "artifact path"),
+        (("record", "artifact_origin_workflow_run_id"), "", "origin workflow run ID"),
+        (("record", "artifact_origin_head_sha"), "bad", "origin SHA"),
+        (("record", "cache_root"), "/wrong", "cache root"),
+        (("record", "source_hashes"), [], "source hashes must be an object"),
+        (("record", "source_hashes"), {"other": "b" * 64}, "source identities"),
+        (("record", "source_hashes"), {"v1": "bad"}, "invalid source hash"),
+        (("record", "target_video_id"), "other", "target does not match"),
+    ]
+    for path, value, message in cases:
+        registry = __import__("json").loads(__import__("json").dumps(base))
+        if path[0] == "record":
+            registry["records"]["123"][path[1]] = value
+        else:
+            registry[path[0]] = value
+        _write_resume_registry(tmp_path, registry)
+        with pytest.raises(RuntimeError, match=message):
+            _load_reviewed_resume_provenance(
+                requested_run_id="123",
+                brief_path=brief_path,
+                campaign_id="campaign",
+                candidates=candidates,
+            )
+
+
+def test_cancellation_confirmation_unknown_error_is_not_terminal() -> None:
+    assert _cancellation_confirmation_is_terminal(RuntimeError("unknown")) is False

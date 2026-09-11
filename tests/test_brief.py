@@ -285,3 +285,76 @@ def test_nested_template_source_id_is_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(BriefValidationError, match="example placeholder"):
         load_brief(path)
+
+
+def test_brief_fail_closed_validation_matrix_covers_malformed_production_contracts(
+    tmp_path: Path,
+) -> None:
+    def write_and_reject(name: str, value: object, message: str) -> None:
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with pytest.raises((BriefValidationError, FileNotFoundError), match=message):
+            load_brief(path)
+
+    write_and_reject("root-list", [], "brief root must be an object")
+
+    def clone() -> dict[str, object]:
+        return json.loads(json.dumps(DATA))
+
+    case = clone()
+    case["targets"]["videos"][0]["video_id"] = "REPLACE_WITH_VIDEO"
+    write_and_reject("placeholder-target", case, "example placeholder")
+    case = clone()
+    case["rights"]["authorized_channels"] = ["UC_REPLACE_CHANNEL"]
+    write_and_reject("placeholder-rights", case, "example placeholder")
+    case = clone()
+    case["targets"] = None
+    write_and_reject("missing-targets", case, "targets.mode=explicit")
+    case = clone()
+    case["targets"]["extra"] = True
+    write_and_reject("unknown-target-rule", case, "unsupported targets rule")
+    case = clone()
+    case["targets"]["mode"] = "discover"
+    write_and_reject("bad-target-mode", case, "targets.mode must be explicit")
+    case = clone()
+    case["targets"]["videos"] = []
+    write_and_reject("empty-videos", case, "at least one explicit video")
+    case = clone()
+    case["targets"]["videos"] = ["not-an-object"]
+    write_and_reject("video-shape", case, "must be an object")
+    case = clone()
+    case["targets"]["videos"][0]["extra"] = True
+    write_and_reject("unknown-video-rule", case, "unsupported targets.videos rule")
+    case = clone()
+    case["targets"]["videos"][0]["video_id"] = ""
+    write_and_reject("empty-video-id", case, "must be a non-empty string")
+    case = clone()
+    case["targets"]["videos"][0]["url"] = "http://example.test/video"
+    write_and_reject("non-https-url", case, "must use https")
+    case = clone()
+    case["targets"]["videos"].append(dict(case["targets"]["videos"][0]))
+    write_and_reject("duplicate-video", case, "duplicate video IDs")
+    case = clone()
+    case["rights"] = None
+    write_and_reject("missing-rights", case, "requires a rights object")
+    case = clone()
+    case["rights"]["authorized_channels"] = "UC123"
+    write_and_reject("bad-authorized-list", case, "must be a list of strings")
+    case = clone()
+    case["rights"]["authorized_channels"] = ["UC_OTHER"]
+    write_and_reject("unauthorized-target", case, "outside rights.authorized_channels")
+    case = clone()
+    case["rights"]["extra"] = True
+    write_and_reject("unknown-rights-rule", case, "unsupported rights rule")
+    case = clone()
+    case["rights"]["confirmed"] = "yes"
+    write_and_reject("non-bool-rights", case, "must be true or false")
+    case = clone()
+    case["content_constraints"] = "bad"
+    write_and_reject("bad-constraints", case, "content_constraints must be an object")
+    case = clone()
+    case["content_constraints"] = {"extra": 1}
+    write_and_reject("unknown-constraint", case, "unsupported content_constraints rule")
+    case = clone()
+    case["acceptance_policy"] = {"generated_media": {"synthetic_visuals": "forbid", "extra": "bad"}}
+    write_and_reject("generated-media-rule", case, "unsupported acceptance_policy.generated_media")

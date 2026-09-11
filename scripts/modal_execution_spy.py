@@ -646,6 +646,10 @@ class ModalExecutionSpy:
         if not isinstance(name, str) or name not in RECOGNIZED_EVENTS:
             return
         compact = self._compact_event(payload)
+        if app != self.pipeline_app and str(compact.get("event") or "").startswith("vision_"):
+            function_call_id = self._function_call_id(line)
+            if function_call_id:
+                compact["invocation_id"] = function_call_id
         with self.lock:
             observed_at = time.monotonic()
             authoritative = app == self.pipeline_app
@@ -694,20 +698,37 @@ class ModalExecutionSpy:
                     violation = self._validate_event(compact)
             else:
                 self._diagnostic_event_counts[name] = self._diagnostic_event_counts.get(name, 0) + 1
-                lifecycle_id = str(compact.get("worker_lifecycle_id") or "")
+                invocation_id = str(compact.get("invocation_id") or "")
                 if self._terminal_event is None and name == "vision_generation_start":
-                    if lifecycle_id:
-                        self._active_vision_generations[lifecycle_id] = (
+                    if not invocation_id:
+                        violation = (
+                            f"vision producer start omitted function-call identity: {compact}"
+                        )
+                    elif invocation_id in self._active_vision_generations:
+                        violation = f"vision producer repeated active invocation ID: {compact}"
+                    else:
+                        self._active_vision_generations[invocation_id] = (
                             task,
                             self._positive_int(compact.get("attempt")),
                             self._positive_int(compact.get("frames")),
                             observed_at,
                         )
-                elif (
-                    name in {"vision_generation_complete", "vision_inference_error"}
-                    and lifecycle_id
-                ):
-                    self._active_vision_generations.pop(lifecycle_id, None)
+                elif name in {"vision_generation_complete", "vision_inference_error"}:
+                    if not invocation_id:
+                        violation = (
+                            f"vision producer terminal omitted function-call identity: {compact}"
+                        )
+                    else:
+                        active = self._active_vision_generations.get(invocation_id)
+                        if active is None:
+                            violation = f"vision producer terminal has no matching start: {compact}"
+                        elif active[0] != task:
+                            violation = (
+                                "vision producer terminal task does not match start: "
+                                f"started={active[0]!r} event={compact}"
+                            )
+                        else:
+                            self._active_vision_generations.pop(invocation_id, None)
 
             if authoritative and name in {
                 "editorial_remote_call_terminal",
@@ -810,17 +831,17 @@ class ModalExecutionSpy:
             active = list(self._active_vision_generations.items())
         now = time.monotonic()
         stalled = [
-            (lifecycle_id, task, attempt, frames, now - started)
-            for lifecycle_id, (task, attempt, frames, started) in active
+            (invocation_id, task, attempt, frames, now - started)
+            for invocation_id, (task, attempt, frames, started) in active
             if now - started >= self.vision_stall_seconds
         ]
         if stalled:
-            lifecycle_id, task, attempt, frames, elapsed = max(stalled, key=lambda item: item[4])
+            invocation_id, task, attempt, frames, elapsed = max(stalled, key=lambda item: item[4])
             self._set_abort(
                 "vision generation made no terminal progress before watchdog deadline",
                 {
                     "event": "vision_generation_stall",
-                    "worker_lifecycle_id": lifecycle_id,
+                    "invocation_id": invocation_id,
                     "task": task,
                     "attempt": attempt,
                     "frames": frames,
@@ -857,12 +878,12 @@ class ModalExecutionSpy:
         with self.lock:
             active_vision = [
                 {
-                    "worker_lifecycle_id": lifecycle_id,
+                    "invocation_id": invocation_id,
                     "task": task,
                     "attempt": attempt,
                     "frames": frames,
                 }
-                for lifecycle_id, (task, attempt, frames, _started) in sorted(
+                for invocation_id, (task, attempt, frames, _started) in sorted(
                     self._active_vision_generations.items()
                 )
             ]

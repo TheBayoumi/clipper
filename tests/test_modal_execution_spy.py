@@ -659,6 +659,7 @@ def test_spy_terminal_barrier_waits_for_active_vision_generation(tmp_path: Path)
     )
     spy._record(
         "clipper-open-editor",
+        "2026-09-11T13:00:00Z fc-VISION1 "
         '{"event":"vision_generation_start","execution_id":"exec-123",'
         '"worker_lifecycle_id":"vision-1","task":"source_policy_visual_scout",'
         '"attempt":1,"frames":8}',
@@ -674,8 +675,70 @@ def test_spy_terminal_barrier_waits_for_active_vision_generation(tmp_path: Path)
 
     spy._record(
         "clipper-open-editor",
+        "2026-09-11T13:00:01Z fc-VISION1 "
         '{"event":"vision_inference_error","execution_id":"exec-123",'
         '"worker_lifecycle_id":"vision-1","task":"source_policy_visual_scout",'
         '"error_type":"InputCancellation"}',
     )
     assert spy.wait_for_producer_barrier(timeout_seconds=0.1) is True
+
+
+def test_spy_keeps_parallel_generations_from_one_warm_container_distinct(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "vision-call-identity.ndjson",
+        execution_id="exec-123",
+    )
+    for call_id in ("fc-VISIONA", "fc-VISIONB"):
+        spy._record(
+            "clipper-open-editor",
+            f"2026-09-11T13:00:00Z {call_id} "
+            '{"event":"vision_generation_start","execution_id":"exec-123",'
+            '"worker_lifecycle_id":"same-container","task":"source_policy_visual_scout",'
+            '"attempt":1,"frames":8}',
+        )
+    active = spy.summary()["active_vision_generations"]
+    assert [item["invocation_id"] for item in active] == ["fc-VISIONA", "fc-VISIONB"]
+    spy._record(
+        "clipper-open-editor",
+        "2026-09-11T13:00:01Z fc-VISIONA "
+        '{"event":"vision_generation_complete","execution_id":"exec-123",'
+        '"worker_lifecycle_id":"same-container","task":"source_policy_visual_scout"}',
+    )
+    assert [item["invocation_id"] for item in spy.summary()["active_vision_generations"]] == [
+        "fc-VISIONB"
+    ]
+
+
+def test_spy_rejects_duplicate_or_unmatched_vision_lifecycle(tmp_path: Path) -> None:
+    module = _module()
+    duplicate = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "vision-duplicate.ndjson",
+        execution_id="exec-123",
+    )
+    line = (
+        "2026-09-11T13:00:00Z fc-VISION1 "
+        '{"event":"vision_generation_start","execution_id":"exec-123",'
+        '"worker_lifecycle_id":"container","task":"source_policy_visual_scout",'
+        '"attempt":1,"frames":8}'
+    )
+    duplicate._record("clipper-open-editor", line)
+    duplicate._record("clipper-open-editor", line)
+    assert duplicate.abort_reason is not None
+    assert "repeated active invocation" in duplicate.abort_reason
+    unmatched = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "vision-unmatched.ndjson",
+        execution_id="exec-123",
+    )
+    unmatched._record(
+        "clipper-open-editor",
+        "2026-09-11T13:00:01Z fc-VISION2 "
+        '{"event":"vision_inference_error","execution_id":"exec-123",'
+        '"worker_lifecycle_id":"container","task":"source_policy_visual_scout",'
+        '"error_type":"InputCancellation"}',
+    )
+    assert unmatched.abort_reason is not None
+    assert "no matching start" in unmatched.abort_reason
