@@ -232,6 +232,7 @@ jobs:
               "transcribe",
               "align",
               "diarize",
+              "speech_cuda_smoke",
               "editorial_schema_smoke",
               "hf_access_smoke",
               "deployment_identity",
@@ -260,7 +261,7 @@ jobs:
           print(json.dumps(evidence, indent=2))
           PY
 
-      - name: Verify immutable deployed SHA identities
+      - name: Verify immutable deployed SHA identities and speech CUDA runtime
         timeout-minutes: 5
         shell: bash
         run: |
@@ -280,6 +281,9 @@ jobs:
               "pipeline": modal.Function.from_name(
                   os.environ["CLIPPER_MODAL_PIPELINE_APP"], "deployment_identity"
               ).spawn(),
+              "speech_cuda_smoke": modal.Function.from_name(
+                  os.environ["CLIPPER_MODAL_APP"], "speech_cuda_smoke"
+              ).spawn(),
           }
           identities = {name: call.get(timeout=180) for name, call in calls.items()}
           for name, value in identities.items():
@@ -289,6 +293,17 @@ jobs:
                   raise RuntimeError(
                       f"{name} deployed SHA mismatch: expected={expected} value={value}"
                   )
+
+          speech = identities["speech_cuda_smoke"]
+          if speech.get("ok") is not True or speech.get("cuda_available") is not True:
+              raise RuntimeError(f"speech CUDA smoke did not confirm CUDA: {speech!r}")
+          if int(speech.get("device_count") or 0) < 1:
+              raise RuntimeError(f"speech CUDA smoke saw no allocated GPU: {speech!r}")
+          if speech.get("cublas") != "libcublas.so.12":
+              raise RuntimeError(f"speech CUDA smoke did not load cuBLAS 12: {speech!r}")
+          if speech.get("cudnn") != "libcudnn.so.9":
+              raise RuntimeError(f"speech CUDA smoke did not load cuDNN 9: {speech!r}")
+
           Path("modal-deployed-sha-identities.json").write_text(
               json.dumps(identities, indent=2) + "\n",
               encoding="utf-8",
@@ -517,6 +532,7 @@ jobs:
                           "transcribe",
                           "align",
                           "diarize",
+                          "speech_cuda_smoke",
                           "editorial_schema_smoke",
                           "hf_access_smoke",
                           "deployment_identity",
