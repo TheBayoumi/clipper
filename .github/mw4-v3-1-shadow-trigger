@@ -1,4 +1,5 @@
 V3.1 hardened canonical pipeline qualification trigger
 semantic-montage renderer + fail-closed contracts
+shadow runner hardening: serial matrix, Batch2 pinned to ubuntu-22.04, heartbeat/resource telemetry
 shadow encoder superfast review-only with H.264 High; production remains 250M medium
-2026-09-12 qualification
+2026-09-12 runner-stability retrigger
