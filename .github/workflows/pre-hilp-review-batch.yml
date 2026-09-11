@@ -30,7 +30,9 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Apply current Codex blocker batch
-        run: python scripts/_pre_hilp_review_batch.py
+        run: |
+          python scripts/_pre_hilp_review_batch.py
+          python scripts/_fix_pre_hilp_generated_test.py
 
       - name: Format repaired Python
         run: |
@@ -38,10 +40,10 @@ jobs:
           ruff check scripts/modal_hilp_watchdog.py tests/test_modal_hilp_watchdog.py tests/test_pre_hilp_runtime_trigger_contract.py --fix
 
       - name: Ruff lint
-        run: ruff check . --exclude scripts/_pre_hilp_review_batch.py
+        run: ruff check . --exclude scripts/_pre_hilp_review_batch.py --exclude scripts/_fix_pre_hilp_generated_test.py
 
       - name: Ruff format
-        run: ruff format --check . --exclude scripts/_pre_hilp_review_batch.py
+        run: ruff format --check . --exclude scripts/_pre_hilp_review_batch.py --exclude scripts/_fix_pre_hilp_generated_test.py
 
       - name: Strict mypy
         run: mypy
