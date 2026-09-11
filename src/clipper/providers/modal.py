@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import contextlib
 import importlib
 import json
 import math
@@ -646,6 +645,13 @@ class ModalVisionProvider(ModalJSONProvider):
             raise ValueError("vision call deadline must be finite and positive")
         return deadline
 
+    @staticmethod
+    def _cancel_confirmation_seconds() -> float:
+        timeout = float(os.getenv("CLIPPER_VISION_CANCEL_CONFIRM_SECONDS", "30"))
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("vision cancellation confirmation timeout must be finite and positive")
+        return timeout
+
     def inspect(
         self, *, task: str, frames: list[Path], context: dict[str, Any]
     ) -> ProviderResult[dict[str, Any]]:
@@ -658,20 +664,58 @@ class ModalVisionProvider(ModalJSONProvider):
         try:
             response = call.get(timeout=deadline)
         except TimeoutError as exc:
-            with contextlib.suppress(Exception):
+            confirmation_timeout = self._cancel_confirmation_seconds()
+            try:
                 call.cancel()
-            self._instance_handle = None
+            except Exception as cancel_exc:
+                self._instance_handle = None
+                raise ModalRemoteError(
+                    function_name=self.function_name,
+                    error_type="VisionCancellationUnconfirmedError",
+                    message=(
+                        "vision call cancellation failed before terminal state could be confirmed"
+                    ),
+                    details={
+                        "reason": "vision_cancellation_unconfirmed",
+                        "timeout_seconds": deadline,
+                        "confirmation_timeout_seconds": confirmation_timeout,
+                        "frames": len(frames),
+                        "cancellation_error_type": type(cancel_exc).__name__,
+                    },
+                ) from cancel_exc
+            try:
+                call.get(timeout=confirmation_timeout)
+            except TimeoutError as confirm_exc:
+                self._instance_handle = None
+                raise ModalRemoteError(
+                    function_name=self.function_name,
+                    error_type="VisionCancellationUnconfirmedError",
+                    message="vision call did not reach a terminal state after cancellation",
+                    details={
+                        "reason": "vision_cancellation_unconfirmed",
+                        "timeout_seconds": deadline,
+                        "confirmation_timeout_seconds": confirmation_timeout,
+                        "frames": len(frames),
+                    },
+                ) from confirm_exc
+            except Exception:
+                self._instance_handle = None
+            else:
+                self._instance_handle = None
             raise ModalRemoteError(
                 function_name=self.function_name,
                 error_type="VisionGenerationDeadlineError",
                 message=(
-                    "vision generation exceeded the bounded client deadline and was cancelled "
+                    "vision generation exceeded the bounded client deadline; "
+                    "the timed-out call reached terminal state and may be repartitioned "
                     f"after {deadline:.3f}s"
                 ),
                 details={
                     "reason": "generation_runtime_deadline",
                     "timeout_seconds": deadline,
+                    "confirmation_timeout_seconds": confirmation_timeout,
                     "frames": len(frames),
+                    "cancellation_confirmed": True,
                     "recovery_action": "REPARTITION",
                 },
             ) from exc

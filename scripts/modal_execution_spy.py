@@ -841,11 +841,12 @@ class ModalExecutionSpy:
         while True:
             with self.lock:
                 terminal_seen = self._terminal_event is not None
-                active_calls = bool(self._active_editorial_calls)
+                active_editorial_calls = bool(self._active_editorial_calls)
+                active_vision_generations = bool(self._active_vision_generations)
                 aborted = self.abort_reason is not None
             if aborted:
                 return False
-            if terminal_seen and not active_calls:
+            if terminal_seen and not active_editorial_calls and not active_vision_generations:
                 return True
             now = time.monotonic()
             if now >= deadline:

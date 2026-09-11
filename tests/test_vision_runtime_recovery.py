@@ -39,7 +39,7 @@ def test_modal_vision_deadline_cancels_remote_call_and_surfaces_repartition(
         function_name="vision",
     )
     call = Mock()
-    call.get.side_effect = TimeoutError
+    call.get.side_effect = [TimeoutError(), RuntimeError("cancelled")]
     function = Mock()
     function.spawn.return_value = call
 
@@ -53,8 +53,11 @@ def test_modal_vision_deadline_cancels_remote_call_and_surfaces_repartition(
     assert raised.value.details["reason"] == "generation_runtime_deadline"
     assert raised.value.details["recovery_action"] == "REPARTITION"
     assert raised.value.details["frames"] == 1
-    call.get.assert_called_once_with(timeout=12.5)
+    assert call.get.call_count == 2
+    assert call.get.call_args_list[0].kwargs == {"timeout": 12.5}
+    assert call.get.call_args_list[1].kwargs == {"timeout": 30.0}
     call.cancel.assert_called_once_with()
+    assert raised.value.details["cancellation_confirmed"] is True
 
 
 def test_vision_deadline_is_repartitionable_capacity_signal() -> None:
@@ -209,7 +212,7 @@ def test_spy_clears_vision_generation_on_completion(
 
 def test_production_workflow_grants_spy_comment_permission_and_sets_vision_bounds() -> None:
     workflow = Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
-    assert "pull-requests: write" in workflow
+    assert "pull-requests: read" in workflow
     assert "CLIPPER_VISION_CALL_DEADLINE_SECONDS: 360" in workflow
     assert "CLIPPER_MODAL_VISION_STALL_SECONDS: 420" in workflow
 
@@ -220,3 +223,57 @@ def test_modal_vision_workers_have_no_hard_timeout() -> None:
         prefix = source.split(f"class {class_name}:", 1)[0]
         decorator = prefix.rsplit("@app.cls(", 1)[-1]
         assert "timeout=" not in decorator
+
+
+def test_modal_vision_deadline_fails_closed_when_cancel_fails(tmp_path: Path) -> None:
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"frame")
+    provider = ModalVisionProvider(
+        app_name="app",
+        identity=_identity(),
+        function_name="vision",
+    )
+    call = Mock()
+    call.get.side_effect = TimeoutError
+    call.cancel.side_effect = RuntimeError("cancel transport failed")
+    function = Mock()
+    function.spawn.return_value = call
+
+    with (
+        patch.object(provider, "_function", return_value=function),
+        pytest.raises(ModalRemoteError) as raised,
+    ):
+        provider.inspect(task="source_policy_visual_scout", frames=[frame], context={})
+
+    assert raised.value.error_type == "VisionCancellationUnconfirmedError"
+    assert raised.value.details["reason"] == "vision_cancellation_unconfirmed"
+    assert "recovery_action" not in raised.value.details
+    assert not visual_ai._is_vision_capacity_error(raised.value)
+
+
+def test_modal_vision_deadline_fails_closed_when_terminal_confirmation_times_out(
+    tmp_path: Path,
+) -> None:
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"frame")
+    provider = ModalVisionProvider(
+        app_name="app",
+        identity=_identity(),
+        function_name="vision",
+    )
+    call = Mock()
+    call.get.side_effect = [TimeoutError(), TimeoutError()]
+    function = Mock()
+    function.spawn.return_value = call
+
+    with (
+        patch.object(provider, "_function", return_value=function),
+        pytest.raises(ModalRemoteError) as raised,
+    ):
+        provider.inspect(task="source_policy_visual_scout", frames=[frame], context={})
+
+    assert raised.value.error_type == "VisionCancellationUnconfirmedError"
+    assert raised.value.details["reason"] == "vision_cancellation_unconfirmed"
+    assert "recovery_action" not in raised.value.details
+    assert not visual_ai._is_vision_capacity_error(raised.value)
+    call.cancel.assert_called_once_with()

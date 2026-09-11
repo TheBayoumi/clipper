@@ -648,3 +648,34 @@ def test_spy_rejects_incomplete_authoritative_deadline_evidence(
     )
 
     assert spy.abort_reason is not None
+
+
+def test_spy_terminal_barrier_waits_for_active_vision_generation(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "vision-terminal-barrier.ndjson",
+        execution_id="exec-123",
+    )
+    spy._record(
+        "clipper-open-editor",
+        '{"event":"vision_generation_start","execution_id":"exec-123",'
+        '"worker_lifecycle_id":"vision-1","task":"source_policy_visual_scout",'
+        '"attempt":1,"frames":8}',
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"production_cycle_terminal","execution_id":"exec-123",'
+        '"status":"PASS","pipeline_status":"SUCCESS","review_status":"NOT_RENDERED"}',
+    )
+
+    assert spy.wait_for_producer_barrier(timeout_seconds=0.05) is False
+    assert len(spy.summary()["active_vision_generations"]) == 1
+
+    spy._record(
+        "clipper-open-editor",
+        '{"event":"vision_inference_error","execution_id":"exec-123",'
+        '"worker_lifecycle_id":"vision-1","task":"source_policy_visual_scout",'
+        '"error_type":"InputCancellation"}',
+    )
+    assert spy.wait_for_producer_barrier(timeout_seconds=0.1) is True

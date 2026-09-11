@@ -148,7 +148,7 @@ def test_production_workflow_has_cancellable_modal_spy_and_editorial_acceptance(
     assert isinstance(parsed, dict)
 
     assert "issues: write" in workflow
-    assert "pull-requests: write" in workflow
+    assert "pull-requests: read" in workflow
     assert "editorial_acceptance_only:" in workflow
     assert "REQUEST_EDITORIAL_ACCEPTANCE_ONLY" in workflow
     assert 'os.environ.get("REQUEST_EDITORIAL_ACCEPTANCE_ONLY", "").lower() == "true"' in workflow

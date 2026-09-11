@@ -387,6 +387,18 @@ def _normalize_visual_presence(value: str) -> str:
     return " ".join(normalized.split())
 
 
+def _visual_presence_matches(required: str, evidence: str) -> bool:
+    required_tokens = tuple(_normalize_visual_presence(required).split())
+    evidence_tokens = tuple(_normalize_visual_presence(evidence).split())
+    width = len(required_tokens)
+    if width == 0 or width > len(evidence_tokens):
+        return False
+    return any(
+        evidence_tokens[index : index + width] == required_tokens
+        for index in range(len(evidence_tokens) - width + 1)
+    )
+
+
 def _required_visual_presence_gate(
     brief: CampaignBrief,
     source_start: float,
@@ -428,9 +440,10 @@ def _required_visual_presence_gate(
             )
         )
         for evidence in evidence_values:
-            normalized_evidence = _normalize_visual_presence(evidence)
             for required_text, normalized_required in required_normalized.items():
-                if not normalized_required or normalized_required not in normalized_evidence:
+                if not normalized_required or not _visual_presence_matches(
+                    normalized_required, evidence
+                ):
                     continue
                 item = {
                     "required": required_text,

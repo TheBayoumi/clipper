@@ -156,3 +156,38 @@ def test_required_visual_presence_escalates_incomplete_visual_coverage() -> None
     )
     assert audit.decision == GateDecision.ESCALATE
     assert "required_visual_presence_uncertain" in audit.reasons
+
+
+def test_required_visual_presence_rejects_substring_false_positives() -> None:
+    ai_audit = evaluate_campaign_policy(
+        _brief("AI"),
+        0.0,
+        10.0,
+        _hazards(),
+        (),
+        multimodal=_timeline(branding=("chair",)),
+    )
+    lovable_audit = evaluate_campaign_policy(
+        _brief("Lovable"),
+        0.0,
+        10.0,
+        _hazards(),
+        (),
+        multimodal=_timeline(branding=("unlovable",)),
+    )
+    assert ai_audit.decision == GateDecision.REJECT
+    assert lovable_audit.decision == GateDecision.REJECT
+
+
+def test_required_visual_presence_matches_normalized_multiword_entity() -> None:
+    audit = evaluate_campaign_policy(
+        _brief("Anton Osika"),
+        0.0,
+        10.0,
+        _hazards(),
+        (),
+        multimodal=_timeline(visible_people=("Anton-Osika, founder",)),
+    )
+    assert audit.decision == GateDecision.PASS
+    checks = audit.campaign_policy_checks["visual_presence_policy"]
+    assert checks["matched_terms"] == ["Anton Osika"]

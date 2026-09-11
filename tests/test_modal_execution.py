@@ -235,12 +235,12 @@ def test_recoverable_modal_submission_reconciles_missing_input_ack(
     )
 
     call, started, error = _real_spawn_recoverable_modal_call(
-            object(),
-            {"request": True},
-            budget=_BudgetLedger(100.0, 100.0),
-            gpu_count=1.0,
-            estimated_usd_per_second=0.01,
-        )
+        object(),
+        {"request": True},
+        budget=_BudgetLedger(100.0, 100.0),
+        gpu_count=1.0,
+        estimated_usd_per_second=0.01,
+    )
 
     assert call.object_id == "fc-recoverable"
     assert started == pytest.approx(3.0)
@@ -429,12 +429,12 @@ def test_recoverable_modal_submission_keeps_exact_call_on_lost_ack(
     )
 
     call, started, error = _real_spawn_recoverable_modal_call(
-            object(),
-            {"request": True},
-            budget=_BudgetLedger(100.0, 100.0),
-            gpu_count=1.0,
-            estimated_usd_per_second=0.01,
-        )
+        object(),
+        {"request": True},
+        budget=_BudgetLedger(100.0, 100.0),
+        gpu_count=1.0,
+        estimated_usd_per_second=0.01,
+    )
 
     assert call.object_id == "fc-recoverable"
     assert started == pytest.approx(4.0)
@@ -468,6 +468,7 @@ def _write_brief(path: Path) -> None:
         ),
         encoding="utf-8",
     )
+
 
 def test_function_hydrates_deployed_handle() -> None:
     handle = Mock()
@@ -594,6 +595,7 @@ def test_ensure_modal_runtime_attaches_without_deploying_when_apps_exist() -> No
     deploy.assert_not_called()
     validate.assert_called_once_with("clipper-open-editor")
 
+
 def test_ensure_modal_runtime_repairs_missing_model_without_redeploying_pipeline() -> None:
     calls: list[tuple[str, str]] = []
     model_failed = False
@@ -622,6 +624,7 @@ def test_ensure_modal_runtime_repairs_missing_model_without_redeploying_pipeline
     assert ("clipper-production-pipeline", "run_full_cycle") in calls
     validate.assert_called_once_with("clipper-open-editor")
 
+
 def test_ensure_modal_runtime_repairs_missing_pipeline_only() -> None:
     calls: list[tuple[str, str]] = []
     pipeline_failed = False
@@ -629,7 +632,11 @@ def test_ensure_modal_runtime_repairs_missing_pipeline_only() -> None:
     def fake_function(app: str, name: str) -> Mock:
         nonlocal pipeline_failed
         calls.append((app, name))
-        if app == "clipper-production-pipeline" and name == "acquire_source" and not pipeline_failed:
+        if (
+            app == "clipper-production-pipeline"
+            and name == "acquire_source"
+            and not pipeline_failed
+        ):
             pipeline_failed = True
             raise NotFoundError("missing pipeline")
         return Mock()
@@ -649,6 +656,7 @@ def test_ensure_modal_runtime_repairs_missing_pipeline_only() -> None:
     assert ("clipper-production-pipeline", "run_full_cycle") in calls
     validate.assert_called_once_with("clipper-open-editor")
 
+
 def test_ensure_modal_runtime_does_not_redeploy_on_connectivity_failure() -> None:
     with (
         patch("clipper.modal_execution._function", side_effect=ServiceError("unavailable")),
@@ -658,6 +666,7 @@ def test_ensure_modal_runtime_does_not_redeploy_on_connectivity_failure() -> Non
     ):
         ensure_modal_runtime()
     deploy.assert_not_called()
+
 
 def test_ensure_modal_runtime_fails_closed_after_unsuccessful_redeploy() -> None:
     with (
@@ -670,6 +679,7 @@ def test_ensure_modal_runtime_fails_closed_after_unsuccessful_redeploy() -> None
         pytest.raises(RuntimeError, match="unavailable after runtime repair"),
     ):
         ensure_modal_runtime()
+
 
 def test_validate_model_access_requires_successful_remote_smoke() -> None:
     smoke = Mock()
@@ -704,6 +714,7 @@ def test_explicit_candidates_resolve_only_campaign_targets(tmp_path: Path) -> No
     assert [item.video_id for item in candidates] == ["v1"]
     assert candidates[0].url == "https://www.youtube.com/watch?v=v1"
     assert candidates[0].channel_id == "UC1"
+
 
 def test_explicit_candidate_keeps_youtube_url_when_supplemental_media_url_exists(
     tmp_path: Path,
@@ -745,6 +756,7 @@ def test_acquire_remote_source_uses_modal_egress_and_validates_quality() -> None
             "expected_git_sha": "a" * 40,
         }
     )
+
 
 def test_acquire_remote_source_exhausts_invalid_and_failed_egress() -> None:
     class FailedCall:
@@ -789,6 +801,7 @@ def test_acquire_remote_source_exhausts_invalid_and_failed_egress() -> None:
             expected_git_sha="a" * 40,
             budget=_BudgetLedger(100.0, 1.0),
         )
+
 
 def test_acquire_remote_source_skips_invalid_response_and_uses_default_budget() -> None:
     invalid_call = Mock()
@@ -932,7 +945,9 @@ def test_runtime_source_sha_fails_closed_without_or_with_conflicting_identity(
     monkeypatch.setattr("clipper.modal_execution._repo_root", lambda: tmp_path)
     monkeypatch.delenv("CLIPPER_SOURCE_SHA", raising=False)
     with (
-        patch("clipper.modal_execution.subprocess.run", side_effect=FileNotFoundError("git missing")),
+        patch(
+            "clipper.modal_execution.subprocess.run", side_effect=FileNotFoundError("git missing")
+        ),
         pytest.raises(RuntimeError, match="runtime source SHA is unavailable"),
     ):
         _runtime_source_sha()
@@ -1131,6 +1146,7 @@ def test_source_acquisition_budget_exhaustion_is_evidenced_and_cancelled(
     assert attempts[0]["status"] == "BUDGET_EXCEEDED"
     assert call.cancelled is True
 
+
 def test_materialize_remote_run_downloads_only_artifact_directory(tmp_path: Path) -> None:
     artifact_root = tmp_path / "artifacts"
 
@@ -1275,9 +1291,9 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
         result = run_modal_pipeline(
             brief_path,
             artifact_root=tmp_path / "artifacts",
-            resume_from_run_id="old-run",
+            resume_from_run_id=None,
             render=True,
-            fresh_inference=True,
+            fresh_inference=False,
         )
 
     assert result == materialized
@@ -1295,9 +1311,10 @@ def test_run_modal_pipeline_acquires_in_modal_runs_remote_and_materializes(tmp_p
     assert isinstance(ledger, _BudgetLedger)
     assert ledger.max_gpu_seconds == 21600.0
     assert ledger.max_estimated_usd == 10.0
-    assert payload["resume_from_run_id"] == "old-run"
+    assert payload["resume_from_run_id"] is None
+    assert payload["resume_provenance"] is None
     assert payload["render"] is True
-    assert payload["fresh_inference"] is True
+    assert payload["fresh_inference"] is False
     assert payload["git_sha"] == "a" * 40
     assert payload["execution_id"] == "e" * 32
     assert payload["max_gpu_seconds"] == 21600.0
@@ -1346,19 +1363,27 @@ def test_run_modal_pipeline_stops_when_acquisition_exhausts_budget(tmp_path: Pat
     invoke.assert_not_called()
 
 
-def test_run_modal_pipeline_fails_closed_for_runtime_empty_targets_and_bad_runner(tmp_path: Path) -> None:
+def test_run_modal_pipeline_fails_closed_for_runtime_empty_targets_and_bad_runner(
+    tmp_path: Path,
+) -> None:
     brief_path = tmp_path / "brief.json"
     _write_brief(brief_path)
     candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
 
     with (
-        patch("clipper.modal_execution.ensure_modal_runtime", side_effect=RuntimeError("model access denied")),
+        patch(
+            "clipper.modal_execution.ensure_modal_runtime",
+            side_effect=RuntimeError("model access denied"),
+        ),
         patch("clipper.modal_execution._function") as function,
         pytest.raises(RuntimeError, match="model access denied"),
     ):
         run_modal_pipeline(
-            brief_path, artifact_root=tmp_path / "artifacts", resume_from_run_id=None,
-            render=True, fresh_inference=False,
+            brief_path,
+            artifact_root=tmp_path / "artifacts",
+            resume_from_run_id=None,
+            render=True,
+            fresh_inference=False,
         )
     function.assert_not_called()
 
@@ -1369,8 +1394,11 @@ def test_run_modal_pipeline_fails_closed_for_runtime_empty_targets_and_bad_runne
         pytest.raises(RuntimeError, match="no explicit authorized targets"),
     ):
         run_modal_pipeline(
-            brief_path, artifact_root=tmp_path / "artifacts-empty", resume_from_run_id=None,
-            render=True, fresh_inference=False,
+            brief_path,
+            artifact_root=tmp_path / "artifacts-empty",
+            resume_from_run_id=None,
+            render=True,
+            fresh_inference=False,
         )
 
     acquire = Mock()
@@ -1380,14 +1408,23 @@ def test_run_modal_pipeline_fails_closed_for_runtime_empty_targets_and_bad_runne
         patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
         patch("clipper.modal_execution._verify_deployed_runtime_sha", return_value="a" * 40),
         patch("clipper.modal_execution.uuid.uuid4", return_value=SimpleNamespace(hex="e" * 32)),
-        patch("clipper.modal_execution._function", side_effect=lambda _app, name: acquire if name == "acquire_source" else runner),
-        patch("clipper.modal_execution._acquire_remote_source", return_value={"quality_policy": "highest_available_no_transcode"}),
+        patch(
+            "clipper.modal_execution._function",
+            side_effect=lambda _app, name: acquire if name == "acquire_source" else runner,
+        ),
+        patch(
+            "clipper.modal_execution._acquire_remote_source",
+            return_value={"quality_policy": "highest_available_no_transcode"},
+        ),
         patch("clipper.modal_execution._invoke_remote_with_budget", return_value="invalid"),
         pytest.raises(RuntimeError, match="invalid response"),
     ):
         run_modal_pipeline(
-            brief_path, artifact_root=tmp_path / "artifacts-invalid", resume_from_run_id=None,
-            render=True, fresh_inference=False,
+            brief_path,
+            artifact_root=tmp_path / "artifacts-invalid",
+            resume_from_run_id=None,
+            render=True,
+            fresh_inference=False,
         )
 
     no_path_result = {
@@ -1400,17 +1437,24 @@ def test_run_modal_pipeline_fails_closed_for_runtime_empty_targets_and_bad_runne
         patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
         patch("clipper.modal_execution._verify_deployed_runtime_sha", return_value="a" * 40),
         patch("clipper.modal_execution.uuid.uuid4", return_value=SimpleNamespace(hex="e" * 32)),
-        patch("clipper.modal_execution._function", side_effect=lambda _app, name: acquire if name == "acquire_source" else runner),
-        patch("clipper.modal_execution._acquire_remote_source", return_value={"quality_policy": "highest_available_no_transcode"}),
+        patch(
+            "clipper.modal_execution._function",
+            side_effect=lambda _app, name: acquire if name == "acquire_source" else runner,
+        ),
+        patch(
+            "clipper.modal_execution._acquire_remote_source",
+            return_value={"quality_policy": "highest_available_no_transcode"},
+        ),
         patch("clipper.modal_execution._invoke_remote_with_budget", return_value=no_path_result),
         pytest.raises(RuntimeError, match="no run path"),
     ):
         run_modal_pipeline(
-            brief_path, artifact_root=tmp_path / "artifacts-no-path", resume_from_run_id=None,
-            render=True, fresh_inference=False,
+            brief_path,
+            artifact_root=tmp_path / "artifacts-no-path",
+            resume_from_run_id=None,
+            render=True,
+            fresh_inference=False,
         )
-
-
 
 
 def test_verify_deployed_runtime_sha_requires_both_apps_match_local_checkout() -> None:
@@ -1572,7 +1616,6 @@ def test_run_modal_pipeline_rejects_mismatched_execution_or_sha_before_download(
             fresh_inference=False,
         )
     download.assert_not_called()
-
 
 
 def test_invoke_remote_with_budget_cancels_exact_call_while_in_flight(
@@ -1813,8 +1856,6 @@ def test_invoke_remote_with_budget_reconciles_lost_input_submission(
     assert budget.estimated_usd == pytest.approx(0.0025)
 
 
-
-
 def test_invoke_remote_with_budget_charges_until_cancellation_acknowledgement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2030,3 +2071,123 @@ def test_runtime_source_sha_uses_embedded_image_identity_without_git(
     (tmp_path / ".clipper-source-sha").write_text("b" * 40 + "\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="disagrees"):
         _runtime_source_sha()
+
+
+def _write_reviewed_resume_registry(root: Path, brief_path: Path) -> dict[str, object]:
+    record: dict[str, object] = {
+        "schema_version": "clipper-resume-provenance-v1",
+        "workflow_run_id": "123",
+        "artifact_run_path": "/prior-run",
+        "artifact_origin_workflow_run_id": "122",
+        "artifact_origin_head_sha": "a" * 40,
+        "campaign_id": "campaign",
+        "campaign_brief_sha256": __import__("hashlib").sha256(brief_path.read_bytes()).hexdigest(),
+        "target_video_id": "v1",
+        "source_hashes": {"v1": "b" * 64},
+        "cache_root": "/artifacts/_cache",
+    }
+    acceptance = root / "acceptance"
+    acceptance.mkdir(parents=True, exist_ok=True)
+    (acceptance / "resume-provenance.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "clipper-resume-provenance-registry-v1",
+                "records": {"123": record},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return record
+
+
+def test_run_modal_pipeline_forwards_reviewed_resume_provenance(tmp_path: Path) -> None:
+    brief_path = tmp_path / "brief.json"
+    _write_brief(brief_path)
+    repo_root = tmp_path / "repo"
+    record = _write_reviewed_resume_registry(repo_root, brief_path)
+    candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
+    acquire = Mock()
+    runner = Mock()
+    materialized = tmp_path / "artifacts" / "campaign-run"
+    remote_result = {
+        "execution_id": "e" * 32,
+        "deployed_git_sha": "a" * 40,
+        "run_path": "/campaign-run",
+        "run_volume": "clipper-production-artifacts",
+    }
+
+    def fake_function(_app: str, name: str) -> Mock:
+        return acquire if name == "acquire_source" else runner
+
+    with (
+        patch("clipper.modal_execution._repo_root", return_value=repo_root),
+        patch("clipper.modal_execution.ensure_modal_runtime") as ensure,
+        patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
+        patch("clipper.modal_execution._verify_deployed_runtime_sha", return_value="a" * 40),
+        patch("clipper.modal_execution.uuid.uuid4", return_value=SimpleNamespace(hex="e" * 32)),
+        patch("clipper.modal_execution._function", side_effect=fake_function),
+        patch(
+            "clipper.modal_execution._acquire_remote_source",
+            return_value={
+                "quality_policy": "highest_available_no_transcode",
+                "sha256": "b" * 64,
+            },
+        ),
+        patch(
+            "clipper.modal_execution._invoke_remote_with_budget",
+            return_value=remote_result,
+        ) as invoke,
+        patch(
+            "clipper.modal_execution._materialize_remote_run",
+            return_value=materialized,
+        ),
+    ):
+        result = run_modal_pipeline(
+            brief_path,
+            artifact_root=tmp_path / "artifacts",
+            resume_from_run_id="123",
+            render=True,
+            fresh_inference=False,
+        )
+
+    assert result == materialized
+    ensure.assert_called_once_with()
+    payload = invoke.call_args.args[1]
+    assert payload["resume_from_run_id"] == "123"
+    assert payload["resume_provenance"] == record
+
+
+def test_run_modal_pipeline_rejects_missing_resume_provenance_before_modal_work(
+    tmp_path: Path,
+) -> None:
+    brief_path = tmp_path / "brief.json"
+    _write_brief(brief_path)
+    repo_root = tmp_path / "repo"
+    acceptance = repo_root / "acceptance"
+    acceptance.mkdir(parents=True)
+    (acceptance / "resume-provenance.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "clipper-resume-provenance-registry-v1",
+                "records": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
+    with (
+        patch("clipper.modal_execution._repo_root", return_value=repo_root),
+        patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
+        patch("clipper.modal_execution.ensure_modal_runtime") as ensure,
+        patch("clipper.modal_execution._function") as function,
+        pytest.raises(RuntimeError, match="no reviewed compatible artifact provenance"),
+    ):
+        run_modal_pipeline(
+            brief_path,
+            artifact_root=tmp_path / "artifacts",
+            resume_from_run_id="missing",
+            render=True,
+            fresh_inference=False,
+        )
+    ensure.assert_not_called()
+    function.assert_not_called()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import logging
@@ -971,6 +972,81 @@ def _materialize_remote_run(*, artifact_root: Path, volume_name: str, remote_run
             shutil.rmtree(staging, ignore_errors=True)
 
 
+def _load_reviewed_resume_provenance(
+    *,
+    requested_run_id: str | None,
+    brief_path: Path,
+    campaign_id: str,
+    candidates: list[VideoCandidate],
+) -> dict[str, Any] | None:
+    requested = str(requested_run_id or "").strip()
+    if not requested:
+        return None
+    registry_path = _repo_root() / "acceptance" / "resume-provenance.json"
+    try:
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "resume execution is missing a valid reviewed provenance registry"
+        ) from exc
+    if not isinstance(registry, dict) or registry.get("schema_version") != (
+        "clipper-resume-provenance-registry-v1"
+    ):
+        raise RuntimeError("resume provenance registry schema is unsupported")
+    records = registry.get("records")
+    if not isinstance(records, dict):
+        raise RuntimeError("resume provenance registry records must be an object")
+    raw_record = records.get(requested)
+    if not isinstance(raw_record, dict):
+        raise RuntimeError("resume_from_run_id has no reviewed compatible artifact provenance")
+    record = {str(key): value for key, value in raw_record.items()}
+    if record.get("schema_version") != "clipper-resume-provenance-v1":
+        raise RuntimeError("resume provenance record schema is unsupported")
+    if str(record.get("workflow_run_id") or "") != requested:
+        raise RuntimeError("resume provenance registry key does not match workflow run ID")
+    if str(record.get("campaign_id") or "") != campaign_id:
+        raise RuntimeError("resume provenance campaign does not match selected campaign")
+    brief_digest = hashlib.sha256(brief_path.read_bytes()).hexdigest()
+    if str(record.get("campaign_brief_sha256") or "") != brief_digest:
+        raise RuntimeError("resume provenance campaign brief digest does not match")
+
+    artifact_path = str(record.get("artifact_run_path") or "").strip()
+    relative = Path(artifact_path.lstrip("/"))
+    if (
+        not artifact_path.startswith("/")
+        or relative.is_absolute()
+        or len(relative.parts) != 1
+        or relative.parts[0] in {"", ".", ".."}
+    ):
+        raise RuntimeError("resume artifact path must identify one direct artifact run directory")
+    origin_run_id = str(record.get("artifact_origin_workflow_run_id") or "").strip()
+    origin_sha = str(record.get("artifact_origin_head_sha") or "").strip().lower()
+    if not origin_run_id:
+        raise RuntimeError("resume provenance is missing artifact origin workflow run ID")
+    if len(origin_sha) != 40 or any(ch not in "0123456789abcdef" for ch in origin_sha):
+        raise RuntimeError("resume provenance artifact origin SHA is invalid")
+    if str(record.get("cache_root") or "") != "/artifacts/_cache":
+        raise RuntimeError("resume provenance cache root is incompatible")
+
+    source_hashes = record.get("source_hashes")
+    if not isinstance(source_hashes, dict):
+        raise RuntimeError("resume provenance source hashes must be an object")
+    normalized_hashes = {str(key): str(value).lower() for key, value in source_hashes.items()}
+    candidate_ids = {candidate.video_id for candidate in candidates}
+    if set(normalized_hashes) != candidate_ids:
+        raise RuntimeError("resume provenance source identities do not match explicit targets")
+    if any(
+        len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value)
+        for value in normalized_hashes.values()
+    ):
+        raise RuntimeError("resume provenance contains an invalid source hash")
+    target_video_id = str(record.get("target_video_id") or "").strip()
+    if target_video_id and (len(candidates) != 1 or target_video_id != candidates[0].video_id):
+        raise RuntimeError("resume provenance target does not match explicit targets")
+    record["source_hashes"] = normalized_hashes
+    return record
+
+
 def run_modal_pipeline(
     brief_path: Path,
     *,
@@ -984,11 +1060,18 @@ def run_modal_pipeline(
     """Execute every explicit campaign target inside one content-addressed Modal run."""
     brief = load_brief(brief_path)
     assert_campaign_authorized(brief)
-    ensure_modal_runtime()
-
+    if fresh_inference and resume_from_run_id is not None:
+        raise ValueError("fresh inference cannot be combined with resume_from_run_id")
     candidates = _explicit_candidates(brief_path)
     if not candidates:
         raise RuntimeError("campaign contains no explicit authorized targets")
+    resume_provenance = _load_reviewed_resume_provenance(
+        requested_run_id=resume_from_run_id,
+        brief_path=brief_path,
+        campaign_id=brief.campaign_id,
+        candidates=candidates,
+    )
+    ensure_modal_runtime()
 
     model_app = os.getenv("CLIPPER_MODAL_APP", DEFAULT_MODEL_APP)
     pipeline_app = os.getenv("CLIPPER_MODAL_PIPELINE_APP", DEFAULT_PIPELINE_APP)
@@ -1025,12 +1108,26 @@ def run_modal_pipeline(
         }
         for candidate, evidence in zip(candidates, sources, strict=True)
     ]
+    if resume_provenance is not None:
+        expected_hashes = {
+            str(key): str(value).lower()
+            for key, value in dict(resume_provenance["source_hashes"]).items()
+        }
+        actual_hashes = {
+            candidate.video_id: str(evidence.get("sha256") or "").lower()
+            for candidate, evidence in zip(candidates, sources, strict=True)
+        }
+        if actual_hashes != expected_hashes:
+            raise RuntimeError(
+                "resume provenance source hashes do not match acquired source masters"
+            )
     request = {
         "sources": source_payloads,
         "brief_yaml": brief_path.read_text(encoding="utf-8"),
         "render": render,
         "fresh_inference": fresh_inference,
         "resume_from_run_id": resume_from_run_id,
+        "resume_provenance": resume_provenance,
         "git_sha": verified_git_sha,
         "execution_id": execution_id,
         "max_gpu_seconds": remaining_gpu_seconds,

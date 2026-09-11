@@ -456,7 +456,7 @@ def run(*, render: bool) -> dict[str, Any]:
             if spy.abort_reason is not None:
                 raise RuntimeError(f"Modal spy aborted before producer barrier: {spy.abort_reason}")
             raise RuntimeError(
-                "Modal spy did not observe a closed pipeline editorial-call set "
+                "Modal spy did not observe a closed pipeline producer set "
                 "before the production terminal barrier"
             )
         if spy.abort_reason is not None:
