@@ -6,14 +6,7 @@ on:
     branches:
       - feat/mw4-fullframe-retention-v3-1
     paths:
-      - campaigns/mw4-fullframe-retention-v3-1.json
-      - scripts/mw4_semantic_gameplay_v3_1.py
-      - scripts/mw4_semantic_gameplay_v3_1_refined.py
-      - scripts/mw4_fullframe_retention_v3_1.py
-      - scripts/mw4_fullframe_retention_v3_1_refined.py
-      - scripts/mw4_v3_1_shadow_preview.py
-      - scripts/mw4_v3_1_shadow_preview_refined.py
-      - .github/workflows/mw4-semantic-v3-1-shadow.yml
+      - .github/mw4-v3-1-shadow-trigger
 
 permissions:
   contents: read
@@ -43,8 +36,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Run refined V3.1 semantic self-test
-        run: python scripts/mw4_semantic_gameplay_v3_1_refined.py --self-test
+      - name: Run hardened V3.1 semantic self-test
+        run: python scripts/mw4_semantic_gameplay_v3_1_final.py --self-test
 
       - name: Resolve official MediaSilo source
         env:
@@ -125,7 +118,7 @@ jobs:
                   output.write(block)
           PY
 
-      - name: Render refined engagement-driven V3.1 review previews
+      - name: Render hardened V3.1 review previews
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
@@ -136,7 +129,7 @@ jobs:
             --config campaigns/mw4-fullframe-retention-v3-1.json \
             --output-dir "shadow/$SOURCE_KEY"
 
-      - name: Verify refined V3.1 selection contract
+      - name: Verify hardened V3.1 source contract
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
@@ -158,21 +151,27 @@ jobs:
               if plan['finishing_move'] is not None:
                   assert plan['story_type'] == 'finishing_move_open'
                   assert plan['effect_profile'] == 'finishing_move_hero'
-                  assert plan['finishing_move']['start'] - plan['start'] <= 0.48
+                  assert plan['finishing_move']['start'] - plan['segments'][0]['start'] <= 0.48
+          if report['verified_finishing_move_count']:
+              assert any(plan['story_type'] == 'finishing_move_open' for plan in selected), (
+                  'Verified Finishing Move exists but was not selected as an opening hero clip'
+              )
+          assert report['unplanned_source_cut_count'] == 0, report.get('unplanned_source_cuts')
           print(json.dumps({
               'source': source_key,
               'selected': len(selected),
               'stories': [p['story_type'] for p in selected],
-              'finishing_move_like': report['finishing_move_like_count'],
+              'verified_finishing_moves': report['verified_finishing_move_count'],
+              'unplanned_source_cuts': report['unplanned_source_cut_count'],
               'diagnostic_pass_count': report['diagnostics']['counts']['pass'],
           }))
           PY
 
-      - name: Upload refined V3.1 previews and diagnostics
+      - name: Upload hardened V3.1 previews and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: MW4-semantic-v3-1-refined-${{ matrix.source }}
+          name: MW4-semantic-v3-1-hardened-${{ matrix.source }}
           path: |
             shadow/${{ matrix.source }}/*.json
             shadow/${{ matrix.source }}/*.mp4
