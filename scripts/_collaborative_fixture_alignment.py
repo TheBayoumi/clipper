@@ -1,0 +1,216 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    target = Path(path)
+    text = target.read_text(encoding="utf-8")
+    if text.count(old) != 1:
+        raise SystemExit(
+            f"{path}: expected one legacy fixture replacement, found {text.count(old)}"
+        )
+    target.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+replace_once(
+    "tests/test_modal_execution.py",
+    'with pytest.raises(ProductionCallNotTerminated, match="terminal state"):',
+    'with pytest.raises(ProductionCallNotTerminated, match="remained nonterminal"):',
+)
+
+replace_once(
+    "tests/test_modal_execution.py",
+    '''    class FailedCall:
+        def hydrate(self) -> None:
+            return None
+
+        def get(self, *, timeout: float) -> object:
+            assert timeout > 0
+            raise RuntimeError("blocked")
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            assert terminate_containers is False
+''',
+    '''    class FailedCall:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def hydrate(self) -> None:
+            return None
+
+        def get(self, *, timeout: float) -> object:
+            assert timeout > 0
+            if self.cancelled:
+                raise InputCancellation("cancelled")
+            raise RuntimeError("blocked")
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            assert terminate_containers is False
+            self.cancelled = True
+''',
+)
+
+replace_once(
+    "tests/test_modal_execution.py",
+    '''        def get(self, *, timeout: float) -> object:
+            assert timeout == 0.1
+            clock["now"] = 1.0
+            raise TimeoutError
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            self.cancel_args.append(terminate_containers)
+''',
+    '''        def get(self, *, timeout: float) -> object:
+            if self.cancel_args:
+                raise InputCancellation("cancelled")
+            assert timeout == 0.1
+            clock["now"] = 1.0
+            raise TimeoutError
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            self.cancel_args.append(terminate_containers)
+''',
+)
+
+replace_once(
+    "tests/test_modal_execution.py",
+    '''        def get(self, *, timeout: float) -> object:
+            self.timeouts.append(timeout)
+            clock["now"] = timeout
+            raise TimeoutError
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            self.cancel_args.append(terminate_containers)
+''',
+    '''        def get(self, *, timeout: float) -> object:
+            if self.cancel_args:
+                raise InputCancellation("cancelled")
+            self.timeouts.append(timeout)
+            clock["now"] = timeout
+            raise TimeoutError
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            self.cancel_args.append(terminate_containers)
+''',
+)
+
+replace_once(
+    "tests/test_modal_execution.py",
+    '''def test_invoke_remote_with_budget_cancels_non_timeout_poll_failure() -> None:
+    call = Mock()
+    call.get.side_effect = ServiceError("poll failed")
+''',
+    '''def test_invoke_remote_with_budget_cancels_non_timeout_poll_failure() -> None:
+    call = Mock()
+    call.get.side_effect = [ServiceError("poll failed"), InputCancellation("cancelled")]
+''',
+)
+
+replace_once(
+    "tests/test_modal_execution.py",
+    '''    call_handle = Mock()
+    call_handle.object_id = "fc-retry"
+    call_handle.get.side_effect = ServiceError("poll failed")
+    call_handle.cancel.side_effect = [RuntimeError("cancel unavailable"), None]
+''',
+    '''    call_handle = Mock()
+    call_handle.object_id = "fc-retry"
+    call_handle.get.side_effect = [ServiceError("poll failed"), InputCancellation("cancelled")]
+    call_handle.cancel.side_effect = [RuntimeError("cancel unavailable"), None]
+''',
+)
+
+replace_once(
+    "tests/test_modal_execution.py",
+    '''    call_handle = Mock()
+    call_handle.object_id = "fc-delayed-spawn"
+
+    def delayed_spawn(_request: dict[str, object]) -> object:
+''',
+    '''    call_handle = Mock()
+    call_handle.object_id = "fc-delayed-spawn"
+    call_handle.get.side_effect = InputCancellation("cancelled")
+
+    def delayed_spawn(_request: dict[str, object]) -> object:
+''',
+)
+replace_once(
+    "tests/test_modal_execution.py",
+    '''    call_handle.get.assert_not_called()
+    call_handle.cancel.assert_called_once_with(terminate_containers=False)
+''',
+    '''    call_handle.get.assert_called_once_with(timeout=30.0)
+    call_handle.cancel.assert_called_once_with(terminate_containers=False)
+''',
+)
+
+replace_once(
+    "tests/test_modal_execution.py",
+    '''    def fail_poll(*, timeout: float) -> object:
+        assert timeout > 0
+        clock["now"] = 0.1
+        raise ServiceError("poll failed")
+
+    call_handle.get.side_effect = fail_poll
+    call_handle.cancel.side_effect = [RuntimeError("cancel unavailable"), None]
+''',
+    '''    def fail_poll(*, timeout: float) -> object:
+        assert timeout > 0
+        if call_handle.cancel.call_count:
+            raise InputCancellation("cancelled")
+        clock["now"] = 0.1
+        raise ServiceError("poll failed")
+
+    call_handle.get.side_effect = fail_poll
+    call_handle.cancel.side_effect = [RuntimeError("cancel unavailable"), None]
+''',
+)
+
+replace_once(
+    "tests/test_vision_runtime_recovery.py",
+    '''        "clipper-open-editor",
+        '{"event":"vision_generation_start","execution_id":"exec-1",'
+        '"worker_lifecycle_id":"worker-1","task":"source_policy_visual_scout",'
+        '"attempt":1,"frames":32}',
+''',
+    '''        "clipper-open-editor",
+        "2026-09-11T13:00:00Z fc-VISION-STALL "
+        '{"event":"vision_generation_start","execution_id":"exec-1",'
+        '"worker_lifecycle_id":"worker-1","task":"source_policy_visual_scout",'
+        '"attempt":1,"frames":32}',
+''',
+)
+replace_once(
+    "tests/test_vision_runtime_recovery.py",
+    '    assert spy.abort_event["worker_lifecycle_id"] == "worker-1"\n',
+    '    assert spy.abort_event["invocation_id"] == "fc-VISION-STALL"\n',
+)
+replace_once(
+    "tests/test_vision_runtime_recovery.py",
+    '''        "clipper-open-editor",
+        '{"event":"vision_generation_start","execution_id":"exec-1",'
+        '"worker_lifecycle_id":"worker-1","task":"source_policy_visual_scout",'
+        '"attempt":1,"frames":8}',
+''',
+    '''        "clipper-open-editor",
+        "2026-09-11T13:00:00Z fc-VISION-COMPLETE "
+        '{"event":"vision_generation_start","execution_id":"exec-1",'
+        '"worker_lifecycle_id":"worker-1","task":"source_policy_visual_scout",'
+        '"attempt":1,"frames":8}',
+''',
+)
+replace_once(
+    "tests/test_vision_runtime_recovery.py",
+    '''        "clipper-open-editor",
+        '{"event":"vision_generation_complete","execution_id":"exec-1",'
+        '"worker_lifecycle_id":"worker-1","attempt":1,"frames":8,'
+        '"generated_tokens":123,"duration_seconds":2.5}',
+''',
+    '''        "clipper-open-editor",
+        "2026-09-11T13:00:01Z fc-VISION-COMPLETE "
+        '{"event":"vision_generation_complete","execution_id":"exec-1",'
+        '"worker_lifecycle_id":"worker-1","task":"source_policy_visual_scout",'
+        '"attempt":1,"frames":8,"generated_tokens":123,"duration_seconds":2.5}',
+''',
+)
