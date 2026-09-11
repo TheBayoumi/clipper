@@ -63,7 +63,14 @@ jobs:
           holder = [None]
           with sync_playwright() as playwright:
               browser = playwright.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
-              page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+              page = browser.new_page(
+                  viewport={'width': 1440, 'height': 1000},
+                  user_agent=(
+                      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                      'AppleWebKit/537.36 (KHTML, like Gecko) '
+                      'Chrome/139.0.0.0 Safari/537.36'
+                  ),
+              )
               def handle(response):
                   if '/folders/3b199368-5974-4eb1-a450-327a4e84c260/assets' not in response.url or response.status != 200:
                       return
