@@ -53,8 +53,8 @@ jobs:
               'class {class_name}:'
           )
           for class_name in ("VisionModel", "VisionModelLarge"):
-              old = common.format(class_name=class_name)
-              new = replacement.format(class_name=class_name)
+              old = common.replace("{class_name}", class_name)
+              new = replacement.replace("{class_name}", class_name)
               count = text.count(old)
               if count != 1:
                   raise RuntimeError(
