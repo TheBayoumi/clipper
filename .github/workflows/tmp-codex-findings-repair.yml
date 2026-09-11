@@ -52,12 +52,11 @@ jobs:
       - name: Full pytest and coverage gate
         run: pytest
 
-      - name: Commit validated fixes and remove temporary repair machinery
+      - name: Commit validated non-workflow fixes
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm -f .github/workflows/tmp-codex-findings-repair.yml scripts/tmp_codex_findings_repair.py scripts/tmp_align_codex_repair.py
-          git add src/clipper/providers/modal.py src/clipper/modal_execution.py src/clipper/editorial_integrity.py scripts/modal_execution_spy.py scripts/modal_hilp_watchdog.py .github/workflows/production-pipeline.yml tests/test_modal_execution.py tests/test_modal_execution_spy.py tests/test_vision_runtime_recovery.py tests/test_visual_presence_policy.py tests/test_production_workflow_contract.py
+          git add src/clipper/providers/modal.py src/clipper/modal_execution.py src/clipper/editorial_integrity.py scripts/modal_execution_spy.py scripts/modal_hilp_watchdog.py tests/test_modal_execution.py tests/test_modal_execution_spy.py tests/test_vision_runtime_recovery.py tests/test_visual_presence_policy.py tests/test_production_workflow_contract.py
           git commit -m "fix: close Codex production safety findings"
           git push origin HEAD:feat/contentrewards-campaign-factory
