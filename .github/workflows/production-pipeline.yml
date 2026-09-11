@@ -53,7 +53,7 @@ permissions:
   actions: read
   contents: read
   issues: write
-  pull-requests: write
+  pull-requests: read
 
 env:
   MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
