@@ -230,14 +230,14 @@ jobs:
           payload = {
               "ref": sys.argv[1],
               "inputs": {
-                  "confirm_production": True,
-                  "fresh_inference": marker.get("fresh_inference") is True,
+                  "confirm_production": "true",
+                  "fresh_inference": "true" if marker.get("fresh_inference") is True else "false",
                   "resume_from_run_id": str(marker.get("resume_from_run_id") or ""),
                   "campaign_brief": str(marker.get("campaign_brief") or ""),
                   "target_video_id": str(marker.get("target_video_id") or ""),
-                  "editorial_acceptance_only": marker.get("editorial_acceptance_only") is True,
-                  "max_gpu_seconds": marker.get("max_gpu_seconds", 21600),
-                  "max_estimated_usd": marker.get("max_estimated_usd", 10),
+                  "editorial_acceptance_only": "true" if marker.get("editorial_acceptance_only") is True else "false",
+                  "max_gpu_seconds": str(marker.get("max_gpu_seconds", 21600)),
+                  "max_estimated_usd": str(marker.get("max_estimated_usd", 10)),
               },
           }
           print(json.dumps(payload))
