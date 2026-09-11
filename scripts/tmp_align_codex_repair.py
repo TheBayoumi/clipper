@@ -28,6 +28,20 @@ text = text.replace(
     'campaign contains no explicit authorized targets',
 )
 
+# Make the generated vision-cancellation branch explicit instead of swallowing
+# the terminal cancellation exception with `pass`.
+text = text.replace(
+    '''            except Exception:
+                pass
+            self._instance_handle = None
+            raise ModalRemoteError(''',
+    '''            except Exception:
+                self._instance_handle = None
+            else:
+                self._instance_handle = None
+            raise ModalRemoteError(''',
+)
+
 # Replace the repair-script source-payload mutation with a pattern that matches
 # the current runner without moving the existing budget-exhaustion guard.
 start_marker = '''replace_once(
@@ -71,7 +85,9 @@ replacement = '''replace_once(
             for candidate, evidence in zip(candidates, sources, strict=True)
         }
         if actual_hashes != expected_hashes:
-            raise RuntimeError("resume provenance source hashes do not match acquired source masters")
+            raise RuntimeError(
+                "resume provenance source hashes do not match acquired source masters"
+            )
 """,
 )
 '''
