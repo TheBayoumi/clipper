@@ -41,6 +41,9 @@ def main() -> None:
         'diagnostics': diagnostics,
         'candidate_count_after_semantic_gates': len(plans),
         'selected': [],
+        'finishing_move_like_count': len(timeline.finishing_moves),
+        'verified_finishing_move_count': len(timeline.finishing_moves),
+        'finishing_moves': [asdict(item) for item in timeline.finishing_moves],
         'preview_note': (
             'Review proxies only. Final production remains 1920x1080 '
             '60000/1001 at 250 Mbps CBR.'
@@ -58,8 +61,6 @@ def main() -> None:
 
     selected = semantic.select_plans(plans, config)
     report['selected'] = [asdict(item) for item in selected]
-    report['verified_finishing_move_count'] = len(timeline.finishing_moves)
-    report['finishing_moves'] = [asdict(item) for item in timeline.finishing_moves]
     report_path.write_text(json.dumps(report, indent=2), encoding='utf-8')
 
     sheets = args.output_dir / 'contact_sheets'
