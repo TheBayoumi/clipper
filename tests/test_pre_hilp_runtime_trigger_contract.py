@@ -37,8 +37,8 @@ def test_bootstrap_waits_for_the_specific_new_deployment_before_production() -> 
     assert "deploy-run-ids-before.json" in workflow
     assert 'int(item["id"]) not in before' in workflow
     assert "actions/runs/${selected_deployment_run_id}" in workflow
-    assert 'head_sha != sys.argv[1]' in workflow
-    assert 'head_branch != sys.argv[2]' in workflow
+    assert "head_sha != sys.argv[1]" in workflow
+    assert "head_branch != sys.argv[2]" in workflow
     assert "only after fresh deploy run" in workflow
 
 
