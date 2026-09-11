@@ -31,8 +31,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Run V3.1 semantic self-test
-        run: python scripts/mw4_semantic_gameplay_v3_1.py --self-test
+      - name: Run refined V3.1 semantic self-test
+        run: python scripts/mw4_semantic_gameplay_v3_1_refined.py --self-test
 
       - name: Resolve official MediaSilo source
         env:
@@ -119,11 +119,11 @@ jobs:
           assert video['avg_frame_rate'] == '60000/1001'
           PY
 
-      - name: Render V3.1 engagement-driven semantic masters
+      - name: Render refined V3.1 engagement-driven semantic masters
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
-          python scripts/mw4_fullframe_retention_v3_1.py \
+          python scripts/mw4_fullframe_retention_v3_1_refined.py \
             --source-key "$SOURCE_KEY" \
             --source "raw_sources/$SOURCE_KEY.mp4" \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
@@ -145,6 +145,7 @@ jobs:
           assert 2 <= len(manifest['outputs']) <= 4
           for output in manifest['outputs']:
               plan = output['editorial_plan']
+              assert 10.0 <= plan['output_duration'] <= 20.0
               assert plan['opening_quality'] >= 0.42
               assert plan['ending_quality'] >= 0.40
               assert plan['retention_quality'] >= 0.36
@@ -155,7 +156,7 @@ jobs:
                   assert plan['effect_profile'] == 'finishing_move_hero'
                   assert plan['finishing_move']['start'] - plan['start'] <= 0.48
               assert all(output['qa']['checks'].values())
-          print(f'{source_key}: V3.1 semantic production contract passed')
+          print(f'{source_key}: refined V3.1 semantic production contract passed')
           PY
 
       - name: Upload V3.1 masters and QA
