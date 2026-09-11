@@ -2,7 +2,8 @@
   "campaign": "Call of Duty - Modern Warfare 4 Multiplayer Beta Gameplay Clipping",
   "target_count": 12,
   "count_per_source": 4,
-  "duration_choices_seconds": [10.5, 11.5, 12.5, 13.5],
+  "minimum_count_per_source": 2,
+  "duration_choices_seconds": [11.0, 12.0, 13.0, 14.0, 15.0],
   "candidate_step_seconds": 0.5,
   "minimum_gap_seconds": 0.5,
   "output": {
@@ -31,17 +32,61 @@
       "precision_punch",
       "impact_flash",
       "chain_escalation",
-      "cold_open_teaser"
+      "cold_open_teaser",
+      "clean_pressure"
     ]
+  },
+  "semantic_analysis": {
+    "engine": "deterministic-gameplay-v1",
+    "sample_fps": 6.0,
+    "sample_width": 256,
+    "sample_height": 144,
+    "audio_sample_rate": 12000,
+    "dull_interest_threshold": 0.28,
+    "event_thresholds": {
+      "combat_burst": 0.62,
+      "outcome_like": 0.58,
+      "impact": 0.68,
+      "contact": 0.60
+    },
+    "notes": "Stage 1 fuses center/global motion, HUD-region changes, luminance/red flashes, audio energy/transients and temporal context. outcome_like is a deterministic gameplay outcome hypothesis, not a guaranteed kill label."
+  },
+  "semantic_editor": {
+    "engine": "semantic-editor-v1",
+    "minimum_meaningful_events": 2,
+    "opening_seconds": 1.0,
+    "low_interest_threshold": 0.30,
+    "minimum_weak_quarter_interest": 0.28,
+    "maximum_low_interest_fraction": 0.42,
+    "min_dull_action_seconds": 0.65,
+    "max_single_dull_action_seconds": 2.20,
+    "max_unexplained_low_interest_run_seconds": 1.0,
+    "event_protection_seconds": 0.38,
+    "max_editorial_actions": 2,
+    "traversal_threshold": 0.58,
+    "traversal_speed": 1.75,
+    "max_speed": 2.0,
+    "max_total_removed_equivalent_seconds": 2.5,
+    "minimum_output_seconds": 10.0,
+    "maximum_output_seconds": 20.0,
+    "cold_open_min_event_delay_seconds": 1.35,
+    "cold_open_min_interest_gain": 0.18,
+    "impact_flash_min_confidence": 0.76,
+    "routing_policy": {
+      "cold_open_teaser": "only when a later high-confidence semantic payoff materially exceeds the opening",
+      "chain_escalation": "three coherent outcome/combat events within the same action chain",
+      "impact_flash": "high-confidence audiovisual impact only",
+      "precision_punch": "isolated outcome-like event",
+      "clean_pressure": "sustained combat where readability is more valuable than extra effects"
+    }
   },
   "performance_targets": {
     "retention_target_percent": 30,
     "retention_proxy_min": 0.30,
     "engagement_proxy_min": 0.30,
-    "minimum_weak_quarter_activity": 0.18,
-    "maximum_low_activity_fraction": 0.55,
     "campaign_engagement_floor_percent": 0.20,
-    "engagement_goal": "optimize materially above the 0.20% campaign floor; actual post engagement cannot be guaranteed before publication"
+    "engagement_goal": "optimize materially above the 0.20% campaign floor; actual TikTok retention or engagement cannot be guaranteed before publication",
+    "no_dull_moment_contract": "after semantic cuts/compression, no unexplained low-interest run may exceed 1.0 second"
   },
   "excluded_windows": {
     "week2": [
@@ -64,6 +109,6 @@
   "duplicate_policy": {
     "allow_overlap_with_prior_work": false,
     "allow_overlap_with_new_batch": false,
-    "notes": "Keep all new selections outside the previously used MW4 windows and mutually non-overlapping. Cold-open teasers may repeat a moment only inside their own clip as an intentional retention device."
+    "notes": "Keep all new selections outside previously used MW4 windows and mutually non-overlapping. Cold-open teasers may repeat a moment only inside their own clip as an intentional retention device."
   }
 }
