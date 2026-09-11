@@ -15,7 +15,7 @@ jobs:
   shadow:
     name: shadow-${{ matrix.source }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
@@ -36,8 +36,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Run hardened V3.1 semantic self-test
-        run: python scripts/mw4_semantic_gameplay_v3_1_final.py --self-test
+      - name: Verify the single V3.1 implementation
+        run: |
+          python -m py_compile \
+            scripts/mw4_semantic_gameplay_v3_1_final.py \
+            scripts/mw4_fullframe_retention_v3_1.py \
+            scripts/mw4_v3_1_contract.py
+          python scripts/mw4_semantic_gameplay_v3_1_final.py --self-test
+          python scripts/mw4_v3_1_contract.py --self-test
 
       - name: Resolve official MediaSilo source
         env:
@@ -58,7 +64,10 @@ jobs:
           }
           holder = [None]
           with sync_playwright() as playwright:
-              browser = playwright.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+              browser = playwright.chromium.launch(
+                  headless=True,
+                  args=['--no-sandbox', '--disable-dev-shm-usage'],
+              )
               page = browser.new_page(
                   viewport={'width': 1440, 'height': 1000},
                   user_agent=(
@@ -80,6 +89,7 @@ jobs:
               page.goto(os.environ['MEDIASILO_URL'], wait_until='domcontentloaded', timeout=90000)
               page.wait_for_timeout(25000)
               browser.close()
+
           if not holder[0]:
               raise RuntimeError('MediaSilo assets were not resolved')
           for asset in holder[0]:
@@ -90,13 +100,16 @@ jobs:
               url = derivative.get('url') or (derivative.get('properties') or {}).get('url')
               if not url:
                   raise RuntimeError('No usable derivative')
-              Path('/tmp/resolved_source.json').write_text(json.dumps({'title': asset['title'], 'url': url}), encoding='utf-8')
+              Path('/tmp/resolved_source.json').write_text(
+                  json.dumps({'title': asset['title'], 'url': url}),
+                  encoding='utf-8',
+              )
               break
           else:
               raise RuntimeError(f'Official source not found: {wanted[source_key]}')
           PY
 
-      - name: Download official source
+      - name: Download and verify official source
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
@@ -104,8 +117,10 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import subprocess
           import urllib.request
           from pathlib import Path
+
           source_key = os.environ['SOURCE_KEY']
           selected = json.loads(Path('/tmp/resolved_source.json').read_text(encoding='utf-8'))
           target = Path('raw_sources') / f'{source_key}.mp4'
@@ -116,66 +131,89 @@ jobs:
                   if not block:
                       break
                   output.write(block)
+
+          probe = json.loads(subprocess.check_output([
+              'ffprobe', '-v', 'error',
+              '-show_entries', 'stream=width,height,avg_frame_rate:format=duration',
+              '-of', 'json', str(target),
+          ], text=True))
+          video = next(item for item in probe['streams'] if item.get('width'))
+          assert (video['width'], video['height']) == (1920, 1080)
+          assert video['avg_frame_rate'] == '60000/1001'
           PY
 
-      - name: Render hardened V3.1 review previews
+      - name: Run canonical V3.1 shadow renderer
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
-          mkdir -p shadow/${SOURCE_KEY}
-          python scripts/mw4_v3_1_shadow_preview_refined.py \
+          python scripts/mw4_fullframe_retention_v3_1.py \
             --source-key "$SOURCE_KEY" \
             --source "raw_sources/$SOURCE_KEY.mp4" \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
-            --output-dir "shadow/$SOURCE_KEY"
+            --output-dir "shadow/$SOURCE_KEY" \
+            --mode shadow
 
-      - name: Verify hardened V3.1 source contract
+      - name: Enforce the single V3.1 source contract
+        if: always()
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          source_key = os.environ['SOURCE_KEY']
-          report = json.loads((Path('shadow') / source_key / f'{source_key}_shadow_refined.json').read_text(encoding='utf-8'))
-          selected = report['selected']
-          assert 2 <= len(selected) <= 4
-          for plan in selected:
-              assert 10.0 <= plan['output_duration'] <= 20.0
-              assert plan['opening_quality'] >= 0.42
-              assert plan['ending_quality'] >= 0.40
-              assert plan['retention_quality'] >= 0.36
-              assert plan['payoff_quality'] >= 0.34
-              assert plan['max_unexplained_low_interest_run_seconds'] <= 0.90
-              if plan['finishing_move'] is not None:
-                  assert plan['story_type'] == 'finishing_move_open'
-                  assert plan['effect_profile'] == 'finishing_move_hero'
-                  assert plan['finishing_move']['start'] - plan['segments'][0]['start'] <= 0.48
-          if report['verified_finishing_move_count']:
-              assert any(plan['story_type'] == 'finishing_move_open' for plan in selected), (
-                  'Verified Finishing Move exists but was not selected as an opening hero clip'
-              )
-          assert report['unplanned_source_cut_count'] == 0, report.get('unplanned_source_cuts')
-          print(json.dumps({
-              'source': source_key,
-              'selected': len(selected),
-              'stories': [p['story_type'] for p in selected],
-              'verified_finishing_moves': report['verified_finishing_move_count'],
-              'unplanned_source_cuts': report['unplanned_source_cut_count'],
-              'diagnostic_pass_count': report['diagnostics']['counts']['pass'],
-          }))
-          PY
+          python scripts/mw4_v3_1_contract.py \
+            --config campaigns/mw4-fullframe-retention-v3-1.json \
+            --source-manifest "shadow/$SOURCE_KEY/${SOURCE_KEY}_manifest_v3_1.json"
 
-      - name: Upload hardened V3.1 previews and diagnostics
+      - name: Upload V3.1 review MP4s and QA
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: MW4-semantic-v3-1-hardened-${{ matrix.source }}
+          name: MW4-semantic-v3-1-shadow-${{ matrix.source }}
           path: |
             shadow/${{ matrix.source }}/*.json
             shadow/${{ matrix.source }}/*.mp4
             shadow/${{ matrix.source }}/contact_sheets/*.jpg
           retention-days: 3
           compression-level: 0
+          if-no-files-found: warn
+
+      - name: Upload batch-contract summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-v3-1-contract-shadow-${{ matrix.source }}
+          path: shadow/${{ matrix.source }}/${{ matrix.source }}_pipeline_summary.json
+          retention-days: 3
+          if-no-files-found: warn
+
+  batch-contract:
+    name: shadow-batch-contract
+    needs: shadow
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download source summaries only
+        uses: actions/download-artifact@v4
+        with:
+          pattern: MW4-v3-1-contract-shadow-*
+          path: batch-contract
+          merge-multiple: true
+
+      - name: Enforce batch target and Finishing Move contract
+        run: |
+          python scripts/mw4_v3_1_contract.py \
+            --config campaigns/mw4-fullframe-retention-v3-1.json \
+            --batch-root batch-contract | tee batch-contract-result.json
+
+      - name: Upload batch contract
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-v3-1-shadow-batch-contract
+          path: batch-contract-result.json
+          retention-days: 3
           if-no-files-found: warn
