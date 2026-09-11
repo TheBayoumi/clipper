@@ -27,6 +27,7 @@
     "source_audio_only": true,
     "effect_profiles": [
       "finishing_move_hero",
+      "semantic_montage",
       "precision_punch",
       "impact_flash",
       "chain_escalation",
@@ -60,11 +61,12 @@
     "local_refine_radius_seconds": 0.8
   },
   "source_integrity": {
-    "policy": "automatic shot boundaries plus visually verified missed source-stringout edit windows; normal stories may never cross these windows",
+    "policy": "automatic shot boundaries plus visually verified missed source-stringout edit windows; contiguous stories may never cross them, while only explicitly planned semantic montage transitions may bridge separate source shots",
     "verified_cut_windows": {
       "r1": [
         [40.5, 41.0],
         [46.5, 47.0],
+        [53.75, 54.25],
         [225.0, 225.5]
       ],
       "batch2": [],
@@ -73,9 +75,10 @@
       ]
     },
     "reject_segment_crossing_verified_cut": true,
-    "reject_normal_edit_bridge_across_verified_cut": true,
-    "allow_cross_shot_transition_only_for_finishing_move_open": true,
-    "notes": "These windows came from visual QA of the real official-reel V3.1 shadow MP4s. They are source structure, not clip exclusions. They prevent the same stringout continuity failures from recurring while the automatic detector remains conservative to avoid false cuts on ADS, damage/smoke and impact effects."
+    "reject_unplanned_cross_shot_bridge": true,
+    "allow_planned_transition_for_finishing_move_open": true,
+    "allow_planned_transition_for_semantic_montage": true,
+    "notes": "The R1 53.75-54.25 window was added after the canonical shadow MP4 visibly jumped from the snowy rooftop sequence into an unrelated training-yard sequence around source 54.07 s. Verified windows are source structure, not clip exclusions. Deliberate semantic montage transitions are represented as separate source segments and receive an intentional transition effect; accidental stringout crossings remain fatal."
   },
   "finishing_move_detector": {
     "enabled": true,
@@ -142,6 +145,24 @@
       "maximum_speedup_source_seconds": 0.85,
       "prefer_boundary_trim_before_internal_edit": true
     },
+    "semantic_montage": {
+      "enabled": true,
+      "minimum_moment_seconds": 2.4,
+      "maximum_moment_seconds": 6.5,
+      "maximum_moments_per_clip": 3,
+      "maximum_output_seconds": 15.5,
+      "minimum_moment_opening_quality": 0.38,
+      "minimum_moment_retention_quality": 0.30,
+      "minimum_moment_payoff_confidence": 0.58,
+      "minimum_moment_weakest_quarter_interest": 0.24,
+      "maximum_moment_low_interest_fraction": 0.42,
+      "prefer_different_source_shots": true,
+      "selection_penalty": 0.015,
+      "transition_flash_opacity": 0.08,
+      "transition_flash_before_seconds": 0.025,
+      "transition_flash_after_seconds": 0.055,
+      "notes": "Semantic montage is a controlled fallback that combines two or three individually strong payoff moments into one 10-15.5 s clip. Each source segment must stay within one hardened shot. Cross-shot joins are explicit planned edits, never accidental stringout continuation. Normal contiguous stories are always selected first."
+    },
     "selection": {
       "candidate_mode": "engagement_driven_explained_dullness",
       "story_diversity_bonus": 0.06,
@@ -157,21 +178,25 @@
   "story_quality_gates": {
     "opening_min": {
       "default": 0.42,
-      "finishing_move_open": 0.50
+      "finishing_move_open": 0.50,
+      "semantic_montage": 0.44
     },
     "ending_min": {
       "default": 0.40,
-      "sustained_pressure": 0.50
+      "sustained_pressure": 0.50,
+      "semantic_montage": 0.42
     },
     "retention_min": {
       "default": 0.36,
-      "sustained_pressure": 0.44
+      "sustained_pressure": 0.44,
+      "semantic_montage": 0.37
     },
     "payoff_min": {
       "default": 0.34,
       "engagement_chain": 0.28,
       "sustained_pressure": 0.16,
-      "finishing_move_open": 0.34
+      "finishing_move_open": 0.34,
+      "semantic_montage": 0.40
     }
   },
   "performance_targets": {
@@ -193,6 +218,6 @@
   "duplicate_policy": {
     "allow_overlap_with_prior_work": true,
     "allow_overlap_with_new_batch": false,
-    "notes": "V3.1 re-evaluates the complete official reels. Selection suppresses neighboring variants around the same opening engagement and overlapping source segments, but does not assume the source scenes themselves are duplicates."
+    "notes": "V3.1 re-evaluates the complete official reels. Selection suppresses neighboring variants around the same opening engagement and rejects any source-segment reuse across outputs in the same source. Semantic montage may only use source moments not already consumed by higher-priority selected clips."
   }
 }
