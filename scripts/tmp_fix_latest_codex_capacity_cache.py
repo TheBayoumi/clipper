@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 
 
@@ -119,6 +117,9 @@ def test_source_policy_capacity_cache_write_failure_does_not_discard_successful_
     assert result.usage.input_units > 0
     assert attempts["count"] >= 3
 '''
-if "test_source_policy_capacity_cache_write_failure_does_not_discard_successful_inference" in test_source:
+regression_name = (
+    "test_source_policy_capacity_cache_write_failure_does_not_discard_successful_inference"
+)
+if regression_name in test_source:
     raise RuntimeError("capacity-cache regression test already exists")
 test_path.write_text(test_source.rstrip() + regression + "\n", encoding="utf-8")
