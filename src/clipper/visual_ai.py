@@ -19,6 +19,7 @@ Severity = Literal["LOW", "MEDIUM", "HIGH"]
 VISUAL_SAMPLE_MAX_EDGE = 960
 SOURCE_POLICY_SAMPLE_INTERVAL_SECONDS = 4.0
 SOURCE_POLICY_SINGLE_FRAME_RETRIES = 2
+SOURCE_POLICY_MAX_BATCH_FRAMES = 32
 LOGGER = logging.getLogger(__name__)
 
 
@@ -761,6 +762,8 @@ def _is_vision_capacity_error(exc: BaseException) -> bool:
             "payload too large",
             "visionoutputcapacityerror",
             "vision output capacity exhausted",
+            "visiongenerationdeadlineerror",
+            "vision generation exceeded the bounded client deadline",
         )
     )
 
@@ -1065,10 +1068,14 @@ def scout_visual_timeline(
         capacity_key, largest_good, smallest_bad, observed_output_tokens_per_item = (
             _load_capacity_state(cache, requested_identity=requested_identity)
         )
-        batch_size = largest_good if largest_good > 0 else 1
+        largest_good = min(largest_good, SOURCE_POLICY_MAX_BATCH_FRAMES)
+        batch_size = min(
+            SOURCE_POLICY_MAX_BATCH_FRAMES,
+            largest_good if largest_good > 0 else 1,
+        )
 
         while work:
-            size = min(batch_size, len(work))
+            size = min(batch_size, len(work), SOURCE_POLICY_MAX_BATCH_FRAMES)
             subset = tuple(work[:size])
             subset_times = tuple(item[0] for item in subset)
             subset_frames = [item[1] for item in subset]
@@ -1111,18 +1118,31 @@ def scout_visual_timeline(
                         events.extend(completed_events)
                         work = retained + work[size:]
                         if not retained:
-                            batch_size = min(max(1, batch_size), len(work)) if work else 0
+                            batch_size = (
+                                min(
+                                    SOURCE_POLICY_MAX_BATCH_FRAMES,
+                                    max(1, batch_size),
+                                    len(work),
+                                )
+                                if work
+                                else 0
+                            )
                             continue
 
                 if size <= 1:
                     raise RuntimeError(
                         "vision capacity exhausted for an indivisible single-frame inspection"
                     ) from exc
+                if size <= largest_good:
+                    largest_good = max(0, size - 1)
                 smallest_bad = size if smallest_bad is None else min(smallest_bad, size)
-                batch_size = _next_batch_after_capacity_failure(
-                    size,
-                    largest_good=largest_good,
-                    smallest_bad=smallest_bad,
+                batch_size = min(
+                    SOURCE_POLICY_MAX_BATCH_FRAMES,
+                    _next_batch_after_capacity_failure(
+                        size,
+                        largest_good=largest_good,
+                        smallest_bad=smallest_bad,
+                    ),
                 )
                 _persist_capacity_state(
                     cache,
@@ -1141,12 +1161,15 @@ def scout_visual_timeline(
                 batch_results,
             )
             work = work[size:]
-            largest_good = max(largest_good, size)
-            batch_size = _next_batch_after_success(
-                size,
-                largest_good=largest_good,
-                smallest_bad=smallest_bad,
-                remaining=len(work),
+            largest_good = min(SOURCE_POLICY_MAX_BATCH_FRAMES, max(largest_good, size))
+            batch_size = min(
+                SOURCE_POLICY_MAX_BATCH_FRAMES,
+                _next_batch_after_success(
+                    size,
+                    largest_good=largest_good,
+                    smallest_bad=smallest_bad,
+                    remaining=len(work),
+                ),
             )
             _persist_capacity_state(
                 cache,

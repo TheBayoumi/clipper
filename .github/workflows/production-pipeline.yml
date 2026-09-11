@@ -53,7 +53,7 @@ permissions:
   actions: read
   contents: read
   issues: write
-  pull-requests: read
+  pull-requests: write
 
 env:
   MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -66,6 +66,8 @@ env:
   CLIPPER_EDITORIAL_GENERATION_DEADLINE_SECONDS: 300
   CLIPPER_EDITORIAL_GENERATION_DEADLINE_TOLERANCE_SECONDS: 30
   CLIPPER_MODAL_GENERATION_STALL_SECONDS: 720
+  CLIPPER_VISION_CALL_DEADLINE_SECONDS: 360
+  CLIPPER_MODAL_VISION_STALL_SECONDS: 420
 
 jobs:
   production-render-evidence:

@@ -37,6 +37,7 @@ RECOGNIZED_EVENTS = {
     "vision_generation_complete",
     "vision_json_validation",
     "vision_generation_capacity_expand",
+    "vision_inference_error",
     "production_cycle_terminal",
 }
 
@@ -54,6 +55,7 @@ class ModalExecutionSpy:
         root_function_call_id: str | None = None,
         execution_id: str | None = None,
         generation_stall_seconds: float | None = None,
+        vision_stall_seconds: float | None = None,
     ) -> None:
         self.apps = apps
         self.pipeline_app = apps[-1] if apps else ""
@@ -76,6 +78,9 @@ class ModalExecutionSpy:
         self.started_at = datetime.now(UTC).isoformat()
         self._last_request_plan_signature: tuple[object, ...] | None = None
         self._active_editorial_calls: dict[str, tuple[str, float]] = {}
+        self._active_vision_generations: dict[
+            str, tuple[str, int | None, int | None, float]
+        ] = {}
         self._diagnostic_event_counts: dict[str, int] = {}
         self._terminal_event: dict[str, Any] | None = None
         self._terminal_seen_at: float | None = None
@@ -87,6 +92,13 @@ class ModalExecutionSpy:
         )
         if not math.isfinite(self.generation_stall_seconds) or self.generation_stall_seconds <= 0:
             raise ValueError("generation stall timeout must be finite and positive")
+        self.vision_stall_seconds = (
+            float(vision_stall_seconds)
+            if vision_stall_seconds is not None
+            else float(os.getenv("CLIPPER_MODAL_VISION_STALL_SECONDS", "420"))
+        )
+        if not math.isfinite(self.vision_stall_seconds) or self.vision_stall_seconds <= 0:
+            raise ValueError("vision stall timeout must be finite and positive")
 
     @staticmethod
     def _positive_int(value: object) -> int | None:
@@ -207,6 +219,11 @@ class ModalExecutionSpy:
             "recovery_action",
             "reason",
             "worker_lifecycle_id",
+            "attempt",
+            "frames",
+            "generated_tokens",
+            "saturated",
+            "valid",
             "cache_implementation",
             "from_cache_implementation",
             "to_cache_implementation",
@@ -553,6 +570,20 @@ class ModalExecutionSpy:
                     "duration_seconds": generation.get("duration_seconds"),
                 },
             )
+        vision = self.latest.get("vision_generation_complete") or self.latest.get(
+            "vision_generation_start"
+        )
+        if vision:
+            row(
+                "Vision progress",
+                {
+                    "active": len(self._active_vision_generations),
+                    "frames": vision.get("frames"),
+                    "attempt": vision.get("attempt"),
+                    "generated_tokens": vision.get("generated_tokens"),
+                    "duration_seconds": vision.get("duration_seconds"),
+                },
+            )
         oom = self.latest.get("editorial_oom")
         if oom:
             row(
@@ -665,6 +696,18 @@ class ModalExecutionSpy:
                     violation = self._validate_event(compact)
             else:
                 self._diagnostic_event_counts[name] = self._diagnostic_event_counts.get(name, 0) + 1
+                lifecycle_id = str(compact.get("worker_lifecycle_id") or "")
+                if self._terminal_event is None and name == "vision_generation_start":
+                    if lifecycle_id:
+                        self._active_vision_generations[lifecycle_id] = (
+                            task,
+                            self._positive_int(compact.get("attempt")),
+                            self._positive_int(compact.get("frames")),
+                            observed_at,
+                        )
+                elif name in {"vision_generation_complete", "vision_inference_error"}:
+                    if lifecycle_id:
+                        self._active_vision_generations.pop(lifecycle_id, None)
 
             if authoritative and name in {
                 "editorial_remote_call_terminal",
@@ -760,6 +803,33 @@ class ModalExecutionSpy:
                 },
             )
 
+    def _check_stalled_vision_generations(self) -> None:
+        with self.lock:
+            if self.abort_reason is not None or not self._active_vision_generations:
+                return
+            active = list(self._active_vision_generations.items())
+        now = time.monotonic()
+        stalled = [
+            (lifecycle_id, task, attempt, frames, now - started)
+            for lifecycle_id, (task, attempt, frames, started) in active
+            if now - started >= self.vision_stall_seconds
+        ]
+        if stalled:
+            lifecycle_id, task, attempt, frames, elapsed = max(stalled, key=lambda item: item[4])
+            self._set_abort(
+                "vision generation made no terminal progress before watchdog deadline",
+                {
+                    "event": "vision_generation_stall",
+                    "worker_lifecycle_id": lifecycle_id,
+                    "task": task,
+                    "attempt": attempt,
+                    "frames": frames,
+                    "elapsed_seconds": round(elapsed, 3),
+                    "stall_limit_seconds": self.vision_stall_seconds,
+                    "execution_id": self.execution_id,
+                },
+            )
+
     def wait_for_producer_barrier(
         self,
         *,
@@ -783,6 +853,18 @@ class ModalExecutionSpy:
             time.sleep(min(0.1, max(0.01, deadline - now)))
 
     def summary(self) -> dict[str, object]:
+        with self.lock:
+            active_vision = [
+                {
+                    "worker_lifecycle_id": lifecycle_id,
+                    "task": task,
+                    "attempt": attempt,
+                    "frames": frames,
+                }
+                for lifecycle_id, (task, attempt, frames, _started) in sorted(
+                    self._active_vision_generations.items()
+                )
+            ]
         return {
             "status": "ABORT" if self.abort_reason else "PASS",
             "abort_reason": self.abort_reason,
@@ -791,7 +873,9 @@ class ModalExecutionSpy:
             "root_function_call_id": self.root_function_call_id,
             "execution_id": self.execution_id,
             "generation_stall_seconds": self.generation_stall_seconds,
+            "vision_stall_seconds": self.vision_stall_seconds,
             "active_editorial_calls": sorted(self._active_editorial_calls),
+            "active_vision_generations": active_vision,
             "diagnostic_event_counts": self._diagnostic_event_counts,
             "terminal_seen": self._terminal_event is not None,
             "terminal_event": self._terminal_event,
@@ -817,6 +901,7 @@ class ModalExecutionSpy:
             thread.start()
         while not self.stop.wait(1):
             self._check_stalled_editorial_calls()
+            self._check_stalled_vision_generations()
             if self.abort_reason is not None:
                 break
             if all(not thread.is_alive() for thread in threads):

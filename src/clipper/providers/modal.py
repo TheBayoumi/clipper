@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import importlib
 import json
+import math
 import os
 import time
 import uuid
@@ -390,7 +391,7 @@ class ModalJSONProvider:
             details=details,
         )
 
-    def invoke(self, payload: dict[str, Any]) -> ProviderResult[dict[str, Any]]:
+    def _prepare_request(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = dict(payload)
         execution_id = os.getenv("CLIPPER_EXECUTION_ID", "").strip()
         expected_git_sha = (
@@ -400,7 +401,9 @@ class ModalJSONProvider:
             request.setdefault("execution_id", execution_id)
         if expected_git_sha:
             request.setdefault("expected_git_sha", expected_git_sha.lower())
-        response = self._function().remote(request)
+        return request
+
+    def _result_from_response(self, response: object) -> ProviderResult[dict[str, Any]]:
         if not isinstance(response, dict):
             raise ValueError("Modal provider returned an invalid response")
         self._raise_remote_error(response)
@@ -431,6 +434,11 @@ class ModalJSONProvider:
                 runtime=runtime,
             ),
         )
+
+    def invoke(self, payload: dict[str, Any]) -> ProviderResult[dict[str, Any]]:
+        request = self._prepare_request(payload)
+        response = self._function().remote(request)
+        return self._result_from_response(response)
 
 
 class ModalEditorialProvider(ModalJSONProvider):
@@ -630,8 +638,42 @@ class ModalVisionProvider(ModalJSONProvider):
             )
         return self.identity
 
+    @staticmethod
+    def _call_deadline_seconds() -> float:
+        deadline = float(os.getenv("CLIPPER_VISION_CALL_DEADLINE_SECONDS", "360"))
+        if not math.isfinite(deadline) or deadline <= 0:
+            raise ValueError("vision call deadline must be finite and positive")
+        return deadline
+
     def inspect(
         self, *, task: str, frames: list[Path], context: dict[str, Any]
     ) -> ProviderResult[dict[str, Any]]:
         encoded_frames = [base64.b64encode(frame.read_bytes()).decode("ascii") for frame in frames]
-        return self.invoke({"task": task, "frames_base64": encoded_frames, "context": context})
+        request = self._prepare_request(
+            {"task": task, "frames_base64": encoded_frames, "context": context}
+        )
+        deadline = self._call_deadline_seconds()
+        call = self._function().spawn(request)
+        try:
+            response = call.get(timeout=deadline)
+        except TimeoutError as exc:
+            try:
+                call.cancel()
+            except Exception:
+                pass
+            self._instance_handle = None
+            raise ModalRemoteError(
+                function_name=self.function_name,
+                error_type="VisionGenerationDeadlineError",
+                message=(
+                    "vision generation exceeded the bounded client deadline and was cancelled "
+                    f"after {deadline:.3f}s"
+                ),
+                details={
+                    "reason": "generation_runtime_deadline",
+                    "timeout_seconds": deadline,
+                    "frames": len(frames),
+                    "recovery_action": "REPARTITION",
+                },
+            ) from exc
+        return self._result_from_response(response)
