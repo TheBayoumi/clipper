@@ -1,0 +1,163 @@
+name: MW4 full-frame semantic v3.1 production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    name: render-${{ matrix.source }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [r1, batch2, week2]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install renderer dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy==2.1.3' 'playwright==1.55.0'
+          python -m playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Run V3.1 semantic self-test
+        run: python scripts/mw4_semantic_gameplay_v3_1.py --self-test
+
+      - name: Resolve official MediaSilo source
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+          MEDIASILO_URL: https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+          source_key = os.environ['SOURCE_KEY']
+          wanted = {
+              'r1': 'MW4_BetaTopPlays_Stringout_16X9_R1.mp4',
+              'batch2': 'BestOfBeta_Stringout_Batch2.mp4',
+              'week2': 'BestOfBeta_Week2_Stringout_1_8.28.mp4',
+          }
+          holder = [None]
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+              page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+              def handle(response):
+                  if '/folders/3b199368-5974-4eb1-a450-327a4e84c260/assets' not in response.url or response.status != 200:
+                      return
+                  try:
+                      data = response.json()
+                  except Exception:
+                      return
+                  if isinstance(data, list) and data:
+                      holder[0] = data
+              page.on('response', handle)
+              page.goto(os.environ['MEDIASILO_URL'], wait_until='domcontentloaded', timeout=90000)
+              page.wait_for_timeout(25000)
+              browser.close()
+          if not holder[0]:
+              raise RuntimeError('MediaSilo assets were not resolved')
+          for asset in holder[0]:
+              if asset.get('title') != wanted[source_key]:
+                  continue
+              derivatives = {item.get('type'): item for item in asset.get('derivatives', [])}
+              derivative = derivatives.get('x1080') or derivatives.get('proxy') or {}
+              url = derivative.get('url') or (derivative.get('properties') or {}).get('url')
+              if not url:
+                  raise RuntimeError('No usable derivative')
+              Path('/tmp/resolved_source.json').write_text(json.dumps({'title': asset['title'], 'url': url}), encoding='utf-8')
+              break
+          else:
+              raise RuntimeError(f'Official source not found: {wanted[source_key]}')
+          PY
+
+      - name: Download and verify official source
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+        run: |
+          mkdir -p raw_sources
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import urllib.request
+          from pathlib import Path
+          source_key = os.environ['SOURCE_KEY']
+          selected = json.loads(Path('/tmp/resolved_source.json').read_text(encoding='utf-8'))
+          target = Path('raw_sources') / f'{source_key}.mp4'
+          request = urllib.request.Request(selected['url'], headers={'User-Agent': 'Mozilla/5.0'})
+          with urllib.request.urlopen(request, timeout=300) as source, target.open('wb') as output:
+              while True:
+                  block = source.read(8 * 1024 * 1024)
+                  if not block:
+                      break
+                  output.write(block)
+          probe = json.loads(subprocess.check_output([
+              'ffprobe','-v','error','-show_entries','stream=width,height,avg_frame_rate:format=duration','-of','json',str(target)
+          ], text=True))
+          video = next(item for item in probe['streams'] if item.get('width'))
+          assert (video['width'], video['height']) == (1920,1080)
+          assert video['avg_frame_rate'] == '60000/1001'
+          PY
+
+      - name: Render V3.1 engagement-driven semantic masters
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+        run: |
+          python scripts/mw4_fullframe_retention_v3_1.py \
+            --source-key "$SOURCE_KEY" \
+            --source "raw_sources/$SOURCE_KEY.mp4" \
+            --config campaigns/mw4-fullframe-retention-v3-1.json \
+            --output-dir "renders/$SOURCE_KEY"
+
+      - name: Verify V3.1 production contract
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          source_key = os.environ['SOURCE_KEY']
+          manifest = json.loads((Path('renders') / source_key / f'{source_key}_manifest_v3_1.json').read_text(encoding='utf-8'))
+          assert manifest['semantic_engine'] == 'deterministic-gameplay-v3.1'
+          assert manifest['editorial_planner'] == 'semantic-editor-v3.1'
+          assert manifest['candidate_mode'] == 'engagement_driven'
+          assert 2 <= len(manifest['outputs']) <= 4
+          for output in manifest['outputs']:
+              plan = output['editorial_plan']
+              assert plan['opening_quality'] >= 0.42
+              assert plan['ending_quality'] >= 0.40
+              assert plan['retention_quality'] >= 0.36
+              assert plan['payoff_quality'] >= 0.34
+              assert plan['max_unexplained_low_interest_run_seconds'] <= 0.90
+              if plan['finishing_move'] is not None:
+                  assert plan['story_type'] == 'finishing_move_open'
+                  assert plan['effect_profile'] == 'finishing_move_hero'
+                  assert plan['finishing_move']['start'] - plan['start'] <= 0.48
+              assert all(output['qa']['checks'].values())
+          print(f'{source_key}: V3.1 semantic production contract passed')
+          PY
+
+      - name: Upload V3.1 masters and QA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-fullframe-semantic-v3-1-${{ matrix.source }}-250M
+          path: |
+            renders/${{ matrix.source }}/*.mp4
+            renders/${{ matrix.source }}/*.json
+            renders/${{ matrix.source }}/contact_sheets/*.jpg
+          retention-days: 1
+          compression-level: 0
