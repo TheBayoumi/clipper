@@ -15,10 +15,10 @@ import yaml
 from modal_execution_spy import ModalExecutionSpy
 
 from clipper.modal_execution import (
+    ProductionCallNotTerminated,
     _acquire_remote_source,
     _BudgetLedger,
     _spawn_recoverable_modal_call,
-    ProductionCallNotTerminated,
 )
 from clipper.models import VideoCandidate
 
