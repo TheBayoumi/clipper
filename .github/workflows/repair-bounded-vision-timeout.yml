@@ -1,0 +1,88 @@
+name: Temporary bounded vision timeout repair
+
+on:
+  push:
+    branches:
+      - feat/contentrewards-campaign-factory
+    paths:
+      - ".github/workflows/repair-bounded-vision-timeout.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/contentrewards-campaign-factory
+          fetch-depth: 0
+
+      - name: Replace 30-minute vision worker timeouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/modal_open_models.py")
+          text = path.read_text(encoding="utf-8")
+          for class_name in ("VisionModel", "VisionModelLarge"):
+              old = f'''@app.cls(
+    image=text_image,
+    gpu="L4:2",
+    volumes={{HF_CACHE: model_cache}},
+    secrets=[hf_secret],
+    timeout=1800,
+    memory=32768,
+)
+class {class_name}:'''
+              new = f'''@app.cls(
+    image=text_image,
+    gpu="L4:2",
+    volumes={{HF_CACHE: model_cache}},
+    secrets=[hf_secret],
+    # Client cancellation is 360s and the independent watchdog is 420s.
+    # Keep the Modal hard ceiling close behind them; never allow 30-minute vision calls.
+    timeout=480,
+    memory=32768,
+)
+class {class_name}:'''
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(
+                      f"expected exactly one 1800s timeout block for {class_name}, found {count}"
+                  )
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding="utf-8")
+
+          tests = Path("tests/test_vision_runtime_recovery.py")
+          test_text = tests.read_text(encoding="utf-8")
+          marker = "def test_modal_vision_workers_have_eight_minute_hard_ceiling() -> None:"
+          if marker not in test_text:
+              test_text += '''\n\ndef test_modal_vision_workers_have_eight_minute_hard_ceiling() -> None:\n    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")\n    for class_name in ("VisionModel", "VisionModelLarge"):\n        prefix = source.split(f"class {class_name}:", 1)[0]\n        decorator = prefix.rsplit("@app.cls(", 1)[-1]\n        assert "timeout=480" in decorator\n        assert "timeout=1800" not in decorator\n'''
+              tests.write_text(test_text, encoding="utf-8")
+          PY
+
+      - name: Format repaired files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'ruff==0.16.7'
+          ruff format scripts/modal_execution_spy.py tests/test_vision_runtime_recovery.py
+          ruff check scripts/modal_open_models.py scripts/modal_execution_spy.py tests/test_vision_runtime_recovery.py
+
+      - name: Commit bounded timeout repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/modal_open_models.py scripts/modal_execution_spy.py tests/test_vision_runtime_recovery.py
+          if git diff --cached --quiet; then
+            echo "No source repair changes needed."
+            exit 0
+          fi
+          git commit -m "fix: cap Modal vision worker timeout"
+          git push origin HEAD:feat/contentrewards-campaign-factory
