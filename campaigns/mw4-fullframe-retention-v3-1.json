@@ -36,6 +36,9 @@
     "finishing_move_opening_lead_seconds": 0.28,
     "finishing_move_payoff_hold_seconds": 0.45,
     "finishing_move_choreography_protected": true,
+    "finishing_move_use_deliberate_montage_if_needed": true,
+    "finishing_move_montage_prefer_later_gameplay": true,
+    "finishing_move_montage_max_output_seconds": 15.5,
     "cold_open_enabled_for_non_finishing_moves": false
   },
   "semantic_analysis": {
@@ -55,6 +58,24 @@
     "local_refine_width": 384,
     "local_refine_height": 216,
     "local_refine_radius_seconds": 0.8
+  },
+  "source_integrity": {
+    "policy": "automatic shot boundaries plus visually verified missed source-stringout edit windows; normal stories may never cross these windows",
+    "verified_cut_windows": {
+      "r1": [
+        [40.5, 41.0],
+        [46.5, 47.0],
+        [225.0, 225.5]
+      ],
+      "batch2": [],
+      "week2": [
+        [145.0, 145.5]
+      ]
+    },
+    "reject_segment_crossing_verified_cut": true,
+    "reject_normal_edit_bridge_across_verified_cut": true,
+    "allow_cross_shot_transition_only_for_finishing_move_open": true,
+    "notes": "These windows came from visual QA of the real official-reel V3.1 shadow MP4s. They are source structure, not clip exclusions. They prevent the same stringout continuity failures from recurring while the automatic detector remains conservative to avoid false cuts on ADS, damage/smoke and impact effects."
   },
   "finishing_move_detector": {
     "enabled": true,
@@ -172,6 +193,6 @@
   "duplicate_policy": {
     "allow_overlap_with_prior_work": true,
     "allow_overlap_with_new_batch": false,
-    "notes": "V3.1 re-evaluates the complete official reels. Selection suppresses neighboring variants around the same opening engagement and overlapping outputs, but does not assume the source scenes themselves are duplicates."
+    "notes": "V3.1 re-evaluates the complete official reels. Selection suppresses neighboring variants around the same opening engagement and overlapping source segments, but does not assume the source scenes themselves are duplicates."
   }
 }
