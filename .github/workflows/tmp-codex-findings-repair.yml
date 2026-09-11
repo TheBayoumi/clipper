@@ -27,6 +27,11 @@ jobs:
       - name: Install development dependencies
         run: python -m pip install -e ".[dev]"
 
+      - name: Correct temporary watchdog match indentation
+        run: |
+          sed -i 's/^            "Modal spy did not observe/                "Modal spy did not observe/' scripts/tmp_codex_findings_repair.py
+          sed -i 's/^            "before the production terminal barrier"/                "before the production terminal barrier"/' scripts/tmp_codex_findings_repair.py
+
       - name: Apply all unresolved Codex fixes and regression tests
         run: python scripts/tmp_codex_findings_repair.py
 
