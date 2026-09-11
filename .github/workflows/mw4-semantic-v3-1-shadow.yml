@@ -1,0 +1,164 @@
+name: MW4 semantic v3.1 shadow analysis
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/mw4-fullframe-retention-v3-1
+    paths:
+      - campaigns/mw4-fullframe-retention-v3-1.json
+      - scripts/mw4_semantic_gameplay_v3_1.py
+      - scripts/mw4_fullframe_retention_v3_1.py
+      - .github/workflows/mw4-semantic-v3-1-shadow.yml
+
+permissions:
+  contents: read
+
+jobs:
+  shadow:
+    name: shadow-${{ matrix.source }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [r1, batch2, week2]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install analysis dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy==2.1.3' 'playwright==1.55.0'
+          python -m playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Run V3.1 semantic self-test
+        run: python scripts/mw4_semantic_gameplay_v3_1.py --self-test
+
+      - name: Resolve official MediaSilo source
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+          MEDIASILO_URL: https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          source_key = os.environ['SOURCE_KEY']
+          wanted = {
+              'r1': 'MW4_BetaTopPlays_Stringout_16X9_R1.mp4',
+              'batch2': 'BestOfBeta_Stringout_Batch2.mp4',
+              'week2': 'BestOfBeta_Week2_Stringout_1_8.28.mp4',
+          }
+          holder = [None]
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+              page = browser.new_page(viewport={'width': 1440, 'height': 1000})
+              def handle(response):
+                  if '/folders/3b199368-5974-4eb1-a450-327a4e84c260/assets' not in response.url or response.status != 200:
+                      return
+                  try:
+                      data = response.json()
+                  except Exception:
+                      return
+                  if isinstance(data, list) and data:
+                      holder[0] = data
+              page.on('response', handle)
+              page.goto(os.environ['MEDIASILO_URL'], wait_until='domcontentloaded', timeout=90000)
+              page.wait_for_timeout(25000)
+              browser.close()
+          if not holder[0]:
+              raise RuntimeError('MediaSilo assets were not resolved')
+          for asset in holder[0]:
+              if asset.get('title') != wanted[source_key]:
+                  continue
+              derivatives = {item.get('type'): item for item in asset.get('derivatives', [])}
+              derivative = derivatives.get('x1080') or derivatives.get('proxy') or {}
+              url = derivative.get('url') or (derivative.get('properties') or {}).get('url')
+              if not url:
+                  raise RuntimeError('No usable derivative')
+              Path('/tmp/resolved_source.json').write_text(json.dumps({'title': asset['title'], 'url': url}), encoding='utf-8')
+              break
+          else:
+              raise RuntimeError(f'Official source not found: {wanted[source_key]}')
+          PY
+
+      - name: Download official source
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+        run: |
+          mkdir -p raw_sources
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+          source_key = os.environ['SOURCE_KEY']
+          selected = json.loads(Path('/tmp/resolved_source.json').read_text(encoding='utf-8'))
+          target = Path('raw_sources') / f'{source_key}.mp4'
+          request = urllib.request.Request(selected['url'], headers={'User-Agent': 'Mozilla/5.0'})
+          with urllib.request.urlopen(request, timeout=300) as source, target.open('wb') as output:
+              while True:
+                  block = source.read(8 * 1024 * 1024)
+                  if not block:
+                      break
+                  output.write(block)
+          PY
+
+      - name: Run engagement-driven V3.1 shadow planner
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+        run: |
+          mkdir -p shadow/${SOURCE_KEY}
+          python scripts/mw4_fullframe_retention_v3_1.py \
+            --source-key "$SOURCE_KEY" \
+            --source "raw_sources/$SOURCE_KEY.mp4" \
+            --config campaigns/mw4-fullframe-retention-v3-1.json \
+            --output-dir "shadow/$SOURCE_KEY" \
+            --analysis-only
+
+      - name: Verify V3.1 selection contract
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          source_key = os.environ['SOURCE_KEY']
+          report = json.loads((Path('shadow') / source_key / f'{source_key}_shadow.json').read_text(encoding='utf-8'))
+          selected = report['selected']
+          assert 2 <= len(selected) <= 4
+          for plan in selected:
+              assert plan['opening_quality'] >= 0.42
+              assert plan['ending_quality'] >= 0.40
+              assert plan['retention_quality'] >= 0.36
+              assert plan['payoff_quality'] >= 0.34
+              assert plan['max_unexplained_low_interest_run_seconds'] <= 0.90
+              if plan['finishing_move'] is not None:
+                  assert plan['story_type'] == 'finishing_move_open'
+                  assert plan['effect_profile'] == 'finishing_move_hero'
+                  assert plan['finishing_move']['start'] - plan['start'] <= 0.48
+          print(json.dumps({
+              'source': source_key,
+              'selected': len(selected),
+              'stories': [p['story_type'] for p in selected],
+              'finishing_move_like': report['finishing_move_like_count'],
+          }))
+          PY
+
+      - name: Upload compact V3.1 shadow report
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-semantic-v3-1-shadow-${{ matrix.source }}
+          path: shadow/${{ matrix.source }}/*.json
+          retention-days: 3
