@@ -384,8 +384,7 @@ def run(*, render: bool) -> dict[str, Any]:
             call.get(timeout=cancel_confirmation_seconds)
         except TimeoutError as exc:
             errors.append(
-                "terminal confirmation timed out after "
-                f"{cancel_confirmation_seconds:.3f}s"
+                f"terminal confirmation timed out after {cancel_confirmation_seconds:.3f}s"
             )
             failure = ProductionCallNotTerminated(call_id, errors)
             cancellation_failure_reason = str(failure)
