@@ -28,27 +28,33 @@ jobs:
 
           path = Path("scripts/modal_open_models.py")
           text = path.read_text(encoding="utf-8")
+          common = (
+              '@app.cls(\n'
+              '    image=text_image,\n'
+              '    gpu="L4:2",\n'
+              '    volumes={HF_CACHE: model_cache},\n'
+              '    secrets=[hf_secret],\n'
+              '    timeout=1800,\n'
+              '    memory=32768,\n'
+              ')\n'
+              'class {class_name}:'
+          )
+          replacement = (
+              '@app.cls(\n'
+              '    image=text_image,\n'
+              '    gpu="L4:2",\n'
+              '    volumes={HF_CACHE: model_cache},\n'
+              '    secrets=[hf_secret],\n'
+              '    # Client cancellation is 360s and the independent watchdog is 420s.\n'
+              '    # Keep the Modal hard ceiling close behind them; never allow 30-minute vision calls.\n'
+              '    timeout=480,\n'
+              '    memory=32768,\n'
+              ')\n'
+              'class {class_name}:'
+          )
           for class_name in ("VisionModel", "VisionModelLarge"):
-              old = f'''@app.cls(
-    image=text_image,
-    gpu="L4:2",
-    volumes={{HF_CACHE: model_cache}},
-    secrets=[hf_secret],
-    timeout=1800,
-    memory=32768,
-)
-class {class_name}:'''
-              new = f'''@app.cls(
-    image=text_image,
-    gpu="L4:2",
-    volumes={{HF_CACHE: model_cache}},
-    secrets=[hf_secret],
-    # Client cancellation is 360s and the independent watchdog is 420s.
-    # Keep the Modal hard ceiling close behind them; never allow 30-minute vision calls.
-    timeout=480,
-    memory=32768,
-)
-class {class_name}:'''
+              old = common.format(class_name=class_name)
+              new = replacement.format(class_name=class_name)
               count = text.count(old)
               if count != 1:
                   raise RuntimeError(
@@ -61,7 +67,16 @@ class {class_name}:'''
           test_text = tests.read_text(encoding="utf-8")
           marker = "def test_modal_vision_workers_have_eight_minute_hard_ceiling() -> None:"
           if marker not in test_text:
-              test_text += '''\n\ndef test_modal_vision_workers_have_eight_minute_hard_ceiling() -> None:\n    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")\n    for class_name in ("VisionModel", "VisionModelLarge"):\n        prefix = source.split(f"class {class_name}:", 1)[0]\n        decorator = prefix.rsplit("@app.cls(", 1)[-1]\n        assert "timeout=480" in decorator\n        assert "timeout=1800" not in decorator\n'''
+              test_text += (
+                  '\n\n'
+                  'def test_modal_vision_workers_have_eight_minute_hard_ceiling() -> None:\n'
+                  '    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")\n'
+                  '    for class_name in ("VisionModel", "VisionModelLarge"):\n'
+                  '        prefix = source.split(f"class {class_name}:", 1)[0]\n'
+                  '        decorator = prefix.rsplit("@app.cls(", 1)[-1]\n'
+                  '        assert "timeout=480" in decorator\n'
+                  '        assert "timeout=1800" not in decorator\n'
+              )
               tests.write_text(test_text, encoding="utf-8")
           PY
 
