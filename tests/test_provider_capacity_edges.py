@@ -123,12 +123,18 @@ def test_modal_vision_provider_encodes_frames_and_forwards_context(tmp_path: Pat
         _identity(),
         InferenceUsage("modal", "now", 0.0),
     )
-    with patch.object(provider, "invoke", return_value=result) as invoked:
+    call = SimpleNamespace(get=Mock(return_value={}), cancel=Mock())
+    function = SimpleNamespace(spawn=Mock(return_value=call))
+    with (
+        patch.object(provider, "_function", return_value=function),
+        patch.object(provider, "_result_from_response", return_value=result),
+    ):
         assert (
             provider.inspect(task="source_policy_visual_scout", frames=[frame], context={"x": 1})
             is result
         )
-    request = invoked.call_args.args[0]
+    request = function.spawn.call_args.args[0]
     assert request["task"] == "source_policy_visual_scout"
     assert request["context"] == {"x": 1}
     assert request["frames_base64"]
+    call.get.assert_called_once_with(timeout=360.0)
