@@ -175,7 +175,7 @@ replace_once(
         '"attempt":1,"frames":32}',
 ''',
     '''        "clipper-open-editor",
-        "2026-09-11T13:00:00Z fc-VISION-STALL "
+        "2026-09-11T13:00:00Z fc-VISIONSTALL "
         '{"event":"vision_generation_start","execution_id":"exec-1",'
         '"worker_lifecycle_id":"worker-1","task":"source_policy_visual_scout",'
         '"attempt":1,"frames":32}',
@@ -184,7 +184,7 @@ replace_once(
 replace_once(
     "tests/test_vision_runtime_recovery.py",
     '    assert spy.abort_event["worker_lifecycle_id"] == "worker-1"\n',
-    '    assert spy.abort_event["invocation_id"] == "fc-VISION-STALL"\n',
+    '    assert spy.abort_event["invocation_id"] == "fc-VISIONSTALL"\n',
 )
 replace_once(
     "tests/test_vision_runtime_recovery.py",
@@ -194,7 +194,7 @@ replace_once(
         '"attempt":1,"frames":8}',
 ''',
     '''        "clipper-open-editor",
-        "2026-09-11T13:00:00Z fc-VISION-COMPLETE "
+        "2026-09-11T13:00:00Z fc-VISIONCOMPLETE "
         '{"event":"vision_generation_start","execution_id":"exec-1",'
         '"worker_lifecycle_id":"worker-1","task":"source_policy_visual_scout",'
         '"attempt":1,"frames":8}',
@@ -208,7 +208,7 @@ replace_once(
         '"generated_tokens":123,"duration_seconds":2.5}',
 ''',
     '''        "clipper-open-editor",
-        "2026-09-11T13:00:01Z fc-VISION-COMPLETE "
+        "2026-09-11T13:00:01Z fc-VISIONCOMPLETE "
         '{"event":"vision_generation_complete","execution_id":"exec-1",'
         '"worker_lifecycle_id":"worker-1","task":"source_policy_visual_scout",'
         '"attempt":1,"frames":8,"generated_tokens":123,"duration_seconds":2.5}',
