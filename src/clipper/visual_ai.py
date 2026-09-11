@@ -836,15 +836,26 @@ def _persist_capacity_state(
 ) -> None:
     if cache is None or key is None:
         return
-    cache.write(
-        key,
-        "capacity",
-        {
-            "largest_good": largest_good,
-            "smallest_bad": smallest_bad,
-            "observed_output_tokens_per_item": observed_output_tokens_per_item,
-        },
-    )
+    payload = {
+        "largest_good": largest_good,
+        "smallest_bad": smallest_bad,
+        "observed_output_tokens_per_item": observed_output_tokens_per_item,
+    }
+    for attempt in range(1, 4):
+        try:
+            cache.write(key, "capacity", payload)
+            break
+        except Exception as exc:
+            LOGGER.warning(
+                "vision capacity cache write failed (attempt %d/3): %s: %s",
+                attempt,
+                type(exc).__name__,
+                exc,
+            )
+            if attempt < 3:
+                time.sleep(0.1 * attempt)
+    else:
+        return
     _best_effort_checkpoint_commit(checkpoint_commit)
 
 

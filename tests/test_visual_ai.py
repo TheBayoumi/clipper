@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from clipper.cache import FileCache
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
 from clipper.visual_ai import (
     VisualReviewIssue,
@@ -959,6 +960,48 @@ def test_source_policy_checkpoint_commit_failure_does_not_discard_successful_inf
             output_dir=tmp_path / "frames-best-effort",
             checkpoint_dir=tmp_path / "cache-best-effort",
             checkpoint_commit=failing_commit,
+        )
+
+    assert timeline.events
+    assert result.usage.input_units > 0
+    assert attempts["count"] >= 3
+
+
+def test_source_policy_capacity_cache_write_failure_does_not_discard_successful_inference(
+    tmp_path: Path,
+) -> None:
+    provider = PolicyVision()
+    attempts = {"count": 0}
+    original_write = FileCache.write
+
+    def failing_capacity_write(
+        cache: FileCache,
+        key: str,
+        name: str,
+        payload: object,
+    ) -> Path:
+        if name == "capacity":
+            attempts["count"] += 1
+            raise OSError("transient capacity cache write failure")
+        return original_write(cache, key, name, payload)
+
+    with (
+        patch("clipper.visual_ai.media_duration_seconds", return_value=12.0),
+        patch(
+            "clipper.visual_ai.extract_video_frames",
+            side_effect=_prepared_source_policy_frames,
+        ),
+        patch.object(FileCache, "write", new=failing_capacity_write),
+        patch("clipper.visual_ai.time.sleep"),
+    ):
+        timeline, result = scout_visual_timeline(
+            tmp_path / "source.mp4",
+            provider,
+            video_id="v",
+            source_hash="h",
+            duration=12.0,
+            output_dir=tmp_path / "frames-capacity-write-best-effort",
+            checkpoint_dir=tmp_path / "cache-capacity-write-best-effort",
         )
 
     assert timeline.events
