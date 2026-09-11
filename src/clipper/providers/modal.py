@@ -645,12 +645,66 @@ class ModalVisionProvider(ModalJSONProvider):
             raise ValueError("vision call deadline must be finite and positive")
         return deadline
 
+    _CANCEL_CONFIRM_TERMINAL_MODAL_ERRORS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "DeserializationError",
+            "ExecutionError",
+            "FunctionTimeoutError",
+            "InputCancellation",
+            "InternalFailure",
+            "OutputExpiredError",
+            "RemoteError",
+        }
+    )
+    _CANCEL_CONFIRM_UNCONFIRMED_MODAL_ERRORS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "AuthError",
+            "ClientClosed",
+            "ConflictError",
+            "ConnectionError",
+            "DataLossError",
+            "InternalError",
+            "InvalidError",
+            "NotFoundError",
+            "PermissionDeniedError",
+            "RequestSizeError",
+            "ResourceExhaustedError",
+            "ServiceError",
+            "UnimplementedError",
+            "VersionError",
+        }
+    )
+
     @staticmethod
     def _cancel_confirmation_seconds() -> float:
         timeout = float(os.getenv("CLIPPER_VISION_CANCEL_CONFIRM_SECONDS", "30"))
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("vision cancellation confirmation timeout must be finite and positive")
         return timeout
+
+    def _cancellation_confirmation_is_terminal(self, exc: BaseException) -> bool:
+        error_name = type(exc).__name__
+        try:
+            modal_module = self._modal()
+        except ProviderUnavailable:
+            return error_name not in self._CANCEL_CONFIRM_UNCONFIRMED_MODAL_ERRORS
+
+        exception_namespace = getattr(modal_module, "exception", None)
+        if exception_namespace is None:
+            return error_name not in self._CANCEL_CONFIRM_UNCONFIRMED_MODAL_ERRORS
+
+        terminal_types = tuple(
+            error_type
+            for name in self._CANCEL_CONFIRM_TERMINAL_MODAL_ERRORS
+            if isinstance((error_type := getattr(exception_namespace, name, None)), type)
+        )
+        if terminal_types and isinstance(exc, terminal_types):
+            return True
+
+        modal_error_type = getattr(exception_namespace, "Error", None)
+        if isinstance(modal_error_type, type) and isinstance(exc, modal_error_type):
+            return False
+        return error_name not in self._CANCEL_CONFIRM_UNCONFIRMED_MODAL_ERRORS
 
     def inspect(
         self, *, task: str, frames: list[Path], context: dict[str, Any]
@@ -698,8 +752,26 @@ class ModalVisionProvider(ModalJSONProvider):
                         "frames": len(frames),
                     },
                 ) from confirm_exc
-            except Exception:
+            except BaseException as confirm_exc:
                 self._instance_handle = None
+                if isinstance(confirm_exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                    raise
+                if not self._cancellation_confirmation_is_terminal(confirm_exc):
+                    raise ModalRemoteError(
+                        function_name=self.function_name,
+                        error_type="VisionCancellationUnconfirmedError",
+                        message=(
+                            "vision cancellation confirmation failed through the Modal "
+                            "control plane; terminal producer state is unconfirmed"
+                        ),
+                        details={
+                            "reason": "vision_cancellation_unconfirmed",
+                            "timeout_seconds": deadline,
+                            "confirmation_timeout_seconds": confirmation_timeout,
+                            "frames": len(frames),
+                            "confirmation_error_type": type(confirm_exc).__name__,
+                        },
+                    ) from confirm_exc
             else:
                 self._instance_handle = None
             raise ModalRemoteError(

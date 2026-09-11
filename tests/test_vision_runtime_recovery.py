@@ -277,3 +277,54 @@ def test_modal_vision_deadline_fails_closed_when_terminal_confirmation_times_out
     assert "recovery_action" not in raised.value.details
     assert not visual_ai._is_vision_capacity_error(raised.value)
     call.cancel.assert_called_once_with()
+
+
+def test_modal_vision_deadline_fails_closed_on_confirmation_transport_error(
+    tmp_path: Path,
+) -> None:
+    class FakeModalError(Exception):
+        pass
+
+    class ServiceError(FakeModalError):
+        pass
+
+    class RemoteError(FakeModalError):
+        pass
+
+    exception_namespace = type(
+        "ExceptionNamespace",
+        (),
+        {
+            "Error": FakeModalError,
+            "ServiceError": ServiceError,
+            "RemoteError": RemoteError,
+        },
+    )
+    fake_modal = type("FakeModal", (), {"exception": exception_namespace})()
+
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"frame")
+    provider = ModalVisionProvider(
+        app_name="app",
+        identity=_identity(),
+        function_name="vision",
+    )
+    call = Mock()
+    call.get.side_effect = [TimeoutError(), ServiceError("control plane unavailable")]
+    function = Mock()
+    function.spawn.return_value = call
+
+    with (
+        patch.object(provider, "_function", return_value=function),
+        patch.object(provider, "_modal", return_value=fake_modal),
+        pytest.raises(ModalRemoteError) as raised,
+    ):
+        provider.inspect(task="source_policy_visual_scout", frames=[frame], context={})
+
+    assert raised.value.error_type == "VisionCancellationUnconfirmedError"
+    assert raised.value.details["reason"] == "vision_cancellation_unconfirmed"
+    assert raised.value.details["confirmation_error_type"] == "ServiceError"
+    assert "recovery_action" not in raised.value.details
+    assert not visual_ai._is_vision_capacity_error(raised.value)
+    assert call.get.call_count == 2
+    call.cancel.assert_called_once_with()
