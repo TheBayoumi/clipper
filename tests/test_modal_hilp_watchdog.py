@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from clipper.modal_execution import ProductionCallNotTerminated, ProductionCallSubmissionFailed
+from clipper.modal_execution import ProductionCallSubmissionFailed
 
 
 def _module():
@@ -447,7 +447,7 @@ def test_watchdog_cancels_exact_call_without_terminating_containers_on_spy_abort
     assert summary["function_call_id"] == "fc-test"
 
 
-def test_watchdog_fails_closed_when_root_cancellation_is_not_terminal(
+def test_watchdog_escalates_unconfirmed_root_cancellation_to_exact_hard_stop(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -459,9 +459,22 @@ def test_watchdog_fails_closed_when_root_cancellation_is_not_terminal(
     monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
 
     class NonTerminalCall(_Call):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.hard_terminated = False
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            self.cancel_args.append(terminate_containers)
+            self.cancel_requested = True
+            if terminate_containers:
+                self.hard_terminated = True
+
         def get(self, *, timeout: float):
             assert timeout > 0
             self.polls += 1
+            if self.hard_terminated:
+                clock["now"] = 2.6
+                raise InputCancellation("hard cancellation reached terminal state")
             if self.cancel_requested:
                 clock["now"] = 2.1
                 raise TimeoutError("root producer still active")
@@ -470,24 +483,26 @@ def test_watchdog_fails_closed_when_root_cancellation_is_not_terminal(
                 _Spy.instance.abort_reason = "synthetic bad telemetry"
             raise TimeoutError
 
-    call = NonTerminalCall({})
+    call = NonTerminalCall()
     monkeypatch.setitem(sys.modules, "modal", _modal(call))
 
-    with pytest.raises(ProductionCallNotTerminated, match="remained nonterminal"):
+    with pytest.raises(RuntimeError, match="Modal spy aborted production early"):
         module.run(render=False)
 
-    assert call.cancel_args == [False]
+    assert call.cancel_args == [False, True]
     summary = json.loads(
         (tmp_path / "open-evidence" / "modal-spy-summary.json").read_text(encoding="utf-8")
     )
     assert summary["status"] == "ABORT"
-    assert summary["call_cancelled"] is False
-    assert summary["root_call_terminal_confirmed"] is False
-    assert "terminal confirmation timed out" in summary["root_call_cancellation_failure"]
-    assert summary["budget"]["gpu_seconds"] == pytest.approx(4.0)
+    assert summary["call_cancelled"] is True
+    assert summary["root_call_terminal_confirmed"] is True
+    assert summary["root_call_hard_termination_succeeded"] is True
+    assert summary["root_call_stopped"] is True
+    assert summary["root_call_cancellation_failure"] is None
+    assert summary["budget"]["gpu_seconds"] == pytest.approx(5.0)
 
 
-def test_watchdog_treats_cancel_confirmation_transport_error_as_unconfirmed(
+def test_watchdog_uses_hard_cancel_ack_when_terminal_confirmation_transport_fails(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -509,15 +524,18 @@ def test_watchdog_treats_cancel_confirmation_transport_error_as_unconfirmed(
     call = TransportFailureCall({})
     monkeypatch.setitem(sys.modules, "modal", _modal(call))
 
-    with pytest.raises(ProductionCallNotTerminated, match="remained nonterminal"):
+    with pytest.raises(RuntimeError, match="Modal spy aborted production early"):
         module.run(render=False)
 
+    assert call.cancel_args == [False, True]
     summary = json.loads(
         (tmp_path / "open-evidence" / "modal-spy-summary.json").read_text(encoding="utf-8")
     )
-    assert summary["call_cancelled"] is False
+    assert summary["call_cancelled"] is True
     assert summary["root_call_terminal_confirmed"] is False
-    assert "ServiceError" in summary["root_call_cancellation_failure"]
+    assert summary["root_call_hard_termination_succeeded"] is True
+    assert summary["root_call_stopped"] is True
+    assert summary["root_call_cancellation_failure"] is None
 
 
 def test_watchdog_counts_successful_hydration_against_compute_budget(

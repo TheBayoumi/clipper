@@ -50,9 +50,13 @@ def test_production_workflow_is_single_pass_resumable_and_exact_head() -> None:
     assert "production_call_cancel_requested" in watchdog
     assert "production_call_cancel_unconfirmed" in watchdog
     assert "cancelled.set()" in watchdog
-    assert "call.cancel(terminate_containers=False)" in watchdog
+    assert "call.cancel(terminate_containers=terminate_containers)" in watchdog
+    assert "terminate_containers=False" in watchdog
+    assert "terminate_containers=True" in watchdog
     assert "call.get(timeout=cancel_confirmation_seconds)" in watchdog
-    assert '"root_call_terminal_confirmed": remote_completed or cancelled.is_set()' in watchdog
+    assert '"root_call_terminal_confirmed": (' in watchdog
+    assert '"root_call_hard_termination_succeeded": root_hard_termination_succeeded' in watchdog
+    assert '"root_call_stopped": (' in watchdog
     assert "modal-function-call.json" in watchdog
     assert "content-addressed-resume" in workflow
     assert "content-addressed-stage-resume" in workflow
@@ -67,7 +71,10 @@ def test_lovable_bootstrap_pins_modal_deployment_to_triggering_sha() -> None:
     bootstrap = _bootstrap_workflow()
     deploy = _modal_deploy_workflow()
 
-    assert '"inputs": {"deployment_sha": os.environ["EXPECTED_SHA"]}' in bootstrap
+    assert 'tag="clipper-hilp-${EXPECTED_SHA}"' in bootstrap
+    assert '{"ref": sys.argv[1], "inputs": {"deployment_sha": sys.argv[2]}}' in bootstrap
+    assert "modal-workers-deploy.yml/dispatches" in bootstrap
+    assert "production-pipeline.yml/dispatches" in bootstrap
     assert "pinned to ${EXPECTED_SHA}" in bootstrap
     assert "deployment_sha:" in deploy
     assert "run-name: Deploy Modal workers ${{ inputs.deployment_sha || github.sha }}" in deploy
@@ -199,7 +206,9 @@ def test_production_workflow_has_cancellable_modal_spy_and_editorial_acceptance(
     assert "_spawn_recoverable_modal_call(" in watchdog
     assert "function.spawn(request)" not in watchdog
     assert '"editorial_acceptance_probe": not render' in watchdog
-    assert "call.cancel(terminate_containers=False)" in watchdog
+    assert "call.cancel(terminate_containers=terminate_containers)" in watchdog
+    assert "terminate_containers=False" in watchdog
+    assert "terminate_containers=True" in watchdog
     assert "production_call_spawned" in watchdog
     assert "production_call_cancel" in watchdog
     assert "SIGTERM" in watchdog

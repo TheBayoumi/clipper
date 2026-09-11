@@ -328,64 +328,124 @@ def run(*, render: bool) -> dict[str, Any]:
     root_budget_charged = False
     cancelled = threading.Event()
     cancellation_failure_reason: str | None = None
+    root_cancel_terminal_confirmed = False
+    root_hard_termination_succeeded = False
     run_succeeded = False
     run_failure_reason: str | None = None
 
     def cancel_call(reason: str) -> None:
         nonlocal cancellation_failure_reason
+        nonlocal root_cancel_terminal_confirmed
+        nonlocal root_hard_termination_succeeded
         if call is None or cancelled.is_set():
             return
 
         errors: list[str] = []
-        requested = False
-        for attempt in range(1, 4):
-            try:
-                call.cancel(terminate_containers=False)
-            except BaseException as exc:
-                errors.append(f"cancel {type(exc).__name__}: {exc}")
+
+        def request_cancel(*, terminate_containers: bool, phase: str) -> bool:
+            for attempt in range(1, 4):
+                try:
+                    call.cancel(terminate_containers=terminate_containers)
+                except BaseException as exc:
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                        raise
+                    errors.append(f"{phase} {type(exc).__name__}: {exc}")
+                    print(
+                        json.dumps(
+                            {
+                                "event": "production_call_cancel_retry",
+                                "function_call_id": call_id,
+                                "reason": reason,
+                                "phase": phase,
+                                "attempt": attempt,
+                                "terminate_containers": terminate_containers,
+                                "error": f"{type(exc).__name__}: {exc}",
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
+                    if attempt < 3:
+                        time.sleep(0.25 * attempt)
+                    continue
                 print(
                     json.dumps(
                         {
-                            "event": "production_call_cancel_retry",
+                            "event": "production_call_cancel_requested",
                             "function_call_id": call_id,
                             "reason": reason,
+                            "phase": phase,
                             "attempt": attempt,
-                            "error": f"{type(exc).__name__}: {exc}",
+                            "terminate_containers": terminate_containers,
                         },
                         sort_keys=True,
                     ),
                     flush=True,
                 )
-                if attempt < 3:
-                    time.sleep(0.25 * attempt)
-                continue
-            requested = True
+                return True
+            return False
+
+        def confirm_terminal(*, phase: str) -> str | None:
+            nonlocal root_cancel_terminal_confirmed
+            try:
+                call.get(timeout=cancel_confirmation_seconds)
+            except TimeoutError:
+                errors.append(
+                    f"{phase} terminal confirmation timed out after "
+                    f"{cancel_confirmation_seconds:.3f}s"
+                )
+                return None
+            except BaseException as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                    raise
+                if not _cancellation_confirmation_is_terminal(modal, exc):
+                    errors.append(f"{phase} confirmation {type(exc).__name__}: {exc}")
+                    return None
+                root_cancel_terminal_confirmed = True
+                return type(exc).__name__
+            root_cancel_terminal_confirmed = True
+            return "result"
+
+        soft_requested = request_cancel(
+            terminate_containers=False,
+            phase="soft_cancel",
+        )
+        confirmed_by = confirm_terminal(phase="soft_cancel") if soft_requested else None
+        if confirmed_by is not None:
+            cancelled.set()
+            cancellation_failure_reason = None
             print(
                 json.dumps(
                     {
-                        "event": "production_call_cancel_requested",
+                        "event": "production_call_cancelled",
                         "function_call_id": call_id,
                         "reason": reason,
-                        "attempt": attempt,
+                        "terminal_confirmation": confirmed_by,
+                        "hard_termination": False,
                     },
                     sort_keys=True,
                 ),
                 flush=True,
             )
-            break
+            return
 
-        if not requested:
-            failure = ProductionCallNotTerminated(call_id, errors)
-            cancellation_failure_reason = str(failure)
-            raise failure
-
-        confirmed_by = "result"
-        try:
-            call.get(timeout=cancel_confirmation_seconds)
-        except TimeoutError as exc:
-            errors.append(
-                f"terminal confirmation timed out after {cancel_confirmation_seconds:.3f}s"
-            )
+        print(
+            json.dumps(
+                {
+                    "event": "production_call_cancel_escalated",
+                    "function_call_id": call_id,
+                    "reason": reason,
+                    "errors": list(errors),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        hard_requested = request_cancel(
+            terminate_containers=True,
+            phase="hard_cancel",
+        )
+        if not hard_requested:
             failure = ProductionCallNotTerminated(call_id, errors)
             cancellation_failure_reason = str(failure)
             print(
@@ -400,29 +460,14 @@ def run(*, render: bool) -> dict[str, Any]:
                 ),
                 flush=True,
             )
-            raise failure from exc
-        except BaseException as exc:
-            if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
-                raise
-            if not _cancellation_confirmation_is_terminal(modal, exc):
-                errors.append(f"confirmation {type(exc).__name__}: {exc}")
-                failure = ProductionCallNotTerminated(call_id, errors)
-                cancellation_failure_reason = str(failure)
-                print(
-                    json.dumps(
-                        {
-                            "event": "production_call_cancel_unconfirmed",
-                            "function_call_id": call_id,
-                            "reason": reason,
-                            "error": str(failure),
-                        },
-                        sort_keys=True,
-                    ),
-                    flush=True,
-                )
-                raise failure from exc
-            confirmed_by = type(exc).__name__
+            raise failure
 
+        # Modal documents terminate_containers=True as terminating the containers
+        # running this FunctionCall's cancelled inputs; concurrently affected inputs
+        # are rescheduled. Treat the successful exact-call hard-cancel request as the
+        # budget-enforcement backstop, while still trying to obtain terminal evidence.
+        root_hard_termination_succeeded = True
+        confirmed_by = confirm_terminal(phase="hard_cancel")
         cancelled.set()
         cancellation_failure_reason = None
         print(
@@ -431,7 +476,10 @@ def run(*, render: bool) -> dict[str, Any]:
                     "event": "production_call_cancelled",
                     "function_call_id": call_id,
                     "reason": reason,
-                    "terminal_confirmation": confirmed_by,
+                    "terminal_confirmation": confirmed_by or "hard_cancel_api_ack",
+                    "hard_termination": True,
+                    "terminal_confirmed": root_cancel_terminal_confirmed,
+                    "confirmation_errors": list(errors),
                 },
                 sort_keys=True,
             ),
@@ -608,16 +656,17 @@ def run(*, render: bool) -> dict[str, Any]:
     finally:
         cleanup_failure_reason: str | None = None
         try:
-            if (
-                call is not None
-                and not remote_completed
-                and not cancelled.is_set()
-                and cancellation_failure_reason is None
-            ):
-                try:
-                    cancel_call("watchdog exited before production call completed")
-                except BaseException as cleanup_exc:
-                    cleanup_failure_reason = f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+            if call is not None and not remote_completed and not cancelled.is_set():
+                for cleanup_attempt in range(1, 4):
+                    try:
+                        cancel_call("watchdog exited before production call completed")
+                    except BaseException as cleanup_exc:
+                        cleanup_failure_reason = f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+                        if cleanup_attempt < 3:
+                            time.sleep(0.25 * cleanup_attempt)
+                        continue
+                    cleanup_failure_reason = None
+                    break
         finally:
             if call_started > 0 and not root_budget_charged:
                 budget.charge(
@@ -641,7 +690,15 @@ def run(*, render: bool) -> dict[str, Any]:
             {
                 "function_call_id": call_id,
                 "call_cancelled": cancelled.is_set(),
-                "root_call_terminal_confirmed": remote_completed or cancelled.is_set(),
+                "root_call_terminal_confirmed": (
+                    remote_completed or root_cancel_terminal_confirmed
+                ),
+                "root_call_hard_termination_succeeded": root_hard_termination_succeeded,
+                "root_call_stopped": (
+                    remote_completed
+                    or root_cancel_terminal_confirmed
+                    or root_hard_termination_succeeded
+                ),
                 "root_call_cancellation_failure": (
                     cancellation_failure_reason or cleanup_failure_reason
                 ),
