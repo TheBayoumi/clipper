@@ -57,7 +57,7 @@ jobs:
         run: mypy
 
       - name: Target cancellation and budget regressions
-        run: pytest -q --no-cov tests/test_modal_execution.py -k "cancel_remote_call or reviewed_resume_provenance or invoke_remote_with_budget or acquire_remote_source"
+        run: pytest -q --no-cov tests/test_modal_execution.py -k "cancel_remote_call or cancellation_confirmation or reviewed_resume_provenance or invoke_remote_with_budget or acquire_remote_source"
 
       - name: Target vision lifecycle regression
         run: pytest -q --no-cov tests/test_modal_execution_spy.py tests/test_vision_runtime_recovery.py -k "vision or spy"
@@ -71,10 +71,25 @@ jobs:
       - name: Full deterministic pytest gate
         run: pytest
 
-      - name: Enforce raw measured coverage floor
+      - name: Report exact measured package coverage
+        shell: bash
+        run: |
+          coverage json -o coverage-final.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("coverage-final.json").read_text(encoding="utf-8"))
+          percent = float(data["totals"]["percent_covered"])
+          print(f"exact package coverage: {percent:.6f}%")
+          if percent < 95.0:
+              raise SystemExit(f"exact package coverage {percent:.6f}% is below 95.0%")
+          PY
+
+      - name: Enforce configured coverage floor
         run: coverage report --fail-under=95
 
-      - name: Commit one verified implementation batch
+      - name: Push verified source-only tree
         shell: bash
         env:
           BRANCH: feat/contentrewards-campaign-factory
@@ -85,12 +100,9 @@ jobs:
           test "$remote_head" = "$EXPECTED_TRIGGER_SHA"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .github/workflows/collaborative-blocker-batch.yml \
-            scripts/_collaborative_blocker_batch.py \
-            scripts/_collaborative_fixture_alignment.py
           git add src/clipper/modal_execution.py src/clipper/quality_pipeline.py scripts/modal_execution_spy.py \
             tests/test_modal_execution.py tests/test_modal_execution_spy.py \
             tests/test_vision_runtime_recovery.py tests/test_coverage_floor_contract_edges.py \
-            tests/test_brief.py .github/workflows/ci.yml
-          git commit -m "fix: close collaborative production blockers"
+            tests/test_brief.py
+          git commit -m "fix: verified collaborative source tree"
           git push origin "HEAD:${BRANCH}"
