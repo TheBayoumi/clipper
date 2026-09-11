@@ -1,0 +1,69 @@
+{
+  "campaign": "Call of Duty - Modern Warfare 4 Multiplayer Beta Gameplay Clipping",
+  "target_count": 12,
+  "count_per_source": 4,
+  "duration_choices_seconds": [10.5, 11.5, 12.5, 13.5],
+  "candidate_step_seconds": 0.5,
+  "minimum_gap_seconds": 0.5,
+  "output": {
+    "width": 1920,
+    "height": 1080,
+    "full_source_frame": true,
+    "fps": "60000/1001",
+    "codec": "libx264",
+    "profile": "high",
+    "format": "mp4",
+    "preset": "medium",
+    "video_bitrate_kbps": 250000,
+    "rate_control": "CBR",
+    "audio_codec": "aac",
+    "audio_bitrate_kbps": 320,
+    "audio_sample_rate": 48000,
+    "audio_channels": 2
+  },
+  "editorial": {
+    "hook_text": false,
+    "campaign_text": false,
+    "campaign_logo": false,
+    "source_audio_only": true,
+    "cold_open_teaser_seconds": 1.25,
+    "effect_profiles": [
+      "precision_punch",
+      "impact_flash",
+      "chain_escalation",
+      "cold_open_teaser"
+    ]
+  },
+  "performance_targets": {
+    "retention_target_percent": 30,
+    "retention_proxy_min": 0.30,
+    "engagement_proxy_min": 0.30,
+    "minimum_weak_quarter_activity": 0.18,
+    "maximum_low_activity_fraction": 0.55,
+    "campaign_engagement_floor_percent": 0.20,
+    "engagement_goal": "optimize materially above the 0.20% campaign floor; actual post engagement cannot be guaranteed before publication"
+  },
+  "excluded_windows": {
+    "week2": [
+      [0.0, 13.8],
+      [17.0, 41.6],
+      [42.2, 88.15],
+      [105.3, 133.4],
+      [147.2, 203.2],
+      [230.96, 250.65]
+    ],
+    "batch2": [
+      [0.0, 25.0],
+      [45.0, 75.0]
+    ],
+    "r1": [
+      [95.0, 120.0],
+      [145.0, 175.0]
+    ]
+  },
+  "duplicate_policy": {
+    "allow_overlap_with_prior_work": false,
+    "allow_overlap_with_new_batch": false,
+    "notes": "Keep all new selections outside the previously used MW4 windows and mutually non-overlapping. Cold-open teasers may repeat a moment only inside their own clip as an intentional retention device."
+  }
+}
