@@ -7,9 +7,9 @@ from dataclasses import asdict
 from pathlib import Path
 
 import mw4_fullframe_retention_v3_1 as renderer
-import mw4_semantic_gameplay_v3_1_final as semantic
+import mw4_semantic_gameplay_v3_1_production as semantic
 
-# Use the exact production FFmpeg graph with the final V3.1 semantic decisions.
+# Use the exact production FFmpeg graph with the hardened V3.1 semantic decisions.
 renderer.semantic = semantic
 
 
@@ -35,8 +35,8 @@ def main() -> None:
     report_path = args.output_dir / f'{args.source_key}_shadow_refined.json'
     report = {
         'source_key': args.source_key,
-        'semantic_engine': 'deterministic-gameplay-v3.1-final',
-        'editorial_planner': 'semantic-editor-v3.1-final',
+        'semantic_engine': 'deterministic-gameplay-v3.1-production',
+        'editorial_planner': 'semantic-editor-v3.1-production',
         'candidate_mode': 'engagement_driven_explained_dullness',
         'diagnostics': diagnostics,
         'candidate_count_after_semantic_gates': len(plans),
@@ -53,7 +53,7 @@ def main() -> None:
     minimum = int(config.get('minimum_count_per_source', 2))
     if len(plans) < minimum:
         report['failure'] = (
-            f'Only {len(plans)} final V3.1 semantic candidates passed; minimum is {minimum}. '
+            f'Only {len(plans)} production V3.1 semantic candidates passed; minimum is {minimum}. '
             'Quality gates were not lowered just to fill quota.'
         )
         report_path.write_text(json.dumps(report, indent=2), encoding='utf-8')
