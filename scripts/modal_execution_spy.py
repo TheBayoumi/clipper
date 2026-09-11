@@ -705,9 +705,11 @@ class ModalExecutionSpy:
                             self._positive_int(compact.get("frames")),
                             observed_at,
                         )
-                elif name in {"vision_generation_complete", "vision_inference_error"}:
-                    if lifecycle_id:
-                        self._active_vision_generations.pop(lifecycle_id, None)
+                elif (
+                    name in {"vision_generation_complete", "vision_inference_error"}
+                    and lifecycle_id
+                ):
+                    self._active_vision_generations.pop(lifecycle_id, None)
 
             if authoritative and name in {
                 "editorial_remote_call_terminal",

@@ -2,20 +2,21 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
 
+from clipper import visual_ai
 from clipper.providers.base import InferenceUsage, ModelIdentity, ProviderResult
 from clipper.providers.modal import ModalRemoteError, ModalVisionProvider
-from clipper import visual_ai
 
 
 def _identity() -> ModelIdentity:
     return ModelIdentity("vision-model", "rev", "none", "test", "prompt", "schema")
 
 
-def _spy_module():
+def _spy_module() -> Any:
     path = Path("scripts/modal_execution_spy.py")
     spec = importlib.util.spec_from_file_location("modal_execution_spy_runtime", path)
     if spec is None or spec.loader is None:
@@ -85,8 +86,8 @@ def test_source_policy_dynamic_batches_never_exceed_safe_cap(
             *,
             task: str,
             frames: list[Path],
-            context: dict[str, object],
-        ) -> ProviderResult[dict[str, object]]:
+            context: dict[str, Any],
+        ) -> ProviderResult[dict[str, Any]]:
             assert task == "source_policy_visual_scout"
             self.batch_sizes.append(len(frames))
             timestamps = context["frame_timestamps"]
@@ -115,7 +116,9 @@ def test_source_policy_dynamic_batches_never_exceed_safe_cap(
     monkeypatch.setattr(
         visual_ai,
         "extract_video_frames",
-        lambda _path, times, _output: [tmp_path / f"frame-{index}.jpg" for index, _ in enumerate(times)],
+        lambda _path, times, _output: [
+            tmp_path / f"frame-{index}.jpg" for index, _ in enumerate(times)
+        ],
     )
 
     visual_ai.scout_visual_timeline(

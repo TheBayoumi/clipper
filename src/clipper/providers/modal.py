@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import importlib
 import json
 import math
@@ -657,10 +658,8 @@ class ModalVisionProvider(ModalJSONProvider):
         try:
             response = call.get(timeout=deadline)
         except TimeoutError as exc:
-            try:
+            with contextlib.suppress(Exception):
                 call.cancel()
-            except Exception:
-                pass
             self._instance_handle = None
             raise ModalRemoteError(
                 function_name=self.function_name,
