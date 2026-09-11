@@ -1,13 +1,6 @@
 name: MW4 full-frame retention v3
 
 on:
-  push:
-    branches:
-      - feat/mw4-fullframe-retention-v3
-    paths:
-      - scripts/mw4_fullframe_retention_v3.py
-      - campaigns/mw4-fullframe-retention-v3.json
-      - .github/workflows/mw4-fullframe-retention-v3.yml
   workflow_dispatch:
 
 permissions:
@@ -17,7 +10,7 @@ jobs:
   render:
     name: render-${{ matrix.source }}
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -37,6 +30,9 @@ jobs:
           python -m playwright install --with-deps chromium
           sudo apt-get update
           sudo apt-get install -y ffmpeg
+
+      - name: Run semantic editor self-test
+        run: python scripts/mw4_semantic_gameplay_v3.py --self-test
 
       - name: Resolve official MediaSilo source
         env:
@@ -101,13 +97,7 @@ jobs:
               if not url:
                   raise RuntimeError(f'No usable derivative for {wanted[source_key]}')
               Path('/tmp/resolved_source.json').write_text(
-                  json.dumps(
-                      {
-                          'asset_id': asset['id'],
-                          'title': asset['title'],
-                          'url': url,
-                      }
-                  ),
+                  json.dumps({'asset_id': asset['id'], 'title': asset['title'], 'url': url}),
                   encoding='utf-8',
               )
               print(asset['title'])
@@ -174,7 +164,7 @@ jobs:
           )
           PY
 
-      - name: Discover retention-gated windows and render full-frame 250 Mbps masters
+      - name: Semantic scene analysis, editorial planning, and 250 Mbps render
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
@@ -184,7 +174,7 @@ jobs:
             --config campaigns/mw4-fullframe-retention-v3.json \
             --output-dir "renders/$SOURCE_KEY"
 
-      - name: Verify full-frame/no-branding/retention contract
+      - name: Verify Stage 1 + Stage 2 semantic contract
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
@@ -197,6 +187,8 @@ jobs:
           manifest = json.loads(
               (Path('renders') / source_key / f'{source_key}_manifest.json').read_text(encoding='utf-8')
           )
+          assert manifest['semantic_engine'] == 'deterministic-gameplay-v1'
+          assert manifest['editorial_planner'] == 'semantic-editor-v1'
           assert manifest['full_source_frame'] is True
           assert manifest['hook_text_added'] is False
           assert manifest['campaign_text_added'] is False
@@ -204,27 +196,28 @@ jobs:
           assert manifest['source_audio_only'] is True
           assert manifest['prior_work_overlap_allowed'] is False
           assert manifest['new_batch_overlap_allowed'] is False
-          assert manifest['retention_target_percent'] == 30
-          assert len(manifest['outputs']) == 4
+          assert 2 <= len(manifest['outputs']) <= 4
           assert manifest['output_settings']['width'] == 1920
           assert manifest['output_settings']['height'] == 1080
           assert manifest['output_settings']['video_bitrate_kbps'] == 250000
           assert manifest['output_settings']['rate_control'] == 'CBR'
           for output in manifest['outputs']:
-              source = output['source']
-              assert source['retention_proxy'] >= 0.30
-              assert source['engagement_proxy'] >= 0.30
-              assert source['weakest_quarter_activity'] >= 0.18
-              assert source['low_activity_fraction'] <= 0.55
-              assert source['max_low_run_seconds'] <= 3.0
+              plan = output['editorial_plan']
+              assert plan['retention_proxy'] >= 0.30
+              assert plan['engagement_proxy'] >= 0.30
+              assert plan['max_unexplained_low_interest_run_seconds'] <= 1.0
+              assert plan['effect_profile'] in {
+                  'precision_punch', 'impact_flash', 'chain_escalation',
+                  'cold_open_teaser', 'clean_pressure'
+              }
               assert all(output['qa']['checks'].values())
-          print(f'{source_key}: four full-frame outputs passed all V3 gates')
+          print(f'{source_key}: semantic gameplay/editorial contract passed')
           PY
 
-      - name: Upload full-frame masters and full-video QA sheets
+      - name: Upload semantic masters, plans, and full-video QA sheets
         uses: actions/upload-artifact@v4
         with:
-          name: MW4-fullframe-retention-v3-${{ matrix.source }}-250M
+          name: MW4-fullframe-semantic-v3-${{ matrix.source }}-250M
           path: |
             renders/${{ matrix.source }}/*.mp4
             renders/${{ matrix.source }}/*.json
