@@ -205,6 +205,7 @@ jobs:
 
       - name: Enforce batch target and Finishing Move contract
         run: |
+          set -o pipefail
           python scripts/mw4_v3_1_contract.py \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
             --batch-root batch-contract | tee batch-contract-result.json
