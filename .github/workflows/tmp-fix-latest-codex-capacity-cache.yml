@@ -43,7 +43,7 @@ jobs:
           mypy
 
       - name: Targeted regression
-        run: pytest tests/test_visual_ai.py -q
+        run: pytest tests/test_visual_ai.py -q --no-cov
 
       - name: Full test and coverage gate
         run: pytest
