@@ -8,8 +8,11 @@ on:
     paths:
       - campaigns/mw4-fullframe-retention-v3-1.json
       - scripts/mw4_semantic_gameplay_v3_1.py
+      - scripts/mw4_semantic_gameplay_v3_1_refined.py
       - scripts/mw4_fullframe_retention_v3_1.py
+      - scripts/mw4_fullframe_retention_v3_1_refined.py
       - scripts/mw4_v3_1_shadow_preview.py
+      - scripts/mw4_v3_1_shadow_preview_refined.py
       - .github/workflows/mw4-semantic-v3-1-shadow.yml
 
 permissions:
@@ -40,8 +43,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Run V3.1 semantic self-test
-        run: python scripts/mw4_semantic_gameplay_v3_1.py --self-test
+      - name: Run refined V3.1 semantic self-test
+        run: python scripts/mw4_semantic_gameplay_v3_1_refined.py --self-test
 
       - name: Resolve official MediaSilo source
         env:
@@ -122,18 +125,18 @@ jobs:
                   output.write(block)
           PY
 
-      - name: Render engagement-driven V3.1 review previews
+      - name: Render refined engagement-driven V3.1 review previews
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
           mkdir -p shadow/${SOURCE_KEY}
-          python scripts/mw4_v3_1_shadow_preview.py \
+          python scripts/mw4_v3_1_shadow_preview_refined.py \
             --source-key "$SOURCE_KEY" \
             --source "raw_sources/$SOURCE_KEY.mp4" \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
             --output-dir "shadow/$SOURCE_KEY"
 
-      - name: Verify V3.1 selection contract
+      - name: Verify refined V3.1 selection contract
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
@@ -142,10 +145,11 @@ jobs:
           import os
           from pathlib import Path
           source_key = os.environ['SOURCE_KEY']
-          report = json.loads((Path('shadow') / source_key / f'{source_key}_shadow.json').read_text(encoding='utf-8'))
+          report = json.loads((Path('shadow') / source_key / f'{source_key}_shadow_refined.json').read_text(encoding='utf-8'))
           selected = report['selected']
           assert 2 <= len(selected) <= 4
           for plan in selected:
+              assert 10.0 <= plan['output_duration'] <= 20.0
               assert plan['opening_quality'] >= 0.42
               assert plan['ending_quality'] >= 0.40
               assert plan['retention_quality'] >= 0.36
@@ -160,16 +164,19 @@ jobs:
               'selected': len(selected),
               'stories': [p['story_type'] for p in selected],
               'finishing_move_like': report['finishing_move_like_count'],
+              'diagnostic_pass_count': report['diagnostics']['counts']['pass'],
           }))
           PY
 
-      - name: Upload V3.1 shadow previews and reports
+      - name: Upload refined V3.1 previews and diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: MW4-semantic-v3-1-shadow-${{ matrix.source }}
+          name: MW4-semantic-v3-1-refined-${{ matrix.source }}
           path: |
             shadow/${{ matrix.source }}/*.json
             shadow/${{ matrix.source }}/*.mp4
             shadow/${{ matrix.source }}/contact_sheets/*.jpg
           retention-days: 3
           compression-level: 0
+          if-no-files-found: warn
