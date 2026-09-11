@@ -24,6 +24,24 @@ def test_lovable_bootstrap_uses_immutable_tag_for_deploy_and_owner_only_hilp_tri
     assert 'test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"' in workflow
 
 
+def test_bootstrap_waits_for_the_specific_new_deployment_before_production() -> None:
+    workflow = Path(".github/workflows/lovable-production-bootstrap.yml").read_text(
+        encoding="utf-8"
+    )
+    dispatch = workflow.index("modal-workers-deploy.yml/dispatches")
+    resolve_new_run = workflow.index("selected_deployment_run_id")
+    wait_for_success = workflow.index('deployment_conclusion" != "success"')
+    production = workflow.index("production-pipeline.yml/dispatches")
+
+    assert dispatch < resolve_new_run < wait_for_success < production
+    assert "deploy-run-ids-before.json" in workflow
+    assert 'int(item["id"]) not in before' in workflow
+    assert "actions/runs/${selected_deployment_run_id}" in workflow
+    assert 'head_sha != sys.argv[1]' in workflow
+    assert 'head_branch != sys.argv[2]' in workflow
+    assert "only after fresh deploy run" in workflow
+
+
 def test_runtime_tag_name_is_content_addressed_to_full_sha() -> None:
     workflow = Path(".github/workflows/lovable-production-bootstrap.yml").read_text(
         encoding="utf-8"
