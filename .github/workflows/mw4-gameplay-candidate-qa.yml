@@ -1,0 +1,142 @@
+name: MW4 gameplay candidate QA
+
+on:
+  push:
+    branches:
+      - feat/mw4-gameplay-batch-v2
+    paths:
+      - scripts/mw4_candidate_contact_sheets.py
+      - .github/workflows/mw4-gameplay-candidate-qa.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qa:
+    name: qa-${{ matrix.source }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [r1, batch2, week2]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install discovery dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy==2.1.3' 'playwright==1.55.0'
+          python -m playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Resolve official source
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+          MEDIASILO_URL: https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          source_key = os.environ['SOURCE_KEY']
+          wanted = {
+              'r1': 'MW4_BetaTopPlays_Stringout_16X9_R1.mp4',
+              'batch2': 'BestOfBeta_Stringout_Batch2.mp4',
+              'week2': 'BestOfBeta_Week2_Stringout_1_8.28.mp4',
+          }
+          holder = [None]
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(
+                  headless=True,
+                  args=['--no-sandbox', '--disable-dev-shm-usage'],
+              )
+              page = browser.new_page(
+                  viewport={'width': 1440, 'height': 1000},
+                  user_agent=(
+                      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                      'AppleWebKit/537.36 (KHTML, like Gecko) '
+                      'Chrome/139.0.0.0 Safari/537.36'
+                  ),
+              )
+
+              def handle(response):
+                  if (
+                      '/folders/3b199368-5974-4eb1-a450-327a4e84c260/assets'
+                      not in response.url
+                      or response.status != 200
+                  ):
+                      return
+                  try:
+                      data = response.json()
+                  except Exception:
+                      return
+                  if isinstance(data, list) and data:
+                      holder[0] = data
+
+              page.on('response', handle)
+              page.goto(os.environ['MEDIASILO_URL'], wait_until='domcontentloaded', timeout=90000)
+              page.wait_for_timeout(25000)
+              browser.close()
+
+          if not holder[0]:
+              raise RuntimeError('MediaSilo assets were not resolved')
+
+          for asset in holder[0]:
+              if asset.get('title') != wanted[source_key]:
+                  continue
+              derivatives = {item.get('type'): item for item in asset.get('derivatives', [])}
+              derivative = derivatives.get('x1080') or derivatives.get('proxy') or {}
+              url = derivative.get('url') or (derivative.get('properties') or {}).get('url')
+              if not url:
+                  raise RuntimeError('No usable derivative')
+              Path('/tmp/source_url.txt').write_text(url, encoding='utf-8')
+              print(asset['title'])
+              break
+          else:
+              raise RuntimeError(f'Official source not found: {wanted[source_key]}')
+          PY
+
+      - name: Download source and make full-window QA sheets
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+        run: |
+          mkdir -p raw_sources "candidate_qa/$SOURCE_KEY"
+          python - <<'PY'
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          source_key = os.environ['SOURCE_KEY']
+          url = Path('/tmp/source_url.txt').read_text(encoding='utf-8')
+          request = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+          target = Path('raw_sources') / f'{source_key}.mp4'
+          with urllib.request.urlopen(request, timeout=300) as source, target.open('wb') as output:
+              while True:
+                  block = source.read(8 * 1024 * 1024)
+                  if not block:
+                      break
+                  output.write(block)
+          PY
+
+          python scripts/mw4_candidate_contact_sheets.py \
+            --source-key "$SOURCE_KEY" \
+            --source "raw_sources/$SOURCE_KEY.mp4" \
+            --config campaigns/mw4-gameplay-batch-v2.json \
+            --output-dir "candidate_qa/$SOURCE_KEY"
+
+      - name: Upload lightweight QA sheets
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-candidate-QA-${{ matrix.source }}
+          path: candidate_qa/${{ matrix.source }}/*
+          retention-days: 1
+          compression-level: 6
