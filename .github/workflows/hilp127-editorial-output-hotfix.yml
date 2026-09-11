@@ -1,0 +1,323 @@
+name: HILP 127 editorial output hotfix
+
+on:
+  push:
+    branches:
+      - feat/contentrewards-campaign-factory
+    paths:
+      - .github/workflows/hilp127-editorial-output-hotfix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/contentrewards-campaign-factory
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Require expected starting head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          parent="$(git rev-parse HEAD^)"
+          test "$parent" = "bedff7998dce3bf8da8a03c27aecaa9ae5810a1a"
+
+      - name: Patch malformed editorial JSON recovery contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"expected exactly one match in {path}, got {count}")
+              target.write_text(text.replace(old, new), encoding="utf-8")
+
+          replace_once(
+              "scripts/modal_open_models.py",
+              '''class EditorialOutputTruncated(ValueError):
+              """Editorial generation exhausted runtime-derived output capacity."""
+
+              def __init__(self, message: str, *, details: dict[str, Any]) -> None:
+                  self.details = dict(details)
+                  super().__init__(message)
+          ''',
+              '''class EditorialOutputTruncated(ValueError):
+              """Editorial generation exhausted runtime-derived output capacity."""
+
+              def __init__(self, message: str, *, details: dict[str, Any]) -> None:
+                  self.details = dict(details)
+                  super().__init__(message)
+
+
+          class EditorialOutputInvalid(ValueError):
+              """Editorial generation returned malformed structured output within its budget."""
+
+              def __init__(self, message: str, *, details: dict[str, Any]) -> None:
+                  self.details = dict(details)
+                  super().__init__(message)
+          ''',
+          )
+
+          replace_once(
+              "scripts/modal_open_models.py",
+              '''    error_type = type(exc).__name__
+              capacity_rejected = error_type == "OutOfMemoryError" or "CapacityError" in error_type
+              if not capacity_rejected:
+                  traceback.print_exception(exc)
+              message = str(exc)
+              if context:
+                  message = f"{context}: {message}"
+              application_status = "CAPACITY_REJECTED" if capacity_rejected else "FAILED"
+              recovery_action = "REPARTITION" if capacity_rejected else "NONE"
+          ''',
+              '''    error_type = type(exc).__name__
+              capacity_rejected = error_type == "OutOfMemoryError" or "CapacityError" in error_type
+              output_retry = error_type in {"EditorialOutputTruncated", "EditorialOutputInvalid"}
+              if not capacity_rejected and not output_retry:
+                  traceback.print_exception(exc)
+              message = str(exc)
+              if context:
+                  message = f"{context}: {message}"
+              if capacity_rejected:
+                  application_status = "CAPACITY_REJECTED"
+                  recovery_action = "REPARTITION"
+              elif output_retry:
+                  application_status = "OUTPUT_RETRY"
+                  recovery_action = "REGENERATE"
+              else:
+                  application_status = "FAILED"
+                  recovery_action = "NONE"
+          ''',
+          )
+
+          replace_once(
+              "scripts/modal_open_models.py",
+              '''        raise RuntimeError(
+                  "constrained editorial generation returned invalid JSON despite Outlines "
+                  f"schema enforcement for task={task}: {exc}"
+              ) from exc
+          ''',
+              '''        available = int(plan["available_output_tokens"])
+              next_budget = min(
+                  available,
+                  max(output_budget + 1, output_budget * 2),
+              )
+              raise EditorialOutputInvalid(
+                  "constrained editorial generation returned malformed JSON despite Outlines "
+                  f"schema enforcement for task={task}: {exc}",
+                  details={
+                      **plan,
+                      "reason": "invalid_structured_json",
+                      "generated_sha256": generated_sha,
+                      "output_tokens": output_units,
+                      "next_output_budget_tokens": next_budget,
+                      "recovery_action": "REGENERATE",
+                  },
+              ) from exc
+          ''',
+          )
+
+          replace_once(
+              "src/clipper/providers/modal.py",
+              '''        if exc.error_type in {"JSONDecodeError", "EditorialOutputTruncated"}:
+                      return True
+          ''',
+              '''        if exc.error_type in {
+                      "JSONDecodeError",
+                      "EditorialOutputTruncated",
+                      "EditorialOutputInvalid",
+                  }:
+                      return True
+          ''',
+          )
+
+          replace_once(
+              "src/clipper/providers/modal.py",
+              '''        seen_recovery_signatures: set[tuple[object, ...]] = set()
+                  while True:
+          ''',
+              '''        seen_recovery_signatures: set[tuple[object, ...]] = set()
+                  invalid_output_retries = 0
+                  while True:
+          ''',
+          )
+
+          replace_once(
+              "src/clipper/providers/modal.py",
+              '''                if not self._is_output_contract_error(exc):
+                          raise
+
+                      next_budget = exc.details.get("next_output_budget_tokens")
+          ''',
+              '''                if not self._is_output_contract_error(exc):
+                          raise
+
+                      if exc.error_type == "EditorialOutputInvalid":
+                          if invalid_output_retries >= 1:
+                              raise
+                          invalid_output_retries += 1
+
+                      next_budget = exc.details.get("next_output_budget_tokens")
+          ''',
+          )
+
+          replace_once(
+              "src/clipper/providers/modal.py",
+              '''                request = {
+                          "task": task,
+                          "payload": payload,
+                          "generation_minimum_output_tokens": next_budget,
+                          "generation_recovery_instruction": (
+                              "Regenerate the complete strict JSON object from the original source "
+                              "evidence using the expanded runtime-derived output capacity. Do not add "
+                              "Markdown or prose outside the object."
+                          ),
+                      }
+          ''',
+              '''                recovery_instruction = (
+                          "The prior constrained generation returned malformed JSON. Regenerate the "
+                          "complete strict JSON object from the original source evidence using the "
+                          "expanded runtime-derived output capacity. Do not add Markdown or prose "
+                          "outside the object."
+                          if exc.error_type == "EditorialOutputInvalid"
+                          else (
+                              "Regenerate the complete strict JSON object from the original source "
+                              "evidence using the expanded runtime-derived output capacity. Do not add "
+                              "Markdown or prose outside the object."
+                          )
+                      )
+                      request = {
+                          "task": task,
+                          "payload": payload,
+                          "generation_minimum_output_tokens": next_budget,
+                          "generation_recovery_instruction": recovery_instruction,
+                      }
+          ''',
+          )
+
+          replace_once(
+              "tests/test_modal_open_models_transport.py",
+              '''    assert event["application_status"] == "FAILED"
+          ''',
+              '''    assert event["application_status"] == "OUTPUT_RETRY"
+              assert event["recovery_action"] == "REGENERATE"
+          ''',
+          )
+
+          recovery_tests = Path("tests/test_modal_editorial_recovery.py")
+          recovery_text = recovery_tests.read_text(encoding="utf-8")
+          marker = "def test_editorial_provider_does_not_retry_unrelated_remote_error() -> None:\n"
+          if recovery_text.count(marker) != 1:
+              raise RuntimeError("editorial recovery insertion marker drifted")
+          added = '''def test_editorial_provider_recovers_malformed_structured_json_once() -> None:
+              provider = SequenceEditorialProvider(
+                  [
+                      ModalRemoteError(
+                          function_name="editorial",
+                          error_type="EditorialOutputInvalid",
+                          message="malformed constrained JSON",
+                          details={
+                              "generation_budget_tokens": 273,
+                              "next_output_budget_tokens": 546,
+                              "generated_sha256": "invalid-first",
+                              "reason": "invalid_structured_json",
+                          },
+                      ),
+                      _result({"segments": []}),
+                  ]
+              )
+              result = provider.complete_json(task="source_hazards:range", payload={"words": []})
+              assert result.value == {"segments": []}
+              assert len(provider.requests) == 2
+              assert provider.requests[1]["generation_minimum_output_tokens"] == 546
+              assert "malformed JSON" in provider.requests[1]["generation_recovery_instruction"]
+
+
+          def test_editorial_provider_fails_closed_after_one_malformed_json_retry() -> None:
+              provider = SequenceEditorialProvider(
+                  [
+                      ModalRemoteError(
+                          function_name="editorial",
+                          error_type="EditorialOutputInvalid",
+                          message="first malformed constrained JSON",
+                          details={
+                              "generation_budget_tokens": 273,
+                              "next_output_budget_tokens": 546,
+                              "generated_sha256": "invalid-first",
+                          },
+                      ),
+                      ModalRemoteError(
+                          function_name="editorial",
+                          error_type="EditorialOutputInvalid",
+                          message="second malformed constrained JSON",
+                          details={
+                              "generation_budget_tokens": 546,
+                              "next_output_budget_tokens": 1092,
+                              "generated_sha256": "invalid-second",
+                          },
+                      ),
+                  ]
+              )
+              with pytest.raises(ModalRemoteError, match="second malformed constrained JSON"):
+                  provider.complete_json(task="source_hazards:range", payload={"words": []})
+              assert len(provider.requests) == 2
+
+
+          '''
+          recovery_tests.write_text(recovery_text.replace(marker, added + marker), encoding="utf-8")
+
+          transport_tests = Path("tests/test_modal_open_models_transport.py")
+          transport_text = transport_tests.read_text(encoding="utf-8")
+          static_test = '''\n\ndef test_malformed_editorial_json_has_dedicated_bounded_retry_contract() -> None:
+              source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+              provider = Path("src/clipper/providers/modal.py").read_text(encoding="utf-8")
+              assert "class EditorialOutputInvalid(ValueError):" in source
+              assert '"reason": "invalid_structured_json"' in source
+              assert "raise EditorialOutputInvalid(" in source
+              assert '"EditorialOutputInvalid"' in provider
+              assert "invalid_output_retries >= 1" in provider
+          '''
+          if "def test_malformed_editorial_json_has_dedicated_bounded_retry_contract" in transport_text:
+              raise RuntimeError("transport regression already present")
+          transport_tests.write_text(transport_text + static_test, encoding="utf-8")
+          PY
+
+      - name: Install focused test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[modal]'
+          python -m pip install pytest pytest-cov ruff
+
+      - name: Verify repair
+        run: |
+          ruff check scripts/modal_open_models.py src/clipper/providers/modal.py tests/test_modal_editorial_recovery.py tests/test_modal_open_models_transport.py
+          ruff format --check scripts/modal_open_models.py src/clipper/providers/modal.py tests/test_modal_editorial_recovery.py tests/test_modal_open_models_transport.py
+          pytest tests/test_modal_editorial_recovery.py tests/test_modal_open_models_transport.py
+
+      - name: Commit clean repair and remove staging workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/hilp127-editorial-output-hotfix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/modal_open_models.py src/clipper/providers/modal.py tests/test_modal_editorial_recovery.py tests/test_modal_open_models_transport.py .github/workflows/hilp127-editorial-output-hotfix.yml
+          git diff --cached --check
+          git commit -m "fix: recover malformed editorial structured output"
+          git push origin HEAD:feat/contentrewards-campaign-factory
