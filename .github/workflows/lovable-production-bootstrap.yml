@@ -6,30 +6,143 @@ on:
       - feat/contentrewards-campaign-factory
     paths:
       - acceptance/production-run-request.json
+  pull_request:
+    branches:
+      - main
+    types:
+      - edited
 
 permissions:
   actions: write
-  contents: read
+  contents: write
 
 jobs:
   dispatch-modal-workers:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       github.actor == github.repository_owner &&
+       contains(github.event.pull_request.body, '<!-- CLIPPER_HILP_TRIGGER sha='))
     runs-on: ubuntu-24.04
     steps:
-      - name: Dispatch existing Modal deployment workflow at this exact branch head
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Create immutable execution tag and dispatch exact-SHA workflows
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          BRANCH: ${{ github.ref_name }}
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
         shell: bash
         run: |
           set -euo pipefail
-          payload="$(python -c 'import json,os; print(json.dumps({"ref": os.environ["BRANCH"], "inputs": {"deployment_sha": os.environ["EXPECTED_SHA"]}}))')"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            expected_trigger="<!-- CLIPPER_HILP_TRIGGER sha=${EXPECTED_SHA} -->"
+            if [[ "$PR_BODY" != *"$expected_trigger"* ]]; then
+              echo "PR metadata trigger does not name the exact current head SHA" >&2
+              exit 1
+            fi
+          fi
+
+          tag="clipper-hilp-${EXPECTED_SHA}"
+          tag_ref="refs/tags/${tag}"
+          ref_url="https://api.github.com/repos/${REPOSITORY}/git/ref/tags/${tag}"
+          status="$(curl --silent --show-error --output tag-ref.json --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$ref_url")"
+          if [[ "$status" == "200" ]]; then
+            python - "$EXPECTED_SHA" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path("tag-ref.json").read_text(encoding="utf-8"))
+          actual = str(((payload.get("object") or {}).get("sha") or "")).lower()
+          expected = sys.argv[1].lower()
+          if actual != expected:
+              raise SystemExit(
+                  f"immutable HILP tag points at the wrong SHA: expected={expected} actual={actual}"
+              )
+          PY
+          elif [[ "$status" == "404" ]]; then
+            payload="$(python - "$tag_ref" "$EXPECTED_SHA" <<'PY'
+          import json
+          import sys
+          print(json.dumps({"ref": sys.argv[1], "sha": sys.argv[2]}))
+          PY
+          )"
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header "Accept: application/vnd.github+json" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${REPOSITORY}/git/refs" \
+              --data "$payload" > tag-ref.json
+          else
+            cat tag-ref.json >&2 || true
+            echo "failed to resolve immutable HILP tag: HTTP ${status}" >&2
+            exit 1
+          fi
+
+          deploy_payload="$(python - "$tag" "$EXPECTED_SHA" <<'PY'
+          import json
+          import sys
+          print(json.dumps({"ref": sys.argv[1], "inputs": {"deployment_sha": sys.argv[2]}}))
+          PY
+          )"
           curl --fail-with-body --silent --show-error \
             --request POST \
             --header "Authorization: Bearer ${GH_TOKEN}" \
             --header "Accept: application/vnd.github+json" \
             --header "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${REPOSITORY}/actions/workflows/modal-workers-deploy.yml/dispatches" \
-            --data "${payload}"
-          echo "Dispatched modal-workers-deploy.yml for ${BRANCH} pinned to ${EXPECTED_SHA}."
+            --data "$deploy_payload"
+          echo "Dispatched modal-workers-deploy.yml pinned to ${EXPECTED_SHA} through ${tag}."
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            production_payload="$(python - "$tag" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          marker = json.loads(
+              Path("acceptance/production-run-request.json").read_text(encoding="utf-8")
+          )
+          if not isinstance(marker, dict) or marker.get("enabled") is not True:
+              raise SystemExit("production acceptance request is disabled")
+          if marker.get("confirm_production") is not True:
+              raise SystemExit("production acceptance request is not confirmed")
+          payload = {
+              "ref": sys.argv[1],
+              "inputs": {
+                  "confirm_production": True,
+                  "fresh_inference": marker.get("fresh_inference") is True,
+                  "resume_from_run_id": str(marker.get("resume_from_run_id") or ""),
+                  "campaign_brief": str(marker.get("campaign_brief") or ""),
+                  "target_video_id": str(marker.get("target_video_id") or ""),
+                  "editorial_acceptance_only": marker.get("editorial_acceptance_only") is True,
+                  "max_gpu_seconds": marker.get("max_gpu_seconds", 21600),
+                  "max_estimated_usd": marker.get("max_estimated_usd", 10),
+              },
+          }
+          print(json.dumps(payload))
+          PY
+          )"
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header "Accept: application/vnd.github+json" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${REPOSITORY}/actions/workflows/production-pipeline.yml/dispatches" \
+              --data "$production_payload"
+            echo "Dispatched production-pipeline.yml at exact reviewed SHA ${EXPECTED_SHA}."
+          fi
