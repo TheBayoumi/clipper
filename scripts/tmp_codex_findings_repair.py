@@ -1,0 +1,697 @@
+# ruff: noqa
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    target = Path(path)
+    text = target.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count != 1:
+        raise RuntimeError(f"expected one match in {path}, found {count}: {old[:120]!r}")
+    target.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def append_once(path: str, marker: str, addition: str) -> None:
+    target = Path(path)
+    text = target.read_text(encoding="utf-8")
+    if marker in text:
+        return
+    target.write_text(text.rstrip() + "\n\n" + addition.strip() + "\n", encoding="utf-8")
+
+
+# P1: a timed-out vision call is repartitionable only after terminal state is confirmed.
+replace_once(
+    "src/clipper/providers/modal.py",
+    """    @staticmethod
+    def _call_deadline_seconds() -> float:
+        deadline = float(os.getenv("CLIPPER_VISION_CALL_DEADLINE_SECONDS", "360"))
+        if not math.isfinite(deadline) or deadline <= 0:
+            raise ValueError("vision call deadline must be finite and positive")
+        return deadline
+""",
+    """    @staticmethod
+    def _call_deadline_seconds() -> float:
+        deadline = float(os.getenv("CLIPPER_VISION_CALL_DEADLINE_SECONDS", "360"))
+        if not math.isfinite(deadline) or deadline <= 0:
+            raise ValueError("vision call deadline must be finite and positive")
+        return deadline
+
+    @staticmethod
+    def _cancel_confirmation_seconds() -> float:
+        timeout = float(os.getenv("CLIPPER_VISION_CANCEL_CONFIRM_SECONDS", "30"))
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError(
+                "vision cancellation confirmation timeout must be finite and positive"
+            )
+        return timeout
+""",
+)
+replace_once(
+    "src/clipper/providers/modal.py",
+    """        try:
+            response = call.get(timeout=deadline)
+        except TimeoutError as exc:
+            with contextlib.suppress(Exception):
+                call.cancel()
+            self._instance_handle = None
+            raise ModalRemoteError(
+                function_name=self.function_name,
+                error_type="VisionGenerationDeadlineError",
+                message=(
+                    "vision generation exceeded the bounded client deadline and was cancelled "
+                    f"after {deadline:.3f}s"
+                ),
+                details={
+                    "reason": "generation_runtime_deadline",
+                    "timeout_seconds": deadline,
+                    "frames": len(frames),
+                    "recovery_action": "REPARTITION",
+                },
+            ) from exc
+""",
+    """        try:
+            response = call.get(timeout=deadline)
+        except TimeoutError as exc:
+            confirmation_timeout = self._cancel_confirmation_seconds()
+            try:
+                call.cancel()
+            except Exception as cancel_exc:
+                self._instance_handle = None
+                raise ModalRemoteError(
+                    function_name=self.function_name,
+                    error_type="VisionCancellationUnconfirmedError",
+                    message=(
+                        "vision call cancellation failed before terminal state could be confirmed"
+                    ),
+                    details={
+                        "reason": "vision_cancellation_unconfirmed",
+                        "timeout_seconds": deadline,
+                        "confirmation_timeout_seconds": confirmation_timeout,
+                        "frames": len(frames),
+                        "cancellation_error_type": type(cancel_exc).__name__,
+                    },
+                ) from cancel_exc
+            try:
+                call.get(timeout=confirmation_timeout)
+            except TimeoutError as confirm_exc:
+                self._instance_handle = None
+                raise ModalRemoteError(
+                    function_name=self.function_name,
+                    error_type="VisionCancellationUnconfirmedError",
+                    message="vision call did not reach a terminal state after cancellation",
+                    details={
+                        "reason": "vision_cancellation_unconfirmed",
+                        "timeout_seconds": deadline,
+                        "confirmation_timeout_seconds": confirmation_timeout,
+                        "frames": len(frames),
+                    },
+                ) from confirm_exc
+            except Exception:
+                pass
+            self._instance_handle = None
+            raise ModalRemoteError(
+                function_name=self.function_name,
+                error_type="VisionGenerationDeadlineError",
+                message=(
+                    "vision generation exceeded the bounded client deadline; "
+                    "the timed-out call reached terminal state and may be repartitioned "
+                    f"after {deadline:.3f}s"
+                ),
+                details={
+                    "reason": "generation_runtime_deadline",
+                    "timeout_seconds": deadline,
+                    "confirmation_timeout_seconds": confirmation_timeout,
+                    "frames": len(frames),
+                    "cancellation_confirmed": True,
+                    "recovery_action": "REPARTITION",
+                },
+            ) from exc
+""",
+)
+
+# P1: production acceptance waits for every tracked producer, including vision.
+replace_once(
+    "scripts/modal_execution_spy.py",
+    """            with self.lock:
+                terminal_seen = self._terminal_event is not None
+                active_calls = bool(self._active_editorial_calls)
+                aborted = self.abort_reason is not None
+            if aborted:
+                return False
+            if terminal_seen and not active_calls:
+                return True
+""",
+    """            with self.lock:
+                terminal_seen = self._terminal_event is not None
+                active_editorial_calls = bool(self._active_editorial_calls)
+                active_vision_generations = bool(self._active_vision_generations)
+                aborted = self.abort_reason is not None
+            if aborted:
+                return False
+            if terminal_seen and not active_editorial_calls and not active_vision_generations:
+                return True
+""",
+)
+replace_once(
+    "scripts/modal_hilp_watchdog.py",
+    """            "Modal spy did not observe a closed pipeline editorial-call set "
+            "before the production terminal barrier"
+""",
+    """            "Modal spy did not observe a closed pipeline producer set "
+            "before the production terminal barrier"
+""",
+)
+
+# P2: required visual entities match normalized token sequences, never substrings.
+replace_once(
+    "src/clipper/editorial_integrity.py",
+    """def _normalize_visual_presence(value: str) -> str:
+    normalized = "".join(
+        character.casefold() if character.isalnum() else " " for character in value
+    )
+    return " ".join(normalized.split())
+
+
+def _required_visual_presence_gate(
+""",
+    """def _normalize_visual_presence(value: str) -> str:
+    normalized = "".join(
+        character.casefold() if character.isalnum() else " " for character in value
+    )
+    return " ".join(normalized.split())
+
+
+def _visual_presence_matches(required: str, evidence: str) -> bool:
+    required_tokens = tuple(_normalize_visual_presence(required).split())
+    evidence_tokens = tuple(_normalize_visual_presence(evidence).split())
+    width = len(required_tokens)
+    if width == 0 or width > len(evidence_tokens):
+        return False
+    return any(
+        evidence_tokens[index : index + width] == required_tokens
+        for index in range(len(evidence_tokens) - width + 1)
+    )
+
+
+def _required_visual_presence_gate(
+""",
+)
+replace_once(
+    "src/clipper/editorial_integrity.py",
+    """        for evidence in evidence_values:
+            normalized_evidence = _normalize_visual_presence(evidence)
+            for required_text, normalized_required in required_normalized.items():
+                if not normalized_required or normalized_required not in normalized_evidence:
+                    continue
+""",
+    """        for evidence in evidence_values:
+            for required_text, normalized_required in required_normalized.items():
+                if not normalized_required or not _visual_presence_matches(
+                    normalized_required, evidence
+                ):
+                    continue
+""",
+)
+
+# P2: Pull Request metadata is read-only; Issues write is enough for PR comments.
+replace_once(
+    ".github/workflows/production-pipeline.yml",
+    "  pull-requests: write\n",
+    "  pull-requests: read\n",
+)
+replace_once(
+    "tests/test_production_workflow_contract.py",
+    '    assert "pull-requests: write" in workflow\n',
+    '    assert "pull-requests: read" in workflow\n',
+)
+replace_once(
+    "tests/test_vision_runtime_recovery.py",
+    '    assert "pull-requests: write" in workflow\n',
+    '    assert "pull-requests: read" in workflow\n',
+)
+
+# P1: default CLI resume validates the reviewed registry before any Modal/runtime work.
+replace_once(
+    "src/clipper/modal_execution.py",
+    "import importlib\n",
+    "import hashlib\nimport importlib\n",
+)
+resume_helper = '''
+def _load_reviewed_resume_provenance(
+    *,
+    requested_run_id: str | None,
+    brief_path: Path,
+    campaign_id: str,
+    candidates: list[VideoCandidate],
+) -> dict[str, Any] | None:
+    requested = str(requested_run_id or "").strip()
+    if not requested:
+        return None
+    registry_path = _repo_root() / "acceptance" / "resume-provenance.json"
+    try:
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "resume execution is missing a valid reviewed provenance registry"
+        ) from exc
+    if not isinstance(registry, dict) or registry.get("schema_version") != (
+        "clipper-resume-provenance-registry-v1"
+    ):
+        raise RuntimeError("resume provenance registry schema is unsupported")
+    records = registry.get("records")
+    if not isinstance(records, dict):
+        raise RuntimeError("resume provenance registry records must be an object")
+    raw_record = records.get(requested)
+    if not isinstance(raw_record, dict):
+        raise RuntimeError("resume_from_run_id has no reviewed compatible artifact provenance")
+    record = {str(key): value for key, value in raw_record.items()}
+    if record.get("schema_version") != "clipper-resume-provenance-v1":
+        raise RuntimeError("resume provenance record schema is unsupported")
+    if str(record.get("workflow_run_id") or "") != requested:
+        raise RuntimeError("resume provenance registry key does not match workflow run ID")
+    if str(record.get("campaign_id") or "") != campaign_id:
+        raise RuntimeError("resume provenance campaign does not match selected campaign")
+    brief_digest = hashlib.sha256(brief_path.read_bytes()).hexdigest()
+    if str(record.get("campaign_brief_sha256") or "") != brief_digest:
+        raise RuntimeError("resume provenance campaign brief digest does not match")
+
+    artifact_path = str(record.get("artifact_run_path") or "").strip()
+    relative = Path(artifact_path.lstrip("/"))
+    if (
+        not artifact_path.startswith("/")
+        or relative.is_absolute()
+        or len(relative.parts) != 1
+        or relative.parts[0] in {"", ".", ".."}
+    ):
+        raise RuntimeError("resume artifact path must identify one direct artifact run directory")
+    origin_run_id = str(record.get("artifact_origin_workflow_run_id") or "").strip()
+    origin_sha = str(record.get("artifact_origin_head_sha") or "").strip().lower()
+    if not origin_run_id:
+        raise RuntimeError("resume provenance is missing artifact origin workflow run ID")
+    if len(origin_sha) != 40 or any(ch not in "0123456789abcdef" for ch in origin_sha):
+        raise RuntimeError("resume provenance artifact origin SHA is invalid")
+    if str(record.get("cache_root") or "") != "/artifacts/_cache":
+        raise RuntimeError("resume provenance cache root is incompatible")
+
+    source_hashes = record.get("source_hashes")
+    if not isinstance(source_hashes, dict):
+        raise RuntimeError("resume provenance source hashes must be an object")
+    normalized_hashes = {str(key): str(value).lower() for key, value in source_hashes.items()}
+    candidate_ids = {candidate.video_id for candidate in candidates}
+    if set(normalized_hashes) != candidate_ids:
+        raise RuntimeError("resume provenance source identities do not match explicit targets")
+    if any(
+        len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value)
+        for value in normalized_hashes.values()
+    ):
+        raise RuntimeError("resume provenance contains an invalid source hash")
+    target_video_id = str(record.get("target_video_id") or "").strip()
+    if target_video_id and (len(candidates) != 1 or target_video_id != candidates[0].video_id):
+        raise RuntimeError("resume provenance target does not match explicit targets")
+    record["source_hashes"] = normalized_hashes
+    return record
+'''
+replace_once(
+    "src/clipper/modal_execution.py",
+    "\ndef run_modal_pipeline(\n",
+    "\n" + resume_helper.strip("\n") + "\n\ndef run_modal_pipeline(\n",
+)
+replace_once(
+    "src/clipper/modal_execution.py",
+    """    brief = load_brief(brief_path)
+    assert_campaign_authorized(brief)
+    ensure_modal_runtime()
+    candidates = _explicit_candidates(brief)
+    if not candidates:
+        raise RuntimeError("campaign brief has no explicit authorized targets")
+""",
+    """    brief = load_brief(brief_path)
+    assert_campaign_authorized(brief)
+    if fresh_inference and resume_from_run_id is not None:
+        raise ValueError("fresh inference cannot be combined with resume_from_run_id")
+    candidates = _explicit_candidates(brief)
+    if not candidates:
+        raise RuntimeError("campaign brief has no explicit authorized targets")
+    resume_provenance = _load_reviewed_resume_provenance(
+        requested_run_id=resume_from_run_id,
+        brief_path=brief_path,
+        campaign_id=brief.campaign_id,
+        candidates=candidates,
+    )
+    ensure_modal_runtime()
+""",
+)
+replace_once(
+    "src/clipper/modal_execution.py",
+    """    source_payloads = [
+        {
+            "evidence": evidence,
+            "video_id": candidate.video_id,
+            "channel_id": candidate.channel_id,
+            "canonical_url": candidate.url,
+        }
+        for candidate, evidence in zip(candidates, sources, strict=True)
+    ]
+    remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
+""",
+    """    source_payloads = [
+        {
+            "evidence": evidence,
+            "video_id": candidate.video_id,
+            "channel_id": candidate.channel_id,
+            "canonical_url": candidate.url,
+        }
+        for candidate, evidence in zip(candidates, sources, strict=True)
+    ]
+    if resume_provenance is not None:
+        expected_hashes = {
+            str(key): str(value).lower()
+            for key, value in dict(resume_provenance["source_hashes"]).items()
+        }
+        actual_hashes = {
+            candidate.video_id: str(evidence.get("sha256") or "").lower()
+            for candidate, evidence in zip(candidates, sources, strict=True)
+        }
+        if actual_hashes != expected_hashes:
+            raise RuntimeError("resume provenance source hashes do not match acquired source masters")
+    remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
+""",
+)
+replace_once(
+    "src/clipper/modal_execution.py",
+    """        "resume_from_run_id": resume_from_run_id,
+        "git_sha": verified_git_sha,
+""",
+    """        "resume_from_run_id": resume_from_run_id,
+        "resume_provenance": resume_provenance,
+        "git_sha": verified_git_sha,
+""",
+)
+
+# Keep the existing generic happy-path test non-resume; dedicated tests cover resume.
+replace_once(
+    "tests/test_modal_execution.py",
+    """            resume_from_run_id="old-run",
+            render=True,
+            fresh_inference=True,
+""",
+    """            resume_from_run_id=None,
+            render=True,
+            fresh_inference=False,
+""",
+)
+replace_once(
+    "tests/test_modal_execution.py",
+    '    assert payload["resume_from_run_id"] == "old-run"\n',
+    '    assert payload["resume_from_run_id"] is None\n    assert payload["resume_provenance"] is None\n',
+)
+replace_once(
+    "tests/test_modal_execution.py",
+    '    assert payload["fresh_inference"] is True\n',
+    '    assert payload["fresh_inference"] is False\n',
+)
+append_once(
+    "tests/test_modal_execution.py",
+    "def test_run_modal_pipeline_forwards_reviewed_resume_provenance",
+    '''
+def _write_reviewed_resume_registry(root: Path, brief_path: Path) -> dict[str, object]:
+    record: dict[str, object] = {
+        "schema_version": "clipper-resume-provenance-v1",
+        "workflow_run_id": "123",
+        "artifact_run_path": "/prior-run",
+        "artifact_origin_workflow_run_id": "122",
+        "artifact_origin_head_sha": "a" * 40,
+        "campaign_id": "campaign",
+        "campaign_brief_sha256": __import__("hashlib").sha256(brief_path.read_bytes()).hexdigest(),
+        "target_video_id": "v1",
+        "source_hashes": {"v1": "s" * 64},
+        "cache_root": "/artifacts/_cache",
+    }
+    acceptance = root / "acceptance"
+    acceptance.mkdir(parents=True, exist_ok=True)
+    (acceptance / "resume-provenance.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "clipper-resume-provenance-registry-v1",
+                "records": {"123": record},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return record
+
+
+def test_run_modal_pipeline_forwards_reviewed_resume_provenance(tmp_path: Path) -> None:
+    brief_path = tmp_path / "brief.json"
+    _write_brief(brief_path)
+    repo_root = tmp_path / "repo"
+    record = _write_reviewed_resume_registry(repo_root, brief_path)
+    candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
+    acquire = Mock()
+    runner = Mock()
+    materialized = tmp_path / "artifacts" / "campaign-run"
+    remote_result = {
+        "execution_id": "e" * 32,
+        "deployed_git_sha": "a" * 40,
+        "run_path": "/campaign-run",
+        "run_volume": "clipper-production-artifacts",
+    }
+
+    def fake_function(_app: str, name: str) -> Mock:
+        return acquire if name == "acquire_source" else runner
+
+    with (
+        patch("clipper.modal_execution._repo_root", return_value=repo_root),
+        patch("clipper.modal_execution.ensure_modal_runtime") as ensure,
+        patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
+        patch("clipper.modal_execution._verify_deployed_runtime_sha", return_value="a" * 40),
+        patch("clipper.modal_execution.uuid.uuid4", return_value=SimpleNamespace(hex="e" * 32)),
+        patch("clipper.modal_execution._function", side_effect=fake_function),
+        patch(
+            "clipper.modal_execution._acquire_remote_source",
+            return_value={
+                "quality_policy": "highest_available_no_transcode",
+                "sha256": "s" * 64,
+            },
+        ),
+        patch(
+            "clipper.modal_execution._invoke_remote_with_budget",
+            return_value=remote_result,
+        ) as invoke,
+        patch(
+            "clipper.modal_execution._materialize_remote_run",
+            return_value=materialized,
+        ),
+    ):
+        result = run_modal_pipeline(
+            brief_path,
+            artifact_root=tmp_path / "artifacts",
+            resume_from_run_id="123",
+            render=True,
+            fresh_inference=False,
+        )
+
+    assert result == materialized
+    ensure.assert_called_once_with()
+    payload = invoke.call_args.args[1]
+    assert payload["resume_from_run_id"] == "123"
+    assert payload["resume_provenance"] == record
+
+
+def test_run_modal_pipeline_rejects_missing_resume_provenance_before_modal_work(
+    tmp_path: Path,
+) -> None:
+    brief_path = tmp_path / "brief.json"
+    _write_brief(brief_path)
+    repo_root = tmp_path / "repo"
+    acceptance = repo_root / "acceptance"
+    acceptance.mkdir(parents=True)
+    (acceptance / "resume-provenance.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "clipper-resume-provenance-registry-v1",
+                "records": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    candidate = VideoCandidate("v1", "Title", "UC1", "Channel", "https://youtu.be/v1")
+    with (
+        patch("clipper.modal_execution._repo_root", return_value=repo_root),
+        patch("clipper.modal_execution._explicit_candidates", return_value=[candidate]),
+        patch("clipper.modal_execution.ensure_modal_runtime") as ensure,
+        patch("clipper.modal_execution._function") as function,
+        pytest.raises(RuntimeError, match="no reviewed compatible artifact provenance"),
+    ):
+        run_modal_pipeline(
+            brief_path,
+            artifact_root=tmp_path / "artifacts",
+            resume_from_run_id="missing",
+            render=True,
+            fresh_inference=False,
+        )
+    ensure.assert_not_called()
+    function.assert_not_called()
+''',
+)
+
+# Vision cancellation regressions: terminal confirmation permits repartition; uncertainty does not.
+replace_once(
+    "tests/test_vision_runtime_recovery.py",
+    """    call = Mock()
+    call.get.side_effect = TimeoutError
+    function = Mock()
+""",
+    """    call = Mock()
+    call.get.side_effect = [TimeoutError(), RuntimeError("cancelled")]
+    function = Mock()
+""",
+)
+replace_once(
+    "tests/test_vision_runtime_recovery.py",
+    """    call.get.assert_called_once_with(timeout=12.5)
+    call.cancel.assert_called_once_with()
+""",
+    """    assert call.get.call_count == 2
+    assert call.get.call_args_list[0].kwargs == {"timeout": 12.5}
+    assert call.get.call_args_list[1].kwargs == {"timeout": 30.0}
+    call.cancel.assert_called_once_with()
+    assert raised.value.details["cancellation_confirmed"] is True
+""",
+)
+append_once(
+    "tests/test_vision_runtime_recovery.py",
+    "def test_modal_vision_deadline_fails_closed_when_cancel_fails",
+    '''
+def test_modal_vision_deadline_fails_closed_when_cancel_fails(tmp_path: Path) -> None:
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"frame")
+    provider = ModalVisionProvider(
+        app_name="app",
+        identity=_identity(),
+        function_name="vision",
+    )
+    call = Mock()
+    call.get.side_effect = TimeoutError
+    call.cancel.side_effect = RuntimeError("cancel transport failed")
+    function = Mock()
+    function.spawn.return_value = call
+
+    with (
+        patch.object(provider, "_function", return_value=function),
+        pytest.raises(ModalRemoteError) as raised,
+    ):
+        provider.inspect(task="source_policy_visual_scout", frames=[frame], context={})
+
+    assert raised.value.error_type == "VisionCancellationUnconfirmedError"
+    assert raised.value.details["reason"] == "vision_cancellation_unconfirmed"
+    assert "recovery_action" not in raised.value.details
+    assert not visual_ai._is_vision_capacity_error(raised.value)
+
+
+def test_modal_vision_deadline_fails_closed_when_terminal_confirmation_times_out(
+    tmp_path: Path,
+) -> None:
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"frame")
+    provider = ModalVisionProvider(
+        app_name="app",
+        identity=_identity(),
+        function_name="vision",
+    )
+    call = Mock()
+    call.get.side_effect = [TimeoutError(), TimeoutError()]
+    function = Mock()
+    function.spawn.return_value = call
+
+    with (
+        patch.object(provider, "_function", return_value=function),
+        pytest.raises(ModalRemoteError) as raised,
+    ):
+        provider.inspect(task="source_policy_visual_scout", frames=[frame], context={})
+
+    assert raised.value.error_type == "VisionCancellationUnconfirmedError"
+    assert raised.value.details["reason"] == "vision_cancellation_unconfirmed"
+    assert "recovery_action" not in raised.value.details
+    assert not visual_ai._is_vision_capacity_error(raised.value)
+    call.cancel.assert_called_once_with()
+''',
+)
+
+append_once(
+    "tests/test_modal_execution_spy.py",
+    "def test_spy_terminal_barrier_waits_for_active_vision_generation",
+    '''
+def test_spy_terminal_barrier_waits_for_active_vision_generation(tmp_path: Path) -> None:
+    module = _module()
+    spy = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "vision-terminal-barrier.ndjson",
+        execution_id="exec-123",
+    )
+    spy._record(
+        "clipper-open-editor",
+        '{"event":"vision_generation_start","execution_id":"exec-123",'
+        '"worker_lifecycle_id":"vision-1","task":"source_policy_visual_scout",'
+        '"attempt":1,"frames":8}',
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"production_cycle_terminal","execution_id":"exec-123",'
+        '"status":"PASS","pipeline_status":"SUCCESS","review_status":"NOT_RENDERED"}',
+    )
+
+    assert spy.wait_for_producer_barrier(timeout_seconds=0.05) is False
+    assert len(spy.summary()["active_vision_generations"]) == 1
+
+    spy._record(
+        "clipper-open-editor",
+        '{"event":"vision_inference_error","execution_id":"exec-123",'
+        '"worker_lifecycle_id":"vision-1","task":"source_policy_visual_scout",'
+        '"error_type":"InputCancellation"}',
+    )
+    assert spy.wait_for_producer_barrier(timeout_seconds=0.1) is True
+''',
+)
+
+append_once(
+    "tests/test_visual_presence_policy.py",
+    "def test_required_visual_presence_rejects_substring_false_positives",
+    '''
+def test_required_visual_presence_rejects_substring_false_positives() -> None:
+    ai_audit = evaluate_campaign_policy(
+        _brief("AI"),
+        0.0,
+        10.0,
+        _hazards(),
+        (),
+        multimodal=_timeline(branding=("chair",)),
+    )
+    lovable_audit = evaluate_campaign_policy(
+        _brief("Lovable"),
+        0.0,
+        10.0,
+        _hazards(),
+        (),
+        multimodal=_timeline(branding=("unlovable",)),
+    )
+    assert ai_audit.decision == GateDecision.REJECT
+    assert lovable_audit.decision == GateDecision.REJECT
+
+
+def test_required_visual_presence_matches_normalized_multiword_entity() -> None:
+    audit = evaluate_campaign_policy(
+        _brief("Anton Osika"),
+        0.0,
+        10.0,
+        _hazards(),
+        (),
+        multimodal=_timeline(visible_people=("Anton-Osika, founder",)),
+    )
+    assert audit.decision == GateDecision.PASS
+    checks = audit.campaign_policy_checks["visual_presence_policy"]
+    assert checks["matched_terms"] == ["Anton Osika"]
+''',
+)
