@@ -27,10 +27,25 @@ jobs:
       - name: Install development dependencies
         run: python -m pip install -e ".[dev]"
 
-      - name: Correct temporary watchdog match indentation
+      - name: Align temporary repair script with current head
         run: |
-          sed -i 's/^            "Modal spy did not observe/                "Modal spy did not observe/' scripts/tmp_codex_findings_repair.py
-          sed -i 's/^            "before the production terminal barrier"/                "before the production terminal barrier"/' scripts/tmp_codex_findings_repair.py
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/tmp_codex_findings_repair.py")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace(
+              '            "Modal spy did not observe a closed pipeline editorial-call set "\n'
+              '            "before the production terminal barrier"',
+              '                "Modal spy did not observe a closed pipeline editorial-call set "\n'
+              '                "before the production terminal barrier"',
+          )
+          text = text.replace(
+              '    ensure_modal_runtime()\n    candidates = _explicit_candidates(brief)\n',
+              '    ensure_modal_runtime()\n\n    candidates = _explicit_candidates(brief_path)\n',
+          )
+          path.write_text(text, encoding="utf-8")
+          PY
 
       - name: Apply all unresolved Codex fixes and regression tests
         run: python scripts/tmp_codex_findings_repair.py
@@ -52,15 +67,12 @@ jobs:
       - name: Full pytest and coverage gate
         run: pytest
 
-      - name: Commit validated fixes
+      - name: Commit validated fixes and remove temporary repair machinery
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/tmp-codex-findings-repair.yml scripts/tmp_codex_findings_repair.py
           git add src/clipper/providers/modal.py src/clipper/modal_execution.py src/clipper/editorial_integrity.py scripts/modal_execution_spy.py scripts/modal_hilp_watchdog.py .github/workflows/production-pipeline.yml tests/test_modal_execution.py tests/test_modal_execution_spy.py tests/test_vision_runtime_recovery.py tests/test_visual_presence_policy.py tests/test_production_workflow_contract.py
-          if git diff --cached --quiet; then
-            echo "No repair changes to commit"
-            exit 0
-          fi
           git commit -m "fix: close Codex production safety findings"
           git push origin HEAD:feat/contentrewards-campaign-factory
