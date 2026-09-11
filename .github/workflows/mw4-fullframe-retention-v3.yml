@@ -2,6 +2,11 @@ name: MW4 full-frame retention v3
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feat/mw4-fullframe-retention-v3
+    paths:
+      - .github/mw4-semantic-v3-production-trigger
 
 permissions:
   contents: read
