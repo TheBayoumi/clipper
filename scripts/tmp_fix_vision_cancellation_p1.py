@@ -165,13 +165,16 @@ def test_modal_vision_deadline_fails_closed_on_confirmation_transport_error(
     class RemoteError(FakeModalError):
         pass
 
-    class ExceptionNamespace:
-        Error = FakeModalError
-        ServiceError = ServiceError
-        RemoteError = RemoteError
-
-    class FakeModal:
-        exception = ExceptionNamespace
+    exception_namespace = type(
+        "ExceptionNamespace",
+        (),
+        {
+            "Error": FakeModalError,
+            "ServiceError": ServiceError,
+            "RemoteError": RemoteError,
+        },
+    )
+    fake_modal = type("FakeModal", (), {"exception": exception_namespace})()
 
     frame = tmp_path / "frame.jpg"
     frame.write_bytes(b"frame")
@@ -187,7 +190,7 @@ def test_modal_vision_deadline_fails_closed_on_confirmation_transport_error(
 
     with (
         patch.object(provider, "_function", return_value=function),
-        patch.object(provider, "_modal", return_value=FakeModal()),
+        patch.object(provider, "_modal", return_value=fake_modal),
         pytest.raises(ModalRemoteError) as raised,
     ):
         provider.inspect(task="source_policy_visual_scout", frames=[frame], context={})
