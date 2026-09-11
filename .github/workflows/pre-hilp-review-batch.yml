@@ -36,14 +36,29 @@ jobs:
 
       - name: Format repaired Python
         run: |
-          ruff format scripts/modal_hilp_watchdog.py tests/test_modal_hilp_watchdog.py tests/test_pre_hilp_runtime_trigger_contract.py
-          ruff check scripts/modal_hilp_watchdog.py tests/test_modal_hilp_watchdog.py tests/test_pre_hilp_runtime_trigger_contract.py --fix
+          ruff format \
+            scripts/modal_hilp_watchdog.py \
+            tests/test_modal_hilp_watchdog.py \
+            tests/test_pre_hilp_runtime_trigger_contract.py \
+            tests/test_production_workflow_contract.py
+          ruff check \
+            scripts/modal_hilp_watchdog.py \
+            tests/test_modal_hilp_watchdog.py \
+            tests/test_pre_hilp_runtime_trigger_contract.py \
+            tests/test_production_workflow_contract.py \
+            --fix
 
       - name: Ruff lint
-        run: ruff check . --exclude scripts/_pre_hilp_review_batch.py --exclude scripts/_fix_pre_hilp_generated_test.py
+        run: >-
+          ruff check .
+          --exclude scripts/_pre_hilp_review_batch.py
+          --exclude scripts/_fix_pre_hilp_generated_test.py
 
       - name: Ruff format
-        run: ruff format --check . --exclude scripts/_pre_hilp_review_batch.py --exclude scripts/_fix_pre_hilp_generated_test.py
+        run: >-
+          ruff format --check .
+          --exclude scripts/_pre_hilp_review_batch.py
+          --exclude scripts/_fix_pre_hilp_generated_test.py
 
       - name: Strict mypy
         run: mypy
@@ -51,7 +66,9 @@ jobs:
       - name: Target current blocker regressions
         run: |
           pytest -q --no-cov tests/test_modal_hilp_watchdog.py -k "cancel or cancellation or budget"
-          pytest -q --no-cov tests/test_pre_hilp_runtime_trigger_contract.py tests/test_production_workflow_contract.py
+          pytest -q --no-cov \
+            tests/test_pre_hilp_runtime_trigger_contract.py \
+            tests/test_production_workflow_contract.py
 
       - name: Full deterministic pytest gate
         run: pytest
@@ -73,7 +90,7 @@ jobs:
           PY
           coverage report --fail-under=95
 
-      - name: Push verified source and regression batch
+      - name: Push verified clean source and regression batch
         shell: bash
         run: |
           set -euo pipefail
@@ -84,6 +101,11 @@ jobs:
           git add \
             scripts/modal_hilp_watchdog.py \
             tests/test_modal_hilp_watchdog.py \
-            tests/test_pre_hilp_runtime_trigger_contract.py
-          git commit -m "fix: reconcile root cancellation before HILP"
+            tests/test_pre_hilp_runtime_trigger_contract.py \
+            tests/test_production_workflow_contract.py
+          git rm \
+            .github/workflows/pre-hilp-review-batch.yml \
+            scripts/_pre_hilp_review_batch.py \
+            scripts/_fix_pre_hilp_generated_test.py
+          git commit -m "fix: close pre-HILP cancellation and deployment blockers"
           git push origin HEAD:feat/contentrewards-campaign-factory
