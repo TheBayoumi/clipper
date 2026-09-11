@@ -1,0 +1,130 @@
+{
+  "campaign": "Call of Duty - Modern Warfare 4 Multiplayer Beta Gameplay Clipping",
+  "version": "3.1",
+  "target_count": 10,
+  "count_per_source_max": 4,
+  "minimum_count_per_source": 2,
+  "output": {
+    "width": 1920,
+    "height": 1080,
+    "full_source_frame": true,
+    "fps": "60000/1001",
+    "codec": "libx264",
+    "profile": "high",
+    "format": "mp4",
+    "preset": "medium",
+    "video_bitrate_kbps": 250000,
+    "rate_control": "CBR",
+    "audio_codec": "aac",
+    "audio_bitrate_kbps": 320,
+    "audio_sample_rate": 48000,
+    "audio_channels": 2
+  },
+  "editorial": {
+    "hook_text": false,
+    "campaign_text": false,
+    "campaign_logo": false,
+    "source_audio_only": true,
+    "effect_profiles": [
+      "finishing_move_hero",
+      "precision_punch",
+      "impact_flash",
+      "chain_escalation",
+      "clean_pressure"
+    ],
+    "finishing_move_must_open_clip": true,
+    "finishing_move_opening_lead_seconds": 0.28,
+    "finishing_move_payoff_hold_seconds": 0.45,
+    "finishing_move_choreography_protected": true,
+    "cold_open_enabled_for_non_finishing_moves": false
+  },
+  "semantic_analysis": {
+    "base_engine": "deterministic-gameplay-v1",
+    "engine": "deterministic-gameplay-v3.1",
+    "sample_fps": 6.0,
+    "sample_width": 256,
+    "sample_height": 144,
+    "audio_sample_rate": 12000,
+    "shot_cut_threshold": 0.82,
+    "shot_cut_guard_seconds": 0.35,
+    "engagement_join_seconds": 2.25,
+    "engagement_context_seconds": 0.55,
+    "minimum_engagement_confidence": 0.56,
+    "local_refine_fps": 12.0,
+    "local_refine_width": 384,
+    "local_refine_height": 216,
+    "local_refine_radius_seconds": 0.8
+  },
+  "finishing_move_detector": {
+    "enabled": true,
+    "minimum_span_seconds": 1.05,
+    "maximum_span_seconds": 4.60,
+    "minimum_confidence": 0.64,
+    "minimum_center_motion": 0.46,
+    "minimum_contact_or_impact": 0.52,
+    "minimum_terminal_outcome": 0.50,
+    "maximum_internal_dull_fraction": 0.34,
+    "maximum_gap_between_choreography_bins_seconds": 0.50,
+    "notes": "Heuristic finishing-move-like span detector. It is a gameplay hypothesis, not a guaranteed named Finishing Move classification. Detected choreography is protected from dull cuts/speedups and must open the clip."
+  },
+  "semantic_editor": {
+    "engine": "semantic-editor-v3.1",
+    "minimum_output_seconds": 10.0,
+    "maximum_output_seconds": 20.0,
+    "preferred_output_seconds": 12.5,
+    "maximum_output_target_seconds": 15.5,
+    "opening": {
+      "max_time_to_meaningful_action_seconds": 0.90,
+      "max_unexplained_dead_open_seconds": 0.50,
+      "minimum_quality": 0.42,
+      "boundary_search_seconds": 0.80
+    },
+    "ending": {
+      "preferred_payoff_tail_seconds": 0.45,
+      "maximum_payoff_tail_seconds": 0.75,
+      "minimum_quality": 0.40,
+      "boundary_search_seconds": 0.80,
+      "allow_active_cliffhanger": true
+    },
+    "dull": {
+      "low_interest_threshold": 0.30,
+      "maximum_unexplained_low_interest_run_seconds": 0.90,
+      "maximum_low_interest_fraction": 0.38,
+      "minimum_weak_quarter_interest": 0.30,
+      "minimum_action_seconds": 0.70,
+      "maximum_single_action_seconds": 1.60,
+      "maximum_editorial_actions": 2,
+      "maximum_total_removed_equivalent_seconds": 2.0,
+      "traversal_speed": 1.35,
+      "maximum_speedup_source_seconds": 0.85,
+      "prefer_boundary_trim_before_internal_edit": true
+    },
+    "selection": {
+      "candidate_mode": "engagement_driven",
+      "story_diversity_bonus": 0.06,
+      "finishing_move_bonus": 0.14,
+      "opening_weight": 0.20,
+      "ending_weight": 0.17,
+      "story_coherence_weight": 0.12,
+      "retention_quality_weight": 0.24,
+      "payoff_quality_weight": 0.17,
+      "weakest_section_weight": 0.10
+    }
+  },
+  "performance_targets": {
+    "retention_quality_min": 0.36,
+    "payoff_quality_min": 0.34,
+    "campaign_engagement_floor_percent": 0.20,
+    "notes": "retention_quality is an internal editorial quality score and must not be interpreted as literal TikTok retention percentage."
+  },
+  "excluded_windows": {
+    "week2": [[0.0, 13.8], [17.0, 41.6], [42.2, 88.15], [105.3, 133.4], [147.2, 203.2], [230.96, 250.65]],
+    "batch2": [[0.0, 25.0], [45.0, 75.0]],
+    "r1": [[95.0, 120.0], [145.0, 175.0]]
+  },
+  "duplicate_policy": {
+    "allow_overlap_with_prior_work": false,
+    "allow_overlap_with_new_batch": false,
+    "notes": "V3.1 improves semantic selection quality. It does not assume the repeated-clip issue is source duplication; it prevents neighboring windows around the same engagement from dominating selection."
+  }
+}
