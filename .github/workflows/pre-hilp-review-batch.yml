@@ -1,0 +1,87 @@
+name: Pre-HILP blocker batch
+
+on:
+  push:
+    branches:
+      - feat/contentrewards-campaign-factory
+    paths:
+      - ".github/workflows/pre-hilp-review-batch.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deterministic development gate
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Apply current Codex blocker batch
+        run: python scripts/_pre_hilp_review_batch.py
+
+      - name: Format repaired Python
+        run: |
+          ruff format scripts/modal_hilp_watchdog.py tests/test_modal_hilp_watchdog.py tests/test_pre_hilp_runtime_trigger_contract.py
+          ruff check scripts/modal_hilp_watchdog.py tests/test_modal_hilp_watchdog.py tests/test_pre_hilp_runtime_trigger_contract.py --fix
+
+      - name: Ruff lint
+        run: ruff check . --exclude scripts/_pre_hilp_review_batch.py
+
+      - name: Ruff format
+        run: ruff format --check . --exclude scripts/_pre_hilp_review_batch.py
+
+      - name: Strict mypy
+        run: mypy
+
+      - name: Target current blocker regressions
+        run: |
+          pytest -q --no-cov tests/test_modal_hilp_watchdog.py -k "cancel or cancellation or budget"
+          pytest -q --no-cov tests/test_pre_hilp_runtime_trigger_contract.py tests/test_production_workflow_contract.py
+
+      - name: Full deterministic pytest gate
+        run: pytest
+
+      - name: Enforce exact unrounded coverage floor
+        shell: bash
+        run: |
+          set -euo pipefail
+          coverage json -o coverage-final.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("coverage-final.json").read_text(encoding="utf-8"))
+          percent = float(data["totals"]["percent_covered"])
+          print(f"exact package coverage: {percent:.6f}%")
+          if percent < 95.0:
+              raise SystemExit(f"exact package coverage {percent:.6f}% is below 95.0%")
+          PY
+          coverage report --fail-under=95
+
+      - name: Push verified source and regression batch
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_head="$(git ls-remote origin refs/heads/feat/contentrewards-campaign-factory | cut -f1)"
+          test "$remote_head" = "$GITHUB_SHA"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            scripts/modal_hilp_watchdog.py \
+            tests/test_modal_hilp_watchdog.py \
+            tests/test_pre_hilp_runtime_trigger_contract.py
+          git commit -m "fix: reconcile root cancellation before HILP"
+          git push origin HEAD:feat/contentrewards-campaign-factory
