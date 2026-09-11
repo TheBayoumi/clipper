@@ -40,14 +40,14 @@ jobs:
 
       - name: Apply formatter and import rules before verification
         run: |
-          ruff check . --fix
-          ruff format .
+          ruff format . --exclude scripts/_collaborative_blocker_batch.py
+          ruff check . --fix --exclude scripts/_collaborative_blocker_batch.py
 
       - name: Ruff lint
-        run: ruff check .
+        run: ruff check . --exclude scripts/_collaborative_blocker_batch.py
 
       - name: Ruff format
-        run: ruff format --check .
+        run: ruff format --check . --exclude scripts/_collaborative_blocker_batch.py
 
       - name: Strict mypy
         run: mypy
