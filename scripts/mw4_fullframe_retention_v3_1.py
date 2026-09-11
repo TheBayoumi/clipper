@@ -67,17 +67,35 @@ def gate(times: list[float], before: float, after: float) -> str:
     ) or "0"
 
 
-def _planned_montage_join(plan: semantic.SemanticPlanV31) -> float | None:
-    if (
-        plan.story_type != "finishing_move_open"
-        or len(plan.segments) < 2
-        or plan.segments[0].reason != "finishing_move_open_hero"
-    ):
-        return None
-    first = plan.segments[0]
-    if plan.segments[1].start <= first.end + 0.02:
-        return None
-    return (first.end - first.start) / first.speed
+def _planned_transition_times(plan: semantic.SemanticPlanV31) -> list[float]:
+    """Return output-time joins that the semantic planner explicitly intended."""
+    joins: list[float] = []
+    output_cursor = 0.0
+    for index, segment in enumerate(plan.segments[:-1]):
+        output_cursor += (segment.end - segment.start) / segment.speed
+        next_segment = plan.segments[index + 1]
+        if next_segment.start <= segment.end + 0.02:
+            continue
+
+        intentional = False
+        if (
+            plan.story_type == "semantic_montage"
+            and segment.reason == "semantic_montage_moment"
+            and next_segment.reason == "semantic_montage_moment"
+        ):
+            intentional = True
+        elif plan.story_type == "finishing_move_open":
+            if index == 0 and segment.reason == "finishing_move_open_hero":
+                intentional = True
+            elif (
+                segment.reason == "semantic_montage_moment"
+                and next_segment.reason == "semantic_montage_moment"
+            ):
+                intentional = True
+
+        if intentional:
+            joins.append(output_cursor)
+    return joins
 
 
 def build_filter(
@@ -102,12 +120,16 @@ def build_filter(
         if (mapped := source_time_to_output(event.time, plan.segments)) is not None
     ]
     profile = plan.effect_profile
+    transition_cfg = config.get("semantic_editor", {}).get("semantic_montage", {})
+    transition_times = _planned_transition_times(plan)
+    transition_opacity = float(transition_cfg.get("transition_flash_opacity", 0.08))
+    transition_before = float(transition_cfg.get("transition_flash_before_seconds", 0.025))
+    transition_after = float(transition_cfg.get("transition_flash_after_seconds", 0.055))
 
     if profile == "finishing_move_hero" and plan.finishing_move is not None:
         trigger = source_time_to_output(plan.finishing_move.start, plan.segments)
         payoff = source_time_to_output(plan.finishing_move.payoff, plan.segments)
         finish_end = source_time_to_output(plan.finishing_move.end, plan.segments)
-        montage_join = _planned_montage_join(plan)
         if trigger is None or payoff is None:
             parts.append("[vsrc]scale=1920:1080:flags=lanczos,setsar=1[outv]")
         else:
@@ -120,13 +142,31 @@ def build_filter(
                 f"[base][hero]overlay=0:0:enable='between(t,{max(0.0, trigger):.3f},{max(trigger, span_end):.3f})'[fx1]",
                 f"[fx1][impact]overlay=0:0:enable='{gate([payoff], .055, .135)}'[fx2]",
             ])
-            if montage_join is not None:
+            if transition_times:
                 parts.append(
-                    f"[fx2]drawbox=x=0:y=0:w=iw:h=ih:color=white@0.09:t=fill:"
-                    f"enable='between(t,{max(0.0, montage_join-0.025):.3f},{montage_join+0.055:.3f})'[outv]"
+                    f"[fx2]drawbox=x=0:y=0:w=iw:h=ih:color=white@{transition_opacity:.3f}:t=fill:"
+                    f"enable='{gate(transition_times, transition_before, transition_after)}'[outv]"
                 )
             else:
                 parts.append("[fx2]null[outv]")
+    elif profile == "semantic_montage":
+        punch_times = times[:3]
+        if punch_times:
+            parts.extend([
+                "[vsrc]split=2[vbase][vpunch]",
+                "[vbase]scale=1920:1080:flags=lanczos,setsar=1[base]",
+                "[vpunch]crop=1882:1059:(iw-1882)/2:(ih-1059)/2,scale=1920:1080:flags=lanczos,setsar=1[punch]",
+                f"[base][punch]overlay=0:0:enable='{gate(punch_times, .055, .155)}'[fx1]",
+            ])
+        else:
+            parts.append("[vsrc]scale=1920:1080:flags=lanczos,setsar=1[fx1]")
+        if transition_times:
+            parts.append(
+                f"[fx1]drawbox=x=0:y=0:w=iw:h=ih:color=white@{transition_opacity:.3f}:t=fill:"
+                f"enable='{gate(transition_times, transition_before, transition_after)}'[outv]"
+            )
+        else:
+            parts.append("[fx1]null[outv]")
     elif profile == "precision_punch" and times:
         first = times[0]
         second = times[1] if len(times) > 1 else first
