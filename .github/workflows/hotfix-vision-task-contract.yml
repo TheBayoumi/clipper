@@ -29,43 +29,44 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
+          import base64
           from pathlib import Path
 
           source_path = Path("scripts/modal_open_models.py")
           source = source_path.read_text(encoding="utf-8")
 
-          complete_old = '''                        {
-                            "event": "vision_generation_complete",
-                            "worker_lifecycle_id": lifecycle_id,
-                            "execution_id": execution_id,
-                            "attempt": attempt,
-          '''
-          complete_new = '''                        {
-                            "event": "vision_generation_complete",
-                            "worker_lifecycle_id": lifecycle_id,
-                            "execution_id": execution_id,
-                            "task": str(payload.get("task") or ""),
-                            "attempt": attempt,
-          '''
+          complete_old = (
+              '                            "event": "vision_generation_complete",\n'
+              '                            "worker_lifecycle_id": lifecycle_id,\n'
+              '                            "execution_id": execution_id,\n'
+              '                            "attempt": attempt,'
+          )
+          complete_new = (
+              '                            "event": "vision_generation_complete",\n'
+              '                            "worker_lifecycle_id": lifecycle_id,\n'
+              '                            "execution_id": execution_id,\n'
+              '                            "task": str(payload.get("task") or ""),\n'
+              '                            "attempt": attempt,'
+          )
           if source.count(complete_old) != 1:
               raise SystemExit(
                   f"expected one vision_generation_complete telemetry block, found {source.count(complete_old)}"
               )
           source = source.replace(complete_old, complete_new, 1)
 
-          error_old = '''                        {
-                            "event": "vision_inference_error",
-                            "worker_lifecycle_id": worker.lifecycle_id,
-                            "execution_id": _execution_id(payload),
-                            "model_id": model_id,
-          '''
-          error_new = '''                        {
-                            "event": "vision_inference_error",
-                            "worker_lifecycle_id": worker.lifecycle_id,
-                            "execution_id": _execution_id(payload),
-                            "task": str(payload.get("task") or ""),
-                            "model_id": model_id,
-          '''
+          error_old = (
+              '                            "event": "vision_inference_error",\n'
+              '                            "worker_lifecycle_id": worker.lifecycle_id,\n'
+              '                            "execution_id": _execution_id(payload),\n'
+              '                            "model_id": model_id,'
+          )
+          error_new = (
+              '                            "event": "vision_inference_error",\n'
+              '                            "worker_lifecycle_id": worker.lifecycle_id,\n'
+              '                            "execution_id": _execution_id(payload),\n'
+              '                            "task": str(payload.get("task") or ""),\n'
+              '                            "model_id": model_id,'
+          )
           if source.count(error_old) != 1:
               raise SystemExit(
                   f"expected one vision_inference_error telemetry block, found {source.count(error_old)}"
@@ -73,115 +74,9 @@ jobs:
           source = source.replace(error_old, error_new, 1)
           source_path.write_text(source, encoding="utf-8")
 
-          test_path = Path("tests/test_vision_telemetry_task_contract.py")
-          test_path.write_text(
-              '''from __future__ import annotations
-
-import ast
-import importlib.util
-from pathlib import Path
-
-
-def _open_models_tree() -> ast.Module:
-    return ast.parse(Path("scripts/modal_open_models.py").read_text(encoding="utf-8"))
-
-
-def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
-    return next(
-        item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name == name
-    )
-
-
-def _event_mapping(function: ast.FunctionDef, event_name: str) -> dict[str, ast.expr]:
-    matches = []
-    for node in ast.walk(function):
-        if not isinstance(node, ast.Dict):
-            continue
-        mapping = {
-            key.value: value
-            for key, value in zip(node.keys, node.values, strict=True)
-            if isinstance(key, ast.Constant) and isinstance(key.value, str)
-        }
-        event = mapping.get("event")
-        if isinstance(event, ast.Constant) and event.value == event_name:
-            matches.append(mapping)
-    assert len(matches) == 1
-    return matches[0]
-
-
-def test_vision_terminal_telemetry_preserves_payload_task_identity() -> None:
-    tree = _open_models_tree()
-    complete = _event_mapping(_function(tree, "_vision_infer"), "vision_generation_complete")
-    error = _event_mapping(_function(tree, "_vision_worker_inspect"), "vision_inference_error")
-
-    assert ast.unparse(complete["task"]) == "str(payload.get('task') or '')"
-    assert ast.unparse(error["task"]) == "str(payload.get('task') or '')"
-
-
-def _spy_module():
-    path = Path("scripts/modal_execution_spy.py")
-    spec = importlib.util.spec_from_file_location("vision_task_contract_spy", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("failed to load modal execution spy")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_spy_closes_matching_vision_task_identity(tmp_path: Path) -> None:
-    module = _spy_module()
-    spy = module.ModalExecutionSpy(
-        ("clipper-open-editor", "clipper-production-pipeline"),
-        tmp_path / "vision-match.ndjson",
-        execution_id="exec-123",
-    )
-    spy._record(
-        "clipper-open-editor",
-        "2026-09-11T13:00:00Z fc-VISION1 "
-        '{"event":"vision_generation_start","execution_id":"exec-123",'
-        '"worker_lifecycle_id":"vision-1","task":"source_policy_visual_scout",'
-        '"attempt":1,"frames":32}',
-    )
-    spy._record(
-        "clipper-open-editor",
-        "2026-09-11T13:00:01Z fc-VISION1 "
-        '{"event":"vision_generation_complete","execution_id":"exec-123",'
-        '"worker_lifecycle_id":"vision-1","task":"source_policy_visual_scout",'
-        '"attempt":1,"frames":32,"generated_tokens":2222}',
-    )
-
-    assert spy.abort_reason is None
-    assert spy.summary()["active_vision_generations"] == []
-
-
-def test_spy_still_rejects_real_vision_task_mismatch(tmp_path: Path) -> None:
-    module = _spy_module()
-    spy = module.ModalExecutionSpy(
-        ("clipper-open-editor", "clipper-production-pipeline"),
-        tmp_path / "vision-mismatch.ndjson",
-        execution_id="exec-123",
-    )
-    spy._record(
-        "clipper-open-editor",
-        "2026-09-11T13:00:00Z fc-VISION1 "
-        '{"event":"vision_generation_start","execution_id":"exec-123",'
-        '"worker_lifecycle_id":"vision-1","task":"source_policy_visual_scout",'
-        '"attempt":1,"frames":32}',
-    )
-    spy._record(
-        "clipper-open-editor",
-        "2026-09-11T13:00:01Z fc-VISION1 "
-        '{"event":"vision_generation_complete","execution_id":"exec-123",'
-        '"worker_lifecycle_id":"vision-1","task":"rendered_clip_review",'
-        '"attempt":1,"frames":32,"generated_tokens":2222}',
-    )
-
-    assert spy.abort_reason is not None
-    assert "terminal task does not match start" in spy.abort_reason
-    assert len(spy.summary()["active_vision_generations"]) == 1
-''',
-              encoding="utf-8",
-          )
+          test_b64 = "ZnJvbSBfX2Z1dHVyZV9fIGltcG9ydCBhbm5vdGF0aW9ucwoKaW1wb3J0IGFzdAppbXBvcnQgaW1wb3J0bGliLnV0aWwKZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgoKZGVmIF9vcGVuX21vZGVsc190cmVlKCkgLT4gYXN0Lk1vZHVsZToKICAgIHJldHVybiBhc3QucGFyc2UoUGF0aCgic2NyaXB0cy9tb2RhbF9vcGVuX21vZGVscy5weSIpLnJlYWRfdGV4dChlbmNvZGluZz0idXRmLTgiKSkKCgpkZWYgX2Z1bmN0aW9uKHRyZWU6IGFzdC5Nb2R1bGUsIG5hbWU6IHN0cikgLT4gYXN0LkZ1bmN0aW9uRGVmOgogICAgcmV0dXJuIG5leHQoCiAgICAgICAgaXRlbSBmb3IgaXRlbSBpbiB0cmVlLmJvZHkgaWYgaXNpbnN0YW5jZShpdGVtLCBhc3QuRnVuY3Rpb25EZWYpIGFuZCBpdGVtLm5hbWUgPT0gbmFtZQogICAgKQoKCmRlZiBfZXZlbnRfbWFwcGluZyhmdW5jdGlvbjogYXN0LkZ1bmN0aW9uRGVmLCBldmVudF9uYW1lOiBzdHIpIC0+IGRpY3Rbc3RyLCBhc3QuZXhwcl06CiAgICBtYXRjaGVzID0gW10KICAgIGZvciBub2RlIGluIGFzdC53YWxrKGZ1bmN0aW9uKToKICAgICAgICBpZiBub3QgaXNpbnN0YW5jZShub2RlLCBhc3QuRGljdCk6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgbWFwcGluZyA9IHsKICAgICAgICAgICAga2V5LnZhbHVlOiB2YWx1ZQogICAgICAgICAgICBmb3Iga2V5LCB2YWx1ZSBpbiB6aXAobm9kZS5rZXlzLCBub2RlLnZhbHVlcywgc3RyaWN0PVRydWUpCiAgICAgICAgICAgIGlmIGlzaW5zdGFuY2Uoa2V5LCBhc3QuQ29uc3RhbnQpIGFuZCBpc2luc3RhbmNlKGtleS52YWx1ZSwgc3RyKQogICAgICAgIH0KICAgICAgICBldmVudCA9IG1hcHBpbmcuZ2V0KCJldmVudCIpCiAgICAgICAgaWYgaXNpbnN0YW5jZShldmVudCwgYXN0LkNvbnN0YW50KSBhbmQgZXZlbnQudmFsdWUgPT0gZXZlbnRfbmFtZToKICAgICAgICAgICAgbWF0Y2hlcy5hcHBlbmQobWFwcGluZykKICAgIGFzc2VydCBsZW4obWF0Y2hlcykgPT0gMQogICAgcmV0dXJuIG1hdGNoZXNbMF0KCgpkZWYgdGVzdF92aXNpb25fdGVybWluYWxfdGVsZW1ldHJ5X3ByZXNlcnZlc19wYXlsb2FkX3Rhc2tfaWRlbnRpdHkoKSAtPiBOb25lOgogICAgdHJlZSA9IF9vcGVuX21vZGVsc190cmVlKCkKICAgIGNvbXBsZXRlID0gX2V2ZW50X21hcHBpbmcoX2Z1bmN0aW9uKHRyZWUsICJfdmlzaW9uX2luZmVyIiksICJ2aXNpb25fZ2VuZXJhdGlvbl9jb21wbGV0ZSIpCiAgICBlcnJvciA9IF9ldmVudF9tYXBwaW5nKF9mdW5jdGlvbih0cmVlLCAiX3Zpc2lvbl93b3JrZXJfaW5zcGVjdCIpLCAidmlzaW9uX2luZmVyZW5jZV9lcnJvciIpCgogICAgYXNzZXJ0IGFzdC51bnBhcnNlKGNvbXBsZXRlWyJ0YXNrIl0pID09ICJzdHIocGF5bG9hZC5nZXQoJ3Rhc2snKSBvciAnJykiCiAgICBhc3NlcnQgYXN0LnVucGFyc2UoZXJyb3JbInRhc2siXSkgPT0gInN0cihwYXlsb2FkLmdldCgndGFzaycpIG9yICcnKSIKCgpkZWYgX3NweV9tb2R1bGUoKToKICAgIHBhdGggPSBQYXRoKCJzY3JpcHRzL21vZGFsX2V4ZWN1dGlvbl9zcHkucHkiKQogICAgc3BlYyA9IGltcG9ydGxpYi51dGlsLnNwZWNfZnJvbV9maWxlX2xvY2F0aW9uKCJ2aXNpb25fdGFza19jb250cmFjdF9zcHkiLCBwYXRoKQogICAgaWYgc3BlYyBpcyBOb25lIG9yIHNwZWMubG9hZGVyIGlzIE5vbmU6CiAgICAgICAgcmFpc2UgUnVudGltZUVycm9yKCJmYWlsZWQgdG8gbG9hZCBtb2RhbCBleGVjdXRpb24gc3B5IikKICAgIG1vZHVsZSA9IGltcG9ydGxpYi51dGlsLm1vZHVsZV9mcm9tX3NwZWMoc3BlYykKICAgIHNwZWMubG9hZGVyLmV4ZWNfbW9kdWxlKG1vZHVsZSkKICAgIHJldHVybiBtb2R1bGUKCgpkZWYgdGVzdF9zcHlfY2xvc2VzX21hdGNoaW5nX3Zpc2lvbl90YXNrX2lkZW50aXR5KHRtcF9wYXRoOiBQYXRoKSAtPiBOb25lOgogICAgbW9kdWxlID0gX3NweV9tb2R1bGUoKQogICAgc3B5ID0gbW9kdWxlLk1vZGFsRXhlY3V0aW9uU3B5KAogICAgICAgICgiY2xpcHBlci1vcGVuLWVkaXRvciIsICJjbGlwcGVyLXByb2R1Y3Rpb24tcGlwZWxpbmUiKSwKICAgICAgICB0bXBfcGF0aCAvICJ2aXNpb24tbWF0Y2gubmRqc29uIiwKICAgICAgICBleGVjdXRpb25faWQ9ImV4ZWMtMTIzIiwKICAgICkKICAgIHNweS5fcmVjb3JkKAogICAgICAgICJjbGlwcGVItb3Blbi1lZGl0b3IiLAogICAgICAgICIyMDI2LTA5LTExVDEzOjAwOjAwWiBmYy1WSVNJT04xICIKICAgICAgICAnIHsiZXZlbnQiOiJ2aXNpb25fZ2VuZXJhdGlvbl9zdGFydCIsImV4ZWN1dGlvbl9pZCI6ImV4ZWMtMTIzIiwKICAgICAgICAiIHdpdGggdGFzayBzb3VyY2VfcG9saWN5X3Zpc3VhbF9zY291dCBhbmQgYXR0ZW1wdCAxIgogICAgKQoK"  # overwritten below
+          test_b64 = "ZnJvbSBfX2Z1dHVyZV9fIGltcG9ydCBhbm5vdGF0aW9ucwoKaW1wb3J0IGFzdAppbXBvcnQgaW1wb3J0bGliLnV0aWwKZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgoKZGVmIF9vcGVuX21vZGVsc190cmVlKCkgLT4gYXN0Lk1vZHVsZToKICAgIHJldHVybiBhc3QucGFyc2UoUGF0aCgic2NyaXB0cy9tb2RhbF9vcGVuX21vZGVscy5weSIpLnJlYWRfdGV4dChlbmNvZGluZz0idXRmLTgiKSkKCgpkZWYgX2Z1bmN0aW9uKHRyZWU6IGFzdC5Nb2R1bGUsIG5hbWU6IHN0cikgLT4gYXN0LkZ1bmN0aW9uRGVmOgogICAgcmV0dXJuIG5leHQoCiAgICAgICAgaXRlbSBmb3IgaXRlbSBpbiB0cmVlLmJvZHkgaWYgaXNpbnN0YW5jZShpdGVtLCBhc3QuRnVuY3Rpb25EZWYpIGFuZCBpdGVtLm5hbWUgPT0gbmFtZQogICAgKQoKCmRlZiBfZXZlbnRfbWFwcGluZyhmdW5jdGlvbjogYXN0LkZ1bmN0aW9uRGVmLCBldmVudF9uYW1lOiBzdHIpIC0+IGRpY3Rbc3RyLCBhc3QuZXhwcl06CiAgICBtYXRjaGVzID0gW10KICAgIGZvciBub2RlIGluIGFzdC53YWxrKGZ1bmN0aW9uKToKICAgICAgICBpZiBub3QgaXNpbnN0YW5jZShub2RlLCBhc3QuRGljdCk6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgbWFwcGluZyA9IHsKICAgICAgICAgICAga2V5LnZhbHVlOiB2YWx1ZQogICAgICAgICAgICBmb3Iga2V5LCB2YWx1ZSBpbiB6aXAobm9kZS5rZXlzLCBub2RlLnZhbHVlcywgc3RyaWN0PVRydWUpCiAgICAgICAgICAgIGlmIGlzaW5zdGFuY2Uoa2V5LCBhc3QuQ29uc3RhbnQpIGFuZCBpc2luc3RhbmNlKGtleS52YWx1ZSwgc3RyKQogICAgICAgIH0KICAgICAgICBldmVudCA9IG1hcHBpbmcuZ2V0KCJldmVudCIpCiAgICAgICAgaWYgaXNpbnN0YW5jZShldmVudCwgYXN0LkNvbnN0YW50KSBhbmQgZXZlbnQudmFsdWUgPT0gZXZlbnRfbmFtZToKICAgICAgICAgICAgbWF0Y2hlcy5hcHBlbmQobWFwcGluZykKICAgIGFzc2VydCBsZW4obWF0Y2hlcykgPT0gMQogICAgcmV0dXJuIG1hdGNoZXNbMF0KCgpkZWYgdGVzdF92aXNpb25fdGVybWluYWxfdGVsZW1ldHJ5X3ByZXNlcnZlc19wYXlsb2FkX3Rhc2tfaWRlbnRpdHkoKSAtPiBOb25lOgogICAgdHJlZSA9IF9vcGVuX21vZGVsc190cmVlKCkKICAgIGNvbXBsZXRlID0gX2V2ZW50X21hcHBpbmcoX2Z1bmN0aW9uKHRyZWUsICJfdmlzaW9uX2luZmVyIiksICJ2aXNpb25fZ2VuZXJhdGlvbl9jb21wbGV0ZSIpCiAgICBlcnJvciA9IF9ldmVudF9tYXBwaW5nKF9mdW5jdGlvbih0cmVlLCAiX3Zpc2lvbl93b3JrZXJfaW5zcGVjdCIpLCAidmlzaW9uX2luZmVyZW5jZV9lcnJvciIpCgogICAgYXNzZXJ0IGFzdC51bnBhcnNlKGNvbXBsZXRlWyJ0YXNrIl0pID09ICJzdHIocGF5bG9hZC5nZXQoJ3Rhc2snKSBvciAnJykiCiAgICBhc3NlcnQgYXN0LnVucGFyc2UoZXJyb3JbInRhc2siXSkgPT0gInN0cihwYXlsb2FkLmdldCgndGFzaycpIG9yICcnKSIKCgpkZWYgX3NweV9tb2R1bGUoKToKICAgIHBhdGggPSBQYXRoKCJzY3JpcHRzL21vZGFsX2V4ZWN1dGlvbl9zcHkucHkiKQogICAgc3BlYyA9IGltcG9ydGxpYi51dGlsLnNwZWNfZnJvbV9maWxlX2xvY2F0aW9uKCJ2aXNpb25fdGFza19jb250cmFjdF9zcHkiLCBwYXRoKQogICAgaWYgc3BlYyBpcyBOb25lIG9yIHNwZWMubG9hZGVyIGlzIE5vbmU6CiAgICAgICAgcmFpc2UgUnVudGltZUVycm9yKCJmYWlsZWQgdG8gbG9hZCBtb2RhbCBleGVjdXRpb24gc3B5IikKICAgIG1vZHVsZSA9IGltcG9ydGxpYi51dGlsLm1vZHVsZV9mcm9tX3NwZWMoc3BlYykKICAgIHNwZWMubG9hZGVyLmV4ZWNfbW9kdWxlKG1vZHVsZSkKICAgIHJldHVybiBtb2R1bGUKCgpkZWYgdGVzdF9zcHlfY2xvc2VzX21hdGNoaW5nX3Zpc2lvbl90YXNrX2lkZW50aXR5KHRtcF9wYXRoOiBQYXRoKSAtPiBOb25lOgogICAgbW9kdWxlID0gX3NweV9tb2R1bGUoKQogICAgc3B5ID0gbW9kdWxlLk1vZGFsRXhlY3V0aW9uU3B5KAogICAgICAgICgiY2xpcHBlci1vcGVuLWVkaXRvciIsICJjbGlwcGVyLXByb2R1Y3Rpb24tcGlwZWxpbmUiKSwKICAgICAgICB0bXBfcGF0aCAvICJ2aXNpb24tbWF0Y2gubmRqc29uIiwKICAgICAgICBleGVjdXRpb25faWQ9ImV4ZWMtMTIzIiwKICAgICkKICAgIHNweS5fcmVjb3JkKAogICAgICAgICJjbGlwcGVyLW9wZW4tZWRpdG9yIiwKICAgICAgICAiMjAyNi0wOS0xMVQxMzowMDowMFogZmMtVklTSU9OMSAiCiAgICAgICAgJ3siZXZlbnQiOiJ2aXNpb25fZ2VuZXJhdGlvbl9zdGFydCIsImV4ZWN1dGlvbl9pZCI6ImV4ZWMtMTIzIiwnCiAgICAgICAgJyJ3b3JrZXJfbGlmZWN5Y2xlX2lkIjoidmlzaW9uLTEiLCJ0YXNrIjoic291cmNlX3BvbGljeV92aXN1YWxfc2NvdXQiLCcKICAgICAgICAnImF0dGVtcHQiOjEsImZyYW1lcyI6MzJ9JywKICAgICkKICAgIHNweS5fcmVjb3JkKAogICAgICAgICJjbGlwcGVyLW9wZW4tZWRpdG9yIiwKICAgICAgICAiMjAyNi0wOS0xMVQxMzowMDowMVogZmMtVklTSU9OMSAiCiAgICAgICAgJ3siZXZlbnQiOiJ2aXNpb25fZ2VuZXJhdGlvbl9jb21wbGV0ZSIsImV4ZWN1dGlvbl9pZCI6ImV4ZWMtMTIzIiwnCiAgICAgICAgJyJ3b3JrZXJfbGlmZWN5Y2xlX2lkIjoidmlzaW9uLTEiLCJ0YXNrIjoic291cmNlX3BvbGljeV92aXN1YWxfc2NvdXQiLCcKICAgICAgICAnImF0dGVtcHQiOjEsImZyYW1lcyI6MzIsImdlbmVyYXRlZF90b2tlbnMiOjIyMjJ9JywKICAgICkKCiAgICBhc3NlcnQgc3B5LmFib3J0X3JlYXNvbiBpcyBOb25lCiAgICBhc3NlcnQgc3B5LnN1bW1hcnkoKVsiYWN0aXZlX3Zpc2lvbl9nZW5lcmF0aW9ucyJdID09IFtdCgoKZGVmIHRlc3Rfc3B5X3N0aWxsX3JlamVjdHNfcmVhbF92aXNpb25fdGFza19taXNtYXRjaCh0bXBfcGF0aDogUGF0aCkgLT4gTm9uZToKICAgIG1vZHVsZSA9IF9zcHlfbW9kdWxlKCkKICAgIHNweSA9IG1vZHVsZS5Nb2RhbEV4ZWN1dGlvblNweSgKICAgICAgICAoImNsaXBwZXItb3Blbi1lZGl0b3IiLCAiY2xpcHBlci1wcm9kdWN0aW9uLXBpcGVsaW5lIiksCiAgICAgICAgdG1wX3BhdGggLyAidmlzaW9uLW1pc21hdGNoLm5kanNvbiIsCiAgICAgICAgZXhlY3V0aW9uX2lkPSJleGVjLTEyMyIsCiAgICApCiAgICBzcHkuX3JlY29yZCgKICAgICAgICAiY2xpcHBlci1vcGVuLWVkaXRvciIsCiAgICAgICAgIjIwMjYtMDktMTFUMTM6MDA6MDBaIGZjLVZJU0lPTjEgIgogICAgICAgICd7ImV2ZW50IjoidmlzaW9uX2dlbmVyYXRpb25fc3RhcnQiLCJleGVjdXRpb25faWQiOiJleGVjLTEyMyIsJwogICAgICAgICcid29ya2VyX2xpZmVjeWNsZV9pZCI6InZpc2lvbi0xIiwidGFzayI6InNvdXJjZV9wb2xpY3lfdmlzdWFsX3Njb3V0IiwnCiAgICAgICAgJyJhdHRlbXB0IjoxLCJmcmFtZXMiOjMyfScsCiAgICApCiAgICBzcHkuX3JlY29yZCgKICAgICAgICAiY2xpcHBlci1vcGVuLWVkaXRvciIsCiAgICAgICAgIjIwMjYtMDktMTFUMTM6MDA6MDFaIGZjLVZJU0lPTjEgIgogICAgICAgICd7ImV2ZW50IjoidmlzaW9uX2dlbmVyYXRpb25fY29tcGxldGUiLCJleGVjdXRpb25faWQiOiJleGVjLTEyMyIsJwogICAgICAgICcid29ya2VyX2xpZmVjeWNsZV9pZCI6InZpc2lvbi0xIiwidGFzayI6InJlbmRlcmVkX2NsaXBfcmV2aWV3IiwnCiAgICAgICAgJyJhdHRlbXB0IjoxLCJmcmFtZXMiOjMyLCJnZW5lcmF0ZWRfdG9rZW5zIjoyMjIyfScsCiAgICApCgogICAgYXNzZXJ0IHNweS5hYm9ydF9yZWFzb24gaXMgbm90IE5vbmUKICAgIGFzc2VydCAidGVybWluYWwgdGFzayBkb2VzIG5vdCBtYXRjaCBzdGFydCIgaW4gc3B5LmFib3J0X3JlYXNvbgogICAgYXNzZXJ0IGxlbihzcHkuc3VtbWFyeSgpWyJhY3RpdmVfdmlzaW9uX2dlbmVyYXRpb25zIl0pID09IDEK"
+          Path("tests/test_vision_telemetry_task_contract.py").write_bytes(base64.b64decode(test_b64))
           PY
 
       - name: Run focused verification
@@ -189,11 +84,10 @@ def test_spy_still_rejects_real_vision_task_mismatch(tmp_path: Path) -> None:
         run: |
           set -euo pipefail
           python -m pip install --quiet pytest ruff
-          ruff format scripts/modal_open_models.py tests/test_vision_telemetry_task_contract.py
+          ruff format tests/test_vision_telemetry_task_contract.py
+          ruff format --check scripts/modal_open_models.py
           ruff check scripts/modal_open_models.py tests/test_vision_telemetry_task_contract.py
-          python -m pytest -q \
-            tests/test_vision_telemetry_task_contract.py \
-            tests/test_modal_execution_spy.py
+          python -m pytest -q tests/test_vision_telemetry_task_contract.py tests/test_modal_execution_spy.py
 
       - name: Commit clean hotfix and remove staging workflow
         shell: bash
