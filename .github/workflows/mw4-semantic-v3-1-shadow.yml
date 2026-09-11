@@ -14,12 +14,19 @@ permissions:
 jobs:
   shadow:
     name: shadow-${{ matrix.source }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 55
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
-        source: [r1, batch2, week2]
+        include:
+          - source: r1
+            runner: ubuntu-24.04
+          - source: batch2
+            runner: ubuntu-22.04
+          - source: week2
+            runner: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
@@ -143,10 +150,28 @@ jobs:
           PY
 
       - name: Run canonical V3.1 shadow renderer
+        timeout-minutes: 20
         env:
           SOURCE_KEY: ${{ matrix.source }}
+          OMP_NUM_THREADS: '2'
+          OPENBLAS_NUM_THREADS: '1'
+          MKL_NUM_THREADS: '1'
+          NUMEXPR_NUM_THREADS: '1'
+          MALLOC_ARENA_MAX: '2'
         run: |
-          python scripts/mw4_fullframe_retention_v3_1.py \
+          set -euo pipefail
+          (
+            while true; do
+              echo "[heartbeat] $(date -u +'%Y-%m-%dT%H:%M:%SZ') source=$SOURCE_KEY"
+              free -h | sed -n '1,2p'
+              df -h / | tail -n 1
+              sleep 20
+            done
+          ) &
+          HEARTBEAT_PID=$!
+          trap 'kill "$HEARTBEAT_PID" 2>/dev/null || true' EXIT
+
+          nice -n 5 python scripts/mw4_fullframe_retention_v3_1.py \
             --source-key "$SOURCE_KEY" \
             --source "raw_sources/$SOURCE_KEY.mp4" \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
@@ -188,7 +213,7 @@ jobs:
     name: shadow-batch-contract
     needs: shadow
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
