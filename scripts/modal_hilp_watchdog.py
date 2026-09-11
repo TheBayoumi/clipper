@@ -18,12 +18,44 @@ from clipper.modal_execution import (
     _acquire_remote_source,
     _BudgetLedger,
     _spawn_recoverable_modal_call,
+    ProductionCallNotTerminated,
 )
 from clipper.models import VideoCandidate
 
 
 class ProductionCallCancelled(RuntimeError):
     pass
+
+
+_CANCEL_CONFIRM_TERMINAL_MODAL_ERRORS = frozenset(
+    {
+        "DeserializationError",
+        "ExecutionError",
+        "FunctionTimeoutError",
+        "InputCancellation",
+        "InternalFailure",
+        "OutputExpiredError",
+        "RemoteError",
+    }
+)
+_CANCEL_CONFIRM_UNCONFIRMED_MODAL_ERRORS = frozenset(
+    {
+        "AuthError",
+        "ClientClosed",
+        "ConflictError",
+        "ConnectionError",
+        "DataLossError",
+        "InternalError",
+        "InvalidError",
+        "NotFoundError",
+        "PermissionDeniedError",
+        "RequestSizeError",
+        "ResourceExhaustedError",
+        "ServiceError",
+        "UnimplementedError",
+        "VersionError",
+    }
+)
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -226,6 +258,26 @@ def _finite_positive_env(name: str, *, default: str | None = None) -> float:
     return value
 
 
+def _cancellation_confirmation_is_terminal(modal_module: Any, exc: BaseException) -> bool:
+    error_name = type(exc).__name__
+    exception_namespace = getattr(modal_module, "exception", None)
+    if exception_namespace is None:
+        return error_name not in _CANCEL_CONFIRM_UNCONFIRMED_MODAL_ERRORS
+
+    terminal_types = tuple(
+        error_type
+        for name in _CANCEL_CONFIRM_TERMINAL_MODAL_ERRORS
+        if isinstance((error_type := getattr(exception_namespace, name, None)), type)
+    )
+    if terminal_types and isinstance(exc, terminal_types):
+        return True
+
+    modal_error_type = getattr(exception_namespace, "Error", None)
+    if isinstance(modal_error_type, type) and isinstance(exc, modal_error_type):
+        return False
+    return error_name not in _CANCEL_CONFIRM_UNCONFIRMED_MODAL_ERRORS
+
+
 def run(*, render: bool) -> dict[str, Any]:
     import modal
 
@@ -240,6 +292,10 @@ def run(*, render: bool) -> dict[str, Any]:
     poll_seconds = _finite_positive_env("CLIPPER_MODAL_SPY_POLL_SECONDS", default="5")
     barrier_timeout_seconds = _finite_positive_env(
         "CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS",
+        default="30",
+    )
+    cancel_confirmation_seconds = _finite_positive_env(
+        "CLIPPER_MODAL_ROOT_CANCEL_CONFIRM_SECONDS",
         default="30",
     )
 
@@ -271,18 +327,22 @@ def run(*, render: bool) -> dict[str, Any]:
     remote_completed = False
     root_budget_charged = False
     cancelled = threading.Event()
+    cancellation_failure_reason: str | None = None
     run_succeeded = False
     run_failure_reason: str | None = None
 
     def cancel_call(reason: str) -> None:
+        nonlocal cancellation_failure_reason
         if call is None or cancelled.is_set():
             return
-        last_error: BaseException | None = None
+
+        errors: list[str] = []
+        requested = False
         for attempt in range(1, 4):
             try:
                 call.cancel(terminate_containers=False)
             except BaseException as exc:
-                last_error = exc
+                errors.append(f"cancel {type(exc).__name__}: {exc}")
                 print(
                     json.dumps(
                         {
@@ -299,11 +359,11 @@ def run(*, render: bool) -> dict[str, Any]:
                 if attempt < 3:
                     time.sleep(0.25 * attempt)
                 continue
-            cancelled.set()
+            requested = True
             print(
                 json.dumps(
                     {
-                        "event": "production_call_cancelled",
+                        "event": "production_call_cancel_requested",
                         "function_call_id": call_id,
                         "reason": reason,
                         "attempt": attempt,
@@ -312,10 +372,71 @@ def run(*, render: bool) -> dict[str, Any]:
                 ),
                 flush=True,
             )
-            return
-        raise RuntimeError(
-            "failed to confirm cancellation of exact Modal production call: "
-            f"{type(last_error).__name__}: {last_error}"
+            break
+
+        if not requested:
+            failure = ProductionCallNotTerminated(call_id, errors)
+            cancellation_failure_reason = str(failure)
+            raise failure
+
+        confirmed_by = "result"
+        try:
+            call.get(timeout=cancel_confirmation_seconds)
+        except TimeoutError as exc:
+            errors.append(
+                "terminal confirmation timed out after "
+                f"{cancel_confirmation_seconds:.3f}s"
+            )
+            failure = ProductionCallNotTerminated(call_id, errors)
+            cancellation_failure_reason = str(failure)
+            print(
+                json.dumps(
+                    {
+                        "event": "production_call_cancel_unconfirmed",
+                        "function_call_id": call_id,
+                        "reason": reason,
+                        "error": str(failure),
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            raise failure from exc
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                raise
+            if not _cancellation_confirmation_is_terminal(modal, exc):
+                errors.append(f"confirmation {type(exc).__name__}: {exc}")
+                failure = ProductionCallNotTerminated(call_id, errors)
+                cancellation_failure_reason = str(failure)
+                print(
+                    json.dumps(
+                        {
+                            "event": "production_call_cancel_unconfirmed",
+                            "function_call_id": call_id,
+                            "reason": reason,
+                            "error": str(failure),
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+                raise failure from exc
+            confirmed_by = type(exc).__name__
+
+        cancelled.set()
+        cancellation_failure_reason = None
+        print(
+            json.dumps(
+                {
+                    "event": "production_call_cancelled",
+                    "function_call_id": call_id,
+                    "reason": reason,
+                    "terminal_confirmation": confirmed_by,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
         )
 
     previous_handlers: dict[int, Any] = {}
@@ -486,9 +607,18 @@ def run(*, render: bool) -> dict[str, Any]:
         run_failure_reason = f"{type(exc).__name__}: {exc}"
         raise
     finally:
+        cleanup_failure_reason: str | None = None
         try:
-            if call is not None and not remote_completed and not cancelled.is_set():
-                cancel_call("watchdog exited before production call completed")
+            if (
+                call is not None
+                and not remote_completed
+                and not cancelled.is_set()
+                and cancellation_failure_reason is None
+            ):
+                try:
+                    cancel_call("watchdog exited before production call completed")
+                except BaseException as cleanup_exc:
+                    cleanup_failure_reason = f"{type(cleanup_exc).__name__}: {cleanup_exc}"
         finally:
             if call_started > 0 and not root_budget_charged:
                 budget.charge(
@@ -497,6 +627,11 @@ def run(*, render: bool) -> dict[str, Any]:
                     estimated_usd_per_second=0.000444,
                 )
                 root_budget_charged = True
+        if cleanup_failure_reason:
+            if run_failure_reason:
+                run_failure_reason = f"{run_failure_reason}; cleanup={cleanup_failure_reason}"
+            else:
+                run_failure_reason = cleanup_failure_reason
         spy.request_stop()
         if spy_thread_started:
             spy_thread.join(timeout=max(1.0, poll_seconds))
@@ -507,6 +642,10 @@ def run(*, render: bool) -> dict[str, Any]:
             {
                 "function_call_id": call_id,
                 "call_cancelled": cancelled.is_set(),
+                "root_call_terminal_confirmed": remote_completed or cancelled.is_set(),
+                "root_call_cancellation_failure": (
+                    cancellation_failure_reason or cleanup_failure_reason
+                ),
                 "render": render,
                 "budget": budget.to_dict(),
             }

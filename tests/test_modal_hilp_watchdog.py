@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from clipper.modal_execution import ProductionCallSubmissionFailed
+from clipper.modal_execution import ProductionCallNotTerminated, ProductionCallSubmissionFailed
 
 
 def _module():
@@ -97,6 +97,7 @@ def _environment(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("CLIPPER_MODAL_APP", "models")
     monkeypatch.setenv("CLIPPER_MODAL_PIPELINE_APP", "pipeline")
     monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "0.001")
+    monkeypatch.setenv("CLIPPER_MODAL_ROOT_CANCEL_CONFIRM_SECONDS", "0.01")
 
 
 def test_scoped_brief_keeps_only_selected_authorized_target(
@@ -161,6 +162,14 @@ class _Spy:
         }
 
 
+class InputCancellation(RuntimeError):
+    pass
+
+
+class ServiceError(RuntimeError):
+    pass
+
+
 class _Call:
     object_id = "fc-test"
 
@@ -168,6 +177,7 @@ class _Call:
         self.result = result
         self.abort_spy = abort_spy
         self.cancel_args: list[bool] = []
+        self.cancel_requested = False
         self.polls = 0
 
     def hydrate(self) -> None:
@@ -176,6 +186,8 @@ class _Call:
     def get(self, *, timeout: float):
         assert timeout > 0
         self.polls += 1
+        if self.cancel_requested:
+            raise InputCancellation("synthetic terminal cancellation")
         if self.abort_spy and _Spy.instance is not None:
             _Spy.instance.abort_reason = "synthetic bad telemetry"
             raise TimeoutError
@@ -183,6 +195,7 @@ class _Call:
 
     def cancel(self, *, terminate_containers: bool) -> None:
         self.cancel_args.append(terminate_containers)
+        self.cancel_requested = True
 
 
 def _modal(call: _Call):
@@ -328,6 +341,7 @@ def test_watchdog_reconciles_root_submission_with_lost_ack(
     assert summary["status"] == "ABORT"
     assert summary["function_call_id"] == "fc-test"
     assert summary["call_cancelled"] is True
+    assert summary["root_call_terminal_confirmed"] is True
 
 
 def test_watchdog_returns_successful_editorial_only_result(tmp_path: Path, monkeypatch) -> None:
@@ -428,7 +442,82 @@ def test_watchdog_cancels_exact_call_without_terminating_containers_on_spy_abort
         (tmp_path / "open-evidence" / "modal-spy-summary.json").read_text(encoding="utf-8")
     )
     assert summary["call_cancelled"] is True
+    assert summary["root_call_terminal_confirmed"] is True
+    assert summary["root_call_cancellation_failure"] is None
     assert summary["function_call_id"] == "fc-test"
+
+
+def test_watchdog_fails_closed_when_root_cancellation_is_not_terminal(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
+    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
+    clock = {"now": 0.1}
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
+
+    class NonTerminalCall(_Call):
+        def get(self, *, timeout: float):
+            assert timeout > 0
+            self.polls += 1
+            if self.cancel_requested:
+                clock["now"] = 2.1
+                raise TimeoutError("root producer still active")
+            clock["now"] = 1.1
+            if _Spy.instance is not None:
+                _Spy.instance.abort_reason = "synthetic bad telemetry"
+            raise TimeoutError
+
+    call = NonTerminalCall({})
+    monkeypatch.setitem(sys.modules, "modal", _modal(call))
+
+    with pytest.raises(ProductionCallNotTerminated, match="remained nonterminal"):
+        module.run(render=False)
+
+    assert call.cancel_args == [False]
+    summary = json.loads(
+        (tmp_path / "open-evidence" / "modal-spy-summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["status"] == "ABORT"
+    assert summary["call_cancelled"] is False
+    assert summary["root_call_terminal_confirmed"] is False
+    assert "terminal confirmation timed out" in summary["root_call_cancellation_failure"]
+    assert summary["budget"]["gpu_seconds"] == pytest.approx(4.0)
+
+
+def test_watchdog_treats_cancel_confirmation_transport_error_as_unconfirmed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
+    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
+
+    class TransportFailureCall(_Call):
+        def get(self, *, timeout: float):
+            assert timeout > 0
+            self.polls += 1
+            if self.cancel_requested:
+                raise ServiceError("control plane unavailable")
+            if _Spy.instance is not None:
+                _Spy.instance.abort_reason = "synthetic bad telemetry"
+            raise TimeoutError
+
+    call = TransportFailureCall({})
+    monkeypatch.setitem(sys.modules, "modal", _modal(call))
+
+    with pytest.raises(ProductionCallNotTerminated, match="remained nonterminal"):
+        module.run(render=False)
+
+    summary = json.loads(
+        (tmp_path / "open-evidence" / "modal-spy-summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["call_cancelled"] is False
+    assert summary["root_call_terminal_confirmed"] is False
+    assert "ServiceError" in summary["root_call_cancellation_failure"]
 
 
 def test_watchdog_counts_successful_hydration_against_compute_budget(
@@ -448,6 +537,8 @@ def test_watchdog_counts_successful_hydration_against_compute_budget(
             clock["now"] = 0.6
 
         def get(self, *, timeout: float):
+            if self.cancel_requested:
+                raise InputCancellation("cancelled")
             raise AssertionError(f"budget must fail before polling, got timeout={timeout}")
 
     call = SlowHydrateCall({})
@@ -478,6 +569,8 @@ def test_watchdog_caps_poll_timeout_to_remaining_compute_budget(
             self.timeouts: list[float] = []
 
         def get(self, *, timeout: float):
+            if self.cancel_requested:
+                raise InputCancellation("cancelled")
             self.timeouts.append(timeout)
             clock["now"] = timeout
             raise TimeoutError
@@ -512,6 +605,7 @@ def test_watchdog_retries_exact_call_cancellation_before_marking_cancelled(
             if self.cancel_attempts == 1:
                 raise RuntimeError("transient cancel failure")
             self.cancel_args.append(terminate_containers)
+            self.cancel_requested = True
 
     call = RetryCancelCall()
     monkeypatch.setitem(sys.modules, "modal", _modal(call))
@@ -604,6 +698,12 @@ def test_watchdog_rejects_nonfinite_production_budgets(
         ("CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS", "0"),
         ("CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS", "-1"),
         ("CLIPPER_MODAL_SPY_BARRIER_TIMEOUT_SECONDS", "not-a-number"),
+        ("CLIPPER_MODAL_ROOT_CANCEL_CONFIRM_SECONDS", "nan"),
+        ("CLIPPER_MODAL_ROOT_CANCEL_CONFIRM_SECONDS", "inf"),
+        ("CLIPPER_MODAL_ROOT_CANCEL_CONFIRM_SECONDS", "-inf"),
+        ("CLIPPER_MODAL_ROOT_CANCEL_CONFIRM_SECONDS", "0"),
+        ("CLIPPER_MODAL_ROOT_CANCEL_CONFIRM_SECONDS", "-1"),
+        ("CLIPPER_MODAL_ROOT_CANCEL_CONFIRM_SECONDS", "not-a-number"),
     ],
 )
 def test_watchdog_rejects_invalid_timing_before_spawning(
@@ -664,6 +764,8 @@ def test_watchdog_cancels_exact_call_if_spy_thread_dies(
     class PollingCall(_Call):
         def get(self, *, timeout: float):
             assert timeout > 0
+            if self.cancel_requested:
+                raise InputCancellation("cancelled")
             time.sleep(0.01)
             raise TimeoutError
 

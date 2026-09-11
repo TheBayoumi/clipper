@@ -11,6 +11,14 @@ def _watchdog() -> str:
     return Path("scripts/modal_hilp_watchdog.py").read_text(encoding="utf-8")
 
 
+def _bootstrap_workflow() -> str:
+    return Path(".github/workflows/lovable-production-bootstrap.yml").read_text(encoding="utf-8")
+
+
+def _modal_deploy_workflow() -> str:
+    return Path(".github/workflows/modal-workers-deploy.yml").read_text(encoding="utf-8")
+
+
 def test_production_workflow_is_single_pass_resumable_and_exact_head() -> None:
     workflow = _workflow()
     watchdog = _watchdog()
@@ -39,8 +47,12 @@ def test_production_workflow_is_single_pass_resumable_and_exact_head() -> None:
     assert "call, call_started, submission_error = _spawn_recoverable_modal_call(" in watchdog
     assert "call.get(timeout=min(poll_seconds, remaining_wall_seconds))" in watchdog
     assert "production_call_cancel_retry" in watchdog
+    assert "production_call_cancel_requested" in watchdog
+    assert "production_call_cancel_unconfirmed" in watchdog
     assert "cancelled.set()" in watchdog
     assert "call.cancel(terminate_containers=False)" in watchdog
+    assert "call.get(timeout=cancel_confirmation_seconds)" in watchdog
+    assert '"root_call_terminal_confirmed": remote_completed or cancelled.is_set()' in watchdog
     assert "modal-function-call.json" in watchdog
     assert "content-addressed-resume" in workflow
     assert "content-addressed-stage-resume" in workflow
@@ -49,6 +61,26 @@ def test_production_workflow_is_single_pass_resumable_and_exact_head() -> None:
     assert "READY_TO_PUBLISH" in workflow
     assert "cycle-evidence" in workflow
     assert "hilp-review" in workflow
+
+
+def test_lovable_bootstrap_pins_modal_deployment_to_triggering_sha() -> None:
+    bootstrap = _bootstrap_workflow()
+    deploy = _modal_deploy_workflow()
+
+    assert '"inputs": {"deployment_sha": os.environ["EXPECTED_SHA"]}' in bootstrap
+    assert "pinned to ${EXPECTED_SHA}" in bootstrap
+    assert "deployment_sha:" in deploy
+    assert "run-name: Deploy Modal workers ${{ inputs.deployment_sha || github.sha }}" in deploy
+    assert (
+        "CLIPPER_DEPLOYED_GIT_SHA: ${{ inputs.deployment_sha || "
+        "github.event.pull_request.head.sha || github.sha }}" in deploy
+    )
+    assert (
+        "ref: ${{ inputs.deployment_sha || github.event.pull_request.head.sha || github.sha }}"
+        in deploy
+    )
+    assert '[[ "$CLIPPER_DEPLOYED_GIT_SHA" =~ ^[0-9a-f]{40}$ ]]' in deploy
+    assert 'test "$(git rev-parse HEAD)" = "$CLIPPER_DEPLOYED_GIT_SHA"' in deploy
 
 
 def test_production_workflow_resolves_campaign_and_target_from_request_data() -> None:

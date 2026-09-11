@@ -1,7 +1,13 @@
 name: Deploy Modal workers
+run-name: Deploy Modal workers ${{ inputs.deployment_sha || github.sha }}
 
 on:
   workflow_dispatch:
+    inputs:
+      deployment_sha:
+        description: Immutable commit SHA to deploy; defaults to the dispatched ref head when omitted
+        required: false
+        type: string
   push:
     branches:
       - feat/word-reveal-face-tracking
@@ -21,7 +27,7 @@ env:
   MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
   CLIPPER_MODAL_APP: clipper-open-editor
   CLIPPER_MODAL_PIPELINE_APP: clipper-production-pipeline
-  CLIPPER_DEPLOYED_GIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  CLIPPER_DEPLOYED_GIT_SHA: ${{ inputs.deployment_sha || github.event.pull_request.head.sha || github.sha }}
   CLIPPER_EDITORIAL_EXECUTION_TIMEOUT_SECONDS: 900
   CLIPPER_EDITORIAL_STARTUP_TIMEOUT_SECONDS: 1800
   CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS: 32768
@@ -34,13 +40,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ inputs.deployment_sha || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
       - name: Verify exact deployment checkout
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$CLIPPER_DEPLOYED_GIT_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CLIPPER_DEPLOYED_GIT_SHA"
 
       - name: Require enabled Modal deployment request
