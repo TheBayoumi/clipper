@@ -236,7 +236,7 @@ def _encode_args(config: dict[str, Any], mode: str) -> list[str]:
         ]
     return [
         "-c:v", "libx264",
-        "-preset", "veryfast",
+        "-preset", "ultrafast",
         "-profile:v", "high",
         "-level:v", "5.2",
         "-pix_fmt", "yuv420p",
