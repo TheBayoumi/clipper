@@ -168,6 +168,23 @@ replace_once(
 )
 
 replace_once(
+    "tests/test_modal_execution.py",
+    '''    _cancel_confirmation_seconds,
+    _cancel_remote_call,
+''',
+    '''    _cancel_confirmation_seconds,
+    _cancel_remote_call,
+    _cancellation_confirmation_is_terminal,
+''',
+)
+
+modal_test_path = Path("tests/test_modal_execution.py")
+modal_test_text = modal_test_path.read_text(encoding="utf-8")
+classification_test = '''\n\ndef test_cancellation_confirmation_unknown_error_is_not_terminal() -> None:\n    assert _cancellation_confirmation_is_terminal(RuntimeError("unknown")) is False\n'''
+if "test_cancellation_confirmation_unknown_error_is_not_terminal" not in modal_test_text:
+    modal_test_path.write_text(modal_test_text + classification_test, encoding="utf-8")
+
+replace_once(
     "tests/test_vision_runtime_recovery.py",
     '''        "clipper-open-editor",
         '{"event":"vision_generation_start","execution_id":"exec-1",'
