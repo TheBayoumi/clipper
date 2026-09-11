@@ -9,6 +9,7 @@ on:
       - campaigns/mw4-fullframe-retention-v3-1.json
       - scripts/mw4_semantic_gameplay_v3_1.py
       - scripts/mw4_fullframe_retention_v3_1.py
+      - scripts/mw4_v3_1_shadow_preview.py
       - .github/workflows/mw4-semantic-v3-1-shadow.yml
 
 permissions:
@@ -114,17 +115,16 @@ jobs:
                   output.write(block)
           PY
 
-      - name: Run engagement-driven V3.1 shadow planner
+      - name: Render engagement-driven V3.1 review previews
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
           mkdir -p shadow/${SOURCE_KEY}
-          python scripts/mw4_fullframe_retention_v3_1.py \
+          python scripts/mw4_v3_1_shadow_preview.py \
             --source-key "$SOURCE_KEY" \
             --source "raw_sources/$SOURCE_KEY.mp4" \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
-            --output-dir "shadow/$SOURCE_KEY" \
-            --analysis-only
+            --output-dir "shadow/$SOURCE_KEY"
 
       - name: Verify V3.1 selection contract
         env:
@@ -156,9 +156,13 @@ jobs:
           }))
           PY
 
-      - name: Upload compact V3.1 shadow report
+      - name: Upload V3.1 shadow previews and reports
         uses: actions/upload-artifact@v4
         with:
           name: MW4-semantic-v3-1-shadow-${{ matrix.source }}
-          path: shadow/${{ matrix.source }}/*.json
+          path: |
+            shadow/${{ matrix.source }}/*.json
+            shadow/${{ matrix.source }}/*.mp4
+            shadow/${{ matrix.source }}/contact_sheets/*.jpg
           retention-days: 3
+          compression-level: 0
