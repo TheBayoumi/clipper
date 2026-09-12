@@ -277,7 +277,9 @@ class SourceHazardClassifier:
                 raise ValueError("source hazard coverage start does not match supplied evidence")
             if str(result.get("coverage_end_word_id") or "") != expected_end:
                 raise ValueError("source hazard coverage end does not match supplied evidence")
-            if any(item.classification == HazardClassification.EDITORIAL_CONTENT for item in parsed):
+            if any(
+                item.classification == HazardClassification.EDITORIAL_CONTENT for item in parsed
+            ):
                 raise ValueError("sparse source hazard output must omit ordinary editorial_content")
             return parsed
 
@@ -285,9 +287,7 @@ class SourceHazardClassifier:
         # returned segments explicitly cover every supplied canonical word. Contract fingerprints
         # prevent these legacy objects from being produced by the new production schema, but this
         # path preserves deterministic replay of already materialized exhaustive evidence.
-        covered_word_ids = {
-            word_id for item in parsed for word_id in item.source_word_ids
-        }
+        covered_word_ids = {word_id for item in parsed for word_id in item.source_word_ids}
         if not parsed or covered_word_ids != legal_word_ids:
             raise ValueError("source hazard output is missing complete coverage attestation")
         return parsed
