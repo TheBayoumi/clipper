@@ -4,6 +4,15 @@
   "target_count": 10,
   "count_per_source_max": 4,
   "minimum_count_per_source": 2,
+  "batch_selection": {
+    "allocation_mode": "global_before_render",
+    "target_count_exact": 10,
+    "candidate_pool_per_source": 18,
+    "require_allocation_before_render": true,
+    "require_verified_finishing_move_when_available": true,
+    "prefer_normal_over_semantic_montage": true,
+    "notes": "All three official reels are analyzed first. One global allocator must prove an exact 10-clip, non-overlapping batch before any shadow or production MP4 is rendered."
+  },
   "output": {
     "width": 1920,
     "height": 1080,
@@ -37,9 +46,17 @@
     "finishing_move_opening_lead_seconds": 0.28,
     "finishing_move_payoff_hold_seconds": 0.45,
     "finishing_move_choreography_protected": true,
-    "finishing_move_use_deliberate_montage_if_needed": true,
+    "finishing_move_hero_full_frame": true,
+    "finishing_move_hero_speed": 1.0,
+    "finishing_move_allow_semantic_montage_continuation": false,
+    "finishing_move_max_continuation_gap_seconds": 18.0,
     "finishing_move_montage_prefer_later_gameplay": true,
     "finishing_move_montage_max_output_seconds": 15.5,
+    "finishing_move_transition": "hard_cut",
+    "finishing_move_transition_flash": false,
+    "finishing_move_impact_bump_percent": 0.012,
+    "finishing_move_impact_bump_before_seconds": 0.035,
+    "finishing_move_impact_bump_after_seconds": 0.085,
     "cold_open_enabled_for_non_finishing_moves": false
   },
   "semantic_analysis": {
@@ -78,12 +95,14 @@
     "reject_unplanned_cross_shot_bridge": true,
     "allow_planned_transition_for_finishing_move_open": true,
     "allow_planned_transition_for_semantic_montage": true,
-    "notes": "The R1 53.75-54.25 window was added after the canonical shadow MP4 visibly jumped from the snowy rooftop sequence into an unrelated training-yard sequence around source 54.07 s. Verified windows are source structure, not clip exclusions. Deliberate semantic montage transitions are represented as separate source segments and receive an intentional transition effect; accidental stringout crossings remain fatal."
+    "notes": "Verified windows are source structure, not clip exclusions. Deliberate semantic montage transitions are represented as separate source segments; accidental stringout crossings remain fatal."
   },
   "finishing_move_detector": {
     "enabled": true,
+    "automatic_discovery_enabled": true,
     "allow_unverified_automatic": false,
-    "automatic_high_precision_confidence": 0.86,
+    "automatic_review_confidence": 0.72,
+    "automatic_high_precision_confidence": 0.90,
     "automatic_minimum_span_seconds": 1.25,
     "automatic_maximum_span_seconds": 3.80,
     "verified_spans": {
@@ -106,7 +125,7 @@
     "minimum_terminal_outcome": 0.50,
     "maximum_internal_dull_fraction": 0.34,
     "maximum_gap_between_choreography_bins_seconds": 0.50,
-    "notes": "Production fails closed on Finishing Moves. Motion-only hypotheses are not trusted. Visually verified execution spans may open a clip; unverified automatic detections are disabled until a high-precision verifier is validated."
+    "notes": "Automatic heuristics are discovery-only until visually validated. Production acceptance stays fail-closed: verified spans may be selected; unverified hypotheses are surfaced in analysis diagnostics but cannot silently become a Finishing Move clip."
   },
   "semantic_editor": {
     "engine": "semantic-editor-v3.1-final",
@@ -161,7 +180,7 @@
       "transition_flash_opacity": 0.08,
       "transition_flash_before_seconds": 0.025,
       "transition_flash_after_seconds": 0.055,
-      "notes": "Semantic montage is a controlled fallback that combines two or three individually strong payoff moments into one 10-15.5 s clip. Each source segment must stay within one hardened shot. Cross-shot joins are explicit planned edits, never accidental stringout continuation. Normal contiguous stories are always selected first."
+      "notes": "Semantic montage is a controlled fallback that combines two or three individually strong payoff moments into one 10-15.5 s clip. It is not permitted as the continuation body of a Finishing Move clip."
     },
     "selection": {
       "candidate_mode": "engagement_driven_explained_dullness",
@@ -218,6 +237,6 @@
   "duplicate_policy": {
     "allow_overlap_with_prior_work": true,
     "allow_overlap_with_new_batch": false,
-    "notes": "V3.1 re-evaluates the complete official reels. Selection suppresses neighboring variants around the same opening engagement and rejects any source-segment reuse across outputs in the same source. Semantic montage may only use source moments not already consumed by higher-priority selected clips."
+    "notes": "V3.1 re-evaluates the complete official reels. The global pre-render allocator rejects source-segment reuse within this batch and decides the 10-clip distribution across all three reels before FFmpeg rendering starts."
   }
 }
