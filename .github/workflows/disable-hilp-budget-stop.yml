@@ -34,7 +34,7 @@ jobs:
           ruff format scripts/modal_hilp_watchdog.py tests/test_modal_hilp_watchdog.py
           ruff check scripts/modal_hilp_watchdog.py tests/test_modal_hilp_watchdog.py
           ruff format --check scripts/modal_hilp_watchdog.py tests/test_modal_hilp_watchdog.py
-          pytest -q tests/test_modal_hilp_watchdog.py
+          pytest -q --no-cov tests/test_modal_hilp_watchdog.py
 
       - name: Commit verified repair and clean staging files
         shell: bash
