@@ -107,3 +107,33 @@ fixed_unpack = '''def test_lifecycle_gate_rejects_unsafe_reconciliation(mutator,
     records, _reconciliation = _hilp129_records()
 '''
 replace_exact(test, unused_unpack, fixed_unpack, expected=1)
+
+old_missing_replacement = '''        (
+            lambda records: [
+                item
+                for item in records
+                if not (
+                    item.get("event") == "editorial_remote_call_start"
+                    and item.get("producer_lifecycle_id") == "producer-b"
+                )
+            ],
+            "replacement lifecycle has no authoritative producer start",
+        ),
+'''
+new_missing_replacement = '''        (
+            lambda records: [
+                {
+                    **item,
+                    "producer_lifecycle_id": "producer-c",
+                }
+                if (
+                    item.get("event") == "editorial_remote_call_start"
+                    and item.get("producer_lifecycle_id") == "producer-b"
+                )
+                else item
+                for item in records
+            ],
+            "replacement lifecycle has no authoritative producer start",
+        ),
+'''
+replace_exact(test, old_missing_replacement, new_missing_replacement, expected=1)
