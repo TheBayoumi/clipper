@@ -234,6 +234,8 @@ def _render_canonical_lossless_master(
 
     This file is the single visual truth for the final H.264 encode and for objective
     fidelity QA. The lossy pass must never rebuild trims, effects, or frame timing.
+    NUT is intentional here: unlike Matroska's 1 ms video time base, NUT preserves
+    the exact 60000/1001 rational frame rate required by the campaign and QA.
     """
     graph, duration = _build_source_native_filter(plan)
     settings = config["output"]
@@ -259,6 +261,7 @@ def _render_canonical_lossless_master(
         "graph_has_spatial_transform": False,
         "video_operations": "trim/setpts/concat/setsar only",
         "canonical_fps": str(settings["fps"]),
+        "canonical_container": "nut",
     }
 
 
@@ -444,7 +447,7 @@ def main() -> None:
         staged_source, local_plan = _stage_plan_source(args.source, plan, workspace)
         fidelity_plan = replace(local_plan, effect_profile="source_native_full_frame")
 
-        canonical_master = workspace / "canonical_lossless_edited_master.mkv"
+        canonical_master = workspace / "canonical_lossless_edited_master.nut"
         canonical_info = _render_canonical_lossless_master(
             staged_source,
             fidelity_plan,
