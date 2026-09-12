@@ -655,11 +655,8 @@ jobs:
               raise RuntimeError("live editorial acceptance observed an editorial execution timeout")
           call_starts = int(authoritative_counts.get("editorial_remote_call_start") or 0)
           call_terminals = int(authoritative_counts.get("editorial_remote_call_terminal") or 0)
-          if call_starts <= 0 or call_terminals != call_starts:
-              raise RuntimeError(
-                  "live editorial acceptance lacks a closed producer-side editorial call set: "
-                  f"starts={call_starts} terminals={call_terminals}"
-              )
+          if call_starts <= 0:
+              raise RuntimeError("live editorial acceptance observed no producer-side calls")
           if int(authoritative_counts.get("production_cycle_terminal") or 0) != 1:
               raise RuntimeError(
                   "live editorial acceptance requires exactly one scoped production terminal event"
@@ -685,19 +682,9 @@ jobs:
               if event.get("event") == "editorial_remote_call_terminal"
               and event.get("authoritative") is True
           ]
-          start_ids = {
-              str(event.get("invocation_id") or "")
-              for event in producer_starts
-          }
-          terminal_ids = {
-              str(event.get("invocation_id") or "")
-              for event in producer_terminals
-          }
-          if "" in start_ids or "" in terminal_ids or start_ids != terminal_ids:
-              raise RuntimeError(
-                  "producer-side editorial invocation IDs are not one-to-one closed: "
-                  f"starts={sorted(start_ids)} terminals={sorted(terminal_ids)}"
-              )
+          from scripts.validate_editorial_lifecycle import validate_editorial_call_closure
+
+          validate_editorial_call_closure(summary=summary, records=records)
           terminal_statuses = [str(event.get("status") or "") for event in producer_terminals]
           if any(status in {"TIMEOUT", "ERROR"} for status in terminal_statuses):
               raise RuntimeError(
