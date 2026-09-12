@@ -11,7 +11,7 @@
     "require_allocation_before_render": true,
     "require_verified_finishing_move_when_available": true,
     "prefer_normal_over_semantic_montage": true,
-    "notes": "All three official reels are analyzed first. One global allocator must prove an exact 10-clip, non-overlapping batch before any shadow or production MP4 is rendered."
+    "notes": "All three official reels are analyzed first. One global allocator must prove an exact 10-clip semantically unique batch before any shadow or production MP4 is rendered."
   },
   "output": {
     "width": 1920,
@@ -80,16 +80,9 @@
   "source_integrity": {
     "policy": "automatic shot boundaries plus visually verified missed source-stringout edit windows; contiguous stories may never cross them, while only explicitly planned semantic montage transitions may bridge separate source shots",
     "verified_cut_windows": {
-      "r1": [
-        [40.5, 41.0],
-        [46.5, 47.0],
-        [53.75, 54.25],
-        [225.0, 225.5]
-      ],
+      "r1": [[40.5, 41.0], [46.5, 47.0], [53.75, 54.25], [225.0, 225.5]],
       "batch2": [],
-      "week2": [
-        [145.0, 145.5]
-      ]
+      "week2": [[145.0, 145.5]]
     },
     "reject_segment_crossing_verified_cut": true,
     "reject_unplanned_cross_shot_bridge": true,
@@ -195,28 +188,10 @@
     }
   },
   "story_quality_gates": {
-    "opening_min": {
-      "default": 0.42,
-      "finishing_move_open": 0.50,
-      "semantic_montage": 0.44
-    },
-    "ending_min": {
-      "default": 0.40,
-      "sustained_pressure": 0.50,
-      "semantic_montage": 0.42
-    },
-    "retention_min": {
-      "default": 0.36,
-      "sustained_pressure": 0.44,
-      "semantic_montage": 0.37
-    },
-    "payoff_min": {
-      "default": 0.34,
-      "engagement_chain": 0.28,
-      "sustained_pressure": 0.16,
-      "finishing_move_open": 0.34,
-      "semantic_montage": 0.40
-    }
+    "opening_min": {"default": 0.42, "finishing_move_open": 0.50, "semantic_montage": 0.44},
+    "ending_min": {"default": 0.40, "sustained_pressure": 0.50, "semantic_montage": 0.42},
+    "retention_min": {"default": 0.36, "sustained_pressure": 0.44, "semantic_montage": 0.37},
+    "payoff_min": {"default": 0.34, "engagement_chain": 0.28, "sustained_pressure": 0.16, "finishing_move_open": 0.34, "semantic_montage": 0.40}
   },
   "performance_targets": {
     "retention_quality_min": 0.36,
@@ -224,11 +199,7 @@
     "campaign_engagement_floor_percent": 0.20,
     "notes": "retention_quality is an internal editorial quality score and must not be interpreted as literal TikTok retention percentage."
   },
-  "excluded_windows": {
-    "week2": [],
-    "batch2": [],
-    "r1": []
-  },
+  "excluded_windows": {"week2": [], "batch2": [], "r1": []},
   "legacy_prior_windows_reference": {
     "week2": [[0.0, 13.8], [17.0, 41.6], [42.2, 88.15], [105.3, 133.4], [147.2, 203.2], [230.96, 250.65]],
     "batch2": [[0.0, 25.0], [45.0, 75.0]],
@@ -236,7 +207,12 @@
   },
   "duplicate_policy": {
     "allow_overlap_with_prior_work": true,
-    "allow_overlap_with_new_batch": false,
-    "notes": "V3.1 re-evaluates the complete official reels. The global pre-render allocator rejects source-segment reuse within this batch and decides the 10-clip distribution across all three reels before FFmpeg rendering starts."
+    "allow_overlap_with_new_batch": true,
+    "semantic_anchor_tolerance_seconds": 0.70,
+    "max_shared_context_seconds": 0.90,
+    "substantial_overlap_seconds": 1.75,
+    "substantial_overlap_fraction_shorter": 0.22,
+    "finishing_move_exclusive": true,
+    "notes": "Within this batch, duplication means reusing the same semantic payoff/Finishing Move or substantially reusing source footage. Up to 0.90 s of shared setup/tail context is allowed when semantic anchors differ. Quality gates and source-integrity gates are unchanged."
   }
 }
