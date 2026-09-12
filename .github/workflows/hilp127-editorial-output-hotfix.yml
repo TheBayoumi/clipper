@@ -17,155 +17,119 @@ jobs:
         with:
           ref: feat/contentrewards-campaign-factory
           fetch-depth: 0
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
 
-      - name: Require staging-only drift from failed HILP head
+      - name: Require staging-only drift
         shell: bash
         run: |
           set -euo pipefail
           base=bedff7998dce3bf8da8a03c27aecaa9ae5810a1a
           test "$(git diff --name-only "$base"..HEAD)" = ".github/workflows/hilp127-editorial-output-hotfix.yml"
 
-      - name: Apply bounded malformed editorial JSON recovery
+      - name: Apply bounded malformed-output recovery
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
+          import re
 
-          def replace_once(text: str, old: str, new: str, label: str) -> str:
-              count = text.count(old)
-              if count != 1:
-                  raise RuntimeError(f"{label}: expected one match, got {count}")
+          def one(text: str, old: str, new: str, label: str) -> str:
+              n = text.count(old)
+              if n != 1:
+                  raise RuntimeError(f"{label}: expected one match, got {n}")
               return text.replace(old, new)
 
-          worker_path = Path("scripts/modal_open_models.py")
-          worker = worker_path.read_text(encoding="utf-8")
+          def sub_one(text: str, pattern: str, replacement: str, label: str) -> str:
+              updated, n = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE)
+              if n != 1:
+                  raise RuntimeError(f"{label}: expected one match, got {n}")
+              if re.search(pattern, updated, flags=re.MULTILINE):
+                  raise RuntimeError(f"{label}: target unexpectedly remains after replacement")
+              return updated
+
+          # Worker: give malformed constrained JSON its own recoverable identity.
+          wp = Path("scripts/modal_open_models.py")
+          worker = wp.read_text(encoding="utf-8")
           marker = "\n\ndef _json_text(text: str) -> dict[str, Any]:\n"
-          invalid_class = '''
-
-          class EditorialOutputInvalid(ValueError):
-              """Editorial generation returned malformed structured output within its budget."""
-
-              def __init__(self, message: str, *, details: dict[str, Any]) -> None:
-                  self.details = dict(details)
-                  super().__init__(message)
-          '''
-          worker = replace_once(worker, marker, invalid_class + marker, "insert invalid-output exception")
-
-          worker = replace_once(
+          invalid_class = (
+              "\n\nclass EditorialOutputInvalid(ValueError):\n"
+              "    \"\"\"Editorial generation returned malformed structured output within its budget.\"\"\"\n\n"
+              "    def __init__(self, message: str, *, details: dict[str, Any]) -> None:\n"
+              "        self.details = dict(details)\n"
+              "        super().__init__(message)\n"
+          )
+          worker = one(worker, marker, invalid_class + marker, "insert EditorialOutputInvalid")
+          worker = one(
               worker,
-              '''    capacity_rejected = error_type == "OutOfMemoryError" or "CapacityError" in error_type
-              if not capacity_rejected:
-                  traceback.print_exception(exc)
-          ''',
-              '''    capacity_rejected = error_type == "OutOfMemoryError" or "CapacityError" in error_type
-              output_retry = error_type in {"EditorialOutputTruncated", "EditorialOutputInvalid"}
-              if not capacity_rejected and not output_retry:
-                  traceback.print_exception(exc)
-          ''',
+              '    capacity_rejected = error_type == "OutOfMemoryError" or "CapacityError" in error_type\n    if not capacity_rejected:\n        traceback.print_exception(exc)\n',
+              '    capacity_rejected = error_type == "OutOfMemoryError" or "CapacityError" in error_type\n    output_retry = error_type in {"EditorialOutputTruncated", "EditorialOutputInvalid"}\n    if not capacity_rejected and not output_retry:\n        traceback.print_exception(exc)\n',
               "transport output-retry classification",
           )
-          worker = replace_once(
+          worker = one(
               worker,
-              '''    application_status = "CAPACITY_REJECTED" if capacity_rejected else "FAILED"
-              recovery_action = "REPARTITION" if capacity_rejected else "NONE"
-          ''',
-              '''    if capacity_rejected:
-                  application_status = "CAPACITY_REJECTED"
-                  recovery_action = "REPARTITION"
-              elif output_retry:
-                  application_status = "OUTPUT_RETRY"
-                  recovery_action = "REGENERATE"
-              else:
-                  application_status = "FAILED"
-                  recovery_action = "NONE"
-          ''',
+              '    application_status = "CAPACITY_REJECTED" if capacity_rejected else "FAILED"\n    recovery_action = "REPARTITION" if capacity_rejected else "NONE"\n',
+              '    if capacity_rejected:\n        application_status = "CAPACITY_REJECTED"\n        recovery_action = "REPARTITION"\n    elif output_retry:\n        application_status = "OUTPUT_RETRY"\n        recovery_action = "REGENERATE"\n    else:\n        application_status = "FAILED"\n        recovery_action = "NONE"\n',
               "transport status mapping",
           )
-          worker = replace_once(
-              worker,
-              '''        raise RuntimeError(
-                  "constrained editorial generation returned invalid JSON despite Outlines "
-                  f"schema enforcement for task={task}: {exc}"
-              ) from exc
-          ''',
-              '''        available = int(plan["available_output_tokens"])
-              next_budget = min(
-                  available,
-                  max(output_budget + 1, output_budget * 2),
-              )
-              raise EditorialOutputInvalid(
-                  "constrained editorial generation returned malformed JSON despite Outlines "
-                  f"schema enforcement for task={task}: {exc}",
-                  details={
-                      **plan,
-                      "reason": "invalid_structured_json",
-                      "generated_sha256": generated_sha,
-                      "output_tokens": output_units,
-                      "next_output_budget_tokens": next_budget,
-                      "recovery_action": "REGENERATE",
-                  },
-              ) from exc
-          ''',
-              "worker malformed-JSON mapping",
+          malformed_pattern = (
+              r'^        raise RuntimeError\(\n'
+              r'\s*"constrained editorial generation returned invalid JSON despite Outlines "\n'
+              r'\s*f"schema enforcement for task=\{task\}: \{exc\}"\n'
+              r'\s*\) from exc\n'
           )
-          worker_path.write_text(worker, encoding="utf-8")
+          malformed_replacement = (
+              '        available = int(plan["available_output_tokens"])\n'
+              '        next_budget = min(\n'
+              '            available,\n'
+              '            max(output_budget + 1, output_budget * 2),\n'
+              '        )\n'
+              '        raise EditorialOutputInvalid(\n'
+              '            "constrained editorial generation returned malformed JSON despite Outlines "\n'
+              '            f"schema enforcement for task={task}: {exc}",\n'
+              '            details={\n'
+              '                **plan,\n'
+              '                "reason": "invalid_structured_json",\n'
+              '                "generated_sha256": generated_sha,\n'
+              '                "output_tokens": output_units,\n'
+              '                "next_output_budget_tokens": next_budget,\n'
+              '                "recovery_action": "REGENERATE",\n'
+              '            },\n'
+              '        ) from exc\n'
+          )
+          worker = sub_one(worker, malformed_pattern, malformed_replacement, "malformed JSON worker mapping")
+          wp.write_text(worker, encoding="utf-8")
 
-          provider_path = Path("src/clipper/providers/modal.py")
-          provider = provider_path.read_text(encoding="utf-8")
-          provider = replace_once(
+          # Provider: recognize only the dedicated output error and bound it to one retry.
+          pp = Path("src/clipper/providers/modal.py")
+          provider = pp.read_text(encoding="utf-8")
+          provider = one(
               provider,
               '        if exc.error_type in {"JSONDecodeError", "EditorialOutputTruncated"}:\n',
-              '''        if exc.error_type in {
-                      "JSONDecodeError",
-                      "EditorialOutputTruncated",
-                      "EditorialOutputInvalid",
-                  }:
-          ''',
-              "provider invalid-output classifier",
+              '        if exc.error_type in {\n            "JSONDecodeError",\n            "EditorialOutputTruncated",\n            "EditorialOutputInvalid",\n        }:\n',
+              "provider output-contract classifier",
           )
-          provider = replace_once(
+          provider = one(
               provider,
-              '''        seen_recovery_signatures: set[tuple[object, ...]] = set()
-                  while True:
-          ''',
-              '''        seen_recovery_signatures: set[tuple[object, ...]] = set()
-                  invalid_output_retries = 0
-                  while True:
-          ''',
-              "provider invalid-output retry counter",
+              '        seen_recovery_signatures: set[tuple[object, ...]] = set()\n        while True:\n',
+              '        seen_recovery_signatures: set[tuple[object, ...]] = set()\n        invalid_output_retries = 0\n        while True:\n',
+              "provider retry counter",
           )
-          provider = replace_once(
+          provider = one(
               provider,
-              '''                if not self._is_output_contract_error(exc):
-                          raise
-
-                      next_budget = exc.details.get("next_output_budget_tokens")
-          ''',
-              '''                if not self._is_output_contract_error(exc):
-                          raise
-
-                      if exc.error_type == "EditorialOutputInvalid":
-                          if invalid_output_retries >= 1:
-                              raise
-                          invalid_output_retries += 1
-
-                      next_budget = exc.details.get("next_output_budget_tokens")
-          ''',
-              "provider bounded invalid-output retry",
+              '                if not self._is_output_contract_error(exc):\n                    raise\n\n                next_budget = exc.details.get("next_output_budget_tokens")\n',
+              '                if not self._is_output_contract_error(exc):\n                    raise\n\n                if exc.error_type == "EditorialOutputInvalid":\n                    if invalid_output_retries >= 1:\n                        raise\n                    invalid_output_retries += 1\n\n                next_budget = exc.details.get("next_output_budget_tokens")\n',
+              "provider bounded malformed-output retry",
           )
-          provider_path.write_text(provider, encoding="utf-8")
+          pp.write_text(provider, encoding="utf-8")
 
-          recovery_path = Path("tests/test_modal_editorial_recovery.py")
-          recovery = recovery_path.read_text(encoding="utf-8")
+          # Regression: one malformed output can recover, a second must fail closed.
+          rp = Path("tests/test_modal_editorial_recovery.py")
+          recovery = rp.read_text(encoding="utf-8")
           insertion = "def test_editorial_provider_does_not_retry_unrelated_remote_error() -> None:\n"
-          if recovery.count(insertion) != 1:
-              raise RuntimeError("recovery test insertion marker drifted")
           tests = '''def test_editorial_provider_recovers_malformed_structured_json_once() -> None:
               provider = SequenceEditorialProvider(
                   [
@@ -221,15 +185,16 @@ jobs:
 
 
           '''
-          recovery_path.write_text(recovery.replace(insertion, tests + insertion), encoding="utf-8")
+          recovery = one(recovery, insertion, tests + insertion, "recovery test insertion")
+          rp.write_text(recovery, encoding="utf-8")
 
-          transport_path = Path("tests/test_modal_open_models_transport.py")
-          transport = transport_path.read_text(encoding="utf-8")
-          transport = replace_once(
+          tp = Path("tests/test_modal_open_models_transport.py")
+          transport = tp.read_text(encoding="utf-8")
+          transport = one(
               transport,
               '    assert event["application_status"] == "FAILED"\n',
               '    assert event["application_status"] == "OUTPUT_RETRY"\n    assert event["recovery_action"] == "REGENERATE"\n',
-              "transport retry expectation",
+              "transport retry assertion",
           )
           transport += '''
 
@@ -242,23 +207,23 @@ jobs:
               assert '"EditorialOutputInvalid"' in provider
               assert "invalid_output_retries >= 1" in provider
           '''
-          transport_path.write_text(transport, encoding="utf-8")
+          tp.write_text(transport, encoding="utf-8")
           PY
 
-      - name: Install focused test dependencies
+      - name: Install focused dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e '.[modal]'
           python -m pip install pytest pytest-cov ruff
 
-      - name: Format and verify repair
+      - name: Format and verify focused repair
         run: |
           ruff format scripts/modal_open_models.py src/clipper/providers/modal.py tests/test_modal_editorial_recovery.py tests/test_modal_open_models_transport.py
           ruff check scripts/modal_open_models.py src/clipper/providers/modal.py tests/test_modal_editorial_recovery.py tests/test_modal_open_models_transport.py
           ruff format --check scripts/modal_open_models.py src/clipper/providers/modal.py tests/test_modal_editorial_recovery.py tests/test_modal_open_models_transport.py
           pytest -o addopts='' tests/test_modal_editorial_recovery.py tests/test_modal_open_models_transport.py
 
-      - name: Commit clean repair and remove staging workflow
+      - name: Commit clean repair
         shell: bash
         run: |
           set -euo pipefail
