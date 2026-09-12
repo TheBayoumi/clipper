@@ -53,7 +53,7 @@ def campaign_context(brief: CampaignBrief) -> dict[str, object]:
 
 
 class SourceHazardClassifier:
-    """Classify source policy regions with grounded, fail-closed structured inference."""
+    """Classify source policy exceptions with grounded, fail-closed structured inference."""
 
     def __init__(
         self,
@@ -151,6 +151,17 @@ class SourceHazardClassifier:
             raise ValueError(f"{stage} returned a non-object payload")
         return {str(key): value for key, value in raw.items()}
 
+    @staticmethod
+    def _instruction() -> str:
+        return (
+            "Review the entire supplied source interval for policy exceptions. Fuse speech and "
+            "multimodal evidence. Copy the first and last supplied word_ref into the coverage "
+            "fields and set coverage_complete=true only after evaluating the whole interval. "
+            "Return only exception spans; do not emit ordinary editorial_content. Use unknown "
+            "for any uncertain subrange. An empty segments array is allowed only when complete "
+            "coverage found no policy exceptions."
+        )
+
     def _projected_payload_for_range(
         self,
         brief: CampaignBrief,
@@ -165,12 +176,7 @@ class SourceHazardClassifier:
         projection = self._project_multimodal_payload(multimodal, chunk_start, chunk_end)
         payload: dict[str, Any] = {
             "campaign": campaign_context(brief),
-            "instruction": (
-                "Classify the entire supplied source interval into exhaustive chronological "
-                "segments. Fuse speech and multimodal evidence. Ordinary source material is "
-                "editorial_content. Use unknown when evidence is insufficient; uncertainty "
-                "must never be converted into an automatic PASS."
-            ),
+            "instruction": self._instruction(),
             "words": self._word_payload(timeline, start, end),
             "capacity_repartitionable": True,
             "multimodal_evidence": list(projection.events),
@@ -192,12 +198,7 @@ class SourceHazardClassifier:
         chunk_end = words[-1].source_end
         return {
             "campaign": campaign_context(brief),
-            "instruction": (
-                "Classify the entire supplied source interval into exhaustive chronological "
-                "segments. Fuse speech and multimodal evidence. Ordinary source material is "
-                "editorial_content. Use unknown when evidence is insufficient; uncertainty "
-                "must never be converted into an automatic PASS."
-            ),
+            "instruction": self._instruction(),
             "words": self._word_payload(timeline, start, end),
             "multimodal_evidence": self._legacy_multimodal_payload(
                 multimodal,
@@ -234,6 +235,62 @@ class SourceHazardClassifier:
                 return None
             work.append((start, end, stage))
         return work
+
+    @staticmethod
+    def _validated_segments(
+        result: dict[str, Any],
+        timeline: CanonicalTimeline,
+        words: tuple[Any, ...],
+        *,
+        model_identity: dict[str, object],
+    ) -> list[SourceHazardSegment]:
+        raw_segments = result.get("segments")
+        if not isinstance(raw_segments, list) or not all(
+            isinstance(item, dict) for item in raw_segments
+        ):
+            raise ValueError("source hazard output must contain a segments object array")
+
+        legal_word_ids = {word.word_id for word in words}
+        parsed: list[SourceHazardSegment] = []
+        for raw in raw_segments:
+            hazard = SourceHazardSegment.from_payload(
+                raw,
+                timeline,
+                model_identity=model_identity,
+            )
+            if not set(hazard.source_word_ids).issubset(legal_word_ids):
+                raise ValueError("source hazard escaped the supplied chunk evidence")
+            parsed.append(hazard)
+
+        coverage_keys = {
+            "coverage_start_word_id",
+            "coverage_end_word_id",
+            "coverage_complete",
+        }
+        coverage_present = any(key in result for key in coverage_keys)
+        if coverage_present:
+            expected_start = timeline.word_ref(words[0].word_id)
+            expected_end = timeline.word_ref(words[-1].word_id)
+            if result.get("coverage_complete") is not True:
+                raise ValueError("source hazard coverage attestation is incomplete")
+            if str(result.get("coverage_start_word_id") or "") != expected_start:
+                raise ValueError("source hazard coverage start does not match supplied evidence")
+            if str(result.get("coverage_end_word_id") or "") != expected_end:
+                raise ValueError("source hazard coverage end does not match supplied evidence")
+            if any(item.classification == HazardClassification.EDITORIAL_CONTENT for item in parsed):
+                raise ValueError("sparse source hazard output must omit ordinary editorial_content")
+            return parsed
+
+        # Backward-compatible acceptance for an old exhaustive result is safe only when its
+        # returned segments explicitly cover every supplied canonical word. Contract fingerprints
+        # prevent these legacy objects from being produced by the new production schema, but this
+        # path preserves deterministic replay of already materialized exhaustive evidence.
+        covered_word_ids = {
+            word_id for item in parsed for word_id in item.source_word_ids
+        }
+        if not parsed or covered_word_ids != legal_word_ids:
+            raise ValueError("source hazard output is missing complete coverage attestation")
+        return parsed
 
     def classify(
         self,
@@ -284,21 +341,14 @@ class SourceHazardClassifier:
                 )
             try:
                 result = self._complete(timeline, brief, stage, payload)
-                raw_segments = result.get("segments")
-                if not isinstance(raw_segments, list) or not all(
-                    isinstance(item, dict) for item in raw_segments
-                ):
-                    raise ValueError("source hazard output must contain a segments object array")
-                legal_word_ids = {word.word_id for word in words}
-                for raw in raw_segments:
-                    hazard = SourceHazardSegment.from_payload(
-                        raw,
+                hazards.extend(
+                    self._validated_segments(
+                        result,
                         timeline,
+                        words,
                         model_identity=model_identity,
                     )
-                    if not set(hazard.source_word_ids).issubset(legal_word_ids):
-                        raise ValueError("source hazard escaped the supplied chunk evidence")
-                    hazards.append(hazard)
+                )
             except EditorialCapacityError as exc:
                 repartition = token_aware_repartition(timeline, start, end, exc.details)
                 if repartition is not None:
