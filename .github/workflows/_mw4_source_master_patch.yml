@@ -18,136 +18,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Patch canonical workflows to MediaSilo source master only
-        run: |
-          python - <<'PY'
-          from pathlib import Path
+      - name: Patch canonical source acquisition
+        run: python scripts/_mw4_source_master_patch.py
 
-          workflows = [
-              Path('.github/workflows/mw4-semantic-v3-1-shadow.yml'),
-              Path('.github/workflows/mw4-fullframe-retention-v3-1.yml'),
-          ]
-
-          resolver = '''              derivative_items = list(asset.get('derivatives') or [])
-              source_candidates = []
-              for item in derivative_items:
-                  if str(item.get('type') or '').lower() != 'source':
-                      continue
-                  candidate_url = item.get('url') or (item.get('properties') or {}).get('url')
-                  if not candidate_url:
-                      continue
-                  try:
-                      file_size = int(item.get('fileSize') or 0)
-                  except (TypeError, ValueError):
-                      file_size = 0
-                  source_candidates.append((file_size, item, candidate_url))
-
-              if not source_candidates:
-                  available_types = sorted({str(item.get('type')) for item in derivative_items})
-                  raise RuntimeError(
-                      f'Original MediaSilo source master unavailable for {asset["title"]}; '
-                      f'refusing all x1080/proxy fallbacks. available derivative types={available_types}'
-                  )
-
-              _, derivative, url = max(source_candidates, key=lambda entry: entry[0])
-              Path('/tmp/resolved_source.json').write_text(
-                  json.dumps({
-                      'title': asset['title'],
-                      'file_name': asset.get('fileName'),
-                      'url': url,
-                      'derivative_type': 'source',
-                      'file_size': derivative.get('fileSize'),
-                      'width': derivative.get('width'),
-                      'height': derivative.get('height'),
-                      'duration_ms': derivative.get('duration'),
-                  }),
-                  encoding='utf-8',
-              )
-'''
-
-          source_qa = '''          if selected.get('derivative_type') != 'source':
-              raise RuntimeError('refusing non-source MediaSilo derivative before semantic analysis')
-
-          actual_size = target.stat().st_size
-          expected_size = int(selected.get('file_size') or 0)
-          if expected_size and actual_size != expected_size:
-              raise RuntimeError(
-                  f'original master byte-size mismatch: downloaded={actual_size} expected={expected_size}'
-              )
-
-          probe = json.loads(subprocess.check_output([
-              'ffprobe', '-v', 'error',
-              '-show_entries',
-              'stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,bit_rate:'
-              'format=duration,size,bit_rate,format_name',
-              '-of', 'json', str(target),
-          ], text=True))
-          video = next(item for item in probe['streams'] if item.get('codec_type') == 'video')
-          if (video.get('width'), video.get('height')) != (1920, 1080):
-              raise RuntimeError(f'original master geometry mismatch: {video.get("width")}x{video.get("height")}')
-          if video.get('avg_frame_rate') != '60000/1001':
-              raise RuntimeError(f'original master FPS mismatch: {video.get("avg_frame_rate")}')
-
-          declared_width = selected.get('width')
-          declared_height = selected.get('height')
-          if declared_width and int(declared_width) != 1920:
-              raise RuntimeError(f'MediaSilo source metadata width mismatch: {declared_width}')
-          if declared_height and int(declared_height) != 1080:
-              raise RuntimeError(f'MediaSilo source metadata height mismatch: {declared_height}')
-
-          import hashlib
-          digest = hashlib.sha256()
-          with target.open('rb') as stream:
-              while block := stream.read(8 * 1024 * 1024):
-                  digest.update(block)
-
-          Path('raw_sources', f'{source_key}.source_qa.json').write_text(
-              json.dumps({
-                  'source_key': source_key,
-                  'title': selected.get('title'),
-                  'file_name': selected.get('file_name'),
-                  'derivative_type': 'source',
-                  'proxy_fallback_allowed': False,
-                  'downloaded_bytes': actual_size,
-                  'declared_source_bytes': expected_size or None,
-                  'sha256': digest.hexdigest(),
-                  'probe': probe,
-              }, indent=2),
-              encoding='utf-8',
-          )
-          print(
-              f'ORIGINAL SOURCE MASTER VERIFIED type=source bytes={actual_size} '
-              f'fps={video.get("avg_frame_rate")} codec={video.get("codec_name")}'
-          )
-'''
-
-          for path in workflows:
-              text = path.read_text(encoding='utf-8')
-
-              start = text.index("              derivatives = {item.get('type'): item for item in asset.get('derivatives', [])}")
-              end = text.index("              break\n          else:", start)
-              text = text[:start] + resolver + text[end:]
-
-              download = text.index("          selected = json.loads(Path('/tmp/resolved_source.json').read_text(encoding='utf-8'))")
-              qa_start = text.index("          probe = json.loads(subprocess.check_output([", download)
-              qa_end = text.index("          PY", qa_start)
-              text = text[:qa_start] + source_qa + text[qa_end:]
-
-              if "derivatives.get('x1080')" in text or "derivatives.get('proxy')" in text:
-                  raise RuntimeError(f'{path}: proxy fallback still present')
-              if "'derivative_type': 'source'" not in text:
-                  raise RuntimeError(f'{path}: source-only certification missing')
-
-              path.write_text(text, encoding='utf-8')
-              print(f'patched {path}')
-          PY
-
-      - name: Commit canonical patch and remove temporary workflow
+      - name: Commit canonical patch and remove one-shot patcher
         run: |
           set -euo pipefail
-          rm -f .github/workflows/_mw4_source_master_patch.yml
+          rm -f .github/workflows/_mw4_source_master_patch.yml scripts/_mw4_source_master_patch.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/mw4-semantic-v3-1-shadow.yml .github/workflows/mw4-fullframe-retention-v3-1.yml .github/workflows/_mw4_source_master_patch.yml
+          git add .github/workflows/mw4-semantic-v3-1-shadow.yml .github/workflows/mw4-fullframe-retention-v3-1.yml .github/workflows/_mw4_source_master_patch.yml scripts/_mw4_source_master_patch.py
           git commit -m "fix(mw4): require original MediaSilo source masters"
           git push origin HEAD:feat/mw4-fullframe-retention-v3-1
