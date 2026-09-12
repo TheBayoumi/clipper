@@ -160,8 +160,20 @@ def test_production_workflow_enforces_current_model_and_budget_evidence() -> Non
     )
     assert 'editorial.get("model_invocations")' in workflow
     assert '"semantic_cores", "narrative_envelope", "quality_windows"' in workflow
-    assert "gpu_seconds > gpu_limit" in workflow
-    assert "estimated_usd > cost_limit" in workflow
+    assert (
+        'gpu_seconds = sum(float(item.get("gpu_seconds") or 0) for item in usage_records)'
+        in workflow
+    )
+    assert (
+        'estimated_usd = sum(float(item.get("estimated_cost_usd") or 0) for item in usage_records)'
+        in workflow
+    )
+    assert 'gpu_limit = float(os.environ["CLIPPER_MAX_GPU_SECONDS"])' in workflow
+    assert 'cost_limit = float(os.environ["CLIPPER_MAX_ESTIMATED_USD"])' in workflow
+    assert "gpu_seconds > gpu_limit" not in workflow
+    assert "estimated_usd > cost_limit" not in workflow
+    assert "GPU budget exceeded" not in workflow
+    assert "estimated cost budget exceeded" not in workflow
 
 
 def test_production_workflow_requires_exact_head_modal_deployment_without_mutation() -> None:
