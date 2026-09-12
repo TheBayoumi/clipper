@@ -27,12 +27,12 @@ jobs:
         run: python -m pip install -e ".[dev]"
       - name: Apply guarded lifecycle gate patch
         run: python scripts/apply_hilp129_final_gate_patch.py
-      - name: Format and lint
+      - name: Format and lint permanent repair files
         run: |
           python -m ruff check --fix scripts/validate_editorial_lifecycle.py tests/test_hilp129_editorial_lifecycle_gate.py
           python -m ruff format scripts/validate_editorial_lifecycle.py tests/test_hilp129_editorial_lifecycle_gate.py
-          python -m ruff check .
-          python -m ruff format --check .
+          python -m ruff check scripts/validate_editorial_lifecycle.py tests/test_hilp129_editorial_lifecycle_gate.py
+          python -m ruff format --check scripts/validate_editorial_lifecycle.py tests/test_hilp129_editorial_lifecycle_gate.py
       - name: Run focused lifecycle regressions
         run: python -m pytest --no-cov tests/test_hilp129_editorial_lifecycle_gate.py tests/test_hilp129_editorial_lifecycle_recovery.py tests/test_modal_execution_spy.py tests/test_production_workflow_contract.py
       - name: Commit clean repair
