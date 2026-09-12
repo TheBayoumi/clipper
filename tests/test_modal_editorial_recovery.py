@@ -137,6 +137,36 @@ def test_editorial_provider_fails_closed_after_one_malformed_json_retry() -> Non
     assert len(provider.requests) == 2
 
 
+def test_editorial_provider_stops_after_malformed_retry_even_if_next_error_is_truncated() -> None:
+    provider = SequenceEditorialProvider(
+        [
+            ModalRemoteError(
+                function_name="editorial",
+                error_type="EditorialOutputInvalid",
+                message="malformed constrained JSON",
+                details={
+                    "generation_budget_tokens": 273,
+                    "next_output_budget_tokens": 546,
+                    "generated_sha256": "invalid-first",
+                },
+            ),
+            ModalRemoteError(
+                function_name="editorial",
+                error_type="EditorialOutputTruncated",
+                message="expanded retry exhausted its output budget",
+                details={
+                    "generation_budget_tokens": 546,
+                    "next_output_budget_tokens": 1092,
+                    "generated_sha256": "truncated-second",
+                },
+            ),
+        ]
+    )
+    with pytest.raises(ModalRemoteError, match="expanded retry exhausted"):
+        provider.complete_json(task="source_hazards:range", payload={"words": []})
+    assert len(provider.requests) == 2
+
+
 def test_editorial_provider_does_not_retry_unrelated_remote_error() -> None:
     provider = SequenceEditorialProvider(
         [

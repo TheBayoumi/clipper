@@ -588,9 +588,9 @@ class ModalEditorialProvider(ModalJSONProvider):
                 if not self._is_output_contract_error(exc):
                     raise
 
+                if invalid_output_retries > 0:
+                    raise
                 if exc.error_type == "EditorialOutputInvalid":
-                    if invalid_output_retries >= 1:
-                        raise
                     invalid_output_retries += 1
 
                 next_budget = exc.details.get("next_output_budget_tokens")
