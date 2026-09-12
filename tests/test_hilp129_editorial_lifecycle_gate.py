@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import copy
+import importlib.util
 from pathlib import Path
 
 import pytest
 
-from scripts.validate_editorial_lifecycle import validate_editorial_call_closure
+
+def _load_lifecycle_validator():
+    path = Path("scripts/validate_editorial_lifecycle.py")
+    spec = importlib.util.spec_from_file_location("validate_editorial_lifecycle_hilp129", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("failed to load editorial lifecycle validator")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.validate_editorial_call_closure
+
+
+validate_editorial_call_closure = _load_lifecycle_validator()
 
 
 def _start(invocation: str, lifecycle: str, task: str = "source_hazards:x") -> dict:
