@@ -248,4 +248,4 @@ def test_malformed_editorial_json_has_dedicated_bounded_retry_contract() -> None
     assert '"reason": "invalid_structured_json"' in source
     assert "raise EditorialOutputInvalid(" in source
     assert '"EditorialOutputInvalid"' in provider
-    assert "invalid_output_retries >= 1" in provider
+    assert "invalid_output_retries > 0" in provider
