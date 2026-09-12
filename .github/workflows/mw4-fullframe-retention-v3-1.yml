@@ -68,7 +68,7 @@ jobs:
           python scripts/mw4_semantic_gameplay_v3_1_final.py --self-test
           python scripts/mw4_v3_1_contract.py --self-test
 
-      - name: Resolve official MediaSilo source
+      - name: Resolve official MediaSilo source once
         env:
           SOURCE_KEY: ${{ matrix.source }}
           MEDIASILO_URL: https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260
@@ -87,31 +87,41 @@ jobs:
           }
           holder = [None]
           with sync_playwright() as playwright:
-              browser = playwright.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
-              page = browser.new_page(
-                  viewport={'width': 1440, 'height': 1000},
-                  user_agent=(
-                      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                      'AppleWebKit/537.36 (KHTML, like Gecko) '
-                      'Chrome/139.0.0.0 Safari/537.36'
-                  ),
+              browser = playwright.chromium.launch(
+                  headless=True,
+                  args=['--no-sandbox', '--disable-dev-shm-usage'],
               )
-              def handle(response):
-                  if '/folders/3b199368-5974-4eb1-a450-327a4e84c260/assets' not in response.url or response.status != 200:
-                      return
+              for attempt in range(1, 4):
+                  page = browser.new_page(
+                      viewport={'width': 1440, 'height': 1000},
+                      user_agent=(
+                          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                          'AppleWebKit/537.36 (KHTML, like Gecko) '
+                          'Chrome/139.0.0.0 Safari/537.36'
+                      ),
+                  )
+                  def handle(response):
+                      if '/folders/3b199368-5974-4eb1-a450-327a4e84c260/assets' not in response.url or response.status != 200:
+                          return
+                      try:
+                          data = response.json()
+                      except Exception:
+                          return
+                      if isinstance(data, list) and data:
+                          holder[0] = data
+                  page.on('response', handle)
                   try:
-                      data = response.json()
-                  except Exception:
-                      return
-                  if isinstance(data, list) and data:
-                      holder[0] = data
-              page.on('response', handle)
-              page.goto(os.environ['MEDIASILO_URL'], wait_until='domcontentloaded', timeout=90000)
-              page.wait_for_timeout(25000)
+                      page.goto(os.environ['MEDIASILO_URL'], wait_until='domcontentloaded', timeout=90000)
+                      page.wait_for_timeout(30000)
+                  finally:
+                      page.close()
+                  if holder[0]:
+                      print(f'MediaSilo assets resolved on attempt {attempt}')
+                      break
               browser.close()
 
           if not holder[0]:
-              raise RuntimeError('MediaSilo assets were not resolved')
+              raise RuntimeError('MediaSilo assets were not resolved after 3 analysis-stage attempts')
           for asset in holder[0]:
               if asset.get('title') != wanted[source_key]:
                   continue
@@ -120,13 +130,16 @@ jobs:
               url = derivative.get('url') or (derivative.get('properties') or {}).get('url')
               if not url:
                   raise RuntimeError('No usable derivative')
-              Path('/tmp/resolved_source.json').write_text(json.dumps({'title': asset['title'], 'url': url}), encoding='utf-8')
+              Path('/tmp/resolved_source.json').write_text(
+                  json.dumps({'title': asset['title'], 'url': url}),
+                  encoding='utf-8',
+              )
               break
           else:
               raise RuntimeError(f'Official source not found: {wanted[source_key]}')
           PY
 
-      - name: Download and verify official source
+      - name: Download and verify official source once
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
@@ -155,6 +168,7 @@ jobs:
           video = next(item for item in probe['streams'] if item.get('width'))
           assert (video['width'], video['height']) == (1920, 1080)
           assert video['avg_frame_rate'] == '60000/1001'
+          print(f'verified source bytes={target.stat().st_size}')
           PY
 
       - name: Analyze canonical production candidate pool only
@@ -174,6 +188,15 @@ jobs:
             --config campaigns/mw4-fullframe-retention-v3-1.json \
             --output-dir "analysis/$SOURCE_KEY" \
             --mode analysis
+
+      - name: Upload verified source reel for isolated master workspaces
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-v3-1-production-source-${{ matrix.source }}
+          path: raw_sources/${{ matrix.source }}.mp4
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
 
       - name: Upload production analysis manifest
         uses: actions/upload-artifact@v4
@@ -268,11 +291,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install single-master renderer dependencies
+      - name: Install lightweight single-master renderer dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install 'numpy==2.1.3' 'playwright==1.55.0'
-          python -m playwright install --with-deps chromium
+          python -m pip install 'numpy==2.1.3'
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
@@ -282,85 +304,35 @@ jobs:
           name: MW4-v3-1-production-allocation
           path: allocation
 
-      - name: Resolve official source for this master workspace
-        env:
-          SOURCE_KEY: ${{ matrix.source }}
-          MEDIASILO_URL: https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          from playwright.sync_api import sync_playwright
+      - name: Download already-verified production source reel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MW4-v3-1-production-source-${{ matrix.source }}
+          path: raw_sources
 
-          source_key = os.environ['SOURCE_KEY']
-          wanted = {
-              'r1': 'MW4_BetaTopPlays_Stringout_16X9_R1.mp4',
-              'batch2': 'BestOfBeta_Stringout_Batch2.mp4',
-              'week2': 'BestOfBeta_Week2_Stringout_1_8.28.mp4',
-          }
-          holder = [None]
-          with sync_playwright() as playwright:
-              browser = playwright.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
-              page = browser.new_page(viewport={'width': 1440, 'height': 1000})
-              def handle(response):
-                  if '/folders/3b199368-5974-4eb1-a450-327a4e84c260/assets' not in response.url or response.status != 200:
-                      return
-                  try:
-                      data = response.json()
-                  except Exception:
-                      return
-                  if isinstance(data, list) and data:
-                      holder[0] = data
-              page.on('response', handle)
-              page.goto(os.environ['MEDIASILO_URL'], wait_until='domcontentloaded', timeout=90000)
-              page.wait_for_timeout(25000)
-              browser.close()
-          if not holder[0]:
-              raise RuntimeError('MediaSilo assets were not resolved')
-          for asset in holder[0]:
-              if asset.get('title') != wanted[source_key]:
-                  continue
-              derivatives = {item.get('type'): item for item in asset.get('derivatives', [])}
-              derivative = derivatives.get('x1080') or derivatives.get('proxy') or {}
-              url = derivative.get('url') or (derivative.get('properties') or {}).get('url')
-              if not url:
-                  raise RuntimeError('No usable derivative')
-              Path('/tmp/resolved_source.json').write_text(json.dumps({'title': asset['title'], 'url': url}), encoding='utf-8')
-              break
-          else:
-              raise RuntimeError(f'Official source not found: {wanted[source_key]}')
-          PY
-
-      - name: Download only this master's source reel
+      - name: Verify staged source reel before master render
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
-          mkdir -p raw_sources
           python - <<'PY'
           import json
           import os
           import subprocess
-          import urllib.request
           from pathlib import Path
 
           source_key = os.environ['SOURCE_KEY']
-          selected = json.loads(Path('/tmp/resolved_source.json').read_text(encoding='utf-8'))
-          target = Path('raw_sources') / f'{source_key}.mp4'
-          request = urllib.request.Request(selected['url'], headers={'User-Agent': 'Mozilla/5.0'})
-          with urllib.request.urlopen(request, timeout=300) as source, target.open('wb') as output:
-              while True:
-                  block = source.read(8 * 1024 * 1024)
-                  if not block:
-                      break
-                  output.write(block)
+          source = Path('raw_sources') / f'{source_key}.mp4'
+          if not source.is_file():
+              raise RuntimeError(f'staged production source artifact missing: {source}')
           probe = json.loads(subprocess.check_output([
-              'ffprobe', '-v', 'error', '-show_entries',
-              'stream=width,height,avg_frame_rate:format=duration', '-of', 'json', str(target),
+              'ffprobe', '-v', 'error',
+              '-show_entries', 'stream=width,height,avg_frame_rate:format=duration',
+              '-of', 'json', str(source),
           ], text=True))
           video = next(item for item in probe['streams'] if item.get('width'))
           assert (video['width'], video['height']) == (1920, 1080)
           assert video['avg_frame_rate'] == '60000/1001'
+          print(f'staged production source verified bytes={source.stat().st_size}')
           PY
 
       - name: Render and QA exactly one 250 Mbps master
@@ -439,7 +411,7 @@ jobs:
           name: MW4-v3-1-production-allocation
           path: allocation
 
-      - name: Download metadata only, never the 250 Mbps masters
+      - name: Download metadata only, never the 250 Mbps masters/source reels
         uses: actions/download-artifact@v4
         with:
           pattern: MW4-v3-1-production-meta-*
