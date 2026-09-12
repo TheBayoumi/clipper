@@ -75,7 +75,10 @@ def test_natural_capacity_split_prefers_source_boundaries_and_validates_ranges()
         stable_range_stage("semantic_cores", timeline, 4, 4)
 
 
-def test_token_aware_repartition_uses_observed_context_ratio_in_one_step() -> None:
+def test_token_aware_repartition_uses_runtime_safe_context_ceiling_in_one_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", raising=False)
     timeline = _timeline(100, sentence_at=23)
     details = {
         "reason": "context_exhausted",
@@ -85,16 +88,33 @@ def test_token_aware_repartition_uses_observed_context_ratio_in_one_step() -> No
     }
 
     target = capacity_target_input_tokens(details)
-    assert target == 260_688
+    assert target == 32_768
     plan = token_aware_repartition(timeline, 0, 100, details)
     assert plan is not None
     assert plan.observed_input_tokens == 4_239_373
-    assert plan.target_input_tokens == 260_688
-    assert plan.partition_count == 17
+    assert plan.target_input_tokens == 32_768
+    assert plan.partition_count == 100
     assert plan.ranges[0][0] == 0
     assert plan.ranges[-1][1] == 100
     assert all(left < right for left, right in plan.ranges)
     assert sum(right - left for left, right in plan.ranges) == 100
+
+    monkeypatch.setenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", "65536")
+    assert capacity_target_input_tokens(details) == 65_536
+
+
+def test_token_aware_repartition_uses_explicit_runtime_safe_evidence_over_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS", "16384")
+    details = {
+        "reason": "context_exhausted",
+        "input_tokens": 200_000,
+        "context_limit_tokens": 262_144,
+        "generation_budget_tokens": 1_456,
+        "runtime_safe_input_tokens": 61_591,
+    }
+    assert capacity_target_input_tokens(details) == 61_591
 
 
 def test_token_aware_repartition_uses_dynamic_oom_as_runtime_boundary() -> None:
