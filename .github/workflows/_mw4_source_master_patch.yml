@@ -22,22 +22,13 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          import re
 
           paths = [
               Path('.github/workflows/mw4-semantic-v3-1-shadow.yml'),
               Path('.github/workflows/mw4-fullframe-retention-v3-1.yml'),
           ]
 
-          old_resolver = '''              derivatives = {item.get('type'): item for item in asset.get('derivatives', [])}
-              derivative = derivatives.get('x1080') or derivatives.get('proxy') or {}
-              url = derivative.get('url') or (derivative.get('properties') or {}).get('url')
-              if not url:
-                  raise RuntimeError('No usable derivative')
-              Path('/tmp/resolved_source.json').write_text(
-                  json.dumps({'title': asset['title'], 'url': url}),
-                  encoding='utf-8',
-              )'''
+          source_expr = '$' + '{{ matrix.source }}'
 
           new_resolver = '''              derivative_items = list(asset.get('derivatives') or [])
               source_candidates = []
@@ -76,10 +67,11 @@ jobs:
                       'duration_ms': derivative.get('duration'),
                   }),
                   encoding='utf-8',
-              )'''
+              )
+'''
 
           qa_replacement = '''          if selected.get('derivative_type') != 'source':
-              raise RuntimeError('refusing non-source MediaSilo derivative before download')
+              raise RuntimeError('refusing non-source MediaSilo derivative before semantic analysis')
 
           actual_size = target.stat().st_size
           expected_size = int(selected.get('file_size') or 0)
@@ -130,7 +122,8 @@ jobs:
           print(
               f'ORIGINAL SOURCE MASTER VERIFIED type=source bytes={actual_size} '
               f'fps={video.get("avg_frame_rate")} codec={video.get("codec_name")}'
-          )'''
+          )
+'''
 
           render_verify_replacement = '''          source = Path('raw_sources') / f'{source_key}.mp4'
           source_qa_path = Path('raw_sources') / f'{source_key}.source_qa.json'
@@ -164,46 +157,42 @@ jobs:
           print(
               f'staged ORIGINAL source verified bytes={source.stat().st_size} '
               f'sha256={source_qa["sha256"][:16]}...'
-          )'''
+          )
+'''
 
           for path in paths:
               text = path.read_text(encoding='utf-8')
 
-              if text.count(old_resolver) != 1:
-                  raise RuntimeError(f'{path}: expected exactly one old MediaSilo resolver block')
-              text = text.replace(old_resolver, new_resolver)
+              resolver_start = text.index("              derivatives = {item.get('type'): item for item in asset.get('derivatives', [])}")
+              resolver_end = text.index("              break\n          else:", resolver_start)
+              text = text[:resolver_start] + new_resolver + text[resolver_end:]
 
-              qa_pattern = re.compile(
-                  r"          probe = json\.loads\(subprocess\.check_output\(\[\n"
-                  r"(?:.*\n){0,20}?"
-                  r"          print\(f'verified source bytes=\{target\.stat\(\)\.st_size\}'\)\n",
-              )
-              text, qa_count = qa_pattern.subn(qa_replacement + '\n', text, count=1)
-              if qa_count != 1:
-                  raise RuntimeError(f'{path}: could not replace original download QA block')
+              download_anchor = text.index("          selected = json.loads(Path('/tmp/resolved_source.json').read_text(encoding='utf-8'))")
+              qa_start = text.index("          probe = json.loads(subprocess.check_output([", download_anchor)
+              qa_end = text.index("          PY", qa_start)
+              text = text[:qa_start] + qa_replacement + text[qa_end:]
 
-              text, upload_count = re.subn(
-                  r"(?m)^(          path:) raw_sources/\$\{\{ matrix\.source \}\}\.mp4$",
-                  r"\1 |\n            raw_sources/${{ matrix.source }}.mp4\n            raw_sources/${{ matrix.source }}.source_qa.json",
-                  text,
-                  count=1,
+              old_upload_path = f'          path: raw_sources/{source_expr}.mp4'
+              new_upload_path = (
+                  '          path: |\n'
+                  f'            raw_sources/{source_expr}.mp4\n'
+                  f'            raw_sources/{source_expr}.source_qa.json'
               )
-              if upload_count != 1:
-                  raise RuntimeError(f'{path}: could not expand staged source artifact payload')
+              if text.count(old_upload_path) != 1:
+                  raise RuntimeError(f'{path}: expected exactly one source artifact upload path')
+              text = text.replace(old_upload_path, new_upload_path, 1)
 
-              render_pattern = re.compile(
-                  r"          source = Path\('raw_sources'\) / f'\{source_key\}\.mp4'\n"
-                  r"(?:.*\n){0,18}?"
-                  r"          print\(f'(?:staged source|staged production source) verified bytes=\{source\.stat\(\)\.st_size\}'\)\n",
-              )
-              text, render_count = render_pattern.subn(render_verify_replacement + '\n', text, count=1)
-              if render_count != 1:
-                  raise RuntimeError(f'{path}: could not replace staged-source verification block')
+              verify_anchor = text.index('      - name: Verify staged source reel before')
+              verify_start = text.index("          source = Path('raw_sources') / f'{source_key}.mp4'", verify_anchor)
+              verify_end = text.index('          PY', verify_start)
+              text = text[:verify_start] + render_verify_replacement + text[verify_end:]
 
               if "derivatives.get('x1080')" in text or "derivatives.get('proxy')" in text:
                   raise RuntimeError(f'{path}: proxy/x1080 fallback still present after patch')
-              if "derivative_type': 'source'" not in text:
+              if "'derivative_type': 'source'" not in text:
                   raise RuntimeError(f'{path}: source-master certification missing after patch')
+              if '.source_qa.json' not in text:
+                  raise RuntimeError(f'{path}: original-source QA manifest not staged')
 
               path.write_text(text, encoding='utf-8')
               print(f'patched {path}')
