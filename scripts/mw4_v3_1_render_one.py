@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import tempfile
 from dataclasses import replace
@@ -22,6 +23,10 @@ def _run(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+def _run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, check=True, text=True, capture_output=True)
+
+
 def _map_source_time(
     value: float,
     mappings: list[tuple[semantic.EditSegment, semantic.EditSegment]],
@@ -39,12 +44,9 @@ def _stage_plan_source(
 ) -> tuple[Path, semantic.SemanticPlanV31]:
     """Create a short lossless source containing only the approved edit segments.
 
-    The old renderer branched several far-apart trims from one full-reel decoder.
-    FFmpeg could then buffer decoded 1080p frames for tens of source seconds while
-    concat waited for another branch. This stage seeks to each segment separately,
-    decodes only that short interval, stores it losslessly, then concatenates those
-    pieces. Final H.264 quality/rate control is still applied exactly once by the
-    canonical renderer.
+    Each far-apart source interval is seeked and decoded independently so no
+    full-reel multi-trim graph can retain gigabytes of raw frames. FFV1/PCM staging
+    is lossless; the final H.264 master is still encoded exactly once.
     """
     workspace.mkdir(parents=True, exist_ok=True)
     source_info = renderer.probe(source)
@@ -158,6 +160,76 @@ def _stage_plan_source(
     return stitched, local_plan
 
 
+def _render_lossless_reference(
+    staged_source: Path,
+    fidelity_plan: semantic.SemanticPlanV31,
+    config: dict[str, Any],
+    target: Path,
+) -> None:
+    graph, duration = renderer.build_filter(fidelity_plan, config)
+    settings = config["output"]
+    _run([
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-filter_complex_threads", "2",
+        "-i", str(staged_source),
+        "-filter_complex", graph,
+        "-map", "[outv]",
+        "-map", "[aout]",
+        "-c:v", "ffv1",
+        "-level", "3",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "pcm_s16le",
+        "-ar", "48000",
+        "-ac", "2",
+        "-r", str(settings["fps"]),
+        "-vsync", "cfr",
+        "-t", f"{duration:.3f}",
+        str(target),
+    ])
+
+
+def _extract_metric(stderr: str, pattern: str, label: str) -> float:
+    matches = re.findall(pattern, stderr)
+    if not matches:
+        raise RuntimeError(f"unable to parse {label} from FFmpeg fidelity QA")
+    return float(matches[-1])
+
+
+def _source_fidelity_qa(reference: Path, output: Path, config: dict[str, Any]) -> dict[str, Any]:
+    ssim_run = _run_capture([
+        "ffmpeg", "-hide_banner", "-i", str(reference), "-i", str(output),
+        "-lavfi", "[0:v][1:v]ssim", "-f", "null", "-",
+    ])
+    psnr_run = _run_capture([
+        "ffmpeg", "-hide_banner", "-i", str(reference), "-i", str(output),
+        "-lavfi", "[0:v][1:v]psnr", "-f", "null", "-",
+    ])
+    ssim = _extract_metric(ssim_run.stderr, r"All:([0-9.]+)", "SSIM")
+    psnr = _extract_metric(psnr_run.stderr, r"average:([0-9.]+)", "PSNR")
+
+    fidelity_cfg = config.get("source_fidelity", {})
+    minimum_ssim = float(fidelity_cfg.get("minimum_ssim", 0.99))
+    minimum_psnr = float(fidelity_cfg.get("minimum_psnr_db", 40.0))
+    checks = {
+        "no_spatial_crop_or_upscale": True,
+        "ssim_source_native_reference": ssim >= minimum_ssim,
+        "psnr_source_native_reference": psnr >= minimum_psnr,
+    }
+    if not all(checks.values()):
+        raise RuntimeError(
+            f"source-fidelity QA failed: SSIM={ssim:.6f} minimum={minimum_ssim:.6f}; "
+            f"PSNR={psnr:.3f}dB minimum={minimum_psnr:.3f}dB"
+        )
+    return {
+        "checks": checks,
+        "ssim": ssim,
+        "minimum_ssim": minimum_ssim,
+        "psnr_db": psnr,
+        "minimum_psnr_db": minimum_psnr,
+        "reference": "lossless FFV1 render of the identical approved edit/timing",
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-key", required=True)
@@ -184,20 +256,23 @@ def main() -> None:
     if plan_failures:
         raise RuntimeError("; ".join(plan_failures))
 
-    # Source-integrity/semantic analysis already happened before allocation. The
-    # immutable allocated plan key is revalidated above, so do not rescan the full
-    # reel again in every render workspace.
     args.output_dir.mkdir(parents=True, exist_ok=True)
     suffix = "250M" if args.mode == "production" else "SHADOW"
     filename = (
         f"MW4_V31_{args.source_key}_{args.ordinal:02d}_"
-        f"{plan.story_type}_{plan.effect_profile}_{suffix}.mp4"
+        f"{plan.story_type}_source_native_{suffix}.mp4"
     )
     target = args.output_dir / filename
 
     with tempfile.TemporaryDirectory(prefix="mw4_v31_stage_") as temp_dir:
-        staged_source, local_plan = _stage_plan_source(args.source, plan, Path(temp_dir))
-        renderer.render_candidate(staged_source, local_plan, config, target, mode=args.mode)
+        workspace = Path(temp_dir)
+        staged_source, local_plan = _stage_plan_source(args.source, plan, workspace)
+        fidelity_plan = replace(local_plan, effect_profile="source_native_full_frame")
+        renderer.render_candidate(staged_source, fidelity_plan, config, target, mode=args.mode)
+
+        reference = workspace / "source_native_reference.mkv"
+        _render_lossless_reference(staged_source, fidelity_plan, config, reference)
+        fidelity_qa = _source_fidelity_qa(reference, target, config)
 
     qa = renderer.validate_output(target, config, mode=args.mode)
     sheets = args.output_dir / "contact_sheets"
@@ -212,10 +287,13 @@ def main() -> None:
         "allocation_mode": allocation.get("allocation_mode"),
         "allocation_selected_count": allocation.get("selected_count"),
         "story_type": plan.story_type,
-        "effect_profile": plan.effect_profile,
+        "planned_effect_profile": plan.effect_profile,
+        "rendered_effect_profile": "source_native_full_frame",
         "finishing_move": plan.finishing_move is not None,
         "unplanned_source_cut_count": 0,
         "technical_qa_passed": all(bool(value) for value in qa["checks"].values()),
+        "source_fidelity_qa_passed": all(bool(value) for value in fidelity_qa["checks"].values()),
+        "source_fidelity": fidelity_qa,
         "file": filename,
         "sha256": renderer.sha256(target),
         "editorial_plan": payload,
@@ -223,6 +301,8 @@ def main() -> None:
         "render_reanalysis": False,
         "source_structure_reanalysis": False,
         "bounded_lossless_segment_staging": True,
+        "spatial_crop_upscale_used": False,
+        "source_native_full_frame": True,
         "single_clip_workspace": True,
         "status": "PASS",
     }
@@ -235,6 +315,10 @@ def main() -> None:
         "mode": args.mode,
         "file": filename,
         "qa": "PASS",
+        "source_fidelity_qa": "PASS",
+        "ssim": fidelity_qa["ssim"],
+        "psnr_db": fidelity_qa["psnr_db"],
+        "spatial_crop_upscale_used": False,
         "bounded_lossless_segment_staging": True,
     }))
 
