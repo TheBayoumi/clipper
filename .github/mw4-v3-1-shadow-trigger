@@ -1,5 +1,6 @@
 V3.1 hardened canonical pipeline qualification trigger
-semantic-montage renderer + fail-closed contracts
-shadow runner hardening: serial matrix, Batch2 pinned to ubuntu-22.04, heartbeat/resource telemetry
-shadow encoder superfast review-only with H.264 High; production remains 250M medium
-2026-09-12 runner-stability retrigger
+single semantic planner + global pre-render allocation + single renderer
+exact 10 clips must be allocated before FFmpeg renders anything
+Finishing Move: verified opening hero, 1.0x choreography, no semantic-montage continuation, no transition flash
+shadow uses review bitrate only; production remains 1920x1080 60000/1001 H.264 High 250M CBR
+2026-09-12 corrected-selection-and-finishing-move qualification
