@@ -14,7 +14,7 @@ permissions:
 jobs:
   preflight:
     name: require-approved-shadow-sha
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require production to use the exact shadow-approved implementation
         env:
@@ -26,15 +26,22 @@ jobs:
             exit 1
           }
 
-  render:
-    name: render-${{ matrix.source }}
+  analyze:
+    name: production-analyze-${{ matrix.source }}
     needs: preflight
-    runs-on: ubuntu-latest
-    timeout-minutes: 100
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
-        source: [r1, batch2, week2]
+        include:
+          - source: r1
+            runner: ubuntu-24.04
+          - source: batch2
+            runner: ubuntu-22.04
+          - source: week2
+            runner: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +50,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install renderer dependencies
+      - name: Install analysis dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install 'numpy==2.1.3' 'playwright==1.55.0'
@@ -51,7 +58,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Verify the exact same V3.1 implementation used by shadow
+      - name: Verify the exact V3.1 implementation approved by shadow
         run: |
           python -m py_compile \
             scripts/mw4_semantic_gameplay_v3_1_final.py \
@@ -79,10 +86,7 @@ jobs:
           }
           holder = [None]
           with sync_playwright() as playwright:
-              browser = playwright.chromium.launch(
-                  headless=True,
-                  args=['--no-sandbox', '--disable-dev-shm-usage'],
-              )
+              browser = playwright.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
               page = browser.new_page(
                   viewport={'width': 1440, 'height': 1000},
                   user_agent=(
@@ -115,10 +119,7 @@ jobs:
               url = derivative.get('url') or (derivative.get('properties') or {}).get('url')
               if not url:
                   raise RuntimeError('No usable derivative')
-              Path('/tmp/resolved_source.json').write_text(
-                  json.dumps({'title': asset['title'], 'url': url}),
-                  encoding='utf-8',
-              )
+              Path('/tmp/resolved_source.json').write_text(json.dumps({'title': asset['title'], 'url': url}), encoding='utf-8')
               break
           else:
               raise RuntimeError(f'Official source not found: {wanted[source_key]}')
@@ -146,36 +147,232 @@ jobs:
                   if not block:
                       break
                   output.write(block)
-
           probe = json.loads(subprocess.check_output([
-              'ffprobe', '-v', 'error',
-              '-show_entries', 'stream=width,height,avg_frame_rate:format=duration',
-              '-of', 'json', str(target),
+              'ffprobe', '-v', 'error', '-show_entries',
+              'stream=width,height,avg_frame_rate:format=duration', '-of', 'json', str(target),
           ], text=True))
           video = next(item for item in probe['streams'] if item.get('width'))
           assert (video['width'], video['height']) == (1920, 1080)
           assert video['avg_frame_rate'] == '60000/1001'
           PY
 
-      - name: Render canonical V3.1 250 Mbps masters
+      - name: Analyze canonical production candidate pool only
+        timeout-minutes: 15
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+          OMP_NUM_THREADS: '2'
+          OPENBLAS_NUM_THREADS: '1'
+          MKL_NUM_THREADS: '1'
+          NUMEXPR_NUM_THREADS: '1'
+          MALLOC_ARENA_MAX: '2'
+        run: |
+          set -euo pipefail
+          nice -n 5 python scripts/mw4_fullframe_retention_v3_1.py \
+            --source-key "$SOURCE_KEY" \
+            --source "raw_sources/$SOURCE_KEY.mp4" \
+            --config campaigns/mw4-fullframe-retention-v3-1.json \
+            --output-dir "analysis/$SOURCE_KEY" \
+            --mode analysis
+
+      - name: Upload production analysis manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-v3-1-production-analysis-${{ matrix.source }}
+          path: analysis/${{ matrix.source }}/${{ matrix.source }}_analysis_v3_1.json
+          retention-days: 1
+          if-no-files-found: error
+
+  allocate:
+    name: production-global-pre-render-allocation
+    needs: analyze
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download production analysis manifests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: MW4-v3-1-production-analysis-*
+          path: analysis-manifests
+          merge-multiple: true
+
+      - name: Reproduce exact global 10-clip allocation before 250 Mbps rendering
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/mw4_v3_1_contract.py
+          python scripts/mw4_v3_1_contract.py --self-test
+          mkdir -p allocation
+          python scripts/mw4_v3_1_contract.py \
+            --config campaigns/mw4-fullframe-retention-v3-1.json \
+            --allocate-from analysis-manifests \
+            --allocation-out allocation/mw4_v3_1_allocation.json
+
+      - name: Upload production global allocation
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-v3-1-production-allocation
+          path: allocation/mw4_v3_1_allocation.json
+          retention-days: 1
+          if-no-files-found: error
+
+  render:
+    name: render-${{ matrix.source }}
+    needs: allocate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - source: r1
+            runner: ubuntu-24.04
+          - source: batch2
+            runner: ubuntu-22.04
+          - source: week2
+            runner: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install renderer dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy==2.1.3' 'playwright==1.55.0'
+          python -m playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Download globally approved production allocation
+        uses: actions/download-artifact@v4
+        with:
+          name: MW4-v3-1-production-allocation
+          path: allocation
+
+      - name: Resolve official MediaSilo source
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+          MEDIASILO_URL: https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          source_key = os.environ['SOURCE_KEY']
+          wanted = {
+              'r1': 'MW4_BetaTopPlays_Stringout_16X9_R1.mp4',
+              'batch2': 'BestOfBeta_Stringout_Batch2.mp4',
+              'week2': 'BestOfBeta_Week2_Stringout_1_8.28.mp4',
+          }
+          holder = [None]
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+              page = browser.new_page(
+                  viewport={'width': 1440, 'height': 1000},
+                  user_agent=(
+                      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                      'AppleWebKit/537.36 (KHTML, like Gecko) '
+                      'Chrome/139.0.0.0 Safari/537.36'
+                  ),
+              )
+              def handle(response):
+                  if '/folders/3b199368-5974-4eb1-a450-327a4e84c260/assets' not in response.url or response.status != 200:
+                      return
+                  try:
+                      data = response.json()
+                  except Exception:
+                      return
+                  if isinstance(data, list) and data:
+                      holder[0] = data
+              page.on('response', handle)
+              page.goto(os.environ['MEDIASILO_URL'], wait_until='domcontentloaded', timeout=90000)
+              page.wait_for_timeout(25000)
+              browser.close()
+
+          if not holder[0]:
+              raise RuntimeError('MediaSilo assets were not resolved')
+          for asset in holder[0]:
+              if asset.get('title') != wanted[source_key]:
+                  continue
+              derivatives = {item.get('type'): item for item in asset.get('derivatives', [])}
+              derivative = derivatives.get('x1080') or derivatives.get('proxy') or {}
+              url = derivative.get('url') or (derivative.get('properties') or {}).get('url')
+              if not url:
+                  raise RuntimeError('No usable derivative')
+              Path('/tmp/resolved_source.json').write_text(json.dumps({'title': asset['title'], 'url': url}), encoding='utf-8')
+              break
+          else:
+              raise RuntimeError(f'Official source not found: {wanted[source_key]}')
+          PY
+
+      - name: Download and verify official source
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
-          python scripts/mw4_fullframe_retention_v3_1.py \
+          mkdir -p raw_sources
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import urllib.request
+          from pathlib import Path
+
+          source_key = os.environ['SOURCE_KEY']
+          selected = json.loads(Path('/tmp/resolved_source.json').read_text(encoding='utf-8'))
+          target = Path('raw_sources') / f'{source_key}.mp4'
+          request = urllib.request.Request(selected['url'], headers={'User-Agent': 'Mozilla/5.0'})
+          with urllib.request.urlopen(request, timeout=300) as source, target.open('wb') as output:
+              while True:
+                  block = source.read(8 * 1024 * 1024)
+                  if not block:
+                      break
+                  output.write(block)
+          probe = json.loads(subprocess.check_output([
+              'ffprobe', '-v', 'error', '-show_entries',
+              'stream=width,height,avg_frame_rate:format=duration', '-of', 'json', str(target),
+          ], text=True))
+          video = next(item for item in probe['streams'] if item.get('width'))
+          assert (video['width'], video['height']) == (1920, 1080)
+          assert video['avg_frame_rate'] == '60000/1001'
+          PY
+
+      - name: Render only globally allocated 250 Mbps masters
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+          OMP_NUM_THREADS: '2'
+          OPENBLAS_NUM_THREADS: '1'
+          MKL_NUM_THREADS: '1'
+          NUMEXPR_NUM_THREADS: '1'
+          MALLOC_ARENA_MAX: '2'
+        run: |
+          set -euo pipefail
+          nice -n 5 python scripts/mw4_fullframe_retention_v3_1.py \
             --source-key "$SOURCE_KEY" \
             --source "raw_sources/$SOURCE_KEY.mp4" \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
             --output-dir "renders/$SOURCE_KEY" \
-            --mode production
+            --mode production \
+            --selection-file allocation/mw4_v3_1_allocation.json
 
-      - name: Enforce the same V3.1 source contract as shadow
+      - name: Enforce production source contract against global allocation
         if: always()
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
           python scripts/mw4_v3_1_contract.py \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
-            --source-manifest "renders/$SOURCE_KEY/${SOURCE_KEY}_manifest_v3_1.json"
+            --source-manifest "renders/$SOURCE_KEY/${SOURCE_KEY}_manifest_v3_1.json" \
+            --allocation allocation/mw4_v3_1_allocation.json
 
       - name: Upload V3.1 masters and QA
         if: always()
@@ -201,15 +398,21 @@ jobs:
 
   batch-contract:
     name: production-batch-contract
-    needs: render
+    needs: [allocate, render]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Download production allocation
+        uses: actions/download-artifact@v4
+        with:
+          name: MW4-v3-1-production-allocation
+          path: allocation
 
       - name: Download production source summaries only
         uses: actions/download-artifact@v4
@@ -218,12 +421,13 @@ jobs:
           path: batch-contract
           merge-multiple: true
 
-      - name: Enforce the identical batch contract
+      - name: Enforce exact globally allocated production batch
         run: |
-          set -o pipefail
+          set -euo pipefail
           python scripts/mw4_v3_1_contract.py \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
-            --batch-root batch-contract | tee batch-contract-result.json
+            --batch-root batch-contract \
+            --allocation allocation/mw4_v3_1_allocation.json | tee batch-contract-result.json
 
       - name: Upload production batch contract
         if: always()
