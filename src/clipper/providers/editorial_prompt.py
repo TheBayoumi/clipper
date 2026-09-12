@@ -20,6 +20,9 @@ _HAZARD_CLASSIFICATIONS = [
     "graphic_heavy",
     "unknown",
 ]
+_HAZARD_EXCEPTION_CLASSIFICATIONS = [
+    item for item in _HAZARD_CLASSIFICATIONS if item != "editorial_content"
+]
 _QUALITY_DECISIONS = ["PASS", "REJECT", "ESCALATE"]
 
 
@@ -74,12 +77,22 @@ def editorial_json_schema(task: str) -> dict[str, Any]:
             {
                 "start_word_id": _string(),
                 "end_word_id": _string(),
-                "classification": {"type": "string", "enum": _HAZARD_CLASSIFICATIONS},
+                "classification": {
+                    "type": "string",
+                    "enum": _HAZARD_EXCEPTION_CLASSIFICATIONS,
+                },
                 "confidence": _confidence(),
                 "evidence": _string_array(max_items=8),
             }
         )
-        return _strict_object({"segments": {"type": "array", "items": segment, "maxItems": 64}})
+        return _strict_object(
+            {
+                "coverage_start_word_id": _string(),
+                "coverage_end_word_id": _string(),
+                "coverage_complete": {"type": "boolean"},
+                "segments": {"type": "array", "items": segment, "maxItems": 64},
+            }
+        )
 
     if family == "semantic_cores":
         core = _strict_object(
@@ -144,10 +157,15 @@ def editorial_contract(task: str) -> str:
 
     if family == "source_hazards":
         return common + (
-            "Classify the complete supplied interval into exhaustive chronological policy "
-            "segments using both speech and multimodal evidence. The allowed classification "
-            "labels are policy ontology, not editorial-value keywords. Use unknown when evidence "
-            "is insufficient."
+            "Review the complete supplied interval for source-policy hazards using both speech "
+            "and multimodal evidence. coverage_start_word_id and coverage_end_word_id must copy "
+            "the first and last supplied word_ref exactly, and coverage_complete may be true only "
+            "after the entire supplied interval has been evaluated. Emit segments only for "
+            "exception spans: advertisement, sponsor_read, promo, intro, outro, housekeeping, "
+            "graphic_heavy, or unknown. Do not emit ordinary editorial_content spans. Use unknown "
+            "for any subrange whose policy classification cannot be established from the supplied "
+            "evidence. An empty segments array is valid only when coverage_complete is true and "
+            "the complete supplied interval contains no exception spans."
         )
     if family == "semantic_cores":
         return common + (
