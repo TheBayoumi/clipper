@@ -290,7 +290,7 @@ def render_candidate(
         *_encode_args(config, mode),
         "-threads:v", "4",
         "-r", str(settings["fps"]),
-        "-fps_mode", "cfr",
+        "-vsync", "cfr",
         "-movflags", "+faststart",
         "-t", f"{duration:.3f}",
         str(output),
@@ -594,10 +594,6 @@ def main() -> None:
             "shadow/production rendering requires --selection-file from the global pre-render allocator"
         )
 
-    # Rendering consumes the exact plans approved by analysis/allocation. Do not
-    # repeat the full-reel semantic pixel/audio analysis here: that duplicate pass
-    # was retaining multi-GB NumPy frame arrays while FFmpeg started encoding and
-    # exhausted the standard GitHub-hosted runner's ~15 GiB RAM.
     selected, allocation = _select_from_allocation(
         args.source_key,
         args.selection_file,
