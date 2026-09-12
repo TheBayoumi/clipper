@@ -222,8 +222,8 @@ def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
 
         raw = list(manifest.get("candidate_pool") or [])
         valid: list[dict[str, Any]] = []
-        for index, plan in enumerate(raw, 1):
-            plan = dict(plan)
+        for index, raw_plan in enumerate(raw, 1):
+            plan = dict(raw_plan)
             plan["plan_key"] = str(plan.get("plan_key") or plan_key(plan))
             plan_failures = validate_plan(source, index, plan, config)
             if not plan_failures:
@@ -357,13 +357,9 @@ def validate_source_manifest(
 
     selected_keys = [str(plan.get("plan_key") or plan_key(plan)) for plan in selected]
     if allocation is not None:
-        expected = (
-            allocation.get("source_allocations", {}).get(source, {}).get("plan_keys", [])
-        )
+        expected = allocation.get("source_allocations", {}).get(source, {}).get("plan_keys", [])
         if selected_keys != list(expected):
-            failures.append(
-                f"{source}: rendered selection does not match global pre-render allocation"
-            )
+            failures.append(f"{source}: rendered selection does not match global pre-render allocation")
 
     for index, plan in enumerate(selected, 1):
         failures.extend(validate_plan(source, index, plan, config))
@@ -435,13 +431,9 @@ def validate_batch(
         if int(item.get("unplanned_source_cut_count", -1)) != 0:
             failures.append(f"{source}: unplanned source cuts present")
         if allocation is not None:
-            expected_count = int(
-                allocation.get("source_allocations", {}).get(source, {}).get("count", -1)
-            )
+            expected_count = int(allocation.get("source_allocations", {}).get(source, {}).get("count", -1))
             if selected != expected_count:
-                failures.append(
-                    f"{source}: rendered count {selected} does not match allocation {expected_count}"
-                )
+                failures.append(f"{source}: rendered count {selected} does not match allocation {expected_count}")
         total_selected += selected
         total_rendered += rendered
         total_verified_finishers += int(item.get("verified_finishing_move_count", 0))
@@ -479,7 +471,7 @@ def _self_test() -> None:
             "opening_min": {"default": 0.42, "finishing_move_open": 0.50}
         },
         "editorial": {
-            "finishing_move_allow_semantic_montage_continuation": false,
+            "finishing_move_allow_semantic_montage_continuation": False,
             "finishing_move_max_continuation_gap_seconds": 18.0,
         },
     }
