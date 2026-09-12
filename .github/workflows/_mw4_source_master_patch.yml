@@ -8,23 +8,28 @@ on:
       - .github/workflows/_mw4_source_master_patch.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   patch:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Patch canonical source acquisition
+      - name: Patch canonical source acquisition in workspace
         run: python scripts/_mw4_source_master_patch.py
 
-      - name: Upload patched canonical workflows
-        uses: actions/upload-artifact@v4
-        with:
-          name: mw4-original-source-patched-workflows
-          path: |
-            .github/workflows/mw4-semantic-v3-1-shadow.yml
-            .github/workflows/mw4-fullframe-retention-v3-1.yml
-          retention-days: 1
-          if-no-files-found: error
+      - name: Stage patched workflow blobs outside workflows directory
+        run: |
+          set -euo pipefail
+          mkdir -p .mw4-workflow-patch
+          cp .github/workflows/mw4-semantic-v3-1-shadow.yml .mw4-workflow-patch/mw4-semantic-v3-1-shadow.yml
+          cp .github/workflows/mw4-fullframe-retention-v3-1.yml .mw4-workflow-patch/mw4-fullframe-retention-v3-1.yml
+          git restore .github/workflows/mw4-semantic-v3-1-shadow.yml .github/workflows/mw4-fullframe-retention-v3-1.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .mw4-workflow-patch/mw4-semantic-v3-1-shadow.yml .mw4-workflow-patch/mw4-fullframe-retention-v3-1.yml
+          git commit -m "ci(mw4): stage original-source patched workflow blobs"
+          git push origin HEAD:feat/mw4-fullframe-retention-v3-1
