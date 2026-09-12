@@ -65,8 +65,8 @@
     "base_engine": "deterministic-gameplay-v1",
     "engine": "deterministic-gameplay-v3.1-final",
     "sample_fps": 6.0,
-    "sample_width": 256,
-    "sample_height": 144,
+    "sample_width": 160,
+    "sample_height": 90,
     "audio_sample_rate": 12000,
     "scene_change_fps": 6.0,
     "scene_change_threshold": 0.34,
@@ -77,7 +77,8 @@
     "local_refine_fps": 12.0,
     "local_refine_width": 384,
     "local_refine_height": 216,
-    "local_refine_radius_seconds": 0.8
+    "local_refine_radius_seconds": 0.8,
+    "memory_policy": "Keep the 6 fps temporal cadence but reduce the coarse full-reel analysis raster from 256x144 to 160x90 so the raw-frame feature pass fits safely inside standard GitHub-hosted runner RAM. Output/render resolution is unchanged."
   },
   "source_integrity": {
     "policy": "automatic shot boundaries plus visually verified missed source-stringout edit windows; contiguous stories may never cross them, while only explicitly planned semantic montage transitions may bridge separate source shots",
