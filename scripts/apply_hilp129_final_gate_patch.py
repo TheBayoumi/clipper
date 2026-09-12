@@ -99,3 +99,11 @@ new_contract = '''    assert workflow.count(
     ) == 1
 '''
 replace_exact(test, old_contract, new_contract, expected=1)
+
+unused_unpack = '''def test_lifecycle_gate_rejects_unsafe_reconciliation(mutator, message: str) -> None:
+    records, reconciliation = _hilp129_records()
+'''
+fixed_unpack = '''def test_lifecycle_gate_rejects_unsafe_reconciliation(mutator, message: str) -> None:
+    records, _reconciliation = _hilp129_records()
+'''
+replace_exact(test, unused_unpack, fixed_unpack, expected=1)
