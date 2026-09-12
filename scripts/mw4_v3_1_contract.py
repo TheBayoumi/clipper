@@ -56,14 +56,114 @@ def plan_key(plan: dict[str, Any]) -> str:
     return digest[:24]
 
 
-def _plans_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    for a in left.get("segments") or []:
-        for b in right.get("segments") or []:
-            if max(float(a["start"]), float(b["start"])) < min(
-                float(a["end"]), float(b["end"])
-            ):
-                return True
-    return False
+def _source_intervals(plan: dict[str, Any]) -> list[tuple[float, float]]:
+    intervals: list[tuple[float, float]] = []
+    for segment in plan.get("segments") or []:
+        start = float(segment["start"])
+        end = float(segment["end"])
+        if end > start:
+            intervals.append((start, end))
+    return intervals
+
+
+def _merged_length(intervals: list[tuple[float, float]]) -> float:
+    if not intervals:
+        return 0.0
+    merged: list[list[float]] = []
+    for start, end in sorted(intervals):
+        if not merged or start > merged[-1][1]:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+    return sum(end - start for start, end in merged)
+
+
+def _shared_source_seconds(left: dict[str, Any], right: dict[str, Any]) -> float:
+    intersections: list[tuple[float, float]] = []
+    for a0, a1 in _source_intervals(left):
+        for b0, b1 in _source_intervals(right):
+            start = max(a0, b0)
+            end = min(a1, b1)
+            if end > start:
+                intersections.append((start, end))
+    return _merged_length(intersections)
+
+
+def _semantic_anchor_times(plan: dict[str, Any]) -> list[float]:
+    """Return payoff/action anchors that define what makes a clip semantically distinct.
+
+    Reusing a little setup/context is acceptable. Reusing the same payoff is not.
+    Prefer the verified Finishing Move payoff, then explicit effect/payoff events,
+    then consolidated engagement payoff events.
+    """
+    finishing = plan.get("finishing_move")
+    if finishing is not None:
+        return [float(finishing.get("payoff", finishing.get("start", 0.0)))]
+
+    anchors: list[float] = []
+    for event in plan.get("effect_events") or []:
+        kind = str(event.get("kind", ""))
+        if kind in {"outcome_like", "impact"} and "time" in event:
+            anchors.append(float(event["time"]))
+
+    if not anchors:
+        for engagement in plan.get("engagements") or []:
+            for event in engagement.get("events") or []:
+                kinds = {str(item) for item in (event.get("kinds") or [])}
+                if kinds.intersection({"outcome_like", "impact"}) and "time" in event:
+                    anchors.append(float(event["time"]))
+
+    if not anchors:
+        for event in plan.get("effect_events") or []:
+            if "time" in event:
+                anchors.append(float(event["time"]))
+
+    return sorted(set(round(value, 3) for value in anchors))
+
+
+def _same_finishing_move(left: dict[str, Any], right: dict[str, Any], tolerance: float) -> bool:
+    a = left.get("finishing_move")
+    b = right.get("finishing_move")
+    if a is None or b is None:
+        return False
+    if abs(float(a.get("payoff", a["start"])) - float(b.get("payoff", b["start"]))) <= tolerance:
+        return True
+    return max(float(a["start"]), float(b["start"])) < min(float(a["end"]), float(b["end"]))
+
+
+def _plans_conflict(left: dict[str, Any], right: dict[str, Any], config: dict[str, Any]) -> bool:
+    """Reject duplicated semantic work, not harmless shared context frames.
+
+    The old allocator treated *any* source-time overlap as a duplicate. That made
+    an exact 10-clip batch impossible even when clips had different engagements
+    and payoffs. This contract is intentionally stricter about semantic reuse and
+    more tolerant of short shared setup/tail context.
+    """
+    policy = config.get("duplicate_policy", {})
+    anchor_tolerance = float(policy.get("semantic_anchor_tolerance_seconds", 0.70))
+    max_context = float(policy.get("max_shared_context_seconds", 0.90))
+    substantial_seconds = float(policy.get("substantial_overlap_seconds", 1.75))
+    substantial_fraction = float(policy.get("substantial_overlap_fraction_shorter", 0.22))
+
+    if bool(policy.get("finishing_move_exclusive", True)) and _same_finishing_move(
+        left, right, anchor_tolerance
+    ):
+        return True
+
+    left_anchors = _semantic_anchor_times(left)
+    right_anchors = _semantic_anchor_times(right)
+    if any(abs(a - b) <= anchor_tolerance for a in left_anchors for b in right_anchors):
+        return True
+
+    shared = _shared_source_seconds(left, right)
+    if shared <= max_context + 1e-9:
+        return False
+
+    left_used = _merged_length(_source_intervals(left))
+    right_used = _merged_length(_source_intervals(right))
+    shorter = min(left_used, right_used)
+    fraction = shared / shorter if shorter > 0 else 0.0
+    return shared >= substantial_seconds or fraction >= substantial_fraction
 
 
 def _finishing_plan_failures(
@@ -179,7 +279,7 @@ def _best_source_subset(
     for subset in itertools.combinations(candidates, count):
         if require_finisher and not any(plan.get("finishing_move") is not None for plan in subset):
             continue
-        if any(_plans_overlap(a, b) for a, b in itertools.combinations(subset, 2)):
+        if any(_plans_conflict(a, b, config) for a, b in itertools.combinations(subset, 2)):
             continue
         score = _subset_score(subset, config)
         if score > best_score:
@@ -287,7 +387,7 @@ def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
             source: sorted(best_by_source_count[source]) for source in EXPECTED_SOURCES
         }
         raise AssertionError(
-            f"global allocator cannot build exactly {target} clips without overlap/quality violations; "
+            f"global allocator cannot build exactly {target} semantically unique clips under quality/source-integrity gates; "
             f"feasible per-source counts={availability}"
         )
 
@@ -312,7 +412,7 @@ def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         "semantic_engine": EXPECTED_ENGINE,
         "editorial_planner": EXPECTED_EDITOR,
         "candidate_mode": EXPECTED_MODE,
-        "allocation_mode": "global_before_render",
+        "allocation_mode": "global_before_render_semantic_uniqueness",
         "target_count": target,
         "selected_count": sum(best_distribution),
         "distribution": {
@@ -474,16 +574,41 @@ def _self_test() -> None:
             "finishing_move_allow_semantic_montage_continuation": False,
             "finishing_move_max_continuation_gap_seconds": 18.0,
         },
+        "duplicate_policy": {
+            "semantic_anchor_tolerance_seconds": 0.70,
+            "max_shared_context_seconds": 0.90,
+            "substantial_overlap_seconds": 1.75,
+            "substantial_overlap_fraction_shorter": 0.22,
+            "finishing_move_exclusive": True,
+        },
     }
     assert _gate(cfg, "finishing_move_open", "opening_min", 0.42) == 0.50
     assert _gate(cfg, "precision_outcome", "opening_min", 0.42) == 0.42
-    sample = {
-        "story_type": "engagement_chain",
-        "effect_profile": "chain_escalation",
-        "segments": [{"start": 1.0, "end": 11.5, "speed": 1.0, "reason": "keep"}],
-    }
-    assert plan_key(sample) == plan_key(sample)
-    print(json.dumps({"self_test": "PASS", "contract": "single-v3.1-global-pre-render-contract"}))
+
+    def sample(start: float, end: float, anchor: float) -> dict[str, Any]:
+        return {
+            "story_type": "engagement_chain",
+            "effect_profile": "chain_escalation",
+            "segments": [{"start": start, "end": end, "speed": 1.0, "reason": "keep"}],
+            "effect_events": [{"time": anchor, "kind": "outcome_like"}],
+        }
+
+    assert plan_key(sample(1.0, 11.5, 6.0)) == plan_key(sample(1.0, 11.5, 6.0))
+    assert not _plans_conflict(sample(0.0, 10.0, 4.0), sample(9.3, 19.3, 14.0), cfg)
+    assert _plans_conflict(sample(0.0, 10.0, 4.0), sample(8.0, 18.0, 14.0), cfg)
+    assert _plans_conflict(sample(0.0, 10.0, 4.0), sample(3.5, 13.5, 4.4), cfg)
+
+    fm_a = sample(0.0, 10.0, 4.0)
+    fm_b = sample(9.4, 19.4, 14.0)
+    fm_a["finishing_move"] = {"start": 2.0, "payoff": 3.0, "end": 3.5}
+    fm_b["finishing_move"] = {"start": 2.1, "payoff": 3.1, "end": 3.6}
+    assert _plans_conflict(fm_a, fm_b, cfg)
+
+    print(json.dumps({
+        "self_test": "PASS",
+        "contract": "single-v3.1-global-pre-render-contract",
+        "duplicate_policy": "semantic-anchor-and-substantial-source-reuse",
+    }))
 
 
 def main() -> None:
