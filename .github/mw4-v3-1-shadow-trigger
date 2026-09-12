@@ -4,4 +4,4 @@ clip count is determined by semantically distinct important scenes that pass qua
 Finishing Move: verified opening hero, 1.0x choreography, no semantic-montage continuation, no transition flash
 shadow uses review bitrate only; production remains 1920x1080 60000/1001 H.264 High 250M CBR
 2026-09-12 adaptive allocation: no filler clips just to hit a number; editorial safety ceiling is 8/source and 20 total
-2026-09-12 hosted-runner memory fix: keep 6fps temporal analysis but reduce coarse full-reel raster to 160x90; render/output quality unchanged
+2026-09-12 memory architecture fix: keep full 256x144/6fps semantic analysis in analysis stage; shadow/production render exact allocation plans directly and do not repeat full-reel NumPy analysis while FFmpeg encodes
