@@ -279,13 +279,18 @@ def render_candidate(
     mode: str = "production",
 ) -> None:
     graph, duration = build_filter(plan, config)
+    settings = config["output"]
     command = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-filter_complex_threads", "2",
         "-i", str(source),
         "-filter_complex", graph,
         "-map", "[outv]",
         "-map", "[aout]",
         *_encode_args(config, mode),
+        "-threads:v", "4",
+        "-r", str(settings["fps"]),
+        "-fps_mode", "cfr",
         "-movflags", "+faststart",
         "-t", f"{duration:.3f}",
         str(output),
@@ -321,7 +326,11 @@ def validate_output(
         checks["high_bitrate_near_250mbps"] = bitrate >= int(expected * 0.94)
     run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"])
     if not all(checks.values()):
-        raise RuntimeError(f"QA failed for {path.name}: {checks}")
+        raise RuntimeError(
+            f"QA failed for {path.name}: {checks}; "
+            f"actual_r_frame_rate={video.get('r_frame_rate')} "
+            f"actual_avg_frame_rate={video.get('avg_frame_rate')}"
+        )
     return {"checks": checks, "probe": data}
 
 
