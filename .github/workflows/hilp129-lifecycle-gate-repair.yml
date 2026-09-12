@@ -35,11 +35,14 @@ jobs:
           python -m ruff format --check scripts/validate_editorial_lifecycle.py tests/test_hilp129_editorial_lifecycle_gate.py
       - name: Run focused lifecycle regressions
         run: python -m pytest --no-cov tests/test_hilp129_editorial_lifecycle_gate.py tests/test_hilp129_editorial_lifecycle_recovery.py tests/test_modal_execution_spy.py tests/test_production_workflow_contract.py
-      - name: Commit clean repair
+      - name: Publish tested non-workflow payload
         run: |
-          git rm .github/workflows/hotfix-hilp129-final-gate.yml .github/workflows/hilp129-lifecycle-gate-repair.yml scripts/apply_hilp129_final_gate_patch.py
-          git add .github/workflows/production-pipeline.yml scripts/validate_editorial_lifecycle.py tests/test_hilp129_editorial_lifecycle_gate.py
+          set -euo pipefail
+          mkdir -p staging
+          cp .github/workflows/production-pipeline.yml staging/hilp129-production-pipeline.yml
+          git checkout -- .github/workflows/production-pipeline.yml
+          git add staging/hilp129-production-pipeline.yml scripts/validate_editorial_lifecycle.py tests/test_hilp129_editorial_lifecycle_gate.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "fix: close reconciled editorial lifecycles in HILP gate"
+          git commit -m "test: stage validated HILP129 lifecycle gate payload"
           git push origin HEAD:feat/contentrewards-campaign-factory
