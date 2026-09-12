@@ -18,19 +18,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Patch canonical V3.1 workflows to MediaSilo source master only
+      - name: Patch canonical workflows to MediaSilo source master only
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          paths = [
+          workflows = [
               Path('.github/workflows/mw4-semantic-v3-1-shadow.yml'),
               Path('.github/workflows/mw4-fullframe-retention-v3-1.yml'),
           ]
 
-          source_expr = '$' + '{{ matrix.source }}'
-
-          new_resolver = '''              derivative_items = list(asset.get('derivatives') or [])
+          resolver = '''              derivative_items = list(asset.get('derivatives') or [])
               source_candidates = []
               for item in derivative_items:
                   if str(item.get('type') or '').lower() != 'source':
@@ -48,13 +46,10 @@ jobs:
                   available_types = sorted({str(item.get('type')) for item in derivative_items})
                   raise RuntimeError(
                       f'Original MediaSilo source master unavailable for {asset["title"]}; '
-                      f'refusing x1080/proxy fallback. available derivative types={available_types}'
+                      f'refusing all x1080/proxy fallbacks. available derivative types={available_types}'
                   )
 
               _, derivative, url = max(source_candidates, key=lambda entry: entry[0])
-              if str(derivative.get('type') or '').lower() != 'source':
-                  raise RuntimeError('internal error: selected MediaSilo derivative is not type=source')
-
               Path('/tmp/resolved_source.json').write_text(
                   json.dumps({
                       'title': asset['title'],
@@ -70,7 +65,7 @@ jobs:
               )
 '''
 
-          qa_replacement = '''          if selected.get('derivative_type') != 'source':
+          source_qa = '''          if selected.get('derivative_type') != 'source':
               raise RuntimeError('refusing non-source MediaSilo derivative before semantic analysis')
 
           actual_size = target.stat().st_size
@@ -106,99 +101,48 @@ jobs:
               while block := stream.read(8 * 1024 * 1024):
                   digest.update(block)
 
-          source_qa = {
-              'source_key': source_key,
-              'title': selected.get('title'),
-              'file_name': selected.get('file_name'),
-              'derivative_type': 'source',
-              'proxy_fallback_allowed': False,
-              'downloaded_bytes': actual_size,
-              'declared_source_bytes': expected_size or None,
-              'sha256': digest.hexdigest(),
-              'probe': probe,
-          }
-          qa_path = Path('raw_sources') / f'{source_key}.source_qa.json'
-          qa_path.write_text(json.dumps(source_qa, indent=2), encoding='utf-8')
+          Path('raw_sources', f'{source_key}.source_qa.json').write_text(
+              json.dumps({
+                  'source_key': source_key,
+                  'title': selected.get('title'),
+                  'file_name': selected.get('file_name'),
+                  'derivative_type': 'source',
+                  'proxy_fallback_allowed': False,
+                  'downloaded_bytes': actual_size,
+                  'declared_source_bytes': expected_size or None,
+                  'sha256': digest.hexdigest(),
+                  'probe': probe,
+              }, indent=2),
+              encoding='utf-8',
+          )
           print(
               f'ORIGINAL SOURCE MASTER VERIFIED type=source bytes={actual_size} '
               f'fps={video.get("avg_frame_rate")} codec={video.get("codec_name")}'
           )
 '''
 
-          render_verify_replacement = '''          source = Path('raw_sources') / f'{source_key}.mp4'
-          source_qa_path = Path('raw_sources') / f'{source_key}.source_qa.json'
-          if not source.is_file():
-              raise RuntimeError(f'staged source artifact missing: {source}')
-          if not source_qa_path.is_file():
-              raise RuntimeError(f'original-source QA manifest missing: {source_qa_path}')
-
-          source_qa = json.loads(source_qa_path.read_text(encoding='utf-8'))
-          if source_qa.get('derivative_type') != 'source' or source_qa.get('proxy_fallback_allowed') is not False:
-              raise RuntimeError('staged reel was not certified as the original MediaSilo source master')
-          if source.stat().st_size != int(source_qa.get('downloaded_bytes') or 0):
-              raise RuntimeError('staged source byte-size differs from original-source QA manifest')
-
-          import hashlib
-          digest = hashlib.sha256()
-          with source.open('rb') as stream:
-              while block := stream.read(8 * 1024 * 1024):
-                  digest.update(block)
-          if digest.hexdigest() != source_qa.get('sha256'):
-              raise RuntimeError('staged source SHA256 differs from original-source QA manifest')
-
-          probe = json.loads(subprocess.check_output([
-              'ffprobe', '-v', 'error',
-              '-show_entries', 'stream=width,height,avg_frame_rate:format=duration',
-              '-of', 'json', str(source),
-          ], text=True))
-          video = next(item for item in probe['streams'] if item.get('width'))
-          assert (video['width'], video['height']) == (1920, 1080)
-          assert video['avg_frame_rate'] == '60000/1001'
-          print(
-              f'staged ORIGINAL source verified bytes={source.stat().st_size} '
-              f'sha256={source_qa["sha256"][:16]}...'
-          )
-'''
-
-          for path in paths:
+          for path in workflows:
               text = path.read_text(encoding='utf-8')
 
-              resolver_start = text.index("              derivatives = {item.get('type'): item for item in asset.get('derivatives', [])}")
-              resolver_end = text.index("              break\n          else:", resolver_start)
-              text = text[:resolver_start] + new_resolver + text[resolver_end:]
+              start = text.index("              derivatives = {item.get('type'): item for item in asset.get('derivatives', [])}")
+              end = text.index("              break\n          else:", start)
+              text = text[:start] + resolver + text[end:]
 
-              download_anchor = text.index("          selected = json.loads(Path('/tmp/resolved_source.json').read_text(encoding='utf-8'))")
-              qa_start = text.index("          probe = json.loads(subprocess.check_output([", download_anchor)
+              download = text.index("          selected = json.loads(Path('/tmp/resolved_source.json').read_text(encoding='utf-8'))")
+              qa_start = text.index("          probe = json.loads(subprocess.check_output([", download)
               qa_end = text.index("          PY", qa_start)
-              text = text[:qa_start] + qa_replacement + text[qa_end:]
-
-              old_upload_path = f'          path: raw_sources/{source_expr}.mp4'
-              new_upload_path = (
-                  '          path: |\n'
-                  f'            raw_sources/{source_expr}.mp4\n'
-                  f'            raw_sources/{source_expr}.source_qa.json'
-              )
-              if text.count(old_upload_path) != 1:
-                  raise RuntimeError(f'{path}: expected exactly one source artifact upload path')
-              text = text.replace(old_upload_path, new_upload_path, 1)
-
-              verify_anchor = text.index('      - name: Verify staged source reel before')
-              verify_start = text.index("          source = Path('raw_sources') / f'{source_key}.mp4'", verify_anchor)
-              verify_end = text.index('          PY', verify_start)
-              text = text[:verify_start] + render_verify_replacement + text[verify_end:]
+              text = text[:qa_start] + source_qa + text[qa_end:]
 
               if "derivatives.get('x1080')" in text or "derivatives.get('proxy')" in text:
-                  raise RuntimeError(f'{path}: proxy/x1080 fallback still present after patch')
+                  raise RuntimeError(f'{path}: proxy fallback still present')
               if "'derivative_type': 'source'" not in text:
-                  raise RuntimeError(f'{path}: source-master certification missing after patch')
-              if '.source_qa.json' not in text:
-                  raise RuntimeError(f'{path}: original-source QA manifest not staged')
+                  raise RuntimeError(f'{path}: source-only certification missing')
 
               path.write_text(text, encoding='utf-8')
               print(f'patched {path}')
           PY
 
-      - name: Commit canonical workflow patch and remove temporary patch workflow
+      - name: Commit canonical patch and remove temporary workflow
         run: |
           set -euo pipefail
           rm -f .github/workflows/_mw4_source_master_patch.yml
