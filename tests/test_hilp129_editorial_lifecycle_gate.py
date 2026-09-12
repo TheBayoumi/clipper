@@ -116,13 +116,29 @@ def test_lifecycle_gate_accepts_exact_hilp129_recoverable_restart_closure() -> N
     assert result["starts"] == result["terminals"] + result["reconciled"]
 
 
+def test_lifecycle_gate_accepts_output_retry_regeneration_restart_closure() -> None:
+    records, reconciliation = _hilp129_records()
+    for event in records:
+        if event.get("event") in {
+            "application_result",
+            "editorial_remote_call_reconciled",
+        }:
+            event["application_status"] = "OUTPUT_RETRY"
+            event["error_type"] = "EditorialOutputInvalid"
+            event["recovery_action"] = "REGENERATE"
+    result = validate_editorial_call_closure(
+        summary=_summary(starts=2, terminals=1, reconciliations=[reconciliation]),
+        records=records,
+    )
+    assert result["reconciled_invocation_ids"] == ["inv-old"]
+    assert result["reconciled"] == 1
+
+
 @pytest.mark.parametrize(
     ("mutator", "message"),
     [
         (
-            lambda records: [
-                item for item in records if item.get("event") != "application_result"
-            ],
+            lambda records: [item for item in records if item.get("event") != "application_result"],
             "lacks model-side application_result",
         ),
         (
@@ -139,12 +155,16 @@ def test_lifecycle_gate_accepts_exact_hilp129_recoverable_restart_closure() -> N
         ),
         (
             lambda records: [
-                item
-                for item in records
-                if not (
+                {
+                    **item,
+                    "producer_lifecycle_id": "producer-c",
+                }
+                if (
                     item.get("event") == "editorial_remote_call_start"
                     and item.get("producer_lifecycle_id") == "producer-b"
                 )
+                else item
+                for item in records
             ],
             "replacement lifecycle has no authoritative producer start",
         ),
@@ -164,12 +184,10 @@ def test_lifecycle_gate_accepts_exact_hilp129_recoverable_restart_closure() -> N
     ],
 )
 def test_lifecycle_gate_rejects_unsafe_reconciliation(mutator, message: str) -> None:
-    records, reconciliation = _hilp129_records()
+    records, _reconciliation = _hilp129_records()
     mutated = mutator(copy.deepcopy(records))
     mutated_reconciliations = [
-        event
-        for event in mutated
-        if event.get("event") == "editorial_remote_call_reconciled"
+        event for event in mutated if event.get("event") == "editorial_remote_call_reconciled"
     ]
     with pytest.raises(RuntimeError, match=message):
         validate_editorial_call_closure(
@@ -213,10 +231,6 @@ def test_lifecycle_gate_rejects_terminal_and_reconciliation_for_same_invocation(
 
 
 def test_production_workflow_uses_reconciliation_aware_lifecycle_gate() -> None:
-    workflow = Path(".github/workflows/production-pipeline.yml").read_text(
-        encoding="utf-8"
-    )
-    assert workflow.count(
-        "validate_editorial_call_closure(summary=summary, records=records)"
-    ) == 2
+    workflow = Path(".github/workflows/production-pipeline.yml").read_text(encoding="utf-8")
+    assert workflow.count("validate_editorial_call_closure(summary=summary, records=records)") == 1
     assert "call_terminals != call_starts" not in workflow

@@ -4,7 +4,7 @@ from typing import Any
 
 _RECOVERABLE_RECONCILIATION_ACTIONS = {
     "CAPACITY_REJECTED": "REPARTITION",
-    "OUTPUT_RETRY": "OUTPUT_RETRY",
+    "OUTPUT_RETRY": "REGENERATE",
 }
 
 
@@ -66,8 +66,7 @@ def validate_editorial_call_closure(
     application_results = [
         event
         for event in records
-        if event.get("event") == "application_result"
-        and event.get("authoritative") is False
+        if event.get("event") == "application_result" and event.get("authoritative") is False
     ]
 
     if len(producer_starts) != expected_starts:
@@ -82,9 +81,7 @@ def validate_editorial_call_closure(
         )
 
     starts_by_id = _unique_by_invocation(producer_starts, label="editorial producer start")
-    terminals_by_id = _unique_by_invocation(
-        producer_terminals, label="editorial producer terminal"
-    )
+    terminals_by_id = _unique_by_invocation(producer_terminals, label="editorial producer terminal")
     reconciled_by_id = _unique_by_invocation(
         reconciliations, label="editorial producer reconciliation"
     )
@@ -99,8 +96,7 @@ def validate_editorial_call_closure(
         invocation_id = _invocation_id(item)
         if not invocation_id or invocation_id in summary_reconciled_ids:
             raise RuntimeError(
-                "Modal spy reconciliation summary has invalid invocation identity: "
-                f"{item}"
+                f"Modal spy reconciliation summary has invalid invocation identity: {item}"
             )
         summary_reconciled_ids.add(invocation_id)
     if summary_reconciled_ids != set(reconciled_by_id):
@@ -121,8 +117,7 @@ def validate_editorial_call_closure(
         start = starts_by_id.get(invocation_id)
         if start is None:
             raise RuntimeError(
-                "editorial reconciliation has no authoritative producer start: "
-                f"{reconciliation}"
+                f"editorial reconciliation has no authoritative producer start: {reconciliation}"
             )
 
         application_status = str(reconciliation.get("application_status") or "")
@@ -130,8 +125,7 @@ def validate_editorial_call_closure(
         recovery_action = str(reconciliation.get("recovery_action") or "")
         if expected_action is None or recovery_action != expected_action:
             raise RuntimeError(
-                "editorial reconciliation is not a permitted recoverable result: "
-                f"{reconciliation}"
+                f"editorial reconciliation is not a permitted recoverable result: {reconciliation}"
             )
 
         producer_lifecycle_id = str(reconciliation.get("producer_lifecycle_id") or "")
@@ -144,8 +138,7 @@ def validate_editorial_call_closure(
             or producer_lifecycle_id == replacement_lifecycle_id
         ):
             raise RuntimeError(
-                "editorial reconciliation lacks a distinct producer replacement: "
-                f"{reconciliation}"
+                f"editorial reconciliation lacks a distinct producer replacement: {reconciliation}"
             )
         if str(start.get("producer_lifecycle_id") or "") != producer_lifecycle_id:
             raise RuntimeError(
@@ -157,18 +150,14 @@ def validate_editorial_call_closure(
                 "editorial reconciliation task does not match its producer start: "
                 f"start={start} reconciliation={reconciliation}"
             )
-        if str(start.get("execution_id") or "") != str(
-            reconciliation.get("execution_id") or ""
-        ):
+        if str(start.get("execution_id") or "") != str(reconciliation.get("execution_id") or ""):
             raise RuntimeError(
                 "editorial reconciliation execution does not match its producer start: "
                 f"start={start} reconciliation={reconciliation}"
             )
 
         same_invocation_results = [
-            result
-            for result in application_results
-            if _invocation_id(result) == invocation_id
+            result for result in application_results if _invocation_id(result) == invocation_id
         ]
         if not same_invocation_results:
             raise RuntimeError(
@@ -178,8 +167,7 @@ def validate_editorial_call_closure(
         if not any(
             str(result.get("application_status") or "") == application_status
             and str(result.get("recovery_action") or "") == recovery_action
-            and str(result.get("error_type") or "")
-            == str(reconciliation.get("error_type") or "")
+            and str(result.get("error_type") or "") == str(reconciliation.get("error_type") or "")
             and str(result.get("execution_id") or "")
             == str(reconciliation.get("execution_id") or "")
             for result in same_invocation_results
@@ -193,8 +181,7 @@ def validate_editorial_call_closure(
             candidate
             for candidate in producer_starts
             if _invocation_id(candidate) != invocation_id
-            and str(candidate.get("producer_lifecycle_id") or "")
-            == replacement_lifecycle_id
+            and str(candidate.get("producer_lifecycle_id") or "") == replacement_lifecycle_id
             and str(candidate.get("execution_id") or "")
             == str(reconciliation.get("execution_id") or "")
         ]
