@@ -7,11 +7,11 @@
   "batch_selection": {
     "allocation_mode": "global_before_render",
     "target_count_exact": 10,
-    "candidate_pool_per_source": 18,
+    "candidate_pool_per_source": 40,
     "require_allocation_before_render": true,
     "require_verified_finishing_move_when_available": true,
     "prefer_normal_over_semantic_montage": true,
-    "notes": "All three official reels are analyzed first. One global allocator must prove an exact 10-clip semantically unique batch before any shadow or production MP4 is rendered."
+    "notes": "All three official reels are analyzed first. The allocator evaluates the complete qualified candidate pool (up to 40/source) and must prove a 10-clip semantically distinct batch before any shadow or production MP4 is rendered."
   },
   "output": {
     "width": 1920,
@@ -208,11 +208,11 @@
   "duplicate_policy": {
     "allow_overlap_with_prior_work": true,
     "allow_overlap_with_new_batch": true,
-    "semantic_anchor_tolerance_seconds": 0.70,
-    "max_shared_context_seconds": 0.90,
-    "substantial_overlap_seconds": 1.75,
-    "substantial_overlap_fraction_shorter": 0.22,
+    "semantic_anchor_tolerance_seconds": 0.35,
+    "max_shared_context_seconds": 2.50,
+    "substantial_overlap_seconds": 6.00,
+    "substantial_overlap_fraction_shorter": 0.60,
     "finishing_move_exclusive": true,
-    "notes": "Within this batch, duplication means reusing the same semantic payoff/Finishing Move or substantially reusing source footage. Up to 0.90 s of shared setup/tail context is allowed when semantic anchors differ. Quality gates and source-integrity gates are unchanged."
+    "notes": "Within this batch, duplication means reusing the same semantic payoff/Finishing Move or reusing most of the same source story. Shared setup/transition context is allowed when the semantic payoff differs. The quality gates, source-integrity gates, and finishing-move requirements are unchanged."
   }
 }
