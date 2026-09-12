@@ -200,7 +200,9 @@ def test_sparse_attestation_rejects_ordinary_editorial_content(tmp_path: Path) -
     assert "must omit ordinary editorial_content" in str(result.rejections[0]["error"])
 
 
-def test_legacy_exhaustive_result_is_accepted_only_when_it_covers_every_word(tmp_path: Path) -> None:
+def test_legacy_exhaustive_result_is_accepted_only_when_it_covers_every_word(
+    tmp_path: Path,
+) -> None:
     timeline = _timeline()
     start_ref, end_ref = _refs(timeline)
     exhaustive = _HazardEditorial(
