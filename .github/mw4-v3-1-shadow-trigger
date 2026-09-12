@@ -1,7 +1,8 @@
 V3.1 hardened canonical pipeline qualification trigger
-single semantic planner + adaptive important-scene pre-render allocation + single renderer
+single semantic planner + adaptive important-scene pre-render allocation
 clip count is determined by semantically distinct important scenes that pass quality/source-integrity gates; no fixed target
 Finishing Move: verified opening hero, 1.0x choreography, no semantic-montage continuation, no transition flash
 shadow uses review bitrate only; production remains 1920x1080 60000/1001 H.264 High 250M CBR
 2026-09-12 adaptive allocation: no filler clips just to hit a number; editorial safety ceiling is 8/source and 20 total
-2026-09-12 memory architecture fix: keep full 256x144/6fps semantic analysis in analysis stage; shadow/production render exact allocation plans directly and do not repeat full-reel NumPy analysis while FFmpeg encodes
+2026-09-12 memory architecture fix: full 256x144/6fps semantic analysis runs only in analysis stage; render consumes approved allocation directly
+2026-09-12 storage architecture fix: each allocated clip gets an isolated GitHub workspace, renders one MP4, uploads that video immediately as its own artifact, uploads QA metadata separately, deletes source/output locally, then the next clip starts; max-parallel=1
