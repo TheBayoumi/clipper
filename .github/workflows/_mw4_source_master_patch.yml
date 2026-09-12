@@ -8,25 +8,23 @@ on:
       - .github/workflows/_mw4_source_master_patch.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   patch:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Patch canonical source acquisition
         run: python scripts/_mw4_source_master_patch.py
 
-      - name: Commit canonical patch and remove one-shot patcher
-        run: |
-          set -euo pipefail
-          rm -f .github/workflows/_mw4_source_master_patch.yml scripts/_mw4_source_master_patch.py
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/mw4-semantic-v3-1-shadow.yml .github/workflows/mw4-fullframe-retention-v3-1.yml .github/workflows/_mw4_source_master_patch.yml scripts/_mw4_source_master_patch.py
-          git commit -m "fix(mw4): require original MediaSilo source masters"
-          git push origin HEAD:feat/mw4-fullframe-retention-v3-1
+      - name: Upload patched canonical workflows
+        uses: actions/upload-artifact@v4
+        with:
+          name: mw4-original-source-patched-workflows
+          path: |
+            .github/workflows/mw4-semantic-v3-1-shadow.yml
+            .github/workflows/mw4-fullframe-retention-v3-1.yml
+          retention-days: 1
+          if-no-files-found: error
