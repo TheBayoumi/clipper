@@ -9,6 +9,7 @@ from typing import Any
 from .canonical import CanonicalTimeline
 
 _TERMINAL_SUFFIXES = (".", "!", "?", "…", "。")
+_DEFAULT_RUNTIME_SAFE_INPUT_TOKENS = 32_768
 
 
 def natural_boundary_near(
@@ -64,6 +65,18 @@ def _positive_int(value: object) -> int | None:
     return value if value > 0 else None
 
 
+def _runtime_safe_input_tokens() -> int | None:
+    raw = os.getenv(
+        "CLIPPER_EDITORIAL_RUNTIME_SAFE_INPUT_TOKENS",
+        str(_DEFAULT_RUNTIME_SAFE_INPUT_TOKENS),
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def capacity_target_input_tokens(details: dict[str, Any]) -> int | None:
     """Derive a safe next input target from observed model/runtime capacity evidence."""
 
@@ -95,10 +108,16 @@ def capacity_target_input_tokens(details: dict[str, Any]) -> int | None:
         candidates.append(max(1, smallest_bad - 1))
 
     runtime_safe = _positive_int(details.get("runtime_safe_input_tokens"))
+    reason = str(details.get("reason") or "")
+    if runtime_safe is None and reason == "context_exhausted":
+        # The model-side context guard can reject before the runtime-safe input guard has a
+        # chance to attach its bound. The configured runtime-safe envelope is nevertheless an
+        # authoritative upper bound for the next paid attempt, so jump directly toward it rather
+        # than stair-stepping through context-limit-sized children first.
+        runtime_safe = _runtime_safe_input_tokens()
     if runtime_safe is not None:
         candidates.append(runtime_safe)
 
-    reason = str(details.get("reason") or "")
     if observed is not None and reason in {
         "cuda_oom_after_offloaded_cache",
         "cuda_oom_dynamic_cache",
