@@ -34,36 +34,21 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          def replace_once(path: str, old: str, new: str) -> None:
-              p = Path(path)
-              text = p.read_text(encoding="utf-8")
-              if text.count(old) != 1:
-                  raise RuntimeError(f"expected exactly one target in {path}, got {text.count(old)}")
-              p.write_text(text.replace(old, new), encoding="utf-8")
-
-          replace_once(
-              "src/clipper/providers/modal.py",
-              '''                if not self._is_output_contract_error(exc):
-                          raise
-
-                      if exc.error_type == "EditorialOutputInvalid":
-                          if invalid_output_retries >= 1:
+          provider_path = Path("src/clipper/providers/modal.py")
+          provider = provider_path.read_text(encoding="utf-8")
+          old = '''                if exc.error_type == "EditorialOutputInvalid":
+                              if invalid_output_retries >= 1:
+                                  raise
+                              invalid_output_retries += 1
+          '''
+          new = '''                if invalid_output_retries > 0:
                               raise
-                          invalid_output_retries += 1
-
-                      next_budget = exc.details.get("next_output_budget_tokens")
-          ''',
-              '''                if not self._is_output_contract_error(exc):
-                          raise
-
-                      if invalid_output_retries > 0:
-                          raise
-                      if exc.error_type == "EditorialOutputInvalid":
-                          invalid_output_retries += 1
-
-                      next_budget = exc.details.get("next_output_budget_tokens")
-          ''',
-          )
+                          if exc.error_type == "EditorialOutputInvalid":
+                              invalid_output_retries += 1
+          '''
+          if provider.count(old) != 1:
+              raise RuntimeError(f"provider recovery target count={provider.count(old)}")
+          provider_path.write_text(provider.replace(old, new), encoding="utf-8")
 
           test_path = Path("tests/test_modal_editorial_recovery.py")
           text = test_path.read_text(encoding="utf-8")
