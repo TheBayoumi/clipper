@@ -35,7 +35,7 @@ new_count = '''          call_starts = int(authoritative_counts.get("editorial_r
           if call_starts <= 0:
               raise RuntimeError("live editorial acceptance observed no producer-side calls")
 '''
-replace_exact(workflow, old_count, new_count, expected=2)
+replace_exact(workflow, old_count, new_count, expected=1)
 
 old_ids = '''          start_ids = {
               str(event.get("invocation_id") or "")
@@ -55,7 +55,7 @@ new_ids = '''          from scripts.validate_editorial_lifecycle import validate
 
           validate_editorial_call_closure(summary=summary, records=records)
 '''
-replace_exact(workflow, old_ids, new_ids, expected=2)
+replace_exact(workflow, old_ids, new_ids, expected=1)
 
 test = Path("tests/test_hilp129_editorial_lifecycle_gate.py")
 marker = '''def test_lifecycle_gate_accepts_exact_hilp129_recoverable_restart_closure() -> None:
@@ -89,3 +89,13 @@ addition = marker + '''def test_lifecycle_gate_accepts_output_retry_regeneration
 
 '''
 replace_exact(test, marker, addition, expected=1)
+
+old_contract = '''    assert workflow.count(
+        "validate_editorial_call_closure(summary=summary, records=records)"
+    ) == 2
+'''
+new_contract = '''    assert workflow.count(
+        "validate_editorial_call_closure(summary=summary, records=records)"
+    ) == 1
+'''
+replace_exact(test, old_contract, new_contract, expected=1)
