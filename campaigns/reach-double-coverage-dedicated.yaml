@@ -1,30 +1,27 @@
 campaign_id: reach-double-coverage-dedicated-1f1adbf3
 title: Double Coverage Podcast Dedicated Account
 objective: Find self-contained, high-retention moments from the Double Coverage podcast that can perform as short-form clips while preserving the speaker context and avoiding negative portrayal.
-keywords:
-  - Clix
-  - Fortnite
-  - creator
-  - streaming
-  - esports
-  - money
-  - business
-  - Ferrari
-negative_keywords: []
-required_phrases: []
 language: en
 region_code: US
-clip_count: 3
-min_clip_seconds: 20
-max_clip_seconds: 45
-source_limit: 1
-max_clips_per_source: 3
-published_after: "2026-07-30T00:00:00Z"
-source_channel_ids:
-  - UCf1q6dhccWr6eQEcFFnJSbA
-allowed_video_ids:
-  - 2Y4LP85PTak
-rights_confirmed: true
+
+# Production runs process only explicitly listed targets. Authorized channels are rights
+# constraints; they do not permit implicit discovery of additional videos during `clipper run`.
+targets:
+  mode: explicit
+  videos:
+    - video_id: 2Y4LP85PTak
+      url: https://www.youtube.com/watch?v=2Y4LP85PTak
+      channel_id: UCf1q6dhccWr6eQEcFFnJSbA
+
+rights:
+  confirmed: true
+  authorized_channels:
+    - UCf1q6dhccWr6eQEcFFnJSbA
+
+content_constraints:
+  min_clip_seconds: 20
+  max_clip_seconds: 45
+
 attribution_required: true
 watermark_text: null
 watermark_url: "https://drive.google.com/file/d/1wn3gL5h7cUZn-8jzTfwkAvLhbleXgbL6/view?usp=sharing"
@@ -37,3 +34,31 @@ posting_requirements:
   - Minimum 15,000 views are required for campaign payout.
   - Do not use botted views or AI-generated source content.
   - Do not portray Double Coverage negatively.
+
+acceptance_policy:
+  source_segments:
+    allow:
+      - editorial_content
+    forbid:
+      - advertisement
+      - sponsor_read
+      - promo
+      - intro
+      - outro
+      - housekeeping
+    unknown: escalate
+    safety_buffer_seconds: 0.25
+  branding:
+    supplied_campaign_assets_allowed: true
+    foreign_logos: forbid
+    minimum_confidence: 0.75
+  generated_media:
+    synthetic_visuals: forbid
+  portrayal:
+    negative_creator_portrayal: forbid
+  language:
+    on_screen_text: en
+  editorial:
+    require_standalone_context: true
+    require_resolved_ending: true
+    minimum_boundary_confidence: 0.75

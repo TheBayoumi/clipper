@@ -1,0 +1,11 @@
+from __future__ import annotations
+
+VISION_MODEL_ID = "Qwen/Qwen3-VL-8B-Instruct"
+VISION_MODEL_REVISION = "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b"
+VISION_QUANTIZATION = "none"
+
+VISION_LARGE_MODEL_ID = "Qwen/Qwen3-VL-30B-A3B-Instruct"
+VISION_LARGE_MODEL_REVISION = "9c4b90e1e4ba969fd3b5378b57d966d725f1b86c"
+VISION_LARGE_QUANTIZATION = "bnb-4bit-nf4"
+
+VISION_INFERENCE_ENGINE = "modal-transformers"

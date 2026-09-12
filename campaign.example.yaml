@@ -1,31 +1,55 @@
-campaign_id: example-whop-campaign
-title: AI automation founder clips
-objective: Find self-contained moments that explain a painful business problem and a practical fix.
-keywords:
-  - automation
-  - AI agent
-  - business
-negative_keywords:
-  - giveaway
-required_phrases: []
+campaign_id: example-campaign
+title: Example clipping campaign
+objective: Find every genuinely worthwhile, self-contained short-form moment from the explicitly targeted source videos while preserving truth, narrative completeness, campaign safety, and source quality.
 language: en
 region_code: US
-clip_count: 3
-min_clip_seconds: 20
-max_clip_seconds: 45
-source_limit: 8
-max_clips_per_source: 1
-published_after: "2026-01-01T00:00:00Z"
 
-# Copy the exact source channel IDs or video IDs allowed by the Whop campaign brief.
-source_channel_ids:
-  - UC_REPLACE_WITH_AUTHORIZED_CHANNEL_ID
-allowed_video_ids: []
+targets:
+  mode: explicit
+  videos:
+    - video_id: REPLACE_WITH_AUTHORIZED_VIDEO_ID
+      url: https://www.youtube.com/watch?v=REPLACE_WITH_AUTHORIZED_VIDEO_ID
+      channel_id: UC_REPLACE_WITH_AUTHORIZED_CHANNEL_ID
 
-# This must only be changed to true after checking the campaign permits clipping these sources.
-rights_confirmed: false
+rights:
+  confirmed: false
+  authorized_channels:
+    - UC_REPLACE_WITH_AUTHORIZED_CHANNEL_ID
+
+content_constraints:
+  min_clip_seconds: 20
+  max_clip_seconds: 45
+
 attribution_required: true
 watermark_text: null
 watermark_url: null
 required_hashtags: []
 posting_requirements: []
+
+acceptance_policy:
+  source_segments:
+    allow:
+      - editorial_content
+    forbid:
+      - advertisement
+      - sponsor_read
+      - promo
+      - intro
+      - outro
+      - housekeeping
+    unknown: escalate
+    safety_buffer_seconds: 0.25
+  branding:
+    supplied_campaign_assets_allowed: true
+    foreign_logos: forbid
+    minimum_confidence: 0.75
+  generated_media:
+    synthetic_visuals: escalate
+  portrayal:
+    negative_creator_portrayal: escalate
+  language:
+    on_screen_text: en
+  editorial:
+    require_standalone_context: true
+    require_resolved_ending: true
+    minimum_boundary_confidence: 0.75

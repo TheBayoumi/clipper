@@ -1,122 +1,219 @@
 # Clipper
 
-A production-oriented, rights-gated pipeline that turns a Whop Content Rewards brief into timestamped YouTube clip candidates and rendered 9:16 MP4 clips.
+Clipper is a rights-gated autonomous multimodal editor for producing short-form clips from explicitly authorized long-form video. Production execution is quality-derived: the system may emit many clips, one clip, or zero clips. It does not fill a requested quota with weaker content.
 
-## What it automates
-
-1. Parse and validate a campaign brief.
-2. Search only the YouTube channels/video IDs authorized by that brief.
-3. Retrieve timestamped captions when available; otherwise run local Faster-Whisper ASR.
-4. Score sentence-aligned windows against campaign keywords, required phrases, hook strength, duration, and negative terms.
-5. Select diverse clips across source videos.
-6. Render 1080x1920 H.264 clips with blurred background fill, burned captions, and EBU-style loudness normalization.
-7. Save a manifest containing source URLs, timestamps, scores, errors, and output paths.
-
-## Non-negotiable source policy
-
-The pipeline intentionally refuses unrestricted scraping. A brief must contain either `source_channel_ids` or `allowed_video_ids`, and `rights_confirmed` must be `true`. Set it only after confirming the Whop campaign permits clipping those exact sources. The pipeline does not bypass DRM, private-video access, paywalls, or platform permissions.
-
-YouTube's official captions download API only supports videos the authenticated account can edit. For public campaign-authorized source videos, this project uses `yt-dlp` to request available subtitles and media. The user remains responsible for the campaign rules, attribution, platform terms, and copyright permissions.
-
-## Architecture
+## Production architecture
 
 ```text
-Whop brief YAML/JSON
-        |
-        v
-Brief validator + rights allow-list
-        |
-        v
-YouTube discovery (Data API key preferred; yt-dlp fallback)
-        |
-        v
-Timed subtitles ---- unavailable ----> Faster-Whisper ASR
-        |                                  |
-        +----------------+-----------------+
-                         v
-             deterministic clip scorer
-                         |
-                         v
-                diversity selector
-                         |
-                         v
-              FFmpeg vertical renderer
-                         |
-                         v
-          clips/*.mp4 + manifest.json
+explicit authorized target video(s)
+        ↓
+highest-available source media
+        ↓
+canonical grounding
+(transcription → alignment → diarization)
+        ↓
+visual timeline / VLM evidence
+        ↓
+MultimodalEvent
+        ↓
+SemanticCore
+        ↓
+NarrativeEnvelope
+        ↓
+deterministic FeasibleDeliveryWindow[]
+        ↓
+QualityMoment
+        ↓
+VisualStrategy
+        ↓
+EditPlan
+        ↓
+1080x1920 render
+        ↓
+technical QC + multimodal editorial QC
+        ↓
+accepted production artifacts
 ```
 
-## Requirements
+The production graph has no editorial output quota, fixed shortlist count, fixed concept count, fixed variant count, hard-coded hook menu, or campaign scoring-weight table. A candidate reaches rendering only when the source evidence supports a complete, feasible, policy-compliant moment.
 
-- Python 3.11 or 3.12
-- FFmpeg on `PATH`
-- A YouTube Data API key is strongly recommended: `YOUTUBE_API_KEY`
-- Optional GPU for Faster-Whisper. CPU works with the default `int8` compute mode.
+## Source targeting and rights
 
-## Local setup
+`clipper run` never performs implicit source discovery. Every production brief must use `targets.mode: explicit` and provide the exact authorized videos. Rights authorization is a separate gate and every target channel must be authorized. Production authorization is enforced by exact video ID; channel authorization constrains rights but never serves as a fallback that admits unlisted videos.
+
+Example:
+
+```yaml
+campaign_id: example-campaign
+title: Example clipping campaign
+objective: Find every genuinely worthwhile, self-contained short-form moment.
+language: en
+region_code: US
+
+targets:
+  mode: explicit
+  videos:
+    - video_id: REPLACE_WITH_AUTHORIZED_VIDEO_ID
+      url: https://www.youtube.com/watch?v=REPLACE_WITH_AUTHORIZED_VIDEO_ID
+      channel_id: UC_REPLACE_WITH_AUTHORIZED_CHANNEL_ID
+
+rights:
+  confirmed: false
+  authorized_channels:
+    - UC_REPLACE_WITH_AUTHORIZED_CHANNEL_ID
+
+content_constraints:
+  min_clip_seconds: 20
+  max_clip_seconds: 45
+
+attribution_required: true
+watermark_text: null
+watermark_url: null
+required_hashtags: []
+posting_requirements: []
+
+acceptance_policy:
+  source_segments:
+    allow: [editorial_content]
+    forbid: [advertisement, sponsor_read, promo, intro, outro, housekeeping]
+    unknown: escalate
+    safety_buffer_seconds: 0.25
+  branding:
+    supplied_campaign_assets_allowed: true
+    foreign_logos: forbid
+    minimum_confidence: 0.75
+  generated_media:
+    synthetic_visuals: escalate
+  portrayal:
+    negative_creator_portrayal: escalate
+  language:
+    on_screen_text: en
+  editorial:
+    require_standalone_context: true
+    require_resolved_ending: true
+    minimum_boundary_confidence: 0.75
+```
+
+Set `rights.confirmed: true` only after the source is actually authorized. Clipper does not bypass DRM, authentication, paywalls, private-video permissions, or platform restrictions.
+
+A separate `clipper discover` command exists only for source research outside production execution. Discovery output is not automatically promoted into a production run; selected videos must be written explicitly into the brief and authorized first.
+
+## Autonomous editorial contract
+
+The structured editorial model has four production task families:
+
+- `source_hazards` — identify sponsor/promo/branding/policy hazards from source evidence.
+- `semantic_cores` — identify independent semantic cores without a predetermined topic or vocabulary list.
+- `narrative_envelope` — determine the context and resolution required for a core to stand alone.
+- `quality_windows` — rank feasible delivery windows that preserve the required narrative envelope.
+
+The prompt/schema contract prohibits predeclared topic, hook, emotion, numeric, or domain-specific lexical templates. Unknown production task families fail closed.
+
+Duration feasibility is deterministic. The solver constructs valid delivery windows before editorial ranking, so an `EditPlan` cannot be accepted merely because a model asked for an under-duration span.
+
+## Multimodal editing and rendering
+
+- Full-frame `1080x1920` output with no blurred duplicate background.
+- Source-resolution-first portrait crop; no unnecessary digital zoom.
+- Speaker-aware framing uses face/speaker evidence rather than generic motion, so gestures and hands do not drive the crop.
+- Source-camera cuts remain hard composition boundaries; virtual-camera movement is deliberately stabilized.
+- Word-synchronized ASS reveal captions use the final clip-local word timeline.
+- First-caption alignment is audited and fails QC on mismatch.
+- Campaign watermark/branding policy is applied before release.
+- Synthetic or generated visual media is policy-gated; campaigns may forbid it entirely.
+- Technical QC validates decode, geometry, audio, captions, tracking evidence, and required sidecars.
+- Final editorial QC is multimodal and can reject an otherwise technically valid render.
+
+## Models and execution
+
+The production model plan is resolved explicitly and recorded in run evidence. The open-model Modal runtime provides:
+
+- transcription
+- alignment
+- diarization
+- structured editorial inference
+- vision / large-vision review
+- schema and Hugging Face access smoke tests
+
+Default production execution uses the deployed Modal pipeline when the resolved plan requires Modal. `--allow-local-lite` is an explicit opt-in to the smaller local profile; it is not silently substituted for production models.
+
+## Content-addressed execution
+
+Grounding and editorial stages are keyed from source/model/contract inputs. A changed source, model identity, schema contract, or relevant stage input invalidates the affected cache rather than reusing stale output.
+
+`--resume RUN_ID` reuses matching content-addressed artifacts from an interrupted run. `--fresh-inference` creates an empty cache root so live model evidence cannot be satisfied by an existing cache entry.
+
+Each run persists model identities, source hashes, cache events, funnel/yield evidence, rejections, render attempts, QC evidence, and output hashes in its artifact directory.
+
+## Setup
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev,asr]"
+python -m pip install -e ".[dev]"
 cp campaign.example.yaml campaign.yaml
 ```
 
-Edit `campaign.yaml` using the exact Whop brief. Do not set `rights_confirmed: true` until the allowed source channels/videos are verified.
+Install only the inference extras required by the execution environment, or install `.[open-models]` for the complete open-model worker dependency set. Modal orchestration uses `.[modal]`.
+
+## Commands
+
+Validate an explicit production brief:
 
 ```bash
 clipper validate --brief campaign.yaml
-clipper discover --brief campaign.yaml
+```
+
+Run production:
+
+```bash
 clipper run --brief campaign.yaml --artifact-root artifacts
 ```
 
-For transcript/timestamp planning without FFmpeg rendering:
+Plan without rendering:
 
 ```bash
 clipper run --brief campaign.yaml --artifact-root artifacts --no-render
 ```
 
-## Output
-
-```text
-artifacts/<campaign-id>-<UTC timestamp>/
-├── brief.normalized.json
-├── manifest.json
-├── clips/
-│   ├── 01-<youtube-id>.mp4
-│   └── 01-<youtube-id>.srt
-└── work/<youtube-id>/
-    ├── transcript.json
-    ├── clip-candidates.json
-    └── source/subtitle files
-```
-
-## Environment tuning
-
-| Variable | Default | Purpose |
-|---|---:|---|
-| `YOUTUBE_API_KEY` | unset | Official YouTube search and metadata |
-| `CLIPPER_ARTIFACT_ROOT` | `artifacts` | Run output root |
-| `CLIPPER_WHISPER_MODEL` | `small` | Faster-Whisper model |
-| `CLIPPER_WHISPER_DEVICE` | `auto` | `cpu`, `cuda`, or `auto` |
-| `CLIPPER_WHISPER_COMPUTE_TYPE` | `int8` | ASR precision/performance trade-off |
-
-### Resource implications
-
-- Caption-backed runs avoid ASR and are cheap.
-- `small` Faster-Whisper is suitable for CPU fallback; `medium`/`large-v3` require substantially more RAM/VRAM and increase latency.
-- Source media dominates storage. Each run is isolated under `artifacts/`; delete old `work/` directories after final QC.
-- FFmpeg rendering is CPU-heavy. Parallel rendering is deliberately not enabled yet to avoid uncontrolled RAM and I/O spikes.
-
-## Quality gates
+Force fresh inference:
 
 ```bash
-make check
+clipper run --brief campaign.yaml --artifact-root artifacts --fresh-inference
 ```
 
-CI runs Ruff, strict mypy, and pytest with a 95% coverage floor on Python 3.11 and 3.12.
+Resume a compatible interrupted run:
 
-## Current boundary
+```bash
+clipper run --brief campaign.yaml --artifact-root artifacts --resume RUN_ID
+```
 
-This first production slice stops at reviewed MP4 artifacts. It does not auto-upload to TikTok, Instagram, YouTube Shorts, or Whop. Publishing should be added only after a visual/audio QC gate and per-platform account permissions are in place.
+Optional non-production source research:
+
+```bash
+clipper discover --query "podcast topic" --channel-id UC_CHANNEL --limit 10
+```
+
+Evaluate a private cross-domain acceptance corpus:
+
+```bash
+clipper benchmark --manifest acceptance/corpus.yaml --output benchmark.json
+```
+
+## Software quality gates
+
+```bash
+ruff check .
+ruff format --check .
+mypy
+pytest
+```
+
+Pytest enforces a repository-wide coverage floor of **95%**. CI runs the quality gates on Python 3.11 and 3.12.
+
+Production acceptance additionally requires exact-head deployment evidence, current model/schema smoke tests, a current end-to-end render, technical QC, multimodal final QC, and review of the actual MP4. Historical renders do not prove the current head.
+
+## Publication boundary
+
+Clipper stops at production artifacts and QC evidence. It does not automatically upload to TikTok, Instagram, YouTube Shorts, Whop, or another campaign platform. Publishing/submission is a separate explicitly authorized action after the final media and campaign/account requirements are reviewed.

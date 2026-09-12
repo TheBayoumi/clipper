@@ -1,0 +1,13 @@
+{
+  "requested_for_sha": "current_pr_head",
+  "reason": "Revalidate the exact pre-HILP head after enforcing the speech CUDA deployment smoke gate",
+  "requirements": [
+    "verify exact checked-out revision",
+    "build exact-head deployment image",
+    "run published CLI preflight checks inside image",
+    "run end-to-end smoke inside image",
+    "record exact source SHA evidence",
+    "upload deployment evidence"
+  ],
+  "request_nonce": "pre-hilp-speech-cuda-gate-20260911-v1"
+}
