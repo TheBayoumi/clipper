@@ -2,8 +2,9 @@ V3.1 hardened canonical pipeline qualification trigger
 single semantic planner + adaptive important-scene pre-render allocation
 clip count is determined by semantically distinct important scenes that pass quality/source-integrity gates; no fixed target
 Finishing Move: verified opening hero, 1.0x choreography, no semantic-montage continuation, no transition flash
-shadow uses review bitrate only; production remains 1920x1080 60000/1001 H.264 High 250M CBR
+qualification clips now render at the requested final master quality: 1920x1080 60000/1001 H.264 High 250000 kbps CBR, AAC 320k/48k stereo
 2026-09-12 adaptive allocation: no filler clips just to hit a number; editorial safety ceiling is 8/source and 20 total
 2026-09-12 memory architecture fix: full 256x144/6fps semantic analysis runs only in analysis stage; render consumes approved allocation directly
 2026-09-12 storage architecture fix: each allocated clip gets an isolated GitHub workspace, renders one MP4, uploads that video immediately as its own artifact, uploads QA metadata separately, deletes source/output locally, then the next clip starts; max-parallel=1
 2026-09-12 MediaSilo fix: each official reel is resolved/downloaded/verified once in analysis, staged as a 1-day source artifact, and reused by isolated render workspaces; render jobs never resolve MediaSilo or install Chromium
+2026-09-12 quality fix: isolated one-clip workspaces are retained for stability, but low-bitrate shadow encoding is no longer used for qualification artifacts
