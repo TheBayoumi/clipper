@@ -2,14 +2,14 @@ V3.1 hardened canonical pipeline qualification trigger
 single semantic planner + adaptive important-scene pre-render allocation
 clip count is determined by semantically distinct important scenes that pass quality/source-integrity gates; no fixed target
 Finishing Move: verified opening hero, 1.0x choreography, no semantic-montage continuation, no transition flash
-qualification clips now render at the requested final master quality: 1920x1080 60000/1001 H.264 High 250000 kbps CBR, AAC 320k/48k stereo
+qualification clips render at final master quality: 1920x1080 60000/1001 H.264 High 250000 kbps CBR, AAC 320k/48k stereo
 2026-09-12 adaptive allocation: no filler clips just to hit a number; editorial safety ceiling is 8/source and 20 total
 2026-09-12 memory architecture fix: full 256x144/6fps semantic analysis runs only in analysis stage; render consumes approved allocation directly
 2026-09-12 storage architecture fix: each allocated clip gets an isolated GitHub workspace, renders one MP4, uploads that video immediately as its own artifact, uploads QA metadata separately, deletes source/output locally, then the next clip starts; max-parallel=1
 2026-09-12 MediaSilo fix: each official reel is resolved/downloaded/verified once in analysis, staged as a 1-day source artifact, and reused by isolated render workspaces; render jobs never resolve MediaSilo or install Chromium
 2026-09-12 quality fix: isolated one-clip workspaces are retained for stability, but low-bitrate shadow encoding is no longer used for qualification artifacts
-2026-09-12 OOM root-cause fix: far-apart montage segments are now extracted independently with bounded decoding, staged losslessly as FFV1/PCM, stitched into a short local source, then passed to the canonical final-quality renderer; no full-reel multi-trim buffering or render-time source-structure rescan
-2026-09-12 CFR fix: final canonical renderer explicitly normalizes output to 60000/1001 CFR after lossless staging and bounds filter/x264 threading; QA now reports actual frame rates on failure
+2026-09-12 OOM root-cause fix: far-apart montage segments are extracted independently with bounded decoding, staged losslessly as FFV1/PCM, stitched into a short local source, then passed to the canonical final-quality renderer; no full-reel multi-trim buffering or render-time source-structure rescan
+2026-09-12 CFR fix: final canonical renderer explicitly normalizes output to 60000/1001 CFR after lossless staging and bounds filter/x264 threading; QA reports actual frame rates on failure
 2026-09-12 FFmpeg compatibility fix: CFR uses -r 60000/1001 plus -vsync cfr so Ubuntu22 FFmpeg 4.4 and Ubuntu24 FFmpeg 6 share the same final encoder path; exact frame-rate QA remains fail-closed
-2026-09-12 source-master fix: MediaSilo fileSize is validated as integer KiB metadata with a strict [KiB*1024, KiB*1024+1024) byte range; type=source, SHA256, geometry and 60000/1001 checks remain fail-closed.
-2026-09-12 qualification retrigger: canonical shadow and production workflows now contain the KiB-aware validator; temporary patch files removed.
+2026-09-12 source-master fix: MediaSilo fileSize is validated as integer KiB metadata with a strict [KiB*1024, KiB*1024+1024) byte range; type=source, SHA256, geometry and 60000/1001 checks remain fail-closed
+2026-09-12 source-fidelity fix: destructive digital zoom/crop-upscale effect paths are disabled in isolated final renders; approved semantic timing/story is rendered source-native full-frame, and every clip must pass objective SSIM >= 0.99 and PSNR >= 40 dB against a lossless FFV1 reference of the identical edit before upload
