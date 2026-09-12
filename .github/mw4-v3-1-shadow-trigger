@@ -12,3 +12,4 @@ qualification clips now render at the requested final master quality: 1920x1080 
 2026-09-12 CFR fix: final canonical renderer explicitly normalizes output to 60000/1001 CFR after lossless staging and bounds filter/x264 threading; QA now reports actual frame rates on failure
 2026-09-12 FFmpeg compatibility fix: CFR uses -r 60000/1001 plus -vsync cfr so Ubuntu22 FFmpeg 4.4 and Ubuntu24 FFmpeg 6 share the same final encoder path; exact frame-rate QA remains fail-closed
 2026-09-12 source-master fix: MediaSilo fileSize is validated as integer KiB metadata with a strict [KiB*1024, KiB*1024+1024) byte range; type=source, SHA256, geometry and 60000/1001 checks remain fail-closed.
+2026-09-12 qualification retrigger: canonical shadow and production workflows now contain the KiB-aware validator; temporary patch files removed.

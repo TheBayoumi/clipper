@@ -194,10 +194,15 @@ jobs:
               raise RuntimeError('refusing non-source MediaSilo derivative before semantic analysis')
 
           actual_size = target.stat().st_size
-          expected_size = int(selected.get('file_size') or 0)
-          if expected_size and actual_size != expected_size:
+          declared_size_kib = int(selected.get('file_size') or 0)
+          declared_floor_bytes = declared_size_kib * 1024 if declared_size_kib else 0
+          if declared_floor_bytes and not (
+              declared_floor_bytes <= actual_size < declared_floor_bytes + 1024
+          ):
               raise RuntimeError(
-                  f'original master byte-size mismatch: downloaded={actual_size} expected={expected_size}'
+                  f'original master size mismatch: downloaded={actual_size} '
+                  f'declared_kib={declared_size_kib} '
+                  f'allowed_bytes=[{declared_floor_bytes},{declared_floor_bytes + 1024})'
               )
 
           probe = json.loads(subprocess.check_output([
@@ -233,7 +238,8 @@ jobs:
               'derivative_type': 'source',
               'proxy_fallback_allowed': False,
               'downloaded_bytes': actual_size,
-              'declared_source_bytes': expected_size or None,
+              'declared_source_size_kib': declared_size_kib or None,
+              'declared_source_floor_bytes': declared_floor_bytes or None,
               'sha256': digest.hexdigest(),
               'probe': probe,
           }
