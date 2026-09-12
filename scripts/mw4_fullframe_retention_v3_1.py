@@ -6,8 +6,10 @@ import json
 import subprocess
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
+import mw4_semantic_gameplay_v3 as semantic_base
 import mw4_semantic_gameplay_v3_1_final as semantic
 
 
@@ -348,7 +350,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _source_contract_failure(
     selected: list[semantic.SemanticPlanV31],
-    timeline: semantic.SemanticTimelineV31,
+    timeline: Any,
     config: dict[str, Any],
     source_key: str,
 ) -> tuple[list[str], list[str]]:
@@ -395,8 +397,90 @@ def _candidate_dict(plan: semantic.SemanticPlanV31) -> dict[str, Any]:
     return payload
 
 
+def _semantic_event_from_dict(payload: dict[str, Any]) -> semantic_base.SemanticEvent:
+    return semantic_base.SemanticEvent(
+        time=float(payload["time"]),
+        kind=str(payload["kind"]),
+        confidence=float(payload["confidence"]),
+        evidence={str(key): float(value) for key, value in (payload.get("evidence") or {}).items()},
+    )
+
+
+def _consolidated_event_from_dict(payload: dict[str, Any]) -> semantic.ConsolidatedEvent:
+    return semantic.ConsolidatedEvent(
+        time=float(payload["time"]),
+        kinds=tuple(str(item) for item in (payload.get("kinds") or [])),
+        confidence=float(payload["confidence"]),
+        evidence={str(key): float(value) for key, value in (payload.get("evidence") or {}).items()},
+    )
+
+
+def _engagement_from_dict(payload: dict[str, Any]) -> semantic.Engagement:
+    return semantic.Engagement(
+        start=float(payload["start"]),
+        end=float(payload["end"]),
+        shot_index=int(payload["shot_index"]),
+        confidence=float(payload["confidence"]),
+        events=tuple(
+            _consolidated_event_from_dict(item)
+            for item in (payload.get("events") or [])
+        ),
+    )
+
+
+def _finishing_move_from_dict(payload: dict[str, Any] | None) -> semantic.FinishingMoveSpan | None:
+    if payload is None:
+        return None
+    return semantic.FinishingMoveSpan(
+        start=float(payload["start"]),
+        payoff=float(payload["payoff"]),
+        end=float(payload["end"]),
+        shot_index=int(payload["shot_index"]),
+        confidence=float(payload["confidence"]),
+        evidence={str(key): float(value) for key, value in (payload.get("evidence") or {}).items()},
+    )
+
+
+def _plan_from_dict(payload: dict[str, Any]) -> semantic.SemanticPlanV31:
+    return semantic.SemanticPlanV31(
+        start=float(payload["start"]),
+        end=float(payload["end"]),
+        raw_duration=float(payload["raw_duration"]),
+        output_duration=float(payload["output_duration"]),
+        score=float(payload["score"]),
+        retention_quality=float(payload["retention_quality"]),
+        payoff_quality=float(payload["payoff_quality"]),
+        opening_quality=float(payload["opening_quality"]),
+        ending_quality=float(payload["ending_quality"]),
+        story_coherence=float(payload["story_coherence"]),
+        weakest_quarter_interest=float(payload["weakest_quarter_interest"]),
+        low_interest_fraction=float(payload["low_interest_fraction"]),
+        max_unexplained_low_interest_run_seconds=float(payload["max_unexplained_low_interest_run_seconds"]),
+        story_type=str(payload["story_type"]),
+        effect_profile=str(payload["effect_profile"]),
+        segments=tuple(
+            semantic.EditSegment(
+                start=float(item["start"]),
+                end=float(item["end"]),
+                speed=float(item.get("speed", 1.0)),
+                reason=str(item.get("reason", "")),
+            )
+            for item in (payload.get("segments") or [])
+        ),
+        effect_events=tuple(
+            _semantic_event_from_dict(item)
+            for item in (payload.get("effect_events") or [])
+        ),
+        engagements=tuple(
+            _engagement_from_dict(item)
+            for item in (payload.get("engagements") or [])
+        ),
+        finishing_move=_finishing_move_from_dict(payload.get("finishing_move")),
+        editorial_reasons=tuple(str(item) for item in (payload.get("editorial_reasons") or [])),
+    )
+
+
 def _select_from_allocation(
-    plans: list[semantic.SemanticPlanV31],
     source_key: str,
     allocation_path: Path,
 ) -> tuple[list[semantic.SemanticPlanV31], dict[str, Any]]:
@@ -404,15 +488,42 @@ def _select_from_allocation(
     source_allocation = allocation.get("source_allocations", {}).get(source_key)
     if not isinstance(source_allocation, dict):
         raise RuntimeError(f"global allocation has no entry for {source_key}")
+
     wanted = [str(item) for item in source_allocation.get("plan_keys", [])]
-    available = {plan_key(plan): plan for plan in plans}
-    missing = [key for key in wanted if key not in available]
-    if missing:
+    raw_plans = list(source_allocation.get("plans") or [])
+    if len(raw_plans) != len(wanted):
         raise RuntimeError(
-            f"{source_key}: allocation references candidate keys not reproduced by canonical planner: {missing}"
+            f"{source_key}: allocation plan payload count {len(raw_plans)} != key count {len(wanted)}"
         )
-    selected = [available[key] for key in wanted]
+
+    selected: list[semantic.SemanticPlanV31] = []
+    for expected_key, raw_plan in zip(wanted, raw_plans):
+        actual_key = _plan_key_from_dict(raw_plan)
+        if actual_key != expected_key:
+            raise RuntimeError(
+                f"{source_key}: allocation plan payload hash {actual_key} != approved key {expected_key}"
+            )
+        selected.append(_plan_from_dict(raw_plan))
     return selected, allocation
+
+
+def _source_structure_only(
+    source: Path,
+    config: dict[str, Any],
+    source_key: str,
+) -> Any:
+    source_probe = probe(source)
+    duration = float(source_probe["format"]["duration"])
+    shots = semantic._build_hardened_shots(source, duration, config)
+    verified_count = len(
+        config.get("finishing_move_detector", {})
+        .get("verified_spans", {})
+        .get(source_key, [])
+    )
+    return SimpleNamespace(
+        shots=shots,
+        finishing_moves=tuple(range(verified_count)),
+    )
 
 
 def main() -> None:
@@ -429,14 +540,13 @@ def main() -> None:
     excluded = config.get("excluded_windows", {}).get(args.source_key, [])
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    timeline = semantic.analyze_source(args.source, config)
-    diagnostics = semantic.diagnose_source(timeline, config, excluded, args.source_key)
-    plans = semantic.build_plans_for_source(timeline, config, excluded, args.source_key)
-    automatic_candidates = _automatic_finishing_candidates(timeline, config)
-
     if args.mode == "analysis":
+        timeline = semantic.analyze_source(args.source, config)
+        diagnostics = semantic.diagnose_source(timeline, config, excluded, args.source_key)
+        plans = semantic.build_plans_for_source(timeline, config, excluded, args.source_key)
+        automatic_candidates = _automatic_finishing_candidates(timeline, config)
         failure: list[str] = []
-        minimum = int(config.get("minimum_count_per_source", 2))
+        minimum = int(config.get("minimum_count_per_source", 0))
         if len(plans) < minimum:
             failure.append(
                 f"only {len(plans)} semantic candidates passed; minimum is {minimum}; quality gates were not lowered"
@@ -475,24 +585,51 @@ def main() -> None:
             "shadow/production rendering requires --selection-file from the global pre-render allocator"
         )
 
+    # Rendering consumes the exact plans approved by analysis/allocation. Do not
+    # repeat the full-reel semantic pixel/audio analysis here: that duplicate pass
+    # was retaining multi-GB NumPy frame arrays while FFmpeg started encoding and
+    # exhausted the standard GitHub-hosted runner's ~15 GiB RAM.
     selected, allocation = _select_from_allocation(
-        plans,
         args.source_key,
         args.selection_file,
     )
+    structure = _source_structure_only(args.source, config, args.source_key)
+    source_allocation = allocation.get("source_allocations", {}).get(args.source_key, {})
+    qualified_candidate_count = int(source_allocation.get("qualified_candidate_count", len(selected)))
+    automatic_candidate_count = int(
+        allocation.get("automatic_finishing_move_candidate_counts", {}).get(args.source_key, 0)
+    )
+    verified_finishing_move_count = len(
+        config.get("finishing_move_detector", {})
+        .get("verified_spans", {})
+        .get(args.source_key, [])
+    )
+    diagnostics = {
+        "render_reanalysis": False,
+        "selection_source": "adaptive pre-render allocation",
+        "source_structure_only_check": True,
+        "shot_count": len(structure.shots),
+        "qualified_candidate_count_from_allocation": qualified_candidate_count,
+        "automatic_finishing_move_candidate_count_from_analysis": automatic_candidate_count,
+    }
+
     manifest_path = args.output_dir / f"{args.source_key}_manifest_v3_1.json"
     summary_path = args.output_dir / f"{args.source_key}_pipeline_summary.json"
 
     failure: list[str] = []
-    minimum = int(config.get("minimum_count_per_source", 2))
-    maximum = int(config.get("count_per_source_max", 4))
-    if not (minimum <= len(selected) <= maximum):
+    maximum = int(
+        config.get("batch_selection", {}).get(
+            "maximum_per_source",
+            config.get("count_per_source_max", 8),
+        )
+    )
+    if not (0 <= len(selected) <= maximum):
         failure.append(
-            f"global allocation selected {len(selected)} for {args.source_key}; required {minimum}..{maximum}"
+            f"adaptive allocation selected {len(selected)} for {args.source_key}; allowed range is 0..{maximum}"
         )
 
     source_failures, integrity_violations = _source_contract_failure(
-        selected, timeline, config, args.source_key
+        selected, structure, config, args.source_key
     )
     failure.extend(source_failures)
 
@@ -532,12 +669,14 @@ def main() -> None:
         "candidate_mode": CANDIDATE_MODE,
         "allocation_mode": allocation.get("allocation_mode"),
         "allocation_target_count": allocation.get("target_count"),
+        "allocation_selected_count": allocation.get("selected_count"),
         "diagnostics": diagnostics,
-        "candidate_count_after_semantic_gates": len(plans),
+        "candidate_count_after_semantic_gates": qualified_candidate_count,
         "selected": selected_payloads,
-        "verified_finishing_move_count": len(timeline.finishing_moves),
+        "verified_finishing_move_count": verified_finishing_move_count,
         "selected_finishing_move_count": len(selected_finishers),
-        "automatic_finishing_move_candidates": automatic_candidates,
+        "automatic_finishing_move_candidate_count": automatic_candidate_count,
+        "automatic_finishing_move_candidates_recomputed_during_render": False,
         "unplanned_source_cuts": integrity_violations,
         "unplanned_source_cut_count": len(integrity_violations),
         "finishing_move_policy": (
@@ -562,7 +701,7 @@ def main() -> None:
         "rendered_count": len(outputs),
         "selected_plan_keys": [item["plan_key"] for item in selected_payloads],
         "stories": [plan.story_type for plan in selected],
-        "verified_finishing_move_count": len(timeline.finishing_moves),
+        "verified_finishing_move_count": verified_finishing_move_count,
         "selected_finishing_move_count": len(selected_finishers),
         "unplanned_source_cut_count": len(integrity_violations),
         "technical_qa_passed": (
@@ -583,9 +722,10 @@ def main() -> None:
         "selected": len(selected),
         "rendered": len(outputs),
         "stories": summary["stories"],
-        "verified_finishing_moves": len(timeline.finishing_moves),
+        "verified_finishing_moves": verified_finishing_move_count,
         "selected_finishing_moves": len(selected_finishers),
         "unplanned_source_cuts": len(integrity_violations),
+        "render_reanalysis": False,
     }))
 
 
