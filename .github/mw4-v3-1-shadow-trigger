@@ -1,8 +1,6 @@
 V3.1 hardened canonical pipeline qualification trigger
-single semantic planner + global pre-render allocation + single renderer
-exact 10 clips must be allocated before FFmpeg renders anything
+single semantic planner + adaptive important-scene pre-render allocation + single renderer
+clip count is determined by semantically distinct important scenes that pass quality/source-integrity gates; no fixed target
 Finishing Move: verified opening hero, 1.0x choreography, no semantic-montage continuation, no transition flash
 shadow uses review bitrate only; production remains 1920x1080 60000/1001 H.264 High 250M CBR
-2026-09-12 corrected-selection-and-finishing-move qualification
-2026-09-12 semantic-uniqueness allocator: shared context allowed; shared payoff/substantial reuse rejected
-2026-09-12 allocator recovery: evaluate up to 40 qualified candidates/source; allow shared setup context when payoff differs
+2026-09-12 adaptive allocation: no filler clips just to hit a number; editorial safety ceiling is 8/source and 20 total
