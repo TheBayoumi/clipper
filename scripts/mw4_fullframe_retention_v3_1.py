@@ -68,7 +68,6 @@ def gate(times: list[float], before: float, after: float) -> str:
 
 
 def _planned_transition_times(plan: semantic.SemanticPlanV31) -> list[float]:
-    """Return output-time joins that the semantic planner explicitly intended."""
     joins: list[float] = []
     output_cursor = 0.0
     for index, segment in enumerate(plan.segments[:-1]):
@@ -84,18 +83,42 @@ def _planned_transition_times(plan: semantic.SemanticPlanV31) -> list[float]:
             and next_segment.reason == "semantic_montage_moment"
         ):
             intentional = True
-        elif plan.story_type == "finishing_move_open":
-            if index == 0 and segment.reason == "finishing_move_open_hero":
-                intentional = True
-            elif (
-                segment.reason == "semantic_montage_moment"
-                and next_segment.reason == "semantic_montage_moment"
-            ):
-                intentional = True
-
+        elif plan.story_type == "finishing_move_open" and index == 0:
+            intentional = segment.reason == "finishing_move_open_hero"
         if intentional:
             joins.append(output_cursor)
     return joins
+
+
+def _plan_key_from_dict(plan: dict[str, Any]) -> str:
+    finishing = plan.get("finishing_move")
+    payload = {
+        "story_type": str(plan.get("story_type", "")),
+        "effect_profile": str(plan.get("effect_profile", "")),
+        "segments": [
+            [
+                round(float(segment["start"]), 3),
+                round(float(segment["end"]), 3),
+                round(float(segment.get("speed", 1.0)), 3),
+                str(segment.get("reason", "")),
+            ]
+            for segment in (plan.get("segments") or [])
+        ],
+        "finishing_move": None
+        if finishing is None
+        else [
+            round(float(finishing["start"]), 3),
+            round(float(finishing["payoff"]), 3),
+            round(float(finishing["end"]), 3),
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:24]
+
+
+def plan_key(plan: semantic.SemanticPlanV31) -> str:
+    return _plan_key_from_dict(asdict(plan))
 
 
 def build_filter(
@@ -127,28 +150,23 @@ def build_filter(
     transition_after = float(transition_cfg.get("transition_flash_after_seconds", 0.055))
 
     if profile == "finishing_move_hero" and plan.finishing_move is not None:
-        trigger = source_time_to_output(plan.finishing_move.start, plan.segments)
         payoff = source_time_to_output(plan.finishing_move.payoff, plan.segments)
-        finish_end = source_time_to_output(plan.finishing_move.end, plan.segments)
-        if trigger is None or payoff is None:
+        impact_percent = float(config.get("editorial", {}).get("finishing_move_impact_bump_percent", 0.012))
+        impact_before = float(config.get("editorial", {}).get("finishing_move_impact_bump_before_seconds", 0.035))
+        impact_after = float(config.get("editorial", {}).get("finishing_move_impact_bump_after_seconds", 0.085))
+        if payoff is None or impact_percent <= 0.0:
             parts.append("[vsrc]scale=1920:1080:flags=lanczos,setsar=1[outv]")
         else:
-            span_end = finish_end if finish_end is not None else payoff + 0.35
+            impact_w = max(1920, int(round(1920 * (1.0 + impact_percent) / 2.0) * 2))
+            impact_h = max(1080, int(round(1080 * (1.0 + impact_percent) / 2.0) * 2))
+            x = max(0, (impact_w - 1920) // 2)
+            y = max(0, (impact_h - 1080) // 2)
             parts.extend([
-                "[vsrc]split=3[vbase][vhero][vimpact]",
+                "[vsrc]split=2[vbase][vimpact]",
                 "[vbase]scale=1920:1080:flags=lanczos,setsar=1[base]",
-                "[vhero]crop=1888:1062:(iw-1888)/2:(ih-1062)/2,scale=1920:1080:flags=lanczos,setsar=1[hero]",
-                "[vimpact]scale=1944:1094:flags=lanczos,crop=1920:1080:x='12+5*sin(95*t)':y='7+2*sin(79*t)',setsar=1[impact]",
-                f"[base][hero]overlay=0:0:enable='between(t,{max(0.0, trigger):.3f},{max(trigger, span_end):.3f})'[fx1]",
-                f"[fx1][impact]overlay=0:0:enable='{gate([payoff], .055, .135)}'[fx2]",
+                f"[vimpact]scale={impact_w}:{impact_h}:flags=lanczos,crop=1920:1080:{x}:{y},setsar=1[impact]",
+                f"[base][impact]overlay=0:0:enable='{gate([payoff], impact_before, impact_after)}'[outv]",
             ])
-            if transition_times:
-                parts.append(
-                    f"[fx2]drawbox=x=0:y=0:w=iw:h=ih:color=white@{transition_opacity:.3f}:t=fill:"
-                    f"enable='{gate(transition_times, transition_before, transition_after)}'[outv]"
-                )
-            else:
-                parts.append("[fx2]null[outv]")
     elif profile == "semantic_montage":
         punch_times = times[:3]
         if punch_times:
@@ -350,6 +368,53 @@ def _source_contract_failure(
     return failures, violations
 
 
+def _automatic_finishing_candidates(
+    timeline: semantic.SemanticTimelineV31,
+    config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    cfg = config.get("finishing_move_detector", {})
+    if not bool(cfg.get("automatic_discovery_enabled", True)):
+        return []
+    review_threshold = float(cfg.get("automatic_review_confidence", 0.72))
+    heuristic = semantic.refined.core.detect_finishing_moves(
+        timeline.base,
+        timeline.shots,
+        timeline.engagements,
+        config,
+    )
+    return [
+        asdict(span)
+        for span in heuristic
+        if float(span.confidence) >= review_threshold
+    ]
+
+
+def _candidate_dict(plan: semantic.SemanticPlanV31) -> dict[str, Any]:
+    payload = asdict(plan)
+    payload["plan_key"] = _plan_key_from_dict(payload)
+    return payload
+
+
+def _select_from_allocation(
+    plans: list[semantic.SemanticPlanV31],
+    source_key: str,
+    allocation_path: Path,
+) -> tuple[list[semantic.SemanticPlanV31], dict[str, Any]]:
+    allocation = json.loads(allocation_path.read_text(encoding="utf-8"))
+    source_allocation = allocation.get("source_allocations", {}).get(source_key)
+    if not isinstance(source_allocation, dict):
+        raise RuntimeError(f"global allocation has no entry for {source_key}")
+    wanted = [str(item) for item in source_allocation.get("plan_keys", [])]
+    available = {plan_key(plan): plan for plan in plans}
+    missing = [key for key in wanted if key not in available]
+    if missing:
+        raise RuntimeError(
+            f"{source_key}: allocation references candidate keys not reproduced by canonical planner: {missing}"
+        )
+    selected = [available[key] for key in wanted]
+    return selected, allocation
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-key", required=True)
@@ -357,6 +422,7 @@ def main() -> None:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--mode", choices=("shadow", "production", "analysis"), default="production")
+    parser.add_argument("--selection-file", type=Path)
     args = parser.parse_args()
 
     config = json.loads(args.config.read_text(encoding="utf-8"))
@@ -366,19 +432,64 @@ def main() -> None:
     timeline = semantic.analyze_source(args.source, config)
     diagnostics = semantic.diagnose_source(timeline, config, excluded, args.source_key)
     plans = semantic.build_plans_for_source(timeline, config, excluded, args.source_key)
+    automatic_candidates = _automatic_finishing_candidates(timeline, config)
 
+    if args.mode == "analysis":
+        failure: list[str] = []
+        minimum = int(config.get("minimum_count_per_source", 2))
+        if len(plans) < minimum:
+            failure.append(
+                f"only {len(plans)} semantic candidates passed; minimum is {minimum}; quality gates were not lowered"
+            )
+        analysis_path = args.output_dir / f"{args.source_key}_analysis_v3_1.json"
+        analysis = {
+            "version": "3.1",
+            "mode": "analysis",
+            "source_key": args.source_key,
+            "semantic_engine": ENGINE,
+            "editorial_planner": EDITOR,
+            "candidate_mode": CANDIDATE_MODE,
+            "diagnostics": diagnostics,
+            "candidate_count_after_semantic_gates": len(plans),
+            "candidate_pool": [_candidate_dict(plan) for plan in plans],
+            "verified_finishing_move_count": len(timeline.finishing_moves),
+            "verified_finishing_moves": [asdict(span) for span in timeline.finishing_moves],
+            "automatic_finishing_move_candidates": automatic_candidates,
+            "automatic_finishing_move_candidates_are_discovery_only": True,
+            "failure": failure or None,
+        }
+        _write_json(analysis_path, analysis)
+        if failure:
+            raise RuntimeError("; ".join(failure))
+        print(json.dumps({
+            "source": args.source_key,
+            "mode": "analysis",
+            "candidates": len(plans),
+            "verified_finishing_moves": len(timeline.finishing_moves),
+            "automatic_finishing_move_candidates": len(automatic_candidates),
+        }))
+        return
+
+    if args.selection_file is None:
+        raise RuntimeError(
+            "shadow/production rendering requires --selection-file from the global pre-render allocator"
+        )
+
+    selected, allocation = _select_from_allocation(
+        plans,
+        args.source_key,
+        args.selection_file,
+    )
     manifest_path = args.output_dir / f"{args.source_key}_manifest_v3_1.json"
     summary_path = args.output_dir / f"{args.source_key}_pipeline_summary.json"
 
-    minimum = int(config.get("minimum_count_per_source", 2))
     failure: list[str] = []
-    selected: list[semantic.SemanticPlanV31] = []
-    if len(plans) < minimum:
+    minimum = int(config.get("minimum_count_per_source", 2))
+    maximum = int(config.get("count_per_source_max", 4))
+    if not (minimum <= len(selected) <= maximum):
         failure.append(
-            f"only {len(plans)} semantic candidates passed; minimum is {minimum}; quality gates were not lowered"
+            f"global allocation selected {len(selected)} for {args.source_key}; required {minimum}..{maximum}"
         )
-    else:
-        selected = semantic.select_plans(plans, config)
 
     source_failures, integrity_violations = _source_contract_failure(
         selected, timeline, config, args.source_key
@@ -386,7 +497,7 @@ def main() -> None:
     failure.extend(source_failures)
 
     outputs: list[dict[str, Any]] = []
-    if not failure and args.mode != "analysis":
+    if not failure:
         sheets = args.output_dir / "contact_sheets"
         for index, plan in enumerate(selected, 1):
             suffix = "250M" if args.mode == "production" else "SHADOW"
@@ -398,10 +509,12 @@ def main() -> None:
             render_candidate(args.source, plan, config, target, mode=args.mode)
             qa = validate_output(target, config, mode=args.mode)
             create_contact_sheets(target, sheets)
+            payload = _candidate_dict(plan)
             outputs.append({
                 "file": name,
                 "sha256": sha256(target),
-                "editorial_plan": asdict(plan),
+                "plan_key": payload["plan_key"],
+                "editorial_plan": payload,
                 "qa": qa,
             })
 
@@ -409,6 +522,7 @@ def main() -> None:
         plan for plan in selected
         if plan.story_type == "finishing_move_open" and plan.finishing_move is not None
     ]
+    selected_payloads = [_candidate_dict(item) for item in selected]
     manifest = {
         "version": "3.1",
         "mode": args.mode,
@@ -416,16 +530,19 @@ def main() -> None:
         "semantic_engine": ENGINE,
         "editorial_planner": EDITOR,
         "candidate_mode": CANDIDATE_MODE,
+        "allocation_mode": allocation.get("allocation_mode"),
+        "allocation_target_count": allocation.get("target_count"),
         "diagnostics": diagnostics,
         "candidate_count_after_semantic_gates": len(plans),
-        "selected": [asdict(item) for item in selected],
+        "selected": selected_payloads,
         "verified_finishing_move_count": len(timeline.finishing_moves),
         "selected_finishing_move_count": len(selected_finishers),
+        "automatic_finishing_move_candidates": automatic_candidates,
         "unplanned_source_cuts": integrity_violations,
         "unplanned_source_cut_count": len(integrity_violations),
         "finishing_move_policy": (
-            "verified Finishing Moves are opening-only protected hero events; "
-            "one deliberate montage continuation is allowed when needed to reach >=10 s"
+            "verified Finishing Moves are opening-only, full-frame 1.0x protected hero events; "
+            "no semantic-montage continuation and no transition flash are permitted"
         ),
         "full_source_frame": True,
         "hook_text_added": False,
@@ -443,13 +560,14 @@ def main() -> None:
         "source_key": args.source_key,
         "selected_count": len(selected),
         "rendered_count": len(outputs),
+        "selected_plan_keys": [item["plan_key"] for item in selected_payloads],
         "stories": [plan.story_type for plan in selected],
         "verified_finishing_move_count": len(timeline.finishing_moves),
         "selected_finishing_move_count": len(selected_finishers),
         "unplanned_source_cut_count": len(integrity_violations),
         "technical_qa_passed": (
-            args.mode == "analysis"
-            or (len(outputs) == len(selected) and all(all(item["qa"]["checks"].values()) for item in outputs))
+            len(outputs) == len(selected)
+            and all(all(item["qa"]["checks"].values()) for item in outputs)
         ),
         "manifest": manifest_path.name,
         "failure": failure or None,
