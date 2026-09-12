@@ -45,7 +45,9 @@ def test_production_workflow_is_single_pass_resumable_and_exact_head() -> None:
     assert "_spawn_recoverable_modal_call(" in watchdog
     assert "function.spawn(request)" not in watchdog
     assert "call, call_started, submission_error = _spawn_recoverable_modal_call(" in watchdog
-    assert "call.get(timeout=min(poll_seconds, remaining_wall_seconds))" in watchdog
+    assert "call.get(timeout=poll_seconds)" in watchdog
+    assert "enforce_budget=False" in watchdog
+    assert "remaining_wall_seconds" not in watchdog
     assert "production_call_cancel_retry" in watchdog
     assert "production_call_cancel_requested" in watchdog
     assert "production_call_cancel_unconfirmed" in watchdog
