@@ -124,6 +124,7 @@ def _source_payload(
                 budget=budget,
                 attempt_evidence=attempts,
                 execution_id=execution_id,
+                enforce_budget=False,
             )
             _write_json(Path("open-evidence/source-master.json"), evidence)
         finally:
@@ -530,6 +531,7 @@ def run(*, render: bool) -> dict[str, Any]:
             budget=budget,
             gpu_count=2.0,
             estimated_usd_per_second=0.000444,
+            enforce_budget=False,
         )
         # FunctionCall.from_id(...) is intentionally recoverable but unhydrated.
         # Hydrate it before reading object_id; Modal 1.5.x raises AttributeError

@@ -382,6 +382,7 @@ def _spawn_recoverable_modal_call(
     budget: _BudgetLedger,
     gpu_count: float,
     estimated_usd_per_second: float,
+    enforce_budget: bool = True,
 ) -> tuple[Any, float, RuntimeError | None]:
     """Allocate a Modal call ID before attaching the producer input.
 
@@ -457,18 +458,19 @@ def _spawn_recoverable_modal_call(
         gpu_count=gpu_count,
         estimated_usd_per_second=estimated_usd_per_second,
     )
-    remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
     started = time.monotonic()
-    if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
-        return (
-            call,
-            started,
-            ProductionBudgetExceeded(
-                "production budget exhausted before Modal producer input attachment: "
-                f"gpu_seconds={budget.gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
-                f"estimated_usd={budget.estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
-            ),
-        )
+    if enforce_budget:
+        remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
+        if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
+            return (
+                call,
+                started,
+                ProductionBudgetExceeded(
+                    "production budget exhausted before Modal producer input attachment: "
+                    f"gpu_seconds={budget.gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
+                    f"estimated_usd={budget.estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
+                ),
+            )
 
     async def submit_input() -> None:
         nonlocal started
@@ -479,13 +481,14 @@ def _spawn_recoverable_modal_call(
             estimated_usd_per_second=estimated_usd_per_second,
         )
         started = attachment_boundary
-        remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
-        if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
-            raise ProductionBudgetExceeded(
-                "production budget exhausted at Modal producer input attachment boundary: "
-                f"gpu_seconds={budget.gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
-                f"estimated_usd={budget.estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
-            )
+        if enforce_budget:
+            remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
+            if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
+                raise ProductionBudgetExceeded(
+                    "production budget exhausted at Modal producer input attachment boundary: "
+                    f"gpu_seconds={budget.gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
+                    f"estimated_usd={budget.estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
+                )
         response = await internal_function.client.stub.FunctionPutInputs(
             api_pb2.FunctionPutInputsRequest(
                 function_id=function_id,
@@ -525,6 +528,7 @@ def _invoke_remote_with_budget(
     budget: _BudgetLedger | None = None,
     gpu_count: float = _MODAL_ROOT_GPU_COUNT,
     estimated_usd_per_second: float = _MODAL_ROOT_ESTIMATED_USD_PER_SECOND,
+    enforce_budget: bool = True,
 ) -> object:
     if budget is None:
         if max_gpu_seconds is None or max_estimated_usd is None:
@@ -535,17 +539,19 @@ def _invoke_remote_with_budget(
         raise ValueError("CLIPPER_MODAL_SPY_POLL_SECONDS must be finite and positive")
     budget._rate(gpu_count, name="gpu_count")
     budget._rate(estimated_usd_per_second, name="estimated_usd_per_second")
-    remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
-    if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
-        raise ProductionBudgetExceeded(
-            "production budget exhausted before recoverable Modal call allocation"
-        )
+    if enforce_budget:
+        remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
+        if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
+            raise ProductionBudgetExceeded(
+                "production budget exhausted before recoverable Modal call allocation"
+            )
     call, started, submission_error = _spawn_recoverable_modal_call(
         function,
         request,
         budget=budget,
         gpu_count=gpu_count,
         estimated_usd_per_second=estimated_usd_per_second,
+        enforce_budget=enforce_budget,
     )
     terminal_result = False
     charged_elapsed_seconds = 0.0
@@ -586,28 +592,32 @@ def _invoke_remote_with_budget(
             raise submission_error
         call.hydrate()
         while True:
-            gpu_seconds, estimated_usd = budget_usage()
-            remaining_seconds = remaining_budget_wall_seconds()
-            if remaining_seconds <= 0:
-                raise ProductionBudgetExceeded(
-                    "CLI production call exceeded its in-flight compute budget: "
-                    f"gpu_seconds={gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
-                    f"estimated_usd={estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
-                )
+            timeout = poll_seconds
+            if enforce_budget:
+                gpu_seconds, estimated_usd = budget_usage()
+                remaining_seconds = remaining_budget_wall_seconds()
+                if remaining_seconds <= 0:
+                    raise ProductionBudgetExceeded(
+                        "CLI production call exceeded its in-flight compute budget: "
+                        f"gpu_seconds={gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
+                        f"estimated_usd={estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
+                    )
+                timeout = min(poll_seconds, remaining_seconds)
             try:
-                result = call.get(timeout=min(poll_seconds, remaining_seconds))
+                result = call.get(timeout=timeout)
             except TimeoutError:
                 continue
             terminal_result = True
             charge_elapsed()
-            gpu_seconds = budget.gpu_seconds
-            estimated_usd = budget.estimated_usd
-            if gpu_seconds > budget.max_gpu_seconds or estimated_usd > budget.max_estimated_usd:
-                raise ProductionBudgetExceeded(
-                    "CLI production call exceeded its compute budget on the final poll: "
-                    f"gpu_seconds={gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
-                    f"estimated_usd={estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
-                )
+            if enforce_budget:
+                gpu_seconds = budget.gpu_seconds
+                estimated_usd = budget.estimated_usd
+                if gpu_seconds > budget.max_gpu_seconds or estimated_usd > budget.max_estimated_usd:
+                    raise ProductionBudgetExceeded(
+                        "CLI production call exceeded its compute budget on the final poll: "
+                        f"gpu_seconds={gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
+                        f"estimated_usd={estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
+                    )
             return result
     finally:
         if not terminal_result:
@@ -615,15 +625,16 @@ def _invoke_remote_with_budget(
                 _cancel_remote_call(call)
             finally:
                 charge_elapsed()
-            gpu_seconds = budget.gpu_seconds
-            estimated_usd = budget.estimated_usd
-            if gpu_seconds > budget.max_gpu_seconds or estimated_usd > budget.max_estimated_usd:
-                raise ProductionBudgetExceeded(
-                    "CLI production call exceeded its compute budget through cancellation "
-                    "acknowledgement: "
-                    f"gpu_seconds={gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
-                    f"estimated_usd={estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
-                )
+            if enforce_budget:
+                gpu_seconds = budget.gpu_seconds
+                estimated_usd = budget.estimated_usd
+                if gpu_seconds > budget.max_gpu_seconds or estimated_usd > budget.max_estimated_usd:
+                    raise ProductionBudgetExceeded(
+                        "CLI production call exceeded its compute budget through cancellation "
+                        "acknowledgement: "
+                        f"gpu_seconds={gpu_seconds:.3f}/{budget.max_gpu_seconds:.3f} "
+                        f"estimated_usd={estimated_usd:.6f}/{budget.max_estimated_usd:.6f}"
+                    )
 
 
 def _deploy(script: Path) -> None:
@@ -790,6 +801,7 @@ def _acquire_remote_source(
     budget: _BudgetLedger | None = None,
     attempt_evidence: list[dict[str, object]] | None = None,
     execution_id: str | None = None,
+    enforce_budget: bool = True,
 ) -> dict[str, Any]:
     if len(expected_git_sha) != 40 or any(
         character not in "0123456789abcdef" for character in expected_git_sha.lower()
@@ -874,6 +886,7 @@ def _acquire_remote_source(
                 budget=budget,
                 gpu_count=0.0,
                 estimated_usd_per_second=_MODAL_ACQUISITION_ESTIMATED_USD_PER_SECOND,
+                enforce_budget=enforce_budget,
             )
         except ProductionBudgetExceeded:
             if attempt_evidence is not None:

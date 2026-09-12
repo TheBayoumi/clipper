@@ -203,7 +203,7 @@ def _modal(call: _Call):
         @staticmethod
         def from_name(app: str, function: str):
             assert app == "pipeline"
-            assert function == "run_full_cycle"
+            assert function in {"run_full_cycle", "acquire_source"}
             return SimpleNamespace(_test_call=call)
 
     return SimpleNamespace(Function=_Function)
@@ -824,3 +824,55 @@ def test_watchdog_cancels_exact_call_if_spy_thread_dies(
         module.run(render=False)
 
     assert call.cancel_args == [False]
+
+
+def test_watchdog_disables_budget_enforcement_for_source_and_root_calls(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _module()
+    _environment(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "ModalExecutionSpy", _Spy)
+    monkeypatch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex="e" * 32))
+    source_modes: list[bool] = []
+    root_modes: list[bool] = []
+
+    def acquire(*_args: object, **kwargs: object) -> dict[str, object]:
+        source_modes.append(bool(kwargs.get("enforce_budget")))
+        return {
+            "video_id": "video",
+            "channel_id": "channel",
+            "quality_policy": "highest_available_no_transcode",
+            "sha256": "s" * 64,
+            "volume_path": "/inputs/video/master.mp4",
+        }
+
+    class Call(_Call):
+        def get(self, *, timeout: float):
+            return {
+                "status": "PASS",
+                "execution_mode": "resume",
+                "execution_id": "e" * 32,
+                "deployed_git_sha": "a" * 40,
+                "pipeline_status": "SUCCESS",
+                "review_status": "NOT_RENDERED",
+                "run_volume": "volume",
+                "run_path": "/run",
+            }
+
+    call = Call({})
+
+    def spawn(*_args: object, **kwargs: object):
+        root_modes.append(bool(kwargs.get("enforce_budget")))
+        return call, module.time.monotonic(), None
+
+    monkeypatch.setattr(module, "_acquire_remote_source", acquire)
+    monkeypatch.setattr(module, "_spawn_recoverable_modal_call", spawn)
+    monkeypatch.setattr(module, "_cached_source_evidence", lambda: None)
+    monkeypatch.setitem(sys.modules, "modal", _modal(call))
+
+    result = module.run(render=False)
+
+    assert result["status"] == "PASS"
+    assert source_modes == [False]
+    assert root_modes == [False]

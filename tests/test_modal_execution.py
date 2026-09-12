@@ -2216,7 +2216,6 @@ def test_run_modal_pipeline_rejects_missing_resume_provenance_before_modal_work(
     function.assert_not_called()
 
 
-
 def test_cancel_remote_call_requires_exact_terminal_confirmation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2313,14 +2312,20 @@ def test_reviewed_resume_provenance_rejects_missing_or_malformed_registry(
     monkeypatch.setattr("clipper.modal_execution._repo_root", lambda: tmp_path)
     with pytest.raises(RuntimeError, match="valid reviewed provenance registry"):
         _load_reviewed_resume_provenance(
-            requested_run_id="123", brief_path=brief_path, campaign_id="campaign", candidates=candidates
+            requested_run_id="123",
+            brief_path=brief_path,
+            campaign_id="campaign",
+            candidates=candidates,
         )
     acceptance = tmp_path / "acceptance"
     acceptance.mkdir()
     (acceptance / "resume-provenance.json").write_text("{bad-json", encoding="utf-8")
     with pytest.raises(RuntimeError, match="valid reviewed provenance registry"):
         _load_reviewed_resume_provenance(
-            requested_run_id="123", brief_path=brief_path, campaign_id="campaign", candidates=candidates
+            requested_run_id="123",
+            brief_path=brief_path,
+            campaign_id="campaign",
+            candidates=candidates,
         )
 
 
@@ -2364,3 +2369,134 @@ def test_reviewed_resume_provenance_rejects_identity_and_compatibility_drift(
 
 def test_cancellation_confirmation_unknown_error_is_not_terminal() -> None:
     assert _cancellation_confirmation_is_terminal(RuntimeError("unknown")) is False
+
+
+def test_hilp_advisory_budget_opt_out_allows_exhausted_recoverable_submission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+    map_response = SimpleNamespace(
+        function_call_id="fc-recoverable",
+        pipelined_inputs=[],
+    )
+    put_response = SimpleNamespace(inputs=[SimpleNamespace(input_id="in-1")])
+    modal, async_utils, function_utils, api_pb2, stub, events = _fake_modal_submission_modules(
+        map_response=map_response,
+        put_response=put_response,
+    )
+
+    async def slow_serialize(*_args: object, **_kwargs: object) -> object:
+        clock["now"] = 2.0
+        return "serialized-input"
+
+    function_utils._create_input.side_effect = slow_serialize
+    modules = {
+        "modal": modal,
+        "modal._utils.async_utils": async_utils,
+        "modal._utils.function_utils": function_utils,
+        "modal_proto.api_pb2": api_pb2,
+    }
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        "clipper.modal_execution.importlib.import_module",
+        lambda name: modules[name],
+    )
+    budget = _BudgetLedger(1.0, 100.0)
+
+    call, _started, error = _real_spawn_recoverable_modal_call(
+        object(),
+        {"request": True},
+        budget=budget,
+        gpu_count=1.0,
+        estimated_usd_per_second=0.0,
+        enforce_budget=False,
+    )
+
+    assert call.object_id == "fc-recoverable"
+    assert error is None
+    assert events == ["from-id", "put-input"]
+    stub.FunctionPutInputs.assert_awaited_once()
+    assert budget.gpu_seconds > budget.max_gpu_seconds
+
+
+def test_hilp_advisory_budget_opt_out_does_not_cap_or_cancel_remote_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+    monkeypatch.setattr("clipper.modal_execution.time.monotonic", lambda: clock["now"])
+    monkeypatch.setenv("CLIPPER_MODAL_SPY_POLL_SECONDS", "5")
+
+    class AdvisoryCall:
+        def __init__(self) -> None:
+            self.timeouts: list[float] = []
+            self.cancel_args: list[bool] = []
+
+        def hydrate(self) -> None:
+            return None
+
+        def get(self, *, timeout: float) -> object:
+            self.timeouts.append(timeout)
+            if len(self.timeouts) == 1:
+                clock["now"] = 3.0
+                raise TimeoutError
+            clock["now"] = 4.0
+            return {"ok": True}
+
+        def cancel(self, *, terminate_containers: bool) -> None:
+            self.cancel_args.append(terminate_containers)
+
+    call = AdvisoryCall()
+    function = SimpleNamespace(spawn=Mock(return_value=call))
+    budget = _BudgetLedger(1.0, 1.0)
+    budget.gpu_seconds = 1.0
+
+    result = _invoke_remote_with_budget(
+        function,
+        {"request": True},
+        budget=budget,
+        gpu_count=1.0,
+        estimated_usd_per_second=0.0,
+        enforce_budget=False,
+    )
+
+    assert result == {"ok": True}
+    assert call.timeouts == [pytest.approx(5.0), pytest.approx(5.0)]
+    assert call.cancel_args == []
+    assert budget.gpu_seconds > budget.max_gpu_seconds
+
+
+def test_source_acquisition_forwards_advisory_budget_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    candidate = VideoCandidate(
+        "video",
+        "title",
+        "channel",
+        "channel-title",
+        "https://www.youtube.com/watch?v=video",
+    )
+    function = Mock()
+    variant = Mock()
+    function.with_options.return_value = variant
+    observed: list[bool] = []
+
+    def invoke(_function: object, _payload: object, **kwargs: object) -> object:
+        observed.append(bool(kwargs.get("enforce_budget")))
+        return {
+            "video_id": "video",
+            "channel_id": "channel",
+            "quality_policy": "highest_available_no_transcode",
+            "bytes": 1,
+            "sha256": "a" * 64,
+            "volume_path": "/inputs/video/master.mp4",
+        }
+
+    monkeypatch.setattr("clipper.modal_execution._invoke_remote_with_budget", invoke)
+    result = _acquire_remote_source(
+        function,
+        candidate,
+        expected_git_sha="b" * 40,
+        budget=_BudgetLedger(1.0, 1.0),
+        enforce_budget=False,
+    )
+
+    assert result["video_id"] == "video"
+    assert observed == [False]
