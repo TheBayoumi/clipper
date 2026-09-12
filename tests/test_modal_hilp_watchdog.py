@@ -538,7 +538,7 @@ def test_watchdog_uses_hard_cancel_ack_when_terminal_confirmation_transport_fail
     assert summary["root_call_cancellation_failure"] is None
 
 
-def test_watchdog_counts_successful_hydration_against_compute_budget(
+def test_watchdog_accounting_threshold_does_not_stop_after_hydration(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -555,20 +555,34 @@ def test_watchdog_counts_successful_hydration_against_compute_budget(
             clock["now"] = 0.6
 
         def get(self, *, timeout: float):
-            if self.cancel_requested:
-                raise InputCancellation("cancelled")
-            raise AssertionError(f"budget must fail before polling, got timeout={timeout}")
+            assert timeout == pytest.approx(0.001)
+            clock["now"] = 1.0
+            return {
+                "status": "PASS",
+                "execution_mode": "resume",
+                "execution_id": "e" * 32,
+                "deployed_git_sha": "a" * 40,
+                "pipeline_status": "SUCCESS",
+                "review_status": "NOT_RENDERED",
+                "run_volume": "volume",
+                "run_path": "/run",
+            }
 
     call = SlowHydrateCall({})
     monkeypatch.setitem(sys.modules, "modal", _modal(call))
 
-    with pytest.raises(RuntimeError, match="production budget reached"):
-        module.run(render=False)
+    result = module.run(render=False)
 
-    assert call.cancel_args == [False]
+    assert result["status"] == "PASS"
+    assert call.cancel_args == []
+    summary = json.loads(
+        (tmp_path / "open-evidence" / "modal-spy-summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["budget_enforcement"] is False
+    assert summary["budget"]["gpu_seconds"] > summary["budget"]["max_gpu_seconds"]
 
 
-def test_watchdog_caps_poll_timeout_to_remaining_compute_budget(
+def test_watchdog_poll_timeout_is_not_capped_by_accounting_threshold(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -581,26 +595,39 @@ def test_watchdog_caps_poll_timeout_to_remaining_compute_budget(
     clock = {"now": 0.0}
     monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
 
-    class BudgetPollCall(_Call):
+    class AccountingPollCall(_Call):
         def __init__(self) -> None:
             super().__init__({})
             self.timeouts: list[float] = []
 
         def get(self, *, timeout: float):
-            if self.cancel_requested:
-                raise InputCancellation("cancelled")
             self.timeouts.append(timeout)
-            clock["now"] = timeout
-            raise TimeoutError
+            if len(self.timeouts) == 1:
+                clock["now"] = 3.0
+                raise TimeoutError
+            return {
+                "status": "PASS",
+                "execution_mode": "resume",
+                "execution_id": "e" * 32,
+                "deployed_git_sha": "a" * 40,
+                "pipeline_status": "SUCCESS",
+                "review_status": "NOT_RENDERED",
+                "run_volume": "volume",
+                "run_path": "/run",
+            }
 
-    call = BudgetPollCall()
+    call = AccountingPollCall()
     monkeypatch.setitem(sys.modules, "modal", _modal(call))
 
-    with pytest.raises(RuntimeError, match="production budget reached"):
-        module.run(render=False)
+    result = module.run(render=False)
 
-    assert call.timeouts == [pytest.approx(0.5)]
-    assert call.cancel_args == [False]
+    assert result["status"] == "PASS"
+    assert call.timeouts == [pytest.approx(5.0), pytest.approx(5.0)]
+    assert call.cancel_args == []
+    summary = json.loads(
+        (tmp_path / "open-evidence" / "modal-spy-summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["budget"]["gpu_seconds"] > summary["budget"]["max_gpu_seconds"]
 
 
 def test_watchdog_retries_exact_call_cancellation_before_marking_cancelled(
@@ -635,7 +662,7 @@ def test_watchdog_retries_exact_call_cancellation_before_marking_cancelled(
     assert call.cancel_args == [False]
 
 
-def test_watchdog_rechecks_budget_after_successful_final_poll(
+def test_watchdog_records_threshold_overrun_without_rejecting_final_poll(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -647,7 +674,7 @@ def test_watchdog_rechecks_budget_after_successful_final_poll(
     clock = {"now": 0.0}
     monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
 
-    class BudgetCall(_Call):
+    class AccountingCall(_Call):
         def get(self, *, timeout: float):
             assert timeout > 0
             clock["now"] = 1.0
@@ -662,17 +689,19 @@ def test_watchdog_rechecks_budget_after_successful_final_poll(
                 "run_path": "/run",
             }
 
-    call = BudgetCall({})
+    call = AccountingCall({})
     monkeypatch.setitem(sys.modules, "modal", _modal(call))
 
-    try:
-        module.run(render=False)
-    except RuntimeError as exc:
-        assert "GPU budget exceeded by completed production call" in str(exc)
-    else:
-        raise AssertionError("final successful poll must still enforce the GPU budget")
+    result = module.run(render=False)
 
+    assert result["status"] == "PASS"
     assert call.cancel_args == []
+    summary = json.loads(
+        (tmp_path / "open-evidence" / "modal-spy-summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["budget_enforcement"] is False
+    assert summary["budget"]["gpu_seconds"] == pytest.approx(2.0)
+    assert summary["budget"]["remaining_gpu_seconds"] == pytest.approx(0.0)
 
 
 @pytest.mark.parametrize(

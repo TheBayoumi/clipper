@@ -465,7 +465,7 @@ def run(*, render: bool) -> dict[str, Any]:
         # Modal documents terminate_containers=True as terminating the containers
         # running this FunctionCall's cancelled inputs; concurrently affected inputs
         # are rescheduled. Treat the successful exact-call hard-cancel request as the
-        # budget-enforcement backstop, while still trying to obtain terminal evidence.
+        # termination backstop, while still trying to obtain terminal evidence.
         root_hard_termination_succeeded = True
         confirmed_by = confirm_terminal(phase="hard_cancel")
         cancelled.set()
@@ -504,11 +504,8 @@ def run(*, render: bool) -> dict[str, Any]:
         resume_provenance = _validated_resume_provenance(source_payload)
         if resume_provenance is not None:
             _write_json(evidence_dir / "resume-provenance-validated.json", resume_provenance)
-        remaining_gpu_seconds, remaining_estimated_usd = budget.remaining_budgets()
-        if remaining_gpu_seconds <= 0 or remaining_estimated_usd <= 0:
-            raise RuntimeError(
-                "source acquisition exhausted the production budget before root execution"
-            )
+        # Compute thresholds are retained for accounting/evidence only. They must never
+        # prevent root execution or terminate HILP/production once rights and static gates pass.
         request = {
             "sources": [source_payload],
             "brief_yaml": scoped_brief_yaml,
@@ -519,8 +516,8 @@ def run(*, render: bool) -> dict[str, Any]:
             "resume_provenance": resume_provenance,
             "git_sha": os.environ["CLIPPER_ACCEPTANCE_SHA"],
             "execution_id": execution_id,
-            "max_gpu_seconds": remaining_gpu_seconds,
-            "max_estimated_usd": remaining_estimated_usd,
+            "max_gpu_seconds": max_gpu_seconds,
+            "max_estimated_usd": max_estimated_usd,
         }
 
         function = modal.Function.from_name(
@@ -559,6 +556,7 @@ def run(*, render: bool) -> dict[str, Any]:
             "editorial_acceptance_probe": request["editorial_acceptance_probe"],
             "max_gpu_seconds": max_gpu_seconds,
             "max_estimated_usd": max_estimated_usd,
+            "budget_enforcement": False,
             "spawned_at": datetime.now(UTC).isoformat(),
         }
         _write_json(evidence_dir / "modal-function-call.json", metadata)
@@ -575,27 +573,10 @@ def run(*, render: bool) -> dict[str, Any]:
                 cancel_call(reason)
                 raise RuntimeError(reason)
 
-            elapsed = max(0.0, time.monotonic() - call_started)
-            conservative_gpu_seconds, conservative_cost_usd = budget.projected_usage(
-                elapsed,
-                gpu_count=2.0,
-                estimated_usd_per_second=0.000444,
-            )
-            remaining_wall_seconds = budget.remaining_wall_seconds(
-                elapsed,
-                gpu_count=2.0,
-                estimated_usd_per_second=0.000444,
-            )
-            if remaining_wall_seconds <= 0:
-                reason = (
-                    "conservative in-flight production budget reached before completion: "
-                    f"gpu_seconds={conservative_gpu_seconds:.3f}/{max_gpu_seconds:.3f} "
-                    f"estimated_usd={conservative_cost_usd:.6f}/{max_estimated_usd:.6f}"
-                )
-                cancel_call(reason)
-                raise RuntimeError(reason)
             try:
-                result = call.get(timeout=min(poll_seconds, remaining_wall_seconds))
+                # Poll cadence is independent of accounting thresholds. A threshold crossing is
+                # observable in the final ledger but is never a cancellation or acceptance signal.
+                result = call.get(timeout=poll_seconds)
                 remote_completed = True
                 elapsed = max(0.0, time.monotonic() - call_started)
                 budget.charge(
@@ -604,18 +585,6 @@ def run(*, render: bool) -> dict[str, Any]:
                     estimated_usd_per_second=0.000444,
                 )
                 root_budget_charged = True
-                conservative_gpu_seconds = budget.gpu_seconds
-                conservative_cost_usd = budget.estimated_usd
-                if conservative_gpu_seconds >= max_gpu_seconds:
-                    raise RuntimeError(
-                        "conservative GPU budget exceeded by completed production call: "
-                        f"{conservative_gpu_seconds:.1f} >= {max_gpu_seconds:.1f}"
-                    )
-                if conservative_cost_usd >= max_estimated_usd:
-                    raise RuntimeError(
-                        "conservative cost budget exceeded by completed production call: "
-                        f"{conservative_cost_usd:.4f} >= {max_estimated_usd:.4f}"
-                    )
                 break
             except TimeoutError:
                 continue
@@ -703,6 +672,7 @@ def run(*, render: bool) -> dict[str, Any]:
                     cancellation_failure_reason or cleanup_failure_reason
                 ),
                 "render": render,
+                "budget_enforcement": False,
                 "budget": budget.to_dict(),
             }
         )
