@@ -129,7 +129,8 @@ def test_transport_error_preserves_invocation_id_in_event_and_returned_details(
     assert event["execution_id"] == "exec-1"
     assert event["invocation_id"] == "invocation-1"
     assert event["error_type"] == "EditorialOutputTruncated"
-    assert event["application_status"] == "FAILED"
+    assert event["application_status"] == "OUTPUT_RETRY"
+    assert event["recovery_action"] == "REGENERATE"
 
     details = result["error"]["details"]
     assert details["editorial_invocation_id"] == "invocation-1"
@@ -238,3 +239,13 @@ def test_editorial_generation_has_internal_deadline_before_modal_timeout() -> No
     assert '"event": "editorial_generation_deadline"' in source
     assert '"late_candidate_rejected"' in source
     assert '"deadline_probe"' in source
+
+
+def test_malformed_editorial_json_has_dedicated_bounded_retry_contract() -> None:
+    source = Path("scripts/modal_open_models.py").read_text(encoding="utf-8")
+    provider = Path("src/clipper/providers/modal.py").read_text(encoding="utf-8")
+    assert "class EditorialOutputInvalid(ValueError):" in source
+    assert '"reason": "invalid_structured_json"' in source
+    assert "raise EditorialOutputInvalid(" in source
+    assert '"EditorialOutputInvalid"' in provider
+    assert "invalid_output_retries >= 1" in provider

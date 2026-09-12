@@ -83,6 +83,60 @@ def test_editorial_provider_recovers_only_when_remote_capacity_expands_monotonic
     )
 
 
+def test_editorial_provider_recovers_malformed_structured_json_once() -> None:
+    provider = SequenceEditorialProvider(
+        [
+            ModalRemoteError(
+                function_name="editorial",
+                error_type="EditorialOutputInvalid",
+                message="malformed constrained JSON",
+                details={
+                    "generation_budget_tokens": 273,
+                    "next_output_budget_tokens": 546,
+                    "generated_sha256": "invalid-first",
+                    "reason": "invalid_structured_json",
+                },
+            ),
+            _result({"segments": []}),
+        ]
+    )
+    result = provider.complete_json(task="source_hazards:range", payload={"words": []})
+    assert result.value == {"segments": []}
+    assert len(provider.requests) == 2
+    assert provider.requests[1]["generation_minimum_output_tokens"] == 546
+    assert "complete strict JSON object" in provider.requests[1]["generation_recovery_instruction"]
+
+
+def test_editorial_provider_fails_closed_after_one_malformed_json_retry() -> None:
+    provider = SequenceEditorialProvider(
+        [
+            ModalRemoteError(
+                function_name="editorial",
+                error_type="EditorialOutputInvalid",
+                message="first malformed constrained JSON",
+                details={
+                    "generation_budget_tokens": 273,
+                    "next_output_budget_tokens": 546,
+                    "generated_sha256": "invalid-first",
+                },
+            ),
+            ModalRemoteError(
+                function_name="editorial",
+                error_type="EditorialOutputInvalid",
+                message="second malformed constrained JSON",
+                details={
+                    "generation_budget_tokens": 546,
+                    "next_output_budget_tokens": 1092,
+                    "generated_sha256": "invalid-second",
+                },
+            ),
+        ]
+    )
+    with pytest.raises(ModalRemoteError, match="second malformed constrained JSON"):
+        provider.complete_json(task="source_hazards:range", payload={"words": []})
+    assert len(provider.requests) == 2
+
+
 def test_editorial_provider_does_not_retry_unrelated_remote_error() -> None:
     provider = SequenceEditorialProvider(
         [
@@ -186,6 +240,6 @@ def test_modal_editorial_runtime_is_model_and_history_derived() -> None:
     assert '"capacity_repartitionable": repartitionable' in source
     assert '"reason": "cuda_oom_dynamic_cache"' in source
     assert 'if plan.get("capacity_repartitionable") is True:' in source
-    assert "if not capacity_rejected:" in source
+    assert "if not capacity_rejected and not output_retry:" in source
     assert "traceback.print_exception(exc)" in source
     assert "editorial_output_budget" not in source

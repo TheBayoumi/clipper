@@ -463,7 +463,11 @@ class ModalEditorialProvider(ModalJSONProvider):
 
     @staticmethod
     def _is_output_contract_error(exc: ModalRemoteError) -> bool:
-        if exc.error_type in {"JSONDecodeError", "EditorialOutputTruncated"}:
+        if exc.error_type in {
+            "JSONDecodeError",
+            "EditorialOutputTruncated",
+            "EditorialOutputInvalid",
+        }:
             return True
         return (
             exc.error_type == "ValueError"
@@ -567,6 +571,7 @@ class ModalEditorialProvider(ModalJSONProvider):
     ) -> ProviderResult[dict[str, Any]]:
         request: dict[str, Any] = {"task": task, "payload": payload}
         seen_recovery_signatures: set[tuple[object, ...]] = set()
+        invalid_output_retries = 0
         while True:
             try:
                 return self._invoke_with_timeout_capacity(request)
@@ -582,6 +587,11 @@ class ModalEditorialProvider(ModalJSONProvider):
                     ) from exc
                 if not self._is_output_contract_error(exc):
                     raise
+
+                if exc.error_type == "EditorialOutputInvalid":
+                    if invalid_output_retries >= 1:
+                        raise
+                    invalid_output_retries += 1
 
                 next_budget = exc.details.get("next_output_budget_tokens")
                 current_budget = exc.details.get("generation_budget_tokens")

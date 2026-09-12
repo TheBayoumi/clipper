@@ -274,6 +274,14 @@ class EditorialOutputTruncated(ValueError):
         super().__init__(message)
 
 
+class EditorialOutputInvalid(ValueError):
+    """Editorial generation returned malformed structured output within its budget."""
+
+    def __init__(self, message: str, *, details: dict[str, Any]) -> None:
+        self.details = dict(details)
+        super().__init__(message)
+
+
 def _json_text(text: str) -> dict[str, Any]:
     candidate = text.strip()
     if candidate.startswith("```") and candidate.endswith("```"):
@@ -1097,13 +1105,21 @@ def _transport_error(
 ) -> dict[str, Any]:
     error_type = type(exc).__name__
     capacity_rejected = error_type == "OutOfMemoryError" or "CapacityError" in error_type
-    if not capacity_rejected:
+    output_retry = error_type in {"EditorialOutputTruncated", "EditorialOutputInvalid"}
+    if not capacity_rejected and not output_retry:
         traceback.print_exception(exc)
     message = str(exc)
     if context:
         message = f"{context}: {message}"
-    application_status = "CAPACITY_REJECTED" if capacity_rejected else "FAILED"
-    recovery_action = "REPARTITION" if capacity_rejected else "NONE"
+    if capacity_rejected:
+        application_status = "CAPACITY_REJECTED"
+        recovery_action = "REPARTITION"
+    elif output_retry:
+        application_status = "OUTPUT_RETRY"
+        recovery_action = "REGENERATE"
+    else:
+        application_status = "FAILED"
+        recovery_action = "NONE"
     raw_details = getattr(exc, "details", None)
     details = dict(raw_details) if isinstance(raw_details, dict) else {}
     details.setdefault("application_status", application_status)
@@ -1742,9 +1758,22 @@ def _editorial_infer(
                     "next_output_budget_tokens": next_budget,
                 },
             ) from exc
-        raise RuntimeError(
-            "constrained editorial generation returned invalid JSON despite Outlines "
-            f"schema enforcement for task={task}: {exc}"
+        available = int(plan["available_output_tokens"])
+        next_budget = min(
+            available,
+            max(output_budget + 1, output_budget * 2),
+        )
+        raise EditorialOutputInvalid(
+            "constrained editorial generation returned malformed JSON despite Outlines "
+            f"schema enforcement for task={task}: {exc}",
+            details={
+                **plan,
+                "reason": "invalid_structured_json",
+                "generated_sha256": generated_sha,
+                "output_tokens": output_units,
+                "next_output_budget_tokens": next_budget,
+                "recovery_action": "REGENERATE",
+            },
         ) from exc
 
     _update_editorial_success_history(
