@@ -6,6 +6,7 @@ on:
       - feat/contentrewards-campaign-factory
     paths:
       - .github/workflows/hilp129-lifecycle-gate-repair.yml
+      - scripts/apply_hilp129_final_gate_patch.py
 
 permissions:
   contents: write
