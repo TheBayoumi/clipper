@@ -265,7 +265,7 @@ jobs:
     name: shadow-${{ matrix.clip_id }}
     needs: allocate
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -322,8 +322,8 @@ jobs:
           print(f'staged source verified bytes={source.stat().st_size}')
           PY
 
-      - name: Render and QA exactly one shadow clip
-        timeout-minutes: 22
+      - name: Render and QA exactly one full-quality 250 Mbps qualification clip
+        timeout-minutes: 65
         env:
           SOURCE_KEY: ${{ matrix.source }}
           OMP_NUM_THREADS: '2'
@@ -352,9 +352,9 @@ jobs:
             --plan-key "${{ matrix.plan_key }}" \
             --ordinal "${{ matrix.ordinal }}" \
             --output-dir one \
-            --mode shadow
+            --mode production
 
-      - name: Upload this video immediately as its own asset
+      - name: Upload this full-quality qualification video immediately as its own asset
         uses: actions/upload-artifact@v4
         with:
           name: MW4-v3-1-shadow-video-${{ matrix.clip_id }}
