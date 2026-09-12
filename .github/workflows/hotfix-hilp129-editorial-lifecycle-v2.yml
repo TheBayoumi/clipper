@@ -45,6 +45,7 @@ jobs:
           PY
       - name: Format and lint repair
         run: |
+          python -m ruff check --fix src/clipper/providers/modal.py scripts/modal_pipeline.py scripts/modal_execution_spy.py tests/test_hilp129_editorial_lifecycle_recovery.py
           python -m ruff format src/clipper/providers/modal.py scripts/modal_pipeline.py scripts/modal_execution_spy.py tests/test_hilp129_editorial_lifecycle_recovery.py
           python -m ruff check src/clipper/providers/modal.py scripts/modal_pipeline.py scripts/modal_execution_spy.py tests/test_hilp129_editorial_lifecycle_recovery.py
       - name: Run lifecycle regression suite
