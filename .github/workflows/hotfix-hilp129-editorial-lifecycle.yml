@@ -1,0 +1,297 @@
+name: Hotfix HILP129 editorial lifecycle
+
+on:
+  push:
+    branches:
+      - feat/contentrewards-campaign-factory
+    paths:
+      - .github/workflows/hotfix-hilp129-editorial-lifecycle.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/contentrewards-campaign-factory
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install -e '.[dev,modal]'
+      - name: Apply HILP129 producer-lifecycle repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"expected exactly one patch target in {path}, found {count}")
+              file.write_text(text.replace(old, new), encoding="utf-8")
+
+          modal_path = "src/clipper/providers/modal.py"
+          replace_once(
+              modal_path,
+              "from .local import ProviderUnavailable\n\n\nclass ModalRemoteError",
+              "from .local import ProviderUnavailable\n\n\n_EDITORIAL_PRODUCER_LIFECYCLE_ID = uuid.uuid4().hex\n\n\nclass ModalRemoteError",
+          )
+          replace_once(
+              modal_path,
+              "        invocation_id: str,\n        started: float,\n    ) -> None:\n        self.task = task\n        self.execution_id = execution_id\n        self.invocation_id = invocation_id\n        self.started = started\n",
+              "        invocation_id: str,\n        producer_lifecycle_id: str,\n        started: float,\n    ) -> None:\n        self.task = task\n        self.execution_id = execution_id\n        self.invocation_id = invocation_id\n        self.producer_lifecycle_id = producer_lifecycle_id\n        self.started = started\n",
+          )
+          replace_once(
+              modal_path,
+              "        invocation = cls(\n            task=task,\n            execution_id=resolved_execution_id,\n            invocation_id=uuid.uuid4().hex,\n            started=time.monotonic(),\n        )\n",
+              "        producer_lifecycle_id = (\n            os.getenv(\"CLIPPER_EDITORIAL_PRODUCER_LIFECYCLE_ID\", \"\").strip()\n            or _EDITORIAL_PRODUCER_LIFECYCLE_ID\n        )\n        invocation = cls(\n            task=task,\n            execution_id=resolved_execution_id,\n            invocation_id=uuid.uuid4().hex,\n            producer_lifecycle_id=producer_lifecycle_id,\n            started=time.monotonic(),\n        )\n",
+          )
+          replace_once(
+              modal_path,
+              "                    \"invocation_id\": invocation.invocation_id,\n                    \"task\": invocation.task,\n",
+              "                    \"invocation_id\": invocation.invocation_id,\n                    \"producer_lifecycle_id\": invocation.producer_lifecycle_id,\n                    \"task\": invocation.task,\n",
+          )
+          replace_once(
+              modal_path,
+              "            \"invocation_id\": self.invocation_id,\n            \"task\": self.task,\n            \"status\": status,\n",
+              "            \"invocation_id\": self.invocation_id,\n            \"producer_lifecycle_id\": self.producer_lifecycle_id,\n            \"task\": self.task,\n            \"status\": status,\n",
+          )
+
+          pipeline_path = "scripts/modal_pipeline.py"
+          replace_once(
+              pipeline_path,
+              "    os.environ.update(\n        {\n            \"GITHUB_SHA\": requested_git_sha,\n",
+              "    editorial_producer_lifecycle_id = uuid.uuid4().hex\n    os.environ.update(\n        {\n            \"GITHUB_SHA\": requested_git_sha,\n",
+          )
+          replace_once(
+              pipeline_path,
+              "            \"CLIPPER_EXECUTION_ID\": execution_id.lower(),\n            \"CLIPPER_MAX_GPU_SECONDS\": str(max_gpu_seconds),\n",
+              "            \"CLIPPER_EXECUTION_ID\": execution_id.lower(),\n            \"CLIPPER_EDITORIAL_PRODUCER_LIFECYCLE_ID\": editorial_producer_lifecycle_id,\n            \"CLIPPER_MAX_GPU_SECONDS\": str(max_gpu_seconds),\n",
+          )
+
+          spy_path = "scripts/modal_execution_spy.py"
+          replace_once(
+              spy_path,
+              "        self._active_editorial_calls: dict[str, tuple[str, float]] = {}\n        self._active_vision_generations",
+              "        self._active_editorial_calls: dict[str, tuple[str, str, float]] = {}\n        self._recoverable_editorial_results: dict[str, dict[str, str]] = {}\n        self._reconciled_editorial_calls: list[dict[str, Any]] = []\n        self._current_editorial_producer_lifecycle_id: str | None = None\n        self._active_vision_generations",
+          )
+          replace_once(
+              spy_path,
+              "            \"worker_lifecycle_id\",\n            \"attempt\",\n",
+              "            \"worker_lifecycle_id\",\n            \"producer_lifecycle_id\",\n            \"attempt\",\n",
+          )
+
+          marker = "    def _set_abort(self, reason: str, event: dict[str, Any] | None = None) -> None:\n"
+          reconciliation_method = '''    def _reconcile_recoverable_editorial_calls(\n        self, replacement_lifecycle_id: str\n    ) -> None:\n        if not replacement_lifecycle_id:\n            return\n        for invocation_id, (task, producer_lifecycle_id, _started) in list(\n            self._active_editorial_calls.items()\n        ):\n            if not producer_lifecycle_id or producer_lifecycle_id == replacement_lifecycle_id:\n                continue\n            remote_result = self._recoverable_editorial_results.get(invocation_id)\n            if remote_result is None:\n                continue\n            application_status = str(remote_result.get("application_status") or "")\n            if application_status not in {"CAPACITY_REJECTED", "OUTPUT_RETRY"}:\n                continue\n            event = {\n                "event": "editorial_remote_call_reconciled",\n                "execution_id": self.execution_id or "",\n                "invocation_id": invocation_id,\n                "task": task,\n                "application_status": application_status,\n                "error_type": str(remote_result.get("error_type") or ""),\n                "recovery_action": str(remote_result.get("recovery_action") or ""),\n                "producer_lifecycle_id": producer_lifecycle_id,\n                "replacement_producer_lifecycle_id": replacement_lifecycle_id,\n                "reason": "producer_lifecycle_replaced_after_recoverable_remote_result",\n            }\n            self._active_editorial_calls.pop(invocation_id, None)\n            self._recoverable_editorial_results.pop(invocation_id, None)\n            self._reconciled_editorial_calls.append(event)\n            self._diagnostic_event_counts["editorial_remote_call_reconciled"] = (\n                self._diagnostic_event_counts.get("editorial_remote_call_reconciled", 0) + 1\n            )\n            with self.output.open("a", encoding="utf-8") as handle:\n                handle.write(\n                    json.dumps(\n                        {"app": "modal-spy", "authoritative": False, **event},\n                        ensure_ascii=False,\n                        sort_keys=True,\n                    )\n                    + "\\n"\n                )\n            print(\n                "[modal-spy:reconcile] "\n                + json.dumps(event, ensure_ascii=False, sort_keys=True),\n                flush=True,\n            )\n\n'''
+          replace_once(spy_path, marker, reconciliation_method + marker)
+
+          old_authoritative = '''                if name == "editorial_remote_call_start":\n                    invocation_id = str(compact.get("invocation_id") or "")\n                    if self._terminal_event is not None:\n                        violation = (\n                            f"editorial producer started work after production terminal: {compact}"\n                        )\n                    elif invocation_id in self._active_editorial_calls:\n                        violation = f"editorial producer repeated active invocation ID: {compact}"\n                    else:\n                        violation = self._validate_event(compact)\n                        if violation is None:\n                            self._active_editorial_calls[invocation_id] = (task, observed_at)\n                elif name == "editorial_remote_call_terminal":\n                    invocation_id = str(compact.get("invocation_id") or "")\n                    active = self._active_editorial_calls.get(invocation_id)\n                    if active is None:\n                        violation = f"editorial producer terminal has no matching start: {compact}"\n                    elif active[0] != task:\n                        violation = (\n                            "editorial producer terminal task does not match start: "\n                            f"started={active[0]!r} event={compact}"\n                        )\n                    else:\n                        violation = self._validate_event(compact)\n                        self._active_editorial_calls.pop(invocation_id, None)\n'''
+          new_authoritative = '''                if name == "editorial_remote_call_start":\n                    invocation_id = str(compact.get("invocation_id") or "")\n                    producer_lifecycle_id = str(compact.get("producer_lifecycle_id") or "")\n                    if producer_lifecycle_id:\n                        self._current_editorial_producer_lifecycle_id = producer_lifecycle_id\n                        self._reconcile_recoverable_editorial_calls(producer_lifecycle_id)\n                    if self._terminal_event is not None:\n                        violation = (\n                            f"editorial producer started work after production terminal: {compact}"\n                        )\n                    elif invocation_id in self._active_editorial_calls:\n                        violation = f"editorial producer repeated active invocation ID: {compact}"\n                    else:\n                        violation = self._validate_event(compact)\n                        if violation is None:\n                            self._active_editorial_calls[invocation_id] = (\n                                task, producer_lifecycle_id, observed_at\n                            )\n                elif name == "editorial_remote_call_terminal":\n                    invocation_id = str(compact.get("invocation_id") or "")\n                    producer_lifecycle_id = str(compact.get("producer_lifecycle_id") or "")\n                    active = self._active_editorial_calls.get(invocation_id)\n                    if active is None:\n                        violation = f"editorial producer terminal has no matching start: {compact}"\n                    elif active[0] != task:\n                        violation = (\n                            "editorial producer terminal task does not match start: "\n                            f"started={active[0]!r} event={compact}"\n                        )\n                    elif active[1] and producer_lifecycle_id != active[1]:\n                        violation = (\n                            "editorial producer terminal lifecycle does not match start: "\n                            f"started={active[1]!r} event={compact}"\n                        )\n                    else:\n                        violation = self._validate_event(compact)\n                        self._active_editorial_calls.pop(invocation_id, None)\n                        self._recoverable_editorial_results.pop(invocation_id, None)\n'''
+          replace_once(spy_path, old_authoritative, new_authoritative)
+
+          old_diagnostic = '''            else:\n                self._diagnostic_event_counts[name] = self._diagnostic_event_counts.get(name, 0) + 1\n                invocation_id = str(compact.get("invocation_id") or "")\n                if self._terminal_event is None and name == "vision_generation_start":\n'''
+          new_diagnostic = '''            else:\n                self._diagnostic_event_counts[name] = self._diagnostic_event_counts.get(name, 0) + 1\n                invocation_id = str(compact.get("invocation_id") or "")\n                if name == "application_result" and invocation_id:\n                    application_status = str(compact.get("application_status") or "")\n                    if application_status in {"CAPACITY_REJECTED", "OUTPUT_RETRY"}:\n                        self._recoverable_editorial_results[invocation_id] = {\n                            "application_status": application_status,\n                            "error_type": str(compact.get("error_type") or ""),\n                            "recovery_action": str(compact.get("recovery_action") or ""),\n                        }\n                        if self._current_editorial_producer_lifecycle_id:\n                            self._reconcile_recoverable_editorial_calls(\n                                self._current_editorial_producer_lifecycle_id\n                            )\n                if self._terminal_event is None and name == "vision_generation_start":\n'''
+          replace_once(spy_path, old_diagnostic, new_diagnostic)
+
+          old_stall = '''        stalled = [\n            (invocation_id, task, now - started)\n            for invocation_id, (task, started) in active_calls\n            if now - started >= self.generation_stall_seconds\n        ]\n'''
+          new_stall = '''        stalled = [\n            (invocation_id, task, now - started)\n            for invocation_id, (task, _producer_lifecycle_id, started) in active_calls\n            if now - started >= self.generation_stall_seconds\n        ]\n'''
+          replace_once(spy_path, old_stall, new_stall)
+
+          replace_once(
+              spy_path,
+              '            "active_editorial_calls": sorted(self._active_editorial_calls),\n            "active_vision_generations": active_vision,\n',
+              '            "active_editorial_calls": sorted(self._active_editorial_calls),\n            "reconciled_editorial_calls": list(self._reconciled_editorial_calls),\n            "active_vision_generations": active_vision,\n',
+          )
+
+          test = Path("tests/test_hilp129_editorial_lifecycle_recovery.py")
+          test.write_text(r'''from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+
+def _spy_module():
+    path = Path("scripts/modal_execution_spy.py")
+    spec = importlib.util.spec_from_file_location("modal_execution_spy_hilp129", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("failed to load Modal execution spy")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_production_assigns_one_editorial_producer_lifecycle_per_root_attempt() -> None:
+    pipeline = Path("scripts/modal_pipeline.py").read_text(encoding="utf-8")
+    provider = Path("src/clipper/providers/modal.py").read_text(encoding="utf-8")
+    assert "editorial_producer_lifecycle_id = uuid.uuid4().hex" in pipeline
+    assert '"CLIPPER_EDITORIAL_PRODUCER_LIFECYCLE_ID": editorial_producer_lifecycle_id' in pipeline
+    assert 'os.getenv("CLIPPER_EDITORIAL_PRODUCER_LIFECYCLE_ID", "").strip()' in provider
+    assert '"producer_lifecycle_id": invocation.producer_lifecycle_id' in provider
+    assert '"producer_lifecycle_id": self.producer_lifecycle_id' in provider
+
+
+def test_spy_reconciles_hilp129_orphan_only_after_recoverable_result_and_replacement(
+    tmp_path: Path,
+) -> None:
+    module = _spy_module()
+    spy = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "hilp129.ndjson",
+        execution_id="exec-129",
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_start","execution_id":"exec-129",'
+        '"invocation_id":"inv-old","producer_lifecycle_id":"producer-a",'
+        '"task":"source_hazards:w0011662-w0012128"}',
+    )
+    spy._record(
+        "clipper-open-editor",
+        '{"event":"application_result","execution_id":"exec-129",'
+        '"invocation_id":"inv-old","application_status":"CAPACITY_REJECTED",'
+        '"error_type":"EditorialCapacityError","recovery_action":"REPARTITION"}',
+    )
+    assert spy.summary()["active_editorial_calls"] == ["inv-old"]
+
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_start","execution_id":"exec-129",'
+        '"invocation_id":"inv-new","producer_lifecycle_id":"producer-b",'
+        '"task":"source_hazards:w0000000-w0012594"}',
+    )
+
+    summary = spy.summary()
+    assert spy.abort_reason is None
+    assert summary["active_editorial_calls"] == ["inv-new"]
+    assert len(summary["reconciled_editorial_calls"]) == 1
+    reconciled = summary["reconciled_editorial_calls"][0]
+    assert reconciled["invocation_id"] == "inv-old"
+    assert reconciled["application_status"] == "CAPACITY_REJECTED"
+    assert reconciled["producer_lifecycle_id"] == "producer-a"
+    assert reconciled["replacement_producer_lifecycle_id"] == "producer-b"
+
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_terminal","execution_id":"exec-129",'
+        '"invocation_id":"inv-new","producer_lifecycle_id":"producer-b",'
+        '"task":"source_hazards:w0000000-w0012594","status":"CAPACITY_REJECTED"}',
+    )
+    assert spy.summary()["active_editorial_calls"] == []
+
+
+def test_spy_does_not_reconcile_unknown_orphan_on_producer_replacement(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _spy_module()
+    clock = {"now": 100.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
+    spy = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "unknown.ndjson",
+        execution_id="exec-129",
+        generation_stall_seconds=10.0,
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_start","execution_id":"exec-129",'
+        '"invocation_id":"inv-unknown","producer_lifecycle_id":"producer-a",'
+        '"task":"source_hazards:unknown"}',
+    )
+    clock["now"] = 101.0
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_start","execution_id":"exec-129",'
+        '"invocation_id":"inv-new","producer_lifecycle_id":"producer-b",'
+        '"task":"source_hazards:new"}',
+    )
+    assert spy.summary()["active_editorial_calls"] == ["inv-new", "inv-unknown"]
+    assert spy.summary()["reconciled_editorial_calls"] == []
+
+    clock["now"] = 111.0
+    spy._check_stalled_editorial_calls()
+    assert spy.abort_reason is not None
+    assert spy.abort_event["invocation_id"] == "inv-unknown"
+
+
+def test_spy_same_producer_lifecycle_cannot_hide_unclosed_call(
+    tmp_path: Path,
+) -> None:
+    module = _spy_module()
+    spy = module.ModalExecutionSpy(
+        ("clipper-open-editor", "clipper-production-pipeline"),
+        tmp_path / "same-producer.ndjson",
+        execution_id="exec-129",
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_start","execution_id":"exec-129",'
+        '"invocation_id":"inv-old","producer_lifecycle_id":"producer-a",'
+        '"task":"source_hazards:old"}',
+    )
+    spy._record(
+        "clipper-open-editor",
+        '{"event":"application_result","execution_id":"exec-129",'
+        '"invocation_id":"inv-old","application_status":"CAPACITY_REJECTED",'
+        '"error_type":"EditorialCapacityError","recovery_action":"REPARTITION"}',
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_start","execution_id":"exec-129",'
+        '"invocation_id":"inv-new","producer_lifecycle_id":"producer-a",'
+        '"task":"source_hazards:new"}',
+    )
+    assert spy.abort_reason is None
+    assert spy.summary()["active_editorial_calls"] == ["inv-new", "inv-old"]
+    assert spy.summary()["reconciled_editorial_calls"] == []
+
+
+def test_spy_rejects_terminal_from_wrong_producer_lifecycle(tmp_path: Path) -> None:
+    module = _spy_module()
+    spy = module.ModalExecutionSpy(
+        ("clipper-production-pipeline",),
+        tmp_path / "mismatch.ndjson",
+        execution_id="exec-129",
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_start","execution_id":"exec-129",'
+        '"invocation_id":"inv-1","producer_lifecycle_id":"producer-a",'
+        '"task":"source_hazards:x"}',
+    )
+    spy._record(
+        "clipper-production-pipeline",
+        '{"event":"editorial_remote_call_terminal","execution_id":"exec-129",'
+        '"invocation_id":"inv-1","producer_lifecycle_id":"producer-b",'
+        '"task":"source_hazards:x","status":"COMPLETE"}',
+    )
+    assert spy.abort_reason is not None
+    assert "lifecycle does not match" in spy.abort_reason
+''', encoding="utf-8")
+          PY
+      - name: Format and lint repair
+        run: |
+          python -m ruff format src/clipper/providers/modal.py scripts/modal_pipeline.py scripts/modal_execution_spy.py tests/test_hilp129_editorial_lifecycle_recovery.py
+          python -m ruff check src/clipper/providers/modal.py scripts/modal_pipeline.py scripts/modal_execution_spy.py tests/test_hilp129_editorial_lifecycle_recovery.py
+      - name: Run lifecycle regression suite
+        run: |
+          python -m pytest --no-cov tests/test_hilp129_editorial_lifecycle_recovery.py tests/test_modal_execution_spy.py tests/test_modal_editorial_recovery.py tests/test_modal_pipeline_probe_lifecycle.py
+      - name: Commit clean repair and remove staging workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/hotfix-hilp129-editorial-lifecycle.yml
+          git add src/clipper/providers/modal.py scripts/modal_pipeline.py scripts/modal_execution_spy.py tests/test_hilp129_editorial_lifecycle_recovery.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix: reconcile editorial lifecycle after producer restart"
+          git push origin HEAD:feat/contentrewards-campaign-factory
