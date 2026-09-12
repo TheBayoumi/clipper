@@ -58,11 +58,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Verify the exact V3.1 implementation approved by shadow
+      - name: Verify exact V3.1 implementation approved by shadow
         run: |
           python -m py_compile \
             scripts/mw4_semantic_gameplay_v3_1_final.py \
             scripts/mw4_fullframe_retention_v3_1.py \
+            scripts/mw4_v3_1_render_one.py \
             scripts/mw4_v3_1_contract.py
           python scripts/mw4_semantic_gameplay_v3_1_final.py --self-test
           python scripts/mw4_v3_1_contract.py --self-test
@@ -183,9 +184,11 @@ jobs:
           if-no-files-found: error
 
   allocate:
-    name: production-global-pre-render-allocation
+    name: production-adaptive-pre-render-allocation
     needs: analyze
     runs-on: ubuntu-24.04
+    outputs:
+      render_matrix: ${{ steps.render-matrix.outputs.render_matrix }}
     steps:
       - uses: actions/checkout@v4
 
@@ -200,7 +203,7 @@ jobs:
           path: analysis-manifests
           merge-multiple: true
 
-      - name: Reproduce exact global 10-clip allocation before 250 Mbps rendering
+      - name: Reproduce adaptive important-scene allocation before 250 Mbps rendering
         run: |
           set -euo pipefail
           python -m py_compile scripts/mw4_v3_1_contract.py
@@ -211,6 +214,35 @@ jobs:
             --allocate-from analysis-manifests \
             --allocation-out allocation/mw4_v3_1_allocation.json
 
+      - name: Build one-workspace-per-master matrix
+        id: render-matrix
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          allocation = json.loads(Path('allocation/mw4_v3_1_allocation.json').read_text(encoding='utf-8'))
+          runners = {'r1': 'ubuntu-24.04', 'batch2': 'ubuntu-22.04', 'week2': 'ubuntu-24.04'}
+          include = []
+          for source in ('r1', 'batch2', 'week2'):
+              keys = allocation.get('source_allocations', {}).get(source, {}).get('plan_keys', [])
+              for ordinal, key in enumerate(keys, 1):
+                  include.append({
+                      'source': source,
+                      'plan_key': str(key),
+                      'ordinal': ordinal,
+                      'runner': runners[source],
+                      'clip_id': f'{source}-{ordinal:02d}-{str(key)[:8]}',
+                  })
+          if not include:
+              raise RuntimeError('adaptive allocation produced no production masters')
+          value = json.dumps({'include': include}, separators=(',', ':'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'render_matrix={value}\n')
+          print(f'sequential production workspaces: {len(include)}')
+          PY
+
       - name: Upload production global allocation
         uses: actions/upload-artifact@v4
         with:
@@ -219,22 +251,15 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  render:
-    name: render-${{ matrix.source }}
+  render-one:
+    name: master-${{ matrix.clip_id }}
     needs: allocate
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 110
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 1
-      matrix:
-        include:
-          - source: r1
-            runner: ubuntu-24.04
-          - source: batch2
-            runner: ubuntu-22.04
-          - source: week2
-            runner: ubuntu-24.04
+      matrix: ${{ fromJSON(needs.allocate.outputs.render_matrix) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -243,7 +268,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install renderer dependencies
+      - name: Install single-master renderer dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install 'numpy==2.1.3' 'playwright==1.55.0'
@@ -251,13 +276,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Download globally approved production allocation
+      - name: Download approved production allocation only
         uses: actions/download-artifact@v4
         with:
           name: MW4-v3-1-production-allocation
           path: allocation
 
-      - name: Resolve official MediaSilo source
+      - name: Resolve official source for this master workspace
         env:
           SOURCE_KEY: ${{ matrix.source }}
           MEDIASILO_URL: https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260
@@ -277,14 +302,7 @@ jobs:
           holder = [None]
           with sync_playwright() as playwright:
               browser = playwright.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
-              page = browser.new_page(
-                  viewport={'width': 1440, 'height': 1000},
-                  user_agent=(
-                      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                      'AppleWebKit/537.36 (KHTML, like Gecko) '
-                      'Chrome/139.0.0.0 Safari/537.36'
-                  ),
-              )
+              page = browser.new_page(viewport={'width': 1440, 'height': 1000})
               def handle(response):
                   if '/folders/3b199368-5974-4eb1-a450-327a4e84c260/assets' not in response.url or response.status != 200:
                       return
@@ -298,7 +316,6 @@ jobs:
               page.goto(os.environ['MEDIASILO_URL'], wait_until='domcontentloaded', timeout=90000)
               page.wait_for_timeout(25000)
               browser.close()
-
           if not holder[0]:
               raise RuntimeError('MediaSilo assets were not resolved')
           for asset in holder[0]:
@@ -315,7 +332,7 @@ jobs:
               raise RuntimeError(f'Official source not found: {wanted[source_key]}')
           PY
 
-      - name: Download and verify official source
+      - name: Download only this master's source reel
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
@@ -346,7 +363,8 @@ jobs:
           assert video['avg_frame_rate'] == '60000/1001'
           PY
 
-      - name: Render only globally allocated 250 Mbps masters
+      - name: Render and QA exactly one 250 Mbps master
+        timeout-minutes: 65
         env:
           SOURCE_KEY: ${{ matrix.source }}
           OMP_NUM_THREADS: '2'
@@ -356,49 +374,56 @@ jobs:
           MALLOC_ARENA_MAX: '2'
         run: |
           set -euo pipefail
-          nice -n 5 python scripts/mw4_fullframe_retention_v3_1.py \
+          (
+            while true; do
+              echo "[heartbeat] $(date -u +'%Y-%m-%dT%H:%M:%SZ') source=$SOURCE_KEY master=${{ matrix.ordinal }}"
+              free -h | sed -n '1,2p'
+              df -h / | tail -n 1
+              sleep 20
+            done
+          ) &
+          HEARTBEAT_PID=$!
+          trap 'kill "$HEARTBEAT_PID" 2>/dev/null || true' EXIT
+
+          nice -n 5 python scripts/mw4_v3_1_render_one.py \
             --source-key "$SOURCE_KEY" \
             --source "raw_sources/$SOURCE_KEY.mp4" \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
-            --output-dir "renders/$SOURCE_KEY" \
-            --mode production \
-            --selection-file allocation/mw4_v3_1_allocation.json
+            --allocation allocation/mw4_v3_1_allocation.json \
+            --plan-key "${{ matrix.plan_key }}" \
+            --ordinal "${{ matrix.ordinal }}" \
+            --output-dir one \
+            --mode production
 
-      - name: Enforce production source contract against global allocation
-        if: always()
-        env:
-          SOURCE_KEY: ${{ matrix.source }}
-        run: |
-          python scripts/mw4_v3_1_contract.py \
-            --config campaigns/mw4-fullframe-retention-v3-1.json \
-            --source-manifest "renders/$SOURCE_KEY/${SOURCE_KEY}_manifest_v3_1.json" \
-            --allocation allocation/mw4_v3_1_allocation.json
-
-      - name: Upload V3.1 masters and QA
-        if: always()
+      - name: Upload this 250 Mbps master immediately as its own asset
         uses: actions/upload-artifact@v4
         with:
-          name: MW4-fullframe-semantic-v3-1-${{ matrix.source }}-250M
-          path: |
-            renders/${{ matrix.source }}/*.mp4
-            renders/${{ matrix.source }}/*.json
-            renders/${{ matrix.source }}/contact_sheets/*.jpg
+          name: MW4-v3-1-250M-${{ matrix.clip_id }}
+          path: one/*.mp4
           retention-days: 1
           compression-level: 0
-          if-no-files-found: warn
+          if-no-files-found: error
 
-      - name: Upload production batch-contract summary
-        if: always()
+      - name: Upload this master's QA metadata separately
         uses: actions/upload-artifact@v4
         with:
-          name: MW4-v3-1-contract-production-${{ matrix.source }}
-          path: renders/${{ matrix.source }}/${{ matrix.source }}_pipeline_summary.json
+          name: MW4-v3-1-production-meta-${{ matrix.clip_id }}
+          path: |
+            one/*_clip_result_v3_1.json
+            one/contact_sheets/*.jpg
           retention-days: 1
-          if-no-files-found: warn
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Release workspace storage before next master
+        if: always()
+        run: |
+          rm -f raw_sources/*.mp4 one/*.mp4 || true
+          df -h /
 
   batch-contract:
     name: production-batch-contract
-    needs: [allocate, render]
+    needs: [allocate, render-one]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -414,14 +439,51 @@ jobs:
           name: MW4-v3-1-production-allocation
           path: allocation
 
-      - name: Download production source summaries only
+      - name: Download metadata only, never the 250 Mbps masters
         uses: actions/download-artifact@v4
         with:
-          pattern: MW4-v3-1-contract-production-*
-          path: batch-contract
+          pattern: MW4-v3-1-production-meta-*
+          path: clip-meta
           merge-multiple: true
 
-      - name: Enforce exact globally allocated production batch
+      - name: Aggregate per-master QA into source summaries
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          allocation = json.loads(Path('allocation/mw4_v3_1_allocation.json').read_text(encoding='utf-8'))
+          config = json.loads(Path('campaigns/mw4-fullframe-retention-v3-1.json').read_text(encoding='utf-8'))
+          results = [json.loads(path.read_text(encoding='utf-8')) for path in Path('clip-meta').rglob('*_clip_result_v3_1.json')]
+          root = Path('batch-contract')
+          root.mkdir(parents=True, exist_ok=True)
+
+          for source in ('r1', 'batch2', 'week2'):
+              expected = [str(item) for item in allocation.get('source_allocations', {}).get(source, {}).get('plan_keys', [])]
+              actual = sorted([item for item in results if item.get('source_key') == source], key=lambda item: int(item.get('ordinal', 0)))
+              actual_keys = [str(item.get('plan_key')) for item in actual]
+              failures = []
+              if actual_keys != expected:
+                  failures.append(f'{source}: rendered master keys {actual_keys} != allocated keys {expected}')
+              if any(item.get('status') != 'PASS' for item in actual):
+                  failures.append(f'{source}: one or more production masters did not pass')
+              summary = {
+                  'mode': 'production',
+                  'source_key': source,
+                  'selected_count': len(actual),
+                  'rendered_count': len(actual),
+                  'selected_plan_keys': actual_keys,
+                  'stories': [str(item.get('story_type')) for item in actual],
+                  'verified_finishing_move_count': len(config.get('finishing_move_detector', {}).get('verified_spans', {}).get(source, [])),
+                  'selected_finishing_move_count': sum(1 for item in actual if bool(item.get('finishing_move'))),
+                  'unplanned_source_cut_count': sum(int(item.get('unplanned_source_cut_count', 0)) for item in actual),
+                  'technical_qa_passed': bool(actual or not expected) and len(actual) == len(expected) and all(bool(item.get('technical_qa_passed')) for item in actual),
+                  'failure': failures or None,
+              }
+              (root / f'{source}_pipeline_summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          PY
+
+      - name: Enforce complete production adaptive batch contract
         run: |
           set -euo pipefail
           python scripts/mw4_v3_1_contract.py \
@@ -434,6 +496,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: MW4-v3-1-production-batch-contract
-          path: batch-contract-result.json
+          path: |
+            batch-contract-result.json
+            batch-contract/*_pipeline_summary.json
           retention-days: 1
           if-no-files-found: warn
