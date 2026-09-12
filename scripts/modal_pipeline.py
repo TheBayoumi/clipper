@@ -1107,11 +1107,13 @@ def run_full_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     ):
         raise ValueError("run_full_cycle requires finite positive compute budget limits")
 
+    editorial_producer_lifecycle_id = uuid.uuid4().hex
     os.environ.update(
         {
             "GITHUB_SHA": requested_git_sha,
             "CLIPPER_ACCEPTANCE_SHA": requested_git_sha,
             "CLIPPER_EXECUTION_ID": execution_id.lower(),
+            "CLIPPER_EDITORIAL_PRODUCER_LIFECYCLE_ID": editorial_producer_lifecycle_id,
             "CLIPPER_MAX_GPU_SECONDS": str(max_gpu_seconds),
             "CLIPPER_MAX_ESTIMATED_USD": str(max_estimated_usd),
         }

@@ -14,6 +14,8 @@ from typing import Any, ClassVar
 from .base import EditorialCapacityError, InferenceUsage, ModelIdentity, ProviderResult
 from .local import ProviderUnavailable
 
+_EDITORIAL_PRODUCER_LIFECYCLE_ID = uuid.uuid4().hex
+
 
 class ModalRemoteError(RuntimeError):
     """Structured error returned by a remote Modal inference function."""
@@ -69,11 +71,13 @@ class EditorialInvocation:
         task: str,
         execution_id: str,
         invocation_id: str,
+        producer_lifecycle_id: str,
         started: float,
     ) -> None:
         self.task = task
         self.execution_id = execution_id
         self.invocation_id = invocation_id
+        self.producer_lifecycle_id = producer_lifecycle_id
         self.started = started
         self.closed = False
 
@@ -89,10 +93,15 @@ class EditorialInvocation:
             if execution_id is None
             else execution_id.strip()
         )
+        producer_lifecycle_id = (
+            os.getenv("CLIPPER_EDITORIAL_PRODUCER_LIFECYCLE_ID", "").strip()
+            or _EDITORIAL_PRODUCER_LIFECYCLE_ID
+        )
         invocation = cls(
             task=task,
             execution_id=resolved_execution_id,
             invocation_id=uuid.uuid4().hex,
+            producer_lifecycle_id=producer_lifecycle_id,
             started=time.monotonic(),
         )
         print(
@@ -101,6 +110,7 @@ class EditorialInvocation:
                     "event": "editorial_remote_call_start",
                     "execution_id": invocation.execution_id,
                     "invocation_id": invocation.invocation_id,
+                    "producer_lifecycle_id": invocation.producer_lifecycle_id,
                     "task": invocation.task,
                 },
                 sort_keys=True,
@@ -133,6 +143,7 @@ class EditorialInvocation:
             "event": "editorial_remote_call_terminal",
             "execution_id": self.execution_id,
             "invocation_id": self.invocation_id,
+            "producer_lifecycle_id": self.producer_lifecycle_id,
             "task": self.task,
             "status": status,
             "duration_seconds": max(0.0, time.monotonic() - self.started),

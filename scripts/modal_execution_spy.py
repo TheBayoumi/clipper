@@ -77,7 +77,10 @@ class ModalExecutionSpy:
         self.stream_errors: list[str] = []
         self.started_at = datetime.now(UTC).isoformat()
         self._last_request_plan_signature: tuple[object, ...] | None = None
-        self._active_editorial_calls: dict[str, tuple[str, float]] = {}
+        self._active_editorial_calls: dict[str, tuple[str, str, float]] = {}
+        self._recoverable_editorial_results: dict[str, dict[str, str]] = {}
+        self._reconciled_editorial_calls: list[dict[str, Any]] = []
+        self._current_editorial_producer_lifecycle_id: str | None = None
         self._active_vision_generations: dict[str, tuple[str, int | None, int | None, float]] = {}
         self._diagnostic_event_counts: dict[str, int] = {}
         self._terminal_event: dict[str, Any] | None = None
@@ -217,6 +220,7 @@ class ModalExecutionSpy:
             "recovery_action",
             "reason",
             "worker_lifecycle_id",
+            "producer_lifecycle_id",
             "attempt",
             "frames",
             "generated_tokens",
@@ -263,6 +267,52 @@ class ModalExecutionSpy:
             "review_status",
         }
         return {key: value for key, value in event.items() if key in allowed}
+
+    def _reconcile_recoverable_editorial_calls(self, replacement_lifecycle_id: str) -> None:
+        if not replacement_lifecycle_id:
+            return
+        for invocation_id, (task, producer_lifecycle_id, _started) in list(
+            self._active_editorial_calls.items()
+        ):
+            if not producer_lifecycle_id or producer_lifecycle_id == replacement_lifecycle_id:
+                continue
+            remote_result = self._recoverable_editorial_results.get(invocation_id)
+            if remote_result is None:
+                continue
+            application_status = str(remote_result.get("application_status") or "")
+            if application_status not in {"CAPACITY_REJECTED", "OUTPUT_RETRY"}:
+                continue
+            event = {
+                "event": "editorial_remote_call_reconciled",
+                "execution_id": self.execution_id or "",
+                "invocation_id": invocation_id,
+                "task": task,
+                "application_status": application_status,
+                "error_type": str(remote_result.get("error_type") or ""),
+                "recovery_action": str(remote_result.get("recovery_action") or ""),
+                "producer_lifecycle_id": producer_lifecycle_id,
+                "replacement_producer_lifecycle_id": replacement_lifecycle_id,
+                "reason": "producer_lifecycle_replaced_after_recoverable_remote_result",
+            }
+            self._active_editorial_calls.pop(invocation_id, None)
+            self._recoverable_editorial_results.pop(invocation_id, None)
+            self._reconciled_editorial_calls.append(event)
+            self._diagnostic_event_counts["editorial_remote_call_reconciled"] = (
+                self._diagnostic_event_counts.get("editorial_remote_call_reconciled", 0) + 1
+            )
+            with self.output.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {"app": "modal-spy", "authoritative": False, **event},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+            print(
+                "[modal-spy:reconcile] " + json.dumps(event, ensure_ascii=False, sort_keys=True),
+                flush=True,
+            )
 
     def _set_abort(self, reason: str, event: dict[str, Any] | None = None) -> None:
         if self.abort_reason is not None:
@@ -660,6 +710,10 @@ class ModalExecutionSpy:
                 self._last_scoped_event_at = observed_at
                 if name == "editorial_remote_call_start":
                     invocation_id = str(compact.get("invocation_id") or "")
+                    producer_lifecycle_id = str(compact.get("producer_lifecycle_id") or "")
+                    if producer_lifecycle_id:
+                        self._current_editorial_producer_lifecycle_id = producer_lifecycle_id
+                        self._reconcile_recoverable_editorial_calls(producer_lifecycle_id)
                     if self._terminal_event is not None:
                         violation = (
                             f"editorial producer started work after production terminal: {compact}"
@@ -669,9 +723,14 @@ class ModalExecutionSpy:
                     else:
                         violation = self._validate_event(compact)
                         if violation is None:
-                            self._active_editorial_calls[invocation_id] = (task, observed_at)
+                            self._active_editorial_calls[invocation_id] = (
+                                task,
+                                producer_lifecycle_id,
+                                observed_at,
+                            )
                 elif name == "editorial_remote_call_terminal":
                     invocation_id = str(compact.get("invocation_id") or "")
+                    producer_lifecycle_id = str(compact.get("producer_lifecycle_id") or "")
                     active = self._active_editorial_calls.get(invocation_id)
                     if active is None:
                         violation = f"editorial producer terminal has no matching start: {compact}"
@@ -680,9 +739,15 @@ class ModalExecutionSpy:
                             "editorial producer terminal task does not match start: "
                             f"started={active[0]!r} event={compact}"
                         )
+                    elif active[1] and producer_lifecycle_id != active[1]:
+                        violation = (
+                            "editorial producer terminal lifecycle does not match start: "
+                            f"started={active[1]!r} event={compact}"
+                        )
                     else:
                         violation = self._validate_event(compact)
                         self._active_editorial_calls.pop(invocation_id, None)
+                        self._recoverable_editorial_results.pop(invocation_id, None)
                 elif name == "production_cycle_terminal":
                     if self._active_editorial_calls:
                         violation = (
@@ -699,6 +764,18 @@ class ModalExecutionSpy:
             else:
                 self._diagnostic_event_counts[name] = self._diagnostic_event_counts.get(name, 0) + 1
                 invocation_id = str(compact.get("invocation_id") or "")
+                if name == "application_result" and invocation_id:
+                    application_status = str(compact.get("application_status") or "")
+                    if application_status in {"CAPACITY_REJECTED", "OUTPUT_RETRY"}:
+                        self._recoverable_editorial_results[invocation_id] = {
+                            "application_status": application_status,
+                            "error_type": str(compact.get("error_type") or ""),
+                            "recovery_action": str(compact.get("recovery_action") or ""),
+                        }
+                        if self._current_editorial_producer_lifecycle_id:
+                            self._reconcile_recoverable_editorial_calls(
+                                self._current_editorial_producer_lifecycle_id
+                            )
                 if self._terminal_event is None and name == "vision_generation_start":
                     if not invocation_id:
                         violation = (
@@ -807,7 +884,7 @@ class ModalExecutionSpy:
         now = time.monotonic()
         stalled = [
             (invocation_id, task, now - started)
-            for invocation_id, (task, started) in active_calls
+            for invocation_id, (task, _producer_lifecycle_id, started) in active_calls
             if now - started >= self.generation_stall_seconds
         ]
         if stalled:
@@ -897,6 +974,7 @@ class ModalExecutionSpy:
             "generation_stall_seconds": self.generation_stall_seconds,
             "vision_stall_seconds": self.vision_stall_seconds,
             "active_editorial_calls": sorted(self._active_editorial_calls),
+            "reconciled_editorial_calls": list(self._reconciled_editorial_calls),
             "active_vision_generations": active_vision,
             "diagnostic_event_counts": self._diagnostic_event_counts,
             "terminal_seen": self._terminal_event is not None,
