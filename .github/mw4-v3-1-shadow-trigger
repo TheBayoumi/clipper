@@ -13,3 +13,4 @@ qualification clips render at final master quality: 1920x1080 60000/1001 H.264 H
 2026-09-12 FFmpeg compatibility fix: CFR uses -r 60000/1001 plus -vsync cfr so Ubuntu22 FFmpeg 4.4 and Ubuntu24 FFmpeg 6 share the same final encoder path; exact frame-rate QA remains fail-closed
 2026-09-12 source-master fix: MediaSilo fileSize is validated as integer KiB metadata with a strict [KiB*1024, KiB*1024+1024) byte range; type=source, SHA256, geometry and 60000/1001 checks remain fail-closed
 2026-09-12 source-fidelity fix: destructive digital zoom/crop-upscale effect paths are disabled in isolated final renders; approved semantic timing/story is rendered source-native full-frame, and every clip must pass objective SSIM >= 0.99 and PSNR >= 40 dB against a lossless FFV1 reference of the identical edit before upload
+2026-09-12 source-fidelity qualification retrigger: validate the source-native helper commit itself, not the prior trigger-only SHA
