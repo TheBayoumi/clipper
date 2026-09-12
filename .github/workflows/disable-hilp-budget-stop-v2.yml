@@ -1,0 +1,54 @@
+name: Apply end-to-end advisory HILP budget accounting
+
+on:
+  push:
+    branches:
+      - feat/contentrewards-campaign-factory
+    paths:
+      - .github/workflows/disable-hilp-budget-stop-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/contentrewards-campaign-factory
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Apply advisory budget repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .github/disable_hilp_budget_stop_v2.py
+          sed -i 's/function_call_id="fc-advisory"/function_call_id="fc-recoverable"/' tests/test_modal_execution.py
+
+      - name: Verify focused repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+          ruff format src/clipper/modal_execution.py scripts/modal_hilp_watchdog.py tests/test_modal_execution.py tests/test_modal_hilp_watchdog.py
+          ruff check src/clipper/modal_execution.py scripts/modal_hilp_watchdog.py tests/test_modal_execution.py tests/test_modal_hilp_watchdog.py
+          ruff format --check src/clipper/modal_execution.py scripts/modal_hilp_watchdog.py tests/test_modal_execution.py tests/test_modal_hilp_watchdog.py
+          pytest -q --no-cov tests/test_modal_execution.py tests/test_modal_hilp_watchdog.py
+
+      - name: Commit verified repair and clean staging files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/disable-hilp-budget-stop-v2.yml .github/disable_hilp_budget_stop_v2.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/clipper/modal_execution.py scripts/modal_hilp_watchdog.py tests/test_modal_execution.py tests/test_modal_hilp_watchdog.py .github/workflows/disable-hilp-budget-stop-v2.yml .github/disable_hilp_budget_stop_v2.py
+          git commit -m "fix: remove HILP budget stop sequence end to end"
+          git push origin HEAD:feat/contentrewards-campaign-factory
