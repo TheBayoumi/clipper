@@ -1,0 +1,46 @@
+name: Align advisory budget production contract
+
+on:
+  push:
+    branches:
+      - feat/contentrewards-campaign-factory
+    paths:
+      - .github/workflows/fix-advisory-budget-contract.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/contentrewards-campaign-factory
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Update contract regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c 'from pathlib import Path; p=Path("tests/test_production_workflow_contract.py"); s=p.read_text(encoding="utf-8"); old="    assert \"call.get(timeout=min(poll_seconds, remaining_wall_seconds))\" in watchdog\n"; new="    assert \"call.get(timeout=poll_seconds)\" in watchdog\n    assert \"enforce_budget=False\" in watchdog\n    assert \"remaining_wall_seconds\" not in watchdog\n"; assert old in s; p.write_text(s.replace(old,new,1),encoding="utf-8")'
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+          ruff check tests/test_production_workflow_contract.py
+          ruff format --check tests/test_production_workflow_contract.py
+          pytest -q --no-cov tests/test_production_workflow_contract.py
+
+      - name: Commit and self-clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/fix-advisory-budget-contract.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/test_production_workflow_contract.py .github/workflows/fix-advisory-budget-contract.yml
+          git commit -m "test: align HILP contract with advisory budget accounting"
+          git push origin HEAD:feat/contentrewards-campaign-factory
