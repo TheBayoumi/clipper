@@ -48,10 +48,9 @@ jobs:
               if n != 1:
                   raise RuntimeError(f"{label}: expected one match, got {n}")
               if re.search(pattern, updated, flags=re.MULTILINE):
-                  raise RuntimeError(f"{label}: target unexpectedly remains after replacement")
+                  raise RuntimeError(f"{label}: target unexpectedly remains")
               return updated
 
-          # Worker: give malformed constrained JSON its own recoverable identity.
           wp = Path("scripts/modal_open_models.py")
           worker = wp.read_text(encoding="utf-8")
           marker = "\n\ndef _json_text(text: str) -> dict[str, Any]:\n"
@@ -75,13 +74,13 @@ jobs:
               '    if capacity_rejected:\n        application_status = "CAPACITY_REJECTED"\n        recovery_action = "REPARTITION"\n    elif output_retry:\n        application_status = "OUTPUT_RETRY"\n        recovery_action = "REGENERATE"\n    else:\n        application_status = "FAILED"\n        recovery_action = "NONE"\n',
               "transport status mapping",
           )
-          malformed_pattern = (
+          pattern = (
               r'^        raise RuntimeError\(\n'
               r'\s*"constrained editorial generation returned invalid JSON despite Outlines "\n'
               r'\s*f"schema enforcement for task=\{task\}: \{exc\}"\n'
               r'\s*\) from exc\n'
           )
-          malformed_replacement = (
+          replacement = (
               '        available = int(plan["available_output_tokens"])\n'
               '        next_budget = min(\n'
               '            available,\n'
@@ -100,10 +99,9 @@ jobs:
               '            },\n'
               '        ) from exc\n'
           )
-          worker = sub_one(worker, malformed_pattern, malformed_replacement, "malformed JSON worker mapping")
+          worker = sub_one(worker, pattern, replacement, "malformed JSON worker mapping")
           wp.write_text(worker, encoding="utf-8")
 
-          # Provider: recognize only the dedicated output error and bound it to one retry.
           pp = Path("src/clipper/providers/modal.py")
           provider = pp.read_text(encoding="utf-8")
           provider = one(
@@ -126,9 +124,14 @@ jobs:
           )
           pp.write_text(provider, encoding="utf-8")
 
-          # Regression: one malformed output can recover, a second must fail closed.
           rp = Path("tests/test_modal_editorial_recovery.py")
           recovery = rp.read_text(encoding="utf-8")
+          recovery = one(
+              recovery,
+              '    assert "if not capacity_rejected:" in source\n',
+              '    assert "if not capacity_rejected and not output_retry:" in source\n',
+              "updated transport guard assertion",
+          )
           insertion = "def test_editorial_provider_does_not_retry_unrelated_remote_error() -> None:\n"
           tests = '''def test_editorial_provider_recovers_malformed_structured_json_once() -> None:
               provider = SequenceEditorialProvider(
@@ -185,7 +188,7 @@ jobs:
 
 
           '''
-          recovery = one(recovery, insertion, tests + insertion, "recovery test insertion")
+          recovery = one(recovery, insertion, tests + insertion, "recovery tests")
           rp.write_text(recovery, encoding="utf-8")
 
           tp = Path("tests/test_modal_open_models_transport.py")
