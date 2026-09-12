@@ -6,10 +6,34 @@ _RECOVERABLE_RECONCILIATION_ACTIONS = {
     "CAPACITY_REJECTED": "REPARTITION",
     "OUTPUT_RETRY": "REGENERATE",
 }
+_RECONCILIATION_SHARED_FIELDS = (
+    "event",
+    "execution_id",
+    "invocation_id",
+    "task",
+    "application_status",
+    "error_type",
+    "recovery_action",
+    "producer_lifecycle_id",
+    "replacement_producer_lifecycle_id",
+    "reason",
+)
+_TERMINAL_IDENTITY_FIELDS = (
+    "execution_id",
+    "task",
+    "producer_lifecycle_id",
+)
 
 
 def _invocation_id(event: dict[str, Any]) -> str:
     return str(event.get("invocation_id") or "")
+
+
+def _normalized_fields(
+    event: dict[str, Any],
+    fields: tuple[str, ...],
+) -> dict[str, str]:
+    return {field: str(event.get(field) or "") for field in fields}
 
 
 def _unique_by_invocation(
@@ -89,22 +113,36 @@ def validate_editorial_call_closure(
     summary_reconciliations = summary.get("reconciled_editorial_calls")
     if not isinstance(summary_reconciliations, list):
         raise RuntimeError("Modal spy reconciliation summary is missing")
-    summary_reconciled_ids: set[str] = set()
+    normalized_summary_reconciliations: list[dict[str, Any]] = []
     for item in summary_reconciliations:
         if not isinstance(item, dict):
             raise RuntimeError(f"invalid Modal spy reconciliation summary item: {item!r}")
-        invocation_id = _invocation_id(item)
-        if not invocation_id or invocation_id in summary_reconciled_ids:
-            raise RuntimeError(
-                f"Modal spy reconciliation summary has invalid invocation identity: {item}"
-            )
-        summary_reconciled_ids.add(invocation_id)
-    if summary_reconciled_ids != set(reconciled_by_id):
+        normalized_summary_reconciliations.append(item)
+    summary_reconciled_by_id = _unique_by_invocation(
+        normalized_summary_reconciliations,
+        label="Modal spy reconciliation summary",
+    )
+    if set(summary_reconciled_by_id) != set(reconciled_by_id):
         raise RuntimeError(
             "Modal spy reconciliation summary disagrees with NDJSON evidence: "
-            f"summary={sorted(summary_reconciled_ids)} "
+            f"summary={sorted(summary_reconciled_by_id)} "
             f"records={sorted(reconciled_by_id)}"
         )
+    for invocation_id, reconciliation in reconciled_by_id.items():
+        summary_reconciliation = summary_reconciled_by_id[invocation_id]
+        summary_fields = _normalized_fields(
+            summary_reconciliation,
+            _RECONCILIATION_SHARED_FIELDS,
+        )
+        record_fields = _normalized_fields(
+            reconciliation,
+            _RECONCILIATION_SHARED_FIELDS,
+        )
+        if summary_fields != record_fields:
+            raise RuntimeError(
+                "Modal spy reconciliation summary disagrees with NDJSON evidence: "
+                f"invocation_id={invocation_id} summary={summary_fields} records={record_fields}"
+            )
 
     overlap = set(terminals_by_id) & set(reconciled_by_id)
     if overlap:
@@ -112,6 +150,26 @@ def validate_editorial_call_closure(
             "editorial invocation was both producer-terminal and restart-reconciled: "
             f"{sorted(overlap)}"
         )
+
+    for invocation_id, terminal in terminals_by_id.items():
+        start = starts_by_id.get(invocation_id)
+        if start is None:
+            raise RuntimeError(
+                f"editorial producer terminal has no authoritative producer start: {terminal}"
+            )
+        for field in _TERMINAL_IDENTITY_FIELDS:
+            start_value = str(start.get(field) or "")
+            terminal_value = str(terminal.get(field) or "")
+            if not start_value or not terminal_value:
+                raise RuntimeError(
+                    "editorial producer terminal identity is incomplete: "
+                    f"field={field} start={start} terminal={terminal}"
+                )
+            if start_value != terminal_value:
+                raise RuntimeError(
+                    "editorial producer terminal identity does not match its start: "
+                    f"field={field} start={start} terminal={terminal}"
+                )
 
     for invocation_id, reconciliation in reconciled_by_id.items():
         start = starts_by_id.get(invocation_id)
