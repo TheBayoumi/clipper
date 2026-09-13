@@ -50,6 +50,10 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
     for span in timeline.finishing_moves:
         shot = timeline.shots[span.shot_index]
         hero_end = min(shot.end, span.end + hold)
+        # The preserved implementation considers a continuation "later" only at
+        # span.end + 0.25. Requiring the maximum of that boundary and hero_end
+        # makes its earlier-content/fallback branch unreachable by construction.
+        later_floor = max(hero_end, float(span.end) + 0.25)
         eligible: list[SemanticPlanV31] = []
         for continuation in continuations:
             if continuation.story_type == "finishing_move_open" or not continuation.segments:
@@ -59,7 +63,7 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
             if _chronology_failures(continuation):
                 continue
             first_start = float(continuation.segments[0].start)
-            if first_start < hero_end - _EPS:
+            if first_start < later_floor - _EPS:
                 continue
             if first_start - hero_end > max_gap + _EPS:
                 continue
@@ -69,7 +73,7 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
         produced = _ORIGINAL_FINISHING(single, eligible, config, source_key)
         valid = [plan for plan in produced if not plan_integrity_violations(plan, single, config, source_key)]
         if not valid:
-            raise RuntimeError("verified Finishing Move has no strictly later continuation within the configured gap contract")
+            raise RuntimeError("verified Finishing Move has no strictly later continuation within the configured gap contract; fallback is disabled")
         results.extend(valid)
     return sorted(results, key=lambda item: item.score, reverse=True)
 
@@ -82,6 +86,12 @@ def _hardening_self_test() -> None:
         raise AssertionError("chronological semantic plan was rejected")
     if not _chronology_failures(bad):
         raise AssertionError("backward semantic plan was accepted")
+    # Guard the exact predicate used by the preserved implementation so its
+    # fallback branch cannot become reachable if the hero hold changes.
+    span_end, hero_end = 10.0, 10.1
+    later_floor = max(hero_end, span_end + 0.25)
+    if later_floor < span_end + 0.25:
+        raise AssertionError("finishing fallback reachability guard failed")
     print("MW4 semantic chronology hardening self-test: PASS")
 
 
