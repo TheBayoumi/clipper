@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import mw4_v3_1_allocator_hardened as _allocator
 import mw4_v3_1_contract_legacy as _legacy
 from mw4_v3_1_contract_legacy import *  # noqa: F401,F403
 
@@ -88,6 +89,7 @@ _legacy._semantic_anchor_times = _semantic_anchor_times
 _legacy._plans_conflict = _plans_conflict
 _legacy._finishing_plan_failures = _finishing_plan_failures
 _legacy.validate_plan = validate_plan
+_allocator.install(_legacy)
 
 
 def main() -> None:
