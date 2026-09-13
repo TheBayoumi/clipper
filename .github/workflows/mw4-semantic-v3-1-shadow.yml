@@ -43,200 +43,48 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Verify canonical V3.1 implementation
+      - name: Verify semantic and source-derived renderer contracts
         run: |
+          set -euo pipefail
           python -m py_compile \
             scripts/mw4_semantic_gameplay_v3_1_final.py \
             scripts/mw4_fullframe_retention_v3_1.py \
+            scripts/mw4_v3_1_contract.py \
+            scripts/mw4_v3_1_media_contract.py \
+            scripts/mw4_v3_1_render_source_contract.py \
             scripts/mw4_v3_1_render_one.py \
-            scripts/mw4_v3_1_contract.py
+            scripts/mw4_v3_1_source_qa.py \
+            scripts/mw4_v3_1_mediasilo_source.py \
+            scripts/mw4_v3_1_workflow_support.py
           python scripts/mw4_semantic_gameplay_v3_1_final.py --self-test
           python scripts/mw4_v3_1_contract.py --self-test
+          python scripts/mw4_v3_1_render_one.py --self-test
 
-      - name: Resolve official MediaSilo source once
+      - name: Resolve original MediaSilo source once
         env:
           SOURCE_KEY: ${{ matrix.source }}
           MEDIASILO_URL: https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260
         run: |
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          from playwright.sync_api import sync_playwright
+          set -euo pipefail
+          python scripts/mw4_v3_1_mediasilo_source.py resolve \
+            --source-key "$SOURCE_KEY" \
+            --review-url "$MEDIASILO_URL" \
+            --output /tmp/resolved_source.json
 
-          source_key = os.environ['SOURCE_KEY']
-          wanted = {
-              'r1': 'MW4_BetaTopPlays_Stringout_16X9_R1.mp4',
-              'batch2': 'BestOfBeta_Stringout_Batch2.mp4',
-              'week2': 'BestOfBeta_Week2_Stringout_1_8.28.mp4',
-          }
-          holder = [None]
-          with sync_playwright() as playwright:
-              browser = playwright.chromium.launch(
-                  headless=True,
-                  args=['--no-sandbox', '--disable-dev-shm-usage'],
-              )
-              for attempt in range(1, 4):
-                  page = browser.new_page(
-                      viewport={'width': 1440, 'height': 1000},
-                      user_agent=(
-                          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                          'AppleWebKit/537.36 (KHTML, like Gecko) '
-                          'Chrome/139.0.0.0 Safari/537.36'
-                      ),
-                  )
-                  def handle(response):
-                      if '/folders/3b199368-5974-4eb1-a450-327a4e84c260/assets' not in response.url or response.status != 200:
-                          return
-                      try:
-                          data = response.json()
-                      except Exception:
-                          return
-                      if isinstance(data, list) and data:
-                          holder[0] = data
-                  page.on('response', handle)
-                  try:
-                      page.goto(os.environ['MEDIASILO_URL'], wait_until='domcontentloaded', timeout=90000)
-                      page.wait_for_timeout(30000)
-                  finally:
-                      page.close()
-                  if holder[0]:
-                      print(f'MediaSilo assets resolved on attempt {attempt}')
-                      break
-              browser.close()
-
-          if not holder[0]:
-              raise RuntimeError('MediaSilo assets were not resolved after 3 analysis-stage attempts')
-          for asset in holder[0]:
-              if asset.get('title') != wanted[source_key]:
-                  continue
-              derivative_items = list(asset.get('derivatives') or [])
-              source_candidates = []
-              for item in derivative_items:
-                  if str(item.get('type') or '').lower() != 'source':
-                      continue
-                  candidate_url = item.get('url') or (item.get('properties') or {}).get('url')
-                  if not candidate_url:
-                      continue
-                  try:
-                      file_size = int(item.get('fileSize') or 0)
-                  except (TypeError, ValueError):
-                      file_size = 0
-                  source_candidates.append((file_size, item, candidate_url))
-
-              if not source_candidates:
-                  available_types = sorted({str(item.get('type')) for item in derivative_items})
-                  raise RuntimeError(
-                      f'Original MediaSilo source master unavailable for {asset["title"]}; '
-                      f'refusing x1080/proxy fallback. available derivative types={available_types}'
-                  )
-
-              _, derivative, url = max(source_candidates, key=lambda entry: entry[0])
-              if str(derivative.get('type') or '').lower() != 'source':
-                  raise RuntimeError('internal error: selected MediaSilo derivative is not type=source')
-
-              Path('/tmp/resolved_source.json').write_text(
-                  json.dumps({
-                      'title': asset['title'],
-                      'file_name': asset.get('fileName'),
-                      'url': url,
-                      'derivative_type': 'source',
-                      'file_size': derivative.get('fileSize'),
-                      'width': derivative.get('width'),
-                      'height': derivative.get('height'),
-                      'duration_ms': derivative.get('duration'),
-                  }),
-                  encoding='utf-8',
-              )
-              break
-          else:
-              raise RuntimeError(f'Official source not found: {wanted[source_key]}')
-          PY
-
-      - name: Download and verify official source once
+      - name: Download and certify original source once
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
+          set -euo pipefail
           mkdir -p raw_sources
-          python - <<'PY'
-          import json
-          import os
-          import subprocess
-          import urllib.request
-          from pathlib import Path
-
-          source_key = os.environ['SOURCE_KEY']
-          selected = json.loads(Path('/tmp/resolved_source.json').read_text(encoding='utf-8'))
-          target = Path('raw_sources') / f'{source_key}.mp4'
-          request = urllib.request.Request(selected['url'], headers={'User-Agent': 'Mozilla/5.0'})
-          with urllib.request.urlopen(request, timeout=300) as source, target.open('wb') as output:
-              while True:
-                  block = source.read(8 * 1024 * 1024)
-                  if not block:
-                      break
-                  output.write(block)
-
-          if selected.get('derivative_type') != 'source':
-              raise RuntimeError('refusing non-source MediaSilo derivative before semantic analysis')
-
-          actual_size = target.stat().st_size
-          declared_size_kib = int(selected.get('file_size') or 0)
-          declared_floor_bytes = declared_size_kib * 1024 if declared_size_kib else 0
-          if declared_floor_bytes and not (
-              declared_floor_bytes <= actual_size < declared_floor_bytes + 1024
-          ):
-              raise RuntimeError(
-                  f'original master size mismatch: downloaded={actual_size} '
-                  f'declared_kib={declared_size_kib} '
-                  f'allowed_bytes=[{declared_floor_bytes},{declared_floor_bytes + 1024})'
-              )
-
-          probe = json.loads(subprocess.check_output([
-              'ffprobe', '-v', 'error',
-              '-show_entries',
-              'stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,bit_rate:'
-              'format=duration,size,bit_rate,format_name',
-              '-of', 'json', str(target),
-          ], text=True))
-          video = next(item for item in probe['streams'] if item.get('codec_type') == 'video')
-          if (video.get('width'), video.get('height')) != (1920, 1080):
-              raise RuntimeError(f'original master geometry mismatch: {video.get("width")}x{video.get("height")}')
-          if video.get('avg_frame_rate') != '60000/1001':
-              raise RuntimeError(f'original master FPS mismatch: {video.get("avg_frame_rate")}')
-
-          declared_width = selected.get('width')
-          declared_height = selected.get('height')
-          if declared_width and int(declared_width) != 1920:
-              raise RuntimeError(f'MediaSilo source metadata width mismatch: {declared_width}')
-          if declared_height and int(declared_height) != 1080:
-              raise RuntimeError(f'MediaSilo source metadata height mismatch: {declared_height}')
-
-          import hashlib
-          digest = hashlib.sha256()
-          with target.open('rb') as stream:
-              while block := stream.read(8 * 1024 * 1024):
-                  digest.update(block)
-
-          source_qa = {
-              'source_key': source_key,
-              'title': selected.get('title'),
-              'file_name': selected.get('file_name'),
-              'derivative_type': 'source',
-              'proxy_fallback_allowed': False,
-              'downloaded_bytes': actual_size,
-              'declared_source_size_kib': declared_size_kib or None,
-              'declared_source_floor_bytes': declared_floor_bytes or None,
-              'sha256': digest.hexdigest(),
-              'probe': probe,
-          }
-          qa_path = Path('raw_sources') / f'{source_key}.source_qa.json'
-          qa_path.write_text(json.dumps(source_qa, indent=2), encoding='utf-8')
-          print(
-              f'ORIGINAL SOURCE MASTER VERIFIED type=source bytes={actual_size} '
-              f'fps={video.get("avg_frame_rate")} codec={video.get("codec_name")} '
-              f'sha256={source_qa["sha256"][:16]}...'
-          )
-          PY
+          python scripts/mw4_v3_1_mediasilo_source.py download \
+            --resolved /tmp/resolved_source.json \
+            --target "raw_sources/$SOURCE_KEY.mp4"
+          python scripts/mw4_v3_1_source_qa.py certify \
+            --source "raw_sources/$SOURCE_KEY.mp4" \
+            --source-key "$SOURCE_KEY" \
+            --resolved /tmp/resolved_source.json \
+            --output "raw_sources/$SOURCE_KEY.source_qa.json"
 
       - name: Analyze canonical V3.1 candidate pool only
         timeout-minutes: 15
@@ -298,7 +146,7 @@ jobs:
       - name: Build adaptive important-scene allocation
         run: |
           set -euo pipefail
-          python -m py_compile scripts/mw4_v3_1_contract.py
+          python -m py_compile scripts/mw4_v3_1_contract.py scripts/mw4_v3_1_workflow_support.py
           python scripts/mw4_v3_1_contract.py --self-test
           mkdir -p allocation
           python scripts/mw4_v3_1_contract.py \
@@ -309,31 +157,10 @@ jobs:
       - name: Build one-workspace-per-clip render matrix
         id: render-matrix
         run: |
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          allocation = json.loads(Path('allocation/mw4_v3_1_allocation.json').read_text(encoding='utf-8'))
-          runners = {'r1': 'ubuntu-24.04', 'batch2': 'ubuntu-22.04', 'week2': 'ubuntu-24.04'}
-          include = []
-          for source in ('r1', 'batch2', 'week2'):
-              keys = allocation.get('source_allocations', {}).get(source, {}).get('plan_keys', [])
-              for ordinal, key in enumerate(keys, 1):
-                  include.append({
-                      'source': source,
-                      'plan_key': str(key),
-                      'ordinal': ordinal,
-                      'runner': runners[source],
-                      'clip_id': f'{source}-{ordinal:02d}-{str(key)[:8]}',
-                  })
-          if not include:
-              raise RuntimeError('adaptive allocation produced no renderable clips')
-          value = json.dumps({'include': include}, separators=(',', ':'))
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'render_matrix={value}\n')
-          print(f'sequential clip workspaces: {len(include)}')
-          PY
+          set -euo pipefail
+          python scripts/mw4_v3_1_workflow_support.py render-matrix \
+            --allocation allocation/mw4_v3_1_allocation.json \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Upload approved global allocation
         uses: actions/upload-artifact@v4
@@ -379,55 +206,16 @@ jobs:
           name: MW4-v3-1-shadow-source-${{ matrix.source }}
           path: raw_sources
 
-      - name: Verify staged source reel before rendering
+      - name: Verify staged source reel against certified input contract
         env:
           SOURCE_KEY: ${{ matrix.source }}
         run: |
-          python - <<'PY'
-          import json
-          import os
-          import subprocess
-          from pathlib import Path
+          set -euo pipefail
+          python scripts/mw4_v3_1_source_qa.py verify \
+            --source "raw_sources/$SOURCE_KEY.mp4" \
+            --manifest "raw_sources/$SOURCE_KEY.source_qa.json"
 
-          source_key = os.environ['SOURCE_KEY']
-          source = Path('raw_sources') / f'{source_key}.mp4'
-          source_qa_path = Path('raw_sources') / f'{source_key}.source_qa.json'
-          if not source.is_file():
-              raise RuntimeError(f'staged source artifact missing: {source}')
-          if not source_qa_path.is_file():
-              raise RuntimeError(f'original-source QA manifest missing: {source_qa_path}')
-
-          source_qa = json.loads(source_qa_path.read_text(encoding='utf-8'))
-          if source_qa.get('derivative_type') != 'source':
-              raise RuntimeError('staged reel was not certified as MediaSilo type=source')
-          if source_qa.get('proxy_fallback_allowed') is not False:
-              raise RuntimeError('staged reel source policy allows proxy fallback')
-          if source.stat().st_size != int(source_qa.get('downloaded_bytes') or 0):
-              raise RuntimeError('staged source byte-size differs from original-source QA manifest')
-
-          import hashlib
-          digest = hashlib.sha256()
-          with source.open('rb') as stream:
-              while block := stream.read(8 * 1024 * 1024):
-                  digest.update(block)
-          if digest.hexdigest() != source_qa.get('sha256'):
-              raise RuntimeError('staged source SHA256 differs from original-source QA manifest')
-
-          probe = json.loads(subprocess.check_output([
-              'ffprobe', '-v', 'error',
-              '-show_entries', 'stream=width,height,avg_frame_rate:format=duration',
-              '-of', 'json', str(source),
-          ], text=True))
-          video = next(item for item in probe['streams'] if item.get('width'))
-          assert (video['width'], video['height']) == (1920, 1080)
-          assert video['avg_frame_rate'] == '60000/1001'
-          print(
-              f'staged ORIGINAL source verified bytes={source.stat().st_size} '
-              f'sha256={source_qa["sha256"][:16]}...'
-          )
-          PY
-
-      - name: Render and QA exactly one full-quality 250 Mbps qualification clip
+      - name: Render and QA exactly one full-quality qualification clip
         timeout-minutes: 65
         env:
           SOURCE_KEY: ${{ matrix.source }}
@@ -512,40 +300,12 @@ jobs:
 
       - name: Aggregate per-clip QA into source summaries
         run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          allocation = json.loads(Path('allocation/mw4_v3_1_allocation.json').read_text(encoding='utf-8'))
-          config = json.loads(Path('campaigns/mw4-fullframe-retention-v3-1.json').read_text(encoding='utf-8'))
-          results = [json.loads(path.read_text(encoding='utf-8')) for path in Path('clip-meta').rglob('*_clip_result_v3_1.json')]
-          root = Path('batch-contract')
-          root.mkdir(parents=True, exist_ok=True)
-
-          for source in ('r1', 'batch2', 'week2'):
-              expected = [str(item) for item in allocation.get('source_allocations', {}).get(source, {}).get('plan_keys', [])]
-              actual = sorted([item for item in results if item.get('source_key') == source], key=lambda item: int(item.get('ordinal', 0)))
-              actual_keys = [str(item.get('plan_key')) for item in actual]
-              failures = []
-              if actual_keys != expected:
-                  failures.append(f'{source}: rendered clip keys {actual_keys} != allocated keys {expected}')
-              if any(item.get('status') != 'PASS' for item in actual):
-                  failures.append(f'{source}: one or more clip results did not pass')
-              summary = {
-                  'mode': 'shadow',
-                  'source_key': source,
-                  'selected_count': len(actual),
-                  'rendered_count': len(actual),
-                  'selected_plan_keys': actual_keys,
-                  'stories': [str(item.get('story_type')) for item in actual],
-                  'verified_finishing_move_count': len(config.get('finishing_move_detector', {}).get('verified_spans', {}).get(source, [])),
-                  'selected_finishing_move_count': sum(1 for item in actual if bool(item.get('finishing_move'))),
-                  'unplanned_source_cut_count': sum(int(item.get('unplanned_source_cut_count', 0)) for item in actual),
-                  'technical_qa_passed': bool(actual or not expected) and len(actual) == len(expected) and all(bool(item.get('technical_qa_passed')) for item in actual),
-                  'failure': failures or None,
-              }
-              (root / f'{source}_pipeline_summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
-          PY
+          set -euo pipefail
+          python scripts/mw4_v3_1_workflow_support.py batch-summaries \
+            --allocation allocation/mw4_v3_1_allocation.json \
+            --config campaigns/mw4-fullframe-retention-v3-1.json \
+            --clip-meta clip-meta \
+            --output-dir batch-contract
 
       - name: Enforce complete adaptive batch contract
         run: |
