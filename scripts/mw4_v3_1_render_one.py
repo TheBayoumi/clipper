@@ -14,6 +14,18 @@ import mw4_semantic_gameplay_v3_1_final as semantic
 import mw4_v3_1_contract as contract
 
 
+UNKNOWN_METADATA = {"", "unknown", "unspecified", "reserved", "n/a", "N/A", "0:1"}
+FIDELITY_METADATA_FIELDS = (
+    "pix_fmt",
+    "sample_aspect_ratio",
+    "color_range",
+    "color_space",
+    "color_transfer",
+    "color_primaries",
+    "chroma_location",
+)
+
+
 def _write(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -25,6 +37,184 @@ def _run(command: list[str]) -> None:
 
 def _run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=True, text=True, capture_output=True)
+
+
+def _video_profile(path: Path, *, count_frames: bool = False) -> dict[str, Any]:
+    entries = (
+        "stream=codec_name,profile,width,height,pix_fmt,sample_aspect_ratio,display_aspect_ratio,"
+        "color_range,color_space,color_transfer,color_primaries,chroma_location,field_order,"
+        "bits_per_raw_sample,r_frame_rate,avg_frame_rate"
+    )
+    if count_frames:
+        entries += ",nb_read_frames"
+    command = [
+        "ffprobe", "-v", "error",
+        "-select_streams", "v:0",
+    ]
+    if count_frames:
+        command.append("-count_frames")
+    command += ["-show_entries", entries, "-of", "json", str(path)]
+    payload = json.loads(_run_capture(command).stdout)
+    streams = payload.get("streams") or []
+    if len(streams) != 1:
+        raise RuntimeError(f"expected exactly one video stream: {path}")
+    stream = streams[0]
+    profile: dict[str, Any] = {
+        "codec_name": str(stream.get("codec_name") or ""),
+        "profile": str(stream.get("profile") or ""),
+        "width": int(stream.get("width") or 0),
+        "height": int(stream.get("height") or 0),
+        "pix_fmt": str(stream.get("pix_fmt") or ""),
+        "sample_aspect_ratio": str(stream.get("sample_aspect_ratio") or ""),
+        "display_aspect_ratio": str(stream.get("display_aspect_ratio") or ""),
+        "color_range": str(stream.get("color_range") or ""),
+        "color_space": str(stream.get("color_space") or ""),
+        "color_transfer": str(stream.get("color_transfer") or ""),
+        "color_primaries": str(stream.get("color_primaries") or ""),
+        "chroma_location": str(stream.get("chroma_location") or ""),
+        "field_order": str(stream.get("field_order") or ""),
+        "bits_per_raw_sample": str(stream.get("bits_per_raw_sample") or ""),
+        "r_frame_rate": str(stream.get("r_frame_rate") or ""),
+        "avg_frame_rate": str(stream.get("avg_frame_rate") or ""),
+    }
+    if count_frames:
+        count = stream.get("nb_read_frames")
+        if count in (None, "N/A"):
+            raise RuntimeError(f"ffprobe could not count decoded video frames for {path}")
+        profile["frame_count"] = int(count)
+    return profile
+
+
+def _known(value: str) -> bool:
+    return str(value).strip() not in UNKNOWN_METADATA
+
+
+def _profile_output_args(profile: dict[str, Any]) -> list[str]:
+    """Preserve source pixel format and color/chroma signaling without conversion."""
+    args = ["-pix_fmt", str(profile["pix_fmt"])]
+    mapping = (
+        ("color_range", "-color_range"),
+        ("color_space", "-colorspace"),
+        ("color_transfer", "-color_trc"),
+        ("color_primaries", "-color_primaries"),
+        ("chroma_location", "-chroma_sample_location"),
+    )
+    for key, option in mapping:
+        value = str(profile.get(key) or "")
+        if _known(value):
+            args += [option, value]
+    return args
+
+
+def _assert_source_profile(source: Path, profile: dict[str, Any], config: dict[str, Any]) -> None:
+    expected_fps = str(config["output"]["fps"])
+    failures: list[str] = []
+    if (profile["width"], profile["height"]) != (1920, 1080):
+        failures.append(f"geometry={profile['width']}x{profile['height']}")
+    if profile["r_frame_rate"] != expected_fps or profile["avg_frame_rate"] != expected_fps:
+        failures.append(
+            f"fps=r:{profile['r_frame_rate']} avg:{profile['avg_frame_rate']} expected:{expected_fps}"
+        )
+    # The delivery contract is H.264 High yuv420p. Fail rather than silently
+    # chroma-convert a source master with a different pixel format.
+    if profile["pix_fmt"] != "yuv420p":
+        failures.append(f"pix_fmt={profile['pix_fmt']} expected source-native yuv420p")
+    if failures:
+        raise RuntimeError(
+            f"cannot guarantee source-native output quality for {source.name}: " + "; ".join(failures)
+        )
+
+
+def _decoded_frame_hashes(
+    path: Path,
+    *,
+    pix_fmt: str,
+    start: float | None = None,
+    duration: float | None = None,
+) -> list[str]:
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    if start is not None:
+        command += ["-ss", f"{start:.6f}"]
+    command += ["-i", str(path)]
+    if duration is not None:
+        command += ["-t", f"{duration:.6f}"]
+    command += [
+        "-map", "0:v:0",
+        "-an",
+        "-vsync", "0",
+        "-pix_fmt", pix_fmt,
+        "-f", "framemd5", "-",
+    ]
+    text = _run_capture(command).stdout
+    return [
+        line.rsplit(",", 1)[-1].strip()
+        for line in text.splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+
+
+def _metadata_match_checks(
+    source_profile: dict[str, Any],
+    other_profile: dict[str, Any],
+    *,
+    prefix: str,
+) -> dict[str, bool]:
+    checks: dict[str, bool] = {}
+    for field in FIDELITY_METADATA_FIELDS:
+        checks[f"{prefix}_{field}_matches_source"] = (
+            str(other_profile.get(field) or "") == str(source_profile.get(field) or "")
+        )
+    return checks
+
+
+def _verify_lossless_piece(
+    source: Path,
+    piece: Path,
+    *,
+    extract_start: float,
+    extract_duration: float,
+    source_profile: dict[str, Any],
+    index: int,
+) -> dict[str, Any]:
+    source_hashes = _decoded_frame_hashes(
+        source,
+        pix_fmt=str(source_profile["pix_fmt"]),
+        start=extract_start,
+        duration=extract_duration,
+    )
+    piece_hashes = _decoded_frame_hashes(
+        piece,
+        pix_fmt=str(source_profile["pix_fmt"]),
+    )
+    piece_profile = _video_profile(piece)
+    metadata_checks = _metadata_match_checks(source_profile, piece_profile, prefix="stage")
+    checks = {
+        "exact_decoded_frame_count_match": len(source_hashes) == len(piece_hashes),
+        "exact_decoded_frame_hash_match": source_hashes == piece_hashes,
+        **metadata_checks,
+        "source_interval_has_frames": bool(source_hashes),
+    }
+    if not all(checks.values()):
+        mismatch = next(
+            (
+                i for i, pair in enumerate(zip(source_hashes, piece_hashes))
+                if pair[0] != pair[1]
+            ),
+            None,
+        )
+        raise RuntimeError(
+            f"lossless source->stage fidelity failed for segment {index + 1}: "
+            f"checks={checks}; source_frames={len(source_hashes)} stage_frames={len(piece_hashes)} "
+            f"first_hash_mismatch={mismatch}; source_profile={source_profile}; stage_profile={piece_profile}"
+        )
+    return {
+        "segment": index + 1,
+        "extract_start": extract_start,
+        "extract_duration": extract_duration,
+        "frame_count": len(source_hashes),
+        "checks": checks,
+        "stage_profile": piece_profile,
+    }
 
 
 def _map_source_time(
@@ -41,27 +231,24 @@ def _stage_plan_source(
     source: Path,
     plan: semantic.SemanticPlanV31,
     workspace: Path,
-) -> tuple[Path, semantic.SemanticPlanV31]:
-    """Create a short lossless source containing only the approved edit segments.
-
-    Each far-apart source interval is seeked and decoded independently so no
-    full-reel multi-trim graph can retain gigabytes of raw frames. FFV1/PCM staging
-    is lossless; the final H.264 master is encoded exactly once from a canonical
-    lossless edited master later in this file.
-    """
+    config: dict[str, Any],
+) -> tuple[Path, semantic.SemanticPlanV31, dict[str, Any], list[dict[str, Any]]]:
+    """Stage only approved intervals losslessly and prove source->stage frame identity."""
     workspace.mkdir(parents=True, exist_ok=True)
     source_info = renderer.probe(source)
     source_duration = float(source_info["format"]["duration"])
+    source_profile = _video_profile(source)
+    _assert_source_profile(source, source_profile, config)
 
     pieces: list[Path] = []
     mappings: list[tuple[semantic.EditSegment, semantic.EditSegment]] = []
+    staging_fidelity: list[dict[str, Any]] = []
     cursor = 0.0
     segments = list(plan.segments)
 
     for index, segment in enumerate(segments):
         previous = segments[index - 1] if index else None
         following = segments[index + 1] if index + 1 < len(segments) else None
-
         noncontiguous_before = bool(
             previous is not None
             and (segment.start > previous.end + 0.02 or segment.start < previous.start - 0.02)
@@ -71,7 +258,6 @@ def _stage_plan_source(
             or following.start > segment.end + 0.02
             or following.start < segment.start - 0.02
         )
-
         lead = min(0.05, segment.start) if noncontiguous_before else 0.0
         tail = min(0.05, max(0.0, source_duration - segment.end)) if noncontiguous_after else 0.0
         extract_start = max(0.0, segment.start - lead)
@@ -80,7 +266,10 @@ def _stage_plan_source(
         if extract_duration <= 0.0:
             raise RuntimeError(f"invalid staged segment {index + 1}: {segment.start}-{segment.end}")
 
-        piece = workspace / f"segment_{index:02d}.mkv"
+        # NUT keeps exact 60000/1001 timestamps. FFV1 is lossless and the frame-hash
+        # check below proves the decoded YUV planes are byte-identical to the same
+        # interval decoded directly from the original MediaSilo source master.
+        piece = workspace / f"segment_{index:02d}.nut"
         _run([
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-ss", f"{extract_start:.6f}",
@@ -90,12 +279,23 @@ def _stage_plan_source(
             "-map", "0:a:0",
             "-c:v", "ffv1",
             "-level", "3",
-            "-pix_fmt", "yuv420p",
+            *_profile_output_args(source_profile),
+            "-vsync", "0",
             "-c:a", "pcm_s16le",
             "-ar", "48000",
             "-ac", "2",
             str(piece),
         ])
+        staging_fidelity.append(
+            _verify_lossless_piece(
+                source,
+                piece,
+                extract_start=extract_start,
+                extract_duration=extract_duration,
+                source_profile=source_profile,
+                index=index,
+            )
+        )
 
         piece_duration = float(renderer.probe(piece)["format"]["duration"])
         local_start = cursor + (segment.start - extract_start)
@@ -105,7 +305,6 @@ def _stage_plan_source(
                 f"staged segment {index + 1} is shorter than approved source interval: "
                 f"need {local_end - cursor:.3f}s, have {piece_duration:.3f}s"
             )
-
         local_segment = semantic.EditSegment(
             start=round(local_start, 6),
             end=round(local_end, 6),
@@ -121,7 +320,7 @@ def _stage_plan_source(
         "".join(f"file '{piece.name}'\n" for piece in pieces),
         encoding="utf-8",
     )
-    stitched = workspace / "approved_segments_lossless.mkv"
+    stitched = workspace / "approved_segments_lossless.nut"
     _run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-f", "concat", "-safe", "0",
@@ -158,7 +357,7 @@ def _stage_plan_source(
         effect_events=tuple(local_events),
         finishing_move=local_finishing,
     )
-    return stitched, local_plan
+    return stitched, local_plan, source_profile, staging_fidelity
 
 
 def _append_source_native_segment(
@@ -166,7 +365,6 @@ def _append_source_native_segment(
     index: int,
     segment: semantic.EditSegment,
 ) -> tuple[str, str]:
-    """Trim/re-time one segment without any spatial transform."""
     video = f"snv{index}"
     audio = f"sna{index}"
     video_pts = (
@@ -188,12 +386,11 @@ def _append_source_native_segment(
     return video, audio
 
 
-def _build_source_native_filter(plan: semantic.SemanticPlanV31) -> tuple[str, float]:
-    """Build the canonical edit graph while preserving every source pixel.
-
-    Allowed video operations are timing/cutting/concatenation and SAR metadata only.
-    No crop, scale, zoom, shake, resize, or other spatial resampling is permitted.
-    """
+def _build_source_native_filter(
+    plan: semantic.SemanticPlanV31,
+    source_profile: dict[str, Any],
+) -> tuple[str, float]:
+    """Timing/cuts only. SAR is preserved as metadata; pixels are never resampled."""
     parts: list[str] = []
     pairs = [
         _append_source_native_segment(parts, index, segment)
@@ -202,15 +399,15 @@ def _build_source_native_filter(plan: semantic.SemanticPlanV31) -> tuple[str, fl
     if not pairs:
         raise RuntimeError("approved plan has no edit segments")
 
+    sar = str(source_profile.get("sample_aspect_ratio") or "")
+    sar_filter = "null" if not _known(sar) else f"setsar={sar.replace(':', '/')}"
     if len(pairs) == 1:
-        parts.append(f"[{pairs[0][0]}]setsar=1[outv]")
+        parts.append(f"[{pairs[0][0]}]{sar_filter}[outv]")
         parts.append(f"[{pairs[0][1]}]aresample=48000[aout]")
     else:
         concat_inputs = "".join(f"[{video}][{audio}]" for video, audio in pairs)
-        parts.append(
-            f"{concat_inputs}concat=n={len(pairs)}:v=1:a=1[vcat][acat]"
-        )
-        parts.append("[vcat]setsar=1[outv]")
+        parts.append(f"{concat_inputs}concat=n={len(pairs)}:v=1:a=1[vcat][acat]")
+        parts.append(f"[vcat]{sar_filter}[outv]")
         parts.append("[acat]aresample=48000[aout]")
 
     graph = ";".join(parts)
@@ -228,16 +425,10 @@ def _render_canonical_lossless_master(
     staged_source: Path,
     plan: semantic.SemanticPlanV31,
     config: dict[str, Any],
+    source_profile: dict[str, Any],
     target: Path,
 ) -> dict[str, Any]:
-    """Render the exact approved edit once as a lossless CFR master.
-
-    This file is the single visual truth for the final H.264 encode and for objective
-    fidelity QA. The lossy pass must never rebuild trims, effects, or frame timing.
-    NUT is intentional here: unlike Matroska's 1 ms video time base, NUT preserves
-    the exact 60000/1001 rational frame rate required by the campaign and QA.
-    """
-    graph, duration = _build_source_native_filter(plan)
+    graph, duration = _build_source_native_filter(plan, source_profile)
     settings = config["output"]
     _run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -248,7 +439,7 @@ def _render_canonical_lossless_master(
         "-map", "[aout]",
         "-c:v", "ffv1",
         "-level", "3",
-        "-pix_fmt", "yuv420p",
+        *_profile_output_args(source_profile),
         "-c:a", "pcm_s16le",
         "-ar", "48000",
         "-ac", "2",
@@ -259,26 +450,28 @@ def _render_canonical_lossless_master(
     ])
     return {
         "graph_has_spatial_transform": False,
-        "video_operations": "trim/setpts/concat/setsar only",
+        "video_operations": "trim/setpts/concat + source-SAR metadata only",
         "canonical_fps": str(settings["fps"]),
         "canonical_container": "nut",
+        "source_profile": source_profile,
     }
 
 
 def _encode_from_canonical_master(
     canonical_master: Path,
     config: dict[str, Any],
+    source_profile: dict[str, Any],
     target: Path,
     *,
     mode: str,
 ) -> None:
-    """Perform only the final codec encode; do not alter the canonical video timeline."""
     _run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", str(canonical_master),
         "-map", "0:v:0",
         "-map", "0:a:0",
         *renderer._encode_args(config, mode),
+        *_profile_output_args(source_profile),
         "-threads:v", "4",
         "-vsync", "0",
         "-movflags", "+faststart",
@@ -293,42 +486,16 @@ def _extract_metric(stderr: str, pattern: str, label: str) -> float:
     return float(matches[-1])
 
 
-def _video_frame_profile(path: Path) -> dict[str, Any]:
-    result = _run_capture([
-        "ffprobe", "-v", "error",
-        "-count_frames",
-        "-select_streams", "v:0",
-        "-show_entries",
-        "stream=width,height,pix_fmt,r_frame_rate,avg_frame_rate,nb_read_frames",
-        "-of", "json",
-        str(path),
-    ])
-    payload = json.loads(result.stdout)
-    streams = payload.get("streams") or []
-    if len(streams) != 1:
-        raise RuntimeError(f"expected exactly one video stream for fidelity QA: {path}")
-    stream = streams[0]
-    count = stream.get("nb_read_frames")
-    if count in (None, "N/A"):
-        raise RuntimeError(f"ffprobe could not count decoded video frames for {path}")
-    return {
-        "width": int(stream["width"]),
-        "height": int(stream["height"]),
-        "pix_fmt": str(stream.get("pix_fmt") or ""),
-        "r_frame_rate": str(stream.get("r_frame_rate") or ""),
-        "avg_frame_rate": str(stream.get("avg_frame_rate") or ""),
-        "frame_count": int(count),
-    }
-
-
 def _source_fidelity_qa(
+    source_profile: dict[str, Any],
+    staging_fidelity: list[dict[str, Any]],
     canonical_master: Path,
     output: Path,
     config: dict[str, Any],
 ) -> dict[str, Any]:
-    """Measure encoder fidelity only after proving exact timeline alignment."""
-    reference_profile = _video_frame_profile(canonical_master)
-    output_profile = _video_frame_profile(output)
+    """Prove source->lossless-stage identity, then measure only H.264 generation loss."""
+    reference_profile = _video_profile(canonical_master, count_frames=True)
+    output_profile = _video_profile(output, count_frames=True)
     expected_fps = str(config["output"]["fps"])
 
     alignment_checks = {
@@ -338,8 +505,6 @@ def _source_fidelity_qa(
         "output_1920x1080": (
             output_profile["width"], output_profile["height"]
         ) == (1920, 1080),
-        "reference_yuv420p": reference_profile["pix_fmt"] == "yuv420p",
-        "output_yuv420p": output_profile["pix_fmt"] == "yuv420p",
         "reference_r_fps": reference_profile["r_frame_rate"] == expected_fps,
         "reference_avg_fps": reference_profile["avg_frame_rate"] == expected_fps,
         "output_r_fps": output_profile["r_frame_rate"] == expected_fps,
@@ -347,11 +512,21 @@ def _source_fidelity_qa(
         "exact_frame_count_match": (
             reference_profile["frame_count"] == output_profile["frame_count"]
         ),
+        "all_source_to_stage_frame_hashes_exact": all(
+            item["checks"]["exact_decoded_frame_hash_match"] for item in staging_fidelity
+        ),
     }
+    alignment_checks.update(
+        _metadata_match_checks(source_profile, reference_profile, prefix="canonical")
+    )
+    alignment_checks.update(
+        _metadata_match_checks(source_profile, output_profile, prefix="output")
+    )
     if not all(alignment_checks.values()):
         raise RuntimeError(
-            "source-fidelity timeline mismatch before SSIM/PSNR: "
-            f"checks={alignment_checks}; reference={reference_profile}; output={output_profile}"
+            "source-fidelity metadata/timeline mismatch before SSIM/PSNR: "
+            f"checks={alignment_checks}; source={source_profile}; "
+            f"reference={reference_profile}; output={output_profile}"
         )
 
     ssim_run = _run_capture([
@@ -402,9 +577,15 @@ def _source_fidelity_qa(
         "minimum_ssim": minimum_ssim,
         "psnr_db": psnr,
         "minimum_psnr_db": minimum_psnr,
+        "source_profile": source_profile,
+        "staging_fidelity": staging_fidelity,
         "reference_profile": reference_profile,
         "output_profile": output_profile,
-        "reference": "single canonical lossless FFV1 edited/CFR master used directly as H.264 encoder input",
+        "reference": (
+            "original MediaSilo source decoded-frame hashes must match every lossless "
+            "staged segment exactly; final H.264 is then compared against the single "
+            "canonical FFV1/NUT edited master"
+        ),
     }
 
 
@@ -444,23 +625,32 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="mw4_v31_stage_") as temp_dir:
         workspace = Path(temp_dir)
-        staged_source, local_plan = _stage_plan_source(args.source, plan, workspace)
+        staged_source, local_plan, source_profile, staging_fidelity = _stage_plan_source(
+            args.source, plan, workspace, config
+        )
         fidelity_plan = replace(local_plan, effect_profile="source_native_full_frame")
-
         canonical_master = workspace / "canonical_lossless_edited_master.nut"
         canonical_info = _render_canonical_lossless_master(
             staged_source,
             fidelity_plan,
             config,
+            source_profile,
             canonical_master,
         )
         _encode_from_canonical_master(
             canonical_master,
             config,
+            source_profile,
             target,
             mode=args.mode,
         )
-        fidelity_qa = _source_fidelity_qa(canonical_master, target, config)
+        fidelity_qa = _source_fidelity_qa(
+            source_profile,
+            staging_fidelity,
+            canonical_master,
+            target,
+            config,
+        )
 
     qa = renderer.validate_output(target, config, mode=args.mode)
     sheets = args.output_dir / "contact_sheets"
@@ -490,13 +680,17 @@ def main() -> None:
         "render_reanalysis": False,
         "source_structure_reanalysis": False,
         "bounded_lossless_segment_staging": True,
+        "exact_source_to_stage_frame_hash_qa": True,
+        "source_color_metadata_preserved": True,
         "spatial_crop_upscale_used": False,
         "source_native_full_frame": True,
         "single_canonical_visual_timeline": True,
         "single_clip_workspace": True,
         "status": "PASS",
     }
-    result_path = args.output_dir / f"{args.source_key}_{args.ordinal:02d}_{args.plan_key}_clip_result_v3_1.json"
+    result_path = args.output_dir / (
+        f"{args.source_key}_{args.ordinal:02d}_{args.plan_key}_clip_result_v3_1.json"
+    )
     _write(result_path, result)
     print(json.dumps({
         "source": args.source_key,
@@ -509,6 +703,9 @@ def main() -> None:
         "ssim": fidelity_qa["ssim"],
         "psnr_db": fidelity_qa["psnr_db"],
         "frame_count": fidelity_qa["reference_profile"]["frame_count"],
+        "source_profile": source_profile,
+        "source_to_stage_hashes_exact": True,
+        "source_color_metadata_preserved": True,
         "spatial_crop_upscale_used": False,
         "single_canonical_visual_timeline": True,
         "bounded_lossless_segment_staging": True,
