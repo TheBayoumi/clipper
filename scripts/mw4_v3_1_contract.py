@@ -6,6 +6,9 @@ import mw4_v3_1_contract_legacy as _legacy
 from mw4_v3_1_contract_legacy import *  # noqa: F401,F403
 
 _ORIGINAL_CONFLICT = _legacy._plans_conflict
+_ORIGINAL_FINISHING_FAILURES = _legacy._finishing_plan_failures
+_ORIGINAL_VALIDATE = _legacy.validate_plan
+_EPS = 1e-3
 
 
 def _semantic_anchor_times(plan: dict[str, Any]) -> list[float]:
@@ -42,8 +45,49 @@ def _plans_conflict(left: dict[str, Any], right: dict[str, Any], config: dict[st
     return _reuses_montage_moment(left, right) or _ORIGINAL_CONFLICT(left, right, config)
 
 
+def _ordering_failures(source: str, index: int, plan: dict[str, Any]) -> list[str]:
+    segments = list(plan.get("segments") or [])
+    if not segments:
+        return [f"{source} clip {index}: plan has no source segments"]
+    failures: list[str] = []
+    start = float(plan.get("start", segments[0]["start"]))
+    end = float(plan.get("end", segments[-1]["end"]))
+    if abs(start - float(segments[0]["start"])) > _EPS:
+        failures.append(f"{source} clip {index}: plan start does not match first segment")
+    if abs(end - float(segments[-1]["end"])) > _EPS or end <= start:
+        failures.append(f"{source} clip {index}: plan bounds are non-monotonic")
+    for pos, segment in enumerate(segments):
+        s0, s1 = float(segment["start"]), float(segment["end"])
+        if s1 <= s0:
+            failures.append(f"{source} clip {index}: segment {pos + 1} has invalid bounds")
+        if pos and s0 < float(segments[pos - 1]["end"]) - _EPS:
+            failures.append(f"{source} clip {index}: source chronology reverses/overlaps at segment {pos + 1}")
+    return failures
+
+
+def _finishing_plan_failures(source: str, index: int, plan: dict[str, Any], config: dict[str, Any]) -> list[str]:
+    failures = list(_ORIGINAL_FINISHING_FAILURES(source, index, plan, config))
+    segments = list(plan.get("segments") or [])
+    if plan.get("finishing_move") is not None and len(segments) > 1:
+        gap = float(segments[1]["start"]) - float(segments[0]["end"])
+        maximum = float(config.get("editorial", {}).get("finishing_move_max_continuation_gap_seconds", 18.0))
+        if gap < -_EPS:
+            failures.append(f"{source} clip {index}: Finishing Move continuation runs backward/overlaps")
+        elif gap > maximum + _EPS:
+            failures.append(f"{source} clip {index}: Finishing Move continuation gap exceeds {maximum:.3f}s")
+    return list(dict.fromkeys(failures))
+
+
+def validate_plan(source: str, index: int, plan: dict[str, Any], config: dict[str, Any]) -> list[str]:
+    failures = list(_ORIGINAL_VALIDATE(source, index, plan, config))
+    failures.extend(_ordering_failures(source, index, plan))
+    return list(dict.fromkeys(failures))
+
+
 _legacy._semantic_anchor_times = _semantic_anchor_times
 _legacy._plans_conflict = _plans_conflict
+_legacy._finishing_plan_failures = _finishing_plan_failures
+_legacy.validate_plan = validate_plan
 
 
 def main() -> None:
