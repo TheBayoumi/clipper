@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import mw4_v3_1_allocator_hardened as _allocator
 import mw4_v3_1_contract_legacy as _legacy
+import mw4_v3_1_contract_regression as _regression
 from mw4_v3_1_contract_legacy import *  # noqa: F401,F403
 
 _ORIGINAL_CONFLICT = _legacy._plans_conflict
@@ -93,6 +95,8 @@ _allocator.install(_legacy)
 
 
 def main() -> None:
+    if "--self-test" in sys.argv:
+        _regression.run(sys.modules[__name__], _legacy)
     _legacy.main()
 
 
