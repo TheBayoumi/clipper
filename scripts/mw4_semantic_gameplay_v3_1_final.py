@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
 from typing import Any
 
 import mw4_semantic_gameplay_v3_1_final_legacy as _legacy
@@ -72,11 +74,24 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
     return sorted(results, key=lambda item: item.score, reverse=True)
 
 
+def _hardening_self_test() -> None:
+    seg = lambda start, end: SimpleNamespace(start=start, end=end, speed=1.0)
+    good = SimpleNamespace(start=1.0, end=4.0, segments=(seg(1.0, 2.0), seg(3.0, 4.0)))
+    bad = SimpleNamespace(start=10.0, end=5.0, segments=(seg(10.0, 12.0), seg(1.0, 5.0)))
+    if _chronology_failures(good):
+        raise AssertionError("chronological semantic plan was rejected")
+    if not _chronology_failures(bad):
+        raise AssertionError("backward semantic plan was accepted")
+    print("MW4 semantic chronology hardening self-test: PASS")
+
+
 _legacy.plan_integrity_violations = plan_integrity_violations
 _legacy._finishing_open_plans = _finishing_open_plans
 
 
 def main() -> None:
+    if "--self-test" in sys.argv:
+        _hardening_self_test()
     _legacy.main()
 
 
