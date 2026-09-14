@@ -80,6 +80,35 @@
     "local_refine_radius_seconds": 0.8,
     "memory_policy": "Run the full 256x144 at 6 fps semantic analysis exactly once in the analysis stage. Shadow and production render stages consume the approved allocation directly and perform only lightweight source-structure validation, so full-reel NumPy frame arrays are never retained while FFmpeg encodes."
   },
+  "combat_state_verifier": {
+    "enabled": true,
+    "minimum_hostile_event_score": 0.64,
+    "outcome_minimum": 0.52,
+    "payoff_combat_minimum": 0.42,
+    "impact_minimum": 0.64,
+    "impact_combat_minimum": 0.55,
+    "strong_combat_minimum": 0.70,
+    "strong_combat_audio_transient_minimum": 0.62,
+    "strong_combat_center_motion_minimum": 0.40,
+    "maximum_hostile_anchor_gap_seconds": 1.35,
+    "maximum_verified_inter_engagement_gap_seconds": 1.25,
+    "engagement_pre_context_seconds": 0.35,
+    "engagement_post_context_seconds": 0.45,
+    "traversal_break_threshold": 0.60,
+    "recovery_break_threshold": 0.60,
+    "break_combat_ceiling": 0.50,
+    "maximum_continuity_break_run_seconds": 0.55,
+    "finishing_continuation": {
+      "minimum_retention_quality": 0.40,
+      "minimum_payoff_quality": 0.40,
+      "minimum_ending_quality": 0.45,
+      "minimum_weakest_quarter_interest": 0.30,
+      "maximum_unexplained_low_interest_run_seconds": 0.75,
+      "minimum_verified_hostile_anchors_without_payoff": 2,
+      "minimum_retention_without_payoff": 0.50
+    },
+    "policy": "Fail closed. Contact-only or ambiguous actor motion is unknown, never hostile. Verified engagements require combat-supported payoff/impact or a strong combat burst. Sustained reload/traversal/recovery breaks terminate continuity. Finishing Move continuation must independently satisfy body quality gates and cannot inherit the hero payoff score."
+  },
   "source_integrity": {
     "policy": "automatic shot boundaries plus visually verified missed source-stringout edit windows; contiguous stories may never cross them, while only explicitly planned semantic montage transitions may bridge separate source shots",
     "verified_cut_windows": {
