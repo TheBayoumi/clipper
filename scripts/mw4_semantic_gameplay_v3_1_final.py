@@ -8,6 +8,7 @@ from typing import Any
 import mw4_semantic_gameplay_v3_1_final_legacy as _legacy
 from mw4_semantic_gameplay_v3_1_final_legacy import *  # noqa: F401,F403
 import mw4_semantic_gameplay_v3_1_combat_state as _combat
+import mw4_semantic_gameplay_v3_1_combat_islands as _islands
 
 _ORIGINAL_INTEGRITY = _legacy.plan_integrity_violations
 _ORIGINAL_FINISHING = _legacy._finishing_open_plans
@@ -39,6 +40,7 @@ def plan_integrity_violations(plan: SemanticPlanV31, timeline: SemanticTimelineV
     failures = list(_ORIGINAL_INTEGRITY(plan, timeline, config, source_key))
     failures.extend(_chronology_failures(plan))
     failures.extend(_combat.plan_combat_state_failures(plan, timeline, config))
+    failures.extend(_islands.plan_island_failures(plan, timeline, config))
     return list(dict.fromkeys(failures))
 
 
@@ -97,27 +99,52 @@ def _conservative_finishing_metrics(
     )
 
 
+def _certified_continuation(
+    continuation: SemanticPlanV31,
+    timeline: SemanticTimelineV31,
+    config: dict[str, Any],
+) -> SemanticPlanV31 | None:
+    if continuation.story_type != "semantic_montage":
+        return continuation
+    editorial = config["editorial"]
+    if bool(editorial.get("finishing_move_allow_semantic_montage_continuation", False)):
+        return continuation
+    if not bool(editorial.get("finishing_move_allow_verified_combat_island_continuation", False)):
+        return None
+    if not _islands.verified_island_montage(continuation, timeline, config, _combat):
+        return None
+    return replace(
+        continuation,
+        story_type="verified_combat_island_continuation",
+        editorial_reasons=(
+            "dedicated Finishing Move body assembled only from independently verified combat islands; generic semantic-montage continuation remains disabled",
+        ) + tuple(continuation.editorial_reasons),
+    )
+
+
 def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[SemanticPlanV31], config: dict[str, Any], source_key: str) -> list[SemanticPlanV31]:
     if not timeline.finishing_moves:
         return []
     editorial = config["editorial"]
     hold = float(editorial.get("finishing_move_payoff_hold_seconds", 0.45))
     max_gap = float(editorial.get("finishing_move_max_continuation_gap_seconds", 18.0))
-    allow_montage = bool(editorial.get("finishing_move_allow_semantic_montage_continuation", False))
     results: list[SemanticPlanV31] = []
     for span in timeline.finishing_moves:
         shot = timeline.shots[span.shot_index]
         hero_end = min(shot.end, span.end + hold)
         later_floor = max(hero_end, float(span.end) + 0.25)
         eligible: list[SemanticPlanV31] = []
-        for continuation in continuations:
-            if continuation.story_type == "finishing_move_open" or not continuation.segments:
+        for raw_continuation in continuations:
+            if raw_continuation.story_type == "finishing_move_open" or not raw_continuation.segments:
                 continue
-            if continuation.story_type == "semantic_montage" and not allow_montage:
+            continuation = _certified_continuation(raw_continuation, timeline, config)
+            if continuation is None:
                 continue
             if _chronology_failures(continuation):
                 continue
             if _combat.continuation_failures(continuation, config):
+                continue
+            if _islands.plan_island_failures(continuation, timeline, config):
                 continue
             first_start = float(continuation.segments[0].start)
             if first_start < later_floor - _EPS:
@@ -142,8 +169,22 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
                 continue
             valid.append(hardened)
         if not valid:
+            later = [
+                {
+                    "story": item.story_type,
+                    "start": round(float(item.segments[0].start), 3),
+                    "end": round(float(item.segments[-1].end), 3),
+                    "retention": round(float(item.retention_quality), 4),
+                    "payoff": round(float(item.payoff_quality), 4),
+                    "failures": _combat.continuation_failures(item, config),
+                }
+                for item in continuations
+                if item.segments and float(item.segments[0].start) >= later_floor - _EPS
+                and float(item.segments[0].start) - hero_end <= max_gap + _EPS
+            ]
             raise RuntimeError(
-                "verified Finishing Move has no strictly later, independently strong hostile-payoff continuation within the configured gap contract; fallback is disabled"
+                "verified Finishing Move has no strictly later, independently strong hostile-payoff continuation within the configured gap contract; fallback is disabled; "
+                f"later_candidates={later[:8]}"
             )
         results.extend(valid)
     return sorted(results, key=lambda item: item.score, reverse=True)
@@ -162,16 +203,16 @@ def _hardening_self_test() -> None:
     if later_floor < span_end + 0.25:
         raise AssertionError("finishing fallback reachability guard failed")
     if analyze_source is not _legacy.analyze_source or diagnose_source is not _legacy.diagnose_source:
-        raise AssertionError("combat-state analyze/diagnose wrappers are not exported by final semantic module")
+        raise AssertionError("combat-island analyze/diagnose wrappers are not exported by final semantic module")
     _combat.self_test()
-    print("MW4 semantic chronology/combat-state hardening self-test: PASS")
+    _islands.self_test()
+    print("MW4 semantic chronology/combat-state/island hardening self-test: PASS")
 
 
 _combat.install(_legacy)
+_islands.install(_legacy, _combat)
 _legacy.plan_integrity_violations = plan_integrity_violations
 _legacy._finishing_open_plans = _finishing_open_plans
-# Star-import bindings above captured the legacy callables before installation.
-# Export the hardened analysis/diagnostics explicitly so callers cannot bypass them.
 analyze_source = _legacy.analyze_source
 diagnose_source = _legacy.diagnose_source
 
