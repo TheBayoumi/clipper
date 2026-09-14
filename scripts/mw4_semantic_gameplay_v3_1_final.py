@@ -129,6 +129,7 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
     editorial = config["editorial"]
     hold = float(editorial.get("finishing_move_payoff_hold_seconds", 0.45))
     max_gap = float(editorial.get("finishing_move_max_continuation_gap_seconds", 18.0))
+    excluded = config.get("excluded_windows", {}).get(source_key, [])
     results: list[SemanticPlanV31] = []
     diagnostics: list[dict[str, Any]] = []
     for span in timeline.finishing_moves:
@@ -136,7 +137,7 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
         hero_end = min(shot.end, span.end + hold)
         later_floor = max(hero_end, float(span.end) + 0.25)
         dedicated, dedicated_diagnostics = _finishing_body.build_continuations(
-            _legacy, _combat, _islands, timeline, span, config
+            _legacy, _combat, _islands, timeline, span, config, excluded
         )
         eligible: list[SemanticPlanV31] = []
         for raw_continuation in list(continuations) + dedicated:
@@ -191,9 +192,6 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
             "status": "PASS" if valid else "NO_VALID_FINISHING_PLAN",
         })
         results.extend(valid)
-    # Analysis must preserve infeasibility evidence instead of crashing before an
-    # artifact can be written. The allocator remains fail-closed and rejects a
-    # verified Finishing Move when no valid chronological plan exists.
     setattr(timeline, "_finishing_continuation_diagnostics", diagnostics)
     return sorted(results, key=lambda item: item.score, reverse=True)
 
