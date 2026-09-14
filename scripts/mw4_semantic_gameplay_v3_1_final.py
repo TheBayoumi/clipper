@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
 import mw4_semantic_gameplay_v3_1_final_legacy as _legacy
 from mw4_semantic_gameplay_v3_1_final_legacy import *  # noqa: F401,F403
+import mw4_semantic_gameplay_v3_1_combat_state as _combat
 
 _ORIGINAL_INTEGRITY = _legacy.plan_integrity_violations
 _ORIGINAL_FINISHING = _legacy._finishing_open_plans
@@ -36,7 +38,63 @@ def _chronology_failures(plan: SemanticPlanV31) -> list[str]:
 def plan_integrity_violations(plan: SemanticPlanV31, timeline: SemanticTimelineV31, config: dict[str, Any], source_key: str) -> list[str]:
     failures = list(_ORIGINAL_INTEGRITY(plan, timeline, config, source_key))
     failures.extend(_chronology_failures(plan))
+    failures.extend(_combat.plan_combat_state_failures(plan, timeline, config))
     return list(dict.fromkeys(failures))
+
+
+def _matched_continuation(plan: SemanticPlanV31, continuations: list[SemanticPlanV31]) -> SemanticPlanV31 | None:
+    body = tuple(plan.segments[1:])
+    for continuation in continuations:
+        if body == tuple(continuation.segments):
+            return continuation
+    return None
+
+
+def _conservative_finishing_metrics(
+    plan: SemanticPlanV31,
+    continuation: SemanticPlanV31,
+    span: FinishingMoveSpan,
+    config: dict[str, Any],
+) -> SemanticPlanV31 | None:
+    hero_payoff = min(1.0, float(span.confidence) + 0.12)
+    payoff = float(0.45 * hero_payoff + 0.55 * float(continuation.payoff_quality))
+    retention = float(0.18 * float(plan.opening_quality) + 0.82 * float(continuation.retention_quality))
+    weakest = min(float(plan.weakest_quarter_interest), float(continuation.weakest_quarter_interest))
+    low_fraction = float(plan.low_interest_fraction)
+    residual = max(float(plan.max_unexplained_low_interest_run_seconds), float(continuation.max_unexplained_low_interest_run_seconds))
+    if not _legacy._passes_story_gates(
+        "finishing_move_open",
+        float(plan.opening_quality),
+        float(plan.ending_quality),
+        retention,
+        payoff,
+        weakest,
+        low_fraction,
+        residual,
+        config,
+    ):
+        return None
+    score = _legacy._score_plan(
+        retention,
+        payoff,
+        float(plan.opening_quality),
+        float(plan.ending_quality),
+        float(plan.story_coherence),
+        weakest,
+        True,
+        config,
+    )
+    return replace(
+        plan,
+        score=round(float(score), 5),
+        retention_quality=round(retention, 4),
+        payoff_quality=round(payoff, 4),
+        weakest_quarter_interest=round(weakest, 4),
+        max_unexplained_low_interest_run_seconds=round(residual, 3),
+        editorial_reasons=(
+            "Finishing Move continuation independently passes hostile/payoff/retention gates; hero score cannot rescue its body",
+        ) + tuple(plan.editorial_reasons),
+    )
 
 
 def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[SemanticPlanV31], config: dict[str, Any], source_key: str) -> list[SemanticPlanV31]:
@@ -50,9 +108,6 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
     for span in timeline.finishing_moves:
         shot = timeline.shots[span.shot_index]
         hero_end = min(shot.end, span.end + hold)
-        # The preserved implementation considers a continuation "later" only at
-        # span.end + 0.25. Requiring the maximum of that boundary and hero_end
-        # makes its earlier-content/fallback branch unreachable by construction.
         later_floor = max(hero_end, float(span.end) + 0.25)
         eligible: list[SemanticPlanV31] = []
         for continuation in continuations:
@@ -62,6 +117,8 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
                 continue
             if _chronology_failures(continuation):
                 continue
+            if _combat.continuation_failures(continuation, config):
+                continue
             first_start = float(continuation.segments[0].start)
             if first_start < later_floor - _EPS:
                 continue
@@ -70,10 +127,24 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
             eligible.append(continuation)
         single = SemanticTimelineV31(timeline.base, timeline.shots, timeline.consolidated_events, timeline.engagements, (span,))
         setattr(single, "_source_key", source_key)
+        if hasattr(timeline, "_combat_state_diagnostics"):
+            setattr(single, "_combat_state_diagnostics", getattr(timeline, "_combat_state_diagnostics"))
         produced = _ORIGINAL_FINISHING(single, eligible, config, source_key)
-        valid = [plan for plan in produced if not plan_integrity_violations(plan, single, config, source_key)]
+        valid: list[SemanticPlanV31] = []
+        for plan in produced:
+            continuation = _matched_continuation(plan, eligible)
+            if continuation is None:
+                continue
+            hardened = _conservative_finishing_metrics(plan, continuation, span, config)
+            if hardened is None:
+                continue
+            if plan_integrity_violations(hardened, single, config, source_key):
+                continue
+            valid.append(hardened)
         if not valid:
-            raise RuntimeError("verified Finishing Move has no strictly later continuation within the configured gap contract; fallback is disabled")
+            raise RuntimeError(
+                "verified Finishing Move has no strictly later, independently strong hostile-payoff continuation within the configured gap contract; fallback is disabled"
+            )
         results.extend(valid)
     return sorted(results, key=lambda item: item.score, reverse=True)
 
@@ -86,15 +157,15 @@ def _hardening_self_test() -> None:
         raise AssertionError("chronological semantic plan was rejected")
     if not _chronology_failures(bad):
         raise AssertionError("backward semantic plan was accepted")
-    # Guard the exact predicate used by the preserved implementation so its
-    # fallback branch cannot become reachable if the hero hold changes.
     span_end, hero_end = 10.0, 10.1
     later_floor = max(hero_end, span_end + 0.25)
     if later_floor < span_end + 0.25:
         raise AssertionError("finishing fallback reachability guard failed")
-    print("MW4 semantic chronology hardening self-test: PASS")
+    _combat.self_test()
+    print("MW4 semantic chronology/combat-state hardening self-test: PASS")
 
 
+_combat.install(_legacy)
 _legacy.plan_integrity_violations = plan_integrity_violations
 _legacy._finishing_open_plans = _finishing_open_plans
 
