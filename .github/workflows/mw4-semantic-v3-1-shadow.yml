@@ -47,6 +47,10 @@ jobs:
         run: |
           set -euo pipefail
           python -m py_compile \
+            scripts/mw4_semantic_gameplay_v3_1_local_verify.py \
+            scripts/mw4_semantic_gameplay_v3_1_combat_state.py \
+            scripts/mw4_semantic_gameplay_v3_1_combat_islands.py \
+            scripts/mw4_semantic_gameplay_v3_1_finishing_body.py \
             scripts/mw4_semantic_gameplay_v3_1_final.py \
             scripts/mw4_fullframe_retention_v3_1.py \
             scripts/mw4_v3_1_contract.py \
@@ -276,7 +280,7 @@ jobs:
   batch-contract:
     name: shadow-batch-contract
     needs: [allocate, render-one]
-    if: always()
+    if: ${{ always() && needs.allocate.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
