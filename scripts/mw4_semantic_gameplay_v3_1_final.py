@@ -121,9 +121,11 @@ def _certified_continuation(
     timeline: SemanticTimelineV31,
     config: dict[str, Any],
 ) -> SemanticPlanV31 | None:
+    editorial = config["editorial"]
+    if continuation.story_type == "verified_combat_island_continuation":
+        return continuation if bool(editorial.get("finishing_move_allow_verified_combat_island_continuation", False)) else None
     if continuation.story_type != "semantic_montage":
         return continuation
-    editorial = config["editorial"]
     if bool(editorial.get("finishing_move_allow_semantic_montage_continuation", False)):
         return continuation
     if not bool(editorial.get("finishing_move_allow_verified_combat_island_continuation", False)):
@@ -264,6 +266,19 @@ def _hardening_self_test() -> None:
     generic_right = seg(30.0, 33.0, "keep")
     if _planned_cross_shot_bridge(deliberate, generic_left, generic_right, 1):
         raise AssertionError("generic cross-shot bridge was silently permitted")
+
+    policy_cfg = {
+        "editorial": {
+            "finishing_move_allow_semantic_montage_continuation": False,
+            "finishing_move_allow_verified_combat_island_continuation": True,
+        }
+    }
+    verified_body = SimpleNamespace(story_type="verified_combat_island_continuation")
+    if _certified_continuation(verified_body, SimpleNamespace(), policy_cfg) is None:
+        raise AssertionError("explicitly enabled verified-island continuation was rejected")
+    policy_cfg["editorial"]["finishing_move_allow_verified_combat_island_continuation"] = False
+    if _certified_continuation(verified_body, SimpleNamespace(), policy_cfg) is not None:
+        raise AssertionError("verified-island continuation ignored its explicit policy switch")
 
     if analyze_source is not _legacy.analyze_source or diagnose_source is not _legacy.diagnose_source:
         raise AssertionError("combat-island analyze/diagnose wrappers are not exported by final semantic module")
