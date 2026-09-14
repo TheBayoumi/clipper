@@ -161,6 +161,8 @@ def _hardening_self_test() -> None:
     later_floor = max(hero_end, span_end + 0.25)
     if later_floor < span_end + 0.25:
         raise AssertionError("finishing fallback reachability guard failed")
+    if analyze_source is not _legacy.analyze_source or diagnose_source is not _legacy.diagnose_source:
+        raise AssertionError("combat-state analyze/diagnose wrappers are not exported by final semantic module")
     _combat.self_test()
     print("MW4 semantic chronology/combat-state hardening self-test: PASS")
 
@@ -168,6 +170,10 @@ def _hardening_self_test() -> None:
 _combat.install(_legacy)
 _legacy.plan_integrity_violations = plan_integrity_violations
 _legacy._finishing_open_plans = _finishing_open_plans
+# Star-import bindings above captured the legacy callables before installation.
+# Export the hardened analysis/diagnostics explicitly so callers cannot bypass them.
+analyze_source = _legacy.analyze_source
+diagnose_source = _legacy.diagnose_source
 
 
 def main() -> None:
