@@ -13,6 +13,7 @@ import mw4_semantic_gameplay_v3_1_finishing_body as _finishing_body
 
 _ORIGINAL_INTEGRITY = _legacy.plan_integrity_violations
 _ORIGINAL_FINISHING = _legacy._finishing_open_plans
+_ORIGINAL_CROSS_SHOT_BRIDGE = _legacy._planned_cross_shot_bridge
 _EPS = 1e-3
 
 
@@ -35,6 +36,21 @@ def _chronology_failures(plan: SemanticPlanV31) -> list[str]:
         if index and float(segment.start) < float(segments[index - 1].end) - _EPS:
             failures.append(f"source chronology reversal/overlap at segment {index + 1}")
     return failures
+
+
+def _planned_cross_shot_bridge(
+    plan: SemanticPlanV31,
+    left: EditSegment,
+    right: EditSegment,
+    bridge_index: int,
+) -> bool:
+    if _ORIGINAL_CROSS_SHOT_BRIDGE(plan, left, right, bridge_index):
+        return True
+    return bool(
+        plan.story_type == "finishing_move_open"
+        and left.reason == "verified_combat_island_body"
+        and right.reason == "verified_combat_island_body"
+    )
 
 
 def plan_integrity_violations(plan: SemanticPlanV31, timeline: SemanticTimelineV31, config: dict[str, Any], source_key: str) -> list[str]:
@@ -140,22 +156,33 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
             _legacy, _combat, _islands, timeline, span, config, excluded
         )
         eligible: list[SemanticPlanV31] = []
+        rejection_reasons: list[dict[str, Any]] = []
         for raw_continuation in list(continuations) + dedicated:
+            reasons: list[str] = []
             if raw_continuation.story_type == "finishing_move_open" or not raw_continuation.segments:
+                reasons.append("not_a_body_candidate")
+                rejection_reasons.append({"story": raw_continuation.story_type, "reasons": reasons})
                 continue
             continuation = _certified_continuation(raw_continuation, timeline, config)
             if continuation is None:
+                reasons.append("continuation_not_certified")
+                rejection_reasons.append({"story": raw_continuation.story_type, "reasons": reasons})
                 continue
-            if _chronology_failures(continuation):
-                continue
-            if _combat.continuation_failures(continuation, config):
-                continue
-            if _islands.plan_island_failures(continuation, timeline, config):
-                continue
+            reasons.extend(_chronology_failures(continuation))
+            reasons.extend(_combat.continuation_failures(continuation, config))
+            reasons.extend(_islands.plan_island_failures(continuation, timeline, config))
             first_start = float(continuation.segments[0].start)
             if first_start < later_floor - _EPS:
-                continue
+                reasons.append("continuation_starts_before_later_floor")
             if first_start - hero_end > max_gap + _EPS:
+                reasons.append("continuation_starts_beyond_gap_contract")
+            if reasons:
+                rejection_reasons.append({
+                    "story": continuation.story_type,
+                    "start": round(first_start, 3),
+                    "end": round(float(continuation.segments[-1].end), 3),
+                    "reasons": list(dict.fromkeys(reasons)),
+                })
                 continue
             eligible.append(continuation)
         single = SemanticTimelineV31(timeline.base, timeline.shots, timeline.consolidated_events, timeline.engagements, (span,))
@@ -164,14 +191,28 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
             setattr(single, "_combat_state_diagnostics", getattr(timeline, "_combat_state_diagnostics"))
         produced = _ORIGINAL_FINISHING(single, eligible, config, source_key)
         valid: list[SemanticPlanV31] = []
+        produced_rejections: list[dict[str, Any]] = []
         for plan in produced:
             continuation = _matched_continuation(plan, eligible)
             if continuation is None:
+                produced_rejections.append({"reason": "produced_plan_body_did_not_match_certified_continuation"})
                 continue
             hardened = _conservative_finishing_metrics(plan, continuation, span, config)
             if hardened is None:
+                produced_rejections.append({
+                    "start": round(float(plan.start), 3),
+                    "end": round(float(plan.end), 3),
+                    "reason": "combined_finishing_metrics_failed_existing_story_gate",
+                })
                 continue
-            if plan_integrity_violations(hardened, single, config, source_key):
+            integrity = plan_integrity_violations(hardened, single, config, source_key)
+            if integrity:
+                produced_rejections.append({
+                    "start": round(float(hardened.start), 3),
+                    "end": round(float(hardened.end), 3),
+                    "reason": "integrity_failure",
+                    "failures": integrity,
+                })
                 continue
             valid.append(hardened)
         diagnostics.append({
@@ -189,6 +230,8 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
                 }
                 for item in eligible[:8]
             ],
+            "continuation_rejections": rejection_reasons[:16],
+            "produced_plan_rejections": produced_rejections[:16],
             "status": "PASS" if valid else "NO_VALID_FINISHING_PLAN",
         })
         results.extend(valid)
@@ -197,7 +240,7 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
 
 
 def _hardening_self_test() -> None:
-    seg = lambda start, end: SimpleNamespace(start=start, end=end, speed=1.0)
+    seg = lambda start, end, reason="keep": SimpleNamespace(start=start, end=end, speed=1.0, reason=reason)
     good = SimpleNamespace(start=1.0, end=4.0, segments=(seg(1.0, 2.0), seg(3.0, 4.0)))
     bad = SimpleNamespace(start=10.0, end=5.0, segments=(seg(10.0, 12.0), seg(1.0, 5.0)))
     if _chronology_failures(good):
@@ -208,6 +251,20 @@ def _hardening_self_test() -> None:
     later_floor = max(hero_end, span_end + 0.25)
     if later_floor < span_end + 0.25:
         raise AssertionError("finishing fallback reachability guard failed")
+
+    deliberate = SimpleNamespace(story_type="finishing_move_open")
+    body_left = seg(20.0, 23.0, "verified_combat_island_body")
+    body_right = seg(30.0, 33.0, "verified_combat_island_body")
+    if not _planned_cross_shot_bridge(deliberate, body_left, body_right, 1):
+        raise AssertionError("deliberate verified-combat-island body hard cut was rejected")
+    unrelated = SimpleNamespace(story_type="engagement_chain")
+    if _planned_cross_shot_bridge(unrelated, body_left, body_right, 0):
+        raise AssertionError("verified-body bridge escaped the Finishing Move contract")
+    generic_left = seg(20.0, 23.0, "keep")
+    generic_right = seg(30.0, 33.0, "keep")
+    if _planned_cross_shot_bridge(deliberate, generic_left, generic_right, 1):
+        raise AssertionError("generic cross-shot bridge was silently permitted")
+
     if analyze_source is not _legacy.analyze_source or diagnose_source is not _legacy.diagnose_source:
         raise AssertionError("combat-island analyze/diagnose wrappers are not exported by final semantic module")
     _combat.self_test()
@@ -218,6 +275,7 @@ def _hardening_self_test() -> None:
 
 _combat.install(_legacy)
 _islands.install(_legacy, _combat)
+_legacy._planned_cross_shot_bridge = _planned_cross_shot_bridge
 _legacy.plan_integrity_violations = plan_integrity_violations
 _legacy._finishing_open_plans = _finishing_open_plans
 _INSTALLED_DIAGNOSE = _legacy.diagnose_source
