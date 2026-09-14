@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+
+import mw4_semantic_gameplay_v3_1_local_verify as local_verify
 
 
 PAYOFF_KINDS = {"outcome_like", "impact"}
@@ -16,6 +19,7 @@ class HostileDecision:
     hostile: bool
     score: float
     reason: str
+    actor_state: str = "unknown"
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -29,13 +33,22 @@ def _cfg(config: dict[str, Any]) -> dict[str, Any]:
     return config.get("combat_state_verifier", {})
 
 
-def _event_hostile_decision(event: Any, config: dict[str, Any]) -> HostileDecision:
-    """Fail-closed hostile classification for a consolidated semantic event.
+def _local_confirmation(evidence: dict[str, Any], config: dict[str, Any]) -> tuple[bool, float]:
+    local_cfg = _cfg(config).get("local_interaction_verifier", {})
+    minimum = _f(local_cfg.get("minimum_hitmarker_score", 0.34), 0.34)
+    attempted = _f(evidence.get("local_refine_attempted")) >= 0.5
+    score = _f(evidence.get("local_hitmarker_score"))
+    return bool(attempted and score >= minimum), score
 
-    Generic contact/motion is never hostile evidence. A hostile anchor requires a
-    payoff-like event with combat support, or an unusually strong combat burst with
-    audio/center-motion support. Ambiguous actors therefore remain unknown rather
-    than silently becoming enemies.
+
+def _event_hostile_decision(event: Any, config: dict[str, Any]) -> HostileDecision:
+    """Fail closed on actor identity.
+
+    Coarse motion/contact/audio never identifies an enemy. A single payoff proxy or
+    strong combat burst must also have local center interaction confirmation. A
+    dual outcome+impact event is allowed without that local cue because two
+    independent payoff modalities already coincide. Ambiguous actors remain
+    ``unknown``; the verifier never infers enemy from operator motion or HUD color.
     """
     cfg = _cfg(config)
     kinds = set(getattr(event, "kinds", ()) or ())
@@ -46,6 +59,7 @@ def _event_hostile_decision(event: Any, config: dict[str, Any]) -> HostileDecisi
     impact = _f(evidence.get("impact"))
     audio_transient = _f(evidence.get("audio_transient"))
     center_motion = _f(evidence.get("center_motion"))
+    local_ok, local_score = _local_confirmation(evidence, config)
 
     min_score = _f(cfg.get("minimum_hostile_event_score", 0.64), 0.64)
     outcome_min = _f(cfg.get("outcome_minimum", 0.52), 0.52)
@@ -55,15 +69,32 @@ def _event_hostile_decision(event: Any, config: dict[str, Any]) -> HostileDecisi
     burst_min = _f(cfg.get("strong_combat_minimum", 0.70), 0.70)
     burst_audio_min = _f(cfg.get("strong_combat_audio_transient_minimum", 0.62), 0.62)
     burst_center_min = _f(cfg.get("strong_combat_center_motion_minimum", 0.40), 0.40)
+    dual_payoff = "outcome_like" in kinds and "impact" in kinds
 
     if "outcome_like" in kinds and outcome >= outcome_min and max(combat, impact) >= payoff_combat_min:
-        score = min(1.0, 0.48 * max(confidence, outcome) + 0.34 * max(combat, impact) + 0.18 * max(audio_transient, center_motion))
-        return HostileDecision(score >= min_score, score, "combat_supported_outcome")
+        if not dual_payoff and not local_ok:
+            return HostileDecision(False, local_score, "single_outcome_without_direct_interaction", "unknown")
+        score = min(
+            1.0,
+            0.44 * max(confidence, outcome)
+            + 0.30 * max(combat, impact)
+            + 0.14 * max(audio_transient, center_motion)
+            + 0.12 * (1.0 if dual_payoff else local_score),
+        )
+        return HostileDecision(score >= min_score, score, "verified_outcome_interaction", "hostile" if score >= min_score else "unknown")
 
     if "impact" in kinds and impact >= impact_min and combat >= impact_combat_min:
+        if not dual_payoff and not local_ok:
+            return HostileDecision(False, local_score, "single_impact_without_direct_interaction", "unknown")
         corroboration = max(audio_transient, center_motion)
-        score = min(1.0, 0.44 * max(confidence, impact) + 0.38 * combat + 0.18 * corroboration)
-        return HostileDecision(score >= min_score, score, "combat_supported_impact")
+        score = min(
+            1.0,
+            0.40 * max(confidence, impact)
+            + 0.32 * combat
+            + 0.16 * corroboration
+            + 0.12 * (1.0 if dual_payoff else local_score),
+        )
+        return HostileDecision(score >= min_score, score, "verified_impact_interaction", "hostile" if score >= min_score else "unknown")
 
     if (
         "combat_burst" in kinds
@@ -71,10 +102,18 @@ def _event_hostile_decision(event: Any, config: dict[str, Any]) -> HostileDecisi
         and audio_transient >= burst_audio_min
         and center_motion >= burst_center_min
     ):
-        score = min(1.0, 0.46 * max(confidence, combat) + 0.29 * audio_transient + 0.25 * center_motion)
-        return HostileDecision(score >= min_score, score, "strong_combat_burst")
+        if not local_ok:
+            return HostileDecision(False, local_score, "strong_burst_without_direct_interaction", "unknown")
+        score = min(
+            1.0,
+            0.40 * max(confidence, combat)
+            + 0.22 * audio_transient
+            + 0.18 * center_motion
+            + 0.20 * local_score,
+        )
+        return HostileDecision(score >= min_score, score, "verified_strong_combat_interaction", "hostile" if score >= min_score else "unknown")
 
-    return HostileDecision(False, 0.0, "unknown_or_non_hostile")
+    return HostileDecision(False, 0.0, "unknown_or_non_hostile", "unknown")
 
 
 def _signal_slice(timeline: Any, name: str, start: float, end: float) -> np.ndarray:
@@ -196,6 +235,7 @@ def refine_timeline(timeline: Any, config: dict[str, Any], legacy: Any) -> Any:
     timeline.engagements = verified
     timeline.signals["verified_hostile"] = _verified_hostile_signal(timeline, verified)
     timeline.signals["combat_break"] = _combat_break_signal(timeline, config)
+    local_diag = dict(getattr(timeline, "_local_interaction_diagnostics", {}))
     setattr(
         timeline,
         "_combat_state_diagnostics",
@@ -204,7 +244,11 @@ def refine_timeline(timeline: Any, config: dict[str, Any], legacy: Any) -> Any:
             "verified_engagement_count": len(verified),
             "contact_only_can_anchor_hostile": False,
             "unknown_actor_defaults_to_hostile": False,
-            "verifier_policy": "payoff-or-strong-combat-confirmation; contact-only is unknown",
+            "strong_combat_burst_requires_direct_interaction": True,
+            "single_payoff_proxy_requires_direct_interaction": True,
+            "actor_identity_policy": "hostile only after direct player-target interaction evidence; ambiguous operators stay unknown",
+            "local_interaction_verifier": local_diag,
+            "verifier_policy": "dual payoff or local hitmarker-confirmed payoff/burst; contact/motion/color alone is unknown",
         },
     )
     return timeline
@@ -239,10 +283,7 @@ def verified_candidate_chains(timeline: Any, config: dict[str, Any], legacy: Any
             first_event = chain[0].events[0].time
             start = max(float(shot.start), float(first_event) - 0.30)
             payoff = legacy.refined._last_payoff(tuple(chain))
-            if payoff is not None:
-                end = min(float(shot.end), float(payoff.time) + tail)
-            else:
-                end = min(float(shot.end), float(chain[-1].end))
+            end = min(float(shot.end), float(payoff.time) + tail) if payoff is not None else min(float(shot.end), float(chain[-1].end))
             if minimum <= end - start <= maximum:
                 chains.append(tuple(chain))
 
@@ -279,7 +320,14 @@ def verified_candidate_chains(timeline: Any, config: dict[str, Any], legacy: Any
 
 
 def continuation_failures(plan: Any, config: dict[str, Any]) -> list[str]:
-    """Require the body of a Finishing Move clip to qualify independently."""
+    """Require a Finishing Move body to qualify independently.
+
+    Payoff-bearing bodies must clear the existing payoff floor. A body without a
+    payoff may use the pre-existing sustained-pressure alternative only when it has
+    enough verified hostile anchors and the stronger no-payoff retention floor.
+    The previous implementation applied the payoff floor unconditionally, making
+    that intended branch unreachable.
+    """
     cfg = _cfg(config).get("finishing_continuation", {})
     failures: list[str] = []
     min_retention = max(
@@ -294,17 +342,6 @@ def continuation_failures(plan: Any, config: dict[str, Any]) -> list[str]:
     min_weakest = _f(cfg.get("minimum_weakest_quarter_interest", 0.30), 0.30)
     max_residual = _f(cfg.get("maximum_unexplained_low_interest_run_seconds", 0.75), 0.75)
 
-    if _f(plan.retention_quality) < min_retention:
-        failures.append("continuation retention below independent floor")
-    if _f(plan.payoff_quality) < min_payoff:
-        failures.append("continuation payoff below independent floor")
-    if _f(plan.ending_quality) < min_ending:
-        failures.append("continuation ending below independent floor")
-    if _f(plan.weakest_quarter_interest) < min_weakest:
-        failures.append("continuation weakest quarter below independent floor")
-    if _f(plan.max_unexplained_low_interest_run_seconds) > max_residual:
-        failures.append("continuation contains excessive unexplained inactivity")
-
     hostile_events = [
         event
         for engagement in getattr(plan, "engagements", ())
@@ -316,11 +353,23 @@ def continuation_failures(plan: Any, config: dict[str, Any]) -> list[str]:
     )
     minimum_sustained_anchors = int(cfg.get("minimum_verified_hostile_anchors_without_payoff", 2))
     minimum_sustained_retention = _f(cfg.get("minimum_retention_without_payoff", 0.50), 0.50)
-    if not has_verified_payoff and (
+
+    if _f(plan.retention_quality) < min_retention:
+        failures.append("continuation retention below independent floor")
+    if has_verified_payoff:
+        if _f(plan.payoff_quality) < min_payoff:
+            failures.append("continuation payoff below independent floor")
+    elif (
         len(hostile_events) < minimum_sustained_anchors
         or _f(plan.retention_quality) < minimum_sustained_retention
     ):
         failures.append("continuation has neither a verified hostile payoff nor sustained independently strong hostile anchors")
+    if _f(plan.ending_quality) < min_ending:
+        failures.append("continuation ending below independent floor")
+    if _f(plan.weakest_quarter_interest) < min_weakest:
+        failures.append("continuation weakest quarter below independent floor")
+    if _f(plan.max_unexplained_low_interest_run_seconds) > max_residual:
+        failures.append("continuation contains excessive unexplained inactivity")
     if any(getattr(segment, "reason", "") == "compressed_traversal" for segment in getattr(plan, "segments", ())):
         failures.append("continuation relies on compressed traversal")
     return failures
@@ -331,7 +380,9 @@ def install(legacy: Any) -> None:
     original_diagnose = legacy.diagnose_source
 
     def analyze_source(source: Any, config: dict[str, Any]) -> Any:
-        return refine_timeline(original_analyze(source, config), config, legacy)
+        timeline = original_analyze(source, config)
+        timeline = local_verify.annotate_timeline(Path(source), timeline, config)
+        return refine_timeline(timeline, config, legacy)
 
     def diagnose_source(timeline: Any, config: dict[str, Any], excluded: list[list[float]], source_key: str) -> dict[str, Any]:
         result = original_diagnose(timeline, config, excluded, source_key)
@@ -356,28 +407,40 @@ def self_test() -> None:
             "strong_combat_minimum": 0.70,
             "strong_combat_audio_transient_minimum": 0.62,
             "strong_combat_center_motion_minimum": 0.40,
+            "local_interaction_verifier": {"minimum_hitmarker_score": 0.34},
             "finishing_continuation": {
                 "minimum_retention_quality": 0.40,
                 "minimum_payoff_quality": 0.40,
                 "minimum_ending_quality": 0.45,
                 "minimum_weakest_quarter_interest": 0.30,
                 "maximum_unexplained_low_interest_run_seconds": 0.75,
+                "minimum_verified_hostile_anchors_without_payoff": 2,
+                "minimum_retention_without_payoff": 0.50,
             },
         },
         "performance_targets": {"retention_quality_min": 0.36, "payoff_quality_min": 0.34},
     }
-    contact_only = SimpleNamespace(kinds=("contact",), confidence=0.90, evidence={"contact": 0.90, "center_motion": 1.0, "hud_change": 1.0})
+    contact_only = SimpleNamespace(kinds=("contact",), confidence=0.90, evidence={"contact": 0.90, "center_motion": 1.0, "hud_change": 1.0, "local_refine_attempted": 1.0, "local_hitmarker_score": 0.90})
     if _event_hostile_decision(contact_only, cfg).hostile:
         raise AssertionError("contact-only teammate-like motion became hostile")
-    weak_burst = SimpleNamespace(kinds=("combat_burst", "contact"), confidence=0.73, evidence={"combat": 0.63, "audio_transient": 0.90, "center_motion": 1.0})
+    weak_burst = SimpleNamespace(kinds=("combat_burst", "contact"), confidence=0.73, evidence={"combat": 0.63, "audio_transient": 0.90, "center_motion": 1.0, "local_refine_attempted": 1.0, "local_hitmarker_score": 0.90})
     if _event_hostile_decision(weak_burst, cfg).hostile:
         raise AssertionError("weak combat burst became hostile")
-    payoff = SimpleNamespace(kinds=("combat_burst", "contact", "outcome_like"), confidence=0.83, evidence={"combat": 0.71, "outcome": 0.67, "audio_transient": 1.0, "center_motion": 0.91})
-    if not _event_hostile_decision(payoff, cfg).hostile:
-        raise AssertionError("combat-supported payoff was rejected")
-    strong_burst = SimpleNamespace(kinds=("combat_burst",), confidence=0.80, evidence={"combat": 0.78, "audio_transient": 0.75, "center_motion": 0.80})
-    if not _event_hostile_decision(strong_burst, cfg).hostile:
-        raise AssertionError("strong combat burst was rejected")
+    strong_without_interaction = SimpleNamespace(kinds=("combat_burst",), confidence=0.80, evidence={"combat": 0.78, "audio_transient": 0.75, "center_motion": 0.80, "local_refine_attempted": 1.0, "local_hitmarker_score": 0.10})
+    if _event_hostile_decision(strong_without_interaction, cfg).hostile:
+        raise AssertionError("strong motion/audio burst without direct interaction became hostile")
+    strong_with_interaction = SimpleNamespace(kinds=("combat_burst",), confidence=0.80, evidence={"combat": 0.78, "audio_transient": 0.75, "center_motion": 0.80, "local_refine_attempted": 1.0, "local_hitmarker_score": 0.90})
+    if not _event_hostile_decision(strong_with_interaction, cfg).hostile:
+        raise AssertionError("directly confirmed strong combat interaction was rejected")
+    single_outcome_without_interaction = SimpleNamespace(kinds=("combat_burst", "contact", "outcome_like"), confidence=0.83, evidence={"combat": 0.71, "outcome": 0.67, "audio_transient": 1.0, "center_motion": 0.91, "local_refine_attempted": 1.0, "local_hitmarker_score": 0.10})
+    if _event_hostile_decision(single_outcome_without_interaction, cfg).hostile:
+        raise AssertionError("HUD/outcome proxy without direct interaction became hostile")
+    single_outcome_with_interaction = SimpleNamespace(kinds=("combat_burst", "contact", "outcome_like"), confidence=0.83, evidence={"combat": 0.71, "outcome": 0.67, "audio_transient": 1.0, "center_motion": 0.91, "local_refine_attempted": 1.0, "local_hitmarker_score": 0.90})
+    if not _event_hostile_decision(single_outcome_with_interaction, cfg).hostile:
+        raise AssertionError("directly confirmed payoff interaction was rejected")
+    dual_payoff = SimpleNamespace(kinds=("combat_burst", "impact", "outcome_like"), confidence=0.86, evidence={"combat": 0.75, "outcome": 0.70, "impact": 0.75, "audio_transient": 0.8, "center_motion": 0.8, "local_refine_attempted": 1.0, "local_hitmarker_score": 0.0})
+    if not _event_hostile_decision(dual_payoff, cfg).hostile:
+        raise AssertionError("dual payoff event was rejected")
 
     poor = SimpleNamespace(
         retention_quality=0.53,
@@ -385,11 +448,22 @@ def self_test() -> None:
         ending_quality=0.55,
         weakest_quarter_interest=0.33,
         max_unexplained_low_interest_run_seconds=0.33,
-        engagements=(),
+        engagements=(SimpleNamespace(events=(SimpleNamespace(kinds=("combat_burst",)),)),),
         segments=(SimpleNamespace(reason="keep"),),
     )
     if not continuation_failures(poor, cfg):
-        raise AssertionError("weak sustained-pressure continuation was accepted")
+        raise AssertionError("single-anchor no-payoff continuation was accepted")
+    sustained = SimpleNamespace(
+        retention_quality=0.56,
+        payoff_quality=0.18,
+        ending_quality=0.58,
+        weakest_quarter_interest=0.34,
+        max_unexplained_low_interest_run_seconds=0.20,
+        engagements=(SimpleNamespace(events=(SimpleNamespace(kinds=("combat_burst",)), SimpleNamespace(kinds=("combat_burst",)))),),
+        segments=(SimpleNamespace(reason="keep"),),
+    )
+    if continuation_failures(sustained, cfg):
+        raise AssertionError(f"intended sustained-hostile no-payoff continuation remained unreachable: {continuation_failures(sustained, cfg)}")
     good = SimpleNamespace(
         retention_quality=0.58,
         payoff_quality=0.74,
@@ -401,7 +475,8 @@ def self_test() -> None:
     )
     if continuation_failures(good, cfg):
         raise AssertionError("independently strong payoff continuation was rejected")
-    print("MW4 combat-state verifier self-test: PASS")
+    local_verify.self_test()
+    print("MW4 combat-state/local-interaction verifier self-test: PASS")
 
 
 def plan_combat_state_failures(plan: Any, timeline: Any, config: dict[str, Any]) -> list[str]:
