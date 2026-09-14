@@ -9,6 +9,7 @@ import mw4_semantic_gameplay_v3_1_final_legacy as _legacy
 from mw4_semantic_gameplay_v3_1_final_legacy import *  # noqa: F401,F403
 import mw4_semantic_gameplay_v3_1_combat_state as _combat
 import mw4_semantic_gameplay_v3_1_combat_islands as _islands
+import mw4_semantic_gameplay_v3_1_finishing_body as _finishing_body
 
 _ORIGINAL_INTEGRITY = _legacy.plan_integrity_violations
 _ORIGINAL_FINISHING = _legacy._finishing_open_plans
@@ -129,12 +130,16 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
     hold = float(editorial.get("finishing_move_payoff_hold_seconds", 0.45))
     max_gap = float(editorial.get("finishing_move_max_continuation_gap_seconds", 18.0))
     results: list[SemanticPlanV31] = []
+    diagnostics: list[dict[str, Any]] = []
     for span in timeline.finishing_moves:
         shot = timeline.shots[span.shot_index]
         hero_end = min(shot.end, span.end + hold)
         later_floor = max(hero_end, float(span.end) + 0.25)
+        dedicated, dedicated_diagnostics = _finishing_body.build_continuations(
+            _legacy, _combat, _islands, timeline, span, config
+        )
         eligible: list[SemanticPlanV31] = []
-        for raw_continuation in continuations:
+        for raw_continuation in list(continuations) + dedicated:
             if raw_continuation.story_type == "finishing_move_open" or not raw_continuation.segments:
                 continue
             continuation = _certified_continuation(raw_continuation, timeline, config)
@@ -168,25 +173,28 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
             if plan_integrity_violations(hardened, single, config, source_key):
                 continue
             valid.append(hardened)
-        if not valid:
-            later = [
+        diagnostics.append({
+            **dedicated_diagnostics,
+            "eligible_continuation_count": len(eligible),
+            "valid_finishing_plan_count": len(valid),
+            "eligible_candidates": [
                 {
                     "story": item.story_type,
                     "start": round(float(item.segments[0].start), 3),
                     "end": round(float(item.segments[-1].end), 3),
+                    "output_duration": round(float(item.output_duration), 3),
                     "retention": round(float(item.retention_quality), 4),
                     "payoff": round(float(item.payoff_quality), 4),
-                    "failures": _combat.continuation_failures(item, config),
                 }
-                for item in continuations
-                if item.segments and float(item.segments[0].start) >= later_floor - _EPS
-                and float(item.segments[0].start) - hero_end <= max_gap + _EPS
-            ]
-            raise RuntimeError(
-                "verified Finishing Move has no strictly later, independently strong hostile-payoff continuation within the configured gap contract; fallback is disabled; "
-                f"later_candidates={later[:8]}"
-            )
+                for item in eligible[:8]
+            ],
+            "status": "PASS" if valid else "NO_VALID_FINISHING_PLAN",
+        })
         results.extend(valid)
+    # Analysis must preserve infeasibility evidence instead of crashing before an
+    # artifact can be written. The allocator remains fail-closed and rejects a
+    # verified Finishing Move when no valid chronological plan exists.
+    setattr(timeline, "_finishing_continuation_diagnostics", diagnostics)
     return sorted(results, key=lambda item: item.score, reverse=True)
 
 
@@ -206,15 +214,27 @@ def _hardening_self_test() -> None:
         raise AssertionError("combat-island analyze/diagnose wrappers are not exported by final semantic module")
     _combat.self_test()
     _islands.self_test()
-    print("MW4 semantic chronology/combat-state/island hardening self-test: PASS")
+    _finishing_body.self_test()
+    print("MW4 semantic chronology/combat-state/island/Finishing-body hardening self-test: PASS")
 
 
 _combat.install(_legacy)
 _islands.install(_legacy, _combat)
 _legacy.plan_integrity_violations = plan_integrity_violations
 _legacy._finishing_open_plans = _finishing_open_plans
+_INSTALLED_DIAGNOSE = _legacy.diagnose_source
+
+
+def diagnose_source(timeline: SemanticTimelineV31, config: dict[str, Any], excluded: list[list[float]], source_key: str) -> dict[str, Any]:
+    result = _INSTALLED_DIAGNOSE(timeline, config, excluded, source_key)
+    result["finishing_move_continuation_diagnostics"] = list(
+        getattr(timeline, "_finishing_continuation_diagnostics", [])
+    )
+    return result
+
+
+_legacy.diagnose_source = diagnose_source
 analyze_source = _legacy.analyze_source
-diagnose_source = _legacy.diagnose_source
 
 
 def main() -> None:
