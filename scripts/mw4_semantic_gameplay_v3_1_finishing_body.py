@@ -82,8 +82,6 @@ def _single_island_candidate(
     opening, ending, coherence, retention, payoff, weakest, low_fraction = legacy._quality_metrics(
         timeline, start, end, (engagement,), None, residual, config
     )
-    # Preserve the existing semantic-moment story gates in addition to the stricter
-    # Finishing Move continuation gates. This is not a relaxed fallback path.
     if not legacy._passes_story_gates(
         "semantic_montage", opening, ending, retention, payoff,
         weakest, low_fraction, residual, config
@@ -209,6 +207,7 @@ def build_continuations(
     timeline: Any,
     span: Any,
     config: dict[str, Any],
+    excluded: list[list[float]],
 ) -> tuple[list[Any], dict[str, Any]]:
     hero, hero_duration, body_minimum, body_maximum = duration_contract(legacy, timeline, span, config)
     max_gap = float(config["editorial"].get("finishing_move_max_continuation_gap_seconds", 18.0))
@@ -221,6 +220,9 @@ def build_continuations(
         if engagement.events
         and float(engagement.start) >= later_floor - _EPS
         and float(engagement.start) <= latest_first_start + _EPS
+        and not legacy.refined.core._intersects_excluded(
+            float(engagement.start), float(engagement.end), excluded
+        )
     ]
     for engagement in eligible_islands:
         candidate = _single_island_candidate(
@@ -230,10 +232,8 @@ def build_continuations(
         if candidate is not None:
             candidates.append(candidate)
 
-    # Reuse the existing individually-qualified semantic moments, but assemble them
-    # under a dedicated Finishing Move body contract with a hero-aware duration.
     moments = [
-        item for item in legacy._montage_moments(timeline, config, [])
+        item for item in legacy._montage_moments(timeline, config, excluded)
         if float(item.segment.start) >= later_floor - _EPS
         and float(item.segment.start) <= latest_first_start + _EPS
     ]
@@ -276,10 +276,11 @@ def build_continuations(
         "allowed_body_maximum_seconds": round(float(body_maximum), 3),
         "later_floor": round(float(later_floor), 3),
         "latest_first_start": round(float(latest_first_start), 3),
+        "excluded_window_count": len(excluded),
         "eligible_combat_islands": len(eligible_islands),
         "eligible_individually_qualified_moments": len(moments),
         "dedicated_continuation_count": len(unique),
-        "policy": "verified combat islands only; body minimum derives from remaining final-clip duration; hostile/payoff/retention/reload-search gates are unchanged",
+        "policy": "verified combat islands only; body minimum derives from remaining final-clip duration; hostile/payoff/retention/reload-search/exclusion gates are unchanged",
     }
 
 
