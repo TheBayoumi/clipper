@@ -63,6 +63,7 @@ jobs:
           core_path = Path('scripts/mw4_semantic_gameplay_v3_1.py')
           final_path = Path('scripts/mw4_semantic_gameplay_v3_1_final.py')
           quality_path = Path('scripts/mw4_semantic_gameplay_v3_1_quality.py')
+          contract_path = Path('scripts/mw4_v3_1_contract.py')
           entry_path = Path('scripts/mw4_fullframe_retention_v3_1.py')
 
           forbidden_core_defs = {
@@ -91,11 +92,12 @@ jobs:
               if 'mw4_semantic_gameplay_v3_1_refined' in text or 'refined.' in text:
                   raise SystemExit(f'stale refined planner dependency in {path}')
 
-          quality_text = quality_path.read_text(encoding='utf-8')
-          if 'canonical_terminal_end' in quality_text:
-              raise SystemExit(
-                  'payoff-tail terminal sub-window implementation still exists'
-              )
+          for path in (quality_path, contract_path):
+              text = path.read_text(encoding='utf-8')
+              if 'canonical_terminal_end' in text:
+                  raise SystemExit(
+                      f'payoff-tail terminal sub-window implementation still exists in {path}'
+                  )
 
           final_tree = ast.parse(final_path.read_text(encoding='utf-8'))
           final_defs = {
@@ -232,7 +234,17 @@ jobs:
           python scripts/mw4_v3_1_contract.py \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
             --allocate-from analysis-manifests \
-            --allocation-out allocation/mw4_v3_1_allocation.json
+            --allocation-out allocation/mw4_v3_1_allocation.json \
+            --rejection-out allocation/mw4_v3_1_allocation_rejection.json
+
+      - name: Upload fail-closed allocation diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-v3-1-shadow-allocation-rejection
+          path: allocation/mw4_v3_1_allocation_rejection.json
+          retention-days: 3
+          if-no-files-found: error
 
       - name: Build one-workspace-per-clip render matrix
         id: render-matrix
