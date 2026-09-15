@@ -35,6 +35,20 @@ def _plans_conflict(left: dict[str, Any], right: dict[str, Any], config: dict[st
     return _ORIGINAL_CONFLICT(left, right, config)
 
 
+def _importance_score(plan: dict[str, Any], config: dict[str, Any]) -> float:
+    """Strict scorer with no fallback-story branch."""
+    if _forbidden_plan_failures("allocation", 0, plan):
+        raise AssertionError("forbidden fallback plan reached strict importance scoring")
+    score = float(plan.get("score", 0.0))
+    if plan.get("finishing_move") is not None:
+        score += float(
+            config.get("semantic_editor", {})
+            .get("selection", {})
+            .get("finishing_move_bonus", 0.14)
+        )
+    return score
+
+
 def _ordering_failures(source: str, index: int, plan: dict[str, Any]) -> list[str]:
     segments = list(plan.get("segments") or [])
     if not segments:
@@ -110,6 +124,7 @@ def validate_plan(source: str, index: int, plan: dict[str, Any], config: dict[st
 
 _legacy._semantic_anchor_times = _semantic_anchor_times
 _legacy._plans_conflict = _plans_conflict
+_legacy._importance_score = _importance_score
 _legacy._finishing_plan_failures = _finishing_plan_failures
 _legacy.validate_plan = validate_plan
 _allocator.install(_legacy)
