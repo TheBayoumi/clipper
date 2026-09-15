@@ -46,6 +46,7 @@ jobs:
       - name: Verify canonical semantic, allocation, and renderer contracts
         run: |
           set -euo pipefail
+          test ! -e scripts/mw4_semantic_gameplay_v3_1_refined.py
           test ! -e scripts/mw4_semantic_gameplay_v3_1_final_legacy.py
           test ! -e scripts/mw4_semantic_gameplay_v3_1_finishing_body.py
           test ! -e scripts/mw4_semantic_gameplay_v3_1_no_fallback.py
@@ -55,8 +56,60 @@ jobs:
           ! grep -Eq 'final_legacy|no_fallback|finishing_body|semantic_montage_moment' scripts/mw4_semantic_gameplay_v3_1_final.py
           ! grep -Eq 'contract_legacy|allocator_hardened|contract_regression' scripts/mw4_v3_1_contract.py
           ! grep -Eq 'semantic_montage|semantic_montage_moment' scripts/mw4_fullframe_retention_v3_1.py
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          core_path = Path('scripts/mw4_semantic_gameplay_v3_1.py')
+          final_path = Path('scripts/mw4_semantic_gameplay_v3_1_final.py')
+          quality_path = Path('scripts/mw4_semantic_gameplay_v3_1_quality.py')
+          entry_path = Path('scripts/mw4_fullframe_retention_v3_1.py')
+
+          forbidden_core_defs = {
+              'analyze_source',
+              'build_plans',
+              'select_plans',
+              'shadow_report',
+              '_candidate_engagement_chains',
+              '_boundary_for_chain',
+              '_editable_segments',
+          }
+          tree = ast.parse(core_path.read_text(encoding='utf-8'))
+          defs = {
+              node.name
+              for node in tree.body
+              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+          }
+          leaked = sorted(defs & forbidden_core_defs)
+          if leaked:
+              raise SystemExit(
+                  f'base evidence module still exposes alternate planner route: {leaked}'
+              )
+
+          for path in (final_path, quality_path, entry_path):
+              text = path.read_text(encoding='utf-8')
+              if 'mw4_semantic_gameplay_v3_1_refined' in text or 'refined.' in text:
+                  raise SystemExit(f'stale refined planner dependency in {path}')
+
+          quality_text = quality_path.read_text(encoding='utf-8')
+          if 'canonical_terminal_end' in quality_text:
+              raise SystemExit(
+                  'payoff-tail terminal sub-window implementation still exists'
+              )
+
+          final_tree = ast.parse(final_path.read_text(encoding='utf-8'))
+          final_defs = {
+              node.name
+              for node in final_tree.body
+              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+          }
+          if '_terminal_island_metrics' in final_defs:
+              raise SystemExit('terminal payoff-trim planner path still exists')
+
+          print('MW4 single-route semantic architecture: PASS')
+          PY
           python -m py_compile \
-            scripts/mw4_semantic_gameplay_v3_1_refined.py \
+            scripts/mw4_semantic_gameplay_v3_1.py \
             scripts/mw4_semantic_gameplay_v3_1_local_verify.py \
             scripts/mw4_semantic_gameplay_v3_1_combat_state.py \
             scripts/mw4_semantic_gameplay_v3_1_combat_islands.py \
