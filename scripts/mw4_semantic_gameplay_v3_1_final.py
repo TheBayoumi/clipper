@@ -8,20 +8,21 @@ from typing import Any
 
 import numpy as np
 
-import mw4_semantic_gameplay_v3_1_refined as refined
+import mw4_semantic_gameplay_v3_1 as core
 import mw4_semantic_gameplay_v3_1_local_verify as local_verify
 import mw4_semantic_gameplay_v3_1_combat_state as combat
 import mw4_semantic_gameplay_v3_1_combat_islands as islands
 import mw4_semantic_gameplay_v3_1_quality as quality
 
-ShotSpan = refined.ShotSpan
-ConsolidatedEvent = refined.ConsolidatedEvent
-Engagement = refined.Engagement
-FinishingMoveSpan = refined.FinishingMoveSpan
-EditSegment = refined.EditSegment
-SemanticPlanV31 = refined.SemanticPlanV31
-SemanticTimelineV31 = refined.SemanticTimelineV31
-PAYOFF_KINDS = refined.PAYOFF_KINDS
+ShotSpan = core.ShotSpan
+ConsolidatedEvent = core.ConsolidatedEvent
+Engagement = core.Engagement
+FinishingMoveSpan = core.FinishingMoveSpan
+EditSegment = core.EditSegment
+SemanticPlanV31 = core.SemanticPlanV31
+SemanticTimelineV31 = core.SemanticTimelineV31
+PAYOFF_KINDS = core.PAYOFF_KINDS
+plan_integrity_violations = quality.plan_integrity_violations
 _EPS = 1e-3
 
 
@@ -38,12 +39,7 @@ def _source_key(source: Path) -> str:
 
 
 def validate_configuration(config: dict[str, Any]) -> None:
-    """Validate the single canonical planner configuration.
-
-    Historical fallback switches are invalid configuration, not disabled features.
-    This prevents dormant alternate planner paths from being reintroduced through
-    JSON alone.
-    """
+    """Validate the single canonical semantic route and fail closed."""
     combat.validate_configuration(config)
     errors: list[str] = []
 
@@ -61,49 +57,86 @@ def validate_configuration(config: dict[str, Any]) -> None:
         if key in editorial:
             errors.append(f"obsolete editorial key must be removed: {key}")
 
-    if "allow_planned_transition_for_semantic_montage" in config.get("source_integrity", {}):
+    if "allow_planned_transition_for_semantic_montage" in config.get(
+        "source_integrity", {}
+    ):
         errors.append("obsolete semantic-montage source-transition key must be removed")
     if "allow_unverified_automatic" in config.get("finishing_move_detector", {}):
-        errors.append("automatic Finishing Move acceptance switch must be removed; discovery is diagnostics-only")
+        errors.append(
+            "automatic Finishing Move acceptance switch must be removed; discovery is diagnostics-only"
+        )
 
-    continuation = config.get("combat_state_verifier", {}).get("finishing_continuation", {})
+    continuation = (
+        config.get("combat_state_verifier", {}).get("finishing_continuation", {})
+    )
     if continuation.get("require_verified_payoff") is not True:
         errors.append("Finishing Move continuation must require verified payoff")
-    for key in ("minimum_verified_hostile_anchors_without_payoff", "minimum_retention_without_payoff"):
+    for key in (
+        "minimum_verified_hostile_anchors_without_payoff",
+        "minimum_retention_without_payoff",
+    ):
         if key in continuation:
-            errors.append(f"obsolete no-payoff continuation key must be removed: {key}")
+            errors.append(
+                f"obsolete no-payoff continuation key must be removed: {key}"
+            )
 
-    first_gap = _f(editorial.get("finishing_move_max_continuation_gap_seconds", 0.0))
-    body_gap = _f(editorial.get("finishing_move_body_hard_cut_max_source_gap_seconds", 0.0))
+    first_gap = _f(
+        editorial.get("finishing_move_max_continuation_gap_seconds", 0.0)
+    )
+    body_gap = _f(
+        editorial.get("finishing_move_body_hard_cut_max_source_gap_seconds", 0.0)
+    )
     if first_gap <= 0.0:
         errors.append("finishing_move_max_continuation_gap_seconds must be positive")
     if body_gap <= 0.0 or body_gap > first_gap + _EPS:
-        errors.append("Finishing Move body hard-cut gap must be positive and no larger than first-continuation reach")
+        errors.append(
+            "Finishing Move body hard-cut gap must be positive and no larger than first-continuation reach"
+        )
 
     if errors:
-        raise RuntimeError("MW4 V3.1 canonical configuration violation: " + "; ".join(errors))
+        raise RuntimeError(
+            "MW4 V3.1 canonical configuration violation: " + "; ".join(errors)
+        )
 
 
-def _verified_cut_windows(config: dict[str, Any], source_key: str) -> tuple[tuple[float, float], ...]:
+def _verified_cut_windows(
+    config: dict[str, Any],
+    source_key: str,
+) -> tuple[tuple[float, float], ...]:
     return quality._verified_cut_windows(config, source_key)
 
 
-def _build_hardened_shots(source: Path, duration: float, config: dict[str, Any]) -> tuple[ShotSpan, ...]:
-    automatic = list(refined._scene_cut_times(source, config))
+def _build_hardened_shots(
+    source: Path,
+    duration: float,
+    config: dict[str, Any],
+) -> tuple[ShotSpan, ...]:
+    automatic = list(core.scene_cut_times(source, config))
     verified = [
         (left + right) / 2.0
         for left, right in _verified_cut_windows(config, _source_key(source))
     ]
     cuts: list[float] = []
     for value in sorted(automatic + verified):
-        if 0.35 < value < duration - 0.35 and all(abs(value - old) >= 0.18 for old in cuts):
+        if (
+            0.35 < value < duration - 0.35
+            and all(abs(value - old) >= 0.18 for old in cuts)
+        ):
             cuts.append(value)
-    guard = float(config.get("semantic_analysis", {}).get("scene_change_guard_seconds", 0.12))
+    guard = float(
+        config.get("semantic_analysis", {}).get(
+            "scene_change_guard_seconds", 0.12
+        )
+    )
     boundaries = [0.0] + cuts + [duration]
     shots: list[ShotSpan] = []
     for index, (left, right) in enumerate(zip(boundaries, boundaries[1:])):
         start = left if index == 0 else min(right, left + guard)
-        end = right if index == len(boundaries) - 2 else max(start, right - guard)
+        end = (
+            right
+            if index == len(boundaries) - 2
+            else max(start, right - guard)
+        )
         if end - start >= 1.0:
             shots.append(ShotSpan(round(start, 3), round(end, 3)))
     return tuple(shots or [ShotSpan(0.0, duration)])
@@ -114,14 +147,19 @@ def _verified_finishing_moves(
     source: Path,
     config: dict[str, Any],
 ) -> tuple[FinishingMoveSpan, ...]:
-    """Only manually verified spans are eligible; automatic detections stay discovery-only."""
+    """Only manually verified campaign spans can enter production planning."""
     verified: list[FinishingMoveSpan] = []
-    for item in config.get("finishing_move_detector", {}).get("verified_spans", {}).get(_source_key(source), []):
+    items = (
+        config.get("finishing_move_detector", {})
+        .get("verified_spans", {})
+        .get(_source_key(source), [])
+    )
+    for item in items:
         start = float(item["start"])
         payoff = float(item["payoff"])
         end = float(item["end"])
         midpoint = (start + end) / 2.0
-        shot_index = refined.core._shot_index(shots, midpoint)
+        shot_index = core._shot_index(shots, midpoint)
         shot = shots[shot_index]
         if shot.start <= midpoint <= shot.end:
             verified.append(
@@ -131,7 +169,10 @@ def _verified_finishing_moves(
                     round(min(float(shot.end), end), 3),
                     shot_index,
                     0.99,
-                    {"visual_verification": 1.0, "third_person_execution_regime": 1.0},
+                    {
+                        "visual_verification": 1.0,
+                        "third_person_execution_regime": 1.0,
+                    },
                 )
             )
     return tuple(sorted(verified, key=lambda item: item.start))
@@ -141,18 +182,24 @@ def _verified_hostile_signal(timeline: SemanticTimelineV31) -> np.ndarray:
     signal = np.zeros(len(timeline.times), dtype=np.float32)
     for engagement in timeline.engagements:
         i0 = max(0, int(np.floor(float(engagement.start) * timeline.fps)))
-        i1 = min(len(signal), int(np.ceil(float(engagement.end) * timeline.fps)))
+        i1 = min(
+            len(signal),
+            int(np.ceil(float(engagement.end) * timeline.fps)),
+        )
         signal[i0:i1] = 1.0
     return signal
 
 
-def analyze_source(source: Path, config: dict[str, Any]) -> SemanticTimelineV31:
-    """Evidence -> direct interaction verification -> exact gap-split combat islands."""
+def analyze_source(
+    source: Path,
+    config: dict[str, Any],
+) -> SemanticTimelineV31:
+    """Canonical evidence -> verification -> combat-island analysis route."""
     validate_configuration(config)
-    base = refined.core.base.analyze_source(source, config)
+    base = core.base.analyze_source(source, config)
     shots = _build_hardened_shots(source, float(base.duration), config)
-    consolidated = refined.core.consolidate_events(base, shots)
-    coarse = refined.core.cluster_engagements(base, shots, consolidated, config)
+    consolidated = core.consolidate_events(base, shots)
+    coarse = core.cluster_engagements(base, shots, consolidated, config)
     timeline = SemanticTimelineV31(
         base,
         shots,
@@ -161,8 +208,16 @@ def analyze_source(source: Path, config: dict[str, Any]) -> SemanticTimelineV31:
         _verified_finishing_moves(shots, source, config),
     )
     setattr(timeline, "_source_key", _source_key(source))
+
     local_verify.annotate_timeline(source, timeline, config)
-    timeline.engagements = islands.build(timeline, coarse, config, refined.core, combat, Engagement)
+    timeline.engagements = islands.build(
+        timeline,
+        coarse,
+        config,
+        core,
+        combat,
+        Engagement,
+    )
     timeline.signals["combat_island_gap"] = islands.gap_signal(timeline, config)
     timeline.signals["verified_hostile"] = _verified_hostile_signal(timeline)
     setattr(
@@ -174,6 +229,7 @@ def analyze_source(source: Path, config: dict[str, Any]) -> SemanticTimelineV31:
             "contact_only_can_anchor_hostile": False,
             "unknown_actor_defaults_to_hostile": False,
             "combat_islands_are_exact_gap_split_bounds": True,
+            "body_segments_preserve_exact_combat_island_bounds": True,
             "alternate_planner_available": False,
         },
     )
@@ -184,9 +240,17 @@ def _candidate_engagement_chains(
     timeline: SemanticTimelineV31,
     config: dict[str, Any],
 ) -> list[tuple[Engagement, ...]]:
-    minimum = _f(config["semantic_editor"].get("minimum_output_seconds", 10.0), 10.0)
-    maximum = _f(config["semantic_editor"].get("maximum_output_seconds", 20.0), 20.0)
-    max_engagements = int(config["semantic_editor"].get("maximum_engagements_per_story", 7))
+    minimum = _f(
+        config["semantic_editor"].get("minimum_output_seconds", 10.0),
+        10.0,
+    )
+    maximum = _f(
+        config["semantic_editor"].get("maximum_output_seconds", 20.0),
+        20.0,
+    )
+    max_engagements = int(
+        config["semantic_editor"].get("maximum_engagements_per_story", 7)
+    )
     chains: list[tuple[Engagement, ...]] = []
 
     for start_index, first in enumerate(timeline.engagements):
@@ -195,7 +259,10 @@ def _candidate_engagement_chains(
             if candidate.shot_index != first.shot_index:
                 break
             if chain and not islands.bridge_supported(
-                timeline, float(chain[-1].end), float(candidate.start), config
+                timeline,
+                float(chain[-1].end),
+                float(candidate.start),
+                config,
             ):
                 break
             chain.append(candidate)
@@ -210,7 +277,10 @@ def _candidate_engagement_chains(
     unique: list[tuple[Engagement, ...]] = []
     seen: set[tuple[tuple[float, float], ...]] = set()
     for chain in chains:
-        key = tuple((round(float(item.start), 3), round(float(item.end), 3)) for item in chain)
+        key = tuple(
+            (round(float(item.start), 3), round(float(item.end), 3))
+            for item in chain
+        )
         if key not in seen:
             seen.add(key)
             unique.append(chain)
@@ -226,8 +296,14 @@ def _protected_finishing_overlap(
     if end <= start + _EPS:
         return False
     editorial = config["editorial"]
-    lead = _f(editorial.get("finishing_move_opening_lead_seconds", 0.28), 0.28)
-    hold = _f(editorial.get("finishing_move_payoff_hold_seconds", 0.45), 0.45)
+    lead = _f(
+        editorial.get("finishing_move_opening_lead_seconds", 0.28),
+        0.28,
+    )
+    hold = _f(
+        editorial.get("finishing_move_payoff_hold_seconds", 0.45),
+        0.45,
+    )
     for span in timeline.finishing_moves:
         shot = timeline.shots[span.shot_index]
         protected_start = max(float(shot.start), float(span.start) - lead)
@@ -247,20 +323,54 @@ def _normal_plans(
     for chain in _candidate_engagement_chains(timeline, config):
         start, end = float(chain[0].start), float(chain[-1].end)
         if (
-            refined.core._intersects_excluded(start, end, excluded)
+            core._intersects_excluded(start, end, excluded)
             or islands.segment_crosses_gap(timeline, start, end)
             or _protected_finishing_overlap(timeline, start, end, config)
         ):
             continue
 
-        segment = EditSegment(round(start, 3), round(end, 3), 1.0, "verified_combat_story")
-        residual = quality._longest_unexplained_low_run(timeline, start, end, chain, None, config)
-        opening, ending, coherence, retention, payoff, weakest, low_fraction = quality._quality_metrics(
-            timeline, start, end, chain, None, residual, config
+        segment = EditSegment(
+            round(start, 3),
+            round(end, 3),
+            1.0,
+            "verified_combat_story",
+        )
+        residual = quality._longest_unexplained_low_run(
+            timeline,
+            start,
+            end,
+            chain,
+            None,
+            config,
+        )
+        (
+            opening,
+            ending,
+            coherence,
+            retention,
+            payoff,
+            weakest,
+            low_fraction,
+        ) = quality._quality_metrics(
+            timeline,
+            start,
+            end,
+            chain,
+            None,
+            residual,
+            config,
         )
         story, profile, effects, reasons = quality._route_story(timeline, chain)
         if not quality._passes_story_gates(
-            story, opening, ending, retention, payoff, weakest, low_fraction, residual, config
+            story,
+            opening,
+            ending,
+            retention,
+            payoff,
+            weakest,
+            low_fraction,
+            residual,
+            config,
         ):
             continue
 
@@ -269,7 +379,19 @@ def _normal_plans(
             round(end, 3),
             round(end - start, 3),
             round(end - start, 3),
-            round(quality._score_plan(retention, payoff, opening, ending, coherence, weakest, False, config), 5),
+            round(
+                quality._score_plan(
+                    retention,
+                    payoff,
+                    opening,
+                    ending,
+                    coherence,
+                    weakest,
+                    False,
+                    config,
+                ),
+                5,
+            ),
             round(retention, 4),
             round(payoff, 4),
             round(opening, 4),
@@ -286,7 +408,12 @@ def _normal_plans(
             None,
             reasons + ("exact verified-combat-island story bounds",),
         )
-        if not quality.plan_integrity_violations(plan, timeline, config, source_key):
+        if not quality.plan_integrity_violations(
+            plan,
+            timeline,
+            config,
+            source_key,
+        ):
             plans.append(plan)
     return sorted(plans, key=lambda item: item.score, reverse=True)
 
@@ -297,27 +424,76 @@ def _component_metric_failures(
     *,
     require_ending: bool,
 ) -> list[str]:
-    """Apply independent body gates; ending is required only for the terminal component."""
     cfg = config["combat_state_verifier"]["finishing_continuation"]
     min_retention = max(
-        _f(config.get("performance_targets", {}).get("retention_quality_min", 0.36), 0.36),
+        _f(
+            config.get("performance_targets", {}).get(
+                "retention_quality_min", 0.36
+            ),
+            0.36,
+        ),
         _f(cfg.get("minimum_retention_quality", 0.40), 0.40),
     )
     min_payoff = max(
-        _f(config.get("performance_targets", {}).get("payoff_quality_min", 0.34), 0.34),
+        _f(
+            config.get("performance_targets", {}).get(
+                "payoff_quality_min", 0.34
+            ),
+            0.34,
+        ),
         _f(cfg.get("minimum_payoff_quality", 0.40), 0.40),
     )
     checks = [
-        (metrics["opening"] >= _f(cfg.get("minimum_verified_island_opening_quality", 0.42), 0.42), "verified combat island opening below floor"),
-        (metrics["retention"] >= min_retention, "verified combat island retention below floor"),
-        (metrics["payoff"] >= min_payoff, "verified combat island payoff below floor"),
-        (metrics["weakest"] >= _f(cfg.get("minimum_weakest_quarter_interest", 0.30), 0.30), "verified combat island weakest quarter below floor"),
-        (metrics["residual"] <= _f(cfg.get("maximum_unexplained_low_interest_run_seconds", 0.75), 0.75), "verified combat island unexplained inactivity exceeds floor"),
-        (metrics["low_fraction"] <= _f(config["semantic_editor"]["dull"].get("maximum_low_interest_fraction", 0.38), 0.38), "verified combat island low-interest fraction exceeds floor"),
+        (
+            metrics["opening"]
+            >= _f(
+                cfg.get("minimum_verified_island_opening_quality", 0.42),
+                0.42,
+            ),
+            "verified combat island opening below floor",
+        ),
+        (
+            metrics["retention"] >= min_retention,
+            "verified combat island retention below floor",
+        ),
+        (
+            metrics["payoff"] >= min_payoff,
+            "verified combat island payoff below floor",
+        ),
+        (
+            metrics["weakest"]
+            >= _f(cfg.get("minimum_weakest_quarter_interest", 0.30), 0.30),
+            "verified combat island weakest quarter below floor",
+        ),
+        (
+            metrics["residual"]
+            <= _f(
+                cfg.get(
+                    "maximum_unexplained_low_interest_run_seconds",
+                    0.75,
+                ),
+                0.75,
+            ),
+            "verified combat island unexplained inactivity exceeds floor",
+        ),
+        (
+            metrics["low_fraction"]
+            <= _f(
+                config["semantic_editor"]["dull"].get(
+                    "maximum_low_interest_fraction", 0.38
+                ),
+                0.38,
+            ),
+            "verified combat island low-interest fraction exceeds floor",
+        ),
     ]
     if require_ending:
         checks.append(
-            (metrics["ending"] >= _f(cfg.get("minimum_ending_quality", 0.45), 0.45), "verified combat island ending below floor")
+            (
+                metrics["ending"]
+                >= _f(cfg.get("minimum_ending_quality", 0.45), 0.45),
+                "verified combat island ending below floor",
+            )
         )
     return [message for passed, message in checks if not passed]
 
@@ -330,10 +506,29 @@ def _metrics_for_bounds(
     config: dict[str, Any],
 ) -> dict[str, float]:
     residual = quality._longest_unexplained_low_run(
-        timeline, start, end, (engagement,), None, config
+        timeline,
+        start,
+        end,
+        (engagement,),
+        None,
+        config,
     )
-    opening, ending, coherence, retention, payoff, weakest, low_fraction = quality._quality_metrics(
-        timeline, start, end, (engagement,), None, residual, config
+    (
+        opening,
+        ending,
+        coherence,
+        retention,
+        payoff,
+        weakest,
+        low_fraction,
+    ) = quality._quality_metrics(
+        timeline,
+        start,
+        end,
+        (engagement,),
+        None,
+        residual,
+        config,
     )
     return {
         "duration": end - start,
@@ -348,23 +543,28 @@ def _metrics_for_bounds(
     }
 
 
-def _island_component_metrics(
+def _qualify_island(
     timeline: SemanticTimelineV31,
     engagement: Engagement,
     config: dict[str, Any],
+    *,
+    require_ending: bool,
 ) -> tuple[dict[str, float] | None, list[str]]:
-    """Qualify an exact gap-split island as a body component.
-
-    An intermediate component is not required to look like the final clip ending;
-    all other independent body-quality gates remain unchanged.
-    """
+    """Qualify the actual canonical gap-split island, never a derived sub-window."""
     cfg = config["combat_state_verifier"]["finishing_continuation"]
     start, end = float(engagement.start), float(engagement.end)
     duration = end - start
     failures: list[str] = []
-    if duration < _f(cfg.get("minimum_verified_island_moment_seconds", 1.0), 1.0) - _EPS:
+
+    if duration < _f(
+        cfg.get("minimum_verified_island_moment_seconds", 1.0),
+        1.0,
+    ) - _EPS:
         failures.append("verified combat island shorter than minimum body island")
-    if duration > _f(cfg.get("maximum_verified_island_moment_seconds", 6.5), 6.5) + _EPS:
+    if duration > _f(
+        cfg.get("maximum_verified_island_moment_seconds", 6.5),
+        6.5,
+    ) + _EPS:
         failures.append("verified combat island longer than maximum body island")
     if not quality.verified_payoff_events(engagement, config):
         failures.append("verified combat island lacks hostile payoff")
@@ -375,38 +575,35 @@ def _island_component_metrics(
         for event in engagement.events
         if not combat.hostile_decision(event, config).hostile
     )
+
     metrics = _metrics_for_bounds(timeline, engagement, start, end, config)
-    failures.extend(_component_metric_failures(metrics, config, require_ending=False))
+    failures.extend(
+        _component_metric_failures(
+            metrics,
+            config,
+            require_ending=require_ending,
+        )
+    )
     if failures:
         return None, list(dict.fromkeys(failures))
     return metrics, []
 
 
-def _terminal_island_metrics(
-    timeline: SemanticTimelineV31,
-    engagement: Engagement,
-    config: dict[str, Any],
-) -> tuple[dict[str, float] | None, list[str]]:
-    """Qualify the deterministic payoff-tail terminal subrange of the final island."""
-    cfg = config["combat_state_verifier"]["finishing_continuation"]
-    start = float(engagement.start)
-    end = quality.canonical_terminal_end(engagement, config)
-    if end is None:
-        return None, ["final verified combat island has no canonical hostile-payoff terminal"]
-    duration = end - start
-    failures: list[str] = []
-    if duration < _f(cfg.get("minimum_verified_island_moment_seconds", 1.0), 1.0) - _EPS:
-        failures.append("terminal verified combat island shorter than minimum body island")
-    if duration > _f(cfg.get("maximum_verified_island_moment_seconds", 6.5), 6.5) + _EPS:
-        failures.append("terminal verified combat island longer than maximum body island")
-    if islands.segment_crosses_gap(timeline, start, end):
-        failures.append("terminal verified combat island crosses a hard combat gap")
-    metrics = _metrics_for_bounds(timeline, engagement, start, end, config)
-    metrics["terminal_end"] = float(end)
-    failures.extend(_component_metric_failures(metrics, config, require_ending=True))
-    if failures:
-        return None, list(dict.fromkeys(failures))
-    return metrics, []
+def _body_segment(engagement: Engagement) -> EditSegment:
+    """Convert a canonical island to an exact 1.0x body segment."""
+    return EditSegment(
+        round(float(engagement.start), 3),
+        round(float(engagement.end), 3),
+        1.0,
+        "verified_combat_island_body",
+    )
+
+
+def _required_body_duration(
+    hero: EditSegment,
+    final_minimum: float,
+) -> float:
+    return max(0.0, final_minimum - quality._segment_duration(hero))
 
 
 def _group_structure_failures(
@@ -416,11 +613,18 @@ def _group_structure_failures(
 ) -> list[str]:
     if not engagements:
         return ["empty Finishing Move body group"]
-    max_first_gap = _f(config["editorial"].get("finishing_move_max_continuation_gap_seconds", 18.0), 18.0)
+    max_first_gap = _f(
+        config["editorial"].get(
+            "finishing_move_max_continuation_gap_seconds", 18.0
+        ),
+        18.0,
+    )
     hard_cut_gap = quality.finishing_body_hard_cut_gap(config)
     failures: list[str] = []
     if float(engagements[0].start) - hero_end > max_first_gap + _EPS:
-        failures.append("first verified body island starts beyond Finishing Move continuation reach")
+        failures.append(
+            "first verified body island starts beyond Finishing Move continuation reach"
+        )
     for left, right in zip(engagements, engagements[1:]):
         gap = float(right.start) - float(left.end)
         if gap < -_EPS:
@@ -440,16 +644,36 @@ def _finishing_open_plans(
     diagnostics: list[dict[str, Any]] = []
     editorial = config["editorial"]
     cfg = config["combat_state_verifier"]["finishing_continuation"]
-    lead = _f(editorial.get("finishing_move_opening_lead_seconds", 0.28), 0.28)
-    hold = _f(editorial.get("finishing_move_payoff_hold_seconds", 0.45), 0.45)
-    max_first_gap = _f(editorial.get("finishing_move_max_continuation_gap_seconds", 18.0), 18.0)
-    hard_cut_gap = quality.finishing_body_hard_cut_gap(config)
-    final_minimum = _f(config["semantic_editor"].get("minimum_output_seconds", 10.0), 10.0)
-    final_maximum = min(
-        _f(config["semantic_editor"].get("maximum_output_seconds", 20.0), 20.0),
-        _f(editorial.get("finishing_move_max_output_seconds", 15.5), 15.5),
+    lead = _f(
+        editorial.get("finishing_move_opening_lead_seconds", 0.28),
+        0.28,
     )
-    max_islands = int(cfg.get("maximum_verified_island_moments_per_body", 3))
+    hold = _f(
+        editorial.get("finishing_move_payoff_hold_seconds", 0.45),
+        0.45,
+    )
+    max_first_gap = _f(
+        editorial.get("finishing_move_max_continuation_gap_seconds", 18.0),
+        18.0,
+    )
+    hard_cut_gap = quality.finishing_body_hard_cut_gap(config)
+    final_minimum = _f(
+        config["semantic_editor"].get("minimum_output_seconds", 10.0),
+        10.0,
+    )
+    final_maximum = min(
+        _f(
+            config["semantic_editor"].get("maximum_output_seconds", 20.0),
+            20.0,
+        ),
+        _f(
+            editorial.get("finishing_move_max_output_seconds", 15.5),
+            15.5,
+        ),
+    )
+    max_islands = int(
+        cfg.get("maximum_verified_island_moments_per_body", 3)
+    )
 
     for span in timeline.finishing_moves:
         shot = timeline.shots[span.shot_index]
@@ -460,7 +684,7 @@ def _finishing_open_plans(
             "finishing_move_open_hero",
         )
         hero_duration = quality._segment_duration(hero)
-        body_minimum = max(0.0, final_minimum - hero_duration)
+        body_minimum = _required_body_duration(hero, final_minimum)
         body_maximum = max(0.0, final_maximum - hero_duration)
         later_floor = max(float(hero.end), float(span.end) + 0.25)
 
@@ -469,20 +693,38 @@ def _finishing_open_plans(
         for engagement in timeline.engagements:
             if float(engagement.start) < later_floor - _EPS:
                 continue
-            if refined.core._intersects_excluded(float(engagement.start), float(engagement.end), excluded):
+            if core._intersects_excluded(
+                float(engagement.start),
+                float(engagement.end),
+                excluded,
+            ):
                 continue
-            component_metrics, component_failures = _island_component_metrics(timeline, engagement, config)
-            terminal_metrics, terminal_failures = _terminal_island_metrics(timeline, engagement, config)
+
+            component_metrics, component_failures = _qualify_island(
+                timeline,
+                engagement,
+                config,
+                require_ending=False,
+            )
+            terminal_metrics, terminal_failures = _qualify_island(
+                timeline,
+                engagement,
+                config,
+                require_ending=True,
+            )
             island_diagnostics.append(
                 {
                     "start": round(float(engagement.start), 3),
                     "end": round(float(engagement.end), 3),
-                    "event_times": [round(float(event.time), 3) for event in engagement.events],
+                    "event_times": [
+                        round(float(event.time), 3)
+                        for event in engagement.events
+                    ],
                     "component_qualified": component_metrics is not None,
                     "component_failures": component_failures,
                     "terminal_qualified": terminal_metrics is not None,
-                    "terminal_end": None if terminal_metrics is None else round(float(terminal_metrics["terminal_end"]), 3),
                     "terminal_failures": terminal_failures,
+                    "evaluated_bounds_are_exact_island_bounds": True,
                 }
             )
             if component_metrics is not None:
@@ -493,54 +735,109 @@ def _finishing_open_plans(
         for count in range(1, max(1, max_islands) + 1):
             for group in itertools.combinations(components, count):
                 engagements = tuple(item[0] for item in group)
-                structure_failures = _group_structure_failures(engagements, float(hero.end), config)
+                structure_failures = _group_structure_failures(
+                    engagements,
+                    float(hero.end),
+                    config,
+                )
                 if structure_failures:
-                    group_rejections.append({
-                        "islands": [[round(float(item.start), 3), round(float(item.end), 3)] for item in engagements],
-                        "failures": structure_failures,
-                    })
+                    group_rejections.append(
+                        {
+                            "islands": [
+                                [
+                                    round(float(item.start), 3),
+                                    round(float(item.end), 3),
+                                ]
+                                for item in engagements
+                            ],
+                            "failures": structure_failures,
+                        }
+                    )
                     continue
 
-                terminal_metrics, terminal_failures = _terminal_island_metrics(timeline, engagements[-1], config)
+                terminal_metrics, terminal_failures = _qualify_island(
+                    timeline,
+                    engagements[-1],
+                    config,
+                    require_ending=True,
+                )
                 if terminal_metrics is None:
-                    group_rejections.append({
-                        "islands": [[round(float(item.start), 3), round(float(item.end), 3)] for item in engagements],
-                        "failures": terminal_failures,
-                    })
+                    group_rejections.append(
+                        {
+                            "islands": [
+                                [
+                                    round(float(item.start), 3),
+                                    round(float(item.end), 3),
+                                ]
+                                for item in engagements
+                            ],
+                            "failures": terminal_failures,
+                        }
+                    )
                     continue
 
                 metrics = [item[1] for item in group[:-1]] + [terminal_metrics]
-                body_segments = [
-                    EditSegment(round(float(item.start), 3), round(float(item.end), 3), 1.0, "verified_combat_island_body")
-                    for item in engagements[:-1]
-                ]
-                body_segments.append(
-                    EditSegment(
-                        round(float(engagements[-1].start), 3),
-                        round(float(terminal_metrics["terminal_end"]), 3),
-                        1.0,
-                        "verified_combat_island_body",
-                    )
+                body_segments_tuple = tuple(
+                    _body_segment(item) for item in engagements
                 )
-                body_segments_tuple = tuple(body_segments)
-                durations = np.asarray([quality._segment_duration(segment) for segment in body_segments_tuple], dtype=float)
+                durations = np.asarray(
+                    [
+                        quality._segment_duration(segment)
+                        for segment in body_segments_tuple
+                    ],
+                    dtype=float,
+                )
                 body_duration = float(np.sum(durations))
-                if not (body_minimum - _EPS <= body_duration <= body_maximum + _EPS):
-                    group_rejections.append({
-                        "islands": [[round(float(item.start), 3), round(float(item.end), 3)] for item in engagements],
-                        "terminal_end": round(float(terminal_metrics["terminal_end"]), 3),
-                        "body_duration": round(body_duration, 3),
-                        "failures": ["verified body duration outside hero-aware contract"],
-                    })
+                if not (
+                    body_minimum - _EPS
+                    <= body_duration
+                    <= body_maximum + _EPS
+                ):
+                    group_rejections.append(
+                        {
+                            "islands": [
+                                [
+                                    round(float(item.start), 3),
+                                    round(float(item.end), 3),
+                                ]
+                                for item in engagements
+                            ],
+                            "body_duration": round(body_duration, 3),
+                            "required_body_minimum_seconds": round(
+                                body_minimum, 3
+                            ),
+                            "failures": [
+                                "verified body duration outside hero-aware contract"
+                            ],
+                        }
+                    )
                     continue
 
-                body_retention = float(np.average([item["retention"] for item in metrics], weights=durations))
+                body_retention = float(
+                    np.average(
+                        [item["retention"] for item in metrics],
+                        weights=durations,
+                    )
+                )
                 payoff_values = [float(item["payoff"]) for item in metrics]
-                body_payoff = float(0.55 * max(payoff_values) + 0.45 * np.mean(payoff_values))
+                body_payoff = float(
+                    0.55 * max(payoff_values)
+                    + 0.45 * np.mean(payoff_values)
+                )
                 body_ending = float(metrics[-1]["ending"])
-                body_coherence = float(np.average([item["coherence"] for item in metrics], weights=durations))
+                body_coherence = float(
+                    np.average(
+                        [item["coherence"] for item in metrics],
+                        weights=durations,
+                    )
+                )
                 body_weakest = float(min(item["weakest"] for item in metrics))
-                body_low_fraction = float(np.average([item["low_fraction"] for item in metrics], weights=durations))
+                body_low_fraction = float(
+                    np.average(
+                        [item["low_fraction"] for item in metrics],
+                        weights=durations,
+                    )
+                )
                 body_residual = float(max(item["residual"] for item in metrics))
 
                 if not quality._passes_story_gates(
@@ -554,23 +851,41 @@ def _finishing_open_plans(
                     body_residual,
                     config,
                 ):
-                    group_rejections.append({
-                        "islands": [[round(float(item.start), 3), round(float(item.end), 3)] for item in engagements],
-                        "terminal_end": round(float(terminal_metrics["terminal_end"]), 3),
-                        "failures": ["aggregated verified body failed unchanged story gates"],
-                    })
+                    group_rejections.append(
+                        {
+                            "islands": [
+                                [
+                                    round(float(item.start), 3),
+                                    round(float(item.end), 3),
+                                ]
+                                for item in engagements
+                            ],
+                            "failures": [
+                                "aggregated verified body failed unchanged story gates"
+                            ],
+                        }
+                    )
                     continue
 
                 segments = (hero,) + body_segments_tuple
-                output_duration = sum(quality._segment_duration(segment) for segment in segments)
-                opening = max(0.90, min(1.0, 0.74 + 0.22 * float(span.confidence)))
-                retention = float(0.18 * opening + 0.82 * body_retention)
+                output_duration = sum(
+                    quality._segment_duration(segment) for segment in segments
+                )
+                opening = max(
+                    0.90,
+                    min(1.0, 0.74 + 0.22 * float(span.confidence)),
+                )
+                retention = float(
+                    0.18 * opening + 0.82 * body_retention
+                )
                 payoff = float(
                     0.45 * min(1.0, float(span.confidence) + 0.12)
                     + 0.55 * body_payoff
                 )
                 coherence = min(1.0, 0.10 + 0.88 * body_coherence)
-                low_fraction = body_low_fraction * (body_duration / output_duration)
+                low_fraction = body_low_fraction * (
+                    body_duration / output_duration
+                )
 
                 if not quality._passes_story_gates(
                     "finishing_move_open",
@@ -583,19 +898,46 @@ def _finishing_open_plans(
                     body_residual,
                     config,
                 ):
-                    group_rejections.append({
-                        "islands": [[round(float(item.start), 3), round(float(item.end), 3)] for item in engagements],
-                        "terminal_end": round(float(terminal_metrics["terminal_end"]), 3),
-                        "failures": ["combined Finishing Move plan failed unchanged story gates"],
-                    })
+                    group_rejections.append(
+                        {
+                            "islands": [
+                                [
+                                    round(float(item.start), 3),
+                                    round(float(item.end), 3),
+                                ]
+                                for item in engagements
+                            ],
+                            "failures": [
+                                "combined Finishing Move plan failed unchanged story gates"
+                            ],
+                        }
+                    )
                     continue
 
                 plan = SemanticPlanV31(
                     hero.start,
                     body_segments_tuple[-1].end,
-                    round(sum(segment.end - segment.start for segment in segments), 3),
+                    round(
+                        sum(
+                            segment.end - segment.start
+                            for segment in segments
+                        ),
+                        3,
+                    ),
                     round(output_duration, 3),
-                    round(quality._score_plan(retention, payoff, opening, body_ending, coherence, body_weakest, True, config), 5),
+                    round(
+                        quality._score_plan(
+                            retention,
+                            payoff,
+                            opening,
+                            body_ending,
+                            coherence,
+                            body_weakest,
+                            True,
+                            config,
+                        ),
+                        5,
+                    ),
                     round(retention, 4),
                     round(payoff, 4),
                     round(opening, 4),
@@ -607,24 +949,39 @@ def _finishing_open_plans(
                     "finishing_move_open",
                     "finishing_move_hero",
                     segments,
-                    quality._effect_events_for_engagements(timeline, engagements),
+                    quality._effect_events_for_engagements(
+                        timeline,
+                        engagements,
+                    ),
                     engagements,
                     span,
                     (
                         "verified Finishing Move opens the clip",
-                        "intermediate body islands retain exact canonical gap-split bounds",
-                        "final body island trims only trailing context after its last verified hostile payoff",
+                        "every body segment preserves exact canonical gap-split combat-island bounds",
                         "every body island independently passes direct-hostile/payoff/retention gates",
-                        "source-time reload/search gaps are omitted by explicit bounded hard cuts",
+                        "terminal body island passes ending quality at its actual island boundary",
+                        "source-time reload/search gaps are omitted only by explicit bounded hard cuts",
                     ),
                 )
-                integrity = quality.plan_integrity_violations(plan, timeline, config, source_key)
+                integrity = quality.plan_integrity_violations(
+                    plan,
+                    timeline,
+                    config,
+                    source_key,
+                )
                 if integrity:
-                    group_rejections.append({
-                        "islands": [[round(float(item.start), 3), round(float(item.end), 3)] for item in engagements],
-                        "terminal_end": round(float(terminal_metrics["terminal_end"]), 3),
-                        "failures": integrity,
-                    })
+                    group_rejections.append(
+                        {
+                            "islands": [
+                                [
+                                    round(float(item.start), 3),
+                                    round(float(item.end), 3),
+                                ]
+                                for item in engagements
+                            ],
+                            "failures": integrity,
+                        }
+                    )
                     continue
 
                 results.append(plan)
@@ -644,6 +1001,7 @@ def _finishing_open_plans(
                 "valid_finishing_plan_count": valid_count,
                 "island_diagnostics": island_diagnostics,
                 "group_rejections": group_rejections[:32],
+                "body_segments_preserve_exact_combat_island_bounds": True,
                 "alternate_planner_available": False,
             }
         )
@@ -672,25 +1030,46 @@ def build_plans(
     config: dict[str, Any],
     excluded: list[list[float]],
 ) -> list[SemanticPlanV31]:
-    return build_plans_for_source(timeline, config, excluded, getattr(timeline, "_source_key", ""))
+    return build_plans_for_source(
+        timeline,
+        config,
+        excluded,
+        getattr(timeline, "_source_key", ""),
+    )
 
 
-def select_plans(plans: list[SemanticPlanV31], config: dict[str, Any]) -> list[SemanticPlanV31]:
+def select_plans(
+    plans: list[SemanticPlanV31],
+    config: dict[str, Any],
+) -> list[SemanticPlanV31]:
     maximum = int(config.get("count_per_source_max", 4))
     minimum = int(config.get("minimum_count_per_source", 0))
     selected: list[SemanticPlanV31] = []
-    finishing = [plan for plan in plans if plan.story_type == "finishing_move_open"]
+    finishing = [
+        plan for plan in plans if plan.story_type == "finishing_move_open"
+    ]
     if finishing:
         selected.append(finishing[0])
     for plan in plans:
-        if plan in selected or any(quality._source_segments_overlap(plan, prior) for prior in selected):
+        if plan in selected or any(
+            quality._source_segments_overlap(plan, prior)
+            for prior in selected
+        ):
             continue
         selected.append(plan)
         if len(selected) >= maximum:
             break
     if len(selected) < minimum:
-        raise RuntimeError(f"Only {len(selected)} canonical V3.1 candidates passed; minimum is {minimum}.")
-    return sorted(selected, key=lambda item: (item.story_type != "finishing_move_open", item.segments[0].start))
+        raise RuntimeError(
+            f"Only {len(selected)} canonical V3.1 candidates passed; minimum is {minimum}."
+        )
+    return sorted(
+        selected,
+        key=lambda item: (
+            item.story_type != "finishing_move_open",
+            item.segments[0].start,
+        ),
+    )
 
 
 def diagnose_source(
@@ -707,7 +1086,9 @@ def diagnose_source(
             "engagement_count": len(timeline.engagements),
             "verified_finishing_move_count": len(timeline.finishing_moves),
             "candidate_count_after_semantic_gates": len(plans),
-            "local_interaction_verifier": dict(getattr(timeline, "_local_interaction_diagnostics", {})),
+            "local_interaction_verifier": dict(
+                getattr(timeline, "_local_interaction_diagnostics", {})
+            ),
             "finishing_move_continuation_diagnostics": list(
                 getattr(timeline, "_finishing_continuation_diagnostics", [])
             ),
@@ -727,14 +1108,29 @@ def _self_test() -> None:
         },
         "source_integrity": {},
         "semantic_editor": {
+            "minimum_output_seconds": 10.0,
+            "maximum_output_seconds": 20.0,
             "maximum_inter_engagement_gap_seconds": 4.0,
-            "ending": {"preferred_payoff_tail_seconds": 0.45, "maximum_payoff_tail_seconds": 0.75},
-            "dull": {"maximum_low_interest_fraction": 0.38},
+            "opening": {"minimum_quality": 0.42},
+            "ending": {
+                "preferred_payoff_tail_seconds": 0.45,
+                "maximum_payoff_tail_seconds": 0.75,
+                "minimum_quality": 0.40,
+            },
+            "dull": {
+                "maximum_low_interest_fraction": 0.38,
+                "minimum_weak_quarter_interest": 0.27,
+                "maximum_unexplained_low_interest_run_seconds": 0.90,
+            },
+            "selection": {},
         },
         "finishing_move_detector": {},
         "combat_state_verifier": {
             "enabled": True,
-            "local_interaction_verifier": {"enabled": True, "minimum_hitmarker_score": 0.34},
+            "local_interaction_verifier": {
+                "enabled": True,
+                "minimum_hitmarker_score": 0.34,
+            },
             "finishing_continuation": {
                 "require_verified_payoff": True,
                 "minimum_retention_quality": 0.40,
@@ -745,9 +1141,13 @@ def _self_test() -> None:
                 "minimum_verified_island_opening_quality": 0.42,
             },
         },
-        "performance_targets": {"retention_quality_min": 0.36, "payoff_quality_min": 0.34},
+        "performance_targets": {
+            "retention_quality_min": 0.36,
+            "payoff_quality_min": 0.34,
+        },
     }
     validate_configuration(config)
+    core.architecture_self_test()
     combat.self_test()
     islands.self_test()
     local_verify.self_test()
@@ -761,36 +1161,60 @@ def _self_test() -> None:
         "residual": 0.0,
         "low_fraction": 0.0,
     }
-    if _component_metric_failures(poor_terminal, config, require_ending=False):
-        raise AssertionError("intermediate verified body island was incorrectly required to be a clip ending")
-    if "verified combat island ending below floor" not in _component_metric_failures(
-        poor_terminal, config, require_ending=True
+    if _component_metric_failures(
+        poor_terminal,
+        config,
+        require_ending=False,
     ):
-        raise AssertionError("terminal verified body island escaped unchanged ending gate")
+        raise AssertionError(
+            "intermediate verified body island was incorrectly required to be a clip ending"
+        )
+    if (
+        "verified combat island ending below floor"
+        not in _component_metric_failures(
+            poor_terminal,
+            config,
+            require_ending=True,
+        )
+    ):
+        raise AssertionError(
+            "terminal verified body island escaped unchanged ending gate"
+        )
 
-    e1 = SimpleNamespace(start=153.533, end=157.800)
-    e2 = SimpleNamespace(start=172.900, end=176.700)
-    if _group_structure_failures((e1, e2), 150.500, config):
+    hero = EditSegment(148.07, 150.50, 1.0, "finishing_move_open_hero")
+    if abs(_required_body_duration(hero, 10.0) - 7.57) > _EPS:
+        raise AssertionError("Finishing Move body minimum is not hero-aware")
+
+    exact_island = SimpleNamespace(start=153.533, end=157.800)
+    exact_segment = _body_segment(exact_island)
+    if (
+        abs(exact_segment.start - 153.533) > _EPS
+        or abs(exact_segment.end - 157.800) > _EPS
+    ):
+        raise AssertionError(
+            "verified combat island was trimmed, centered, padded, or expanded"
+        )
+
+    later = SimpleNamespace(start=172.900, end=176.700)
+    if _group_structure_failures((exact_island, later), 150.500, config):
         raise AssertionError("valid bounded verified-island hard cut was rejected")
     too_late_first = SimpleNamespace(start=169.0, end=172.0)
     if not _group_structure_failures((too_late_first,), 150.500, config):
         raise AssertionError("first Finishing Move body island escaped 18s reach")
     too_far_second = SimpleNamespace(start=176.100, end=179.0)
-    if not _group_structure_failures((e1, too_far_second), 150.500, config):
-        raise AssertionError("body hard cut exceeding source-gap contract was accepted")
+    if not _group_structure_failures(
+        (exact_island, too_far_second),
+        150.500,
+        config,
+    ):
+        raise AssertionError(
+            "body hard cut exceeding source-gap contract was accepted"
+        )
 
-    event = SimpleNamespace(
-        time=175.917,
-        kinds=("outcome_like",),
-        confidence=0.9,
-        evidence={"local_refine_attempted": 1.0, "local_hitmarker_score": 1.0, "outcome": 1.0, "combat": 1.0},
-    )
-    engagement = SimpleNamespace(start=172.9, end=181.0, events=(event,))
-    terminal_end = quality.canonical_terminal_end(engagement, config)
-    if abs(float(terminal_end) - 176.367) > _EPS:
-        raise AssertionError(f"canonical terminal end is not payoff+0.45s inside island: {terminal_end}")
-    if float(engagement.start) != 172.9:
-        raise AssertionError("terminal boundary logic changed canonical island start")
+    if "canonical_terminal_end" in quality.__dict__:
+        raise AssertionError(
+            "payoff-tail terminal sub-window implementation still exists"
+        )
 
     print("MW4 canonical semantic architecture self-test: PASS")
 
