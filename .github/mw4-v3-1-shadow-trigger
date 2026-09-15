@@ -18,3 +18,5 @@ Fail-closed allocation remains mandatory. If verified evidence cannot satisfy th
 Existing source certification, exact decoded-frame hash identity, FFV1 level-3 + PCM s16le NUT staging/stitched/canonical transport, source-native delivery timing/metadata restoration, SSIM >= 0.99, PSNR >= 40 dB and production bitrate contracts remain mandatory.
 
 2026-09-16 qualification trigger: exact half-open combat-island frame bounds, 60 fps bounded direct-interaction verification at unchanged score threshold, exact semantic evidence surfaced in logs, exact terminal bounds enforced end-to-end, hero-aware body duration, one canonical semantic route, structured fail-closed allocation evidence, no fallback implementation.
+
+Run-64 qualification additionally exercises corrected allocation-rejection manifest extraction plus exact combat-island/orphan-hostile-event assignment diagnostics at the current canonical head.
