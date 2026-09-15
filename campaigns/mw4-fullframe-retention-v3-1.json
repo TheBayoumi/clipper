@@ -3,11 +3,6 @@
   "version": "3.1",
   "count_per_source_max": 8,
   "minimum_count_per_source": 0,
-  "fallback_policy": {
-    "enabled": false,
-    "mode": "fail_closed",
-    "policy": "No fallback code may execute. If strict hostile verification, strict story construction, or strict Finishing Move continuation cannot produce a valid clip, produce no clip and surface diagnostics."
-  },
   "batch_selection": {
     "allocation_mode": "adaptive_important_scenes_before_render",
     "candidate_pool_per_source": 40,
@@ -17,7 +12,7 @@
     "beam_width": 2048,
     "require_allocation_before_render": true,
     "require_verified_finishing_move_when_available": true,
-    "notes": "There is no fixed clip target. All three official reels are analyzed first, then the allocator keeps every semantically distinct scene that passes the strict quality and source-integrity gates, subject only to an 8-per-source and 20-total editorial safety ceiling. Never create filler and never invoke an alternate planner merely to hit a number."
+    "notes": "All three official reels are analyzed first. Allocation keeps semantically distinct scenes that pass canonical hostile, story, source-integrity and quality gates, subject only to editorial safety ceilings. No alternate planner exists merely to hit a number."
   },
   "output": {
     "width": 1920,
@@ -53,10 +48,9 @@
     "finishing_move_choreography_protected": true,
     "finishing_move_hero_full_frame": true,
     "finishing_move_hero_speed": 1.0,
-    "finishing_move_allow_semantic_montage_continuation": false,
-    "finishing_move_allow_verified_combat_island_continuation": true,
     "finishing_move_max_continuation_gap_seconds": 18.0,
-    "finishing_move_montage_max_output_seconds": 15.5,
+    "finishing_move_body_hard_cut_max_source_gap_seconds": 18.0,
+    "finishing_move_max_output_seconds": 15.5,
     "finishing_move_transition": "hard_cut",
     "finishing_move_transition_flash": false,
     "finishing_move_impact_bump_percent": 0.012,
@@ -81,14 +75,14 @@
     "local_refine_width": 384,
     "local_refine_height": 216,
     "local_refine_radius_seconds": 0.8,
-    "memory_policy": "Run the full 256x144 at 6 fps semantic analysis exactly once in the analysis stage. Shadow and production render stages consume the approved allocation directly and perform only lightweight source-structure validation, so full-reel NumPy frame arrays are never retained while FFmpeg encodes."
+    "memory_policy": "Run full 256x144 at 6 fps semantic analysis exactly once in analysis. Render stages consume the approved allocation and lightweight source-structure checks only."
   },
   "combat_state_verifier": {
     "enabled": true,
     "local_interaction_verifier": {
       "enabled": true,
       "minimum_hitmarker_score": 0.34,
-      "policy": "Local 384x216/12fps refinement is decoded only around coarse payoff/combat candidates. Every hostile classification requires centered direct-interaction confirmation. Generic motion, HUD changes, color, minimap state, operator appearance, and coincident coarse payoff modalities never establish hostile identity."
+      "policy": "Every hostile classification requires local centered direct player-target interaction confirmation. Generic motion, contact, HUD state, color, minimap state and operator appearance never establish hostile identity."
     },
     "minimum_hostile_event_score": 0.64,
     "outcome_minimum": 0.52,
@@ -105,7 +99,13 @@
     "traversal_break_threshold": 0.60,
     "recovery_break_threshold": 0.60,
     "break_combat_ceiling": 0.50,
+    "break_outcome_ceiling": 0.42,
+    "break_impact_ceiling": 0.45,
     "maximum_continuity_break_run_seconds": 0.55,
+    "combat_island_support_floor": 0.38,
+    "maximum_combat_island_quiet_run_seconds": 0.75,
+    "minimum_combat_island_seconds": 1.0,
+    "minimum_bridge_combat_support_fraction": 0.50,
     "finishing_continuation": {
       "require_verified_payoff": true,
       "minimum_retention_quality": 0.40,
@@ -118,10 +118,10 @@
       "minimum_verified_island_opening_quality": 0.42,
       "maximum_verified_island_moments_per_body": 3
     },
-    "policy": "Fail closed with no alternate path. Contact-only or ambiguous actor motion is unknown. Every hostile event requires direct local interaction evidence. Finishing Move bodies require verified hostile payoff evidence plus the independent body-quality gates. Sustained reload/traversal/recovery breaks terminate continuity."
+    "policy": "Ambiguous actor evidence remains unknown. Verified combat islands require direct hostile anchors and split at sustained reload, traversal, recovery or quiet-search gaps. Finishing Move body islands require verified hostile payoff evidence and independent body quality gates."
   },
   "source_integrity": {
-    "policy": "automatic shot boundaries plus visually verified missed source-stringout edit windows; contiguous stories may never cross them. The only deliberate cross-shot join is inside a verified Finishing Move and only between the protected hero and explicitly qualified verified-combat-island body segments, or between two such body segments.",
+    "policy": "Automatic shot boundaries plus visually verified source-stringout edit windows are authoritative. Contiguous stories may never cross them. A verified Finishing Move may use explicit hard cuts only between its protected hero and canonical verified combat-island body segments, or between those body segments.",
     "verified_cut_windows": {
       "r1": [[40.5, 41.0], [46.5, 47.0], [53.75, 54.25], [225.0, 225.5]],
       "batch2": [],
@@ -130,13 +130,11 @@
     "reject_segment_crossing_verified_cut": true,
     "reject_unplanned_cross_shot_bridge": true,
     "allow_planned_transition_for_finishing_move_open": true,
-    "allow_planned_transition_for_semantic_montage": false,
-    "notes": "Verified windows are source structure, not clip exclusions. No semantic-montage bridge is allowed. Accidental stringout crossings remain fatal."
+    "notes": "Verified windows are source structure, not clip exclusions. Accidental stringout crossings remain fatal."
   },
   "finishing_move_detector": {
     "enabled": true,
     "automatic_discovery_enabled": true,
-    "allow_unverified_automatic": false,
     "automatic_review_confidence": 0.72,
     "automatic_high_precision_confidence": 0.90,
     "automatic_minimum_span_seconds": 1.25,
@@ -149,7 +147,7 @@
           "start": 148.35,
           "payoff": 149.45,
           "end": 150.05,
-          "verification": "2fps official-reel visual index shows a third-person execution sequence; V3.1 must use it only as an opening hero event"
+          "verification": "2fps official-reel visual index shows a third-person execution sequence; canonical V3.1 uses it only as the protected opening hero event"
         }
       ]
     },
@@ -161,7 +159,7 @@
     "minimum_terminal_outcome": 0.50,
     "maximum_internal_dull_fraction": 0.34,
     "maximum_gap_between_choreography_bins_seconds": 0.50,
-    "notes": "Automatic heuristics are discovery-only until visually validated. Production acceptance stays fail-closed: verified spans may be selected; unverified hypotheses are diagnostics only and can never become a Finishing Move clip."
+    "notes": "Automatic hypotheses are discovery-only. Only manually verified spans can enter production Finishing Move planning."
   },
   "semantic_editor": {
     "engine": "semantic-editor-v3.1-final",
@@ -199,10 +197,6 @@
       "traversal_speed": 1.35,
       "maximum_speedup_source_seconds": 0.85,
       "prefer_boundary_trim_before_internal_edit": true
-    },
-    "semantic_montage": {
-      "enabled": false,
-      "notes": "Disabled by the no-fallback policy. Canonical planning never calls semantic montage; any attempted invocation is a fatal policy violation."
     },
     "selection": {
       "candidate_mode": "engagement_driven_explained_dullness",
@@ -242,6 +236,6 @@
     "substantial_overlap_seconds": 6.00,
     "substantial_overlap_fraction_shorter": 0.60,
     "finishing_move_exclusive": true,
-    "notes": "Within this batch, duplication means reusing the same semantic payoff/Finishing Move or reusing most of the same source story. Shared setup/transition context is allowed when the semantic payoff differs. The quality gates, source-integrity gates, and finishing-move requirements are unchanged."
+    "notes": "Within this batch, duplication means reusing the same semantic payoff/Finishing Move or most of the same source story. Shared setup context is allowed when the semantic payoff differs. Quality, source-integrity and Finishing Move requirements are unchanged."
   }
 }
