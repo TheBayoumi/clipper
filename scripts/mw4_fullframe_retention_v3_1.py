@@ -277,7 +277,7 @@ def _automatic_finishing_candidates(timeline: semantic.SemanticTimelineV31, conf
     if not bool(cfg.get("automatic_discovery_enabled", True)):
         return []
     review_threshold = float(cfg.get("automatic_review_confidence", 0.72))
-    heuristic = semantic.refined.core.detect_finishing_moves(timeline.base, timeline.shots, timeline.engagements, config)
+    heuristic = semantic.core.discover_finishing_moves(timeline.base, timeline.shots, timeline.engagements, config)
     return [asdict(span) for span in heuristic if float(span.confidence) >= review_threshold]
 
 
