@@ -368,7 +368,11 @@ def allocation_rejection_diagnostics(root: Path) -> dict[str, Any]:
     sources: dict[str, Any] = {}
     for source in EXPECTED_SOURCES:
         manifest = by_source.get(source, {})
-        semantic = dict(manifest.get("semantic_diagnostics") or {})
+        semantic = dict(
+            manifest.get("diagnostics")
+            or manifest.get("semantic_diagnostics")
+            or {}
+        )
         continuations = list(semantic.get("finishing_move_continuation_diagnostics") or [])
         sources[source] = {
             "candidate_count_after_semantic_gates": int(
