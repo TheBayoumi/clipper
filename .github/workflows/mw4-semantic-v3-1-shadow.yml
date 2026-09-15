@@ -186,6 +186,16 @@ jobs:
             --output-dir "analysis/$SOURCE_KEY" \
             --mode analysis
 
+      - name: Print canonical semantic evidence diagnostics
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          echo "===== canonical semantic evidence: $SOURCE_KEY ====="
+          cat "analysis/$SOURCE_KEY/${SOURCE_KEY}_analysis_v3_1.json"
+          echo
+          echo "===== end canonical semantic evidence: $SOURCE_KEY ====="
+
       - name: Upload verified source reel for isolated render workspaces
         uses: actions/upload-artifact@v4
         with:
