@@ -3,8 +3,23 @@ from __future__ import annotations
 from typing import Any
 
 
+def _forbidden_candidate(plan: dict[str, Any]) -> bool:
+    if str(plan.get("story_type", "")) == "semantic_montage":
+        return True
+    if str(plan.get("effect_profile", "")) == "semantic_montage":
+        return True
+    return any(
+        str(segment.get("reason", "")) == "semantic_montage_moment"
+        for segment in (plan.get("segments") or [])
+    )
+
+
 def install(legacy: Any) -> None:
     def select(source: str, candidates: list[dict[str, Any]], verified_count: int, config: dict[str, Any]) -> list[dict[str, Any]]:
+        forbidden = [plan for plan in candidates if _forbidden_candidate(plan)]
+        if forbidden:
+            raise AssertionError(f"{source}: forbidden fallback candidate reached allocator")
+
         batch = config.get("batch_selection", {})
         maximum = int(batch.get("maximum_per_source", config.get("count_per_source_max", 8)))
         diversity = float(config.get("semantic_editor", {}).get("selection", {}).get("story_diversity_bonus", 0.06))
