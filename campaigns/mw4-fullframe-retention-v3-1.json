@@ -71,11 +71,11 @@
     "engagement_join_seconds": 2.25,
     "engagement_context_seconds": 0.55,
     "minimum_engagement_confidence": 0.56,
-    "local_refine_fps": 12.0,
+    "local_refine_fps": 60.0,
     "local_refine_width": 384,
     "local_refine_height": 216,
     "local_refine_radius_seconds": 0.8,
-    "memory_policy": "Run full 256x144 at 6 fps semantic analysis exactly once in analysis. Render stages consume the approved allocation and lightweight source-structure checks only."
+    "memory_policy": "Run full 256x144 at 6 fps semantic analysis exactly once in analysis. Candidate-centered direct-interaction verification decodes only bounded local windows at 60 fps so transient hitmarkers are not lost to temporal undersampling. Render stages consume the approved allocation and lightweight source-structure checks only."
   },
   "combat_state_verifier": {
     "enabled": true,
