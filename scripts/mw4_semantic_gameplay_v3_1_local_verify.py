@@ -9,6 +9,9 @@ from typing import Any
 import numpy as np
 
 
+_DEFAULT_OUTER_RADIUS_FRACTION = 0.105
+
+
 def _cfg(config: dict[str, Any]) -> dict[str, Any]:
     return config.get("combat_state_verifier", {}).get("local_interaction_verifier", {})
 
@@ -53,12 +56,29 @@ def _extract_frames(source: Path, start: float, end: float, fps: float, width: i
     return np.frombuffer(raw[: count * frame_size], dtype=np.uint8).reshape(count, height, width, 3)
 
 
-def _masks(height: int, width: int) -> tuple[np.ndarray, np.ndarray, tuple[np.ndarray, ...]]:
+def _masks(
+    height: int,
+    width: int,
+    outer_radius_fraction: float = _DEFAULT_OUTER_RADIUS_FRACTION,
+) -> tuple[np.ndarray, np.ndarray, tuple[np.ndarray, ...]]:
+    """Build the centered X-shaped hitmarker support and its local control annulus.
+
+    The previous 0.085 outer-radius fraction clipped real MW4 hitmarker arms at
+    the 384x216 local-refine resolution. 0.105 covers the complete centered
+    transient while remaining tightly local to the reticle; the control ring,
+    temporal baseline, balanced-arm term and unchanged acceptance threshold
+    continue to reject global flashes and off-center HUD activity.
+    """
+    if not 0.085 <= float(outer_radius_fraction) <= 0.14:
+        raise ValueError("hitmarker_outer_radius_fraction must be within 0.085..0.14")
     yy, xx = np.mgrid[0:height, 0:width]
     cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
     dx, dy = xx - cx, yy - cy
     radius = np.sqrt(dx * dx + dy * dy)
-    annulus = (radius >= max(3.0, min(width, height) * 0.020)) & (radius <= max(11.0, min(width, height) * 0.085))
+    annulus = (
+        (radius >= max(3.0, min(width, height) * 0.020))
+        & (radius <= max(11.0, min(width, height) * float(outer_radius_fraction)))
+    )
     band = max(1.5, min(width, height) * 0.012)
     diagonal = annulus & (np.abs(np.abs(dx) - np.abs(dy)) <= band)
     control = annulus & ~diagonal
@@ -114,13 +134,18 @@ def hitmarker_metrics(
     search_after_seconds: float = 0.38,
     baseline_far_seconds: float = 0.60,
     baseline_near_seconds: float = 0.16,
+    outer_radius_fraction: float = _DEFAULT_OUTER_RADIUS_FRACTION,
 ) -> dict[str, float]:
     """Find a transient centered hitmarker near a consolidated semantic event."""
     empty = {"score": 0.0, "white": 0.0, "red": 0.0, "specificity": 0.0, "arms": 0.0, "offset_frames": 0.0}
     if len(frames) < 4:
         return empty
     event_index = max(0, min(len(frames) - 1, int(event_index)))
-    diagonal, control, quadrants = _masks(frames.shape[1], frames.shape[2])
+    diagonal, control, quadrants = _masks(
+        frames.shape[1],
+        frames.shape[2],
+        outer_radius_fraction,
+    )
     if not np.any(diagonal) or not np.any(control):
         return empty
     before = max(1, int(math.ceil(search_before_seconds * fps)))
@@ -160,6 +185,13 @@ def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> An
     height = int(semantic.get("local_refine_height", 216))
     radius = float(semantic.get("local_refine_radius_seconds", 0.8))
     minimum = float(cfg.get("minimum_hitmarker_score", 0.34))
+    outer_radius_fraction = float(
+        cfg.get("hitmarker_outer_radius_fraction", _DEFAULT_OUTER_RADIUS_FRACTION)
+    )
+    if not 0.085 <= outer_radius_fraction <= 0.14:
+        raise RuntimeError(
+            "local_interaction_verifier.hitmarker_outer_radius_fraction must be within 0.085..0.14"
+        )
     search_before = float(cfg.get("event_search_before_seconds", 0.45))
     search_after = float(cfg.get("event_search_after_seconds", 0.38))
     required_radius = search_before + float(cfg.get("baseline_far_seconds", 0.60)) + 0.10
@@ -181,6 +213,7 @@ def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> An
                 search_after_seconds=search_after,
                 baseline_far_seconds=float(cfg.get("baseline_far_seconds", 0.60)),
                 baseline_near_seconds=float(cfg.get("baseline_near_seconds", 0.16)),
+                outer_radius_fraction=outer_radius_fraction,
             )
             evidence = dict(getattr(event, "evidence", {}) or {})
             evidence.update({
@@ -207,9 +240,10 @@ def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> An
         "verified_event_count": sum(1 for item in diagnostics if item["confirmed"]),
         "decode_window_count": len(windows),
         "minimum_hitmarker_score": minimum,
+        "hitmarker_outer_radius_fraction": round(outer_radius_fraction, 4),
         "event_search_before_seconds": search_before,
         "event_search_after_seconds": search_after,
-        "policy": "candidate-centered temporal search for a spatially specific hitmarker; ambiguous motion, color and off-center HUD changes remain unknown",
+        "policy": "candidate-centered temporal search for a spatially specific centered hitmarker using full MW4 marker-arm geometry; ambiguous motion, color and off-center HUD changes remain unknown",
         "events": diagnostics,
     })
     return timeline
@@ -228,6 +262,16 @@ def self_test() -> None:
     positive = hitmarker_metrics(frames, 10, fps)
     if positive["score"] < 0.34:
         raise AssertionError(f"synthetic centered hitmarker was not confirmed: {positive}")
+
+    wide_hit = (radius >= 18) & (radius <= 22) & (np.abs(np.abs(dx) - np.abs(dy)) <= 2.2)
+    wide = np.full((20, height, width, 3), 45, dtype=np.uint8)
+    wide[10][wide_hit] = 245
+    wide_positive = hitmarker_metrics(wide, 10, fps)
+    if wide_positive["score"] < 0.34:
+        raise AssertionError(
+            f"full-size centered MW4 hitmarker arms were clipped by verifier geometry: {wide_positive}"
+        )
+
     shifted = np.full((22, height, width, 3), 45, dtype=np.uint8)
     shifted[8][hit] = 245
     shifted_positive = hitmarker_metrics(shifted, 12, fps)
