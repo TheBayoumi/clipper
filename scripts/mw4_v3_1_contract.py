@@ -30,22 +30,9 @@ def _semantic_anchor_times(plan: dict[str, Any]) -> list[float]:
     return sorted(anchors)
 
 
-def _reuses_montage_moment(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    left_segments = [s for s in (left.get("segments") or []) if s.get("reason") == "semantic_montage_moment"]
-    right_segments = [s for s in (right.get("segments") or []) if s.get("reason") == "semantic_montage_moment"]
-    for a in left_segments:
-        for b in right_segments:
-            a0, a1 = float(a["start"]), float(a["end"])
-            b0, b1 = float(b["start"]), float(b["end"])
-            shared = max(0.0, min(a1, b1) - max(a0, b0))
-            shorter = min(a1 - a0, b1 - b0)
-            if shared >= 0.35 and shorter > 0 and shared / shorter >= 0.50:
-                return True
-    return False
-
-
 def _plans_conflict(left: dict[str, Any], right: dict[str, Any], config: dict[str, Any]) -> bool:
-    return _reuses_montage_moment(left, right) or _ORIGINAL_CONFLICT(left, right, config)
+    """Canonical duplicate check; forbidden fallback plan types never reach here."""
+    return _ORIGINAL_CONFLICT(left, right, config)
 
 
 def _ordering_failures(source: str, index: int, plan: dict[str, Any]) -> list[str]:
@@ -68,6 +55,38 @@ def _ordering_failures(source: str, index: int, plan: dict[str, Any]) -> list[st
     return failures
 
 
+def _forbidden_plan_failures(source: str, index: int, plan: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    if str(plan.get("story_type", "")) == "semantic_montage":
+        failures.append(f"{source} clip {index}: semantic montage fallback story is forbidden")
+    if str(plan.get("effect_profile", "")) == "semantic_montage":
+        failures.append(f"{source} clip {index}: semantic montage fallback effect profile is forbidden")
+    if any(str(segment.get("reason", "")) == "semantic_montage_moment" for segment in (plan.get("segments") or [])):
+        failures.append(f"{source} clip {index}: semantic montage fallback segment is forbidden")
+    return failures
+
+
+def _policy_failures(config: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    if config.get("fallback_policy", {}).get("enabled") is not False:
+        failures.append("fallback_policy.enabled must be false")
+    if bool(config.get("semantic_editor", {}).get("semantic_montage", {}).get("enabled", False)):
+        failures.append("semantic_montage must be disabled")
+    if bool(config.get("editorial", {}).get("finishing_move_allow_semantic_montage_continuation", False)):
+        failures.append("semantic montage Finishing Move continuation is forbidden")
+    if bool(config.get("source_integrity", {}).get("allow_planned_transition_for_semantic_montage", False)):
+        failures.append("semantic montage source transitions are forbidden")
+    if bool(config.get("finishing_move_detector", {}).get("allow_unverified_automatic", False)):
+        failures.append("unverified automatic Finishing Move acceptance is forbidden")
+    continuation = config.get("combat_state_verifier", {}).get("finishing_continuation", {})
+    if continuation.get("require_verified_payoff") is not True:
+        failures.append("Finishing Move continuation must require verified payoff")
+    for key in ("minimum_verified_hostile_anchors_without_payoff", "minimum_retention_without_payoff"):
+        if key in continuation:
+            failures.append(f"forbidden no-payoff continuation key present: {key}")
+    return failures
+
+
 def _finishing_plan_failures(source: str, index: int, plan: dict[str, Any], config: dict[str, Any]) -> list[str]:
     failures = list(_ORIGINAL_FINISHING_FAILURES(source, index, plan, config))
     segments = list(plan.get("segments") or [])
@@ -83,6 +102,8 @@ def _finishing_plan_failures(source: str, index: int, plan: dict[str, Any], conf
 
 def validate_plan(source: str, index: int, plan: dict[str, Any], config: dict[str, Any]) -> list[str]:
     failures = list(_ORIGINAL_VALIDATE(source, index, plan, config))
+    failures.extend(_policy_failures(config))
+    failures.extend(_forbidden_plan_failures(source, index, plan))
     failures.extend(_ordering_failures(source, index, plan))
     return list(dict.fromkeys(failures))
 
