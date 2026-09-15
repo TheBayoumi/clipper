@@ -10,10 +10,10 @@ from mw4_semantic_gameplay_v3_1_final_legacy import *  # noqa: F401,F403
 import mw4_semantic_gameplay_v3_1_combat_state as _combat
 import mw4_semantic_gameplay_v3_1_combat_islands as _islands
 import mw4_semantic_gameplay_v3_1_finishing_body as _finishing_body
+import mw4_semantic_gameplay_v3_1_no_fallback as _no_fallback
 
 _ORIGINAL_INTEGRITY = _legacy.plan_integrity_violations
-_ORIGINAL_FINISHING = _legacy._finishing_open_plans
-_ORIGINAL_CROSS_SHOT_BRIDGE = _legacy._planned_cross_shot_bridge
+_ORIGINAL_FINISHING = _no_fallback.strict_finishing_assembler
 _EPS = 1e-3
 
 
@@ -44,11 +44,17 @@ def _planned_cross_shot_bridge(
     right: EditSegment,
     bridge_index: int,
 ) -> bool:
-    if _ORIGINAL_CROSS_SHOT_BRIDGE(plan, left, right, bridge_index):
+    """Allow only explicit verified Finishing Move hard cuts; no generic bridge path."""
+    if plan.story_type != "finishing_move_open":
+        return False
+    if (
+        bridge_index == 0
+        and left.reason == "finishing_move_open_hero"
+        and right.reason == "verified_combat_island_body"
+    ):
         return True
     return bool(
-        plan.story_type == "finishing_move_open"
-        and left.reason == "verified_combat_island_body"
+        left.reason == "verified_combat_island_body"
         and right.reason == "verified_combat_island_body"
     )
 
@@ -58,6 +64,10 @@ def plan_integrity_violations(plan: SemanticPlanV31, timeline: SemanticTimelineV
     failures.extend(_chronology_failures(plan))
     failures.extend(_combat.plan_combat_state_failures(plan, timeline, config))
     failures.extend(_islands.plan_island_failures(plan, timeline, config))
+    if plan.story_type == "semantic_montage":
+        failures.append("semantic montage fallback story is forbidden")
+    if any(str(getattr(segment, "reason", "")) == "semantic_montage_moment" for segment in plan.segments):
+        failures.append("semantic montage fallback segment is forbidden")
     return list(dict.fromkeys(failures))
 
 
@@ -111,7 +121,7 @@ def _conservative_finishing_metrics(
         weakest_quarter_interest=round(weakest, 4),
         max_unexplained_low_interest_run_seconds=round(residual, 3),
         editorial_reasons=(
-            "Finishing Move continuation independently passes hostile/payoff/retention gates; hero score cannot rescue its body",
+            "Finishing Move continuation independently passes strict hostile/payoff/retention gates; hero score cannot rescue its body",
         ) + tuple(plan.editorial_reasons),
     )
 
@@ -121,29 +131,21 @@ def _certified_continuation(
     timeline: SemanticTimelineV31,
     config: dict[str, Any],
 ) -> SemanticPlanV31 | None:
-    editorial = config["editorial"]
-    if continuation.story_type == "verified_combat_island_continuation":
-        return continuation if bool(editorial.get("finishing_move_allow_verified_combat_island_continuation", False)) else None
-    if continuation.story_type != "semantic_montage":
-        return continuation
-    if bool(editorial.get("finishing_move_allow_semantic_montage_continuation", False)):
-        return continuation
-    if not bool(editorial.get("finishing_move_allow_verified_combat_island_continuation", False)):
+    del timeline
+    if continuation.story_type != "verified_combat_island_continuation":
         return None
-    if not _islands.verified_island_montage(continuation, timeline, config, _combat):
+    if not bool(config["editorial"].get("finishing_move_allow_verified_combat_island_continuation", False)):
         return None
-    return replace(
-        continuation,
-        story_type="verified_combat_island_continuation",
-        editorial_reasons=(
-            "dedicated Finishing Move body assembled only from independently verified combat islands; generic semantic-montage continuation remains disabled",
-        ) + tuple(continuation.editorial_reasons),
-    )
+    return continuation
 
 
 def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[SemanticPlanV31], config: dict[str, Any], source_key: str) -> list[SemanticPlanV31]:
+    _no_fallback.assert_policy(config)
     if not timeline.finishing_moves:
         return []
+    if continuations:
+        raise RuntimeError("MW4 V3.1 no-fallback policy: external continuation pool is forbidden")
+
     editorial = config["editorial"]
     hold = float(editorial.get("finishing_move_payoff_hold_seconds", 0.45))
     max_gap = float(editorial.get("finishing_move_max_continuation_gap_seconds", 18.0))
@@ -159,15 +161,11 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
         )
         eligible: list[SemanticPlanV31] = []
         rejection_reasons: list[dict[str, Any]] = []
-        for raw_continuation in list(continuations) + dedicated:
+        for raw_continuation in dedicated:
             reasons: list[str] = []
-            if raw_continuation.story_type == "finishing_move_open" or not raw_continuation.segments:
-                reasons.append("not_a_body_candidate")
-                rejection_reasons.append({"story": raw_continuation.story_type, "reasons": reasons})
-                continue
             continuation = _certified_continuation(raw_continuation, timeline, config)
             if continuation is None:
-                reasons.append("continuation_not_certified")
+                reasons.append("continuation_not_strict_verified_island_body")
                 rejection_reasons.append({"story": raw_continuation.story_type, "reasons": reasons})
                 continue
             reasons.extend(_chronology_failures(continuation))
@@ -187,6 +185,7 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
                 })
                 continue
             eligible.append(continuation)
+
         single = SemanticTimelineV31(timeline.base, timeline.shots, timeline.consolidated_events, timeline.engagements, (span,))
         setattr(single, "_source_key", source_key)
         if hasattr(timeline, "_combat_state_diagnostics"):
@@ -197,7 +196,7 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
         for plan in produced:
             continuation = _matched_continuation(plan, eligible)
             if continuation is None:
-                produced_rejections.append({"reason": "produced_plan_body_did_not_match_certified_continuation"})
+                produced_rejections.append({"reason": "produced_plan_body_did_not_match_strict_continuation"})
                 continue
             hardened = _conservative_finishing_metrics(plan, continuation, span, config)
             if hardened is None:
@@ -221,6 +220,7 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
             **dedicated_diagnostics,
             "eligible_continuation_count": len(eligible),
             "valid_finishing_plan_count": len(valid),
+            "fallback_execution_allowed": False,
             "eligible_candidates": [
                 {
                     "story": item.story_type,
@@ -252,11 +252,14 @@ def _hardening_self_test() -> None:
     span_end, hero_end = 10.0, 10.1
     later_floor = max(hero_end, span_end + 0.25)
     if later_floor < span_end + 0.25:
-        raise AssertionError("finishing fallback reachability guard failed")
+        raise AssertionError("strict later-content reachability guard failed")
 
     deliberate = SimpleNamespace(story_type="finishing_move_open")
+    hero = seg(10.0, 12.0, "finishing_move_open_hero")
     body_left = seg(20.0, 23.0, "verified_combat_island_body")
     body_right = seg(30.0, 33.0, "verified_combat_island_body")
+    if not _planned_cross_shot_bridge(deliberate, hero, body_left, 0):
+        raise AssertionError("verified Finishing Move hero-to-body hard cut was rejected")
     if not _planned_cross_shot_bridge(deliberate, body_left, body_right, 1):
         raise AssertionError("deliberate verified-combat-island body hard cut was rejected")
     unrelated = SimpleNamespace(story_type="engagement_chain")
@@ -269,23 +272,22 @@ def _hardening_self_test() -> None:
 
     policy_cfg = {
         "editorial": {
-            "finishing_move_allow_semantic_montage_continuation": False,
             "finishing_move_allow_verified_combat_island_continuation": True,
         }
     }
     verified_body = SimpleNamespace(story_type="verified_combat_island_continuation")
     if _certified_continuation(verified_body, SimpleNamespace(), policy_cfg) is None:
-        raise AssertionError("explicitly enabled verified-island continuation was rejected")
-    policy_cfg["editorial"]["finishing_move_allow_verified_combat_island_continuation"] = False
-    if _certified_continuation(verified_body, SimpleNamespace(), policy_cfg) is not None:
-        raise AssertionError("verified-island continuation ignored its explicit policy switch")
+        raise AssertionError("strict verified-island continuation was rejected")
+    forbidden_body = SimpleNamespace(story_type="semantic_montage")
+    if _certified_continuation(forbidden_body, SimpleNamespace(), policy_cfg) is not None:
+        raise AssertionError("semantic montage continuation remained reachable")
 
     if analyze_source is not _legacy.analyze_source or diagnose_source is not _legacy.diagnose_source:
-        raise AssertionError("combat-island analyze/diagnose wrappers are not exported by final semantic module")
+        raise AssertionError("strict analyze/diagnose wrappers are not exported by final semantic module")
     _combat.self_test()
     _islands.self_test()
     _finishing_body.self_test()
-    print("MW4 semantic chronology/combat-state/island/Finishing-body hardening self-test: PASS")
+    print("MW4 semantic no-fallback chronology/combat-state/island/Finishing-body self-test: PASS")
 
 
 _combat.install(_legacy)
@@ -293,6 +295,7 @@ _islands.install(_legacy, _combat)
 _legacy._planned_cross_shot_bridge = _planned_cross_shot_bridge
 _legacy.plan_integrity_violations = plan_integrity_violations
 _legacy._finishing_open_plans = _finishing_open_plans
+_no_fallback.install(_legacy, _combat, _islands, _finishing_body)
 _INSTALLED_DIAGNOSE = _legacy.diagnose_source
 
 
@@ -301,6 +304,7 @@ def diagnose_source(timeline: SemanticTimelineV31, config: dict[str, Any], exclu
     result["finishing_move_continuation_diagnostics"] = list(
         getattr(timeline, "_finishing_continuation_diagnostics", [])
     )
+    result["fallback_execution_allowed"] = False
     return result
 
 
@@ -311,6 +315,7 @@ analyze_source = _legacy.analyze_source
 def main() -> None:
     if "--self-test" in sys.argv:
         _hardening_self_test()
+        return
     _legacy.main()
 
 
