@@ -82,6 +82,7 @@
     "local_interaction_verifier": {
       "enabled": true,
       "minimum_hitmarker_score": 0.34,
+      "hitmarker_outer_radius_fraction": 0.105,
       "policy": "Every hostile classification requires local centered direct player-target interaction confirmation. Generic motion, contact, HUD state, color, minimap state and operator appearance never establish hostile identity."
     },
     "minimum_hostile_event_score": 0.64,
