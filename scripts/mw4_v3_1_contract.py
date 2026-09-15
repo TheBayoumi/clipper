@@ -133,6 +133,7 @@ _allocator.install(_legacy)
 def main() -> None:
     if "--self-test" in sys.argv:
         _regression.run(sys.modules[__name__], _legacy)
+        return
     _legacy.main()
 
 
