@@ -241,6 +241,76 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, continuations: list[Sem
     return sorted(results, key=lambda item: item.score, reverse=True)
 
 
+def _strict_build_plans(timeline: SemanticTimelineV31, config: dict[str, Any], excluded: list[list[float]]) -> list[SemanticPlanV31]:
+    """Canonical build path with no fallback-oriented planner call."""
+    _no_fallback.assert_policy(config)
+    return _legacy.build_plans_for_source(
+        timeline,
+        config,
+        excluded,
+        getattr(timeline, "_source_key", ""),
+    )
+
+
+def _strict_select_plans(plans: list[SemanticPlanV31], config: dict[str, Any]) -> list[SemanticPlanV31]:
+    """Select only strict contiguous/verified-Finishing-Move plans.
+
+    This intentionally does not delegate to the legacy selector because that
+    function contains semantic-montage fallback handling even when no montage
+    candidates are present.
+    """
+    _no_fallback.assert_policy(config)
+    forbidden = [
+        plan for plan in plans
+        if plan.story_type in _no_fallback.FORBIDDEN_STORY_TYPES
+        or any(str(getattr(segment, "reason", "")) == "semantic_montage_moment" for segment in plan.segments)
+    ]
+    if forbidden:
+        raise RuntimeError("MW4 V3.1 no-fallback policy: forbidden plan reached strict selection")
+
+    maximum = int(config.get("count_per_source_max", 4))
+    minimum = int(config.get("minimum_count_per_source", 0))
+    selected: list[SemanticPlanV31] = []
+
+    finishing = [plan for plan in plans if plan.story_type == "finishing_move_open"]
+    if finishing:
+        selected.append(finishing[0])
+
+    normal = [plan for plan in plans if plan.story_type != "finishing_move_open"]
+    seen_story = {plan.story_type for plan in selected}
+    for plan in normal:
+        if plan.story_type in seen_story:
+            continue
+        if any(_legacy._source_segments_overlap(plan, prior) for prior in selected):
+            continue
+        selected.append(plan)
+        seen_story.add(plan.story_type)
+        if len(selected) >= maximum:
+            break
+
+    for plan in normal:
+        if len(selected) >= maximum:
+            break
+        if plan in selected:
+            continue
+        if any(_legacy._source_segments_overlap(plan, prior) for prior in selected):
+            continue
+        selected.append(plan)
+
+    if len(selected) < minimum:
+        raise RuntimeError(
+            f"Only {len(selected)} strict V3.1 candidates passed; minimum is {minimum}. "
+            "No fallback planner is permitted."
+        )
+    return sorted(
+        selected,
+        key=lambda item: (
+            item.story_type != "finishing_move_open",
+            item.segments[0].start,
+        ),
+    )
+
+
 def _hardening_self_test() -> None:
     seg = lambda start, end, reason="keep": SimpleNamespace(start=start, end=end, speed=1.0, reason=reason)
     good = SimpleNamespace(start=1.0, end=4.0, segments=(seg(1.0, 2.0), seg(3.0, 4.0)))
@@ -286,14 +356,24 @@ def _hardening_self_test() -> None:
         raise AssertionError("strict analyze/diagnose wrappers are not exported by final semantic module")
     if build_plans_for_source is not _legacy.build_plans_for_source:
         raise AssertionError("strict build_plans_for_source export is bypassed by a stale star-import binding")
-    if build_plans is not _legacy.build_plans:
-        raise AssertionError("strict build_plans export is bypassed by a stale star-import binding")
-    if select_plans is not _legacy.select_plans:
-        raise AssertionError("strict select_plans export is bypassed by a stale star-import binding")
+    if build_plans is not _strict_build_plans or _legacy.build_plans is not _strict_build_plans:
+        raise AssertionError("canonical build_plans still delegates through legacy fallback-aware code")
+    if select_plans is not _strict_select_plans or _legacy.select_plans is not _strict_select_plans:
+        raise AssertionError("canonical select_plans still delegates through legacy fallback-aware code")
+    if _combat._event_hostile_decision is not _no_fallback.strict_event_hostile_decision:
+        raise AssertionError("hostile classifier is not the strict direct-interaction implementation")
+    if _combat.continuation_failures is not _no_fallback.strict_continuation_failures:
+        raise AssertionError("Finishing Move continuation gate is not the strict verified-payoff implementation")
+    if _finishing_body.build_continuations is not _no_fallback.strict_build_continuations:
+        raise AssertionError("Finishing Move body builder is not the strict verified-payoff implementation")
+    if _legacy._semantic_montage_plans is not _no_fallback._forbidden_semantic_montage:
+        raise AssertionError("semantic montage planner is not replaced by the fatal policy tripwire")
+    if _legacy._montage_moments is not _no_fallback._forbidden_semantic_montage:
+        raise AssertionError("semantic montage moment builder is not replaced by the fatal policy tripwire")
     _combat.self_test()
     _islands.self_test()
     _finishing_body.self_test()
-    print("MW4 semantic no-fallback chronology/combat-state/island/Finishing-body self-test: PASS")
+    print("MW4 semantic zero-fallback chronology/combat-state/island/Finishing-body self-test: PASS")
 
 
 _combat.install(_legacy)
@@ -302,6 +382,8 @@ _legacy._planned_cross_shot_bridge = _planned_cross_shot_bridge
 _legacy.plan_integrity_violations = plan_integrity_violations
 _legacy._finishing_open_plans = _finishing_open_plans
 _no_fallback.install(_legacy, _combat, _islands, _finishing_body)
+_legacy.build_plans = _strict_build_plans
+_legacy.select_plans = _strict_select_plans
 _INSTALLED_DIAGNOSE = _legacy.diagnose_source
 
 
@@ -317,14 +399,13 @@ def diagnose_source(timeline: SemanticTimelineV31, config: dict[str, Any], exclu
 _legacy.diagnose_source = diagnose_source
 
 # Explicitly bind every public planner/analyzer export after all installers have
-# patched the legacy module. Never rely on the earlier star-import snapshot: a
-# stale function object can otherwise call legacy fallback code even while the
-# strict module has correctly patched the legacy namespace.
+# patched the legacy module. A stale star-import function object can otherwise
+# execute legacy fallback-aware code even while the strict namespace is patched.
 analyze_source = _legacy.analyze_source
 diagnose_source = _legacy.diagnose_source
 build_plans_for_source = _legacy.build_plans_for_source
-build_plans = _legacy.build_plans
-select_plans = _legacy.select_plans
+build_plans = _strict_build_plans
+select_plans = _strict_select_plans
 
 
 def main() -> None:
