@@ -3,6 +3,11 @@
   "version": "3.1",
   "count_per_source_max": 8,
   "minimum_count_per_source": 0,
+  "fallback_policy": {
+    "enabled": false,
+    "mode": "fail_closed",
+    "policy": "No fallback code may execute. If strict hostile verification, strict story construction, or strict Finishing Move continuation cannot produce a valid clip, produce no clip and surface diagnostics."
+  },
   "batch_selection": {
     "allocation_mode": "adaptive_important_scenes_before_render",
     "candidate_pool_per_source": 40,
@@ -12,8 +17,7 @@
     "beam_width": 2048,
     "require_allocation_before_render": true,
     "require_verified_finishing_move_when_available": true,
-    "prefer_normal_over_semantic_montage": true,
-    "notes": "There is no fixed clip target. All three official reels are analyzed first, then the allocator keeps every semantically distinct scene that passes the existing quality and source-integrity gates, subject only to an 8-per-source and 20-total editorial safety ceiling. If nine scenes matter, render nine; if fourteen matter, render fourteen. Never create filler merely to hit a number."
+    "notes": "There is no fixed clip target. All three official reels are analyzed first, then the allocator keeps every semantically distinct scene that passes the strict quality and source-integrity gates, subject only to an 8-per-source and 20-total editorial safety ceiling. Never create filler and never invoke an alternate planner merely to hit a number."
   },
   "output": {
     "width": 1920,
@@ -38,7 +42,6 @@
     "source_audio_only": true,
     "effect_profiles": [
       "finishing_move_hero",
-      "semantic_montage",
       "precision_punch",
       "impact_flash",
       "chain_escalation",
@@ -53,7 +56,6 @@
     "finishing_move_allow_semantic_montage_continuation": false,
     "finishing_move_allow_verified_combat_island_continuation": true,
     "finishing_move_max_continuation_gap_seconds": 18.0,
-    "finishing_move_montage_prefer_later_gameplay": true,
     "finishing_move_montage_max_output_seconds": 15.5,
     "finishing_move_transition": "hard_cut",
     "finishing_move_transition_flash": false,
@@ -86,7 +88,7 @@
     "local_interaction_verifier": {
       "enabled": true,
       "minimum_hitmarker_score": 0.34,
-      "policy": "Local 384x216/12fps refinement is decoded only around coarse payoff/combat candidates. Centered hitmarker geometry confirms direct player-target interaction. Generic motion, HUD changes, red/blue color, minimap state, and operator appearance never establish hostile identity."
+      "policy": "Local 384x216/12fps refinement is decoded only around coarse payoff/combat candidates. Every hostile classification requires centered direct-interaction confirmation. Generic motion, HUD changes, color, minimap state, operator appearance, and coincident coarse payoff modalities never establish hostile identity."
     },
     "minimum_hostile_event_score": 0.64,
     "outcome_minimum": 0.52,
@@ -105,19 +107,21 @@
     "break_combat_ceiling": 0.50,
     "maximum_continuity_break_run_seconds": 0.55,
     "finishing_continuation": {
+      "require_verified_payoff": true,
       "minimum_retention_quality": 0.40,
       "minimum_payoff_quality": 0.40,
       "minimum_ending_quality": 0.45,
       "minimum_weakest_quarter_interest": 0.30,
       "maximum_unexplained_low_interest_run_seconds": 0.75,
-      "minimum_verified_hostile_anchors_without_payoff": 2,
-      "minimum_retention_without_payoff": 0.50,
-      "minimum_verified_island_moment_seconds": 1.0
+      "minimum_verified_island_moment_seconds": 1.0,
+      "maximum_verified_island_moment_seconds": 6.5,
+      "minimum_verified_island_opening_quality": 0.42,
+      "maximum_verified_island_moments_per_body": 3
     },
-    "policy": "Fail closed. Contact-only or ambiguous actor motion is unknown, never hostile. Single payoff proxies and strong combat bursts require direct local interaction evidence; dual payoff modalities can independently corroborate hostile interaction. Sustained reload/traversal/recovery breaks terminate continuity. Finishing Move continuation must independently satisfy body quality gates and cannot inherit the hero payoff score."
+    "policy": "Fail closed with no alternate path. Contact-only or ambiguous actor motion is unknown. Every hostile event requires direct local interaction evidence. Finishing Move bodies require verified hostile payoff evidence plus the independent body-quality gates. Sustained reload/traversal/recovery breaks terminate continuity."
   },
   "source_integrity": {
-    "policy": "automatic shot boundaries plus visually verified missed source-stringout edit windows; contiguous stories may never cross them, while only explicitly planned semantic montage or verified Finishing Move combat-island transitions may bridge separate source shots",
+    "policy": "automatic shot boundaries plus visually verified missed source-stringout edit windows; contiguous stories may never cross them. The only deliberate cross-shot join is inside a verified Finishing Move and only between the protected hero and explicitly qualified verified-combat-island body segments, or between two such body segments.",
     "verified_cut_windows": {
       "r1": [[40.5, 41.0], [46.5, 47.0], [53.75, 54.25], [225.0, 225.5]],
       "batch2": [],
@@ -126,8 +130,8 @@
     "reject_segment_crossing_verified_cut": true,
     "reject_unplanned_cross_shot_bridge": true,
     "allow_planned_transition_for_finishing_move_open": true,
-    "allow_planned_transition_for_semantic_montage": true,
-    "notes": "Verified windows are source structure, not clip exclusions. Deliberate transitions are represented as separate source segments; verified Finishing Move body joins are allowed only between independently qualified combat-island segments, while accidental stringout crossings remain fatal."
+    "allow_planned_transition_for_semantic_montage": false,
+    "notes": "Verified windows are source structure, not clip exclusions. No semantic-montage bridge is allowed. Accidental stringout crossings remain fatal."
   },
   "finishing_move_detector": {
     "enabled": true,
@@ -157,7 +161,7 @@
     "minimum_terminal_outcome": 0.50,
     "maximum_internal_dull_fraction": 0.34,
     "maximum_gap_between_choreography_bins_seconds": 0.50,
-    "notes": "Automatic heuristics are discovery-only until visually validated. Production acceptance stays fail-closed: verified spans may be selected; unverified hypotheses are surfaced in analysis diagnostics but cannot silently become a Finishing Move clip."
+    "notes": "Automatic heuristics are discovery-only until visually validated. Production acceptance stays fail-closed: verified spans may be selected; unverified hypotheses are diagnostics only and can never become a Finishing Move clip."
   },
   "semantic_editor": {
     "engine": "semantic-editor-v3.1-final",
@@ -197,22 +201,8 @@
       "prefer_boundary_trim_before_internal_edit": true
     },
     "semantic_montage": {
-      "enabled": true,
-      "minimum_moment_seconds": 2.4,
-      "maximum_moment_seconds": 6.5,
-      "maximum_moments_per_clip": 3,
-      "maximum_output_seconds": 15.5,
-      "minimum_moment_opening_quality": 0.38,
-      "minimum_moment_retention_quality": 0.30,
-      "minimum_moment_payoff_confidence": 0.58,
-      "minimum_moment_weakest_quarter_interest": 0.24,
-      "maximum_moment_low_interest_fraction": 0.42,
-      "prefer_different_source_shots": true,
-      "selection_penalty": 0.015,
-      "transition_flash_opacity": 0.08,
-      "transition_flash_before_seconds": 0.025,
-      "transition_flash_after_seconds": 0.055,
-      "notes": "Semantic montage is a controlled fallback that combines two or three individually strong payoff moments into one 10-15.5 s clip. It is not permitted as the continuation body of a Finishing Move clip."
+      "enabled": false,
+      "notes": "Disabled by the no-fallback policy. Canonical planning never calls semantic montage; any attempted invocation is a fatal policy violation."
     },
     "selection": {
       "candidate_mode": "engagement_driven_explained_dullness",
@@ -227,10 +217,10 @@
     }
   },
   "story_quality_gates": {
-    "opening_min": {"default": 0.42, "finishing_move_open": 0.50, "semantic_montage": 0.44},
-    "ending_min": {"default": 0.40, "sustained_pressure": 0.50, "semantic_montage": 0.42},
-    "retention_min": {"default": 0.36, "sustained_pressure": 0.44, "semantic_montage": 0.37},
-    "payoff_min": {"default": 0.34, "engagement_chain": 0.28, "sustained_pressure": 0.16, "finishing_move_open": 0.34, "semantic_montage": 0.40}
+    "opening_min": {"default": 0.42, "finishing_move_open": 0.50},
+    "ending_min": {"default": 0.40, "sustained_pressure": 0.50},
+    "retention_min": {"default": 0.36, "sustained_pressure": 0.44},
+    "payoff_min": {"default": 0.34, "engagement_chain": 0.28, "sustained_pressure": 0.16, "finishing_move_open": 0.34}
   },
   "performance_targets": {
     "retention_quality_min": 0.36,
