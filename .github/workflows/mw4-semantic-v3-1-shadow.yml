@@ -43,15 +43,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Verify semantic and source-derived renderer contracts
+      - name: Verify canonical semantic and source-derived renderer contracts
         run: |
           set -euo pipefail
+          test ! -e scripts/mw4_semantic_gameplay_v3_1_final_legacy.py
+          test ! -e scripts/mw4_semantic_gameplay_v3_1_finishing_body.py
+          test ! -e scripts/mw4_semantic_gameplay_v3_1_no_fallback.py
+          ! grep -Eq 'final_legacy|no_fallback|finishing_body|semantic_montage_moment' scripts/mw4_semantic_gameplay_v3_1_final.py
           python -m py_compile \
+            scripts/mw4_semantic_gameplay_v3_1_refined.py \
             scripts/mw4_semantic_gameplay_v3_1_local_verify.py \
             scripts/mw4_semantic_gameplay_v3_1_combat_state.py \
             scripts/mw4_semantic_gameplay_v3_1_combat_islands.py \
-            scripts/mw4_semantic_gameplay_v3_1_finishing_body.py \
-            scripts/mw4_semantic_gameplay_v3_1_no_fallback.py \
+            scripts/mw4_semantic_gameplay_v3_1_quality.py \
             scripts/mw4_semantic_gameplay_v3_1_final.py \
             scripts/mw4_fullframe_retention_v3_1.py \
             scripts/mw4_v3_1_contract.py \
@@ -66,11 +70,11 @@ jobs:
           import json
           import sys
           sys.path.insert(0, 'scripts')
-          import mw4_semantic_gameplay_v3_1_no_fallback as no_fallback
+          import mw4_semantic_gameplay_v3_1_final as semantic
           with open('campaigns/mw4-fullframe-retention-v3-1.json', 'r', encoding='utf-8') as handle:
               config = json.load(handle)
-          no_fallback.assert_policy(config)
-          print('MW4 campaign no-fallback policy: PASS')
+          semantic.validate_configuration(config)
+          print('MW4 canonical semantic configuration: PASS')
           PY
           python scripts/mw4_v3_1_contract.py --self-test
           python scripts/mw4_v3_1_render_one.py --self-test
