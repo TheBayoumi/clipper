@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -204,17 +205,6 @@ def _event_has_payoff(event: dict[str, Any]) -> bool:
     return bool({str(item) for item in (event.get("kinds") or [])}.intersection({"outcome_like", "impact"}))
 
 
-def _canonical_terminal_end(engagement: dict[str, Any], config: dict[str, Any]) -> float | None:
-    payoffs = [event for event in (engagement.get("events") or []) if _event_has_payoff(event)]
-    if not payoffs:
-        return None
-    ending = config["semantic_editor"]["ending"]
-    preferred = float(ending.get("preferred_payoff_tail_seconds", 0.45))
-    maximum = float(ending.get("maximum_payoff_tail_seconds", 0.75))
-    tail = min(max(0.0, preferred), max(0.0, maximum))
-    return round(min(float(engagement["end"]), float(payoffs[-1]["time"]) + tail), 3)
-
-
 def _finishing_plan_failures(source: str, index: int, plan: dict[str, Any], config: dict[str, Any]) -> list[str]:
     finishing = plan.get("finishing_move")
     if finishing is None:
@@ -259,13 +249,9 @@ def _finishing_plan_failures(source: str, index: int, plan: dict[str, Any], conf
             failures.append(f"{source} clip {index}: body segment {pos + 1} is not a verified combat island")
         if abs(float(segment["start"]) - float(engagement["start"])) > _EPS:
             failures.append(f"{source} clip {index}: body segment {pos + 1} does not start at canonical island boundary")
-        expected_end = (
-            _canonical_terminal_end(engagement, config)
-            if pos == len(body) - 1
-            else round(float(engagement["end"]), 3)
-        )
-        if expected_end is None or abs(float(segment["end"]) - float(expected_end)) > _EPS:
-            failures.append(f"{source} clip {index}: body segment {pos + 1} violates canonical island boundary")
+        expected_end = round(float(engagement["end"]), 3)
+        if abs(float(segment["end"]) - expected_end) > _EPS:
+            failures.append(f"{source} clip {index}: body segment {pos + 1} does not end at canonical island boundary")
         if not any(_event_has_payoff(event) for event in (engagement.get("events") or [])):
             failures.append(f"{source} clip {index}: body island {pos + 1} lacks verified payoff anchor")
         if pos:
@@ -373,6 +359,37 @@ def _apply_global_ceiling(
     return {
         source: [plan for plan in selections[source] if (source, str(plan["plan_key"])) in keep_keys]
         for source in EXPECTED_SOURCES
+    }
+
+
+def allocation_rejection_diagnostics(root: Path) -> dict[str, Any]:
+    manifests = [_load(path) for path in sorted(root.rglob("*_analysis_v3_1.json"))]
+    by_source = {str(item.get("source_key", "")): item for item in manifests}
+    sources: dict[str, Any] = {}
+    for source in EXPECTED_SOURCES:
+        manifest = by_source.get(source, {})
+        semantic = dict(manifest.get("semantic_diagnostics") or {})
+        continuations = list(semantic.get("finishing_move_continuation_diagnostics") or [])
+        sources[source] = {
+            "candidate_count_after_semantic_gates": int(
+                semantic.get(
+                    "candidate_count_after_semantic_gates",
+                    len(manifest.get("candidate_pool") or []),
+                )
+            ),
+            "verified_finishing_move_count": int(manifest.get("verified_finishing_move_count", 0)),
+            "automatic_finishing_move_candidate_count": len(manifest.get("automatic_finishing_move_candidates") or []),
+            "verified_combat_island_count": int(semantic.get("verified_combat_island_count", 0)),
+            "local_interaction_verifier": dict(semantic.get("local_interaction_verifier") or {}),
+            "finishing_move_continuation_diagnostics": continuations,
+        }
+    return {
+        "version": "3.1",
+        "semantic_engine": EXPECTED_ENGINE,
+        "editorial_planner": EXPECTED_EDITOR,
+        "candidate_mode": EXPECTED_MODE,
+        "status": "REJECTED",
+        "sources": sources,
     }
 
 
@@ -679,8 +696,8 @@ def _self_test() -> None:
         "story_type": "finishing_move_open",
         "effect_profile": "finishing_move_hero",
         "start": 148.07,
-        "end": 176.367,
-        "output_duration": 10.164,
+        "end": 181.0,
+        "output_duration": 14.797,
         "opening_quality": 0.9,
         "ending_quality": 0.9,
         "retention_quality": 0.9,
@@ -691,7 +708,7 @@ def _self_test() -> None:
         "segments": [
             {"start": 148.07, "end": 150.5, "speed": 1.0, "reason": "finishing_move_open_hero"},
             {"start": 153.533, "end": 157.8, "speed": 1.0, "reason": "verified_combat_island_body"},
-            {"start": 172.9, "end": 176.367, "speed": 1.0, "reason": "verified_combat_island_body"},
+            {"start": 172.9, "end": 181.0, "speed": 1.0, "reason": "verified_combat_island_body"},
         ],
         "engagements": [
             {"start": 153.533, "end": 157.8, "events": [{"time": 156.0, "kinds": ["impact"]}]},
@@ -702,6 +719,14 @@ def _self_test() -> None:
     failures = _finishing_plan_failures("batch2", 1, finisher, config)
     if failures:
         raise AssertionError(f"canonical multi-island Finishing Move body was rejected: {failures}")
+
+    trimmed = deepcopy(finisher)
+    trimmed["segments"][-1]["end"] = 176.367
+    if not any(
+        "does not end at canonical island boundary" in failure
+        for failure in _finishing_plan_failures("batch2", 1, trimmed, config)
+    ):
+        raise AssertionError("payoff-tail terminal trimming escaped canonical allocation contract")
 
     print(json.dumps({
         "self_test": "PASS",
@@ -719,6 +744,7 @@ def main() -> None:
     parser.add_argument("--allocation", type=Path)
     parser.add_argument("--allocate-from", type=Path)
     parser.add_argument("--allocation-out", type=Path)
+    parser.add_argument("--rejection-out", type=Path)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
@@ -733,7 +759,15 @@ def main() -> None:
     if args.allocate_from is not None:
         if args.allocation_out is None:
             parser.error("--allocation-out is required with --allocate-from")
-        result = allocate_batch(args.allocate_from, config)
+        try:
+            result = allocate_batch(args.allocate_from, config)
+        except AssertionError as exc:
+            rejection = allocation_rejection_diagnostics(args.allocate_from)
+            rejection["reason"] = str(exc)
+            if args.rejection_out is not None:
+                _write(args.rejection_out, rejection)
+            print(json.dumps(rejection, indent=2))
+            raise
         _write(args.allocation_out, result)
         print(json.dumps(result, indent=2))
         return
