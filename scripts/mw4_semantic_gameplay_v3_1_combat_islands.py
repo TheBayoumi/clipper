@@ -93,6 +93,44 @@ def fragment_bounds(start: float, end: float, hard: np.ndarray, fps: float) -> l
     return out
 
 
+def _attach_assignment_diagnostics(timeline: Any, anchors: list[tuple[Any, Any]], islands_out: tuple[Any, ...]) -> None:
+    """Expose evidence assignment without changing island construction or gates."""
+    diagnostics = dict(getattr(timeline, "_local_interaction_diagnostics", {}) or {})
+    diagnostics["canonical_combat_islands"] = [
+        {
+            "start": round(float(island.start), 3),
+            "end": round(float(island.end), 3),
+            "duration": round(float(island.end) - float(island.start), 3),
+            "shot_index": int(island.shot_index),
+            "confidence": round(float(island.confidence), 4),
+            "event_times": [round(float(event.time), 3) for event in island.events],
+            "event_kinds": [list(event.kinds) for event in island.events],
+        }
+        for island in islands_out
+    ]
+    assignments: list[dict[str, Any]] = []
+    for event, decision in anchors:
+        assigned = [
+            [round(float(island.start), 3), round(float(island.end), 3)]
+            for island in islands_out
+            if event in island.events
+        ]
+        assignments.append(
+            {
+                "time": round(float(event.time), 3),
+                "kinds": list(event.kinds),
+                "hostile_score": round(float(decision.score), 4),
+                "assigned_islands": assigned,
+                "orphaned_from_combat_islands": not bool(assigned),
+            }
+        )
+    diagnostics["verified_hostile_event_assignment"] = assignments
+    diagnostics["orphaned_verified_hostile_event_count"] = sum(
+        1 for item in assignments if item["orphaned_from_combat_islands"]
+    )
+    setattr(timeline, "_local_interaction_diagnostics", diagnostics)
+
+
 def build(timeline: Any, coarse: tuple[Any, ...], config: dict[str, Any], core: Any, combat: Any, Engagement: Any) -> tuple[Any, ...]:
     """Build exact gap-split combat islands. Short fragments are dropped, never padded."""
     cfg = config["combat_state_verifier"]
@@ -126,7 +164,9 @@ def build(timeline: Any, coarse: tuple[Any, ...], config: dict[str, Any], core: 
             unique.append(island)
         elif island.end - island.start > unique[prior].end - unique[prior].start:
             unique[prior] = island
-    return tuple(sorted(unique, key=lambda item: (item.start, item.end)))
+    result = tuple(sorted(unique, key=lambda item: (item.start, item.end)))
+    _attach_assignment_diagnostics(timeline, anchors, result)
+    return result
 
 
 def bridge_supported(timeline: Any, left: float, right: float, config: dict[str, Any]) -> bool:
