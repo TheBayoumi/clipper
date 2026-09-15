@@ -160,11 +160,36 @@ def _candidate_engagement_chains(timeline: SemanticTimelineV31, config: dict[str
     return unique
 
 
+def _protected_finishing_overlap(timeline: SemanticTimelineV31, start: float, end: float, config: dict[str, Any]) -> bool:
+    """Normal stories may never absorb a verified Finishing Move.
+
+    The verified move owns its protected opening interval. If a normal combat story
+    intersects that interval it must be rejected rather than silently routing the
+    execution as ordinary gameplay.
+    """
+    if end <= start + _EPS:
+        return False
+    editorial = config["editorial"]
+    lead = _f(editorial.get("finishing_move_opening_lead_seconds", 0.28), 0.28)
+    hold = _f(editorial.get("finishing_move_payoff_hold_seconds", 0.45), 0.45)
+    for span in timeline.finishing_moves:
+        shot = timeline.shots[span.shot_index]
+        protected_start = max(float(shot.start), float(span.start) - lead)
+        protected_end = min(float(shot.end), float(span.end) + hold)
+        if max(start, protected_start) < min(end, protected_end) - _EPS:
+            return True
+    return False
+
+
 def _normal_plans(timeline: SemanticTimelineV31, config: dict[str, Any], excluded: list[list[float]], source_key: str) -> list[SemanticPlanV31]:
     plans: list[SemanticPlanV31] = []
     for chain in _candidate_engagement_chains(timeline, config):
         start, end = float(chain[0].start), float(chain[-1].end)
-        if refined.core._intersects_excluded(start, end, excluded) or islands.segment_crosses_gap(timeline, start, end):
+        if (
+            refined.core._intersects_excluded(start, end, excluded)
+            or islands.segment_crosses_gap(timeline, start, end)
+            or _protected_finishing_overlap(timeline, start, end, config)
+        ):
             continue
         segment = EditSegment(round(start, 3), round(end, 3), 1.0, "verified_combat_story")
         residual = quality._longest_unexplained_low_run(timeline, start, end, chain, None, config)
@@ -229,6 +254,13 @@ def _island_body_metrics(timeline: SemanticTimelineV31, engagement: Engagement, 
     }, []
 
 
+def _finishing_body_join_gap(config: dict[str, Any]) -> float:
+    """Bound body-to-body hard cuts by ordinary story continuity, not hero reach."""
+    hero_reach = _f(config["editorial"].get("finishing_move_max_continuation_gap_seconds", 18.0), 18.0)
+    ordinary_gap = _f(config["semantic_editor"].get("maximum_inter_engagement_gap_seconds", 4.0), 4.0)
+    return max(0.0, min(hero_reach, ordinary_gap))
+
+
 def _finishing_open_plans(timeline: SemanticTimelineV31, config: dict[str, Any], excluded: list[list[float]], source_key: str) -> list[SemanticPlanV31]:
     results: list[SemanticPlanV31] = []
     diagnostics: list[dict[str, Any]] = []
@@ -237,6 +269,7 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, config: dict[str, Any],
     lead = _f(editorial.get("finishing_move_opening_lead_seconds", 0.28), 0.28)
     hold = _f(editorial.get("finishing_move_payoff_hold_seconds", 0.45), 0.45)
     max_gap = _f(editorial.get("finishing_move_max_continuation_gap_seconds", 18.0), 18.0)
+    body_join_gap = _finishing_body_join_gap(config)
     final_minimum = _f(config["semantic_editor"].get("minimum_output_seconds", 10.0), 10.0)
     final_maximum = min(_f(config["semantic_editor"].get("maximum_output_seconds", 20.0), 20.0), _f(editorial.get("finishing_move_montage_max_output_seconds", 15.5), 15.5))
     max_islands = int(cfg.get("maximum_verified_island_moments_per_body", 3))
@@ -263,7 +296,11 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, config: dict[str, Any],
         for count in range(1, max(1, max_islands) + 1):
             for group in itertools.combinations(qualified, count):
                 engagements = tuple(item[0] for item in group)
-                if any(float(right.start) < float(left.end) - _EPS or float(right.start) - float(left.end) > max_gap + _EPS for left, right in zip(engagements, engagements[1:])):
+                if any(
+                    float(right.start) < float(left.end) - _EPS
+                    or float(right.start) - float(left.end) > body_join_gap + _EPS
+                    for left, right in zip(engagements, engagements[1:])
+                ):
                     continue
                 body_duration = sum(item[1]["duration"] for item in group)
                 if body_minimum - _EPS <= body_duration <= body_maximum + _EPS:
@@ -311,6 +348,7 @@ def _finishing_open_plans(timeline: SemanticTimelineV31, config: dict[str, Any],
             "span_start": round(float(span.start), 3), "span_end": round(float(span.end), 3),
             "hero_start": round(float(hero.start), 3), "hero_end": round(float(hero.end), 3),
             "required_body_minimum_seconds": round(body_minimum, 3), "allowed_body_maximum_seconds": round(body_maximum, 3),
+            "body_join_max_gap_seconds": round(body_join_gap, 3),
             "qualified_island_count": len(qualified), "candidate_group_count": len(groups),
             "valid_finishing_plan_count": valid_count, "island_diagnostics": island_diagnostics,
             "fallback_execution_allowed": False,
@@ -358,20 +396,38 @@ def diagnose_source(timeline: SemanticTimelineV31, config: dict[str, Any], exclu
 
 
 def _self_test() -> None:
-    validate_configuration({
+    config = {
         "fallback_policy": {"enabled": False},
-        "editorial": {"finishing_move_allow_semantic_montage_continuation": False},
+        "editorial": {
+            "finishing_move_allow_semantic_montage_continuation": False,
+            "finishing_move_opening_lead_seconds": 0.28,
+            "finishing_move_payoff_hold_seconds": 0.45,
+            "finishing_move_max_continuation_gap_seconds": 18.0,
+        },
         "source_integrity": {"allow_planned_transition_for_semantic_montage": False},
-        "semantic_editor": {"semantic_montage": {"enabled": False}},
+        "semantic_editor": {
+            "semantic_montage": {"enabled": False},
+            "maximum_inter_engagement_gap_seconds": 4.0,
+        },
         "finishing_move_detector": {"allow_unverified_automatic": False},
         "combat_state_verifier": {"enabled": True, "local_interaction_verifier": {"enabled": True, "minimum_hitmarker_score": 0.34}, "finishing_continuation": {"require_verified_payoff": True}},
-    })
+    }
+    validate_configuration(config)
     combat.self_test()
     islands.self_test()
     local_verify.self_test()
     segment = EditSegment(153.533, 157.800, 1.0, "verified_combat_island_body")
     if (segment.start, segment.end) != (153.533, 157.8):
         raise AssertionError("Finishing Move body changed canonical combat-island boundaries")
+    if abs(_finishing_body_join_gap(config) - 4.0) > _EPS:
+        raise AssertionError("Finishing Move body hard cuts escaped ordinary continuity contract")
+    timeline = type("Timeline", (), {})()
+    timeline.shots = (ShotSpan(0.0, 20.0),)
+    timeline.finishing_moves = (FinishingMoveSpan(10.0, 11.0, 12.0, 0, 0.99, {}),)
+    if not _protected_finishing_overlap(timeline, 9.9, 12.2, config):
+        raise AssertionError("normal story was allowed to absorb protected Finishing Move interval")
+    if _protected_finishing_overlap(timeline, 12.6, 15.0, config):
+        raise AssertionError("non-overlapping normal story was incorrectly blocked by Finishing Move ownership")
     print("MW4 canonical semantic architecture self-test: PASS")
 
 
