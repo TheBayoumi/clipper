@@ -284,6 +284,12 @@ def _hardening_self_test() -> None:
 
     if analyze_source is not _legacy.analyze_source or diagnose_source is not _legacy.diagnose_source:
         raise AssertionError("strict analyze/diagnose wrappers are not exported by final semantic module")
+    if build_plans_for_source is not _legacy.build_plans_for_source:
+        raise AssertionError("strict build_plans_for_source export is bypassed by a stale star-import binding")
+    if build_plans is not _legacy.build_plans:
+        raise AssertionError("strict build_plans export is bypassed by a stale star-import binding")
+    if select_plans is not _legacy.select_plans:
+        raise AssertionError("strict select_plans export is bypassed by a stale star-import binding")
     _combat.self_test()
     _islands.self_test()
     _finishing_body.self_test()
@@ -309,7 +315,16 @@ def diagnose_source(timeline: SemanticTimelineV31, config: dict[str, Any], exclu
 
 
 _legacy.diagnose_source = diagnose_source
+
+# Explicitly bind every public planner/analyzer export after all installers have
+# patched the legacy module. Never rely on the earlier star-import snapshot: a
+# stale function object can otherwise call legacy fallback code even while the
+# strict module has correctly patched the legacy namespace.
 analyze_source = _legacy.analyze_source
+diagnose_source = _legacy.diagnose_source
+build_plans_for_source = _legacy.build_plans_for_source
+build_plans = _legacy.build_plans
+select_plans = _legacy.select_plans
 
 
 def main() -> None:
