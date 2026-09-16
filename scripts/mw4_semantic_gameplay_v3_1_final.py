@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 # Canonical planner entrypoint: verified evidence -> same-shot quality-gated source span -> clip proposal.
+# Semantic combat gaps are evidence/quality signals, not authoritative source-cut boundaries.
 import sys
 from typing import Any
 
