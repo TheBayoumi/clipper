@@ -6,7 +6,12 @@ on:
     branches:
       - feat/mw4-fullframe-retention-v3-1
     paths:
+      - .github/workflows/mw4-semantic-v3-1-complete.yml
       - .github/mw4-v3-1-complete-trigger
+      - campaigns/mw4-fullframe-retention-v3-1.json
+      - scripts/mw4_semantic_gameplay_v3_1_*.py
+      - scripts/mw4_v3_1_*.py
+      - scripts/mw4_fullframe_retention_v3_1.py
 
 permissions:
   contents: read
@@ -79,6 +84,7 @@ jobs:
           test ! -e scripts/mw4_semantic_gameplay_v3_1_no_fallback.py
           python -m py_compile \
             scripts/mw4_semantic_gameplay_v3_1_payoff_complete.py \
+            scripts/mw4_semantic_gameplay_v3_1_payoff_terminal.py \
             scripts/mw4_semantic_gameplay_v3_1_final.py \
             scripts/mw4_v3_1_source_catalog.py \
             scripts/mw4_v3_1_dynamic_contract.py \
