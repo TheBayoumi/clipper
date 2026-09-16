@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# Canonical planner entrypoint: verified evidence -> support component -> clip proposal.
 import sys
 from typing import Any
 
