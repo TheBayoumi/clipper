@@ -1,8 +1,9 @@
 MW4 V3.1 complete-source payoff qualification
 
-This trigger validates two corrected invariants:
+This trigger validates three corrected invariants:
 1. MediaSilo discovery must resolve exactly four original video masters for this campaign and every discovered source must enter semantic analysis.
 2. Every verified hostile payoff anchor receives an independent 10-20s proposal search inside its verified source-stringout region. Automatic scene cuts are soft evidence only for normal payoff proposals; manually verified stringout cut windows remain hard integrity walls.
+3. A later independently verified payoff in the same verified source region may close a continuous source-native story opened by an earlier verified payoff. This expands boundary search only; it does not skip source time, pad duration, lower quality gates, or create semantic montage.
 
 Candidate-pool construction preserves one best plan per distinct terminal payoff scene before score-based fill, so alternate boundaries from one Finishing Move or one payoff cluster cannot crowd distinct kill scenes out of the allocator input.
 
