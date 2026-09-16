@@ -1,0 +1,360 @@
+name: MW4 semantic v3.1 complete-source qualification
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/mw4-fullframe-retention-v3-1
+    paths:
+      - .github/mw4-v3-1-complete-trigger
+
+permissions:
+  contents: read
+
+jobs:
+  discover-sources:
+    name: discover-all-mediasilo-sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      source_matrix: ${{ steps.catalog.outputs.source_matrix }}
+      source_count: ${{ steps.catalog.outputs.source_count }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install MediaSilo discovery dependency
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'playwright==1.55.0'
+          python -m playwright install --with-deps chromium
+      - name: Discover every original video master
+        id: catalog
+        env:
+          MEDIASILO_URL: https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260
+        run: |
+          set -euo pipefail
+          python scripts/mw4_v3_1_source_catalog.py discover \
+            --review-url "$MEDIASILO_URL" \
+            --output /tmp/source_catalog.json \
+            --github-output "$GITHUB_OUTPUT" \
+            --expected-count 4
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('/tmp/source_catalog.json').read_text())
+          print('Resolved MediaSilo source masters:')
+          for item in data['sources']:
+              print(f"- {item['source_key']}: {item['title']}")
+          PY
+
+  analyze:
+    name: analyze-${{ matrix.source }}
+    needs: discover-sources
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.discover-sources.outputs.source_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install analysis dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy==2.1.3' 'playwright==1.55.0'
+          python -m playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Verify payoff-complete canonical architecture
+        run: |
+          set -euo pipefail
+          test ! -e scripts/mw4_semantic_gameplay_v3_1_refined.py
+          test ! -e scripts/mw4_semantic_gameplay_v3_1_final_legacy.py
+          test ! -e scripts/mw4_semantic_gameplay_v3_1_finishing_body.py
+          test ! -e scripts/mw4_semantic_gameplay_v3_1_no_fallback.py
+          python -m py_compile \
+            scripts/mw4_semantic_gameplay_v3_1_payoff_complete.py \
+            scripts/mw4_semantic_gameplay_v3_1_final.py \
+            scripts/mw4_v3_1_source_catalog.py \
+            scripts/mw4_v3_1_dynamic_contract.py \
+            scripts/mw4_v3_1_dynamic_workflow_support.py \
+            scripts/mw4_fullframe_retention_v3_1.py \
+            scripts/mw4_v3_1_render_one.py
+          python scripts/mw4_semantic_gameplay_v3_1_final.py --self-test
+          python scripts/mw4_v3_1_dynamic_contract.py --self-test
+      - name: Resolve this discovered MediaSilo original master
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+          MEDIASILO_URL: https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260
+        run: |
+          set -euo pipefail
+          python scripts/mw4_v3_1_source_catalog.py discover \
+            --review-url "$MEDIASILO_URL" \
+            --output /tmp/source_catalog.json \
+            --expected-count 4
+          python scripts/mw4_v3_1_source_catalog.py select \
+            --catalog /tmp/source_catalog.json \
+            --source-key "$SOURCE_KEY" \
+            --output /tmp/resolved_source.json
+      - name: Download and certify original source once
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          mkdir -p raw_sources
+          python scripts/mw4_v3_1_mediasilo_source.py download \
+            --resolved /tmp/resolved_source.json \
+            --target "raw_sources/$SOURCE_KEY.mp4"
+          python scripts/mw4_v3_1_source_qa.py certify \
+            --source "raw_sources/$SOURCE_KEY.mp4" \
+            --source-key "$SOURCE_KEY" \
+            --resolved /tmp/resolved_source.json \
+            --output "raw_sources/$SOURCE_KEY.source_qa.json"
+      - name: Analyze payoff-complete candidate pool
+        timeout-minutes: 18
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+          OMP_NUM_THREADS: '2'
+          OPENBLAS_NUM_THREADS: '1'
+          MKL_NUM_THREADS: '1'
+          NUMEXPR_NUM_THREADS: '1'
+          MALLOC_ARENA_MAX: '2'
+        run: |
+          set -euo pipefail
+          nice -n 5 python scripts/mw4_fullframe_retention_v3_1.py \
+            --source-key "$SOURCE_KEY" \
+            --source "raw_sources/$SOURCE_KEY.mp4" \
+            --config campaigns/mw4-fullframe-retention-v3-1.json \
+            --output-dir "analysis/$SOURCE_KEY" \
+            --mode analysis
+      - name: Print source and kill-scene diagnostics
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          key = os.environ['SOURCE_KEY']
+          path = Path('analysis') / key / f'{key}_analysis_v3_1.json'
+          data = json.loads(path.read_text())
+          local = (data.get('diagnostics') or {}).get('local_interaction_verifier') or {}
+          events = local.get('events') or []
+          confirmed = [e for e in events if e.get('confirmed')]
+          kill_like = [e for e in confirmed if 'outcome_like' in (e.get('kinds') or [])]
+          pool = data.get('candidate_pool') or []
+          terminals = set()
+          for plan in pool:
+              anchors = []
+              for event in plan.get('effect_events') or []:
+                  if event.get('kind') in {'impact', 'outcome_like'}:
+                      anchors.append(float(event['time']))
+              for engagement in plan.get('engagements') or []:
+                  for event in engagement.get('events') or []:
+                      if set(event.get('kinds') or []).intersection({'impact', 'outcome_like'}):
+                          anchors.append(float(event['time']))
+              if anchors:
+                  terminals.add(round(max(anchors), 3))
+          print(json.dumps({
+              'source': key,
+              'verified_local_interactions': len(confirmed),
+              'kill_like_outcome_events': len(kill_like),
+              'kill_like_times': [round(float(e['time']), 3) for e in kill_like],
+              'qualified_candidate_count': len(pool),
+              'distinct_terminal_payoff_scenes_in_pool': len(terminals),
+              'terminal_payoff_times': sorted(terminals),
+          }, indent=2))
+          PY
+      - name: Upload verified source reel for isolated render workspaces
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-v3-1-complete-source-${{ matrix.source }}
+          path: |
+            raw_sources/${{ matrix.source }}.mp4
+            raw_sources/${{ matrix.source }}.source_qa.json
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload analysis manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-v3-1-complete-analysis-${{ matrix.source }}
+          path: analysis/${{ matrix.source }}/${{ matrix.source }}_analysis_v3_1.json
+          retention-days: 3
+          if-no-files-found: error
+
+  allocate:
+    name: adaptive-payoff-diverse-allocation
+    needs: analyze
+    runs-on: ubuntu-24.04
+    outputs:
+      render_matrix: ${{ steps.render-matrix.outputs.render_matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download all analysis manifests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: MW4-v3-1-complete-analysis-*
+          path: analysis-manifests
+          merge-multiple: true
+      - name: Build dynamic source-set allocation
+        run: |
+          set -euo pipefail
+          python scripts/mw4_v3_1_dynamic_contract.py --self-test
+          mkdir -p allocation
+          python scripts/mw4_v3_1_dynamic_contract.py \
+            --config campaigns/mw4-fullframe-retention-v3-1.json \
+            --allocate-from analysis-manifests \
+            --allocation-out allocation/mw4_v3_1_allocation.json \
+            --rejection-out allocation/mw4_v3_1_allocation_rejection.json
+      - name: Upload fail-closed allocation diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-v3-1-complete-allocation-rejection
+          path: allocation/mw4_v3_1_allocation_rejection.json
+          retention-days: 3
+          if-no-files-found: error
+      - name: Build one-workspace-per-clip render matrix
+        id: render-matrix
+        run: |
+          set -euo pipefail
+          python scripts/mw4_v3_1_dynamic_workflow_support.py render-matrix \
+            --allocation allocation/mw4_v3_1_allocation.json \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Upload approved global allocation
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-v3-1-complete-allocation
+          path: allocation/mw4_v3_1_allocation.json
+          retention-days: 3
+          if-no-files-found: error
+
+  render-one:
+    name: complete-${{ matrix.clip_id }}
+    needs: allocate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.allocate.outputs.render_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install single-clip renderer dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy==2.1.3'
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Download approved allocation
+        uses: actions/download-artifact@v4
+        with:
+          name: MW4-v3-1-complete-allocation
+          path: allocation
+      - name: Download already-certified source reel
+        uses: actions/download-artifact@v4
+        with:
+          name: MW4-v3-1-complete-source-${{ matrix.source }}
+          path: raw_sources
+      - name: Verify staged source reel
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          python scripts/mw4_v3_1_source_qa.py verify \
+            --source "raw_sources/$SOURCE_KEY.mp4" \
+            --manifest "raw_sources/$SOURCE_KEY.source_qa.json"
+      - name: Render and QA one full-quality clip
+        timeout-minutes: 65
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+          OMP_NUM_THREADS: '2'
+          OPENBLAS_NUM_THREADS: '1'
+          MKL_NUM_THREADS: '1'
+          NUMEXPR_NUM_THREADS: '1'
+          MALLOC_ARENA_MAX: '2'
+        run: |
+          set -euo pipefail
+          nice -n 5 python scripts/mw4_v3_1_render_one.py \
+            --source-key "$SOURCE_KEY" \
+            --source "raw_sources/$SOURCE_KEY.mp4" \
+            --config campaigns/mw4-fullframe-retention-v3-1.json \
+            --allocation allocation/mw4_v3_1_allocation.json \
+            --plan-key "${{ matrix.plan_key }}" \
+            --ordinal "${{ matrix.ordinal }}" \
+            --output-dir one \
+            --mode production
+      - name: Upload qualification video
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-v3-1-complete-video-${{ matrix.clip_id }}
+          path: one/*.mp4
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload clip QA metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-v3-1-complete-meta-${{ matrix.clip_id }}
+          path: |
+            one/*_clip_result_v3_1.json
+            one/contact_sheets/*.jpg
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+
+  batch-contract:
+    name: complete-batch-contract
+    needs: [allocate, render-one]
+    if: ${{ always() && needs.allocate.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download approved allocation
+        uses: actions/download-artifact@v4
+        with:
+          name: MW4-v3-1-complete-allocation
+          path: allocation
+      - name: Download clip metadata only
+        uses: actions/download-artifact@v4
+        with:
+          pattern: MW4-v3-1-complete-meta-*
+          path: clip-meta
+          merge-multiple: true
+      - name: Aggregate dynamic source summaries
+        run: |
+          set -euo pipefail
+          python scripts/mw4_v3_1_dynamic_workflow_support.py batch-summaries \
+            --allocation allocation/mw4_v3_1_allocation.json \
+            --config campaigns/mw4-fullframe-retention-v3-1.json \
+            --clip-meta clip-meta \
+            --output-dir batch
+      - name: Enforce complete adaptive batch contract
+        run: |
+          set -euo pipefail
+          python scripts/mw4_v3_1_dynamic_contract.py \
+            --config campaigns/mw4-fullframe-retention-v3-1.json \
+            --batch-root batch \
+            --allocation allocation/mw4_v3_1_allocation.json
+      - name: Upload batch contract
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-v3-1-complete-batch-contract
+          path: batch/*.json
+          retention-days: 3
+          if-no-files-found: error
