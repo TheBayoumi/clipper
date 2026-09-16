@@ -1,23 +1,24 @@
-MW4 V3.1 verified-anchor proposal architecture qualification
+MW4 V3.1 same-shot quality-gated source-span qualification
 
 Single executable semantic path:
-evidence analysis -> direct-interaction hostile verification -> hard-gap-safe verified support components -> boundary-refined canonical clip proposals -> integrity/quality gates -> canonical adaptive allocator -> FFV1/NUT renderer.
+evidence analysis -> direct-interaction hostile verification -> verified hostile/payoff anchors -> same-shot quality-gated source-span proposals -> source-integrity/quality gates -> canonical adaptive allocator -> FFV1/NUT renderer.
 
 The base V3.1 module remains evidence-only. The obsolete refined planner, historical semantic planner, detached Finishing Move body planner, fallback guard, legacy allocation contract, allocator patch layer, and allocation regression shim remain physically absent from the executable path.
 
-Combat-island evidence is no longer treated as the final editorial boundary. Verified hostile events seed maximal same-shot hard-gap-free support components; clip proposals are then refined only inside those support regions. Normal plans may use multiple source-native 1.0x same-shot proposal segments when rejected hard-gap material is omitted explicitly. No proposal segment may cross a hard combat gap, source shot, verified source cut, excluded window, or protected Finishing Move hero region.
+Combat-island evidence is not a final editorial boundary. Verified hostile/payoff events remain the semantic anchors, while candidate clips may expand inside the same authoritative source shot. Sustained reload/search/recovery gap signals are evaluated by the unchanged retention, weakest-quarter, low-interest-fraction, and unexplained-low-run quality gates; they are not treated as source cuts. Actual hardened source-shot boundaries, verified source-cut windows, excluded windows, chronology, and protected Finishing Move hero regions remain fatal integrity boundaries.
 
-Batch2 Finishing Move policy remains strict: protected verified hero at 1.0x, then only boundary-refined moments contained inside verified hostile/payoff support components. Every body moment still requires independently verified hostile payoff plus the unchanged component retention/payoff/weakest-quarter/inactivity floors; the terminal moment must also pass the unchanged ending-quality floor. The hero-aware >=10 second final-duration contract, <=15.5 second Finishing Move maximum, maximum body-moment duration, first-continuation reach, hard-cut source-gap contract, and adaptive allocator requirement are unchanged.
+Normal plans are contiguous source-native 1.0x same-shot proposals. They may span bounded inter-engagement context only when the full contiguous interval passes all unchanged story-quality gates. No source shot, verified source cut, exclusion, chronology, hostile-verification, or protected Finishing Move requirement is relaxed.
 
-Every hostile event still requires local direct-interaction confirmation. Contact, motion, HUD/color/minimap state and ambiguous actors remain non-hostile. The centered MW4 hitmarker geometry remains pinned at outer-radius fraction 0.105 and the acceptance threshold remains 0.34. No hostile, editorial, duration or quality threshold is lowered.
+Batch2 Finishing Move policy remains strict: protected verified hero at 1.0x, followed only by payoff-anchored same-shot body moments. Each body moment still requires an independently verified hostile payoff and must pass the unchanged component retention/payoff/weakest-quarter/inactivity floors. Non-terminal moments may extend forward or backward inside the same actual source shot up to the unchanged 6.5 second maximum when the full interval still passes those gates. The terminal body moment must additionally pass the unchanged ending-quality floor. The hero-aware >=10 second final-duration contract, <=15.5 second Finishing Move maximum, first-continuation reach, body hard-cut source-gap contract, and adaptive allocator requirement are unchanged.
 
-Canonical hard-gap checks retain half-open frame-grid semantics with bounded millisecond-rounding tolerance. Regression tests continue to cover rounded-up terminal bounds, rounded-down opening bounds, true hard-gap rejection, orphaned verified-hostile recovery, and structural non-islandable evidence disposition.
+Every hostile event still requires local direct-interaction confirmation. Contact, motion, HUD/color/minimap state and ambiguous actors remain non-hostile. The centered MW4 hitmarker geometry remains pinned at outer-radius fraction 0.105 and the acceptance threshold remains 0.34. No hostile, editorial, duration, payoff, retention, weakest-quarter, inactivity, SSIM, PSNR, timing, geometry, or metadata threshold is lowered.
 
-The proposal layer emits explicit diagnostics for support-component count, candidate chains, proposal combinations, duration rejection, integrity rejection, quality rejection, qualified plans, required Finishing Move body duration, maximum qualified body seconds seen, and threshold_reduction_used=false.
+The proposal layer emits explicit diagnostics for support-component count, same-shot source-span variants, duration rejection, integrity rejection, quality rejection, qualified plans, required Finishing Move body duration, maximum qualified body seconds seen, whether a candidate crosses a semantic gap, semantic_gap_is_not_source_cut=true, and threshold_reduction_used=false.
 
 Fail-closed allocation remains mandatory. If verified evidence cannot satisfy the campaign contract, allocation exits non-zero and surfaces structured diagnostics rather than manufacturing a clip, re-enabling semantic montage, or lowering gates.
 
 Existing source certification, exact decoded-frame hash identity, FFV1 level-3 + PCM s16le NUT staging/stitched/canonical transport, source-native delivery timing/metadata restoration, SSIM >= 0.99, PSNR >= 40 dB and no crop/scale/zoom qualification contracts remain mandatory.
 
-Run-68 qualification validates the initial verified-anchor -> hard-gap-free support component -> boundary-refined proposal architecture.
-Run-69 qualification validates the same architecture after making the hero-aware duration regression test float-safe; planner behavior and thresholds are unchanged.
+Run-68 qualification validated the initial verified-anchor -> hard-gap-free support component -> boundary-refined proposal architecture.
+Run-69 qualification showed that treating support-component/hard-gap bounds as edit walls left Batch2 at 5.317 seconds of qualified body against the required 7.570 seconds.
+Run-70 qualification validates the corrected verified-payoff anchor -> same-shot quality-gated source-span architecture at branch head.
