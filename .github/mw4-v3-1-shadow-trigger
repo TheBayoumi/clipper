@@ -19,4 +19,5 @@ Fail-closed allocation remains mandatory. If verified evidence cannot satisfy th
 
 Existing source certification, exact decoded-frame hash identity, FFV1 level-3 + PCM s16le NUT staging/stitched/canonical transport, source-native delivery timing/metadata restoration, SSIM >= 0.99, PSNR >= 40 dB and no crop/scale/zoom qualification contracts remain mandatory.
 
-Run-68 qualification validates the verified-anchor -> hard-gap-free support component -> boundary-refined proposal architecture at commit 6c1f90472277a4e707315a99233cc52e5c106fd8, while preserving all existing semantic and fidelity thresholds.
+Run-68 qualification validates the initial verified-anchor -> hard-gap-free support component -> boundary-refined proposal architecture.
+Run-69 qualification validates the same architecture after making the hero-aware duration regression test float-safe; planner behavior and thresholds are unchanged.
