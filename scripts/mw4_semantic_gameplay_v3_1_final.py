@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-# Canonical planner entrypoint: every verified payoff anchor -> verified-source-region quality-gated span -> clip proposal.
-# Automatic scene cuts are proposal evidence only; manually verified stringout cuts remain hard integrity walls.
+# Canonical planner entrypoint: every verified payoff anchor -> verified-source-region
+# quality-gated span -> clip proposal. A later independently verified payoff in the
+# same verified source region may close the story. Automatic scene cuts are proposal
+# evidence only; manually verified stringout cuts remain hard integrity walls.
 import sys
 from typing import Any
 
 import mw4_semantic_gameplay_v3_1_final_base as _base
 from mw4_semantic_gameplay_v3_1_final_base import *  # noqa: F401,F403
-import mw4_semantic_gameplay_v3_1_payoff_complete as _proposals
+import mw4_semantic_gameplay_v3_1_payoff_terminal as _proposals
 
 SemanticPlanV31 = _base.SemanticPlanV31
 SemanticTimelineV31 = _base.SemanticTimelineV31
@@ -75,7 +77,9 @@ plan_integrity_violations = _proposals.plan_integrity_violations
 def _self_test() -> None:
     _base._self_test()
     _proposals.self_test(_base)
-    print("MW4 payoff-complete verified-source-region proposal architecture: PASS")
+    print(
+        "MW4 terminal-aware payoff-complete verified-source-region proposal architecture: PASS"
+    )
 
 
 def __getattr__(name: str) -> Any:
