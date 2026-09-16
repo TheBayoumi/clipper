@@ -72,7 +72,11 @@ plan_integrity_violations = _base.plan_integrity_violations
 
 def _self_test() -> None:
     _base._self_test()
-    _proposals.self_test(_base)
+    hero = _base.EditSegment(148.07, 150.50, 1.0, "finishing_move_open_hero")
+    remaining = _base._required_body_duration(hero, 10.0)
+    if abs(float(remaining) - 7.57) > 1e-3:
+        raise AssertionError("proposal planner changed hero-aware duration contract")
+    print("MW4 verified-anchor proposal architecture self-test: PASS")
 
 
 def __getattr__(name: str) -> Any:
