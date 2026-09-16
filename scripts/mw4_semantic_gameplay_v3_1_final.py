@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-# Canonical planner entrypoint: verified evidence -> same-shot quality-gated source span -> clip proposal.
+# Canonical planner entrypoint: every verified payoff anchor -> same-shot quality-gated source span -> clip proposal.
 # Semantic combat gaps are evidence/quality signals, not authoritative source-cut boundaries.
 import sys
 from typing import Any
 
 import mw4_semantic_gameplay_v3_1_final_base as _base
 from mw4_semantic_gameplay_v3_1_final_base import *  # noqa: F401,F403
-import mw4_semantic_gameplay_v3_1_source_span_proposals as _proposals
+import mw4_semantic_gameplay_v3_1_payoff_complete as _proposals
 
 SemanticPlanV31 = _base.SemanticPlanV31
 SemanticTimelineV31 = _base.SemanticTimelineV31
@@ -75,7 +75,7 @@ plan_integrity_violations = _proposals.plan_integrity_violations
 def _self_test() -> None:
     _base._self_test()
     _proposals.self_test(_base)
-    print("MW4 same-shot quality-gated proposal architecture: PASS")
+    print("MW4 payoff-complete same-shot proposal architecture: PASS")
 
 
 def __getattr__(name: str) -> Any:
