@@ -128,18 +128,25 @@ def _recover_orphaned_anchors(
     Engagement: Any,
     islands_in: list[Any],
     minimum: float,
-) -> tuple[list[Any], list[dict[str, Any]]]:
-    """Let verified hostility recover topology omitted by pre-verification coarse gating."""
+) -> tuple[list[Any], list[dict[str, Any]], dict[int, dict[str, Any]]]:
+    """Recover eligible islands while retaining structurally ineligible hostile evidence."""
     assigned_ids = {id(event) for island in islands_in for event in island.events}
     orphan_ids = {id(event) for event, _ in anchors if id(event) not in assigned_ids}
     if not orphan_ids:
-        return islands_in, []
+        return islands_in, [], {}
 
     components: dict[tuple[int, float, float], list[tuple[Any, Any]]] = {}
     event_component: dict[int, tuple[int, float, float]] = {}
+    dispositions: dict[int, dict[str, Any]] = {}
     for event, decision in anchors:
         component = _support_component_for_event(timeline, event, hard, core)
         if component is None:
+            if id(event) in orphan_ids:
+                dispositions[id(event)] = {
+                    "disposition": "non_islandable_hard_gap_event",
+                    "reason": "verified_event_falls_inside_hard_gap",
+                    "minimum_combat_island_seconds": round(minimum, 3),
+                }
             continue
         components.setdefault(component, []).append((event, decision))
         event_component[id(event)] = component
@@ -151,16 +158,34 @@ def _recover_orphaned_anchors(
         members = components[(shot_index, start, end)]
         duration = end - start
         member_ids = {id(event) for event, _ in members}
+        eligible = duration >= minimum - _BOUNDARY_EPS_SECONDS
+        component_disposition = "recovered" if eligible else "non_islandable_short_component"
+        rejection_reason = None if eligible else "hard_gap_bounded_component_below_minimum_duration"
         diagnostics.append({
             "shot_index": int(shot_index),
             "start": round(start, 3),
             "end": round(end, 3),
             "duration": round(duration, 3),
+            "minimum_combat_island_seconds": round(minimum, 3),
             "verified_event_times": [round(float(event.time), 3) for event, _ in members],
             "recovered_orphan_event_times": [round(float(event.time), 3) for event, _ in members if id(event) in orphan_ids],
-            "meets_minimum_combat_island_seconds": duration >= minimum - _BOUNDARY_EPS_SECONDS,
+            "meets_minimum_combat_island_seconds": eligible,
+            "disposition": component_disposition,
+            "structural_rejection_reason": rejection_reason,
         })
-        if duration < minimum - _BOUNDARY_EPS_SECONDS:
+        for event, _ in members:
+            if id(event) not in orphan_ids:
+                continue
+            dispositions[id(event)] = {
+                "disposition": component_disposition,
+                "reason": rejection_reason,
+                "shot_index": int(shot_index),
+                "component_start": round(start, 3),
+                "component_end": round(end, 3),
+                "component_duration": round(duration, 3),
+                "minimum_combat_island_seconds": round(minimum, 3),
+            }
+        if not eligible:
             continue
 
         # The recovered component is authoritative for verified anchors it contains.
@@ -179,7 +204,7 @@ def _recover_orphaned_anchors(
             round(float(np.mean([decision.score for _, decision in members])), 4),
             tuple(event for event, _ in members),
         ))
-    return _dedupe_islands(recovered), diagnostics
+    return _dedupe_islands(recovered), diagnostics, dispositions
 
 
 def _attach_assignment_diagnostics(
@@ -187,8 +212,9 @@ def _attach_assignment_diagnostics(
     anchors: list[tuple[Any, Any]],
     islands_out: tuple[Any, ...],
     recovery: list[dict[str, Any]] | None = None,
-) -> None:
-    """Expose evidence assignment without changing hostile/quality thresholds."""
+    structural_dispositions: dict[int, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Expose event truth separately from canonical-island eligibility."""
     diagnostics = dict(getattr(timeline, "_local_interaction_diagnostics", {}) or {})
     diagnostics["canonical_combat_islands"] = [
         {
@@ -202,6 +228,7 @@ def _attach_assignment_diagnostics(
         }
         for island in islands_out
     ]
+    structural = structural_dispositions or {}
     assignments: list[dict[str, Any]] = []
     for event, decision in anchors:
         assigned = [
@@ -209,26 +236,66 @@ def _attach_assignment_diagnostics(
             for island in islands_out
             if event in island.events
         ]
-        assignments.append(
-            {
-                "time": round(float(event.time), 3),
-                "kinds": list(event.kinds),
-                "hostile_score": round(float(decision.score), 4),
-                "assigned_islands": assigned,
-                "orphaned_from_combat_islands": not bool(assigned),
-            }
-        )
+        detail = dict(structural.get(id(event), {}))
+        if assigned:
+            disposition = "recovered" if detail.get("disposition") == "recovered" else "assigned"
+            canonical_island_eligible = True
+            rejection_reason = None
+        elif detail.get("disposition") in {
+            "non_islandable_short_component",
+            "non_islandable_hard_gap_event",
+        }:
+            disposition = str(detail["disposition"])
+            canonical_island_eligible = False
+            rejection_reason = detail.get("reason")
+        else:
+            disposition = "unresolved"
+            canonical_island_eligible = False
+            rejection_reason = detail.get("reason") or "no_explicit_structural_disposition"
+
+        item = {
+            "time": round(float(event.time), 3),
+            "kinds": list(event.kinds),
+            "hostile_score": round(float(decision.score), 4),
+            "hostile_verified": True,
+            "assigned_islands": assigned,
+            "orphaned_from_combat_islands": not bool(assigned),
+            "canonical_island_eligible": canonical_island_eligible,
+            "disposition": disposition,
+            "structural_rejection_reason": rejection_reason,
+        }
+        for key in (
+            "shot_index",
+            "component_start",
+            "component_end",
+            "component_duration",
+            "minimum_combat_island_seconds",
+        ):
+            if key in detail:
+                item[key] = detail[key]
+        assignments.append(item)
+
     diagnostics["verified_hostile_event_assignment"] = assignments
     diagnostics["orphaned_verified_hostile_event_count"] = sum(
         1 for item in assignments if item["orphaned_from_combat_islands"]
     )
+    diagnostics["recovered_verified_hostile_event_count"] = sum(
+        1 for item in assignments if item["disposition"] == "recovered"
+    )
+    diagnostics["non_islandable_verified_hostile_event_count"] = sum(
+        1 for item in assignments if str(item["disposition"]).startswith("non_islandable_")
+    )
+    diagnostics["unresolved_verified_hostile_event_count"] = sum(
+        1 for item in assignments if item["disposition"] == "unresolved"
+    )
     diagnostics["orphan_recovery_components"] = list(recovery or [])
     diagnostics["orphan_recovery_component_count"] = len(recovery or [])
     setattr(timeline, "_local_interaction_diagnostics", diagnostics)
+    return assignments
 
 
 def build(timeline: Any, coarse: tuple[Any, ...], config: dict[str, Any], core: Any, combat: Any, Engagement: Any) -> tuple[Any, ...]:
-    """Build exact gap-split islands; verified hostility cannot be silently orphaned."""
+    """Build exact gap-split islands without conflating hostile evidence with edit eligibility."""
     cfg = config["combat_state_verifier"]
     minimum = _f(cfg.get("minimum_combat_island_seconds", 1.0), 1.0)
     hard = gap_signal(timeline, config)
@@ -254,16 +321,23 @@ def build(timeline: Any, coarse: tuple[Any, ...], config: dict[str, Any], core: 
             ))
 
     unique = _dedupe_islands(combat_islands)
-    unique, recovery = _recover_orphaned_anchors(timeline, anchors, hard, core, Engagement, unique, minimum)
+    unique, recovery, structural = _recover_orphaned_anchors(
+        timeline, anchors, hard, core, Engagement, unique, minimum
+    )
     result = tuple(sorted(unique, key=lambda item: (item.start, item.end)))
-    _attach_assignment_diagnostics(timeline, anchors, result, recovery)
+    assignments = _attach_assignment_diagnostics(
+        timeline, anchors, result, recovery, structural
+    )
 
-    remaining = [event for event, _ in anchors if not any(event in island.events for island in result)]
-    if remaining:
-        times = ", ".join(f"{float(event.time):.3f}" for event in remaining)
+    unresolved = [
+        item for item in assignments
+        if not item["assigned_islands"] and item["disposition"] == "unresolved"
+    ]
+    if unresolved:
+        times = ", ".join(f"{float(item['time']):.3f}" for item in unresolved)
         raise RuntimeError(
-            "verified hostile event could not be assigned to a minimum-duration same-shot "
-            f"hard-gap-free canonical combat island; event_times=[{times}]"
+            "verified hostile event has neither a canonical combat island nor an explicit "
+            f"structural non-islandable disposition; event_times=[{times}]"
         )
     return result
 
@@ -366,5 +440,54 @@ def self_test() -> None:
         raise AssertionError("orphan recovery did not produce total assignment")
     if diagnostics["orphan_recovery_component_count"] != 1:
         raise AssertionError("coarse-gating regression did not exercise recovery")
+    event_b_assignment = next(
+        item for item in diagnostics["verified_hostile_event_assignment"]
+        if item["time"] == 7.5
+    )
+    if event_b_assignment["disposition"] != "recovered":
+        raise AssertionError("recovered hostile event did not receive recovered disposition")
+
+    # Regression: verified local hostility remains valid evidence even when hard
+    # gaps bound its maximal legal component below the production island minimum.
+    short_event = type("Event", (), {"time": 4.5, "kinds": ("outcome_like",)})()
+
+    class ShortCombat:
+        @staticmethod
+        def hostile_decision(event: Any, config: dict[str, Any]) -> Any:
+            return type("Decision", (), {"hostile": True, "score": 0.95})()
+
+    short_support = np.zeros(100, dtype=np.float32)
+    short_support[42:48] = 1.0
+    short_traversal = np.ones(100, dtype=np.float32)
+    short_traversal[42:48] = 0.0
+    short_timeline = type("Timeline", (), {
+        "fps": 10.0,
+        "times": np.arange(100, dtype=np.float32) / 10.0,
+        "shots": (shot,),
+        "consolidated_events": (short_event,),
+        "signals": {
+            "combat": short_support,
+            "outcome": short_support,
+            "impact": short_support,
+            "traversal": short_traversal,
+            "recovery": zeros,
+        },
+        "_local_interaction_diagnostics": {},
+    })()
+    short_islands = build(short_timeline, (), recovery_config, FakeCore, ShortCombat, fake_engagement)
+    if short_islands:
+        raise AssertionError("sub-minimum hard-gap-bounded hostile component became a canonical island")
+    short_diagnostics = short_timeline._local_interaction_diagnostics
+    if short_diagnostics["non_islandable_verified_hostile_event_count"] != 1:
+        raise AssertionError("short hostile component was not retained as explicit non-islandable evidence")
+    if short_diagnostics["unresolved_verified_hostile_event_count"] != 0:
+        raise AssertionError("short hostile component was incorrectly left unresolved")
+    short_assignment = short_diagnostics["verified_hostile_event_assignment"][0]
+    if short_assignment["disposition"] != "non_islandable_short_component":
+        raise AssertionError("short hostile component received the wrong structural disposition")
+    if short_assignment["canonical_island_eligible"]:
+        raise AssertionError("short hostile component was incorrectly marked island-eligible")
+    if abs(float(short_assignment["component_duration"]) - 0.6) > 1e-6:
+        raise AssertionError("short hostile component duration diagnostic is incorrect")
 
     print("MW4 canonical combat-island self-test: PASS")
