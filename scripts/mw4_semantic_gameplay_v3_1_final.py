@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-# Canonical planner entrypoint: every verified payoff anchor -> same-shot quality-gated source span -> clip proposal.
-# Semantic combat gaps are evidence/quality signals, not authoritative source-cut boundaries.
+# Canonical planner entrypoint: every verified payoff anchor -> verified-source-region quality-gated span -> clip proposal.
+# Automatic scene cuts are proposal evidence only; manually verified stringout cuts remain hard integrity walls.
 import sys
 from typing import Any
 
@@ -75,7 +75,7 @@ plan_integrity_violations = _proposals.plan_integrity_violations
 def _self_test() -> None:
     _base._self_test()
     _proposals.self_test(_base)
-    print("MW4 payoff-complete same-shot proposal architecture: PASS")
+    print("MW4 payoff-complete verified-source-region proposal architecture: PASS")
 
 
 def __getattr__(name: str) -> Any:
