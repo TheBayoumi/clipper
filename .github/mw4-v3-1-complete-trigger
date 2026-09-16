@@ -1,0 +1,9 @@
+MW4 V3.1 complete-source payoff qualification
+
+This trigger validates two corrected invariants:
+1. MediaSilo discovery must resolve exactly four original video masters for this campaign and every discovered source must enter semantic analysis.
+2. Every verified hostile payoff anchor receives an independent same-shot 10-20s proposal search under unchanged source-integrity, hostile-verification, retention, payoff, opening, ending, weakest-quarter, inactivity, FFV1/NUT, SSIM, PSNR, timing and metadata gates.
+
+Candidate-pool construction preserves one best plan per distinct terminal payoff scene before score-based fill, so alternate boundaries from one Finishing Move or one payoff cluster cannot crowd distinct kill scenes out of the allocator input.
+
+No fallback planner, semantic montage, threshold reduction, earlier-footage continuation, minimum-duration padding, or proxy MediaSilo derivative is enabled.
