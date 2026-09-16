@@ -8,3 +8,5 @@ This trigger validates three corrected invariants:
 Candidate-pool construction preserves one best plan per distinct terminal payoff scene before score-based fill, so alternate boundaries from one Finishing Move or one payoff cluster cannot crowd distinct kill scenes out of the allocator input.
 
 Hostile verification, retention, payoff, opening, ending, weakest-quarter, inactivity, verified-cut integrity, FFV1/NUT, SSIM, PSNR, timing and metadata gates remain unchanged. No fallback planner, semantic montage, threshold reduction, earlier-footage continuation, minimum-duration padding, or proxy MediaSilo derivative is enabled.
+
+Retrigger marker: 2026-09-17 clean qualification after orphaned run 35162813611.
