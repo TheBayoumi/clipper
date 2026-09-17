@@ -39,9 +39,10 @@ def _add_mw4_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
 
     analyze = stages.add_parser(
         "analyze",
-        help="select, download, certify, and semantically analyze one discovered source",
+        help="resolve, download, certify, and semantically analyze one MediaSilo source",
     )
-    analyze.add_argument("--catalog", type=Path, required=True)
+    analyze.add_argument("--review-url", required=True)
+    analyze.add_argument("--expected-count", type=int, required=True)
     analyze.add_argument("--source-key", required=True)
     analyze.add_argument("--config", type=Path, required=True)
     analyze.add_argument("--source-dir", type=Path, required=True)
@@ -217,13 +218,25 @@ def _run_mw4(args: argparse.Namespace) -> int:
         source_path = args.source_dir / f"{args.source_key}.mp4"
         qa_path = args.source_dir / f"{args.source_key}.source_qa.json"
         with tempfile.TemporaryDirectory(prefix="clipper-mw4-") as temp_dir:
+            catalog = Path(temp_dir) / "source_catalog.json"
             resolved = Path(temp_dir) / "resolved_source.json"
+            _run_script(
+                root,
+                "mw4_v3_1_source_catalog.py",
+                "discover",
+                "--review-url",
+                args.review_url,
+                "--output",
+                str(catalog),
+                "--expected-count",
+                str(args.expected_count),
+            )
             _run_script(
                 root,
                 "mw4_v3_1_source_catalog.py",
                 "select",
                 "--catalog",
-                str(args.catalog),
+                str(catalog),
                 "--source-key",
                 args.source_key,
                 "--output",
