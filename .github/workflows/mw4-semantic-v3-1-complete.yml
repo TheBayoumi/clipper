@@ -9,6 +9,7 @@ on:
       - .github/workflows/mw4-semantic-v3-1-complete.yml
       - .github/mw4-v3-1-complete-trigger
       - campaigns/mw4-fullframe-retention-v3-1.json
+      - src/clipper/cli.py
       - scripts/mw4_semantic_gameplay_v3_1_*.py
       - scripts/mw4_v3_1_*.py
       - scripts/mw4_fullframe_retention_v3_1.py
@@ -29,30 +30,27 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install MediaSilo discovery dependency
+      - name: Install Clipper CLI and MediaSilo discovery dependency
         run: |
           python -m pip install --upgrade pip
+          python -m pip install -e .
           python -m pip install 'playwright==1.55.0'
           python -m playwright install --with-deps chromium
-      - name: Discover every original video master
+      - name: Verify canonical MW4 CLI architecture
+        run: |
+          set -euo pipefail
+          clipper mw4 self-test
+      - name: Discover every original video master through Clipper CLI
         id: catalog
         env:
           MEDIASILO_URL: https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260
         run: |
           set -euo pipefail
-          python scripts/mw4_v3_1_source_catalog.py discover \
+          clipper mw4 discover \
             --review-url "$MEDIASILO_URL" \
             --output /tmp/source_catalog.json \
             --github-output "$GITHUB_OUTPUT" \
             --expected-count 4
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          data = json.loads(Path('/tmp/source_catalog.json').read_text())
-          print('Resolved MediaSilo source masters:')
-          for item in data['sources']:
-              print(f"- {item['source_key']}: {item['title']}")
-          PY
 
   analyze:
     name: analyze-${{ matrix.source }}
@@ -68,63 +66,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install analysis dependencies
+      - name: Install Clipper CLI analysis dependencies
         run: |
           python -m pip install --upgrade pip
+          python -m pip install -e .
           python -m pip install 'numpy==2.1.3' 'playwright==1.55.0'
           python -m playwright install --with-deps chromium
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-      - name: Verify payoff-complete canonical architecture
-        run: |
-          set -euo pipefail
-          test ! -e scripts/mw4_semantic_gameplay_v3_1_refined.py
-          test ! -e scripts/mw4_semantic_gameplay_v3_1_final_legacy.py
-          test ! -e scripts/mw4_semantic_gameplay_v3_1_finishing_body.py
-          test ! -e scripts/mw4_semantic_gameplay_v3_1_no_fallback.py
-          python -m py_compile \
-            scripts/mw4_semantic_gameplay_v3_1_payoff_complete.py \
-            scripts/mw4_semantic_gameplay_v3_1_payoff_terminal.py \
-            scripts/mw4_semantic_gameplay_v3_1_final.py \
-            scripts/mw4_v3_1_source_catalog.py \
-            scripts/mw4_v3_1_dynamic_contract.py \
-            scripts/mw4_v3_1_dynamic_workflow_support.py \
-            scripts/mw4_fullframe_retention_v3_1.py \
-            scripts/mw4_v3_1_render_one.py
-          python scripts/mw4_semantic_gameplay_v3_1_final.py --self-test
-          python scripts/mw4_v3_1_dynamic_contract.py --self-test
-      - name: Resolve this discovered MediaSilo original master
+      - name: Resolve, certify, analyze, and diagnose source through Clipper CLI
+        timeout-minutes: 30
         env:
           SOURCE_KEY: ${{ matrix.source }}
           MEDIASILO_URL: https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260
-        run: |
-          set -euo pipefail
-          python scripts/mw4_v3_1_source_catalog.py discover \
-            --review-url "$MEDIASILO_URL" \
-            --output /tmp/source_catalog.json \
-            --expected-count 4
-          python scripts/mw4_v3_1_source_catalog.py select \
-            --catalog /tmp/source_catalog.json \
-            --source-key "$SOURCE_KEY" \
-            --output /tmp/resolved_source.json
-      - name: Download and certify original source once
-        env:
-          SOURCE_KEY: ${{ matrix.source }}
-        run: |
-          set -euo pipefail
-          mkdir -p raw_sources
-          python scripts/mw4_v3_1_mediasilo_source.py download \
-            --resolved /tmp/resolved_source.json \
-            --target "raw_sources/$SOURCE_KEY.mp4"
-          python scripts/mw4_v3_1_source_qa.py certify \
-            --source "raw_sources/$SOURCE_KEY.mp4" \
-            --source-key "$SOURCE_KEY" \
-            --resolved /tmp/resolved_source.json \
-            --output "raw_sources/$SOURCE_KEY.source_qa.json"
-      - name: Analyze payoff-complete candidate pool
-        timeout-minutes: 18
-        env:
-          SOURCE_KEY: ${{ matrix.source }}
           OMP_NUM_THREADS: '2'
           OPENBLAS_NUM_THREADS: '1'
           MKL_NUM_THREADS: '1'
@@ -132,50 +86,13 @@ jobs:
           MALLOC_ARENA_MAX: '2'
         run: |
           set -euo pipefail
-          nice -n 5 python scripts/mw4_fullframe_retention_v3_1.py \
+          nice -n 5 clipper mw4 analyze \
+            --review-url "$MEDIASILO_URL" \
+            --expected-count 4 \
             --source-key "$SOURCE_KEY" \
-            --source "raw_sources/$SOURCE_KEY.mp4" \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
-            --output-dir "analysis/$SOURCE_KEY" \
-            --mode analysis
-      - name: Print source and kill-scene diagnostics
-        env:
-          SOURCE_KEY: ${{ matrix.source }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          key = os.environ['SOURCE_KEY']
-          path = Path('analysis') / key / f'{key}_analysis_v3_1.json'
-          data = json.loads(path.read_text())
-          local = (data.get('diagnostics') or {}).get('local_interaction_verifier') or {}
-          events = local.get('events') or []
-          confirmed = [e for e in events if e.get('confirmed')]
-          kill_like = [e for e in confirmed if 'outcome_like' in (e.get('kinds') or [])]
-          pool = data.get('candidate_pool') or []
-          terminals = set()
-          for plan in pool:
-              anchors = []
-              for event in plan.get('effect_events') or []:
-                  if event.get('kind') in {'impact', 'outcome_like'}:
-                      anchors.append(float(event['time']))
-              for engagement in plan.get('engagements') or []:
-                  for event in engagement.get('events') or []:
-                      if set(event.get('kinds') or []).intersection({'impact', 'outcome_like'}):
-                          anchors.append(float(event['time']))
-              if anchors:
-                  terminals.add(round(max(anchors), 3))
-          print(json.dumps({
-              'source': key,
-              'verified_local_interactions': len(confirmed),
-              'kill_like_outcome_events': len(kill_like),
-              'kill_like_times': [round(float(e['time']), 3) for e in kill_like],
-              'qualified_candidate_count': len(pool),
-              'distinct_terminal_payoff_scenes_in_pool': len(terminals),
-              'terminal_payoff_times': sorted(terminals),
-          }, indent=2))
-          PY
+            --source-dir raw_sources \
+            --output-dir "analysis/$SOURCE_KEY"
       - name: Upload verified source reel for isolated render workspaces
         uses: actions/upload-artifact@v4
         with:
@@ -199,28 +116,33 @@ jobs:
     needs: analyze
     runs-on: ubuntu-24.04
     outputs:
-      render_matrix: ${{ steps.render-matrix.outputs.render_matrix }}
+      render_matrix: ${{ steps.allocate.outputs.render_matrix }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install Clipper CLI
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
       - name: Download all analysis manifests
         uses: actions/download-artifact@v4
         with:
           pattern: MW4-v3-1-complete-analysis-*
           path: analysis-manifests
           merge-multiple: true
-      - name: Build dynamic source-set allocation
+      - name: Allocate canonical candidates through Clipper CLI
+        id: allocate
         run: |
           set -euo pipefail
-          python scripts/mw4_v3_1_dynamic_contract.py --self-test
           mkdir -p allocation
-          python scripts/mw4_v3_1_dynamic_contract.py \
+          clipper mw4 allocate \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
-            --allocate-from analysis-manifests \
+            --analysis-root analysis-manifests \
             --allocation-out allocation/mw4_v3_1_allocation.json \
-            --rejection-out allocation/mw4_v3_1_allocation_rejection.json
+            --rejection-out allocation/mw4_v3_1_allocation_rejection.json \
+            --github-output "$GITHUB_OUTPUT"
       - name: Upload fail-closed allocation diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -229,13 +151,6 @@ jobs:
           path: allocation/mw4_v3_1_allocation_rejection.json
           retention-days: 3
           if-no-files-found: error
-      - name: Build one-workspace-per-clip render matrix
-        id: render-matrix
-        run: |
-          set -euo pipefail
-          python scripts/mw4_v3_1_dynamic_workflow_support.py render-matrix \
-            --allocation allocation/mw4_v3_1_allocation.json \
-            --github-output "$GITHUB_OUTPUT"
       - name: Upload approved global allocation
         uses: actions/upload-artifact@v4
         with:
@@ -258,9 +173,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install single-clip renderer dependencies
+      - name: Install Clipper CLI renderer dependencies
         run: |
           python -m pip install --upgrade pip
+          python -m pip install -e .
           python -m pip install 'numpy==2.1.3'
           sudo apt-get update
           sudo apt-get install -y ffmpeg
@@ -274,15 +190,7 @@ jobs:
         with:
           name: MW4-v3-1-complete-source-${{ matrix.source }}
           path: raw_sources
-      - name: Verify staged source reel
-        env:
-          SOURCE_KEY: ${{ matrix.source }}
-        run: |
-          set -euo pipefail
-          python scripts/mw4_v3_1_source_qa.py verify \
-            --source "raw_sources/$SOURCE_KEY.mp4" \
-            --manifest "raw_sources/$SOURCE_KEY.source_qa.json"
-      - name: Render and QA one full-quality clip
+      - name: Verify, render, and QA clip through Clipper CLI
         timeout-minutes: 65
         env:
           SOURCE_KEY: ${{ matrix.source }}
@@ -293,9 +201,9 @@ jobs:
           MALLOC_ARENA_MAX: '2'
         run: |
           set -euo pipefail
-          nice -n 5 python scripts/mw4_v3_1_render_one.py \
+          nice -n 5 clipper mw4 render-one \
             --source-key "$SOURCE_KEY" \
-            --source "raw_sources/$SOURCE_KEY.mp4" \
+            --source-dir raw_sources \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
             --allocation allocation/mw4_v3_1_allocation.json \
             --plan-key "${{ matrix.plan_key }}" \
@@ -331,6 +239,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install Clipper CLI
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
       - name: Download approved allocation
         uses: actions/download-artifact@v4
         with:
@@ -342,21 +254,14 @@ jobs:
           pattern: MW4-v3-1-complete-meta-*
           path: clip-meta
           merge-multiple: true
-      - name: Aggregate dynamic source summaries
+      - name: Enforce complete adaptive batch contract through Clipper CLI
         run: |
           set -euo pipefail
-          python scripts/mw4_v3_1_dynamic_workflow_support.py batch-summaries \
-            --allocation allocation/mw4_v3_1_allocation.json \
+          clipper mw4 batch-contract \
             --config campaigns/mw4-fullframe-retention-v3-1.json \
+            --allocation allocation/mw4_v3_1_allocation.json \
             --clip-meta clip-meta \
             --output-dir batch
-      - name: Enforce complete adaptive batch contract
-        run: |
-          set -euo pipefail
-          python scripts/mw4_v3_1_dynamic_contract.py \
-            --config campaigns/mw4-fullframe-retention-v3-1.json \
-            --batch-root batch \
-            --allocation allocation/mw4_v3_1_allocation.json
       - name: Upload batch contract
         uses: actions/upload-artifact@v4
         with:
