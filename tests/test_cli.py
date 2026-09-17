@@ -75,7 +75,10 @@ def test_mw4_self_test_uses_canonical_modules(tmp_path: Path) -> None:
         assert main(["mw4", "self-test"]) == 0
     compile_command = run.call_args.args[0]
     assert compile_command[1:3] == ["-m", "py_compile"]
-    assert any(str(item).endswith("mw4_semantic_gameplay_v3_1_payoff_terminal.py") for item in compile_command)
+    assert any(
+        str(item).endswith("mw4_semantic_gameplay_v3_1_payoff_terminal.py")
+        for item in compile_command
+    )
     assert run_script.call_count == 2
 
     forbidden = scripts / "mw4_semantic_gameplay_v3_1_refined.py"
@@ -114,8 +117,7 @@ def test_mw4_discover_routes_through_cli_contract(tmp_path: Path) -> None:
     assert "4" in arguments
 
 
-def test_mw4_analyze_owns_source_resolution_and_diagnostics(tmp_path: Path) -> None:
-    catalog = tmp_path / "catalog.json"
+def test_mw4_analyze_keeps_signed_catalog_local(tmp_path: Path) -> None:
     config = tmp_path / "config.json"
     source_dir = tmp_path / "raw_sources"
     output_dir = tmp_path / "analysis" / "r1"
@@ -129,8 +131,10 @@ def test_mw4_analyze_owns_source_resolution_and_diagnostics(tmp_path: Path) -> N
                 [
                     "mw4",
                     "analyze",
-                    "--catalog",
-                    str(catalog),
+                    "--review-url",
+                    "https://example.test/review",
+                    "--expected-count",
+                    "4",
                     "--source-key",
                     "r1",
                     "--config",
@@ -146,10 +150,15 @@ def test_mw4_analyze_owns_source_resolution_and_diagnostics(tmp_path: Path) -> N
     called_scripts = [call.args[1] for call in run_script.call_args_list]
     assert called_scripts == [
         "mw4_v3_1_source_catalog.py",
+        "mw4_v3_1_source_catalog.py",
         "mw4_v3_1_mediasilo_source.py",
         "mw4_v3_1_source_qa.py",
         "mw4_fullframe_retention_v3_1.py",
     ]
+    first_call = run_script.call_args_list[0].args
+    assert first_call[2] == "discover"
+    assert "--review-url" in first_call
+    assert "--expected-count" in first_call
     diagnostics.assert_called_once_with(output_dir / "r1_analysis_v3_1.json")
 
 
