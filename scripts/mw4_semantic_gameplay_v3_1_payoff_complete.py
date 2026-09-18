@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from typing import Any
+from typing import Any, ClassVar
 
 import mw4_semantic_gameplay_v3_1_quality as quality
 import mw4_semantic_gameplay_v3_1_source_span_proposals as canonical
@@ -577,7 +577,7 @@ def self_test(base: Any) -> None:
 
     class Timeline:
         base = Base()
-        shots = [Shot(0.0, 5.0), Shot(5.2, 30.0)]
+        shots: ClassVar[list[Shot]] = [Shot(0.0, 5.0), Shot(5.2, 30.0)]
 
     config = {
         "source_integrity": {"verified_cut_windows": {}},
