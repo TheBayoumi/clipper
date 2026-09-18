@@ -7,8 +7,9 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from .brief import load_brief
 from clipper_engine.gameplay.workflow import run_mw4
+
+from .brief import load_brief
 from .pipeline import PipelineSettings, run_pipeline
 from .rights import assert_campaign_authorized
 from .youtube import YouTubeClient
@@ -35,7 +36,8 @@ def _add_mw4_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
 
     discover = stages.add_parser("discover", help="discover original MediaSilo source masters")
     discover.add_argument("--review-url")
-    discover.add_argument("--output", type=Path, required=True)\n    discover.add_argument("--config", type=Path)
+    discover.add_argument("--output", type=Path, required=True)
+    discover.add_argument("--config", type=Path)
     discover.add_argument("--github-output", type=Path)
     discover.add_argument("--expected-count", type=int)
 
