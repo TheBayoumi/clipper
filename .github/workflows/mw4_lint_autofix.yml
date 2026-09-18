@@ -1,4 +1,4 @@
-name: MW4 lint audited fixes
+name: MW4 lint audited fixes v2
 
 on:
   push:
