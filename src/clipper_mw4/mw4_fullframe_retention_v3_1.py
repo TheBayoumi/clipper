@@ -451,10 +451,16 @@ def _candidate_scene_id(payload: dict[str, Any], anchor_time: float | None) -> s
         if anchor_time is None:
             return (0.0, start)
         event_times = [float(event["time"]) for event in item.get("events") or []]
-        event_distance = min((abs(value - anchor_time) for value in event_times), default=float("inf"))
-        interval_distance = 0.0 if start - 0.35 <= anchor_time <= end + 0.35 else min(
-            abs(anchor_time - start),
-            abs(anchor_time - end),
+        event_distance = min(
+            (abs(value - anchor_time) for value in event_times), default=float("inf")
+        )
+        interval_distance = (
+            0.0
+            if start - 0.35 <= anchor_time <= end + 0.35
+            else min(
+                abs(anchor_time - start),
+                abs(anchor_time - end),
+            )
         )
         return (min(event_distance, interval_distance), start)
 

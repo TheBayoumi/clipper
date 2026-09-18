@@ -318,9 +318,9 @@ def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> An
                         float(metrics["offset_frames"]) / fps, 4
                     ),
                     "local_direct_interaction": 1.0 if confirmed else 0.0,
-                    "local_confirmation_mode": 1.0 if confirmation_mode == "direct_hitmarker" else (
-                        0.5 if confirmation_mode == "outcome_assisted_hitmarker" else 0.0
-                    ),
+                    "local_confirmation_mode": 1.0
+                    if confirmation_mode == "direct_hitmarker"
+                    else (0.5 if confirmation_mode == "outcome_assisted_hitmarker" else 0.0),
                 }
             )
             updated[index] = replace(event, evidence=evidence)
