@@ -75,9 +75,7 @@ def _print_diagnostics(path: Path) -> None:
     local = (data.get("diagnostics") or {}).get("local_interaction_verifier") or {}
     events = local.get("events") or []
     confirmed = [event for event in events if event.get("confirmed")]
-    kill_like = [
-        event for event in confirmed if "outcome_like" in (event.get("kinds") or [])
-    ]
+    kill_like = [event for event in confirmed if "outcome_like" in (event.get("kinds") or [])]
     pool = data.get("candidate_pool") or []
     terminals: set[float] = set()
     for plan in pool:
