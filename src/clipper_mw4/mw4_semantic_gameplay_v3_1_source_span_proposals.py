@@ -151,10 +151,10 @@ def _normal_span_variants(
 ) -> tuple[tuple[float, float], ...]:
     editor = config["semantic_editor"]
     minimum = _f(editor.get("minimum_output_seconds", 10.0), 10.0)
-    maximum = _f(editor.get("maximum_output_seconds", 20.0), 20.0)
+    maximum = _f(editor.get("maximum_output_seconds", 12.0), 12.0)
     preferred = min(
         maximum,
-        _f(editor.get("preferred_output_seconds", 12.5), 12.5),
+        _f(editor.get("preferred_output_seconds", 11.0), 11.0),
     )
     tail = _f(editor["ending"].get("preferred_payoff_tail_seconds", 0.45), 0.45)
     shot = _shot_for_component(timeline, chain[0])
@@ -230,8 +230,8 @@ def normal_plans(
         10.0,
     )
     maximum = _f(
-        config["semantic_editor"].get("maximum_output_seconds", 20.0),
-        20.0,
+        config["semantic_editor"].get("maximum_output_seconds", 12.0),
+        12.0,
     )
     components = support._support_components(timeline, config)
     plans: list[SemanticPlanV31] = []
@@ -519,12 +519,12 @@ def finishing_open_plans(
     )
     final_maximum = min(
         _f(
-            config["semantic_editor"].get("maximum_output_seconds", 20.0),
-            20.0,
+            config["semantic_editor"].get("maximum_output_seconds", 12.0),
+            12.0,
         ),
         _f(
-            editorial.get("finishing_move_max_output_seconds", 15.5),
-            15.5,
+            editorial.get("finishing_move_max_output_seconds", 12.0),
+            12.0,
         ),
     )
     max_islands = int(cfg.get("maximum_verified_island_moments_per_body", 3))

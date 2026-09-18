@@ -550,11 +550,6 @@ def main() -> None:
         plans = semantic.build_plans_for_source(timeline, config, excluded, args.source_key)
         automatic_candidates = _automatic_finishing_candidates(timeline, config)
         failure: list[str] = []
-        minimum = int(config.get("minimum_count_per_source", 0))
-        if len(plans) < minimum:
-            failure.append(
-                f"only {len(plans)} semantic candidates passed; minimum is {minimum}; quality gates were not lowered"
-            )
         analysis_path = args.output_dir / f"{args.source_key}_analysis_v3_1.json"
         analysis = {
             "version": "3.1",
@@ -607,7 +602,7 @@ def main() -> None:
     )
     diagnostics = {
         "render_reanalysis": False,
-        "selection_source": "adaptive pre-render allocation",
+        "selection_source": "orchestrator scene-derived pre-render allocation",
         "source_structure_only_check": True,
         "shot_count": len(structure.shots),
         "qualified_candidate_count_from_allocation": qualified_candidate_count,
@@ -617,14 +612,13 @@ def main() -> None:
     manifest_path = args.output_dir / f"{args.source_key}_manifest_v3_1.json"
     summary_path = args.output_dir / f"{args.source_key}_pipeline_summary.json"
     failure: list[str] = []
-    maximum = int(
-        config.get("batch_selection", {}).get(
-            "maximum_per_source", config.get("count_per_source_max", 8)
-        )
-    )
-    if not (0 <= len(selected) <= maximum):
+    expected_scene_count = int(source_allocation.get("distinct_fighting_scene_count", -1))
+    if expected_scene_count < 0:
+        failure.append("allocation is missing distinct fighting-scene count")
+    elif len(selected) != expected_scene_count:
         failure.append(
-            f"adaptive allocation selected {len(selected)} for {args.source_key}; allowed range is 0..{maximum}"
+            f"orchestrator selected {len(selected)} clips for "
+            f"{expected_scene_count} distinct qualified fighting scenes"
         )
 
     source_failures, integrity_violations = _source_contract_failure(

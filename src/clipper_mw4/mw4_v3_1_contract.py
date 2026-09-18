@@ -30,6 +30,28 @@ def validate_configuration(config: dict[str, Any]) -> None:
     if "semantic_montage" in config.get("semantic_editor", {}):
         errors.append("obsolete semantic_montage configuration must be removed")
 
+    for key in ("count_per_source_max", "minimum_count_per_source"):
+        if key in config:
+            errors.append(f"static clip-count configuration must be removed: {key}")
+    batch = config.get("batch_selection", {})
+    for key in (
+        "candidate_pool_per_source",
+        "maximum_per_source",
+        "minimum_total_clips",
+        "maximum_total_clips",
+    ):
+        if key in batch:
+            errors.append(f"static batch clip-count configuration must be removed: {key}")
+
+    semantic_editor = config.get("semantic_editor", {})
+    minimum_output = float(semantic_editor.get("minimum_output_seconds", 10.0))
+    maximum_output = float(semantic_editor.get("maximum_output_seconds", 12.0))
+    preferred_output = float(semantic_editor.get("preferred_output_seconds", 11.0))
+    if abs(minimum_output - 10.0) > _EPS or abs(maximum_output - 12.0) > _EPS:
+        errors.append("MW4 canonical clip duration contract must be exactly 10–12 seconds")
+    if not minimum_output - _EPS <= preferred_output <= maximum_output + _EPS:
+        errors.append("preferred_output_seconds must remain inside the 10–12 second contract")
+
     editorial = config.get("editorial", {})
     for key in (
         "finishing_move_allow_semantic_montage_continuation",
@@ -310,7 +332,7 @@ def validate_plan(
     story = str(plan.get("story_type", ""))
     duration = float(plan.get("output_duration", 0.0))
     minimum = float(editor.get("minimum_output_seconds", 10.0))
-    maximum = float(editor.get("maximum_output_seconds", 20.0))
+    maximum = float(editor.get("maximum_output_seconds", 12.0))
     if not (minimum <= duration <= maximum):
         failures.append(f"{source} clip {index}: duration out of campaign range")
     checks = (
@@ -367,88 +389,48 @@ def _importance_score(plan: dict[str, Any], config: dict[str, Any]) -> float:
     return score
 
 
+def _primary_scene_key(plan: dict[str, Any]) -> tuple[str, float | str]:
+    finishing = plan.get("finishing_move")
+    if finishing is not None:
+        return ("finishing_move", round(float(finishing.get("payoff", finishing["start"])), 3))
+    anchors = _semantic_anchor_times(plan)
+    if anchors:
+        return ("terminal_payoff", round(float(anchors[-1]), 3))
+    return ("plan", str(plan.get("plan_key") or plan_key(plan)))
+
+
 def _adaptive_source_selection(
     source: str,
     candidates: list[dict[str, Any]],
     verified_count: int,
     config: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    batch = config.get("batch_selection", {})
-    maximum = int(batch.get("maximum_per_source", config.get("count_per_source_max", 8)))
-    diversity = float(
-        config.get("semantic_editor", {}).get("selection", {}).get("story_diversity_bonus", 0.06)
+    ordered = sorted(
+        candidates,
+        key=lambda plan: (-_importance_score(plan, config), str(plan.get("plan_key", ""))),
     )
-    selected: list[dict[str, Any]] = []
+    best_per_scene: dict[tuple[str, float | str], dict[str, Any]] = {}
+    for plan in ordered:
+        best_per_scene.setdefault(_primary_scene_key(plan), plan)
+    selected = list(best_per_scene.values())
 
+    batch = config.get("batch_selection", {})
     if verified_count > 0 and bool(
         batch.get("require_verified_finishing_move_when_available", True)
-    ):
-        finishers = [plan for plan in candidates if plan.get("finishing_move") is not None]
-        if not finishers:
-            raise AssertionError(f"{source}: verified Finishing Move has no valid canonical plan")
-        selected.append(
-            max(
-                finishers,
-                key=lambda plan: (_importance_score(plan, config), str(plan.get("plan_key", ""))),
-            )
-        )
-
-    remaining = [plan for plan in candidates if plan not in selected]
-    while len(selected) < maximum:
-        compatible = [
-            plan
-            for plan in remaining
-            if not any(_plans_conflict(plan, old, config) for old in selected)
-        ]
-        if not compatible:
-            break
-        stories = {str(plan.get("story_type", "")) for plan in selected}
-        best = max(
-            compatible,
-            key=lambda plan: (
-                _importance_score(plan, config)
-                + (diversity if str(plan.get("story_type", "")) not in stories else 0.0),
-                str(plan.get("plan_key", "")),
-            ),
-        )
-        selected.append(best)
-        remaining.remove(best)
+    ) and not any(plan.get("finishing_move") is not None for plan in selected):
+        raise AssertionError(f"{source}: verified Finishing Move has no valid canonical plan")
 
     return sorted(
         selected,
         key=lambda plan: (
             plan.get("finishing_move") is None,
+            float(_primary_scene_key(plan)[1])
+            if isinstance(_primary_scene_key(plan)[1], float)
+            else float("inf"),
             -_importance_score(plan, config),
             str(plan.get("plan_key", "")),
         ),
     )
-
-
-def _apply_global_ceiling(
-    selections: dict[str, list[dict[str, Any]]],
-    config: dict[str, Any],
-) -> dict[str, list[dict[str, Any]]]:
-    maximum_total = int(config.get("batch_selection", {}).get("maximum_total_clips", 20))
-    flattened = [(source, plan) for source in EXPECTED_SOURCES for plan in selections[source]]
-    if len(flattened) <= maximum_total:
-        return selections
-    mandatory = [item for item in flattened if item[1].get("finishing_move") is not None]
-    optional = [item for item in flattened if item[1].get("finishing_move") is None]
-    optional.sort(
-        key=lambda item: (
-            -_importance_score(item[1], config),
-            item[0],
-            str(item[1].get("plan_key", "")),
-        )
-    )
-    keep = mandatory + optional[: max(0, maximum_total - len(mandatory))]
-    keep_keys = {(source, str(plan["plan_key"])) for source, plan in keep}
-    return {
-        source: [
-            plan for plan in selections[source] if (source, str(plan["plan_key"])) in keep_keys
-        ]
-        for source in EXPECTED_SOURCES
-    }
 
 
 def allocation_rejection_diagnostics(root: Path) -> dict[str, Any]:
@@ -496,11 +478,8 @@ def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
     if failures:
         raise AssertionError("\n".join(failures))
 
-    batch = config.get("batch_selection", {})
-    pool_limit = int(batch.get("candidate_pool_per_source", 40))
-    minimum_total = int(batch.get("minimum_total_clips", 1))
-    maximum_total = int(batch.get("maximum_total_clips", 20))
     candidate_pools: dict[str, list[dict[str, Any]]] = {}
+    discovered_scene_counts: dict[str, int] = {}
     verified_counts: dict[str, int] = {}
     automatic_candidate_counts: dict[str, int] = {}
     rejected_by_contract: dict[str, int] = {}
@@ -529,7 +508,8 @@ def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         valid.sort(
             key=lambda item: (-_importance_score(item, config), str(item.get("plan_key", "")))
         )
-        candidate_pools[source] = valid[:pool_limit]
+        candidate_pools[source] = valid
+        discovered_scene_counts[source] = len({_primary_scene_key(plan) for plan in valid})
         rejected_by_contract[source] = rejected
         verified_counts[source] = int(manifest.get("verified_finishing_move_count", 0))
         automatic_candidate_counts[source] = len(
@@ -545,11 +525,17 @@ def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         )
         for source in EXPECTED_SOURCES
     }
-    selections = _apply_global_ceiling(selections, config)
     total_selected = sum(len(items) for items in selections.values())
-    if not (minimum_total <= total_selected <= maximum_total):
+    derived_target_count = sum(discovered_scene_counts.values())
+    for source in EXPECTED_SOURCES:
+        if len(selections[source]) != discovered_scene_counts[source]:
+            raise AssertionError(
+                f"{source}: selected {len(selections[source])} clips for "
+                f"{discovered_scene_counts[source]} distinct qualified fighting scenes"
+            )
+    if total_selected != derived_target_count:
         raise AssertionError(
-            f"adaptive allocator selected {total_selected}; allowed total is {minimum_total}..{maximum_total}"
+            f"scene-derived allocator selected {total_selected}; expected {derived_target_count}"
         )
 
     allocations: dict[str, Any] = {}
@@ -562,6 +548,7 @@ def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
             "plan_keys": [str(plan["plan_key"]) for plan in selected],
             "plans": selected,
             "qualified_candidate_count": len(candidate_pools[source]),
+            "distinct_fighting_scene_count": discovered_scene_counts[source],
             "rejected_by_contract": rejected_by_contract[source],
         }
 
@@ -574,12 +561,11 @@ def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         "semantic_engine": EXPECTED_ENGINE,
         "editorial_planner": EXPECTED_EDITOR,
         "candidate_mode": EXPECTED_MODE,
-        "allocation_mode": "adaptive_important_scenes_before_render",
-        "selection_basis": "canonical quality-qualified semantically distinct important scenes",
-        "target_count": None,
+        "allocation_mode": "orchestrator_scene_derived_before_render",
+        "selection_basis": "one best canonical 10–12 second clip per distinct qualified fighting scene",
+        "target_count": derived_target_count,
         "selected_count": total_selected,
-        "minimum_total_clips": minimum_total,
-        "maximum_total_clips": maximum_total,
+        "duration_contract": {"minimum_seconds": 10.0, "maximum_seconds": 12.0},
         "distribution": {source: len(selections[source]) for source in EXPECTED_SOURCES},
         "verified_finishing_move_count": total_verified,
         "selected_finishing_move_count": selected_finishers,
@@ -612,13 +598,6 @@ def validate_source_manifest(
     if manifest.get("failure"):
         failures.append(f"{source}: pipeline reported failure: {manifest['failure']}")
 
-    maximum = int(
-        config.get("batch_selection", {}).get(
-            "maximum_per_source", config.get("count_per_source_max", 8)
-        )
-    )
-    if not (0 <= len(selected) <= maximum):
-        failures.append(f"{source}: selected {len(selected)}, allowed range is 0..{maximum}")
     if len(outputs) != len(selected):
         failures.append(f"{source}: rendered {len(outputs)} != selected {len(selected)}")
 
@@ -675,10 +654,6 @@ def validate_batch(
     if len(modes) != 1 or not modes.issubset({"shadow", "production"}):
         failures.append(f"batch has inconsistent/invalid modes: {sorted(modes)}")
 
-    batch = config.get("batch_selection", {})
-    maximum_per_source = int(batch.get("maximum_per_source", config.get("count_per_source_max", 8)))
-    minimum_total = int(batch.get("minimum_total_clips", 1))
-    maximum_total = int(batch.get("maximum_total_clips", 20))
     total_selected = total_rendered = total_verified = total_selected_finishers = 0
 
     for item in summaries:
@@ -687,10 +662,6 @@ def validate_batch(
             failures.append(f"{source}: {item['failure']}")
         selected = int(item.get("selected_count", 0))
         rendered = int(item.get("rendered_count", 0))
-        if not (0 <= selected <= maximum_per_source):
-            failures.append(
-                f"{source}: selected {selected}, allowed range is 0..{maximum_per_source}"
-            )
         if rendered != selected:
             failures.append(f"{source}: rendered {rendered} != selected {selected}")
         if not bool(item.get("technical_qa_passed", False)):
@@ -710,9 +681,12 @@ def validate_batch(
         total_verified += int(item.get("verified_finishing_move_count", 0))
         total_selected_finishers += int(item.get("selected_finishing_move_count", 0))
 
-    if not (minimum_total <= total_selected <= maximum_total):
+    derived_target_count = (
+        int(allocation.get("target_count", -1)) if allocation is not None else total_selected
+    )
+    if total_selected != derived_target_count:
         failures.append(
-            f"batch selected {total_selected}; allowed total is {minimum_total}..{maximum_total}"
+            f"batch selected {total_selected}; scene-derived target is {derived_target_count}"
         )
     if total_rendered != total_selected:
         failures.append("batch rendered count does not equal selected count")
@@ -727,9 +701,8 @@ def validate_batch(
         "sources": sorted(sources),
         "selected_count": total_selected,
         "rendered_count": total_rendered,
-        "selection_mode": "adaptive_important_scenes",
-        "minimum_total_clips": minimum_total,
-        "maximum_total_clips": maximum_total,
+        "selection_mode": "orchestrator_scene_derived",
+        "derived_target_count": derived_target_count,
         "verified_finishing_move_count": total_verified,
         "selected_finishing_move_count": total_selected_finishers,
         "allocation_enforced": allocation is not None,
@@ -740,9 +713,6 @@ def validate_batch(
 def _self_test() -> None:
     config = {
         "batch_selection": {
-            "maximum_per_source": 8,
-            "minimum_total_clips": 1,
-            "maximum_total_clips": 20,
             "require_verified_finishing_move_when_available": True,
         },
         "duplicate_policy": {
@@ -765,7 +735,7 @@ def _self_test() -> None:
         },
         "semantic_editor": {
             "minimum_output_seconds": 10.0,
-            "maximum_output_seconds": 20.0,
+            "maximum_output_seconds": 12.0,
             "opening": {"minimum_quality": 0.42},
             "ending": {
                 "minimum_quality": 0.40,
@@ -807,29 +777,32 @@ def _self_test() -> None:
         "story_type": "impact_payoff",
         "segments": [{"start": 0.0, "end": 10.0}],
     }
+    high["effect_events"] = [{"kind": "outcome_like", "time": 10.0}]
     low_a = {
         "plan_key": "low-a",
         "score": 0.6,
         "story_type": "impact_payoff",
-        "segments": [{"start": 0.0, "end": 4.0}],
+        "segments": [{"start": 0.0, "end": 10.0}],
+        "effect_events": [{"kind": "outcome_like", "time": 10.0}],
     }
     low_b = {
         "plan_key": "low-b",
         "score": 0.6,
         "story_type": "impact_payoff",
-        "segments": [{"start": 6.0, "end": 10.0}],
+        "segments": [{"start": 20.0, "end": 30.0}],
+        "effect_events": [{"kind": "outcome_like", "time": 30.0}],
     }
     selected = _adaptive_source_selection("test", [low_a, low_b, high], 0, config)
-    if [plan["plan_key"] for plan in selected] != ["high"]:
-        raise AssertionError("allocator is cardinality-first instead of quality-first")
+    if {plan["plan_key"] for plan in selected} != {"high", "low-b"}:
+        raise AssertionError("allocator did not keep one best clip for every distinct fighting scene")
 
     payoff = {"time": 175.917, "kinds": ["outcome_like"]}
     finisher = {
         "story_type": "finishing_move_open",
         "effect_profile": "finishing_move_hero",
         "start": 148.07,
-        "end": 181.0,
-        "output_duration": 14.797,
+        "end": 178.0,
+        "output_duration": 11.797,
         "opening_quality": 0.9,
         "ending_quality": 0.9,
         "retention_quality": 0.9,
@@ -840,11 +813,11 @@ def _self_test() -> None:
         "segments": [
             {"start": 148.07, "end": 150.5, "speed": 1.0, "reason": "finishing_move_open_hero"},
             {"start": 153.533, "end": 157.8, "speed": 1.0, "reason": "verified_combat_island_body"},
-            {"start": 172.9, "end": 181.0, "speed": 1.0, "reason": "verified_combat_island_body"},
+            {"start": 172.9, "end": 178.0, "speed": 1.0, "reason": "verified_combat_island_body"},
         ],
         "engagements": [
             {"start": 153.533, "end": 157.8, "events": [{"time": 156.0, "kinds": ["impact"]}]},
-            {"start": 172.9, "end": 181.0, "events": [payoff]},
+            {"start": 172.9, "end": 178.0, "events": [payoff]},
         ],
         "finishing_move": {"start": 148.35, "payoff": 149.45, "end": 150.05},
     }
@@ -865,7 +838,7 @@ def _self_test() -> None:
             {
                 "self_test": "PASS",
                 "contract": "canonical-v3.1-adaptive-important-scenes-contract",
-                "selection_mode": "quality-first-adaptive",
+                "selection_mode": "all-distinct-scenes-no-static-cap",
                 "alternate_allocator_available": False,
             }
         )

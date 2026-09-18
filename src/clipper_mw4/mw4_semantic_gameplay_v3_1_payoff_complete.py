@@ -95,10 +95,10 @@ def _anchor_variants(
 ) -> tuple[tuple[float, float], ...]:
     editor = config["semantic_editor"]
     minimum = _f(editor.get("minimum_output_seconds", 10.0), 10.0)
-    maximum = _f(editor.get("maximum_output_seconds", 20.0), 20.0)
+    maximum = _f(editor.get("maximum_output_seconds", 12.0), 12.0)
     preferred = min(
         maximum,
-        _f(editor.get("preferred_output_seconds", 12.5), 12.5),
+        _f(editor.get("preferred_output_seconds", 11.0), 11.0),
     )
     preferred_tail = _f(
         editor["ending"].get("preferred_payoff_tail_seconds", 0.45),
@@ -250,8 +250,8 @@ def _plan_for_span(
         10.0,
     )
     maximum = _f(
-        config["semantic_editor"].get("maximum_output_seconds", 20.0),
-        20.0,
+        config["semantic_editor"].get("maximum_output_seconds", 12.0),
+        12.0,
     )
     output_duration = end - start
     if not (minimum - _EPS <= output_duration <= maximum + _EPS):
@@ -583,8 +583,8 @@ def self_test(base: Any) -> None:
         "source_integrity": {"verified_cut_windows": {}},
         "semantic_editor": {
             "minimum_output_seconds": 10.0,
-            "maximum_output_seconds": 20.0,
-            "preferred_output_seconds": 12.5,
+            "maximum_output_seconds": 12.0,
+            "preferred_output_seconds": 11.0,
             "ending": {
                 "preferred_payoff_tail_seconds": 0.45,
                 "maximum_payoff_tail_seconds": 0.75,

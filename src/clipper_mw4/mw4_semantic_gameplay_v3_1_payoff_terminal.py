@@ -48,10 +48,10 @@ def _terminal_aware_variants(
     """
     editor = config["semantic_editor"]
     minimum = _f(editor.get("minimum_output_seconds", 10.0), 10.0)
-    maximum = _f(editor.get("maximum_output_seconds", 20.0), 20.0)
+    maximum = _f(editor.get("maximum_output_seconds", 12.0), 12.0)
     preferred = min(
         maximum,
-        _f(editor.get("preferred_output_seconds", 12.5), 12.5),
+        _f(editor.get("preferred_output_seconds", 11.0), 11.0),
     )
     preferred_tail = _f(
         editor["ending"].get("preferred_payoff_tail_seconds", 0.45),
@@ -161,8 +161,8 @@ def _anchor_plans(
             if value >= anchor_time - _EPS
             and value - max(region[0], anchor_time - 0.30)
             <= _f(
-                config["semantic_editor"].get("maximum_output_seconds", 20.0),
-                20.0,
+                config["semantic_editor"].get("maximum_output_seconds", 12.0),
+                12.0,
             )
             + _EPS
         )
@@ -333,8 +333,8 @@ def self_test(base: Any) -> None:
     config = {
         "semantic_editor": {
             "minimum_output_seconds": 10.0,
-            "maximum_output_seconds": 20.0,
-            "preferred_output_seconds": 12.5,
+            "maximum_output_seconds": 12.0,
+            "preferred_output_seconds": 11.0,
             "ending": {
                 "preferred_payoff_tail_seconds": 0.45,
                 "maximum_payoff_tail_seconds": 0.75,
@@ -348,11 +348,14 @@ def self_test(base: Any) -> None:
         (10.0, 27.0),
         config,
     )
-    expected = (9.7, 27.45)
-    if expected not in variants:
-        raise AssertionError(
-            "later verified terminal payoff did not produce natural kill-to-kill story bounds"
-        )
-    if any(end - start > 20.0 + _EPS for start, end in variants):
-        raise AssertionError("terminal-aware proposal search exceeded unchanged campaign maximum")
+    if not any(
+        start - _EPS <= 10.0 <= end + _EPS
+        and 10.0 - _EPS <= end - start <= 12.0 + _EPS
+        for start, end in variants
+    ):
+        raise AssertionError("terminal-aware proposal search did not produce a 10–12 second anchor clip")
+    if any(end - start > 12.0 + _EPS for start, end in variants):
+        raise AssertionError("terminal-aware proposal search exceeded the 12 second campaign maximum")
+    if any(end >= 27.0 - _EPS for _, end in variants):
+        raise AssertionError("distant payoff incorrectly stretched one fighting scene into another")
     print("MW4 terminal-aware verified-payoff proposal self-test: PASS")

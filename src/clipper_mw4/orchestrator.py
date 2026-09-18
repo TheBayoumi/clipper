@@ -106,6 +106,48 @@ def _print_diagnostics(path: Path) -> None:
     )
 
 
+def _assert_scene_derived_allocation(path: Path) -> None:
+    allocation = json.loads(path.read_text(encoding="utf-8"))
+    source_allocations = dict(allocation.get("source_allocations") or {})
+    derived_total = 0
+    for source, raw in source_allocations.items():
+        item = dict(raw)
+        scene_count = int(item.get("distinct_fighting_scene_count", -1))
+        selected_count = int(item.get("count", -1))
+        if scene_count < 0:
+            raise RuntimeError(f"{source}: allocation is missing distinct fighting-scene count")
+        if selected_count != scene_count:
+            raise RuntimeError(
+                f"{source}: orchestrator allocation selected {selected_count} clips for "
+                f"{scene_count} distinct qualified fighting scenes"
+            )
+        derived_total += scene_count
+
+    target_count = int(allocation.get("target_count", -1))
+    selected_total = int(allocation.get("selected_count", -1))
+    if target_count != derived_total or selected_total != derived_total:
+        raise RuntimeError(
+            "orchestrator scene-derived allocation invariant failed: "
+            f"target={target_count} selected={selected_total} derived={derived_total}"
+        )
+
+    duration = dict(allocation.get("duration_contract") or {})
+    if float(duration.get("minimum_seconds", -1.0)) != 10.0 or float(
+        duration.get("maximum_seconds", -1.0)
+    ) != 12.0:
+        raise RuntimeError(f"orchestrator allocation has wrong duration contract: {duration}")
+
+    print(
+        json.dumps(
+            {
+                "orchestrator_scene_derived_allocation": "PASS",
+                "derived_clip_count": derived_total,
+                "duration_contract_seconds": [10.0, 12.0],
+            }
+        )
+    )
+
+
 def _discover(args: argparse.Namespace) -> int:
     arguments = [
         "discover",
@@ -201,6 +243,7 @@ def _allocate(args: argparse.Namespace) -> int:
         "--rejection-out",
         str(args.rejection_out),
     )
+    _assert_scene_derived_allocation(args.allocation_out)
     _invoke(
         "mw4_v3_1_dynamic_workflow_support",
         "render-matrix",

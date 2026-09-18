@@ -48,6 +48,28 @@ def validate_configuration(config: dict[str, Any]) -> None:
     if "semantic_montage" in config.get("semantic_editor", {}):
         errors.append("obsolete semantic_montage configuration must be removed")
 
+    for key in ("count_per_source_max", "minimum_count_per_source"):
+        if key in config:
+            errors.append(f"static clip-count configuration must be removed: {key}")
+    batch = config.get("batch_selection", {})
+    for key in (
+        "candidate_pool_per_source",
+        "maximum_per_source",
+        "minimum_total_clips",
+        "maximum_total_clips",
+    ):
+        if key in batch:
+            errors.append(f"static batch clip-count configuration must be removed: {key}")
+
+    semantic_editor = config.get("semantic_editor", {})
+    minimum_output = _f(semantic_editor.get("minimum_output_seconds", 10.0), 10.0)
+    maximum_output = _f(semantic_editor.get("maximum_output_seconds", 12.0), 12.0)
+    preferred_output = _f(semantic_editor.get("preferred_output_seconds", 11.0), 11.0)
+    if abs(minimum_output - 10.0) > _EPS or abs(maximum_output - 12.0) > _EPS:
+        errors.append("MW4 canonical clip duration contract must be exactly 10–12 seconds")
+    if not minimum_output - _EPS <= preferred_output <= maximum_output + _EPS:
+        errors.append("preferred_output_seconds must remain inside the 10–12 second contract")
+
     editorial = config.get("editorial", {})
     for key in (
         "finishing_move_allow_semantic_montage_continuation",
@@ -217,8 +239,8 @@ def _candidate_engagement_chains(
         10.0,
     )
     maximum = _f(
-        config["semantic_editor"].get("maximum_output_seconds", 20.0),
-        20.0,
+        config["semantic_editor"].get("maximum_output_seconds", 12.0),
+        12.0,
     )
     max_engagements = int(config["semantic_editor"].get("maximum_engagements_per_story", 7))
     chains: list[tuple[Engagement, ...]] = []
@@ -628,12 +650,12 @@ def _finishing_open_plans(
     )
     final_maximum = min(
         _f(
-            config["semantic_editor"].get("maximum_output_seconds", 20.0),
-            20.0,
+            config["semantic_editor"].get("maximum_output_seconds", 12.0),
+            12.0,
         ),
         _f(
-            editorial.get("finishing_move_max_output_seconds", 15.5),
-            15.5,
+            editorial.get("finishing_move_max_output_seconds", 12.0),
+            12.0,
         ),
     )
     max_islands = int(cfg.get("maximum_verified_island_moments_per_body", 3))
@@ -972,8 +994,6 @@ def select_plans(
     plans: list[SemanticPlanV31],
     config: dict[str, Any],
 ) -> list[SemanticPlanV31]:
-    maximum = int(config.get("count_per_source_max", 4))
-    minimum = int(config.get("minimum_count_per_source", 0))
     selected: list[SemanticPlanV31] = []
     finishing = [plan for plan in plans if plan.story_type == "finishing_move_open"]
     if finishing:
@@ -984,12 +1004,6 @@ def select_plans(
         ):
             continue
         selected.append(plan)
-        if len(selected) >= maximum:
-            break
-    if len(selected) < minimum:
-        raise RuntimeError(
-            f"Only {len(selected)} canonical V3.1 candidates passed; minimum is {minimum}."
-        )
     return sorted(
         selected,
         key=lambda item: (
@@ -1031,12 +1045,12 @@ def _self_test() -> None:
             "finishing_move_payoff_hold_seconds": 0.45,
             "finishing_move_max_continuation_gap_seconds": 18.0,
             "finishing_move_body_hard_cut_max_source_gap_seconds": 18.0,
-            "finishing_move_max_output_seconds": 15.5,
+            "finishing_move_max_output_seconds": 12.0,
         },
         "source_integrity": {},
         "semantic_editor": {
             "minimum_output_seconds": 10.0,
-            "maximum_output_seconds": 20.0,
+            "maximum_output_seconds": 12.0,
             "maximum_inter_engagement_gap_seconds": 4.0,
             "opening": {"minimum_quality": 0.42},
             "ending": {
