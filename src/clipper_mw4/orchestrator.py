@@ -96,9 +96,7 @@ def _print_diagnostics(path: Path) -> None:
                 "source": data.get("source_key"),
                 "verified_local_interactions": len(confirmed),
                 "kill_like_outcome_events": len(kill_like),
-                "kill_like_times": [
-                    round(float(event["time"]), 3) for event in kill_like
-                ],
+                "kill_like_times": [round(float(event["time"]), 3) for event in kill_like],
                 "qualified_candidate_count": len(pool),
                 "distinct_terminal_payoff_scenes_in_pool": len(terminals),
                 "terminal_payoff_times": sorted(terminals),
