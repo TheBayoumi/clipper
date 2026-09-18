@@ -1,34 +1,32 @@
 from __future__ import annotations
 
-import mw4_gameplay_batch as batch
+import importlib
+import sys
+from pathlib import Path
+from types import ModuleType
+from typing import Any
 
-_original_build_filter = batch.build_filter
+_SRC = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 
-
-def build_filter(
-    candidate: batch.Candidate,
-    config: dict[str, object],
-    *,
-    logo_enabled: bool,
-) -> tuple[str, float]:
-    graph, duration = _original_build_filter(
-        candidate,
-        config,
-        logo_enabled=logo_enabled,
-    )
-    unused_by_profile = {
-        "precision_punch": ("z3", "shake"),
-        "impact_flash": ("z1", "z2", "z3"),
-        "chain_escalation": (),
-        "cold_open_teaser": ("z1", "z3"),
-    }
-    unused = unused_by_profile[candidate.effect_profile]
-    if unused:
-        graph += ";" + ";".join(f"[{label}]nullsink" for label in unused)
-    return graph, duration
+_IMPL: ModuleType = importlib.import_module("clipper_mw4.mw4_gameplay_batch_runner")
 
 
-batch.build_filter = build_filter
+def __getattr__(name: str) -> Any:
+    return getattr(_IMPL, name)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(dir(_IMPL)))
+
+
+def _main() -> None:
+    entrypoint = getattr(_IMPL, "main", None)
+    if not callable(entrypoint):
+        raise RuntimeError("installed MW4 compatibility target has no main()")
+    entrypoint()
+
 
 if __name__ == "__main__":
-    batch.main()
+    _main()

@@ -1,145 +1,32 @@
 from __future__ import annotations
 
-import argparse
-import json
-import os
+import importlib
+import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
-import mw4_v3_1_workflow_support as base
+_SRC = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+_IMPL: ModuleType = importlib.import_module("clipper_mw4.mw4_v3_1_dynamic_workflow_support")
 
 
-def _read(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+def __getattr__(name: str) -> Any:
+    return getattr(_IMPL, name)
 
 
-def _runner(source: str) -> str:
-    return "ubuntu-22.04" if source == "batch2" else "ubuntu-24.04"
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(dir(_IMPL)))
 
 
-def _source_order(allocation: dict[str, Any]) -> list[str]:
-    explicit = [str(item) for item in allocation.get("source_order") or []]
-    if explicit:
-        return explicit
-    return [str(item) for item in allocation.get("source_allocations", {})]
-
-
-def render_matrix(allocation_path: Path, github_output: Path) -> list[dict[str, Any]]:
-    allocation = _read(allocation_path)
-    include: list[dict[str, Any]] = []
-    for source in _source_order(allocation):
-        keys = allocation.get("source_allocations", {}).get(source, {}).get("plan_keys", [])
-        for ordinal, key in enumerate(keys, 1):
-            key_text = str(key)
-            include.append(
-                {
-                    "source": source,
-                    "plan_key": key_text,
-                    "ordinal": ordinal,
-                    "runner": _runner(source),
-                    "clip_id": f"{source}-{ordinal:02d}-{key_text[:8]}",
-                }
-            )
-    if not include:
-        raise RuntimeError("adaptive allocation produced no renderable clips")
-    value = json.dumps({"include": include}, separators=(",", ":"))
-    with github_output.open("a", encoding="utf-8") as output:
-        output.write(f"render_matrix={value}\n")
-    print(f"sequential clip workspaces: {len(include)}")
-    return include
-
-
-def batch_summaries(
-    allocation_path: Path, config_path: Path, clip_meta: Path, output_dir: Path
-) -> None:
-    allocation = _read(allocation_path)
-    config = _read(config_path)
-    results = [_read(path) for path in clip_meta.rglob("*_clip_result_v3_1.json")]
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    for source in _source_order(allocation):
-        expected = [
-            str(item)
-            for item in allocation.get("source_allocations", {})
-            .get(source, {})
-            .get("plan_keys", [])
-        ]
-        actual = sorted(
-            [item for item in results if item.get("source_key") == source],
-            key=lambda item: int(item.get("ordinal", 0)),
-        )
-        actual_keys = [str(item.get("plan_key")) for item in actual]
-        failures: list[str] = []
-        architecture_failures: list[str] = []
-        if actual_keys != expected:
-            failures.append(
-                f"{source}: rendered clip keys {actual_keys} != allocated keys {expected}"
-            )
-        if any(item.get("status") != "PASS" for item in actual):
-            failures.append(f"{source}: one or more clip results did not pass")
-        for item in actual:
-            clip_failures = base._clip_ffv1_nut_contract_failures(item)
-            architecture_failures.extend(
-                f"{source} clip {item.get('ordinal', '?')}: {failure}" for failure in clip_failures
-            )
-        failures.extend(architecture_failures)
-        architecture_passed = (
-            bool(actual or not expected)
-            and not architecture_failures
-            and len(actual) == len(expected)
-        )
-        summary = {
-            "mode": "shadow",
-            "source_key": source,
-            "selected_count": len(actual),
-            "rendered_count": len(actual),
-            "selected_plan_keys": actual_keys,
-            "stories": [str(item.get("story_type")) for item in actual],
-            "verified_finishing_move_count": len(
-                config.get("finishing_move_detector", {}).get("verified_spans", {}).get(source, [])
-            ),
-            "selected_finishing_move_count": sum(
-                1 for item in actual if bool(item.get("finishing_move"))
-            ),
-            "unplanned_source_cut_count": sum(
-                int(item.get("unplanned_source_cut_count", 0)) for item in actual
-            ),
-            "ffv1_nut_transport_contract_passed": architecture_passed,
-            "technical_qa_passed": (
-                bool(actual or not expected)
-                and len(actual) == len(expected)
-                and architecture_passed
-                and all(bool(item.get("technical_qa_passed")) for item in actual)
-                and all(bool(item.get("source_fidelity_qa_passed")) for item in actual)
-            ),
-            "failure": failures or None,
-        }
-        (output_dir / f"{source}_pipeline_summary.json").write_text(
-            json.dumps(summary, indent=2), encoding="utf-8"
-        )
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="command", required=True)
-    matrix = sub.add_parser("render-matrix")
-    matrix.add_argument("--allocation", type=Path, required=True)
-    matrix.add_argument(
-        "--github-output", type=Path, default=Path(os.environ.get("GITHUB_OUTPUT", ""))
-    )
-    summary = sub.add_parser("batch-summaries")
-    summary.add_argument("--allocation", type=Path, required=True)
-    summary.add_argument("--config", type=Path, required=True)
-    summary.add_argument("--clip-meta", type=Path, required=True)
-    summary.add_argument("--output-dir", type=Path, required=True)
-    args = parser.parse_args()
-    if args.command == "render-matrix":
-        if not str(args.github_output):
-            raise RuntimeError("GITHUB_OUTPUT is not available")
-        render_matrix(args.allocation, args.github_output)
-    else:
-        batch_summaries(args.allocation, args.config, args.clip_meta, args.output_dir)
+def _main() -> None:
+    entrypoint = getattr(_IMPL, "main", None)
+    if not callable(entrypoint):
+        raise RuntimeError("installed MW4 compatibility target has no main()")
+    entrypoint()
 
 
 if __name__ == "__main__":
-    main()
+    _main()
