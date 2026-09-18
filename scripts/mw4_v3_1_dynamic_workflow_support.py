@@ -49,14 +49,21 @@ def render_matrix(allocation_path: Path, github_output: Path) -> list[dict[str, 
     return include
 
 
-def batch_summaries(allocation_path: Path, config_path: Path, clip_meta: Path, output_dir: Path) -> None:
+def batch_summaries(
+    allocation_path: Path, config_path: Path, clip_meta: Path, output_dir: Path
+) -> None:
     allocation = _read(allocation_path)
     config = _read(config_path)
     results = [_read(path) for path in clip_meta.rglob("*_clip_result_v3_1.json")]
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for source in _source_order(allocation):
-        expected = [str(item) for item in allocation.get("source_allocations", {}).get(source, {}).get("plan_keys", [])]
+        expected = [
+            str(item)
+            for item in allocation.get("source_allocations", {})
+            .get(source, {})
+            .get("plan_keys", [])
+        ]
         actual = sorted(
             [item for item in results if item.get("source_key") == source],
             key=lambda item: int(item.get("ordinal", 0)),
@@ -65,7 +72,9 @@ def batch_summaries(allocation_path: Path, config_path: Path, clip_meta: Path, o
         failures: list[str] = []
         architecture_failures: list[str] = []
         if actual_keys != expected:
-            failures.append(f"{source}: rendered clip keys {actual_keys} != allocated keys {expected}")
+            failures.append(
+                f"{source}: rendered clip keys {actual_keys} != allocated keys {expected}"
+            )
         if any(item.get("status") != "PASS" for item in actual):
             failures.append(f"{source}: one or more clip results did not pass")
         for item in actual:
@@ -74,7 +83,11 @@ def batch_summaries(allocation_path: Path, config_path: Path, clip_meta: Path, o
                 f"{source} clip {item.get('ordinal', '?')}: {failure}" for failure in clip_failures
             )
         failures.extend(architecture_failures)
-        architecture_passed = bool(actual or not expected) and not architecture_failures and len(actual) == len(expected)
+        architecture_passed = (
+            bool(actual or not expected)
+            and not architecture_failures
+            and len(actual) == len(expected)
+        )
         summary = {
             "mode": "shadow",
             "source_key": source,
@@ -85,8 +98,12 @@ def batch_summaries(allocation_path: Path, config_path: Path, clip_meta: Path, o
             "verified_finishing_move_count": len(
                 config.get("finishing_move_detector", {}).get("verified_spans", {}).get(source, [])
             ),
-            "selected_finishing_move_count": sum(1 for item in actual if bool(item.get("finishing_move"))),
-            "unplanned_source_cut_count": sum(int(item.get("unplanned_source_cut_count", 0)) for item in actual),
+            "selected_finishing_move_count": sum(
+                1 for item in actual if bool(item.get("finishing_move"))
+            ),
+            "unplanned_source_cut_count": sum(
+                int(item.get("unplanned_source_cut_count", 0)) for item in actual
+            ),
             "ffv1_nut_transport_contract_passed": architecture_passed,
             "technical_qa_passed": (
                 bool(actual or not expected)
@@ -97,7 +114,9 @@ def batch_summaries(allocation_path: Path, config_path: Path, clip_meta: Path, o
             ),
             "failure": failures or None,
         }
-        (output_dir / f"{source}_pipeline_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        (output_dir / f"{source}_pipeline_summary.json").write_text(
+            json.dumps(summary, indent=2), encoding="utf-8"
+        )
 
 
 def main() -> None:
@@ -105,7 +124,9 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     matrix = sub.add_parser("render-matrix")
     matrix.add_argument("--allocation", type=Path, required=True)
-    matrix.add_argument("--github-output", type=Path, default=Path(os.environ.get("GITHUB_OUTPUT", "")))
+    matrix.add_argument(
+        "--github-output", type=Path, default=Path(os.environ.get("GITHUB_OUTPUT", ""))
+    )
     summary = sub.add_parser("batch-summaries")
     summary.add_argument("--allocation", type=Path, required=True)
     summary.add_argument("--config", type=Path, required=True)

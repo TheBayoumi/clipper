@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
-import mw4_semantic_gameplay_v3_1_source_span_proposals as canonical
 import mw4_semantic_gameplay_v3_1_quality as quality
+import mw4_semantic_gameplay_v3_1_source_span_proposals as canonical
 
 SemanticPlanV31 = canonical.SemanticPlanV31
 EditSegment = canonical.EditSegment
@@ -43,11 +43,7 @@ def plan_integrity_violations(
     )
     if plan.story_type == "finishing_move_open":
         return failures
-    return [
-        failure
-        for failure in failures
-        if "crosses a source-shot boundary" not in failure
-    ]
+    return [failure for failure in failures if "crosses a source-shot boundary" not in failure]
 
 
 def _verified_payoff_anchors(
@@ -176,10 +172,7 @@ def _span_evidence(
     return tuple(
         item
         for item in timeline.engagements
-        if any(
-            start - _EPS <= float(event.time) <= end + _EPS
-            for event in item.events
-        )
+        if any(start - _EPS <= float(event.time) <= end + _EPS for event in item.events)
     )
 
 
@@ -193,13 +186,8 @@ def _span_proposal(
     events = _span_hostile_events(timeline, start, end, config)
     if not events:
         return None
-    scores = [
-        canonical.combat.hostile_decision(event, config).score
-        for event in events
-    ]
-    shot_index = int(
-        canonical.core._shot_index(timeline.shots, anchor_time)
-    )
+    scores = [canonical.combat.hostile_decision(event, config).score for event in events]
+    shot_index = int(canonical.core._shot_index(timeline.shots, anchor_time))
     return Engagement(
         round(start, 3),
         round(end, 3),
@@ -225,16 +213,14 @@ def _span_metrics(
         None,
         config,
     )
-    opening, ending, coherence, retention, payoff, weakest, low_fraction = (
-        quality._quality_metrics(
-            timeline,
-            start,
-            end,
-            explained,
-            None,
-            residual,
-            config,
-        )
+    opening, ending, coherence, retention, payoff, weakest, low_fraction = quality._quality_metrics(
+        timeline,
+        start,
+        end,
+        explained,
+        None,
+        residual,
+        config,
     )
     return {
         "duration": end - start,
@@ -285,8 +271,7 @@ def _plan_for_span(
     if proposal is None:
         return None, "no_verified_hostile_evidence"
     payoff_times = {
-        round(float(item.time), 3)
-        for item in quality.verified_payoff_events(proposal, config)
+        round(float(item.time), 3) for item in quality.verified_payoff_events(proposal, config)
     }
     if round(anchor_time, 3) not in payoff_times:
         return None, "anchor_not_verified_payoff"
@@ -454,26 +439,21 @@ def _anchor_plans(
             qualified_anchor_count += 1
             selected.extend(unique[:3])
 
-    existing = dict(
-        getattr(timeline, "_proposal_diagnostics", {}) or {}
-    )
+    existing = dict(getattr(timeline, "_proposal_diagnostics", {}) or {})
     existing.update(
         {
             "verified_payoff_anchor_count": len(anchors),
-            "payoff_anchor_times": [
-                round(float(item.time), 3) for item in anchors
-            ],
+            "payoff_anchor_times": [round(float(item.time), 3) for item in anchors],
             "payoff_anchor_span_variant_count": attempted,
             "payoff_anchor_qualified_anchor_count": qualified_anchor_count,
-            "payoff_anchor_unrepresented_count": len(anchors)
-            - qualified_anchor_count,
+            "payoff_anchor_unrepresented_count": len(anchors) - qualified_anchor_count,
             "payoff_anchor_independent_search": True,
             "automatic_scene_cuts_are_soft_for_normal_payoff_proposals": True,
             "verified_stringout_cuts_remain_hard": True,
             "payoff_anchor_diagnostics": anchor_diagnostics,
         }
     )
-    setattr(timeline, "_proposal_diagnostics", existing)
+    timeline._proposal_diagnostics = existing
     return selected
 
 
@@ -567,9 +547,7 @@ def build_plans_for_source(
         key=lambda item: item.score,
         reverse=True,
     )
-    diagnostics = dict(
-        getattr(timeline, "_proposal_diagnostics", {}) or {}
-    )
+    diagnostics = dict(getattr(timeline, "_proposal_diagnostics", {}) or {})
     diagnostics.update(
         {
             "proposal_architecture": "every_verified_payoff_anchor_to_verified_source_region_quality_gated_span",
@@ -582,7 +560,7 @@ def build_plans_for_source(
             "qualified_plan_count": len(plans),
         }
     )
-    setattr(timeline, "_proposal_diagnostics", diagnostics)
+    timeline._proposal_diagnostics = diagnostics
     return plans
 
 
@@ -630,10 +608,7 @@ def self_test(base: Any) -> None:
         config,
     )
     if not variants or not any(
-        start <= 4.8 <= end
-        and end - start >= 10.0 - _EPS
-        and end > 5.2
-        for start, end in variants
+        start <= 4.8 <= end and end - start >= 10.0 - _EPS and end > 5.2 for start, end in variants
     ):
         raise AssertionError(
             "verified payoff near an automatic cut cannot receive a campaign-length source-region proposal"
@@ -641,9 +616,7 @@ def self_test(base: Any) -> None:
 
     cut_config = {
         **config,
-        "source_integrity": {
-            "verified_cut_windows": {"test": [[6.0, 6.5]]}
-        },
+        "source_integrity": {"verified_cut_windows": {"test": [[6.0, 6.5]]}},
     }
     hard_region = _verified_source_region(
         Timeline(),
@@ -652,9 +625,5 @@ def self_test(base: Any) -> None:
         cut_config,
     )
     if hard_region != (0.0, 6.0):
-        raise AssertionError(
-            "verified stringout cut did not remain a hard proposal boundary"
-        )
-    print(
-        "MW4 payoff-complete verified-source-region proposal self-test: PASS"
-    )
+        raise AssertionError("verified stringout cut did not remain a hard proposal boundary")
+    print("MW4 payoff-complete verified-source-region proposal self-test: PASS")

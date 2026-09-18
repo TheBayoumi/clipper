@@ -11,7 +11,6 @@ from typing import Any
 import mw4_v3_1_media_contract as media
 import mw4_v3_1_render_source_contract as source
 
-
 NUT_NON_AUTHORITATIVE_VIDEO_METADATA = (
     "color_range",
     "color_space",
@@ -24,11 +23,18 @@ NUT_NON_AUTHORITATIVE_VIDEO_METADATA = (
 
 def _format_name(path: Path) -> str:
     payload = json.loads(
-        media.run_capture([
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=format_name",
-            "-of", "json", str(path),
-        ]).stdout
+        media.run_capture(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=format_name",
+                "-of",
+                "json",
+                str(path),
+            ]
+        ).stdout
     )
     return str((payload.get("format") or {}).get("format_name") or "")
 
@@ -43,10 +49,14 @@ def _ffv1_video_args(source_profile: dict[str, Any]) -> list[str]:
     if not pix_fmt:
         raise RuntimeError("source pixel format is unavailable for FFV1 transport")
     return [
-        "-c:v", "ffv1",
-        "-level", "3",
-        "-pix_fmt", pix_fmt,
-        "-threads:v", "4",
+        "-c:v",
+        "ffv1",
+        "-level",
+        "3",
+        "-pix_fmt",
+        pix_fmt,
+        "-threads:v",
+        "4",
     ]
 
 
@@ -57,9 +67,12 @@ def _transport_identity_checks(
     prefix: str,
 ) -> dict[str, bool]:
     checks = {
-        f"{prefix}_width_matches_source": int(other_profile.get("width") or 0) == int(source_profile["width"]),
-        f"{prefix}_height_matches_source": int(other_profile.get("height") or 0) == int(source_profile["height"]),
-        f"{prefix}_pix_fmt_matches_source": str(other_profile.get("pix_fmt") or "") == str(source_profile["pix_fmt"]),
+        f"{prefix}_width_matches_source": int(other_profile.get("width") or 0)
+        == int(source_profile["width"]),
+        f"{prefix}_height_matches_source": int(other_profile.get("height") or 0)
+        == int(source_profile["height"]),
+        f"{prefix}_pix_fmt_matches_source": str(other_profile.get("pix_fmt") or "")
+        == str(source_profile["pix_fmt"]),
     }
     source_sar = str(source_profile.get("sample_aspect_ratio") or "")
     other_sar = str(other_profile.get("sample_aspect_ratio") or "")
@@ -135,8 +148,10 @@ def _transport_architecture_qa(
         f"{prefix}_container_is_nut": _is_nut(path),
         f"{prefix}_video_codec_is_ffv1": str(video.get("codec_name") or "") == "ffv1",
         f"{prefix}_audio_codec_is_pcm_s16le": str(audio.get("codec_name") or "") == "pcm_s16le",
-        f"{prefix}_audio_sample_rate_matches_source": int(audio.get("sample_rate") or 0) == source._audio_rate(source_profile),
-        f"{prefix}_audio_channels_match_source": int(audio.get("channels") or 0) == source._audio_channels(source_profile),
+        f"{prefix}_audio_sample_rate_matches_source": int(audio.get("sample_rate") or 0)
+        == source._audio_rate(source_profile),
+        f"{prefix}_audio_channels_match_source": int(audio.get("channels") or 0)
+        == source._audio_channels(source_profile),
         **_transport_identity_checks(source_profile, video, prefix=prefix),
     }
     timing = _transport_timing_qa(
@@ -294,21 +309,37 @@ def _stage_plan_source(
             raise RuntimeError(f"invalid staged segment {index + 1}: {segment.start}-{segment.end}")
 
         piece = workspace / f"segment_{index:02d}.nut"
-        media.run([
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-ss", f"{extract_start:.6f}",
-            "-i", str(original_source),
-            "-t", f"{extract_duration:.6f}",
-            "-map", "0:v:0",
-            "-map", "0:a:0",
-            *_ffv1_video_args(source_profile),
-            "-vsync", "0",
-            "-c:a", "pcm_s16le",
-            "-ar", str(contract.audio.sample_rate),
-            "-ac", str(contract.audio.channels),
-            "-f", "nut",
-            str(piece),
-        ])
+        media.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{extract_start:.6f}",
+                "-i",
+                str(original_source),
+                "-t",
+                f"{extract_duration:.6f}",
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0",
+                *_ffv1_video_args(source_profile),
+                "-vsync",
+                "0",
+                "-c:a",
+                "pcm_s16le",
+                "-ar",
+                str(contract.audio.sample_rate),
+                "-ac",
+                str(contract.audio.channels),
+                "-f",
+                "nut",
+                str(piece),
+            ]
+        )
         staging_fidelity.append(
             _verify_lossless_piece(
                 original_source,
@@ -344,14 +375,26 @@ def _stage_plan_source(
         encoding="utf-8",
     )
     stitched = workspace / "approved_segments_lossless.nut"
-    media.run([
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-f", "concat", "-safe", "0",
-        "-i", str(concat_list),
-        "-c", "copy",
-        "-f", "nut",
-        str(stitched),
-    ])
+    media.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_list),
+            "-c",
+            "copy",
+            "-f",
+            "nut",
+            str(stitched),
+        ]
+    )
     staging_fidelity.append(_verify_stitched_lossless(pieces, stitched, source_profile))
 
     local_events = []
@@ -398,23 +441,41 @@ def _render_canonical_lossless_master(
     timing = source._timing(source_profile)
     fps = media.fraction_text(timing.nominal_rate)
 
-    media.run([
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-filter_complex_threads", "2",
-        "-i", str(staged_source),
-        "-filter_complex", graph,
-        "-map", "[outv]",
-        "-map", "[aout]",
-        *_ffv1_video_args(source_profile),
-        "-c:a", "pcm_s16le",
-        "-ar", str(source._audio_rate(source_profile)),
-        "-ac", str(source._audio_channels(source_profile)),
-        "-r", fps,
-        "-vsync", "cfr",
-        "-t", f"{duration:.6f}",
-        "-f", "nut",
-        str(target),
-    ])
+    media.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-filter_complex_threads",
+            "2",
+            "-i",
+            str(staged_source),
+            "-filter_complex",
+            graph,
+            "-map",
+            "[outv]",
+            "-map",
+            "[aout]",
+            *_ffv1_video_args(source_profile),
+            "-c:a",
+            "pcm_s16le",
+            "-ar",
+            str(source._audio_rate(source_profile)),
+            "-ac",
+            str(source._audio_channels(source_profile)),
+            "-r",
+            fps,
+            "-vsync",
+            "cfr",
+            "-t",
+            f"{duration:.6f}",
+            "-f",
+            "nut",
+            str(target),
+        ]
+    )
 
     expected_hashes = source._canonical_filter_hashes(
         staged_source,
@@ -489,34 +550,47 @@ def _source_fidelity_qa(
     output_timing = media.verify_cfr_timeline(output, timing, label="final H.264 output")
 
     settings = config["output"]
-    expected_audio_rate = int(settings.get("audio_sample_rate") or source._audio_rate(source_profile))
-    expected_audio_channels = int(settings.get("audio_channels") or source._audio_channels(source_profile))
+    expected_audio_rate = int(
+        settings.get("audio_sample_rate") or source._audio_rate(source_profile)
+    )
+    expected_audio_channels = int(
+        settings.get("audio_channels") or source._audio_channels(source_profile)
+    )
     source_geometry = (int(source_profile["width"]), int(source_profile["height"]))
     checks = {
         "reference_geometry_matches_source": (
-            reference_profile["width"], reference_profile["height"]
-        ) == source_geometry,
-        "output_geometry_matches_source": (
-            output_profile["width"], output_profile["height"]
-        ) == source_geometry,
+            reference_profile["width"],
+            reference_profile["height"],
+        )
+        == source_geometry,
+        "output_geometry_matches_source": (output_profile["width"], output_profile["height"])
+        == source_geometry,
         "canonical_transport_is_ffv1_nut_pcm": all(reference_transport["checks"].values()),
         "output_time_base_matches_source": output_timing["checks"]["time_base_matches_source"],
         "output_r_fps_matches_source": output_timing["checks"]["r_frame_rate_matches_source"],
         "output_strict_cfr_timestamps": output_timing["checks"]["packet_pts_strictly_cfr"],
-        "exact_frame_count_match": reference_profile["frame_count"] == output_profile["frame_count"],
+        "exact_frame_count_match": reference_profile["frame_count"]
+        == output_profile["frame_count"],
         "all_source_to_stage_frame_hashes_exact": all(
             item["checks"]["exact_decoded_frame_hash_match"] for item in staging_fidelity
         ),
         "all_staging_transport_checks_pass": all(
             all(bool(value) for value in item["checks"].values()) for item in staging_fidelity
         ),
-        "canonical_audio_sample_rate_matches_source": reference_audio["sample_rate"] == source._audio_rate(source_profile),
-        "canonical_audio_channels_match_source": reference_audio["channels"] == source._audio_channels(source_profile),
-        "output_audio_sample_rate_matches_delivery": output_audio["sample_rate"] == expected_audio_rate,
+        "canonical_audio_sample_rate_matches_source": reference_audio["sample_rate"]
+        == source._audio_rate(source_profile),
+        "canonical_audio_channels_match_source": reference_audio["channels"]
+        == source._audio_channels(source_profile),
+        "output_audio_sample_rate_matches_delivery": output_audio["sample_rate"]
+        == expected_audio_rate,
         "output_audio_channels_match_delivery": output_audio["channels"] == expected_audio_channels,
     }
-    checks.update(_transport_identity_checks(source_profile, reference_profile, prefix="canonical_reference"))
-    final_metadata_checks = media.metadata_match_checks(source_profile, output_profile, prefix="output")
+    checks.update(
+        _transport_identity_checks(source_profile, reference_profile, prefix="canonical_reference")
+    )
+    final_metadata_checks = media.metadata_match_checks(
+        source_profile, output_profile, prefix="output"
+    )
     checks.update(final_metadata_checks)
     checks["source_media_contract_reapplied_to_final_h264"] = all(final_metadata_checks.values())
     if not all(checks.values()):
@@ -529,24 +603,40 @@ def _source_fidelity_qa(
 
     ssim = source._metric(
         [
-            "ffmpeg", "-hide_banner",
-            "-i", str(canonical_master),
-            "-i", str(output),
+            "ffmpeg",
+            "-hide_banner",
+            "-i",
+            str(canonical_master),
+            "-i",
+            str(output),
             "-filter_complex",
             "[0:v]setpts=PTS-STARTPTS[ref];[1:v]setpts=PTS-STARTPTS[enc];[ref][enc]ssim[metric]",
-            "-map", "[metric]", "-an", "-f", "null", "-",
+            "-map",
+            "[metric]",
+            "-an",
+            "-f",
+            "null",
+            "-",
         ],
         r"All:([0-9.]+)",
         "SSIM",
     )
     psnr = source._metric(
         [
-            "ffmpeg", "-hide_banner",
-            "-i", str(canonical_master),
-            "-i", str(output),
+            "ffmpeg",
+            "-hide_banner",
+            "-i",
+            str(canonical_master),
+            "-i",
+            str(output),
             "-filter_complex",
             "[0:v]setpts=PTS-STARTPTS[ref];[1:v]setpts=PTS-STARTPTS[enc];[ref][enc]psnr[metric]",
-            "-map", "[metric]", "-an", "-f", "null", "-",
+            "-map",
+            "[metric]",
+            "-an",
+            "-f",
+            "null",
+            "-",
         ],
         r"average:([0-9.]+)",
         "PSNR",
@@ -554,12 +644,14 @@ def _source_fidelity_qa(
     fidelity_cfg = config.get("source_fidelity", {})
     minimum_ssim = float(fidelity_cfg.get("minimum_ssim", 0.99))
     minimum_psnr = float(fidelity_cfg.get("minimum_psnr_db", 40.0))
-    checks.update({
-        "no_spatial_crop_or_upscale": True,
-        "single_canonical_visual_timeline": True,
-        "ssim_encoder_fidelity": ssim >= minimum_ssim,
-        "psnr_encoder_fidelity": psnr >= minimum_psnr,
-    })
+    checks.update(
+        {
+            "no_spatial_crop_or_upscale": True,
+            "single_canonical_visual_timeline": True,
+            "ssim_encoder_fidelity": ssim >= minimum_ssim,
+            "psnr_encoder_fidelity": psnr >= minimum_psnr,
+        }
+    )
     if not all(checks.values()):
         raise RuntimeError(
             f"source-fidelity QA failed: SSIM={ssim:.6f} minimum={minimum_ssim:.6f}; "
@@ -595,7 +687,10 @@ def _self_test_case(root: Path, name: str, spec: dict[str, Any]) -> dict[str, An
         raise AssertionError(f"{name}: source geometry was not derived correctly")
     if contract.video.timing.track_timescale != spec["timescale"]:
         raise AssertionError(f"{name}: source timescale was not derived correctly")
-    if contract.audio.sample_rate != spec["audio_rate"] or contract.audio.channels != spec["channels"]:
+    if (
+        contract.audio.sample_rate != spec["audio_rate"]
+        or contract.audio.channels != spec["channels"]
+    ):
         raise AssertionError(f"{name}: source audio contract was not derived correctly")
 
     config = {
@@ -627,11 +722,16 @@ def _self_test_case(root: Path, name: str, spec: dict[str, Any]) -> dict[str, An
     canonical_info = _render_canonical_lossless_master(
         staged, local_plan, config, source_profile, canonical
     )
-    if canonical_info["actual_video_codec"] != "ffv1" or canonical_info["actual_container"] != "nut":
+    if (
+        canonical_info["actual_video_codec"] != "ffv1"
+        or canonical_info["actual_container"] != "nut"
+    ):
         raise AssertionError(f"{name}: canonical architecture is not FFV1/NUT: {canonical_info}")
 
     output = root / f"{name}_final.mp4"
-    source._encode_from_canonical_master(canonical, config, source_profile, output, mode="production")
+    source._encode_from_canonical_master(
+        canonical, config, source_profile, output, mode="production"
+    )
     qa = _source_fidelity_qa(source_profile, staging, canonical, output, config)
     final_timing = media.verify_cfr_timeline(
         output,
@@ -639,9 +739,13 @@ def _self_test_case(root: Path, name: str, spec: dict[str, Any]) -> dict[str, An
         label=f"{name} final delivery",
     )
     final_profile = media.video_profile(output)
-    final_metadata = media.metadata_match_checks(source_profile, final_profile, prefix="preflight_final")
+    final_metadata = media.metadata_match_checks(
+        source_profile, final_profile, prefix="preflight_final"
+    )
     if not all(final_metadata.values()):
-        raise AssertionError(f"{name}: final H.264 did not restore source metadata: {final_metadata}")
+        raise AssertionError(
+            f"{name}: final H.264 did not restore source metadata: {final_metadata}"
+        )
 
     try:
         _transport_architecture_qa(
@@ -698,12 +802,18 @@ def preflight() -> dict[str, Any]:
             results["ntsc_5994_bt709"]["source"]["video"]["track_timescale"]
             == results["ntsc_2997_smpte170m"]["source"]["video"]["track_timescale"]
         ):
-            raise AssertionError("preflight did not exercise distinct source-derived timing contracts")
+            raise AssertionError(
+                "preflight did not exercise distinct source-derived timing contracts"
+            )
         if any(item["canonical_container"] != "nut" for item in results.values()):
             raise AssertionError("preflight canonical transport was not NUT")
         if any(item["canonical_video_codec"] != "ffv1" for item in results.values()):
             raise AssertionError("preflight canonical codec was not FFV1")
-        print(json.dumps({"ffv1_nut_source_contract_preflight": "PASS", "cases": results}, sort_keys=True))
+        print(
+            json.dumps(
+                {"ffv1_nut_source_contract_preflight": "PASS", "cases": results}, sort_keys=True
+            )
+        )
         return results
 
 

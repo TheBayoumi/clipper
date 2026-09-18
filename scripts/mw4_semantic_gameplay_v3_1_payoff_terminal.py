@@ -4,7 +4,6 @@ from collections import Counter, defaultdict
 from typing import Any
 
 import mw4_semantic_gameplay_v3_1_payoff_complete as canonical
-import mw4_semantic_gameplay_v3_1_quality as quality
 
 SemanticPlanV31 = canonical.SemanticPlanV31
 _EPS = 1e-3
@@ -91,9 +90,7 @@ def _terminal_aware_variants(
             # inside the unchanged campaign duration range.
             duration = terminal_end - action_start
             if minimum - _EPS <= duration <= maximum + _EPS:
-                candidates.add(
-                    (round(action_start, 3), round(terminal_end, 3))
-                )
+                candidates.add((round(action_start, 3), round(terminal_end, 3)))
 
             # Also test standard campaign lengths ending cleanly on the later
             # verified payoff. The opening kill must remain inside the span.
@@ -164,9 +161,7 @@ def _anchor_plans(
             if value >= anchor_time - _EPS
             and value - max(region[0], anchor_time - 0.30)
             <= _f(
-                config["semantic_editor"].get(
-                    "maximum_output_seconds", 20.0
-                ),
+                config["semantic_editor"].get("maximum_output_seconds", 20.0),
                 20.0,
             )
             + _EPS
@@ -229,19 +224,14 @@ def _anchor_plans(
             qualified_anchor_count += 1
             selected.extend(unique[:4])
 
-    existing = dict(
-        getattr(timeline, "_proposal_diagnostics", {}) or {}
-    )
+    existing = dict(getattr(timeline, "_proposal_diagnostics", {}) or {})
     existing.update(
         {
             "verified_payoff_anchor_count": len(anchors),
-            "payoff_anchor_times": [
-                round(float(item.time), 3) for item in anchors
-            ],
+            "payoff_anchor_times": [round(float(item.time), 3) for item in anchors],
             "payoff_anchor_span_variant_count": attempted,
             "payoff_anchor_qualified_anchor_count": qualified_anchor_count,
-            "payoff_anchor_unrepresented_count": len(anchors)
-            - qualified_anchor_count,
+            "payoff_anchor_unrepresented_count": len(anchors) - qualified_anchor_count,
             "payoff_anchor_independent_search": True,
             "later_verified_payoff_may_close_story": True,
             "automatic_scene_cuts_are_soft_for_normal_payoff_proposals": True,
@@ -249,7 +239,7 @@ def _anchor_plans(
             "payoff_anchor_diagnostics": anchor_diagnostics,
         }
     )
-    setattr(timeline, "_proposal_diagnostics", existing)
+    timeline._proposal_diagnostics = existing
     return selected
 
 
@@ -321,9 +311,7 @@ def build_plans_for_source(
         key=lambda item: item.score,
         reverse=True,
     )
-    diagnostics = dict(
-        getattr(timeline, "_proposal_diagnostics", {}) or {}
-    )
+    diagnostics = dict(getattr(timeline, "_proposal_diagnostics", {}) or {})
     diagnostics.update(
         {
             "proposal_architecture": "every verified payoff anchor to verified source region with later verified terminal payoff search",
@@ -336,7 +324,7 @@ def build_plans_for_source(
             "qualified_plan_count": len(plans),
         }
     )
-    setattr(timeline, "_proposal_diagnostics", diagnostics)
+    timeline._proposal_diagnostics = diagnostics
     return plans
 
 
@@ -366,9 +354,5 @@ def self_test(base: Any) -> None:
             "later verified terminal payoff did not produce natural kill-to-kill story bounds"
         )
     if any(end - start > 20.0 + _EPS for start, end in variants):
-        raise AssertionError(
-            "terminal-aware proposal search exceeded unchanged campaign maximum"
-        )
-    print(
-        "MW4 terminal-aware verified-payoff proposal self-test: PASS"
-    )
+        raise AssertionError("terminal-aware proposal search exceeded unchanged campaign maximum")
+    print("MW4 terminal-aware verified-payoff proposal self-test: PASS")

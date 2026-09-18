@@ -13,7 +13,6 @@ import mw4_fullframe_retention_v3_1 as renderer
 import mw4_semantic_gameplay_v3_1_final as semantic
 import mw4_v3_1_contract as contract
 
-
 UNKNOWN_METADATA = {"", "unknown", "unspecified", "reserved", "n/a", "N/A", "0:1"}
 FIDELITY_METADATA_FIELDS = (
     "pix_fmt",
@@ -48,8 +47,11 @@ def _video_profile(path: Path, *, count_frames: bool = False) -> dict[str, Any]:
     if count_frames:
         entries += ",nb_read_frames"
     command = [
-        "ffprobe", "-v", "error",
-        "-select_streams", "v:0",
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
     ]
     if count_frames:
         command.append("-count_frames")
@@ -121,7 +123,8 @@ def _assert_source_profile(source: Path, profile: dict[str, Any], config: dict[s
         failures.append(f"pix_fmt={profile['pix_fmt']} expected source-native yuv420p")
     if failures:
         raise RuntimeError(
-            f"cannot guarantee source-native output quality for {source.name}: " + "; ".join(failures)
+            f"cannot guarantee source-native output quality for {source.name}: "
+            + "; ".join(failures)
         )
 
 
@@ -139,11 +142,16 @@ def _decoded_frame_hashes(
     if duration is not None:
         command += ["-t", f"{duration:.6f}"]
     command += [
-        "-map", "0:v:0",
+        "-map",
+        "0:v:0",
         "-an",
-        "-vsync", "0",
-        "-pix_fmt", pix_fmt,
-        "-f", "framemd5", "-",
+        "-vsync",
+        "0",
+        "-pix_fmt",
+        pix_fmt,
+        "-f",
+        "framemd5",
+        "-",
     ]
     text = _run_capture(command).stdout
     return [
@@ -161,8 +169,8 @@ def _metadata_match_checks(
 ) -> dict[str, bool]:
     checks: dict[str, bool] = {}
     for field in FIDELITY_METADATA_FIELDS:
-        checks[f"{prefix}_{field}_matches_source"] = (
-            str(other_profile.get(field) or "") == str(source_profile.get(field) or "")
+        checks[f"{prefix}_{field}_matches_source"] = str(other_profile.get(field) or "") == str(
+            source_profile.get(field) or ""
         )
     return checks
 
@@ -196,10 +204,7 @@ def _verify_lossless_piece(
     }
     if not all(checks.values()):
         mismatch = next(
-            (
-                i for i, pair in enumerate(zip(source_hashes, piece_hashes))
-                if pair[0] != pair[1]
-            ),
+            (i for i, pair in enumerate(zip(source_hashes, piece_hashes)) if pair[0] != pair[1]),
             None,
         )
         raise RuntimeError(
@@ -270,22 +275,39 @@ def _stage_plan_source(
         # check below proves the decoded YUV planes are byte-identical to the same
         # interval decoded directly from the original MediaSilo source master.
         piece = workspace / f"segment_{index:02d}.nut"
-        _run([
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-ss", f"{extract_start:.6f}",
-            "-i", str(source),
-            "-t", f"{extract_duration:.6f}",
-            "-map", "0:v:0",
-            "-map", "0:a:0",
-            "-c:v", "ffv1",
-            "-level", "3",
-            *_profile_output_args(source_profile),
-            "-vsync", "0",
-            "-c:a", "pcm_s16le",
-            "-ar", "48000",
-            "-ac", "2",
-            str(piece),
-        ])
+        _run(
+            [
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{extract_start:.6f}",
+                "-i",
+                str(source),
+                "-t",
+                f"{extract_duration:.6f}",
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0",
+                "-c:v",
+                "ffv1",
+                "-level",
+                "3",
+                *_profile_output_args(source_profile),
+                "-vsync",
+                "0",
+                "-c:a",
+                "pcm_s16le",
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
+                str(piece),
+            ]
+        )
         staging_fidelity.append(
             _verify_lossless_piece(
                 source,
@@ -321,13 +343,24 @@ def _stage_plan_source(
         encoding="utf-8",
     )
     stitched = workspace / "approved_segments_lossless.nut"
-    _run([
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-f", "concat", "-safe", "0",
-        "-i", str(concat_list),
-        "-c", "copy",
-        str(stitched),
-    ])
+    _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_list),
+            "-c",
+            "copy",
+            str(stitched),
+        ]
+    )
 
     local_events = []
     for event in plan.effect_events:
@@ -368,18 +401,12 @@ def _append_source_native_segment(
     video = f"snv{index}"
     audio = f"sna{index}"
     video_pts = (
-        "PTS-STARTPTS"
-        if abs(segment.speed - 1.0) < 1e-6
-        else f"(PTS-STARTPTS)/{segment.speed:.6f}"
+        "PTS-STARTPTS" if abs(segment.speed - 1.0) < 1e-6 else f"(PTS-STARTPTS)/{segment.speed:.6f}"
     )
     parts.append(
-        f"[0:v]trim=start={segment.start:.6f}:end={segment.end:.6f},"
-        f"setpts={video_pts}[{video}]"
+        f"[0:v]trim=start={segment.start:.6f}:end={segment.end:.6f},setpts={video_pts}[{video}]"
     )
-    audio_chain = (
-        f"[0:a]atrim=start={segment.start:.6f}:end={segment.end:.6f},"
-        "asetpts=PTS-STARTPTS"
-    )
+    audio_chain = f"[0:a]atrim=start={segment.start:.6f}:end={segment.end:.6f},asetpts=PTS-STARTPTS"
     if abs(segment.speed - 1.0) >= 1e-6:
         audio_chain += f",atempo={segment.speed:.6f}"
     parts.append(audio_chain + f"[{audio}]")
@@ -430,24 +457,43 @@ def _render_canonical_lossless_master(
 ) -> dict[str, Any]:
     graph, duration = _build_source_native_filter(plan, source_profile)
     settings = config["output"]
-    _run([
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-filter_complex_threads", "2",
-        "-i", str(staged_source),
-        "-filter_complex", graph,
-        "-map", "[outv]",
-        "-map", "[aout]",
-        "-c:v", "ffv1",
-        "-level", "3",
-        *_profile_output_args(source_profile),
-        "-c:a", "pcm_s16le",
-        "-ar", "48000",
-        "-ac", "2",
-        "-r", str(settings["fps"]),
-        "-vsync", "cfr",
-        "-t", f"{duration:.3f}",
-        str(target),
-    ])
+    _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-filter_complex_threads",
+            "2",
+            "-i",
+            str(staged_source),
+            "-filter_complex",
+            graph,
+            "-map",
+            "[outv]",
+            "-map",
+            "[aout]",
+            "-c:v",
+            "ffv1",
+            "-level",
+            "3",
+            *_profile_output_args(source_profile),
+            "-c:a",
+            "pcm_s16le",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-r",
+            str(settings["fps"]),
+            "-vsync",
+            "cfr",
+            "-t",
+            f"{duration:.3f}",
+            str(target),
+        ]
+    )
     return {
         "graph_has_spatial_transform": False,
         "video_operations": "trim/setpts/concat + source-SAR metadata only",
@@ -465,18 +511,30 @@ def _encode_from_canonical_master(
     *,
     mode: str,
 ) -> None:
-    _run([
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(canonical_master),
-        "-map", "0:v:0",
-        "-map", "0:a:0",
-        *renderer._encode_args(config, mode),
-        *_profile_output_args(source_profile),
-        "-threads:v", "4",
-        "-vsync", "0",
-        "-movflags", "+faststart",
-        str(target),
-    ])
+    _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(canonical_master),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0",
+            *renderer._encode_args(config, mode),
+            *_profile_output_args(source_profile),
+            "-threads:v",
+            "4",
+            "-vsync",
+            "0",
+            "-movflags",
+            "+faststart",
+            str(target),
+        ]
+    )
 
 
 def _extract_metric(stderr: str, pattern: str, label: str) -> float:
@@ -499,12 +557,9 @@ def _source_fidelity_qa(
     expected_fps = str(config["output"]["fps"])
 
     alignment_checks = {
-        "reference_1920x1080": (
-            reference_profile["width"], reference_profile["height"]
-        ) == (1920, 1080),
-        "output_1920x1080": (
-            output_profile["width"], output_profile["height"]
-        ) == (1920, 1080),
+        "reference_1920x1080": (reference_profile["width"], reference_profile["height"])
+        == (1920, 1080),
+        "output_1920x1080": (output_profile["width"], output_profile["height"]) == (1920, 1080),
         "reference_r_fps": reference_profile["r_frame_rate"] == expected_fps,
         "reference_avg_fps": reference_profile["avg_frame_rate"] == expected_fps,
         "output_r_fps": output_profile["r_frame_rate"] == expected_fps,
@@ -519,9 +574,7 @@ def _source_fidelity_qa(
     alignment_checks.update(
         _metadata_match_checks(source_profile, reference_profile, prefix="canonical")
     )
-    alignment_checks.update(
-        _metadata_match_checks(source_profile, output_profile, prefix="output")
-    )
+    alignment_checks.update(_metadata_match_checks(source_profile, output_profile, prefix="output"))
     if not all(alignment_checks.values()):
         raise RuntimeError(
             "source-fidelity metadata/timeline mismatch before SSIM/PSNR: "
@@ -529,28 +582,42 @@ def _source_fidelity_qa(
             f"reference={reference_profile}; output={output_profile}"
         )
 
-    ssim_run = _run_capture([
-        "ffmpeg", "-hide_banner",
-        "-i", str(canonical_master),
-        "-i", str(output),
-        "-filter_complex",
-        "[0:v]setpts=PTS-STARTPTS[ref];"
-        "[1:v]setpts=PTS-STARTPTS[enc];"
-        "[ref][enc]ssim[metric]",
-        "-map", "[metric]",
-        "-an", "-f", "null", "-",
-    ])
-    psnr_run = _run_capture([
-        "ffmpeg", "-hide_banner",
-        "-i", str(canonical_master),
-        "-i", str(output),
-        "-filter_complex",
-        "[0:v]setpts=PTS-STARTPTS[ref];"
-        "[1:v]setpts=PTS-STARTPTS[enc];"
-        "[ref][enc]psnr[metric]",
-        "-map", "[metric]",
-        "-an", "-f", "null", "-",
-    ])
+    ssim_run = _run_capture(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-i",
+            str(canonical_master),
+            "-i",
+            str(output),
+            "-filter_complex",
+            "[0:v]setpts=PTS-STARTPTS[ref];[1:v]setpts=PTS-STARTPTS[enc];[ref][enc]ssim[metric]",
+            "-map",
+            "[metric]",
+            "-an",
+            "-f",
+            "null",
+            "-",
+        ]
+    )
+    psnr_run = _run_capture(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-i",
+            str(canonical_master),
+            "-i",
+            str(output),
+            "-filter_complex",
+            "[0:v]setpts=PTS-STARTPTS[ref];[1:v]setpts=PTS-STARTPTS[enc];[ref][enc]psnr[metric]",
+            "-map",
+            "[metric]",
+            "-an",
+            "-f",
+            "null",
+            "-",
+        ]
+    )
     ssim = _extract_metric(ssim_run.stderr, r"All:([0-9.]+)", "SSIM")
     psnr = _extract_metric(psnr_run.stderr, r"average:([0-9.]+)", "PSNR")
 
@@ -618,8 +685,7 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     suffix = "250M" if args.mode == "production" else "SHADOW"
     filename = (
-        f"MW4_V31_{args.source_key}_{args.ordinal:02d}_"
-        f"{plan.story_type}_source_native_{suffix}.mp4"
+        f"MW4_V31_{args.source_key}_{args.ordinal:02d}_{plan.story_type}_source_native_{suffix}.mp4"
     )
     target = args.output_dir / filename
 
@@ -692,24 +758,28 @@ def main() -> None:
         f"{args.source_key}_{args.ordinal:02d}_{args.plan_key}_clip_result_v3_1.json"
     )
     _write(result_path, result)
-    print(json.dumps({
-        "source": args.source_key,
-        "ordinal": args.ordinal,
-        "plan_key": args.plan_key,
-        "mode": args.mode,
-        "file": filename,
-        "qa": "PASS",
-        "source_fidelity_qa": "PASS",
-        "ssim": fidelity_qa["ssim"],
-        "psnr_db": fidelity_qa["psnr_db"],
-        "frame_count": fidelity_qa["reference_profile"]["frame_count"],
-        "source_profile": source_profile,
-        "source_to_stage_hashes_exact": True,
-        "source_color_metadata_preserved": True,
-        "spatial_crop_upscale_used": False,
-        "single_canonical_visual_timeline": True,
-        "bounded_lossless_segment_staging": True,
-    }))
+    print(
+        json.dumps(
+            {
+                "source": args.source_key,
+                "ordinal": args.ordinal,
+                "plan_key": args.plan_key,
+                "mode": args.mode,
+                "file": filename,
+                "qa": "PASS",
+                "source_fidelity_qa": "PASS",
+                "ssim": fidelity_qa["ssim"],
+                "psnr_db": fidelity_qa["psnr_db"],
+                "frame_count": fidelity_qa["reference_profile"]["frame_count"],
+                "source_profile": source_profile,
+                "source_to_stage_hashes_exact": True,
+                "source_color_metadata_preserved": True,
+                "spatial_crop_upscale_used": False,
+                "single_canonical_visual_timeline": True,
+                "bounded_lossless_segment_staging": True,
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

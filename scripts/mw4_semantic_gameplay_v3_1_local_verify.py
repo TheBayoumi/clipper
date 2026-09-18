@@ -8,7 +8,6 @@ from typing import Any
 
 import numpy as np
 
-
 _DEFAULT_OUTER_RADIUS_FRACTION = 0.105
 
 
@@ -21,7 +20,9 @@ def _candidate(event: Any) -> bool:
     return bool(kinds & {"combat_burst", "outcome_like", "impact"})
 
 
-def _merge_windows(events: list[tuple[int, Any]], radius: float, duration: float) -> list[tuple[float, float, list[tuple[int, Any]]]]:
+def _merge_windows(
+    events: list[tuple[int, Any]], radius: float, duration: float
+) -> list[tuple[float, float, list[tuple[int, Any]]]]:
     raw: list[tuple[float, float, int, Any]] = []
     for index, event in events:
         value = float(event.time)
@@ -37,16 +38,31 @@ def _merge_windows(events: list[tuple[int, Any]], radius: float, duration: float
     return merged
 
 
-def _extract_frames(source: Path, start: float, end: float, fps: float, width: int, height: int) -> np.ndarray:
+def _extract_frames(
+    source: Path, start: float, end: float, fps: float, width: int, height: int
+) -> np.ndarray:
     duration = max(0.0, end - start)
     if duration <= 0.0:
         return np.empty((0, height, width, 3), dtype=np.uint8)
     raw = subprocess.check_output(
         [
-            "ffmpeg", "-v", "error",
-            "-ss", f"{start:.6f}", "-t", f"{duration:.6f}", "-i", str(source),
-            "-an", "-vf", f"fps={fps},scale={width}:{height}:flags=fast_bilinear,format=rgb24",
-            "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+            "ffmpeg",
+            "-v",
+            "error",
+            "-ss",
+            f"{start:.6f}",
+            "-t",
+            f"{duration:.6f}",
+            "-i",
+            str(source),
+            "-an",
+            "-vf",
+            f"fps={fps},scale={width}:{height}:flags=fast_bilinear,format=rgb24",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "pipe:1",
         ]
     )
     frame_size = width * height * 3
@@ -75,9 +91,8 @@ def _masks(
     cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
     dx, dy = xx - cx, yy - cy
     radius = np.sqrt(dx * dx + dy * dy)
-    annulus = (
-        (radius >= max(3.0, min(width, height) * 0.020))
-        & (radius <= max(11.0, min(width, height) * float(outer_radius_fraction)))
+    annulus = (radius >= max(3.0, min(width, height) * 0.020)) & (
+        radius <= max(11.0, min(width, height) * float(outer_radius_fraction))
     )
     band = max(1.5, min(width, height) * 0.012)
     diagonal = annulus & (np.abs(np.abs(dx) - np.abs(dy)) <= band)
@@ -97,19 +112,31 @@ def _appearance(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     high = np.max(frame, axis=2)
     neutral = 1.0 - (high - low)
     white = np.clip((low - 0.55) / 0.45, 0.0, 1.0) * np.clip((neutral - 0.45) / 0.55, 0.0, 1.0)
-    red = np.clip((frame[..., 0] - np.maximum(frame[..., 1], frame[..., 2]) - 0.08) / 0.55, 0.0, 1.0)
+    red = np.clip(
+        (frame[..., 0] - np.maximum(frame[..., 1], frame[..., 2]) - 0.08) / 0.55, 0.0, 1.0
+    )
     gray = np.mean(frame, axis=2, dtype=np.float32)
     return white, red, gray
 
 
-def _frame_score(frame: np.ndarray, baseline: np.ndarray, diagonal: np.ndarray, control: np.ndarray, quadrants: tuple[np.ndarray, ...]) -> dict[str, float]:
+def _frame_score(
+    frame: np.ndarray,
+    baseline: np.ndarray,
+    diagonal: np.ndarray,
+    control: np.ndarray,
+    quadrants: tuple[np.ndarray, ...],
+) -> dict[str, float]:
     white, red, gray = _appearance(frame)
     base_white, base_red, base_gray = _appearance(baseline)
     white_delta = np.maximum(white - base_white, 0.0)
     red_delta = np.maximum(red - base_red, 0.0)
     diff = np.abs(gray - base_gray)
-    diagonal_white = max(0.0, float(np.mean(white_delta[diagonal])) - 0.95 * float(np.mean(white_delta[control])))
-    diagonal_red = max(0.0, float(np.mean(red_delta[diagonal])) - 0.95 * float(np.mean(red_delta[control])))
+    diagonal_white = max(
+        0.0, float(np.mean(white_delta[diagonal])) - 0.95 * float(np.mean(white_delta[control]))
+    )
+    diagonal_red = max(
+        0.0, float(np.mean(red_delta[diagonal])) - 0.95 * float(np.mean(red_delta[control]))
+    )
     specificity = max(0.0, float(np.mean(diff[diagonal])) - 0.90 * float(np.mean(diff[control])))
     control_appearance = float(np.mean(white_delta[control] + 0.75 * red_delta[control]))
     arms: list[float] = []
@@ -121,8 +148,20 @@ def _frame_score(frame: np.ndarray, baseline: np.ndarray, diagonal: np.ndarray, 
         arms.append(max(0.0, arm_signal - 0.95 * control_appearance))
     arms.sort(reverse=True)
     balanced = float(arms[2]) if len(arms) >= 3 else 0.0
-    score = float(np.clip(3.2 * diagonal_white + 2.6 * diagonal_red + 2.0 * specificity + 1.15 * balanced, 0.0, 1.0))
-    return {"score": score, "white": diagonal_white, "red": diagonal_red, "specificity": specificity, "arms": balanced}
+    score = float(
+        np.clip(
+            3.2 * diagonal_white + 2.6 * diagonal_red + 2.0 * specificity + 1.15 * balanced,
+            0.0,
+            1.0,
+        )
+    )
+    return {
+        "score": score,
+        "white": diagonal_white,
+        "red": diagonal_red,
+        "specificity": specificity,
+        "arms": balanced,
+    }
 
 
 def hitmarker_metrics(
@@ -137,7 +176,14 @@ def hitmarker_metrics(
     outer_radius_fraction: float = _DEFAULT_OUTER_RADIUS_FRACTION,
 ) -> dict[str, float]:
     """Find a transient centered hitmarker near a consolidated semantic event."""
-    empty = {"score": 0.0, "white": 0.0, "red": 0.0, "specificity": 0.0, "arms": 0.0, "offset_frames": 0.0}
+    empty = {
+        "score": 0.0,
+        "white": 0.0,
+        "red": 0.0,
+        "specificity": 0.0,
+        "arms": 0.0,
+        "offset_frames": 0.0,
+    }
     if len(frames) < 4:
         return empty
     event_index = max(0, min(len(frames) - 1, int(event_index)))
@@ -163,7 +209,9 @@ def hitmarker_metrics(
             baseline_end = candidate_index
         if baseline_end <= baseline_start:
             continue
-        baseline = np.median(frames[baseline_start:baseline_end].astype(np.float32), axis=0).astype(np.uint8)
+        baseline = np.median(frames[baseline_start:baseline_end].astype(np.float32), axis=0).astype(
+            np.uint8
+        )
         metrics = _frame_score(frames[candidate_index], baseline, diagonal, control, quadrants)
         if metrics["score"] > best["score"]:
             best = {**metrics, "offset_frames": float(candidate_index - event_index)}
@@ -173,11 +221,17 @@ def hitmarker_metrics(
 def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> Any:
     cfg = _cfg(config)
     if not bool(cfg.get("enabled", True)):
-        raise RuntimeError("local interaction verifier may not be disabled for MW4 V3.1 qualification")
+        raise RuntimeError(
+            "local interaction verifier may not be disabled for MW4 V3.1 qualification"
+        )
     events = list(timeline.consolidated_events)
     indexed = [(index, event) for index, event in enumerate(events) if _candidate(event)]
     if not indexed:
-        setattr(timeline, "_local_interaction_diagnostics", {"candidate_event_count": 0, "verified_event_count": 0, "decode_window_count": 0})
+        timeline._local_interaction_diagnostics = {
+            "candidate_event_count": 0,
+            "verified_event_count": 0,
+            "decode_window_count": 0,
+        }
         return timeline
     semantic = config.get("semantic_analysis", {})
     fps = float(semantic.get("local_refine_fps", 12.0))
@@ -202,7 +256,9 @@ def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> An
     for start, end, members in windows:
         frames = _extract_frames(Path(source), start, end, fps, width, height)
         if len(frames) == 0:
-            raise RuntimeError(f"local interaction verifier decoded zero frames for {start:.3f}-{end:.3f}s")
+            raise RuntimeError(
+                f"local interaction verifier decoded zero frames for {start:.3f}-{end:.3f}s"
+            )
         for index, event in members:
             event_index = int(round((float(event.time) - start) * fps))
             metrics = hitmarker_metrics(
@@ -216,26 +272,32 @@ def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> An
                 outer_radius_fraction=outer_radius_fraction,
             )
             evidence = dict(getattr(event, "evidence", {}) or {})
-            evidence.update({
-                "local_refine_attempted": 1.0,
-                "local_hitmarker_score": round(float(metrics["score"]), 4),
-                "local_hitmarker_white": round(float(metrics["white"]), 4),
-                "local_hitmarker_red": round(float(metrics["red"]), 4),
-                "local_hitmarker_specificity": round(float(metrics["specificity"]), 4),
-                "local_hitmarker_balanced_arms": round(float(metrics["arms"]), 4),
-                "local_hitmarker_offset_seconds": round(float(metrics["offset_frames"]) / fps, 4),
-                "local_direct_interaction": 1.0 if float(metrics["score"]) >= minimum else 0.0,
-            })
+            evidence.update(
+                {
+                    "local_refine_attempted": 1.0,
+                    "local_hitmarker_score": round(float(metrics["score"]), 4),
+                    "local_hitmarker_white": round(float(metrics["white"]), 4),
+                    "local_hitmarker_red": round(float(metrics["red"]), 4),
+                    "local_hitmarker_specificity": round(float(metrics["specificity"]), 4),
+                    "local_hitmarker_balanced_arms": round(float(metrics["arms"]), 4),
+                    "local_hitmarker_offset_seconds": round(
+                        float(metrics["offset_frames"]) / fps, 4
+                    ),
+                    "local_direct_interaction": 1.0 if float(metrics["score"]) >= minimum else 0.0,
+                }
+            )
             updated[index] = replace(event, evidence=evidence)
-            diagnostics.append({
-                "time": round(float(event.time), 3),
-                "kinds": list(getattr(event, "kinds", ()) or ()),
-                "score": round(float(metrics["score"]), 4),
-                "offset_seconds": round(float(metrics["offset_frames"]) / fps, 4),
-                "confirmed": float(metrics["score"]) >= minimum,
-            })
+            diagnostics.append(
+                {
+                    "time": round(float(event.time), 3),
+                    "kinds": list(getattr(event, "kinds", ()) or ()),
+                    "score": round(float(metrics["score"]), 4),
+                    "offset_seconds": round(float(metrics["offset_frames"]) / fps, 4),
+                    "confirmed": float(metrics["score"]) >= minimum,
+                }
+            )
     timeline.consolidated_events = tuple(updated)
-    setattr(timeline, "_local_interaction_diagnostics", {
+    timeline._local_interaction_diagnostics = {
         "candidate_event_count": len(indexed),
         "verified_event_count": sum(1 for item in diagnostics if item["confirmed"]),
         "decode_window_count": len(windows),
@@ -245,7 +307,7 @@ def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> An
         "event_search_after_seconds": search_after,
         "policy": "candidate-centered temporal search for a spatially specific centered hitmarker using full MW4 marker-arm geometry; ambiguous motion, color and off-center HUD changes remain unknown",
         "events": diagnostics,
-    })
+    }
     return timeline
 
 
@@ -276,7 +338,9 @@ def self_test() -> None:
     shifted[8][hit] = 245
     shifted_positive = hitmarker_metrics(shifted, 12, fps)
     if shifted_positive["score"] < 0.34 or shifted_positive["offset_frames"] >= 0:
-        raise AssertionError(f"early hitmarker near consolidated event was missed: {shifted_positive}")
+        raise AssertionError(
+            f"early hitmarker near consolidated event was missed: {shifted_positive}"
+        )
     flash = np.full((20, height, width, 3), 45, dtype=np.uint8)
     flash[10] = 180
     negative = hitmarker_metrics(flash, 10, fps)
@@ -286,10 +350,14 @@ def self_test() -> None:
     offcenter[10, 35:55, 35:55] = 245
     negative2 = hitmarker_metrics(offcenter, 10, fps)
     if negative2["score"] >= 0.34:
-        raise AssertionError(f"off-center HUD flash was misclassified as direct interaction: {negative2}")
+        raise AssertionError(
+            f"off-center HUD flash was misclassified as direct interaction: {negative2}"
+        )
     static = np.full((20, height, width, 3), 45, dtype=np.uint8)
     static[:, hit] = 245
     negative3 = hitmarker_metrics(static, 10, fps)
     if negative3["score"] >= 0.34:
-        raise AssertionError(f"static reticle geometry was misclassified as transient hitmarker: {negative3}")
+        raise AssertionError(
+            f"static reticle geometry was misclassified as transient hitmarker: {negative3}"
+        )
     print("MW4 local direct-interaction verifier self-test: PASS")

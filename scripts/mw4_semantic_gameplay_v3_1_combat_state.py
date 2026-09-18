@@ -62,18 +62,34 @@ def hostile_decision(event: Any, config: dict[str, Any]) -> HostileDecision:
         and outcome >= _f(cfg.get("outcome_minimum", 0.52), 0.52)
         and max(combat, impact) >= _f(cfg.get("payoff_combat_minimum", 0.42), 0.42)
     ):
-        score = min(1.0, 0.44 * max(confidence, outcome) + 0.30 * max(combat, impact) + 0.14 * max(audio, center) + 0.12 * local_score)
+        score = min(
+            1.0,
+            0.44 * max(confidence, outcome)
+            + 0.30 * max(combat, impact)
+            + 0.14 * max(audio, center)
+            + 0.12 * local_score,
+        )
         ok = score >= minimum
-        return HostileDecision(ok, score, "directly_confirmed_outcome", "hostile" if ok else "unknown")
+        return HostileDecision(
+            ok, score, "directly_confirmed_outcome", "hostile" if ok else "unknown"
+        )
 
     if (
         "impact" in kinds
         and impact >= _f(cfg.get("impact_minimum", 0.64), 0.64)
         and combat >= _f(cfg.get("impact_combat_minimum", 0.55), 0.55)
     ):
-        score = min(1.0, 0.40 * max(confidence, impact) + 0.32 * combat + 0.16 * max(audio, center) + 0.12 * local_score)
+        score = min(
+            1.0,
+            0.40 * max(confidence, impact)
+            + 0.32 * combat
+            + 0.16 * max(audio, center)
+            + 0.12 * local_score,
+        )
         ok = score >= minimum
-        return HostileDecision(ok, score, "directly_confirmed_impact", "hostile" if ok else "unknown")
+        return HostileDecision(
+            ok, score, "directly_confirmed_impact", "hostile" if ok else "unknown"
+        )
 
     if (
         "combat_burst" in kinds
@@ -81,9 +97,13 @@ def hostile_decision(event: Any, config: dict[str, Any]) -> HostileDecision:
         and audio >= _f(cfg.get("strong_combat_audio_transient_minimum", 0.62), 0.62)
         and center >= _f(cfg.get("strong_combat_center_motion_minimum", 0.40), 0.40)
     ):
-        score = min(1.0, 0.40 * max(confidence, combat) + 0.22 * audio + 0.18 * center + 0.20 * local_score)
+        score = min(
+            1.0, 0.40 * max(confidence, combat) + 0.22 * audio + 0.18 * center + 0.20 * local_score
+        )
         ok = score >= minimum
-        return HostileDecision(ok, score, "directly_confirmed_combat_burst", "hostile" if ok else "unknown")
+        return HostileDecision(
+            ok, score, "directly_confirmed_combat_burst", "hostile" if ok else "unknown"
+        )
 
     return HostileDecision(False, 0.0, "insufficient_hostile_evidence")
 
@@ -106,18 +126,40 @@ def self_test() -> None:
         }
     }
     good = SimpleNamespace(
-        kinds=("combat_burst", "impact", "outcome_like"), confidence=0.9,
-        evidence={"combat": 0.82, "impact": 0.82, "outcome": 0.8, "audio_transient": 0.9, "center_motion": 0.9, "local_refine_attempted": 1.0, "local_hitmarker_score": 0.9},
+        kinds=("combat_burst", "impact", "outcome_like"),
+        confidence=0.9,
+        evidence={
+            "combat": 0.82,
+            "impact": 0.82,
+            "outcome": 0.8,
+            "audio_transient": 0.9,
+            "center_motion": 0.9,
+            "local_refine_attempted": 1.0,
+            "local_hitmarker_score": 0.9,
+        },
     )
     if not hostile_decision(good, config).hostile:
         raise AssertionError("directly verified hostile interaction was rejected")
     bad = SimpleNamespace(
-        kinds=("combat_burst", "impact", "outcome_like"), confidence=0.99,
-        evidence={"combat": 0.99, "impact": 0.99, "outcome": 0.99, "audio_transient": 0.99, "center_motion": 0.99, "local_refine_attempted": 1.0, "local_hitmarker_score": 0.0},
+        kinds=("combat_burst", "impact", "outcome_like"),
+        confidence=0.99,
+        evidence={
+            "combat": 0.99,
+            "impact": 0.99,
+            "outcome": 0.99,
+            "audio_transient": 0.99,
+            "center_motion": 0.99,
+            "local_refine_attempted": 1.0,
+            "local_hitmarker_score": 0.0,
+        },
     )
     if hostile_decision(bad, config).hostile:
         raise AssertionError("coarse evidence bypassed direct-interaction verification")
-    contact = SimpleNamespace(kinds=("contact",), confidence=1.0, evidence={"local_refine_attempted": 1.0, "local_hitmarker_score": 1.0})
+    contact = SimpleNamespace(
+        kinds=("contact",),
+        confidence=1.0,
+        evidence={"local_refine_attempted": 1.0, "local_hitmarker_score": 1.0},
+    )
     if hostile_decision(contact, config).hostile:
         raise AssertionError("contact-only event became hostile")
     print("MW4 canonical hostile verifier self-test: PASS")

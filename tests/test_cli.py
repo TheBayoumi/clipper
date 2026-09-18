@@ -273,9 +273,7 @@ def test_mw4_diagnostics_and_script_runner(tmp_path: Path, capsys) -> None:
                     },
                     {
                         "effect_events": [],
-                        "engagements": [
-                            {"events": [{"kinds": ["impact"], "time": 30.0}]}
-                        ],
+                        "engagements": [{"events": [{"kinds": ["impact"], "time": 30.0}]}],
                     },
                 ],
             }

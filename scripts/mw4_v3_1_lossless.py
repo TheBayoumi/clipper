@@ -49,8 +49,7 @@ def assert_supported_profile(profile: dict[str, Any]) -> None:
     if failures:
         raise RuntimeError(
             "MW4 lossless MOV transport is qualified only for the current "
-            "MediaSilo SDR profile; refusing an unqualified source: "
-            + "; ".join(failures)
+            "MediaSilo SDR profile; refusing an unqualified source: " + "; ".join(failures)
         )
 
 
@@ -75,13 +74,19 @@ def lossless_video_args(profile: dict[str, Any]) -> list[str]:
         )
     )
     return [
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-qp", "0",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-qp",
+        "0",
         *profile_output_args(profile),
-        "-x264-params", x264_vui,
-        "-video_track_timescale", str(VIDEO_TRACK_TIMESCALE),
-        "-threads:v", "4",
+        "-x264-params",
+        x264_vui,
+        "-video_track_timescale",
+        str(VIDEO_TRACK_TIMESCALE),
+        "-threads:v",
+        "4",
     ]
 
 
@@ -93,10 +98,15 @@ def _probe(path: Path) -> dict[str, str]:
     payload = json.loads(
         _capture(
             [
-                "ffprobe", "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", entries,
-                "-of", "json",
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                entries,
+                "-of",
+                "json",
                 str(path),
             ]
         )
@@ -111,13 +121,22 @@ def _probe(path: Path) -> dict[str, str]:
 def _frame_hashes(path: Path) -> list[str]:
     text = _capture(
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-i", str(path),
-            "-map", "0:v:0",
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-map",
+            "0:v:0",
             "-an",
-            "-vsync", "0",
-            "-pix_fmt", QUALIFICATION_PROFILE["pix_fmt"],
-            "-f", "framemd5", "-",
+            "-vsync",
+            "0",
+            "-pix_fmt",
+            QUALIFICATION_PROFILE["pix_fmt"],
+            "-f",
+            "framemd5",
+            "-",
         ]
     )
     return [
@@ -139,33 +158,52 @@ def preflight() -> dict[str, Any]:
         # 60000/1001 SDR color/chroma contract.
         _run(
             [
-                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                "-f", "lavfi",
-                "-i", "testsrc2=size=128x72:rate=60000/1001:duration=0.25,setsar=0/1",
-                "-frames:v", "12",
-                "-c:v", "libx264",
-                "-preset", "ultrafast",
-                "-crf", "12",
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=128x72:rate=60000/1001:duration=0.25,setsar=0/1",
+                "-frames:v",
+                "12",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-crf",
+                "12",
                 *profile_output_args(profile),
                 "-x264-params",
-                "fullrange=off:colorprim=bt709:transfer=bt709:"
-                "colormatrix=bt709:chromaloc=0",
-                "-video_track_timescale", str(VIDEO_TRACK_TIMESCALE),
+                "fullrange=off:colorprim=bt709:transfer=bt709:colormatrix=bt709:chromaloc=0",
+                "-video_track_timescale",
+                str(VIDEO_TRACK_TIMESCALE),
                 "-an",
-                "-f", "mov",
+                "-f",
+                "mov",
                 str(source),
             ]
         )
 
         _run(
             [
-                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                "-i", str(source),
-                "-map", "0:v:0",
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(source),
+                "-map",
+                "0:v:0",
                 *lossless_video_args(profile),
-                "-vsync", "0",
+                "-vsync",
+                "0",
                 "-an",
-                "-f", "mov",
+                "-f",
+                "mov",
                 str(staged),
             ]
         )

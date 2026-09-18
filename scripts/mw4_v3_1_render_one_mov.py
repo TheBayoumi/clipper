@@ -95,25 +95,37 @@ def _stage_plan_source(
         extract_end = min(source_duration, segment.end + tail)
         extract_duration = extract_end - extract_start
         if extract_duration <= 0.0:
-            raise RuntimeError(
-                f"invalid staged segment {index + 1}: {segment.start}-{segment.end}"
-            )
+            raise RuntimeError(f"invalid staged segment {index + 1}: {segment.start}-{segment.end}")
 
         piece = workspace / f"segment_{index:02d}.mov"
         legacy._run(
             [
-                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                "-ss", f"{extract_start:.6f}",
-                "-i", str(source),
-                "-t", f"{extract_duration:.6f}",
-                "-map", "0:v:0",
-                "-map", "0:a:0",
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{extract_start:.6f}",
+                "-i",
+                str(source),
+                "-t",
+                f"{extract_duration:.6f}",
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0",
                 *lossless.lossless_video_args(source_profile),
-                "-vsync", "0",
-                "-c:a", "pcm_s16le",
-                "-ar", "48000",
-                "-ac", "2",
-                "-f", "mov",
+                "-vsync",
+                "0",
+                "-c:a",
+                "pcm_s16le",
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
+                "-f",
+                "mov",
                 str(piece),
             ]
         )
@@ -154,18 +166,27 @@ def _stage_plan_source(
     stitched = workspace / "approved_segments_lossless.mov"
     legacy._run(
         [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "concat", "-safe", "0",
-            "-i", str(concat_list),
-            "-c", "copy",
-            "-video_track_timescale", str(lossless.VIDEO_TRACK_TIMESCALE),
-            "-f", "mov",
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_list),
+            "-c",
+            "copy",
+            "-video_track_timescale",
+            str(lossless.VIDEO_TRACK_TIMESCALE),
+            "-f",
+            "mov",
             str(stitched),
         ]
     )
-    staging_fidelity.append(
-        _verify_stitched_lossless(pieces, stitched, source_profile)
-    )
+    staging_fidelity.append(_verify_stitched_lossless(pieces, stitched, source_profile))
 
     local_events = []
     for event in plan.effect_events:
@@ -179,9 +200,7 @@ def _stage_plan_source(
         payoff = legacy._map_source_time(plan.finishing_move.payoff, mappings)
         end = legacy._map_source_time(plan.finishing_move.end, mappings)
         if start is None or payoff is None or end is None:
-            raise RuntimeError(
-                "verified Finishing Move was not fully preserved by staged source"
-            )
+            raise RuntimeError("verified Finishing Move was not fully preserved by staged source")
         local_finishing = replace(
             plan.finishing_move,
             start=round(start, 6),
@@ -207,15 +226,26 @@ def _canonical_filter_hashes(
 ) -> list[str]:
     text = legacy._run_capture(
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-filter_complex_threads", "2",
-            "-i", str(staged_source),
-            "-filter_complex", graph,
-            "-map", "[outv]",
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-filter_complex_threads",
+            "2",
+            "-i",
+            str(staged_source),
+            "-filter_complex",
+            graph,
+            "-map",
+            "[outv]",
             "-an",
-            "-vsync", "0",
-            "-pix_fmt", pix_fmt,
-            "-f", "framemd5", "-",
+            "-vsync",
+            "0",
+            "-pix_fmt",
+            pix_fmt,
+            "-f",
+            "framemd5",
+            "-",
         ]
     ).stdout
     return [
@@ -240,20 +270,36 @@ def _render_canonical_lossless_master(
     # ffmpeg/ffprobe identify the container by content, and this file is never exported.
     legacy._run(
         [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-filter_complex_threads", "2",
-            "-i", str(staged_source),
-            "-filter_complex", graph,
-            "-map", "[outv]",
-            "-map", "[aout]",
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-filter_complex_threads",
+            "2",
+            "-i",
+            str(staged_source),
+            "-filter_complex",
+            graph,
+            "-map",
+            "[outv]",
+            "-map",
+            "[aout]",
             *lossless.lossless_video_args(source_profile),
-            "-c:a", "pcm_s16le",
-            "-ar", "48000",
-            "-ac", "2",
-            "-r", str(settings["fps"]),
-            "-vsync", "cfr",
-            "-t", f"{duration:.3f}",
-            "-f", "mov",
+            "-c:a",
+            "pcm_s16le",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-r",
+            str(settings["fps"]),
+            "-vsync",
+            "cfr",
+            "-t",
+            f"{duration:.3f}",
+            "-f",
+            "mov",
             str(target),
         ]
     )
@@ -269,11 +315,7 @@ def _render_canonical_lossless_master(
     )
     if expected_hashes != master_hashes:
         mismatch = next(
-            (
-                i
-                for i, pair in enumerate(zip(expected_hashes, master_hashes))
-                if pair[0] != pair[1]
-            ),
+            (i for i, pair in enumerate(zip(expected_hashes, master_hashes)) if pair[0] != pair[1]),
             None,
         )
         raise RuntimeError(

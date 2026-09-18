@@ -14,7 +14,9 @@ def run(command: list[str]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build full-window visual QA sheets for MW4 selections")
+    parser = argparse.ArgumentParser(
+        description="Build full-window visual QA sheets for MW4 selections"
+    )
     parser.add_argument("--source-key", choices=("r1", "batch2", "week2"), required=True)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)

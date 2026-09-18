@@ -171,7 +171,9 @@ def choose_peaks(activity: np.ndarray, start_index: int, end_index: int) -> tupl
     return tuple((start_index + index + 0.5) / SAMPLE_FPS for index in chosen)
 
 
-def score_window(activity: np.ndarray, motion: np.ndarray, start: float, end: float) -> tuple[float, tuple[float, ...]]:
+def score_window(
+    activity: np.ndarray, motion: np.ndarray, start: float, end: float
+) -> tuple[float, tuple[float, ...]]:
     start_index = max(0, int(math.floor(start * SAMPLE_FPS)))
     end_index = min(len(activity), int(math.ceil(end * SAMPLE_FPS)))
     segment = activity[start_index:end_index]
@@ -230,8 +232,7 @@ def discover_candidates(
     for candidate in candidates:
         _, start, end, _ = candidate
         if any(
-            overlap_seconds(start - gap, end + gap, chosen[1], chosen[2]) > 0
-            for chosen in selected
+            overlap_seconds(start - gap, end + gap, chosen[1], chosen[2]) > 0 for chosen in selected
         ):
             continue
         selected.append(candidate)
@@ -262,9 +263,7 @@ def discover_candidates(
 
 
 def gate(times: list[float], before: float, after: float) -> str:
-    intervals = [
-        f"between(t,{max(0.0, time - before):.3f},{time + after:.3f})" for time in times
-    ]
+    intervals = [f"between(t,{max(0.0, time - before):.3f},{time + after:.3f})" for time in times]
     return "+".join(intervals) if intervals else "0"
 
 
@@ -512,7 +511,9 @@ def sha256(path: Path) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Discover and render a non-duplicate MW4 gameplay batch")
+    parser = argparse.ArgumentParser(
+        description="Discover and render a non-duplicate MW4 gameplay batch"
+    )
     parser.add_argument("--source-key", choices=("r1", "batch2", "week2"), required=True)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)

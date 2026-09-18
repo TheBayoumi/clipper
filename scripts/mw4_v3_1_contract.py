@@ -43,7 +43,9 @@ def validate_configuration(config: dict[str, Any]) -> None:
     if first_gap <= 0.0:
         errors.append("finishing_move_max_continuation_gap_seconds must be positive")
     if body_gap <= 0.0 or body_gap > first_gap + _EPS:
-        errors.append("finishing_move_body_hard_cut_max_source_gap_seconds must be positive and <= first continuation reach")
+        errors.append(
+            "finishing_move_body_hard_cut_max_source_gap_seconds must be positive and <= first continuation reach"
+        )
 
     if "allow_planned_transition_for_semantic_montage" in config.get("source_integrity", {}):
         errors.append("obsolete semantic-montage source transition key must be removed")
@@ -59,12 +61,17 @@ def validate_configuration(config: dict[str, Any]) -> None:
     continuation = verifier.get("finishing_continuation", {})
     if continuation.get("require_verified_payoff") is not True:
         errors.append("Finishing Move continuation must require verified payoff")
-    for key in ("minimum_verified_hostile_anchors_without_payoff", "minimum_retention_without_payoff"):
+    for key in (
+        "minimum_verified_hostile_anchors_without_payoff",
+        "minimum_retention_without_payoff",
+    ):
         if key in continuation:
             errors.append(f"obsolete no-payoff continuation key must be removed: {key}")
 
     if errors:
-        raise AssertionError("MW4 V3.1 canonical contract configuration violation: " + "; ".join(errors))
+        raise AssertionError(
+            "MW4 V3.1 canonical contract configuration violation: " + "; ".join(errors)
+        )
 
 
 def _gate(config: dict[str, Any], story: str, metric: str, default: float) -> float:
@@ -161,7 +168,9 @@ def _plans_conflict(left: dict[str, Any], right: dict[str, Any], config: dict[st
     substantial_seconds = float(policy.get("substantial_overlap_seconds", 6.0))
     substantial_fraction = float(policy.get("substantial_overlap_fraction_shorter", 0.60))
 
-    if bool(policy.get("finishing_move_exclusive", True)) and _same_finishing_move(left, right, anchor_tolerance):
+    if bool(policy.get("finishing_move_exclusive", True)) and _same_finishing_move(
+        left, right, anchor_tolerance
+    ):
         return True
     if any(
         abs(a - b) <= anchor_tolerance
@@ -197,15 +206,21 @@ def _ordering_failures(source: str, index: int, plan: dict[str, Any]) -> list[st
         if abs(float(segment.get("speed", 1.0)) - 1.0) > 1e-6:
             failures.append(f"{source} clip {index}: segment {pos + 1} is not source-native 1.0x")
         if pos and s0 < float(segments[pos - 1]["end"]) - _EPS:
-            failures.append(f"{source} clip {index}: source chronology reverses/overlaps at segment {pos + 1}")
+            failures.append(
+                f"{source} clip {index}: source chronology reverses/overlaps at segment {pos + 1}"
+            )
     return failures
 
 
 def _event_has_payoff(event: dict[str, Any]) -> bool:
-    return bool({str(item) for item in (event.get("kinds") or [])}.intersection({"outcome_like", "impact"}))
+    return bool(
+        {str(item) for item in (event.get("kinds") or [])}.intersection({"outcome_like", "impact"})
+    )
 
 
-def _finishing_plan_failures(source: str, index: int, plan: dict[str, Any], config: dict[str, Any]) -> list[str]:
+def _finishing_plan_failures(
+    source: str, index: int, plan: dict[str, Any], config: dict[str, Any]
+) -> list[str]:
     finishing = plan.get("finishing_move")
     if finishing is None:
         return []
@@ -214,16 +229,23 @@ def _finishing_plan_failures(source: str, index: int, plan: dict[str, Any], conf
     engagements = list(plan.get("engagements") or [])
     editorial = config["editorial"]
 
-    if str(plan.get("story_type", "")) != "finishing_move_open" or str(plan.get("effect_profile", "")) != "finishing_move_hero":
+    if (
+        str(plan.get("story_type", "")) != "finishing_move_open"
+        or str(plan.get("effect_profile", "")) != "finishing_move_hero"
+    ):
         failures.append(f"{source} clip {index}: Finishing Move routing is not opening hero")
     if not segments:
         return failures + [f"{source} clip {index}: Finishing Move has no segments"]
 
     hero = segments[0]
     if str(hero.get("reason", "")) != "finishing_move_open_hero":
-        failures.append(f"{source} clip {index}: first segment is not protected Finishing Move hero")
+        failures.append(
+            f"{source} clip {index}: first segment is not protected Finishing Move hero"
+        )
     if not (float(hero["start"]) <= float(finishing["start"]) <= float(hero["end"])):
-        failures.append(f"{source} clip {index}: verified Finishing Move is not contained in hero segment")
+        failures.append(
+            f"{source} clip {index}: verified Finishing Move is not contained in hero segment"
+        )
     delay = float(finishing["start"]) - float(hero["start"])
     if delay > 0.48 + _EPS:
         failures.append(f"{source} clip {index}: Finishing Move opens too late ({delay:.3f}s)")
@@ -233,37 +255,55 @@ def _finishing_plan_failures(source: str, index: int, plan: dict[str, Any], conf
         failures.append(f"{source} clip {index}: Finishing Move has no verified combat-island body")
         return failures
     if len(body) != len(engagements):
-        failures.append(f"{source} clip {index}: Finishing Move body/engagement cardinality mismatch")
+        failures.append(
+            f"{source} clip {index}: Finishing Move body/engagement cardinality mismatch"
+        )
         return failures
 
     later_floor = max(float(hero["end"]), float(finishing["end"]) + 0.25)
     max_first_gap = float(editorial["finishing_move_max_continuation_gap_seconds"])
     hard_cut_gap = float(editorial["finishing_move_body_hard_cut_max_source_gap_seconds"])
     if float(body[0]["start"]) < later_floor - _EPS:
-        failures.append(f"{source} clip {index}: Finishing Move continuation starts before later-content floor")
+        failures.append(
+            f"{source} clip {index}: Finishing Move continuation starts before later-content floor"
+        )
     if float(body[0]["start"]) - float(hero["end"]) > max_first_gap + _EPS:
         failures.append(f"{source} clip {index}: Finishing Move first continuation exceeds reach")
 
     for pos, (segment, engagement) in enumerate(zip(body, engagements)):
         if str(segment.get("reason", "")) != "verified_combat_island_body":
-            failures.append(f"{source} clip {index}: body segment {pos + 1} is not a verified combat island")
+            failures.append(
+                f"{source} clip {index}: body segment {pos + 1} is not a verified combat island"
+            )
         if abs(float(segment["start"]) - float(engagement["start"])) > _EPS:
-            failures.append(f"{source} clip {index}: body segment {pos + 1} does not start at canonical island boundary")
+            failures.append(
+                f"{source} clip {index}: body segment {pos + 1} does not start at canonical island boundary"
+            )
         expected_end = round(float(engagement["end"]), 3)
         if abs(float(segment["end"]) - expected_end) > _EPS:
-            failures.append(f"{source} clip {index}: body segment {pos + 1} does not end at canonical island boundary")
+            failures.append(
+                f"{source} clip {index}: body segment {pos + 1} does not end at canonical island boundary"
+            )
         if not any(_event_has_payoff(event) for event in (engagement.get("events") or [])):
-            failures.append(f"{source} clip {index}: body island {pos + 1} lacks verified payoff anchor")
+            failures.append(
+                f"{source} clip {index}: body island {pos + 1} lacks verified payoff anchor"
+            )
         if pos:
             gap = float(segment["start"]) - float(body[pos - 1]["end"])
             if gap < -_EPS:
-                failures.append(f"{source} clip {index}: Finishing Move body segments overlap/reverse")
+                failures.append(
+                    f"{source} clip {index}: Finishing Move body segments overlap/reverse"
+                )
             elif gap > hard_cut_gap + _EPS:
-                failures.append(f"{source} clip {index}: Finishing Move body hard-cut source gap exceeds contract")
+                failures.append(
+                    f"{source} clip {index}: Finishing Move body hard-cut source gap exceeds contract"
+                )
     return failures
 
 
-def validate_plan(source: str, index: int, plan: dict[str, Any], config: dict[str, Any]) -> list[str]:
+def validate_plan(
+    source: str, index: int, plan: dict[str, Any], config: dict[str, Any]
+) -> list[str]:
     validate_configuration(config)
     failures = _ordering_failures(source, index, plan)
     editor = config["semantic_editor"]
@@ -274,19 +314,45 @@ def validate_plan(source: str, index: int, plan: dict[str, Any], config: dict[st
     if not (minimum <= duration <= maximum):
         failures.append(f"{source} clip {index}: duration out of campaign range")
     checks = (
-        ("opening_quality", "opening_min", float(editor["opening"].get("minimum_quality", 0.42)), "opening gate failed"),
-        ("ending_quality", "ending_min", float(editor["ending"].get("minimum_quality", 0.40)), "ending gate failed"),
-        ("retention_quality", "retention_min", float(config["performance_targets"].get("retention_quality_min", 0.36)), "retention-quality gate failed"),
-        ("payoff_quality", "payoff_min", float(config["performance_targets"].get("payoff_quality_min", 0.34)), "payoff-quality gate failed"),
+        (
+            "opening_quality",
+            "opening_min",
+            float(editor["opening"].get("minimum_quality", 0.42)),
+            "opening gate failed",
+        ),
+        (
+            "ending_quality",
+            "ending_min",
+            float(editor["ending"].get("minimum_quality", 0.40)),
+            "ending gate failed",
+        ),
+        (
+            "retention_quality",
+            "retention_min",
+            float(config["performance_targets"].get("retention_quality_min", 0.36)),
+            "retention-quality gate failed",
+        ),
+        (
+            "payoff_quality",
+            "payoff_min",
+            float(config["performance_targets"].get("payoff_quality_min", 0.34)),
+            "payoff-quality gate failed",
+        ),
     )
     for field, metric, default, message in checks:
         if float(plan.get(field, 0.0)) < _gate(config, story, metric, default):
             failures.append(f"{source} clip {index}: {message}")
-    if float(plan.get("max_unexplained_low_interest_run_seconds", 99.0)) > float(editor["dull"].get("maximum_unexplained_low_interest_run_seconds", 0.90)):
+    if float(plan.get("max_unexplained_low_interest_run_seconds", 99.0)) > float(
+        editor["dull"].get("maximum_unexplained_low_interest_run_seconds", 0.90)
+    ):
         failures.append(f"{source} clip {index}: unexplained dull run too long")
-    if float(plan.get("weakest_quarter_interest", 0.0)) < float(editor["dull"].get("minimum_weak_quarter_interest", 0.27)):
+    if float(plan.get("weakest_quarter_interest", 0.0)) < float(
+        editor["dull"].get("minimum_weak_quarter_interest", 0.27)
+    ):
         failures.append(f"{source} clip {index}: weakest quarter gate failed")
-    if float(plan.get("low_interest_fraction", 1.0)) > float(editor["dull"].get("maximum_low_interest_fraction", 0.38)):
+    if float(plan.get("low_interest_fraction", 1.0)) > float(
+        editor["dull"].get("maximum_low_interest_fraction", 0.38)
+    ):
         failures.append(f"{source} clip {index}: unexplained low-interest fraction too high")
     failures.extend(_finishing_plan_failures(source, index, plan, config))
     return list(dict.fromkeys(failures))
@@ -295,7 +361,9 @@ def validate_plan(source: str, index: int, plan: dict[str, Any], config: dict[st
 def _importance_score(plan: dict[str, Any], config: dict[str, Any]) -> float:
     score = float(plan.get("score", 0.0))
     if plan.get("finishing_move") is not None:
-        score += float(config.get("semantic_editor", {}).get("selection", {}).get("finishing_move_bonus", 0.14))
+        score += float(
+            config.get("semantic_editor", {}).get("selection", {}).get("finishing_move_bonus", 0.14)
+        )
     return score
 
 
@@ -307,18 +375,31 @@ def _adaptive_source_selection(
 ) -> list[dict[str, Any]]:
     batch = config.get("batch_selection", {})
     maximum = int(batch.get("maximum_per_source", config.get("count_per_source_max", 8)))
-    diversity = float(config.get("semantic_editor", {}).get("selection", {}).get("story_diversity_bonus", 0.06))
+    diversity = float(
+        config.get("semantic_editor", {}).get("selection", {}).get("story_diversity_bonus", 0.06)
+    )
     selected: list[dict[str, Any]] = []
 
-    if verified_count > 0 and bool(batch.get("require_verified_finishing_move_when_available", True)):
+    if verified_count > 0 and bool(
+        batch.get("require_verified_finishing_move_when_available", True)
+    ):
         finishers = [plan for plan in candidates if plan.get("finishing_move") is not None]
         if not finishers:
             raise AssertionError(f"{source}: verified Finishing Move has no valid canonical plan")
-        selected.append(max(finishers, key=lambda plan: (_importance_score(plan, config), str(plan.get("plan_key", "")))))
+        selected.append(
+            max(
+                finishers,
+                key=lambda plan: (_importance_score(plan, config), str(plan.get("plan_key", ""))),
+            )
+        )
 
     remaining = [plan for plan in candidates if plan not in selected]
     while len(selected) < maximum:
-        compatible = [plan for plan in remaining if not any(_plans_conflict(plan, old, config) for old in selected)]
+        compatible = [
+            plan
+            for plan in remaining
+            if not any(_plans_conflict(plan, old, config) for old in selected)
+        ]
         if not compatible:
             break
         stories = {str(plan.get("story_type", "")) for plan in selected}
@@ -353,11 +434,19 @@ def _apply_global_ceiling(
         return selections
     mandatory = [item for item in flattened if item[1].get("finishing_move") is not None]
     optional = [item for item in flattened if item[1].get("finishing_move") is None]
-    optional.sort(key=lambda item: (-_importance_score(item[1], config), item[0], str(item[1].get("plan_key", ""))))
+    optional.sort(
+        key=lambda item: (
+            -_importance_score(item[1], config),
+            item[0],
+            str(item[1].get("plan_key", "")),
+        )
+    )
     keep = mandatory + optional[: max(0, maximum_total - len(mandatory))]
     keep_keys = {(source, str(plan["plan_key"])) for source, plan in keep}
     return {
-        source: [plan for plan in selections[source] if (source, str(plan["plan_key"])) in keep_keys]
+        source: [
+            plan for plan in selections[source] if (source, str(plan["plan_key"])) in keep_keys
+        ]
         for source in EXPECTED_SOURCES
     }
 
@@ -368,11 +457,7 @@ def allocation_rejection_diagnostics(root: Path) -> dict[str, Any]:
     sources: dict[str, Any] = {}
     for source in EXPECTED_SOURCES:
         manifest = by_source.get(source, {})
-        semantic = dict(
-            manifest.get("diagnostics")
-            or manifest.get("semantic_diagnostics")
-            or {}
-        )
+        semantic = dict(manifest.get("diagnostics") or manifest.get("semantic_diagnostics") or {})
         continuations = list(semantic.get("finishing_move_continuation_diagnostics") or [])
         sources[source] = {
             "candidate_count_after_semantic_gates": int(
@@ -382,7 +467,9 @@ def allocation_rejection_diagnostics(root: Path) -> dict[str, Any]:
                 )
             ),
             "verified_finishing_move_count": int(manifest.get("verified_finishing_move_count", 0)),
-            "automatic_finishing_move_candidate_count": len(manifest.get("automatic_finishing_move_candidates") or []),
+            "automatic_finishing_move_candidate_count": len(
+                manifest.get("automatic_finishing_move_candidates") or []
+            ),
             "verified_combat_island_count": int(semantic.get("verified_combat_island_count", 0)),
             "local_interaction_verifier": dict(semantic.get("local_interaction_verifier") or {}),
             "finishing_move_continuation_diagnostics": continuations,
@@ -403,7 +490,9 @@ def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
     by_source = {str(item.get("source_key", "")): item for item in manifests}
     failures: list[str] = []
     if set(by_source) != set(EXPECTED_SOURCES):
-        failures.append(f"analysis manifests cover {sorted(by_source)}, expected {sorted(EXPECTED_SOURCES)}")
+        failures.append(
+            f"analysis manifests cover {sorted(by_source)}, expected {sorted(EXPECTED_SOURCES)}"
+        )
     if failures:
         raise AssertionError("\n".join(failures))
 
@@ -437,17 +526,23 @@ def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
                 rejected += 1
                 continue
             valid.append(plan)
-        valid.sort(key=lambda item: (-_importance_score(item, config), str(item.get("plan_key", ""))))
+        valid.sort(
+            key=lambda item: (-_importance_score(item, config), str(item.get("plan_key", "")))
+        )
         candidate_pools[source] = valid[:pool_limit]
         rejected_by_contract[source] = rejected
         verified_counts[source] = int(manifest.get("verified_finishing_move_count", 0))
-        automatic_candidate_counts[source] = len(manifest.get("automatic_finishing_move_candidates") or [])
+        automatic_candidate_counts[source] = len(
+            manifest.get("automatic_finishing_move_candidates") or []
+        )
 
     if failures:
         raise AssertionError("\n".join(failures))
 
     selections = {
-        source: _adaptive_source_selection(source, candidate_pools[source], verified_counts[source], config)
+        source: _adaptive_source_selection(
+            source, candidate_pools[source], verified_counts[source], config
+        )
         for source in EXPECTED_SOURCES
     }
     selections = _apply_global_ceiling(selections, config)
@@ -517,7 +612,11 @@ def validate_source_manifest(
     if manifest.get("failure"):
         failures.append(f"{source}: pipeline reported failure: {manifest['failure']}")
 
-    maximum = int(config.get("batch_selection", {}).get("maximum_per_source", config.get("count_per_source_max", 8)))
+    maximum = int(
+        config.get("batch_selection", {}).get(
+            "maximum_per_source", config.get("count_per_source_max", 8)
+        )
+    )
     if not (0 <= len(selected) <= maximum):
         failures.append(f"{source}: selected {len(selected)}, allowed range is 0..{maximum}")
     if len(outputs) != len(selected):
@@ -567,7 +666,9 @@ def validate_batch(
     failures: list[str] = []
     sources = {str(item.get("source_key", "")) for item in summaries}
     if sources != set(EXPECTED_SOURCES):
-        failures.append(f"batch summaries cover {sorted(sources)}, expected {sorted(EXPECTED_SOURCES)}")
+        failures.append(
+            f"batch summaries cover {sorted(sources)}, expected {sorted(EXPECTED_SOURCES)}"
+        )
     if len(summaries) != len(EXPECTED_SOURCES):
         failures.append(f"expected exactly 3 source summaries, found {len(summaries)}")
     modes = {str(item.get("mode", "")) for item in summaries}
@@ -587,7 +688,9 @@ def validate_batch(
         selected = int(item.get("selected_count", 0))
         rendered = int(item.get("rendered_count", 0))
         if not (0 <= selected <= maximum_per_source):
-            failures.append(f"{source}: selected {selected}, allowed range is 0..{maximum_per_source}")
+            failures.append(
+                f"{source}: selected {selected}, allowed range is 0..{maximum_per_source}"
+            )
         if rendered != selected:
             failures.append(f"{source}: rendered {rendered} != selected {selected}")
         if not bool(item.get("technical_qa_passed", False)):
@@ -595,16 +698,22 @@ def validate_batch(
         if int(item.get("unplanned_source_cut_count", -1)) != 0:
             failures.append(f"{source}: unplanned source cuts present")
         if allocation is not None:
-            expected_count = int(allocation.get("source_allocations", {}).get(source, {}).get("count", -1))
+            expected_count = int(
+                allocation.get("source_allocations", {}).get(source, {}).get("count", -1)
+            )
             if selected != expected_count:
-                failures.append(f"{source}: rendered count {selected} != allocation {expected_count}")
+                failures.append(
+                    f"{source}: rendered count {selected} != allocation {expected_count}"
+                )
         total_selected += selected
         total_rendered += rendered
         total_verified += int(item.get("verified_finishing_move_count", 0))
         total_selected_finishers += int(item.get("selected_finishing_move_count", 0))
 
     if not (minimum_total <= total_selected <= maximum_total):
-        failures.append(f"batch selected {total_selected}; allowed total is {minimum_total}..{maximum_total}")
+        failures.append(
+            f"batch selected {total_selected}; allowed total is {minimum_total}..{maximum_total}"
+        )
     if total_rendered != total_selected:
         failures.append("batch rendered count does not equal selected count")
     if total_verified > 0 and total_selected_finishers < 1:
@@ -658,7 +767,11 @@ def _self_test() -> None:
             "minimum_output_seconds": 10.0,
             "maximum_output_seconds": 20.0,
             "opening": {"minimum_quality": 0.42},
-            "ending": {"minimum_quality": 0.40, "preferred_payoff_tail_seconds": 0.45, "maximum_payoff_tail_seconds": 0.75},
+            "ending": {
+                "minimum_quality": 0.40,
+                "preferred_payoff_tail_seconds": 0.45,
+                "maximum_payoff_tail_seconds": 0.75,
+            },
             "dull": {
                 "maximum_unexplained_low_interest_run_seconds": 0.90,
                 "minimum_weak_quarter_interest": 0.27,
@@ -688,9 +801,24 @@ def _self_test() -> None:
     if not _ordering_failures("test", 1, bad_order):
         raise AssertionError("backward source chronology was accepted")
 
-    high = {"plan_key": "high", "score": 1.0, "story_type": "impact_payoff", "segments": [{"start": 0.0, "end": 10.0}]}
-    low_a = {"plan_key": "low-a", "score": 0.6, "story_type": "impact_payoff", "segments": [{"start": 0.0, "end": 4.0}]}
-    low_b = {"plan_key": "low-b", "score": 0.6, "story_type": "impact_payoff", "segments": [{"start": 6.0, "end": 10.0}]}
+    high = {
+        "plan_key": "high",
+        "score": 1.0,
+        "story_type": "impact_payoff",
+        "segments": [{"start": 0.0, "end": 10.0}],
+    }
+    low_a = {
+        "plan_key": "low-a",
+        "score": 0.6,
+        "story_type": "impact_payoff",
+        "segments": [{"start": 0.0, "end": 4.0}],
+    }
+    low_b = {
+        "plan_key": "low-b",
+        "score": 0.6,
+        "story_type": "impact_payoff",
+        "segments": [{"start": 6.0, "end": 10.0}],
+    }
     selected = _adaptive_source_selection("test", [low_a, low_b, high], 0, config)
     if [plan["plan_key"] for plan in selected] != ["high"]:
         raise AssertionError("allocator is cardinality-first instead of quality-first")
@@ -732,12 +860,16 @@ def _self_test() -> None:
     ):
         raise AssertionError("payoff-tail terminal trimming escaped canonical allocation contract")
 
-    print(json.dumps({
-        "self_test": "PASS",
-        "contract": "canonical-v3.1-adaptive-important-scenes-contract",
-        "selection_mode": "quality-first-adaptive",
-        "alternate_allocator_available": False,
-    }))
+    print(
+        json.dumps(
+            {
+                "self_test": "PASS",
+                "contract": "canonical-v3.1-adaptive-important-scenes-contract",
+                "selection_mode": "quality-first-adaptive",
+                "alternate_allocator_available": False,
+            }
+        )
+    )
 
 
 def main() -> None:

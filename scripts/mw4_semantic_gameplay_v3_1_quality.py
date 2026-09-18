@@ -3,11 +3,10 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import numpy as np
-
 import mw4_semantic_gameplay_v3_1 as core
-import mw4_semantic_gameplay_v3_1_combat_state as combat
 import mw4_semantic_gameplay_v3_1_combat_islands as islands
+import mw4_semantic_gameplay_v3_1_combat_state as combat
+import numpy as np
 
 Engagement = core.Engagement
 FinishingMoveSpan = core.FinishingMoveSpan
@@ -31,9 +30,7 @@ def _verified_cut_windows(
 ) -> tuple[tuple[float, float], ...]:
     out: list[tuple[float, float]] = []
     for item in (
-        config.get("source_integrity", {})
-        .get("verified_cut_windows", {})
-        .get(source_key, [])
+        config.get("source_integrity", {}).get("verified_cut_windows", {}).get(source_key, [])
     ):
         if len(item) != 2:
             continue
@@ -52,9 +49,7 @@ def _source_segments_overlap(
     right: SemanticPlanV31,
 ) -> bool:
     return any(
-        max(a.start, b.start) < min(a.end, b.end)
-        for a in left.segments
-        for b in right.segments
+        max(a.start, b.start) < min(a.end, b.end) for a in left.segments for b in right.segments
     )
 
 
@@ -103,9 +98,7 @@ def _longest_unexplained_low_run(
     i1 = min(len(timeline.times), int(math.ceil(end * timeline.fps)))
     if i1 <= i0:
         return float("inf")
-    threshold = float(
-        config["semantic_editor"]["dull"].get("low_interest_threshold", 0.30)
-    )
+    threshold = float(config["semantic_editor"]["dull"].get("low_interest_threshold", 0.30))
     explained = _explained_mask(timeline, engagements, finishing, config)
     low = np.asarray(timeline.signals["interest"] < threshold, dtype=bool)
     return core._longest_true_run(
@@ -132,20 +125,14 @@ def _quality_metrics(
         return (0.0,) * 7
 
     explained = _explained_mask(timeline, engagements, finishing, config)[i0:i1]
-    floor = float(
-        config["semantic_editor"]["dull"].get("explained_interest_floor", 0.26)
-    )
+    floor = float(config["semantic_editor"]["dull"].get("explained_interest_floor", 0.26))
     effective = np.where(explained, np.maximum(raw_interest, floor), raw_interest)
     quarters = np.array_split(effective, 4)
     weakest = min(float(np.mean(part)) for part in quarters if len(part))
-    low_threshold = float(
-        config["semantic_editor"]["dull"].get("low_interest_threshold", 0.30)
-    )
+    low_threshold = float(config["semantic_editor"]["dull"].get("low_interest_threshold", 0.30))
     low_fraction = float(np.mean((raw_interest < low_threshold) & ~explained))
 
-    first_event = (
-        finishing.start if finishing is not None else engagements[0].events[0].time
-    )
+    first_event = finishing.start if finishing is not None else engagements[0].events[0].time
     delay = max(0.0, float(first_event) - start)
     opening_mean = core._mean(
         sig["interest"],
@@ -154,9 +141,7 @@ def _quality_metrics(
         min(end, start + 1.25),
     )
     opening_slice = np.asarray(
-        sig["interest"][
-            i0 : min(i1, i0 + max(1, int(round(1.1 * fps))))
-        ],
+        sig["interest"][i0 : min(i1, i0 + max(1, int(round(1.1 * fps))))],
         dtype=np.float32,
     )
     opening_explained = explained[: len(opening_slice)]
@@ -183,17 +168,12 @@ def _quality_metrics(
         if any(kind in PAYOFF_KINDS for kind in event.kinds)
     ]
     last_payoff = payoff_events[-1].time if payoff_events else None
-    if (
-        finishing is not None
-        and (last_payoff is None or finishing.payoff > last_payoff)
-    ):
+    if finishing is not None and (last_payoff is None or finishing.payoff > last_payoff):
         last_payoff = finishing.payoff
 
     if last_payoff is not None:
         tail = max(0.0, end - float(last_payoff))
-        tail_quality = float(
-            np.clip(1.0 - abs(tail - 0.45) / 0.75, 0, 1)
-        )
+        tail_quality = float(np.clip(1.0 - abs(tail - 0.45) / 0.75, 0, 1))
         ending_interest = core._mean(
             sig["interest"],
             timeline,
@@ -203,12 +183,8 @@ def _quality_metrics(
         ending = 0.66 * tail_quality + 0.34 * ending_interest
     else:
         active = max(
-            core._mean(
-                sig["combat"], timeline, max(start, end - 0.8), end
-            ),
-            core._mean(
-                sig["contact"], timeline, max(start, end - 0.8), end
-            ),
+            core._mean(sig["combat"], timeline, max(start, end - 0.8), end),
+            core._mean(sig["contact"], timeline, max(start, end - 0.8), end),
         )
         ending = 0.72 * active + 0.28 * core._mean(
             sig["interest"],
@@ -219,16 +195,11 @@ def _quality_metrics(
 
     payoff_strength = max(
         [float(event.confidence) for event in payoff_events]
-        + (
-            [min(1.0, float(finishing.confidence) + 0.12)]
-            if finishing is not None
-            else [0.0]
-        )
+        + ([min(1.0, float(finishing.confidence) + 0.12)] if finishing is not None else [0.0])
     )
     coherence = float(
         np.clip(
-            0.54
-            * float(np.mean([eng.confidence for eng in engagements]))
+            0.54 * float(np.mean([eng.confidence for eng in engagements]))
             + 0.26 * min(1.0, len(engagements) / 4.0)
             + 0.20 * (1.0 - min(1.0, low_fraction / 0.45)),
             0,
@@ -247,9 +218,7 @@ def _quality_metrics(
             1,
         )
     )
-    payoff = float(
-        np.clip(0.72 * payoff_strength + 0.28 * ending, 0, 1)
-    )
+    payoff = float(np.clip(0.72 * payoff_strength + 0.28 * ending, 0, 1))
     return (
         opening,
         float(ending),
@@ -303,11 +272,7 @@ def _passes_story_gates(
             story,
             "retention_min",
             config,
-            float(
-                config["performance_targets"].get(
-                    "retention_quality_min", 0.36
-                )
-            ),
+            float(config["performance_targets"].get("retention_quality_min", 0.36)),
         )
         and payoff
         >= _story_gate(
@@ -316,16 +281,10 @@ def _passes_story_gates(
             config,
             float(config["performance_targets"].get("payoff_quality_min", 0.34)),
         )
-        and weakest
-        >= float(editor["dull"].get("minimum_weak_quarter_interest", 0.27))
-        and low_fraction
-        <= float(editor["dull"].get("maximum_low_interest_fraction", 0.38))
+        and weakest >= float(editor["dull"].get("minimum_weak_quarter_interest", 0.27))
+        and low_fraction <= float(editor["dull"].get("maximum_low_interest_fraction", 0.38))
         and residual
-        <= float(
-            editor["dull"].get(
-                "maximum_unexplained_low_interest_run_seconds", 0.90
-            )
-        )
+        <= float(editor["dull"].get("maximum_unexplained_low_interest_run_seconds", 0.90))
     )
 
 
@@ -358,9 +317,7 @@ def _effect_events_for_engagements(
     engagements: tuple[Engagement, ...],
 ) -> tuple[Any, ...]:
     verified_times = [
-        float(event.time)
-        for engagement in engagements
-        for event in engagement.events
+        float(event.time) for engagement in engagements for event in engagement.events
     ]
     raw = [
         event
@@ -375,8 +332,7 @@ def _effect_events_for_engagements(
         key=lambda item: (-float(item.confidence), float(item.time)),
     ):
         if any(
-            abs(float(event.time) - float(old.time)) <= 0.12
-            and event.kind == old.kind
+            abs(float(event.time) - float(old.time)) <= 0.12 and event.kind == old.kind
             for old in unique
         ):
             continue
@@ -467,9 +423,7 @@ def _chronology_failures(plan: SemanticPlanV31) -> list[str]:
         if abs(float(segment.speed) - 1.0) > 1e-6:
             failures.append(f"segment {index + 1} is not source-native 1.0x")
         if index and float(segment.start) < float(segments[index - 1].end) - _EPS:
-            failures.append(
-                f"source chronology reversal/overlap at segment {index + 1}"
-            )
+            failures.append(f"source chronology reversal/overlap at segment {index + 1}")
     return failures
 
 
@@ -504,8 +458,7 @@ def plan_integrity_violations(
 
     for index, segment in enumerate(plan.segments):
         inside = any(
-            shot.start - _EPS <= segment.start
-            and segment.end <= shot.end + _EPS
+            shot.start - _EPS <= segment.start and segment.end <= shot.end + _EPS
             for shot in timeline.shots
         )
         if not inside:
@@ -519,21 +472,14 @@ def plan_integrity_violations(
                     f"segment {segment.start:.3f}-{segment.end:.3f} crosses verified source cut "
                     f"{left:.3f}-{right:.3f}"
                 )
-        if (
-            segment.reason != "finishing_move_open_hero"
-            and islands.segment_crosses_gap(
-                timeline,
-                float(segment.start),
-                float(segment.end),
-            )
+        if segment.reason != "finishing_move_open_hero" and islands.segment_crosses_gap(
+            timeline,
+            float(segment.start),
+            float(segment.end),
         ):
-            failures.append(
-                f"segment {index + 1} crosses a sustained reload/search/recovery break"
-            )
+            failures.append(f"segment {index + 1} crosses a sustained reload/search/recovery break")
 
-    for index, (left, right) in enumerate(
-        zip(plan.segments, plan.segments[1:])
-    ):
+    for index, (left, right) in enumerate(zip(plan.segments, plan.segments[1:])):
         if right.start <= left.end + 0.02:
             continue
         left_shot = core._shot_index(
@@ -550,39 +496,25 @@ def plan_integrity_violations(
             right,
             index,
         ):
-            failures.append(
-                f"unplanned cross-shot bridge {left.end:.3f}->{right.start:.3f}"
-            )
+            failures.append(f"unplanned cross-shot bridge {left.end:.3f}->{right.start:.3f}")
 
     for engagement in plan.engagements:
         for event in engagement.events:
             if not combat.hostile_decision(event, config).hostile:
-                failures.append(
-                    f"plan includes non-hostile/ambiguous anchor at {event.time:.3f}s"
-                )
+                failures.append(f"plan includes non-hostile/ambiguous anchor at {event.time:.3f}s")
 
     if plan.finishing_move is not None:
-        if (
-            plan.story_type != "finishing_move_open"
-            or plan.effect_profile != "finishing_move_hero"
-        ):
+        if plan.story_type != "finishing_move_open" or plan.effect_profile != "finishing_move_hero":
             failures.append(
                 "verified Finishing Move is not routed as finishing_move_open/finishing_move_hero"
             )
-        if (
-            not plan.segments
-            or plan.segments[0].reason != "finishing_move_open_hero"
-        ):
-            failures.append(
-                "Finishing Move first segment is not the protected hero"
-            )
+        if not plan.segments or plan.segments[0].reason != "finishing_move_open_hero":
+            failures.append("Finishing Move first segment is not the protected hero")
             return list(dict.fromkeys(failures))
 
         hero = plan.segments[0]
         if not hero.start <= plan.finishing_move.start <= hero.end:
-            failures.append(
-                "Finishing Move is not contained in first output segment"
-            )
+            failures.append("Finishing Move is not contained in first output segment")
         if (plan.finishing_move.start - hero.start) / hero.speed > 0.48:
             failures.append("Finishing Move opening delay exceeds 0.48s")
 
@@ -609,22 +541,12 @@ def plan_integrity_violations(
                 failures.append(
                     "Finishing Move continuation starts before strict later-content floor"
                 )
-            if (
-                body
-                and float(body[0].start) - float(hero.end)
-                > max_first_gap + _EPS
-            ):
-                failures.append(
-                    "Finishing Move first continuation starts beyond configured reach"
-                )
+            if body and float(body[0].start) - float(hero.end) > max_first_gap + _EPS:
+                failures.append("Finishing Move first continuation starts beyond configured reach")
 
-            for index, (segment, engagement) in enumerate(
-                zip(body, engagements)
-            ):
+            for index, (segment, engagement) in enumerate(zip(body, engagements)):
                 if segment.reason != "verified_combat_island_body":
-                    failures.append(
-                        "Finishing Move body contains a non-island segment"
-                    )
+                    failures.append("Finishing Move body contains a non-island segment")
                     continue
                 if (
                     abs(float(segment.start) - float(engagement.start)) > _EPS
@@ -636,12 +558,8 @@ def plan_integrity_violations(
                 if index:
                     gap = float(segment.start) - float(body[index - 1].end)
                     if gap < -_EPS:
-                        failures.append(
-                            "Finishing Move body segments overlap/reverse"
-                        )
+                        failures.append("Finishing Move body segments overlap/reverse")
                     elif gap > hard_cut_gap + _EPS:
-                        failures.append(
-                            "Finishing Move body hard-cut source gap exceeds contract"
-                        )
+                        failures.append("Finishing Move body hard-cut source gap exceeds contract")
 
     return list(dict.fromkeys(failures))

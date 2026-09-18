@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 UNKNOWN_METADATA = {"", "unknown", "unspecified", "reserved", "n/a", "N/A", "0:1"}
 VIDEO_METADATA_FIELDS = (
@@ -189,11 +190,20 @@ def video_profile(path: Path, *, count_frames: bool = False) -> dict[str, Any]:
 
 def audio_profile(path: Path) -> dict[str, Any]:
     payload = json.loads(
-        run_capture([
-            "ffprobe", "-v", "error", "-select_streams", "a:0",
-            "-show_entries", "stream=codec_name,sample_fmt,sample_rate,channels,channel_layout",
-            "-of", "json", str(path),
-        ]).stdout
+        run_capture(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=codec_name,sample_fmt,sample_rate,channels,channel_layout",
+                "-of",
+                "json",
+                str(path),
+            ]
+        ).stdout
     )
     streams = payload.get("streams") or []
     if len(streams) != 1:
@@ -209,11 +219,21 @@ def audio_profile(path: Path) -> dict[str, Any]:
 
 
 def packet_pts(path: Path) -> list[int]:
-    text = run_capture([
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_packets", "-show_entries", "packet=pts", "-of", "csv=p=0",
-        str(path),
-    ]).stdout
+    text = run_capture(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_packets",
+            "-show_entries",
+            "packet=pts",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ]
+    ).stdout
     pts: list[int] = []
     for raw in text.splitlines():
         token = raw.strip().split(",", 1)[0].strip()
@@ -286,7 +306,9 @@ def verify_cfr_timeline(path: Path, timing: VideoTimingContract, *, label: str) 
     }
 
 
-def verify_monotonic_timeline(path: Path, timing: VideoTimingContract, *, label: str) -> dict[str, Any]:
+def verify_monotonic_timeline(
+    path: Path, timing: VideoTimingContract, *, label: str
+) -> dict[str, Any]:
     profile = video_profile(path)
     actual_tb = _fraction(profile["time_base"], label=f"{label} time_base")
     actual_rate = _fraction(profile["r_frame_rate"], label=f"{label} r_frame_rate")
@@ -359,7 +381,9 @@ def is_known(value: Any) -> bool:
     return str(value or "").strip() not in UNKNOWN_METADATA
 
 
-def metadata_match_checks(source: dict[str, Any], other: dict[str, Any], *, prefix: str) -> dict[str, bool]:
+def metadata_match_checks(
+    source: dict[str, Any], other: dict[str, Any], *, prefix: str
+) -> dict[str, bool]:
     checks: dict[str, bool] = {}
     for field in VIDEO_METADATA_FIELDS:
         left = str(source.get(field) or "")
@@ -427,16 +451,21 @@ def lossless_video_args(profile: dict[str, Any]) -> list[str]:
     timing = timing_from_profile(profile)
     vui = x264_vui_params(profile)
     args = [
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-qp", "0",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-qp",
+        "0",
         *profile_output_args(profile),
     ]
     if vui:
         args += ["-x264-params", ":".join(vui)]
     args += [
-        "-video_track_timescale", str(timing.track_timescale),
-        "-threads:v", "4",
+        "-video_track_timescale",
+        str(timing.track_timescale),
+        "-threads:v",
+        "4",
     ]
     return args
 
@@ -473,22 +502,30 @@ def validate_delivery_compatibility(contract: SourceMediaContract, config: dict[
     width = settings.get("width")
     height = settings.get("height")
     if width not in (None, "source", "auto") and int(width) != contract.video.width:
-        failures.append(f"delivery width={width} conflicts with source width={contract.video.width}")
+        failures.append(
+            f"delivery width={width} conflicts with source width={contract.video.width}"
+        )
     if height not in (None, "source", "auto") and int(height) != contract.video.height:
-        failures.append(f"delivery height={height} conflicts with source height={contract.video.height}")
+        failures.append(
+            f"delivery height={height} conflicts with source height={contract.video.height}"
+        )
     configured_fps = settings.get("fps")
     if configured_fps not in (None, "source", "auto"):
         try:
             wanted = Fraction(str(configured_fps))
         except (ValueError, ZeroDivisionError) as exc:
-            raise RuntimeError(f"invalid output.fps delivery constraint: {configured_fps!r}") from exc
+            raise RuntimeError(
+                f"invalid output.fps delivery constraint: {configured_fps!r}"
+            ) from exc
         if wanted != contract.video.timing.nominal_rate:
             failures.append(
                 "delivery fps conflicts with source-native timing: "
                 f"delivery={configured_fps} source={fraction_text(contract.video.timing.nominal_rate)}"
             )
     if failures:
-        raise RuntimeError("source-native delivery contract is incompatible: " + "; ".join(failures))
+        raise RuntimeError(
+            "source-native delivery contract is incompatible: " + "; ".join(failures)
+        )
 
 
 def frame_hashes(
@@ -505,8 +542,16 @@ def frame_hashes(
     if duration is not None:
         command += ["-t", f"{duration:.6f}"]
     command += [
-        "-map", "0:v:0", "-an", "-vsync", "0",
-        "-pix_fmt", pix_fmt, "-f", "framemd5", "-",
+        "-map",
+        "0:v:0",
+        "-an",
+        "-vsync",
+        "0",
+        "-pix_fmt",
+        pix_fmt,
+        "-f",
+        "framemd5",
+        "-",
     ]
     text = run_capture(command).stdout
     return [

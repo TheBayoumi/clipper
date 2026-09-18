@@ -77,32 +77,49 @@ def _apply_global_ceiling(
         return selections
     mandatory = [item for item in flattened if item[1].get("finishing_move") is not None]
     optional = [item for item in flattened if item[1].get("finishing_move") is None]
-    optional.sort(key=lambda item: (-base._importance_score(item[1], config), item[0], str(item[1].get("plan_key", ""))))
+    optional.sort(
+        key=lambda item: (
+            -base._importance_score(item[1], config),
+            item[0],
+            str(item[1].get("plan_key", "")),
+        )
+    )
     keep = mandatory + optional[: max(0, maximum_total - len(mandatory))]
     keep_keys = {(source, str(plan["plan_key"])) for source, plan in keep}
     return {
-        source: [plan for plan in selections[source] if (source, str(plan["plan_key"])) in keep_keys]
+        source: [
+            plan for plan in selections[source] if (source, str(plan["plan_key"])) in keep_keys
+        ]
         for source in source_order
     }
 
 
 def allocation_rejection_diagnostics(root: Path) -> dict[str, Any]:
     manifests = [_load(path) for path in sorted(root.rglob("*_analysis_v3_1.json"))]
-    by_source = {str(item.get("source_key", "")): item for item in manifests if item.get("source_key")}
+    by_source = {
+        str(item.get("source_key", "")): item for item in manifests if item.get("source_key")
+    }
     sources: dict[str, Any] = {}
     for source in _source_order(by_source):
         manifest = by_source[source]
         semantic = dict(manifest.get("diagnostics") or manifest.get("semantic_diagnostics") or {})
         sources[source] = {
             "candidate_count_after_semantic_gates": int(
-                semantic.get("candidate_count_after_semantic_gates", len(manifest.get("candidate_pool") or []))
+                semantic.get(
+                    "candidate_count_after_semantic_gates",
+                    len(manifest.get("candidate_pool") or []),
+                )
             ),
             "verified_finishing_move_count": int(manifest.get("verified_finishing_move_count", 0)),
-            "automatic_finishing_move_candidate_count": len(manifest.get("automatic_finishing_move_candidates") or []),
+            "automatic_finishing_move_candidate_count": len(
+                manifest.get("automatic_finishing_move_candidates") or []
+            ),
             "verified_combat_island_count": int(semantic.get("verified_combat_island_count", 0)),
             "local_interaction_verifier": dict(semantic.get("local_interaction_verifier") or {}),
             "proposal_diagnostics": dict(semantic.get("proposal_diagnostics") or {}),
-            "finishing_move_continuation_diagnostics": list(semantic.get("finishing_move_continuation_diagnostics") or []),
+            "finishing_move_continuation_diagnostics": list(
+                semantic.get("finishing_move_continuation_diagnostics") or []
+            ),
         }
     return {
         "version": "3.1",
@@ -118,7 +135,9 @@ def allocation_rejection_diagnostics(root: Path) -> dict[str, Any]:
 def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
     base.validate_configuration(config)
     manifests = [_load(path) for path in sorted(root.rglob("*_analysis_v3_1.json"))]
-    by_source = {str(item.get("source_key", "")): item for item in manifests if item.get("source_key")}
+    by_source = {
+        str(item.get("source_key", "")): item for item in manifests if item.get("source_key")
+    }
     if not by_source:
         raise AssertionError("no analysis manifests found")
     if len(by_source) != len(manifests):
@@ -160,13 +179,17 @@ def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         discovered_scene_counts[source] = len({_primary_scene_key(plan) for plan in valid})
         rejected_by_contract[source] = rejected
         verified_counts[source] = int(manifest.get("verified_finishing_move_count", 0))
-        automatic_candidate_counts[source] = len(manifest.get("automatic_finishing_move_candidates") or [])
+        automatic_candidate_counts[source] = len(
+            manifest.get("automatic_finishing_move_candidates") or []
+        )
 
     if failures:
         raise AssertionError("\n".join(failures))
 
     selections = {
-        source: base._adaptive_source_selection(source, candidate_pools[source], verified_counts[source], config)
+        source: base._adaptive_source_selection(
+            source, candidate_pools[source], verified_counts[source], config
+        )
         for source in source_order
     }
     selections = _apply_global_ceiling(selections, source_order, config)
@@ -215,11 +238,15 @@ def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def validate_batch(root: Path, config: dict[str, Any], allocation: dict[str, Any] | None = None) -> dict[str, Any]:
+def validate_batch(
+    root: Path, config: dict[str, Any], allocation: dict[str, Any] | None = None
+) -> dict[str, Any]:
     base.validate_configuration(config)
     summaries = [_load(path) for path in sorted(root.rglob("*_pipeline_summary.json"))]
-    source_order = tuple(allocation.get("source_order") or []) if allocation else _source_order(
-        str(item.get("source_key", "")) for item in summaries
+    source_order = (
+        tuple(allocation.get("source_order") or [])
+        if allocation
+        else _source_order(str(item.get("source_key", "")) for item in summaries)
     )
     expected = set(source_order)
     actual = {str(item.get("source_key", "")) for item in summaries}
@@ -227,7 +254,9 @@ def validate_batch(root: Path, config: dict[str, Any], allocation: dict[str, Any
     if actual != expected:
         failures.append(f"batch summaries cover {sorted(actual)}, expected {sorted(expected)}")
     if len(summaries) != len(expected):
-        failures.append(f"expected exactly {len(expected)} source summaries, found {len(summaries)}")
+        failures.append(
+            f"expected exactly {len(expected)} source summaries, found {len(summaries)}"
+        )
     modes = {str(item.get("mode", "")) for item in summaries}
     if len(modes) != 1 or not modes.issubset({"shadow", "production"}):
         failures.append(f"batch has inconsistent/invalid modes: {sorted(modes)}")
@@ -244,7 +273,9 @@ def validate_batch(root: Path, config: dict[str, Any], allocation: dict[str, Any
         selected = int(item.get("selected_count", 0))
         rendered = int(item.get("rendered_count", 0))
         if not (0 <= selected <= maximum_per_source):
-            failures.append(f"{source}: selected {selected}, allowed range is 0..{maximum_per_source}")
+            failures.append(
+                f"{source}: selected {selected}, allowed range is 0..{maximum_per_source}"
+            )
         if rendered != selected:
             failures.append(f"{source}: rendered {rendered} != selected {selected}")
         if not bool(item.get("technical_qa_passed", False)):
@@ -252,16 +283,22 @@ def validate_batch(root: Path, config: dict[str, Any], allocation: dict[str, Any
         if int(item.get("unplanned_source_cut_count", -1)) != 0:
             failures.append(f"{source}: unplanned source cuts present")
         if allocation is not None:
-            expected_count = int(allocation.get("source_allocations", {}).get(source, {}).get("count", -1))
+            expected_count = int(
+                allocation.get("source_allocations", {}).get(source, {}).get("count", -1)
+            )
             if selected != expected_count:
-                failures.append(f"{source}: rendered count {selected} != allocation {expected_count}")
+                failures.append(
+                    f"{source}: rendered count {selected} != allocation {expected_count}"
+                )
         total_selected += selected
         total_rendered += rendered
         total_verified += int(item.get("verified_finishing_move_count", 0))
         total_selected_finishers += int(item.get("selected_finishing_move_count", 0))
 
     if not (minimum_total <= total_selected <= maximum_total):
-        failures.append(f"batch selected {total_selected}; allowed total is {minimum_total}..{maximum_total}")
+        failures.append(
+            f"batch selected {total_selected}; allowed total is {minimum_total}..{maximum_total}"
+        )
     if total_rendered != total_selected:
         failures.append("batch rendered count does not equal selected count")
     if total_verified > 0 and total_selected_finishers < 1:
@@ -294,9 +331,22 @@ def _self_test() -> None:
     ]
     config = {"semantic_editor": {"selection": {"finishing_move_bonus": 0.14}}}
     pool = _diversified_candidate_pool(sample, 2, config)
-    if {_primary_scene_key(item) for item in pool} != {("terminal_payoff", 10.0), ("terminal_payoff", 30.0)}:
-        raise AssertionError("candidate pool did not preserve distinct payoff scenes before score-fill")
-    print(json.dumps({"self_test": "PASS", "dynamic_source_set": True, "distinct_payoff_pool_preservation": True}))
+    if {_primary_scene_key(item) for item in pool} != {
+        ("terminal_payoff", 10.0),
+        ("terminal_payoff", 30.0),
+    }:
+        raise AssertionError(
+            "candidate pool did not preserve distinct payoff scenes before score-fill"
+        )
+    print(
+        json.dumps(
+            {
+                "self_test": "PASS",
+                "dynamic_source_set": True,
+                "distinct_payoff_pool_preservation": True,
+            }
+        )
+    )
 
 
 def main() -> None:

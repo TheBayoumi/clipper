@@ -6,7 +6,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-
 OFFICIAL_FILES = {
     "r1": "MW4_BetaTopPlays_Stringout_16X9_R1.mp4",
     "batch2": "BestOfBeta_Stringout_Batch2.mp4",

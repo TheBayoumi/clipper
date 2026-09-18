@@ -7,9 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 import mw4_semantic_gameplay_v3 as base
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -283,9 +282,9 @@ def cluster_engagements(
         shot = shots[shot_index]
         start = max(shot.start, group[0].time - context)
         end = min(shot.end, group[-1].time + context)
-        payoff_bonus = 0.08 if any(
-            any(kind in PAYOFF_KINDS for kind in item.kinds) for item in group
-        ) else 0.0
+        payoff_bonus = (
+            0.08 if any(any(kind in PAYOFF_KINDS for kind in item.kinds) for item in group) else 0.0
+        )
         confidence = min(
             1.0,
             float(np.mean([item.confidence for item in group])) + payoff_bonus,
@@ -327,14 +326,7 @@ def discover_finishing_moves(
     max_dull = float(cfg.get("maximum_internal_dull_fraction", 0.34))
     max_gap_bins = max(
         1,
-        int(
-            round(
-                float(
-                    cfg.get("maximum_gap_between_choreography_bins_seconds", 0.50)
-                )
-                * fps
-            )
-        ),
+        int(round(float(cfg.get("maximum_gap_between_choreography_bins_seconds", 0.50)) * fps)),
     )
 
     score = np.clip(
@@ -349,10 +341,7 @@ def discover_finishing_moves(
     )
     active = (
         (sig["center_motion"] >= min_center)
-        & (
-            np.maximum(sig["contact"], sig["impact"])
-            >= min_contact_impact * 0.72
-        )
+        & (np.maximum(sig["contact"], sig["impact"]) >= min_contact_impact * 0.72)
         & (sig["traversal"] < 0.68)
     )
 
@@ -406,8 +395,7 @@ def discover_finishing_moves(
             body_dominance = float(
                 np.mean(
                     np.maximum(
-                        sig["center_motion"][left:right]
-                        - 0.72 * sig["combat"][left:right],
+                        sig["center_motion"][left:right] - 0.72 * sig["combat"][left:right],
                         0.0,
                     )
                 )
@@ -454,10 +442,7 @@ def discover_finishing_moves(
 
     deduped: list[FinishingMoveSpan] = []
     for span in sorted(spans, key=lambda item: item.confidence, reverse=True):
-        if any(
-            max(span.start, prior.start) < min(span.end, prior.end)
-            for prior in deduped
-        ):
+        if any(max(span.start, prior.start) < min(span.end, prior.end) for prior in deduped):
             continue
         deduped.append(span)
     return tuple(sorted(deduped, key=lambda item: item.start))

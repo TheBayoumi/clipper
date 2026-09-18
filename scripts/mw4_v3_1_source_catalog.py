@@ -66,7 +66,9 @@ def _assign_keys(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         copy["source_key"] = key
         result.append(copy)
     order = {key: pos for pos, key in enumerate(KNOWN_ORDER)}
-    result.sort(key=lambda item: (order.get(str(item["source_key"]), 999), str(item["title"]).lower()))
+    result.sort(
+        key=lambda item: (order.get(str(item["source_key"]), 999), str(item["title"]).lower())
+    )
     return result
 
 
@@ -78,7 +80,9 @@ def _capture_assets(review_url: str) -> list[dict[str, Any]]:
 
     holder: list[list[dict[str, Any]] | None] = [None]
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        browser = playwright.chromium.launch(
+            headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
         try:
             for attempt in range(1, 4):
                 page = browser.new_page(
@@ -116,7 +120,9 @@ def _capture_assets(review_url: str) -> list[dict[str, Any]]:
     return holder[0]
 
 
-def discover(review_url: str, output: Path, github_output: Path | None, expected_count: int | None) -> dict[str, Any]:
+def discover(
+    review_url: str, output: Path, github_output: Path | None, expected_count: int | None
+) -> dict[str, Any]:
     discovered: list[dict[str, Any]] = []
     for asset in _capture_assets(review_url):
         selected = _source_derivative(asset)
@@ -159,7 +165,14 @@ def discover(review_url: str, output: Path, github_output: Path | None, expected
         with github_output.open("a", encoding="utf-8") as handle:
             handle.write("source_matrix=" + json.dumps(matrix, separators=(",", ":")) + "\n")
             handle.write(f"source_count={len(sources)}\n")
-    print(json.dumps({"source_count": len(sources), "sources": [(i['source_key'], i['title']) for i in sources]}))
+    print(
+        json.dumps(
+            {
+                "source_count": len(sources),
+                "sources": [(i["source_key"], i["title"]) for i in sources],
+            }
+        )
+    )
     return payload
 
 
@@ -170,7 +183,9 @@ def select(catalog: Path, source_key: str, output: Path) -> dict[str, Any]:
             selected = {key: value for key, value in item.items() if key != "source_key"}
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(json.dumps(selected, indent=2), encoding="utf-8")
-            print(f"MediaSilo source selected: key={source_key} title={selected['title']} type=source")
+            print(
+                f"MediaSilo source selected: key={source_key} title={selected['title']} type=source"
+            )
             return selected
     raise RuntimeError(f"source key not found in MediaSilo catalog: {source_key}")
 

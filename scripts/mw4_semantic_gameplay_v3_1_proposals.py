@@ -4,12 +4,11 @@ import itertools
 from collections import defaultdict
 from typing import Any
 
-import numpy as np
-
 import mw4_semantic_gameplay_v3_1 as core
-import mw4_semantic_gameplay_v3_1_combat_state as combat
 import mw4_semantic_gameplay_v3_1_combat_islands as islands
+import mw4_semantic_gameplay_v3_1_combat_state as combat
 import mw4_semantic_gameplay_v3_1_quality as quality
+import numpy as np
 
 Engagement = core.Engagement
 EditSegment = core.EditSegment
@@ -40,15 +39,11 @@ def _support_components(timeline: Any, config: dict[str, Any]) -> tuple[Engageme
         decision = combat.hostile_decision(event, config)
         if not decision.hostile:
             continue
-        component = islands._support_component_for_event(
-            timeline, event, hard, core
-        )
+        component = islands._support_component_for_event(timeline, event, hard, core)
         if component is None:
             continue
         shot_index, start, end = component
-        grouped[(int(shot_index), float(start), float(end))].append(
-            (event, decision)
-        )
+        grouped[(int(shot_index), float(start), float(end))].append((event, decision))
 
     minimum = _f(
         config["combat_state_verifier"].get("minimum_combat_island_seconds", 1.0),
@@ -103,8 +98,7 @@ def _evidence_engagements(
     evidence = tuple(
         item
         for item in timeline.engagements
-        if int(item.shot_index)
-        == int(core._shot_index(timeline.shots, (start + end) / 2.0))
+        if int(item.shot_index) == int(core._shot_index(timeline.shots, (start + end) / 2.0))
         and any(start - _EPS <= float(event.time) <= end + _EPS for event in item.events)
     )
     return evidence
@@ -125,16 +119,14 @@ def _metrics(
         None,
         config,
     )
-    opening, ending, coherence, retention, payoff, weakest, low_fraction = (
-        quality._quality_metrics(
-            timeline,
-            start,
-            end,
-            evidence,
-            None,
-            residual,
-            config,
-        )
+    opening, ending, coherence, retention, payoff, weakest, low_fraction = quality._quality_metrics(
+        timeline,
+        start,
+        end,
+        evidence,
+        None,
+        residual,
+        config,
     )
     return {
         "duration": end - start,
@@ -162,9 +154,7 @@ def _normal_variants(
     tail = _f(editor["ending"].get("preferred_payoff_tail_seconds", 0.45), 0.45)
     events = tuple(sorted(component.events, key=lambda item: float(item.time)))
     payoffs = tuple(
-        event
-        for event in events
-        if event in quality.verified_payoff_events(component, config)
+        event for event in events if event in quality.verified_payoff_events(component, config)
     )
     terminals = payoffs or events[-1:]
     candidates: list[tuple[float, float]] = []
@@ -175,7 +165,9 @@ def _normal_variants(
 
     for terminal in terminals:
         end = min(float(component.end), float(terminal.time) + tail)
-        prior_events = [event for event in events if float(event.time) <= float(terminal.time) + _EPS]
+        prior_events = [
+            event for event in events if float(event.time) <= float(terminal.time) + _EPS
+        ]
         if not prior_events:
             continue
         first = prior_events[0]
@@ -226,9 +218,7 @@ def _component_chains(
         config["semantic_editor"].get("maximum_inter_engagement_gap_seconds", 4.0),
         4.0,
     )
-    max_items = int(
-        config["semantic_editor"].get("maximum_engagements_per_story", 7)
-    )
+    max_items = int(config["semantic_editor"].get("maximum_engagements_per_story", 7))
     chains: list[tuple[Engagement, ...]] = []
     for index, first in enumerate(components):
         chain: list[Engagement] = []
@@ -270,7 +260,9 @@ def _aggregate_metrics(
         "retention": float(np.average([item["retention"] for item in per], weights=durations)),
         "payoff": float(max(item["payoff"] for item in per)),
         "weakest": float(min(item["weakest"] for item in per)),
-        "low_fraction": float(np.average([item["low_fraction"] for item in per], weights=durations)),
+        "low_fraction": float(
+            np.average([item["low_fraction"] for item in per], weights=durations)
+        ),
         "residual": float(max(item["residual"] for item in per)),
     }
 
@@ -330,9 +322,7 @@ def normal_plans(
                 )
                 for item in proposal_tuple
             )
-            output_duration = float(
-                sum(quality._segment_duration(segment) for segment in segments)
-            )
+            output_duration = float(sum(quality._segment_duration(segment) for segment in segments))
             if not (minimum - _EPS <= output_duration <= maximum + _EPS):
                 diagnostics["normal_duration_reject_count"] += 1
                 continue
@@ -348,9 +338,7 @@ def normal_plans(
                 continue
 
             metrics = _aggregate_metrics(timeline, proposal_tuple, config)
-            story, profile, effects, reasons = quality._route_story(
-                timeline, proposal_tuple
-            )
+            story, profile, effects, reasons = quality._route_story(timeline, proposal_tuple)
             if not quality._passes_story_gates(
                 story,
                 metrics["opening"],
@@ -403,9 +391,7 @@ def normal_plans(
                     "every kept segment stays inside one same-shot hard-gap-free support component",
                 ),
             )
-            integrity = quality.plan_integrity_violations(
-                plan, timeline, config, source_key
-            )
+            integrity = quality.plan_integrity_violations(plan, timeline, config, source_key)
             if integrity:
                 diagnostics["normal_integrity_reject_count"] += 1
                 continue
@@ -426,7 +412,7 @@ def normal_plans(
 
     existing = dict(getattr(timeline, "_proposal_diagnostics", {}) or {})
     existing.update(diagnostics)
-    setattr(timeline, "_proposal_diagnostics", existing)
+    timeline._proposal_diagnostics = existing
     return unique
 
 
@@ -505,9 +491,7 @@ def finishing_open_plans(
     cfg = config["combat_state_verifier"]["finishing_continuation"]
     lead = _f(editorial.get("finishing_move_opening_lead_seconds", 0.28), 0.28)
     hold = _f(editorial.get("finishing_move_payoff_hold_seconds", 0.45), 0.45)
-    final_minimum = _f(
-        config["semantic_editor"].get("minimum_output_seconds", 10.0), 10.0
-    )
+    final_minimum = _f(config["semantic_editor"].get("minimum_output_seconds", 10.0), 10.0)
     final_maximum = min(
         _f(config["semantic_editor"].get("maximum_output_seconds", 20.0), 20.0),
         _f(editorial.get("finishing_move_max_output_seconds", 15.5), 15.5),
@@ -616,9 +600,7 @@ def finishing_open_plans(
                     dtype=float,
                 )
                 body_duration = float(np.sum(durations))
-                if not (
-                    body_minimum - _EPS <= body_duration <= body_maximum + _EPS
-                ):
+                if not (body_minimum - _EPS <= body_duration <= body_maximum + _EPS):
                     group_rejections.append(
                         {
                             "proposals": [
@@ -627,7 +609,9 @@ def finishing_open_plans(
                             ],
                             "body_duration": round(body_duration, 3),
                             "required_body_minimum_seconds": round(body_minimum, 3),
-                            "failures": ["boundary-refined body duration outside hero-aware contract"],
+                            "failures": [
+                                "boundary-refined body duration outside hero-aware contract"
+                            ],
                         }
                     )
                     continue
@@ -640,9 +624,7 @@ def finishing_open_plans(
                     )
                 )
                 payoff_values = [float(item["payoff"]) for item in metrics]
-                body_payoff = float(
-                    0.55 * max(payoff_values) + 0.45 * np.mean(payoff_values)
-                )
+                body_payoff = float(0.55 * max(payoff_values) + 0.45 * np.mean(payoff_values))
                 body_ending = float(metrics[-1]["ending"])
                 body_coherence = float(
                     np.average(
@@ -673,21 +655,12 @@ def finishing_open_plans(
                     continue
 
                 segments = (hero,) + body_segments
-                output_duration = sum(
-                    quality._segment_duration(segment) for segment in segments
-                )
-                opening = max(
-                    0.90, min(1.0, 0.74 + 0.22 * float(span.confidence))
-                )
+                output_duration = sum(quality._segment_duration(segment) for segment in segments)
+                opening = max(0.90, min(1.0, 0.74 + 0.22 * float(span.confidence)))
                 retention = float(0.18 * opening + 0.82 * body_retention)
-                payoff = float(
-                    0.45 * min(1.0, float(span.confidence) + 0.12)
-                    + 0.55 * body_payoff
-                )
+                payoff = float(0.45 * min(1.0, float(span.confidence) + 0.12) + 0.55 * body_payoff)
                 coherence = min(1.0, 0.10 + 0.88 * body_coherence)
-                low_fraction = body_low_fraction * (
-                    body_duration / output_duration
-                )
+                low_fraction = body_low_fraction * (body_duration / output_duration)
                 if not quality._passes_story_gates(
                     "finishing_move_open",
                     opening,
@@ -740,9 +713,7 @@ def finishing_open_plans(
                         "terminal body moment passes the unchanged ending-quality gate",
                     ),
                 )
-                integrity = quality.plan_integrity_violations(
-                    plan, timeline, config, source_key
-                )
+                integrity = quality.plan_integrity_violations(plan, timeline, config, source_key)
                 if integrity:
                     group_rejections.append(
                         {
@@ -788,7 +759,7 @@ def finishing_open_plans(
             }
         )
 
-    setattr(timeline, "_finishing_continuation_diagnostics", diagnostics)
+    timeline._finishing_continuation_diagnostics = diagnostics
     return sorted(results, key=lambda item: item.score, reverse=True)
 
 
@@ -801,9 +772,7 @@ def build_plans_for_source(
 ) -> list[SemanticPlanV31]:
     base.validate_configuration(config)
     normal = normal_plans(base, timeline, config, excluded, source_key)
-    finishing = finishing_open_plans(
-        base, timeline, config, excluded, source_key
-    )
+    finishing = finishing_open_plans(base, timeline, config, excluded, source_key)
     plans = sorted(finishing + normal, key=lambda item: item.score, reverse=True)
     diagnostics = dict(getattr(timeline, "_proposal_diagnostics", {}) or {})
     diagnostics.update(
@@ -816,15 +785,18 @@ def build_plans_for_source(
             "qualified_plan_count": len(plans),
         }
     )
-    setattr(timeline, "_proposal_diagnostics", diagnostics)
+    timeline._proposal_diagnostics = diagnostics
     return plans
 
 
 def self_test(base: Any) -> None:
-    if base._required_body_duration(
-        EditSegment(148.07, 150.50, 1.0, "finishing_move_open_hero"),
-        10.0,
-    ) != 7.57:
+    if (
+        base._required_body_duration(
+            EditSegment(148.07, 150.50, 1.0, "finishing_move_open_hero"),
+            10.0,
+        )
+        != 7.57
+    ):
         raise AssertionError("proposal planner changed hero-aware duration contract")
 
     component = type(

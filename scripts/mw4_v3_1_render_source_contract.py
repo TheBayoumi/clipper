@@ -187,18 +187,32 @@ def _stage_plan_source(
         piece = workspace / f"segment_{index:02d}.mov"
         media.run(
             [
-                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                "-ss", f"{extract_start:.6f}",
-                "-i", str(source),
-                "-t", f"{extract_duration:.6f}",
-                "-map", "0:v:0",
-                "-map", "0:a:0",
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{extract_start:.6f}",
+                "-i",
+                str(source),
+                "-t",
+                f"{extract_duration:.6f}",
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0",
                 *media.lossless_video_args(source_profile),
-                "-vsync", "0",
-                "-c:a", "pcm_s16le",
-                "-ar", str(contract.audio.sample_rate),
-                "-ac", str(contract.audio.channels),
-                "-f", "mov",
+                "-vsync",
+                "0",
+                "-c:a",
+                "pcm_s16le",
+                "-ar",
+                str(contract.audio.sample_rate),
+                "-ac",
+                str(contract.audio.channels),
+                "-f",
+                "mov",
                 str(piece),
             ]
         )
@@ -239,12 +253,23 @@ def _stage_plan_source(
     stitched = workspace / "approved_segments_lossless.mov"
     media.run(
         [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "concat", "-safe", "0",
-            "-i", str(concat_list),
-            "-c", "copy",
-            "-video_track_timescale", str(timing.track_timescale),
-            "-f", "mov",
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_list),
+            "-c",
+            "copy",
+            "-video_track_timescale",
+            str(timing.track_timescale),
+            "-f",
+            "mov",
             str(stitched),
         ]
     )
@@ -289,18 +314,12 @@ def _append_source_native_segment(
     video = f"snv{index}"
     audio = f"sna{index}"
     video_pts = (
-        "PTS-STARTPTS"
-        if abs(segment.speed - 1.0) < 1e-6
-        else f"(PTS-STARTPTS)/{segment.speed:.6f}"
+        "PTS-STARTPTS" if abs(segment.speed - 1.0) < 1e-6 else f"(PTS-STARTPTS)/{segment.speed:.6f}"
     )
     parts.append(
-        f"[0:v]trim=start={segment.start:.6f}:end={segment.end:.6f},"
-        f"setpts={video_pts}[{video}]"
+        f"[0:v]trim=start={segment.start:.6f}:end={segment.end:.6f},setpts={video_pts}[{video}]"
     )
-    audio_chain = (
-        f"[0:a]atrim=start={segment.start:.6f}:end={segment.end:.6f},"
-        "asetpts=PTS-STARTPTS"
-    )
+    audio_chain = f"[0:a]atrim=start={segment.start:.6f}:end={segment.end:.6f},asetpts=PTS-STARTPTS"
     if abs(segment.speed - 1.0) >= 1e-6:
         audio_chain += f",atempo={segment.speed:.6f}"
     parts.append(audio_chain + f"[{audio}]")
@@ -335,7 +354,9 @@ def _build_source_native_filter(
     forbidden = ("crop=", "scale=", "zscale=", "zoompan=", "perspective=", "rotate=")
     found = [token for token in forbidden if token in graph.lower()]
     if found:
-        raise RuntimeError(f"source-native canonical graph contains forbidden spatial transform(s): {found}")
+        raise RuntimeError(
+            f"source-native canonical graph contains forbidden spatial transform(s): {found}"
+        )
     return graph, plan.output_duration
 
 
@@ -349,20 +370,36 @@ def _canonical_filter_hashes(
 ) -> list[str]:
     completed = media.run_capture(
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-filter_complex_threads", "2",
-            "-i", str(staged_source),
-            "-filter_complex", graph,
-            "-map", "[outv]",
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-filter_complex_threads",
+            "2",
+            "-i",
+            str(staged_source),
+            "-filter_complex",
+            graph,
+            "-map",
+            "[outv]",
             "-an",
-            "-r", fps,
-            "-vsync", "cfr",
-            "-t", f"{duration:.6f}",
-            "-pix_fmt", pix_fmt,
-            "-f", "framemd5", "-",
-            "-map", "[aout]",
+            "-r",
+            fps,
+            "-vsync",
+            "cfr",
+            "-t",
+            f"{duration:.6f}",
+            "-pix_fmt",
+            pix_fmt,
+            "-f",
+            "framemd5",
+            "-",
+            "-map",
+            "[aout]",
             "-vn",
-            "-f", "null", os.devnull,
+            "-f",
+            "null",
+            os.devnull,
         ]
     )
     return [
@@ -385,20 +422,36 @@ def _render_canonical_lossless_master(
 
     media.run(
         [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-filter_complex_threads", "2",
-            "-i", str(staged_source),
-            "-filter_complex", graph,
-            "-map", "[outv]",
-            "-map", "[aout]",
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-filter_complex_threads",
+            "2",
+            "-i",
+            str(staged_source),
+            "-filter_complex",
+            graph,
+            "-map",
+            "[outv]",
+            "-map",
+            "[aout]",
             *media.lossless_video_args(source_profile),
-            "-c:a", "pcm_s16le",
-            "-ar", str(_audio_rate(source_profile)),
-            "-ac", str(_audio_channels(source_profile)),
-            "-r", fps,
-            "-vsync", "cfr",
-            "-t", f"{duration:.6f}",
-            "-f", "mov",
+            "-c:a",
+            "pcm_s16le",
+            "-ar",
+            str(_audio_rate(source_profile)),
+            "-ac",
+            str(_audio_channels(source_profile)),
+            "-r",
+            fps,
+            "-vsync",
+            "cfr",
+            "-t",
+            f"{duration:.6f}",
+            "-f",
+            "mov",
             str(target),
         ]
     )
@@ -427,7 +480,9 @@ def _render_canonical_lossless_master(
         )
 
     master_profile = media.video_profile(target)
-    metadata_checks = media.metadata_match_checks(source_profile, master_profile, prefix="canonical")
+    metadata_checks = media.metadata_match_checks(
+        source_profile, master_profile, prefix="canonical"
+    )
     if not all(metadata_checks.values()):
         raise RuntimeError(
             f"canonical master media metadata differs from source: checks={metadata_checks}; "
@@ -464,16 +519,27 @@ def _encode_from_canonical_master(
         encoder_args = media.merge_x264_params(encoder_args, media.x264_vui_params(source_profile))
     media.run(
         [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(canonical_master),
-            "-map", "0:v:0",
-            "-map", "0:a:0",
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(canonical_master),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0",
             *encoder_args,
             *media.profile_output_args(source_profile),
-            "-video_track_timescale", str(timing.track_timescale),
-            "-threads:v", "4",
-            "-vsync", "0",
-            "-movflags", "+faststart",
+            "-video_track_timescale",
+            str(timing.track_timescale),
+            "-threads:v",
+            "4",
+            "-vsync",
+            "0",
+            "-movflags",
+            "+faststart",
             str(target),
         ]
     )
@@ -499,7 +565,9 @@ def _source_fidelity_qa(
     output_profile = media.video_profile(output, count_frames=True)
     reference_audio = media.audio_profile(canonical_master)
     output_audio = media.audio_profile(output)
-    reference_timing = media.verify_cfr_timeline(canonical_master, timing, label="canonical fidelity reference")
+    reference_timing = media.verify_cfr_timeline(
+        canonical_master, timing, label="canonical fidelity reference"
+    )
     output_timing = media.verify_cfr_timeline(output, timing, label="final H.264 output")
 
     settings = config["output"]
@@ -508,27 +576,36 @@ def _source_fidelity_qa(
     source_geometry = (int(source_profile["width"]), int(source_profile["height"]))
     checks = {
         "reference_geometry_matches_source": (
-            reference_profile["width"], reference_profile["height"]
-        ) == source_geometry,
-        "output_geometry_matches_source": (
-            output_profile["width"], output_profile["height"]
-        ) == source_geometry,
-        "reference_time_base_matches_source": reference_timing["checks"]["time_base_matches_source"],
+            reference_profile["width"],
+            reference_profile["height"],
+        )
+        == source_geometry,
+        "output_geometry_matches_source": (output_profile["width"], output_profile["height"])
+        == source_geometry,
+        "reference_time_base_matches_source": reference_timing["checks"][
+            "time_base_matches_source"
+        ],
         "reference_r_fps_matches_source": reference_timing["checks"]["r_frame_rate_matches_source"],
         "reference_strict_cfr_timestamps": reference_timing["checks"]["packet_pts_strictly_cfr"],
         "output_time_base_matches_source": output_timing["checks"]["time_base_matches_source"],
         "output_r_fps_matches_source": output_timing["checks"]["r_frame_rate_matches_source"],
         "output_strict_cfr_timestamps": output_timing["checks"]["packet_pts_strictly_cfr"],
-        "exact_frame_count_match": reference_profile["frame_count"] == output_profile["frame_count"],
+        "exact_frame_count_match": reference_profile["frame_count"]
+        == output_profile["frame_count"],
         "all_source_to_stage_frame_hashes_exact": all(
             item["checks"]["exact_decoded_frame_hash_match"] for item in staging_fidelity
         ),
-        "canonical_audio_sample_rate_matches_source": reference_audio["sample_rate"] == _audio_rate(source_profile),
-        "canonical_audio_channels_match_source": reference_audio["channels"] == _audio_channels(source_profile),
-        "output_audio_sample_rate_matches_delivery": output_audio["sample_rate"] == expected_audio_rate,
+        "canonical_audio_sample_rate_matches_source": reference_audio["sample_rate"]
+        == _audio_rate(source_profile),
+        "canonical_audio_channels_match_source": reference_audio["channels"]
+        == _audio_channels(source_profile),
+        "output_audio_sample_rate_matches_delivery": output_audio["sample_rate"]
+        == expected_audio_rate,
         "output_audio_channels_match_delivery": output_audio["channels"] == expected_audio_channels,
     }
-    checks.update(media.metadata_match_checks(source_profile, reference_profile, prefix="canonical"))
+    checks.update(
+        media.metadata_match_checks(source_profile, reference_profile, prefix="canonical")
+    )
     checks.update(media.metadata_match_checks(source_profile, output_profile, prefix="output"))
     if not all(checks.values()):
         raise RuntimeError(
@@ -539,20 +616,40 @@ def _source_fidelity_qa(
 
     ssim = _metric(
         [
-            "ffmpeg", "-hide_banner", "-i", str(canonical_master), "-i", str(output),
+            "ffmpeg",
+            "-hide_banner",
+            "-i",
+            str(canonical_master),
+            "-i",
+            str(output),
             "-filter_complex",
             "[0:v]setpts=PTS-STARTPTS[ref];[1:v]setpts=PTS-STARTPTS[enc];[ref][enc]ssim[metric]",
-            "-map", "[metric]", "-an", "-f", "null", "-",
+            "-map",
+            "[metric]",
+            "-an",
+            "-f",
+            "null",
+            "-",
         ],
         r"All:([0-9.]+)",
         "SSIM",
     )
     psnr = _metric(
         [
-            "ffmpeg", "-hide_banner", "-i", str(canonical_master), "-i", str(output),
+            "ffmpeg",
+            "-hide_banner",
+            "-i",
+            str(canonical_master),
+            "-i",
+            str(output),
             "-filter_complex",
             "[0:v]setpts=PTS-STARTPTS[ref];[1:v]setpts=PTS-STARTPTS[enc];[ref][enc]psnr[metric]",
-            "-map", "[metric]", "-an", "-f", "null", "-",
+            "-map",
+            "[metric]",
+            "-an",
+            "-f",
+            "null",
+            "-",
         ],
         r"average:([0-9.]+)",
         "PSNR",
@@ -594,7 +691,9 @@ def _source_fidelity_qa(
     }
 
 
-def _validate_output(path: Path, config: dict[str, Any], *, mode: str = "production") -> dict[str, Any]:
+def _validate_output(
+    path: Path, config: dict[str, Any], *, mode: str = "production"
+) -> dict[str, Any]:
     if _ACTIVE_SOURCE_PROFILE is None:
         raise RuntimeError("final output validation has no active source media contract")
     source_profile = _ACTIVE_SOURCE_PROFILE
@@ -608,18 +707,21 @@ def _validate_output(path: Path, config: dict[str, Any], *, mode: str = "product
     settings = config["output"]
     duration = float(fmt["duration"])
     bitrate = int(fmt.get("bit_rate") or video.get("bit_rate") or 0)
-    expected_codec = "h264" if str(settings["codec"]).lower() == "libx264" else str(settings["codec"])
+    expected_codec = (
+        "h264" if str(settings["codec"]).lower() == "libx264" else str(settings["codec"])
+    )
     checks = {
         "duration_10_to_20s": 10.0 <= duration <= 20.0,
-        "full_frame_geometry_matches_source": (
-            int(video["width"]), int(video["height"])
-        ) == (int(source_profile["width"]), int(source_profile["height"])),
+        "full_frame_geometry_matches_source": (int(video["width"]), int(video["height"]))
+        == (int(source_profile["width"]), int(source_profile["height"])),
         "codec_matches_delivery": str(video["codec_name"]) == expected_codec,
-        "profile_matches_delivery": str(video.get("profile", "")).lower() == str(settings.get("profile", "")).lower(),
+        "profile_matches_delivery": str(video.get("profile", "")).lower()
+        == str(settings.get("profile", "")).lower(),
         "time_base_matches_source": timeline["checks"]["time_base_matches_source"],
         "r_frame_rate_matches_source": timeline["checks"]["r_frame_rate_matches_source"],
         "strict_cfr_timestamps": timeline["checks"]["packet_pts_strictly_cfr"],
-        "audio_sample_rate_matches_delivery": int(audio["sample_rate"]) == int(settings["audio_sample_rate"]),
+        "audio_sample_rate_matches_delivery": int(audio["sample_rate"])
+        == int(settings["audio_sample_rate"]),
         "audio_channels_match_delivery": int(audio["channels"]) == int(settings["audio_channels"]),
         **media.metadata_match_checks(source_profile, profile, prefix="delivery"),
     }
@@ -649,16 +751,50 @@ def _synthetic_source(
     x264 = f"fullrange=off:colorprim={color}:transfer={color}:colormatrix={color}:chromaloc=0"
     media.run(
         [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "lavfi", "-i", f"testsrc2=size={width}x{height}:rate={fps}:duration=2.0",
-            "-f", "lavfi", "-i", f"sine=frequency=997:sample_rate={audio_rate}:duration=2.0",
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "12", "-pix_fmt", "yuv420p",
-            "-color_range", "tv", "-colorspace", color, "-color_trc", color,
-            "-color_primaries", color, "-chroma_sample_location", "left",
-            "-x264-params", x264,
-            "-video_track_timescale", str(timescale),
-            "-c:a", "aac", "-ar", str(audio_rate), "-ac", str(channels),
-            "-f", "mov", str(target),
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc2=size={width}x{height}:rate={fps}:duration=2.0",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=997:sample_rate={audio_rate}:duration=2.0",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "12",
+            "-pix_fmt",
+            "yuv420p",
+            "-color_range",
+            "tv",
+            "-colorspace",
+            color,
+            "-color_trc",
+            color,
+            "-color_primaries",
+            color,
+            "-chroma_sample_location",
+            "left",
+            "-x264-params",
+            x264,
+            "-video_track_timescale",
+            str(timescale),
+            "-c:a",
+            "aac",
+            "-ar",
+            str(audio_rate),
+            "-ac",
+            str(channels),
+            "-f",
+            "mov",
+            str(target),
         ]
     )
 
@@ -701,7 +837,10 @@ def _self_test_case(root: Path, name: str, spec: dict[str, Any]) -> dict[str, An
         raise AssertionError(f"{name}: source geometry was not derived correctly")
     if contract.video.timing.track_timescale != spec["timescale"]:
         raise AssertionError(f"{name}: source timescale was not derived correctly")
-    if contract.audio.sample_rate != spec["audio_rate"] or contract.audio.channels != spec["channels"]:
+    if (
+        contract.audio.sample_rate != spec["audio_rate"]
+        or contract.audio.channels != spec["channels"]
+    ):
         raise AssertionError(f"{name}: source audio contract was not derived correctly")
 
     config = {
@@ -723,7 +862,9 @@ def _self_test_case(root: Path, name: str, spec: dict[str, Any]) -> dict[str, An
     }
     plan = _test_plan()
     workspace = root / f"{name}_work"
-    staged, local_plan, source_profile, staging = _stage_plan_source(source, plan, workspace, config)
+    staged, local_plan, source_profile, staging = _stage_plan_source(
+        source, plan, workspace, config
+    )
     canonical = root / f"{name}_canonical.mov"
     _render_canonical_lossless_master(staged, local_plan, config, source_profile, canonical)
     output = root / f"{name}_final.mp4"
@@ -765,8 +906,14 @@ def preflight() -> dict[str, Any]:
             results["ntsc_5994_bt709"]["source"]["video"]["track_timescale"]
             == results["ntsc_2997_smpte170m"]["source"]["video"]["track_timescale"]
         ):
-            raise AssertionError("preflight did not exercise distinct source-derived timing contracts")
-        print(json.dumps({"source_derived_renderer_preflight": "PASS", "cases": results}, sort_keys=True))
+            raise AssertionError(
+                "preflight did not exercise distinct source-derived timing contracts"
+            )
+        print(
+            json.dumps(
+                {"source_derived_renderer_preflight": "PASS", "cases": results}, sort_keys=True
+            )
+        )
         return results
 
 

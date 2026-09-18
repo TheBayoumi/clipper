@@ -8,8 +8,8 @@ import sys
 from typing import Any
 
 import mw4_semantic_gameplay_v3_1_final_base as _base
-from mw4_semantic_gameplay_v3_1_final_base import *  # noqa: F401,F403
 import mw4_semantic_gameplay_v3_1_payoff_terminal as _proposals
+from mw4_semantic_gameplay_v3_1_final_base import *  # noqa: F403
 
 SemanticPlanV31 = _base.SemanticPlanV31
 SemanticTimelineV31 = _base.SemanticTimelineV31
@@ -21,9 +21,7 @@ def _normal_plans(
     excluded: list[list[float]],
     source_key: str,
 ) -> list[SemanticPlanV31]:
-    return _proposals.normal_plans(
-        _base, timeline, config, excluded, source_key
-    )
+    return _proposals.normal_plans(_base, timeline, config, excluded, source_key)
 
 
 def _finishing_open_plans(
@@ -32,9 +30,7 @@ def _finishing_open_plans(
     excluded: list[list[float]],
     source_key: str,
 ) -> list[SemanticPlanV31]:
-    return _proposals.finishing_open_plans(
-        _base, timeline, config, excluded, source_key
-    )
+    return _proposals.finishing_open_plans(_base, timeline, config, excluded, source_key)
 
 
 def build_plans_for_source(
@@ -43,9 +39,7 @@ def build_plans_for_source(
     excluded: list[list[float]],
     source_key: str,
 ) -> list[SemanticPlanV31]:
-    return _proposals.build_plans_for_source(
-        _base, timeline, config, excluded, source_key
-    )
+    return _proposals.build_plans_for_source(_base, timeline, config, excluded, source_key)
 
 
 def build_plans(
@@ -77,9 +71,7 @@ plan_integrity_violations = _proposals.plan_integrity_violations
 def _self_test() -> None:
     _base._self_test()
     _proposals.self_test(_base)
-    print(
-        "MW4 terminal-aware payoff-complete verified-source-region proposal architecture: PASS"
-    )
+    print("MW4 terminal-aware payoff-complete verified-source-region proposal architecture: PASS")
 
 
 def __getattr__(name: str) -> Any:

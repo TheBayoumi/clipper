@@ -3,13 +3,12 @@ from __future__ import annotations
 import itertools
 from typing import Any
 
-import numpy as np
-
 import mw4_semantic_gameplay_v3_1 as core
-import mw4_semantic_gameplay_v3_1_combat_state as combat
 import mw4_semantic_gameplay_v3_1_combat_islands as islands
+import mw4_semantic_gameplay_v3_1_combat_state as combat
 import mw4_semantic_gameplay_v3_1_proposals as support
 import mw4_semantic_gameplay_v3_1_quality as quality
+import numpy as np
 
 Engagement = core.Engagement
 EditSegment = core.EditSegment
@@ -39,11 +38,7 @@ def plan_integrity_violations(
         config,
         source_key,
     )
-    return [
-        failure
-        for failure in failures
-        if _SEMANTIC_GAP_INTEGRITY_MESSAGE not in failure
-    ]
+    return [failure for failure in failures if _SEMANTIC_GAP_INTEGRITY_MESSAGE not in failure]
 
 
 def _shot_for_component(timeline: Any, component: Engagement) -> Any:
@@ -102,10 +97,7 @@ def _span_evidence(
         item
         for item in timeline.engagements
         if int(item.shot_index) == int(shot_index)
-        and any(
-            start - _EPS <= float(event.time) <= end + _EPS
-            for event in item.events
-        )
+        and any(start - _EPS <= float(event.time) <= end + _EPS for event in item.events)
     )
 
 
@@ -115,15 +107,12 @@ def _span_metrics(
     config: dict[str, Any],
 ) -> dict[str, float]:
     start, end = float(proposal.start), float(proposal.end)
-    evidence = (
-        _span_evidence(
-            timeline,
-            int(proposal.shot_index),
-            start,
-            end,
-        )
-        or (proposal,)
-    )
+    evidence = _span_evidence(
+        timeline,
+        int(proposal.shot_index),
+        start,
+        end,
+    ) or (proposal,)
     residual = quality._longest_unexplained_low_run(
         timeline,
         start,
@@ -132,16 +121,14 @@ def _span_metrics(
         None,
         config,
     )
-    opening, ending, coherence, retention, payoff, weakest, low_fraction = (
-        quality._quality_metrics(
-            timeline,
-            start,
-            end,
-            evidence,
-            None,
-            residual,
-            config,
-        )
+    opening, ending, coherence, retention, payoff, weakest, low_fraction = quality._quality_metrics(
+        timeline,
+        start,
+        end,
+        evidence,
+        None,
+        residual,
+        config,
     )
     return {
         "duration": end - start,
@@ -182,9 +169,7 @@ def _normal_span_variants(
         return ()
 
     payoff_events = tuple(
-        event
-        for item in chain
-        for event in quality.verified_payoff_events(item, config)
+        event for item in chain for event in quality.verified_payoff_events(item, config)
     )
     terminal = max(
         payoff_events or all_events[-1:],
@@ -269,14 +254,11 @@ def normal_plans(
             if not (minimum - _EPS <= output_duration <= maximum + _EPS):
                 diagnostics["normal_duration_reject_count"] += 1
                 continue
-            if (
-                core._intersects_excluded(start, end, excluded)
-                or base._protected_finishing_overlap(
-                    timeline,
-                    start,
-                    end,
-                    config,
-                )
+            if core._intersects_excluded(start, end, excluded) or base._protected_finishing_overlap(
+                timeline,
+                start,
+                end,
+                config,
             ):
                 diagnostics["normal_integrity_reject_count"] += 1
                 continue
@@ -385,7 +367,7 @@ def normal_plans(
 
     existing = dict(getattr(timeline, "_proposal_diagnostics", {}) or {})
     existing.update(diagnostics)
-    setattr(timeline, "_proposal_diagnostics", existing)
+    timeline._proposal_diagnostics = existing
     return unique
 
 
@@ -452,12 +434,7 @@ def _finishing_variants(
             natural_end - maximum,
         )
         first = min(
-            (
-                event
-                for event in component.events
-                if float(event.time)
-                <= float(payoff.time) + _EPS
-            ),
+            (event for event in component.events if float(event.time) <= float(payoff.time) + _EPS),
             key=lambda event: float(event.time),
             default=payoff,
         )
@@ -496,11 +473,7 @@ def _finishing_variants(
 
             for end in ends:
                 duration = end - start
-                if (
-                    minimum - _EPS
-                    <= duration
-                    <= maximum + _EPS
-                ):
+                if minimum - _EPS <= duration <= maximum + _EPS:
                     candidates.add(
                         (
                             round(start, 3),
@@ -553,9 +526,7 @@ def finishing_open_plans(
             15.5,
         ),
     )
-    max_islands = int(
-        cfg.get("maximum_verified_island_moments_per_body", 3)
-    )
+    max_islands = int(cfg.get("maximum_verified_island_moments_per_body", 3))
 
     for span in timeline.finishing_moves:
         shot = timeline.shots[span.shot_index]
@@ -617,12 +588,9 @@ def finishing_open_plans(
                     end,
                     config,
                 )
-                if (
-                    proposal is None
-                    or not quality.verified_payoff_events(
-                        proposal,
-                        config,
-                    )
+                if proposal is None or not quality.verified_payoff_events(
+                    proposal,
+                    config,
                 ):
                     continue
 
@@ -673,10 +641,7 @@ def finishing_open_plans(
                     )
 
             by_duration = lambda item: (
-                -(
-                    float(item[0].end)
-                    - float(item[0].start)
-                ),
+                -(float(item[0].end) - float(item[0].start)),
                 float(item[0].start),
                 float(item[0].end),
             )
@@ -685,11 +650,7 @@ def finishing_open_plans(
                 key=by_duration,
             )[:8]
             terminal_variants = sorted(
-                (
-                    item
-                    for item in qualified_for_component
-                    if item[2]
-                ),
+                (item for item in qualified_for_component if item[2]),
                 key=by_duration,
             )[:4]
             selected_variants: list[
@@ -767,18 +728,11 @@ def finishing_open_plans(
                     for item in engagements
                 )
                 durations = np.asarray(
-                    [
-                        quality._segment_duration(item)
-                        for item in body_segments
-                    ],
+                    [quality._segment_duration(item) for item in body_segments],
                     dtype=float,
                 )
                 body_duration = float(np.sum(durations))
-                if not (
-                    body_minimum - _EPS
-                    <= body_duration
-                    <= body_maximum + _EPS
-                ):
+                if not (body_minimum - _EPS <= body_duration <= body_maximum + _EPS):
                     group_rejections.append(
                         {
                             "proposals": [
@@ -807,13 +761,8 @@ def finishing_open_plans(
                         weights=durations,
                     )
                 )
-                payoff_values = [
-                    float(item["payoff"]) for item in metrics
-                ]
-                body_payoff = float(
-                    0.55 * max(payoff_values)
-                    + 0.45 * np.mean(payoff_values)
-                )
+                payoff_values = [float(item["payoff"]) for item in metrics]
+                body_payoff = float(0.55 * max(payoff_values) + 0.45 * np.mean(payoff_values))
                 body_ending = float(metrics[-1]["ending"])
                 body_coherence = float(
                     np.average(
@@ -821,18 +770,14 @@ def finishing_open_plans(
                         weights=durations,
                     )
                 )
-                body_weakest = float(
-                    min(item["weakest"] for item in metrics)
-                )
+                body_weakest = float(min(item["weakest"] for item in metrics))
                 body_low_fraction = float(
                     np.average(
                         [item["low_fraction"] for item in metrics],
                         weights=durations,
                     )
                 )
-                body_residual = float(
-                    max(item["residual"] for item in metrics)
-                )
+                body_residual = float(max(item["residual"] for item in metrics))
 
                 if not quality._passes_story_gates(
                     "finishing_move_open",
@@ -851,10 +796,7 @@ def finishing_open_plans(
                     continue
 
                 segments = (hero,) + body_segments
-                output_duration = sum(
-                    quality._segment_duration(segment)
-                    for segment in segments
-                )
+                output_duration = sum(quality._segment_duration(segment) for segment in segments)
                 opening = max(
                     0.90,
                     min(
@@ -862,9 +804,7 @@ def finishing_open_plans(
                         0.74 + 0.22 * float(span.confidence),
                     ),
                 )
-                retention = float(
-                    0.18 * opening + 0.82 * body_retention
-                )
+                retention = float(0.18 * opening + 0.82 * body_retention)
                 payoff = float(
                     0.45
                     * min(
@@ -877,9 +817,7 @@ def finishing_open_plans(
                     1.0,
                     0.10 + 0.88 * body_coherence,
                 )
-                low_fraction = body_low_fraction * (
-                    body_duration / output_duration
-                )
+                low_fraction = body_low_fraction * (body_duration / output_duration)
                 if not quality._passes_story_gates(
                     "finishing_move_open",
                     opening,
@@ -897,10 +835,7 @@ def finishing_open_plans(
                     hero.start,
                     body_segments[-1].end,
                     round(
-                        sum(
-                            segment.end - segment.start
-                            for segment in segments
-                        ),
+                        sum(segment.end - segment.start for segment in segments),
                         3,
                     ),
                     round(output_duration, 3),
@@ -984,11 +919,7 @@ def finishing_open_plans(
                 "maximum_qualified_body_seconds_seen": round(
                     max(
                         (
-                            sum(
-                                float(item[1].end)
-                                - float(item[1].start)
-                                for item in group
-                            )
+                            sum(float(item[1].end) - float(item[1].start) for item in group)
                             for count in range(
                                 1,
                                 max(1, max_islands) + 1,
@@ -997,10 +928,7 @@ def finishing_open_plans(
                                 moments,
                                 count,
                             )
-                            if len(
-                                {entry[0] for entry in group}
-                            )
-                            == len(group)
+                            if len({entry[0] for entry in group}) == len(group)
                         ),
                         default=0.0,
                     ),
@@ -1016,11 +944,7 @@ def finishing_open_plans(
             }
         )
 
-    setattr(
-        timeline,
-        "_finishing_continuation_diagnostics",
-        diagnostics,
-    )
+    timeline._finishing_continuation_diagnostics = diagnostics
     return sorted(
         results,
         key=lambda item: item.score,
@@ -1055,9 +979,7 @@ def build_plans_for_source(
         key=lambda item: item.score,
         reverse=True,
     )
-    diagnostics = dict(
-        getattr(timeline, "_proposal_diagnostics", {}) or {}
-    )
+    diagnostics = dict(getattr(timeline, "_proposal_diagnostics", {}) or {})
     diagnostics.update(
         {
             "proposal_architecture": "verified_anchor_to_same_shot_quality_gated_source_span",
@@ -1069,11 +991,7 @@ def build_plans_for_source(
             "qualified_plan_count": len(plans),
         }
     )
-    setattr(
-        timeline,
-        "_proposal_diagnostics",
-        diagnostics,
-    )
+    timeline._proposal_diagnostics = diagnostics
     return plans
 
 
@@ -1084,13 +1002,8 @@ def self_test(base: Any) -> None:
         1.0,
         "finishing_move_open_hero",
     )
-    if abs(
-        float(base._required_body_duration(hero, 10.0))
-        - 7.57
-    ) > _EPS:
-        raise AssertionError(
-            "source-span planner changed hero-aware duration contract"
-        )
+    if abs(float(base._required_body_duration(hero, 10.0)) - 7.57) > _EPS:
+        raise AssertionError("source-span planner changed hero-aware duration contract")
 
     starts = _candidate_starts(
         earliest=150.50,
@@ -1123,7 +1036,5 @@ def self_test(base: Any) -> None:
             "non-terminal payoff-anchored body moment cannot expand forward inside its source shot"
         )
     if expanded_end - expanded_start > 6.5 + _EPS:
-        raise AssertionError(
-            "forward-expanded body moment exceeded unchanged 6.5s maximum"
-        )
+        raise AssertionError("forward-expanded body moment exceeded unchanged 6.5s maximum")
     print("MW4 same-shot quality-gated source-span proposal self-test: PASS")
