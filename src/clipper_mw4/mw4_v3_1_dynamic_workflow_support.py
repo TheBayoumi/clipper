@@ -26,11 +26,21 @@ def _source_order(allocation: dict[str, Any]) -> list[str]:
 
 def render_matrix(allocation_path: Path, github_output: Path) -> list[dict[str, Any]]:
     allocation = _read(allocation_path)
+    source_allocations = dict(allocation.get("source_allocations") or {})
     include: list[dict[str, Any]] = []
+    distribution: dict[str, int] = {}
+
     for source in _source_order(allocation):
-        keys = allocation.get("source_allocations", {}).get(source, {}).get("plan_keys", [])
-        for ordinal, key in enumerate(keys, 1):
-            key_text = str(key)
+        source_allocation = dict(source_allocations.get(source) or {})
+        keys = [str(item) for item in source_allocation.get("plan_keys") or []]
+        declared_count = int(source_allocation.get("count", -1))
+        if declared_count != len(keys):
+            raise RuntimeError(
+                f"{source}: orchestrator declared {declared_count} clips but emitted "
+                f"{len(keys)} plan keys"
+            )
+        distribution[source] = len(keys)
+        for ordinal, key_text in enumerate(keys, 1):
             include.append(
                 {
                     "source": source,
@@ -40,12 +50,37 @@ def render_matrix(allocation_path: Path, github_output: Path) -> list[dict[str, 
                     "clip_id": f"{source}-{ordinal:02d}-{key_text[:8]}",
                 }
             )
+
+    derived_count = int(allocation.get("target_count", -1))
+    selected_count = int(allocation.get("selected_count", -1))
+    if derived_count < 0 or selected_count != derived_count:
+        raise RuntimeError(
+            "orchestrator cardinality mismatch: "
+            f"target={derived_count} selected={selected_count}"
+        )
+    if len(include) != derived_count:
+        raise RuntimeError(
+            "render matrix does not match orchestrator-derived cardinality: "
+            f"matrix={len(include)} target={derived_count}"
+        )
     if not include:
-        raise RuntimeError("adaptive allocation produced no renderable clips")
+        raise RuntimeError("orchestrator derived no renderable clips")
+
     value = json.dumps({"include": include}, separators=(",", ":"))
+    distribution_value = json.dumps(distribution, separators=(",", ":"))
     with github_output.open("a", encoding="utf-8") as output:
         output.write(f"render_matrix={value}\n")
-    print(f"sequential clip workspaces: {len(include)}")
+        output.write(f"derived_clip_count={derived_count}\n")
+        output.write(f"source_distribution={distribution_value}\n")
+    print(
+        json.dumps(
+            {
+                "orchestrator_render_matrix": "PASS",
+                "derived_clip_count": derived_count,
+                "source_distribution": distribution,
+            }
+        )
+    )
     return include
 
 

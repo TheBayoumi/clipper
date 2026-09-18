@@ -8,6 +8,7 @@ import pytest
 
 from clipper import mw4
 from clipper_mw4 import mw4_v3_1_contract as mw4_contract
+from clipper_mw4 import mw4_v3_1_dynamic_workflow_support as workflow_support
 from clipper_mw4 import orchestrator as mw4_orchestrator
 
 
@@ -96,3 +97,60 @@ def test_mw4_orchestrator_enforces_scene_derived_count(tmp_path: Path) -> None:
     allocation.write_text(json.dumps(bad), encoding="utf-8")
     with pytest.raises(RuntimeError, match="distinct qualified fighting scenes"):
         mw4_orchestrator._assert_scene_derived_allocation(allocation)
+
+
+def test_mw4_render_matrix_matches_orchestrator_cardinality(tmp_path: Path) -> None:
+    allocation = tmp_path / "allocation.json"
+    github_output = tmp_path / "github_output.txt"
+    allocation.write_text(
+        json.dumps(
+            {
+                "target_count": 3,
+                "selected_count": 3,
+                "source_order": ["r1", "batch2"],
+                "source_allocations": {
+                    "r1": {
+                        "count": 2,
+                        "plan_keys": ["r1-a", "r1-b"],
+                    },
+                    "batch2": {
+                        "count": 1,
+                        "plan_keys": ["b2-a"],
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    matrix = workflow_support.render_matrix(allocation, github_output)
+
+    assert len(matrix) == 3
+    assert [item["source"] for item in matrix] == ["r1", "r1", "batch2"]
+    outputs = github_output.read_text(encoding="utf-8")
+    assert "derived_clip_count=3" in outputs
+    assert 'source_distribution={"r1":2,"batch2":1}' in outputs
+
+
+def test_mw4_render_matrix_rejects_cardinality_mismatch(tmp_path: Path) -> None:
+    allocation = tmp_path / "allocation.json"
+    github_output = tmp_path / "github_output.txt"
+    allocation.write_text(
+        json.dumps(
+            {
+                "target_count": 3,
+                "selected_count": 3,
+                "source_order": ["r1"],
+                "source_allocations": {
+                    "r1": {
+                        "count": 2,
+                        "plan_keys": ["r1-a", "r1-b"],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="render matrix does not match"):
+        workflow_support.render_matrix(allocation, github_output)

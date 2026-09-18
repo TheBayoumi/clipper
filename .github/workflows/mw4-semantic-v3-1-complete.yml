@@ -17,6 +17,10 @@ on:
       - scripts/mw4_v3_1_*.py
       - scripts/mw4_fullframe_retention_v3_1.py
 
+concurrency:
+  group: mw4-v3-1-complete-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -113,11 +117,13 @@ jobs:
           if-no-files-found: error
 
   allocate:
-    name: adaptive-payoff-diverse-allocation
+    name: orchestrator-derived-clip-cardinality
     needs: analyze
     runs-on: ubuntu-24.04
     outputs:
       render_matrix: ${{ steps.allocate.outputs.render_matrix }}
+      derived_clip_count: ${{ steps.allocate.outputs.derived_clip_count }}
+      source_distribution: ${{ steps.allocate.outputs.source_distribution }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -133,7 +139,7 @@ jobs:
           pattern: MW4-v3-1-complete-analysis-*
           path: analysis-manifests
           merge-multiple: true
-      - name: Allocate canonical candidates through Clipper CLI
+      - name: Derive clip cardinality and render matrix through Clipper CLI
         id: allocate
         run: |
           set -euo pipefail
