@@ -1,4 +1,4 @@
-name: MW4 package migration
+name: MW4 compatibility shim migration
 
 on:
   push:
@@ -20,61 +20,71 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Copy canonical MW4 graph into installed package
+      - name: Replace legacy MW4 implementations with package shims
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
-          import re
 
-          source_root = Path("scripts")
-          package_root = Path("src/clipper_mw4")
-          package_root.mkdir(parents=True, exist_ok=True)
-          (package_root / "__init__.py").write_text(
-              '"""Installed Modern Warfare 4 v3.1 implementation package."""\n',
-              encoding="utf-8",
-          )
+          scripts = Path("scripts")
+          sources = sorted(scripts.glob("mw4_*.py"))
+          if len(sources) < 20:
+              raise RuntimeError("refusing incomplete MW4 shim migration")
 
-          import_pattern = re.compile(
-              r"^import (mw4_[A-Za-z0-9_]+)( as [A-Za-z_][A-Za-z0-9_]*)?$",
-              re.MULTILINE,
-          )
-          from_pattern = re.compile(
-              r"^from (mw4_[A-Za-z0-9_]+) import ",
-              re.MULTILINE,
-          )
+          template = '''from __future__ import annotations
 
-          copied = []
-          for source in sorted(source_root.glob("mw4_*.py")):
-              text = source.read_text(encoding="utf-8")
-              text = import_pattern.sub(
-                  lambda match: (
-                      f"from . import {match.group(1)}{match.group(2) or ''}"
-                  ),
-                  text,
+          import importlib
+          import sys
+          from pathlib import Path
+          from types import ModuleType
+          from typing import Any
+
+          _SRC = Path(__file__).resolve().parents[1] / "src"
+          if str(_SRC) not in sys.path:
+              sys.path.insert(0, str(_SRC))
+
+          _IMPL: ModuleType = importlib.import_module("clipper_mw4.{module}")
+
+
+          def __getattr__(name: str) -> Any:
+              return getattr(_IMPL, name)
+
+
+          def __dir__() -> list[str]:
+              return sorted(set(globals()) | set(dir(_IMPL)))
+
+
+          def _main() -> None:
+              entrypoint = getattr(_IMPL, "main", None)
+              if not callable(entrypoint):
+                  raise RuntimeError("installed MW4 compatibility target has no main()")
+              entrypoint()
+
+
+          if __name__ == "__main__":
+              _main()
+          '''
+
+          for source in sources:
+              source.write_text(
+                  template.format(module=source.stem),
+                  encoding="utf-8",
               )
-              text = from_pattern.sub(r"from .\1 import ", text)
-              target = package_root / source.name
-              target.write_text(text, encoding="utf-8")
-              copied.append(source.name)
-
-          if len(copied) < 20:
-              raise RuntimeError(f"incomplete MW4 package migration: {copied}")
-          print(f"copied {len(copied)} MW4 modules into {package_root}")
+          print(f"replaced {len(sources)} legacy MW4 modules with compatibility shims")
           PY
-      - name: Normalize migrated package
+      - name: Verify compatibility shims
         run: |
           python -m pip install "ruff>=0.15.22,<1"
-          ruff check src/clipper_mw4 --fix
-          ruff format src/clipper_mw4
-          ruff check src/clipper_mw4
-          ruff format --check src/clipper_mw4
+          ruff check scripts/mw4_*.py --fix
+          ruff format scripts/mw4_*.py
+          ruff check scripts/mw4_*.py
+          ruff format --check scripts/mw4_*.py
           git diff --check
-      - name: Commit installed MW4 package
+      - name: Commit compatibility shims
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/clipper_mw4
-          git commit -m "refactor(mw4): package canonical implementation graph"
+          git add scripts/mw4_*.py
+          git commit -m "refactor(mw4): make legacy scripts package compatibility shims"
           git push origin HEAD:feat/mw4-fullframe-retention-v3-1
