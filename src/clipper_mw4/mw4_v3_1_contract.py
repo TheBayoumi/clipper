@@ -48,9 +48,9 @@ def validate_configuration(config: dict[str, Any]) -> None:
     maximum_output = float(semantic_editor.get("maximum_output_seconds", 12.0))
     preferred_output = float(semantic_editor.get("preferred_output_seconds", 11.0))
     if abs(minimum_output - 10.0) > _EPS or abs(maximum_output - 12.0) > _EPS:
-        errors.append("MW4 canonical clip duration contract must be exactly 10–12 seconds")
+        errors.append("MW4 canonical clip duration contract must be exactly 10-12 seconds")
     if not minimum_output - _EPS <= preferred_output <= maximum_output + _EPS:
-        errors.append("preferred_output_seconds must remain inside the 10–12 second contract")
+        errors.append("preferred_output_seconds must remain inside the 10-12 second contract")
 
     editorial = config.get("editorial", {})
     for key in (
@@ -562,7 +562,7 @@ def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         "editorial_planner": EXPECTED_EDITOR,
         "candidate_mode": EXPECTED_MODE,
         "allocation_mode": "orchestrator_scene_derived_before_render",
-        "selection_basis": "one best canonical 10–12 second clip per distinct qualified fighting scene",
+        "selection_basis": "one best canonical 10-12 second clip per distinct qualified fighting scene",
         "target_count": derived_target_count,
         "selected_count": total_selected,
         "duration_contract": {"minimum_seconds": 10.0, "maximum_seconds": 12.0},

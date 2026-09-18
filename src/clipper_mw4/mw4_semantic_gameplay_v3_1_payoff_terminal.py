@@ -353,7 +353,7 @@ def self_test(base: Any) -> None:
         and 10.0 - _EPS <= end - start <= 12.0 + _EPS
         for start, end in variants
     ):
-        raise AssertionError("terminal-aware proposal search did not produce a 10–12 second anchor clip")
+        raise AssertionError("terminal-aware proposal search did not produce a 10-12 second anchor clip")
     if any(end - start > 12.0 + _EPS for start, end in variants):
         raise AssertionError("terminal-aware proposal search exceeded the 12 second campaign maximum")
     if any(end >= 27.0 - _EPS for _, end in variants):

@@ -66,9 +66,9 @@ def validate_configuration(config: dict[str, Any]) -> None:
     maximum_output = _f(semantic_editor.get("maximum_output_seconds", 12.0), 12.0)
     preferred_output = _f(semantic_editor.get("preferred_output_seconds", 11.0), 11.0)
     if abs(minimum_output - 10.0) > _EPS or abs(maximum_output - 12.0) > _EPS:
-        errors.append("MW4 canonical clip duration contract must be exactly 10–12 seconds")
+        errors.append("MW4 canonical clip duration contract must be exactly 10-12 seconds")
     if not minimum_output - _EPS <= preferred_output <= maximum_output + _EPS:
-        errors.append("preferred_output_seconds must remain inside the 10–12 second contract")
+        errors.append("preferred_output_seconds must remain inside the 10-12 second contract")
 
     editorial = config.get("editorial", {})
     for key in (

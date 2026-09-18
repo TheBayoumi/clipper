@@ -192,7 +192,7 @@ def allocate_batch(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         "editorial_planner": base.EXPECTED_EDITOR,
         "candidate_mode": base.EXPECTED_MODE,
         "allocation_mode": "orchestrator_scene_derived_before_render",
-        "selection_basis": "one best canonical 10–12 second clip per distinct qualified fighting scene",
+        "selection_basis": "one best canonical 10-12 second clip per distinct qualified fighting scene",
         "target_count": derived_target_count,
         "source_order": list(source_order),
         "selected_count": total_selected,
