@@ -1,4 +1,4 @@
-name: MW4 lint audited fixes v2
+name: MW4 lint audited fixes v3
 
 on:
   push:
@@ -28,6 +28,8 @@ jobs:
           ruff check .
           --select RUF046,B905,RUF005,RUF007,RUF012,E731,SIM118,SIM108
           --fix --unsafe-fixes
+      - name: Apply remaining safe Ruff fixes
+        run: ruff check . --fix
       - name: Format
         run: ruff format .
       - name: Verify Ruff
