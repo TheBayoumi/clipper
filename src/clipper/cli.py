@@ -8,7 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .brief import load_brief
-from .mw4 import run as run_mw4
+from clipper_engine.gameplay.workflow import run_mw4
 from .pipeline import PipelineSettings, run_pipeline
 from .rights import assert_campaign_authorized
 from .youtube import YouTubeClient
@@ -24,26 +24,29 @@ def _configure_logging(verbose: bool) -> None:
 def _add_mw4_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     mw4 = subparsers.add_parser(
         "mw4",
-        help="execute the canonical Modern Warfare 4 v3.1 campaign pipeline",
+        help="run the Clipper gameplay pipeline with the Modern Warfare 4 profile",
     )
     stages = mw4.add_subparsers(dest="mw4_command", required=True)
 
-    stages.add_parser("self-test", help="validate canonical MW4 planner/contract architecture")
+    self_test = stages.add_parser(
+        "self-test", help="validate the Clipper gameplay engine with the MW4 profile"
+    )
+    self_test.add_argument("--config", type=Path)
 
     discover = stages.add_parser("discover", help="discover original MediaSilo source masters")
-    discover.add_argument("--review-url", required=True)
-    discover.add_argument("--output", type=Path, required=True)
+    discover.add_argument("--review-url")
+    discover.add_argument("--output", type=Path, required=True)\n    discover.add_argument("--config", type=Path)
     discover.add_argument("--github-output", type=Path)
-    discover.add_argument("--expected-count", type=int, required=True)
+    discover.add_argument("--expected-count", type=int)
 
     analyze = stages.add_parser(
         "analyze",
         help="resolve, download, certify, and semantically analyze one MediaSilo source",
     )
-    analyze.add_argument("--review-url", required=True)
-    analyze.add_argument("--expected-count", type=int, required=True)
+    analyze.add_argument("--review-url")
+    analyze.add_argument("--expected-count", type=int)
     analyze.add_argument("--source-key", required=True)
-    analyze.add_argument("--config", type=Path, required=True)
+    analyze.add_argument("--config", type=Path)
     analyze.add_argument("--source-dir", type=Path, required=True)
     analyze.add_argument("--output-dir", type=Path, required=True)
 
@@ -51,7 +54,7 @@ def _add_mw4_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         "allocate",
         help="perform adaptive allocation and emit the render matrix",
     )
-    allocate.add_argument("--config", type=Path, required=True)
+    allocate.add_argument("--config", type=Path)
     allocate.add_argument("--analysis-root", type=Path, required=True)
     allocate.add_argument("--allocation-out", type=Path, required=True)
     allocate.add_argument("--rejection-out", type=Path, required=True)
@@ -60,7 +63,7 @@ def _add_mw4_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
     render = stages.add_parser("render-one", help="verify source and render one allocated clip")
     render.add_argument("--source-key", required=True)
     render.add_argument("--source-dir", type=Path, required=True)
-    render.add_argument("--config", type=Path, required=True)
+    render.add_argument("--config", type=Path)
     render.add_argument("--allocation", type=Path, required=True)
     render.add_argument("--plan-key", required=True)
     render.add_argument("--ordinal", type=int, required=True)
@@ -71,7 +74,7 @@ def _add_mw4_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         "batch-contract",
         help="aggregate rendered clip metadata and enforce the adaptive batch contract",
     )
-    batch.add_argument("--config", type=Path, required=True)
+    batch.add_argument("--config", type=Path)
     batch.add_argument("--allocation", type=Path, required=True)
     batch.add_argument("--clip-meta", type=Path, required=True)
     batch.add_argument("--output-dir", type=Path, required=True)
@@ -80,7 +83,7 @@ def _add_mw4_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="clipper",
-        description="Rights-gated campaign clipping pipeline.",
+        description="Production clipping pipeline with configurable gameplay profiles.",
     )
     parser.add_argument("--verbose", action="store_true")
     subparsers = parser.add_subparsers(dest="command", required=True)

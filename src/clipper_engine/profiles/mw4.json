@@ -1,0 +1,361 @@
+{
+  "campaign": "Call of Duty - Modern Warfare 4 Multiplayer Beta Gameplay Clipping",
+  "batch_selection": {
+    "allocation_mode": "coverage_conflict_before_render",
+    "require_allocation_before_render": true,
+    "require_verified_finishing_move_when_available": true,
+    "notes": "Clipper allocates from explicit verified-outcome coverage plus source-overlap conflicts. MW4 supplies calibration and Finishing Move policy; there is no static clip-count ceiling or reconstructed combat-scene cardinality authority."
+  },
+  "output": {
+    "width": 1920,
+    "height": 1080,
+    "full_source_frame": true,
+    "fps": "60000/1001",
+    "codec": "libx264",
+    "profile": "high",
+    "format": "mp4",
+    "preset": "medium",
+    "video_bitrate_kbps": 250000,
+    "rate_control": "CBR",
+    "audio_codec": "aac",
+    "audio_bitrate_kbps": 320,
+    "audio_sample_rate": 48000,
+    "audio_channels": 2
+  },
+  "editorial": {
+    "hook_text": false,
+    "campaign_text": false,
+    "campaign_logo": false,
+    "source_audio_only": true,
+    "effect_profiles": [
+      "finishing_move_hero",
+      "precision_punch",
+      "impact_flash",
+      "chain_escalation",
+      "clean_pressure"
+    ],
+    "finishing_move_must_open_clip": true,
+    "finishing_move_opening_lead_seconds": 0.28,
+    "finishing_move_payoff_hold_seconds": 0.45,
+    "finishing_move_choreography_protected": true,
+    "finishing_move_hero_full_frame": true,
+    "finishing_move_hero_speed": 1,
+    "finishing_move_max_continuation_gap_seconds": 18,
+    "finishing_move_body_hard_cut_max_source_gap_seconds": 18,
+    "finishing_move_max_output_seconds": 12,
+    "finishing_move_transition": "hard_cut",
+    "finishing_move_transition_flash": false,
+    "finishing_move_impact_bump_percent": 0.012,
+    "finishing_move_impact_bump_before_seconds": 0.035,
+    "finishing_move_impact_bump_after_seconds": 0.085,
+    "cold_open_enabled_for_non_finishing_moves": false
+  },
+  "semantic_analysis": {
+    "base_engine": "audiovisual-gameplay",
+    "engine": "deterministic-gameplay",
+    "sample_fps": 6,
+    "sample_width": 256,
+    "sample_height": 144,
+    "audio_sample_rate": 12000,
+    "scene_change_fps": 6,
+    "scene_change_threshold": 0.34,
+    "scene_change_guard_seconds": 0.12,
+    "engagement_join_seconds": 2.25,
+    "engagement_context_seconds": 0.55,
+    "minimum_engagement_confidence": 0.56,
+    "local_refine_fps": 60,
+    "local_refine_width": 384,
+    "local_refine_height": 216,
+    "local_refine_radius_seconds": 0.8,
+    "memory_policy": "Run full 256x144 at 6 fps semantic analysis exactly once in analysis. Candidate-centered direct-interaction verification decodes only bounded local windows at 60 fps so transient hitmarkers are not lost to temporal undersampling. Render stages consume the approved allocation and lightweight source-structure checks only."
+  },
+  "combat_state_verifier": {
+    "enabled": true,
+    "local_interaction_verifier": {
+      "enabled": true,
+      "minimum_hitmarker_score": 0.34,
+      "minimum_outcome_assisted_hitmarker_score": 0.28,
+      "hitmarker_outer_radius_fraction": 0.105,
+      "policy": "Every hostile classification requires locally verified player-target interaction. Strong outcome-like events may use a near-threshold hitmarker only when direct contact/impact plus outcome/combat evidence independently agree; generic HUD motion remains unknown."
+    },
+    "minimum_hostile_event_score": 0.64,
+    "outcome_minimum": 0.52,
+    "payoff_combat_minimum": 0.42,
+    "impact_minimum": 0.64,
+    "impact_combat_minimum": 0.55,
+    "strong_combat_minimum": 0.7,
+    "strong_combat_audio_transient_minimum": 0.62,
+    "strong_combat_center_motion_minimum": 0.4,
+    "maximum_hostile_anchor_gap_seconds": 1.35,
+    "maximum_verified_inter_engagement_gap_seconds": 1.25,
+    "engagement_pre_context_seconds": 0.35,
+    "engagement_post_context_seconds": 0.45,
+    "traversal_break_threshold": 0.6,
+    "recovery_break_threshold": 0.6,
+    "break_combat_ceiling": 0.5,
+    "break_outcome_ceiling": 0.42,
+    "break_impact_ceiling": 0.45,
+    "maximum_continuity_break_run_seconds": 0.55,
+    "combat_island_support_floor": 0.38,
+    "maximum_combat_island_quiet_run_seconds": 0.75,
+    "minimum_combat_island_seconds": 1,
+    "minimum_bridge_combat_support_fraction": 0.5,
+    "finishing_continuation": {
+      "require_verified_payoff": true,
+      "minimum_retention_quality": 0.4,
+      "minimum_payoff_quality": 0.4,
+      "minimum_ending_quality": 0.45,
+      "minimum_weakest_quarter_interest": 0.3,
+      "maximum_unexplained_low_interest_run_seconds": 0.75,
+      "minimum_verified_island_moment_seconds": 1,
+      "maximum_verified_island_moment_seconds": 6.5,
+      "minimum_verified_island_opening_quality": 0.42,
+      "maximum_verified_island_moments_per_body": 3
+    },
+    "policy": "MW4 calibration for Clipper combat continuity. Ambiguous actor evidence remains unknown; sustained traversal, recovery, or quiet-search gaps split hostile continuity. Finishing Move body moments require verified hostile payoff evidence."
+  },
+  "source_integrity": {
+    "policy": "Automatic shot boundaries plus visually verified source-stringout edit windows are authoritative. Contiguous stories may never cross them. A verified Finishing Move may use explicit hard cuts only between its protected hero and canonical verified combat-island body segments, or between those body segments.",
+    "verified_cut_windows": {
+      "r1": [
+        [
+          40.5,
+          41
+        ],
+        [
+          46.5,
+          47
+        ],
+        [
+          53.75,
+          54.25
+        ],
+        [
+          225,
+          225.5
+        ]
+      ],
+      "batch2": [],
+      "week2": [
+        [
+          145,
+          145.5
+        ]
+      ]
+    },
+    "reject_segment_crossing_verified_cut": true,
+    "reject_unplanned_cross_shot_bridge": true,
+    "allow_planned_transition_for_finishing_move_open": true,
+    "notes": "Verified windows are source structure, not clip exclusions. Accidental stringout crossings remain fatal."
+  },
+  "finishing_move_detector": {
+    "enabled": true,
+    "automatic_discovery_enabled": true,
+    "automatic_review_confidence": 0.72,
+    "automatic_high_precision_confidence": 0.9,
+    "automatic_minimum_span_seconds": 1.25,
+    "automatic_maximum_span_seconds": 3.8,
+    "verified_spans": {
+      "r1": [],
+      "week2": [],
+      "batch2": [
+        {
+          "start": 148.35,
+          "payoff": 149.45,
+          "end": 150.05,
+          "verification": "2fps official-reel visual index shows a third-person execution sequence; canonical V3.1 uses it only as the protected opening hero event"
+        }
+      ]
+    },
+    "minimum_span_seconds": 1.05,
+    "maximum_span_seconds": 4.6,
+    "minimum_confidence": 0.64,
+    "minimum_center_motion": 0.46,
+    "minimum_contact_or_impact": 0.52,
+    "minimum_terminal_outcome": 0.5,
+    "maximum_internal_dull_fraction": 0.34,
+    "maximum_gap_between_choreography_bins_seconds": 0.5,
+    "notes": "Automatic hypotheses are discovery-only. Only manually verified spans can enter production Finishing Move planning."
+  },
+  "semantic_editor": {
+    "engine": "semantic-editor",
+    "anchor_boundary_sweep_step_seconds": 0.25,
+    "minimum_output_seconds": 10,
+    "maximum_output_seconds": 12,
+    "preferred_output_seconds": 11,
+    "maximum_output_target_seconds": 12,
+    "maximum_inter_engagement_gap_seconds": 4,
+    "maximum_engagements_per_story": 7,
+    "opening": {
+      "max_time_to_meaningful_action_seconds": 0.9,
+      "max_unexplained_dead_open_seconds": 0.5,
+      "minimum_quality": 0.42,
+      "boundary_search_seconds": 0.8
+    },
+    "ending": {
+      "preferred_payoff_tail_seconds": 0.45,
+      "maximum_payoff_tail_seconds": 0.75,
+      "minimum_quality": 0.4,
+      "boundary_search_seconds": 0.8,
+      "allow_active_cliffhanger": true
+    },
+    "dull": {
+      "low_interest_threshold": 0.3,
+      "explained_interest_floor": 0.26,
+      "engagement_explanation_lead_seconds": 0.35,
+      "engagement_explanation_tail_seconds": 0.3,
+      "maximum_unexplained_low_interest_run_seconds": 0.9,
+      "maximum_low_interest_fraction": 0.38,
+      "minimum_weak_quarter_interest": 0.27,
+      "minimum_action_seconds": 0.7,
+      "maximum_single_action_seconds": 1.6,
+      "maximum_editorial_actions": 2,
+      "maximum_total_removed_equivalent_seconds": 2,
+      "traversal_speed": 1.35,
+      "maximum_speedup_source_seconds": 0.85,
+      "prefer_boundary_trim_before_internal_edit": true
+    },
+    "selection": {
+      "candidate_mode": "engagement_driven_explained_dullness",
+      "story_diversity_bonus": 0.06,
+      "finishing_move_bonus": 0.14,
+      "opening_weight": 0.2,
+      "ending_weight": 0.17,
+      "story_coherence_weight": 0.12,
+      "retention_quality_weight": 0.24,
+      "payoff_quality_weight": 0.17,
+      "weakest_section_weight": 0.1
+    }
+  },
+  "story_quality_gates": {
+    "opening_min": {
+      "default": 0.42,
+      "finishing_move_open": 0.5
+    },
+    "ending_min": {
+      "default": 0.4,
+      "sustained_pressure": 0.5
+    },
+    "retention_min": {
+      "default": 0.36,
+      "sustained_pressure": 0.44
+    },
+    "payoff_min": {
+      "default": 0.34,
+      "engagement_chain": 0.28,
+      "sustained_pressure": 0.16,
+      "finishing_move_open": 0.34
+    }
+  },
+  "performance_targets": {
+    "retention_quality_min": 0.36,
+    "payoff_quality_min": 0.34,
+    "campaign_engagement_floor_percent": 0.2,
+    "notes": "retention_quality is an internal editorial quality score and must not be interpreted as literal TikTok retention percentage."
+  },
+  "excluded_windows": {
+    "week2": [],
+    "batch2": [],
+    "r1": []
+  },
+  "legacy_prior_windows_reference": {
+    "week2": [
+      [
+        0,
+        13.8
+      ],
+      [
+        17,
+        41.6
+      ],
+      [
+        42.2,
+        88.15
+      ],
+      [
+        105.3,
+        133.4
+      ],
+      [
+        147.2,
+        203.2
+      ],
+      [
+        230.96,
+        250.65
+      ]
+    ],
+    "batch2": [
+      [
+        0,
+        25
+      ],
+      [
+        45,
+        75
+      ]
+    ],
+    "r1": [
+      [
+        95,
+        120
+      ],
+      [
+        145,
+        175
+      ]
+    ]
+  },
+  "duplicate_policy": {
+    "allow_overlap_with_prior_work": true,
+    "allow_overlap_with_new_batch": true,
+    "semantic_anchor_tolerance_seconds": 0.35,
+    "max_shared_context_seconds": 2.5,
+    "substantial_overlap_seconds": 6,
+    "substantial_overlap_fraction_shorter": 0.6,
+    "finishing_move_exclusive": true,
+    "notes": "Within a source, Clipper treats reuse of the same semantic payoff/Finishing Move or substantial source-span overlap as a selection conflict. Shared setup context below the configured limits is allowed."
+  },
+  "profile": "mw4",
+  "source_profile": {
+    "provider": "mediasilo",
+    "review_url": "https://app.mediasilo.com/review/6a88a6c15a183a21eeeae9e6/f/3b199368-5974-4eb1-a450-327a4e84c260",
+    "expected_count": 4
+  },
+  "capabilities": {
+    "direct_interaction_detection": {
+      "enabled": true,
+      "mode": "centered_hitmarker_local_refinement"
+    },
+    "combat_outcome_detection": {
+      "enabled": true,
+      "mode": "audiovisual_outcome"
+    },
+    "traversal_recovery_detection": {
+      "enabled": true,
+      "mode": "combat_continuity"
+    },
+    "player_death_detection": {
+      "enabled": true,
+      "mode": "state_transition"
+    },
+    "finishing_move_detection": {
+      "enabled": true,
+      "mode": "verified_campaign_spans"
+    }
+  },
+  "player_state_detector": {
+    "enabled": true,
+    "mode": "state_transition",
+    "pre_seconds": 0.65,
+    "post_seconds": 0.8,
+    "damage_memory_seconds": 0.55,
+    "minimum_score": 0.82,
+    "minimum_red_signal": 0.72,
+    "minimum_transition": 0.62,
+    "minimum_activity_drop": 0.48,
+    "exclusion_after_seconds": 1.25,
+    "minimum_spacing_seconds": 2,
+    "notes": "Clipper detector calibration for MW4. A confirmed player-death state discontinuity excludes intersecting candidate footage; it does not impose a player-must-win rule."
+  }
+}

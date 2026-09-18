@@ -1,190 +1,138 @@
 import argparse
-import json
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 
-from clipper import mw4
-from clipper_mw4 import mw4_v3_1_contract as mw4_contract
-from clipper_mw4 import mw4_v3_1_dynamic_workflow_support as workflow_support
-from clipper_mw4 import orchestrator as mw4_orchestrator
+from clipper.cli import main
+from clipper_engine.gameplay import allocation, contract
+from clipper_engine.profiles import load_profile
 
 
-def test_mw4_bridge_lazy_loads_installed_orchestrator() -> None:
-    args = argparse.Namespace(mw4_command="self-test")
-    runner = Mock(return_value=7)
-    module = SimpleNamespace(run=runner)
-
-    with patch("clipper.mw4.importlib.import_module", return_value=module) as import_module:
-        assert mw4.run(args) == 7
-
-    import_module.assert_called_once_with("clipper_mw4.orchestrator")
-    runner.assert_called_once_with(args)
-
-
-def test_mw4_bridge_rejects_invalid_runtime() -> None:
-    module = SimpleNamespace(run=None)
-    with (
-        patch("clipper.mw4.importlib.import_module", return_value=module),
-        pytest.raises(RuntimeError, match="callable orchestrator"),
-    ):
-        mw4.run(argparse.Namespace(mw4_command="self-test"))
+def _config() -> dict:
+    return {
+        "batch_selection": {"require_verified_finishing_move_when_available": False},
+        "editorial": {
+            "finishing_move_max_continuation_gap_seconds": 18.0,
+            "finishing_move_body_hard_cut_max_source_gap_seconds": 18.0,
+        },
+        "finishing_move_detector": {},
+        "source_integrity": {},
+        "semantic_editor": {
+            "minimum_output_seconds": 10.0,
+            "maximum_output_seconds": 12.0,
+            "preferred_output_seconds": 11.0,
+            "selection": {"finishing_move_bonus": 0.14},
+        },
+    }
 
 
-def test_mw4_scene_derived_selection_keeps_every_distinct_fighting_scene() -> None:
+def _candidate(key: str, start: float, end: float, anchors: list[float], score: float) -> dict:
+    return {
+        "plan_key": key,
+        "score": score,
+        "start": start,
+        "end": end,
+        "raw_duration": end - start,
+        "output_duration": end - start,
+        "opening_quality": 0.5,
+        "ending_quality": 0.5,
+        "retention_quality": 0.5,
+        "payoff_quality": 0.5,
+        "story_coherence": 0.5,
+        "weakest_quarter_interest": 0.3,
+        "low_interest_fraction": 0.2,
+        "max_unexplained_low_interest_run_seconds": 0.4,
+        "story_type": "engagement_chain",
+        "effect_profile": "clean_pressure",
+        "segments": [{"start": start, "end": end, "speed": 1.0, "reason": "story"}],
+        "effect_events": [
+            {"kind": "outcome_like", "time": anchor, "confidence": 0.9, "evidence": {}}
+            for anchor in anchors
+        ],
+        "engagements": [],
+        "finishing_move": None,
+        "editorial_reasons": [],
+        "covered_outcome_anchor_times": anchors,
+        "covered_payoff_anchor_times": anchors,
+    }
+
+
+def test_mw4_command_routes_to_clipper_engine() -> None:
+    with patch("clipper.cli.run_mw4", return_value=0) as run_mw4:
+        assert main(["mw4", "self-test"]) == 0
+    args = run_mw4.call_args.args[0]
+    assert args.command == "mw4"
+    assert args.mw4_command == "self-test"
+
+
+def test_mw4_profile_is_declarative() -> None:
+    profile = load_profile("mw4")
+    assert profile.name == "mw4"
+    assert profile.expected_source_count == 4
+    assert profile.capability("direct_interaction_detection")["enabled"] is True
+    assert profile.capability("player_death_detection")["enabled"] is True
+    assert all(not callable(value) for value in profile.config.values())
+
+
+def test_overlap_conflict_uses_source_spans_not_scene_ids() -> None:
     config = {
-        "batch_selection": {"require_verified_finishing_move_when_available": True},
-        "semantic_editor": {"selection": {"finishing_move_bonus": 0.14}},
+        "duplicate_policy": {
+            "semantic_anchor_tolerance_seconds": 0.35,
+            "max_shared_context_seconds": 2.5,
+            "substantial_overlap_seconds": 6.0,
+            "substantial_overlap_fraction_shorter": 0.60,
+            "finishing_move_exclusive": True,
+        }
+    }
+    left = _candidate("a", 10.0, 22.0, [15.0], 0.8)
+    right = _candidate("b", 10.05, 22.05, [21.0], 0.9)
+    left["combat_scene_id"] = "old-scene-a"
+    right["combat_scene_id"] = "old-scene-b"
+    assert contract.plans_conflict(left, right, config)
+
+
+def test_exact_allocator_prefers_one_candidate_covering_multiple_outcomes() -> None:
+    config = _config()
+    config["duplicate_policy"] = {
+        "semantic_anchor_tolerance_seconds": 0.35,
+        "max_shared_context_seconds": 2.5,
+        "substantial_overlap_seconds": 6.0,
+        "substantial_overlap_fraction_shorter": 0.60,
+        "finishing_move_exclusive": True,
     }
     candidates = [
-        {
-            "plan_key": "scene-a-low",
-            "score": 0.60,
-            "effect_events": [{"kind": "outcome_like", "time": 10.0}],
-        },
-        {
-            "plan_key": "scene-a-best",
-            "score": 0.95,
-            "effect_events": [{"kind": "outcome_like", "time": 10.0}],
-        },
-        {
-            "plan_key": "scene-b",
-            "score": 0.70,
-            "effect_events": [{"kind": "outcome_like", "time": 30.0}],
-        },
-        {
-            "plan_key": "scene-c",
-            "score": 0.65,
-            "effect_events": [{"kind": "outcome_like", "time": 50.0}],
-        },
+        _candidate("multi", 10.0, 22.0, [15.0, 20.0], 0.85),
+        _candidate("first", 8.0, 18.0, [15.0], 0.95),
+        _candidate("second", 15.0, 25.0, [20.0], 0.95),
     ]
-
-    selected = mw4_contract._adaptive_source_selection("test", candidates, 0, config)
-
-    assert {plan["plan_key"] for plan in selected} == {
-        "scene-a-best",
-        "scene-b",
-        "scene-c",
-    }
-
-
-def test_mw4_orchestrator_enforces_scene_derived_count(tmp_path: Path) -> None:
-    allocation = tmp_path / "allocation.json"
-    allocation.write_text(
-        json.dumps(
-            {
-                "target_count": 3,
-                "selected_count": 3,
-                "duration_contract": {
-                    "minimum_seconds": 10.0,
-                    "maximum_seconds": 12.0,
-                },
-                "source_allocations": {
-                    "r1": {"count": 2, "distinct_fighting_scene_count": 2},
-                    "batch2": {"count": 1, "distinct_fighting_scene_count": 1},
-                },
-            }
-        ),
-        encoding="utf-8",
+    selected = allocation._solve_source(
+        "test", candidates, {15.0, 20.0}, False, config
     )
-
-    mw4_orchestrator._assert_scene_derived_allocation(allocation)
-
-    bad = json.loads(allocation.read_text(encoding="utf-8"))
-    bad["source_allocations"]["r1"]["count"] = 1
-    allocation.write_text(json.dumps(bad), encoding="utf-8")
-    with pytest.raises(RuntimeError, match="distinct qualified fighting scenes"):
-        mw4_orchestrator._assert_scene_derived_allocation(allocation)
+    assert [item["plan_key"] for item in selected] == ["multi"]
 
 
-def test_mw4_render_matrix_matches_orchestrator_cardinality(tmp_path: Path) -> None:
-    allocation = tmp_path / "allocation.json"
-    github_output = tmp_path / "github_output.txt"
-    allocation.write_text(
-        json.dumps(
-            {
-                "target_count": 3,
-                "selected_count": 3,
-                "source_order": ["r1", "batch2"],
-                "source_allocations": {
-                    "r1": {
-                        "count": 2,
-                        "plan_keys": ["r1-a", "r1-b"],
-                    },
-                    "batch2": {
-                        "count": 1,
-                        "plan_keys": ["b2-a"],
-                    },
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    matrix = workflow_support.render_matrix(allocation, github_output)
-
-    assert len(matrix) == 3
-    assert [item["source"] for item in matrix] == ["r1", "r1", "batch2"]
-    outputs = github_output.read_text(encoding="utf-8")
-    assert "derived_clip_count=3" in outputs
-    assert 'source_distribution={"r1":2,"batch2":1}' in outputs
-
-
-def test_mw4_render_matrix_rejects_cardinality_mismatch(tmp_path: Path) -> None:
-    allocation = tmp_path / "allocation.json"
-    github_output = tmp_path / "github_output.txt"
-    allocation.write_text(
-        json.dumps(
-            {
-                "target_count": 3,
-                "selected_count": 3,
-                "source_order": ["r1"],
-                "source_allocations": {
-                    "r1": {
-                        "count": 2,
-                        "plan_keys": ["r1-a", "r1-b"],
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(RuntimeError, match="render matrix does not match"):
-        workflow_support.render_matrix(allocation, github_output)
-
-
-def test_mw4_scene_identity_wins_over_terminal_payoff() -> None:
-    config = {
-        "batch_selection": {"require_verified_finishing_move_when_available": True},
-        "semantic_editor": {"selection": {"finishing_move_bonus": 0.14}},
+def test_allocator_fails_when_conflicts_make_qualified_coverage_impossible() -> None:
+    config = _config()
+    config["duplicate_policy"] = {
+        "semantic_anchor_tolerance_seconds": 0.35,
+        "max_shared_context_seconds": 0.0,
+        "substantial_overlap_seconds": 1.0,
+        "substantial_overlap_fraction_shorter": 0.10,
+        "finishing_move_exclusive": True,
     }
     candidates = [
-        {
-            "plan_key": "same-scene-earlier",
-            "combat_scene_id": "combat:3:10.000:14.000",
-            "score": 0.70,
-            "effect_events": [{"kind": "outcome_like", "time": 12.0}],
-        },
-        {
-            "plan_key": "same-scene-best",
-            "combat_scene_id": "combat:3:10.000:14.000",
-            "score": 0.95,
-            "effect_events": [{"kind": "outcome_like", "time": 13.5}],
-        },
-        {
-            "plan_key": "different-scene",
-            "combat_scene_id": "combat:3:20.000:24.000",
-            "score": 0.80,
-            "effect_events": [{"kind": "outcome_like", "time": 23.0}],
-        },
+        _candidate("first", 10.0, 20.0, [12.0], 0.8),
+        _candidate("second", 10.5, 20.5, [18.0], 0.8),
     ]
+    with pytest.raises(AssertionError, match="no conflict-free allocation"):
+        allocation._solve_source(
+            "test", candidates, {12.0, 18.0}, False, config
+        )
 
-    selected = mw4_contract._adaptive_source_selection("test", candidates, 0, config)
 
-    assert {plan["plan_key"] for plan in selected} == {
-        "same-scene-best",
-        "different-scene",
-    }
+def test_profile_override_must_still_declare_mw4(tmp_path: Path) -> None:
+    path = tmp_path / "profile.json"
+    path.write_text('{"profile":"other"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="expected 'mw4'"):
+        load_profile("mw4", path)

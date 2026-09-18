@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "whop-clipper"
 version = "0.1.0"
-description = "Rights-gated Whop brief to YouTube clip pipeline"
+description = "Production clipping pipeline with configurable gameplay profiles"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = {text = "MIT"}
@@ -60,3 +60,4 @@ packages = ["clipper"]
 
 [tool.setuptools.package-data]
 clipper = ["py.typed"]
+clipper_engine = ["profiles/*.json"]

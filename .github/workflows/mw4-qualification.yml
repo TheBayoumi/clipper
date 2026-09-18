@@ -1,0 +1,262 @@
+name: MW4 production qualification
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/mw4-fullframe-retention-v3-1
+    paths:
+      - .github/workflows/mw4-qualification.yml
+      - .github/mw4-production-trigger
+      - pyproject.toml
+      - src/clipper_engine/profiles/mw4.json
+      - src/clipper/cli.py
+      - src/clipper_engine/**/*.py
+
+concurrency:
+  group: mw4-production-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  discover-sources:
+    name: discover-all-mediasilo-sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      source_matrix: ${{ steps.catalog.outputs.source_matrix }}
+      source_count: ${{ steps.catalog.outputs.source_count }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Clipper MW4 CLI runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[mw4]"
+          python -m playwright install --with-deps chromium
+      - name: Verify canonical MW4 CLI architecture
+        run: |
+          set -euo pipefail
+          clipper mw4 self-test
+      - name: Discover every original video master through Clipper CLI
+        id: catalog
+        run: |
+          set -euo pipefail
+          clipper mw4 discover \
+            --output /tmp/source_catalog.json \
+            --github-output "$GITHUB_OUTPUT" \
+
+  analyze:
+    name: analyze-${{ matrix.source }}
+    needs: discover-sources
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.discover-sources.outputs.source_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Clipper MW4 CLI analysis runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[mw4]"
+          python -m playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Resolve, certify, analyze, and diagnose source through Clipper CLI
+        timeout-minutes: 30
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+          OMP_NUM_THREADS: '2'
+          OPENBLAS_NUM_THREADS: '1'
+          MKL_NUM_THREADS: '1'
+          NUMEXPR_NUM_THREADS: '1'
+          MALLOC_ARENA_MAX: '2'
+        run: |
+          set -euo pipefail
+          nice -n 5 clipper mw4 analyze \
+            --source-key "$SOURCE_KEY" \
+            --source-dir raw_sources \
+            --output-dir "analysis/$SOURCE_KEY"
+      - name: Upload verified source reel for isolated render workspaces
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-production-source-${{ matrix.source }}
+          path: |
+            raw_sources/${{ matrix.source }}.mp4
+            raw_sources/${{ matrix.source }}.source_qa.json
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload analysis manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-production-analysis-${{ matrix.source }}
+          path: analysis/${{ matrix.source }}/${{ matrix.source }}_analysis.json
+          retention-days: 3
+          if-no-files-found: error
+
+  allocate:
+    name: orchestrator-derived-clip-cardinality
+    needs: analyze
+    runs-on: ubuntu-24.04
+    outputs:
+      render_matrix: ${{ steps.allocate.outputs.render_matrix }}
+      derived_clip_count: ${{ steps.allocate.outputs.derived_clip_count }}
+      source_distribution: ${{ steps.allocate.outputs.source_distribution }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Clipper MW4 CLI runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[mw4]"
+      - name: Download all analysis manifests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: MW4-production-analysis-*
+          path: analysis-manifests
+          merge-multiple: true
+      - name: Derive clip cardinality and render matrix through Clipper CLI
+        id: allocate
+        run: |
+          set -euo pipefail
+          mkdir -p allocation
+          clipper mw4 allocate \
+            --analysis-root analysis-manifests \
+            --allocation-out allocation/mw4_allocation.json \
+            --rejection-out allocation/mw4_allocation_rejection.json \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Upload fail-closed allocation diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-production-allocation-rejection
+          path: allocation/mw4_allocation_rejection.json
+          retention-days: 3
+          if-no-files-found: error
+      - name: Upload approved global allocation
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-production-allocation
+          path: allocation/mw4_allocation.json
+          retention-days: 3
+          if-no-files-found: error
+
+  render-one:
+    name: complete-${{ matrix.clip_id }}
+    needs: allocate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.allocate.outputs.render_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Clipper MW4 CLI renderer runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[mw4]"
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Download approved allocation
+        uses: actions/download-artifact@v4
+        with:
+          name: MW4-production-allocation
+          path: allocation
+      - name: Download already-certified source reel
+        uses: actions/download-artifact@v4
+        with:
+          name: MW4-production-source-${{ matrix.source }}
+          path: raw_sources
+      - name: Verify, render, and QA clip through Clipper CLI
+        timeout-minutes: 65
+        env:
+          SOURCE_KEY: ${{ matrix.source }}
+          OMP_NUM_THREADS: '2'
+          OPENBLAS_NUM_THREADS: '1'
+          MKL_NUM_THREADS: '1'
+          NUMEXPR_NUM_THREADS: '1'
+          MALLOC_ARENA_MAX: '2'
+        run: |
+          set -euo pipefail
+          nice -n 5 clipper mw4 render-one \
+            --source-key "$SOURCE_KEY" \
+            --source-dir raw_sources \
+            --allocation allocation/mw4_allocation.json \
+            --plan-key "${{ matrix.plan_key }}" \
+            --ordinal "${{ matrix.ordinal }}" \
+            --output-dir one \
+            --mode production
+      - name: Upload qualification video
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-production-video-${{ matrix.clip_id }}
+          path: one/*.mp4
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload clip QA metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-production-meta-${{ matrix.clip_id }}
+          path: |
+            one/*_clip_result.json
+            one/contact_sheets/*.jpg
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+
+  batch-contract:
+    name: complete-batch-contract
+    needs: [allocate, render-one]
+    if: ${{ always() && needs.allocate.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Clipper MW4 CLI runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[mw4]"
+      - name: Download approved allocation
+        uses: actions/download-artifact@v4
+        with:
+          name: MW4-production-allocation
+          path: allocation
+      - name: Download clip metadata only
+        uses: actions/download-artifact@v4
+        with:
+          pattern: MW4-production-meta-*
+          path: clip-meta
+          merge-multiple: true
+      - name: Enforce complete adaptive batch contract through Clipper CLI
+        run: |
+          set -euo pipefail
+          clipper mw4 batch-contract \
+            --allocation allocation/mw4_allocation.json \
+            --clip-meta clip-meta \
+            --output-dir batch
+      - name: Upload batch contract
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-production-batch-contract
+          path: batch/*.json
+          retention-days: 3
+          if-no-files-found: error
