@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -117,9 +118,16 @@ def download(resolved_path: Path, target: Path) -> None:
     url = str(selected.get("url") or "")
     if not url:
         raise RuntimeError("resolved MediaSilo source URL is missing")
+    parsed_url = urllib.parse.urlparse(url)
+    if parsed_url.scheme.lower() != "https" or not parsed_url.hostname:
+        raise RuntimeError("refusing non-HTTPS MediaSilo source URL")
     target.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(request, timeout=300) as source, target.open("wb") as output:
+    request = urllib.request.Request(  # noqa: S310 - HTTPS validated above.
+        url, headers={"User-Agent": "Mozilla/5.0"}
+    )
+    with urllib.request.urlopen(  # noqa: S310 - HTTPS validated above.
+        request, timeout=300
+    ) as source, target.open("wb") as output:
         while True:
             block = source.read(8 * 1024 * 1024)
             if not block:
