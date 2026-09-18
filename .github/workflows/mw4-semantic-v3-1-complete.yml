@@ -11,6 +11,8 @@ on:
       - pyproject.toml
       - campaigns/mw4-fullframe-retention-v3-1.json
       - src/clipper/cli.py
+      - src/clipper/mw4.py
+      - src/clipper_mw4/*.py
       - scripts/mw4_semantic_gameplay_v3_1_*.py
       - scripts/mw4_v3_1_*.py
       - scripts/mw4_fullframe_retention_v3_1.py
