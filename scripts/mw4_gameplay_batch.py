@@ -160,7 +160,7 @@ def choose_peaks(activity: np.ndarray, start_index: int, end_index: int) -> tupl
         return ()
     ordered = np.argsort(local)[::-1]
     chosen: list[int] = []
-    minimum_spacing = int(round(1.15 * SAMPLE_FPS))
+    minimum_spacing = round(1.15 * SAMPLE_FPS)
     for raw_index in ordered:
         index = int(raw_index)
         if all(abs(index - prior) >= minimum_spacing for prior in chosen):
@@ -174,8 +174,8 @@ def choose_peaks(activity: np.ndarray, start_index: int, end_index: int) -> tupl
 def score_window(
     activity: np.ndarray, motion: np.ndarray, start: float, end: float
 ) -> tuple[float, tuple[float, ...]]:
-    start_index = max(0, int(math.floor(start * SAMPLE_FPS)))
-    end_index = min(len(activity), int(math.ceil(end * SAMPLE_FPS)))
+    start_index = max(0, math.floor(start * SAMPLE_FPS))
+    end_index = min(len(activity), math.ceil(end * SAMPLE_FPS))
     segment = activity[start_index:end_index]
     segment_motion = motion[start_index:end_index]
     if segment.size < int(10 * SAMPLE_FPS):

@@ -235,7 +235,7 @@ def _finishing_plan_failures(
     ):
         failures.append(f"{source} clip {index}: Finishing Move routing is not opening hero")
     if not segments:
-        return failures + [f"{source} clip {index}: Finishing Move has no segments"]
+        return [*failures, f"{source} clip {index}: Finishing Move has no segments"]
 
     hero = segments[0]
     if str(hero.get("reason", "")) != "finishing_move_open_hero":
@@ -270,7 +270,7 @@ def _finishing_plan_failures(
     if float(body[0]["start"]) - float(hero["end"]) > max_first_gap + _EPS:
         failures.append(f"{source} clip {index}: Finishing Move first continuation exceeds reach")
 
-    for pos, (segment, engagement) in enumerate(zip(body, engagements)):
+    for pos, (segment, engagement) in enumerate(zip(body, engagements, strict=False)):
         if str(segment.get("reason", "")) != "verified_combat_island_body":
             failures.append(
                 f"{source} clip {index}: body segment {pos + 1} is not a verified combat island"

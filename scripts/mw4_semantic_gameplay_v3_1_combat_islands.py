@@ -49,8 +49,8 @@ def _half_open_frame_slice(start: float, end: float, fps: float, length: int) ->
     """
     if end <= start:
         return 0, 0
-    i0 = max(0, int(math.ceil((float(start) - _BOUNDARY_EPS_SECONDS) * fps)))
-    i1 = min(length, int(math.ceil((float(end) - _BOUNDARY_EPS_SECONDS) * fps)))
+    i0 = max(0, math.ceil((float(start) - _BOUNDARY_EPS_SECONDS) * fps))
+    i1 = min(length, math.ceil((float(end) - _BOUNDARY_EPS_SECONDS) * fps))
     return i0, max(i0, i1)
 
 
@@ -91,8 +91,8 @@ def gap_signal(timeline: Any, config: dict[str, Any]) -> np.ndarray:
 def fragment_bounds(
     start: float, end: float, hard: np.ndarray, fps: float
 ) -> list[tuple[float, float]]:
-    i0 = max(0, int(math.floor(start * fps)))
-    i1 = min(len(hard), int(math.ceil(end * fps)))
+    i0 = max(0, math.floor(start * fps))
+    i1 = min(len(hard), math.ceil(end * fps))
     if i1 <= i0:
         return []
     out: list[tuple[float, float]] = []

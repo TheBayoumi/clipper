@@ -125,9 +125,12 @@ def download(resolved_path: Path, target: Path) -> None:
     request = urllib.request.Request(  # noqa: S310 - HTTPS validated above.
         url, headers={"User-Agent": "Mozilla/5.0"}
     )
-    with urllib.request.urlopen(  # noqa: S310 - HTTPS validated above.
-        request, timeout=300
-    ) as source, target.open("wb") as output:
+    with (
+        urllib.request.urlopen(  # noqa: S310 - HTTPS validated above.
+            request, timeout=300
+        ) as source,
+        target.open("wb") as output,
+    ):
         while True:
             block = source.read(8 * 1024 * 1024)
             if not block:

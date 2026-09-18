@@ -335,8 +335,8 @@ def normal_plans(
                 effects,
                 evidence,
                 None,
-                reasons
-                + (
+                (
+                    *reasons,
                     "verified hostile evidence anchors a contiguous same-shot source proposal",
                     "semantic reload/search/recovery gaps are evaluated by unchanged quality gates rather than treated as source cuts",
                 ),
@@ -640,11 +640,13 @@ def finishing_open_plans(
                         )
                     )
 
-            by_duration = lambda item: (
-                -(float(item[0].end) - float(item[0].start)),
-                float(item[0].start),
-                float(item[0].end),
-            )
+            def by_duration(item):
+                return (
+                    -(float(item[0].end) - float(item[0].start)),
+                    float(item[0].start),
+                    float(item[0].end),
+                )
+
             longest = sorted(
                 qualified_for_component,
                 key=by_duration,
@@ -795,7 +797,7 @@ def finishing_open_plans(
                 ):
                     continue
 
-                segments = (hero,) + body_segments
+                segments = (hero, *body_segments)
                 output_duration = sum(quality._segment_duration(segment) for segment in segments)
                 opening = max(
                     0.90,

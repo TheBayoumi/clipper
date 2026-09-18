@@ -107,20 +107,20 @@ PAYOFF_KINDS = {"outcome_like", "impact"}
 
 def _idx(timeline: SemanticTimelineV31 | base.SemanticTimeline, seconds: float) -> int:
     fps = timeline.fps
-    return max(0, min(len(timeline.times) - 1, int(round(seconds * fps - 0.5))))
+    return max(0, min(len(timeline.times) - 1, round(seconds * fps - 0.5)))
 
 
 def _mean(signal: np.ndarray, timeline: SemanticTimelineV31, start: float, end: float) -> float:
-    i0 = max(0, int(math.floor(start * timeline.fps)))
-    i1 = min(len(signal), int(math.ceil(end * timeline.fps)))
+    i0 = max(0, math.floor(start * timeline.fps))
+    i1 = min(len(signal), math.ceil(end * timeline.fps))
     if i1 <= i0:
         return 0.0
     return float(np.mean(signal[i0:i1]))
 
 
 def _max(signal: np.ndarray, timeline: SemanticTimelineV31, start: float, end: float) -> float:
-    i0 = max(0, int(math.floor(start * timeline.fps)))
-    i1 = min(len(signal), int(math.ceil(end * timeline.fps)))
+    i0 = max(0, math.floor(start * timeline.fps))
+    i1 = min(len(signal), math.ceil(end * timeline.fps))
     if i1 <= i0:
         return 0.0
     return float(np.max(signal[i0:i1]))
@@ -326,7 +326,7 @@ def discover_finishing_moves(
     max_dull = float(cfg.get("maximum_internal_dull_fraction", 0.34))
     max_gap_bins = max(
         1,
-        int(round(float(cfg.get("maximum_gap_between_choreography_bins_seconds", 0.50)) * fps)),
+        round(float(cfg.get("maximum_gap_between_choreography_bins_seconds", 0.50)) * fps),
     )
 
     score = np.clip(
@@ -347,8 +347,8 @@ def discover_finishing_moves(
 
     spans: list[FinishingMoveSpan] = []
     for engagement in engagements:
-        i0 = max(0, int(math.floor(engagement.start * fps)))
-        i1 = min(len(score), int(math.ceil(engagement.end * fps)))
+        i0 = max(0, math.floor(engagement.start * fps))
+        i1 = min(len(score), math.ceil(engagement.end * fps))
         if i1 - i0 < int(min_span * fps):
             continue
         indices = [index for index in range(i0, i1) if active[index]]
@@ -370,7 +370,7 @@ def discover_finishing_moves(
             duration = raw_end - raw_start
             if duration < min_span or duration > max_span:
                 continue
-            terminal_start = max(left, right - max(1, int(round(0.85 * fps))))
+            terminal_start = max(left, right - max(1, round(0.85 * fps)))
             terminal_outcome = float(
                 np.max(
                     np.maximum(

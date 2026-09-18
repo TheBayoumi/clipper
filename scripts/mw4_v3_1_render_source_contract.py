@@ -79,7 +79,7 @@ def _verify_lossless_piece(
         mismatch = next(
             (
                 item
-                for item, pair in enumerate(zip(source_hashes, piece_hashes))
+                for item, pair in enumerate(zip(source_hashes, piece_hashes, strict=False))
                 if pair[0] != pair[1]
             ),
             None,
@@ -468,7 +468,7 @@ def _render_canonical_lossless_master(
         mismatch = next(
             (
                 index
-                for index, pair in enumerate(zip(expected_hashes, master_hashes))
+                for index, pair in enumerate(zip(expected_hashes, master_hashes, strict=False))
                 if pair[0] != pair[1]
             ),
             None,

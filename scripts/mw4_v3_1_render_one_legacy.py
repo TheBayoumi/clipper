@@ -204,7 +204,11 @@ def _verify_lossless_piece(
     }
     if not all(checks.values()):
         mismatch = next(
-            (i for i, pair in enumerate(zip(source_hashes, piece_hashes)) if pair[0] != pair[1]),
+            (
+                i
+                for i, pair in enumerate(zip(source_hashes, piece_hashes, strict=False))
+                if pair[0] != pair[1]
+            ),
             None,
         )
         raise RuntimeError(

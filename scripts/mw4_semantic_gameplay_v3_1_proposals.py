@@ -303,7 +303,7 @@ def normal_plans(
             diagnostics["normal_variant_combination_count"] += 1
             proposal_engagements: list[Engagement] = []
             valid = True
-            for component, (start, end) in zip(chain, choice):
+            for component, (start, end) in zip(chain, choice, strict=False):
                 proposal = _proposal_engagement(component, start, end, config)
                 if proposal is None:
                     valid = False
@@ -385,8 +385,8 @@ def normal_plans(
                 effects,
                 proposal_tuple,
                 None,
-                reasons
-                + (
+                (
+                    *reasons,
                     "verified hostile evidence anchors a boundary-refined source-safe proposal",
                     "every kept segment stays inside one same-shot hard-gap-free support component",
                 ),
@@ -654,7 +654,7 @@ def finishing_open_plans(
                 ):
                     continue
 
-                segments = (hero,) + body_segments
+                segments = (hero, *body_segments)
                 output_duration = sum(quality._segment_duration(segment) for segment in segments)
                 opening = max(0.90, min(1.0, 0.74 + 0.22 * float(span.confidence)))
                 retention = float(0.18 * opening + 0.82 * body_retention)

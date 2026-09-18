@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import subprocess
@@ -190,7 +191,7 @@ def _load_audio_features(source: Path, fps: float, sample_rate: int) -> dict[str
         ]
     )
     audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-    per_bin = max(1, int(round(sample_rate / fps)))
+    per_bin = max(1, round(sample_rate / fps))
     count = len(audio) // per_bin
     if count < int(fps * 3):
         raise RuntimeError("Not enough sampled audio for semantic gameplay analysis")
@@ -269,8 +270,8 @@ def analyze_source(source: Path, config: dict[str, Any]) -> SemanticTimeline:
         0,
         1,
     )
-    recent = _rolling_max(combat, max(1, int(round(0.55 * fps))))
-    post_drop = np.clip(recent - _future_mean(combat, max(1, int(round(0.65 * fps)))), 0, 1)
+    recent = _rolling_max(combat, max(1, round(0.55 * fps)))
+    post_drop = np.clip(recent - _future_mean(combat, max(1, round(0.65 * fps))), 0, 1)
     outcome = np.clip(
         0.34 * hud + 0.27 * recent + 0.18 * post_drop + 0.11 * cm + 0.10 * audio_tr, 0, 1
     )
@@ -299,7 +300,7 @@ def analyze_source(source: Path, config: dict[str, Any]) -> SemanticTimeline:
         0,
         1,
     )
-    interest = _rolling_mean(np.maximum(interest, 0.74 * pressure), max(1, int(round(0.16 * fps))))
+    interest = _rolling_mean(np.maximum(interest, 0.74 * pressure), max(1, round(0.16 * fps)))
     dull = (
         (interest < float(cfg.get("dull_interest_threshold", 0.28)))
         & (combat < 0.36)
@@ -354,7 +355,7 @@ def analyze_source(source: Path, config: dict[str, Any]) -> SemanticTimeline:
     )
     events: list[SemanticEvent] = []
     for kind, signal, threshold, spacing, evidence in specs:
-        for index in _local_maxima(signals[signal], threshold, max(1, int(round(spacing * fps)))):
+        for index in _local_maxima(signals[signal], threshold, max(1, round(spacing * fps))):
             events.append(_event(index, fps, kind, signal, signals, evidence))
     events.sort(key=lambda item: (item.time, item.kind))
     times = (np.arange(length, dtype=np.float32) + 0.5) / fps
@@ -410,8 +411,8 @@ def _editorial_segments(
     cfg = config.get("semantic_editor", {})
     fps = timeline.fps
     i0, i1 = (
-        max(0, int(math.floor(start * fps))),
-        min(len(timeline.times), int(math.ceil(end * fps))),
+        max(0, math.floor(start * fps)),
+        min(len(timeline.times), math.ceil(end * fps)),
     )
     min_action = float(cfg.get("min_dull_action_seconds", 0.65))
     max_action = float(cfg.get("max_single_dull_action_seconds", 2.2))
@@ -454,7 +455,7 @@ def _editorial_segments(
     segments: list[EditSegment] = []
     reasons: list[str] = []
     removed = 0.0
-    for left, right in zip(boundaries, boundaries[1:]):
+    for left, right in itertools.pairwise(boundaries):
         midpoint = (left + right) / 2
         action = next((item for item in chosen if item[0] <= midpoint <= item[1]), None)
         if action is None:
@@ -526,9 +527,7 @@ def _route_story(
     teaser_seconds = float(config.get("editorial", {}).get("cold_open_teaser_seconds", 1.25))
 
     if strongest is not None:
-        index = min(
-            len(timeline.times) - 1, max(0, int(round(strongest.time * timeline.fps - 0.5)))
-        )
+        index = min(len(timeline.times) - 1, max(0, round(strongest.time * timeline.fps - 0.5)))
         gain = float(timeline.signals["interest"][index]) - opening
         if (
             strongest.time - start >= float(cfg.get("cold_open_min_event_delay_seconds", 1.35))
@@ -595,10 +594,10 @@ def plan_window(
     cfg = config.get("semantic_editor", {})
     fps = timeline.fps
     i0, i1 = (
-        max(0, int(math.floor(start * fps))),
-        min(len(timeline.times), int(math.ceil(end * fps))),
+        max(0, math.floor(start * fps)),
+        min(len(timeline.times), math.ceil(end * fps)),
     )
-    if i1 - i0 < int(round(10 * fps)):
+    if i1 - i0 < round(10 * fps):
         return None
     interest = timeline.signals["interest"][i0:i1]
     combat, outcome, impact = (
@@ -616,7 +615,7 @@ def plan_window(
         return None
 
     quarters = [float(np.mean(part)) for part in np.array_split(interest, 4) if part.size]
-    opening_bins = max(1, int(round(float(cfg.get("opening_seconds", 1.0)) * fps)))
+    opening_bins = max(1, round(float(cfg.get("opening_seconds", 1.0)) * fps))
     opening, closing = (
         float(np.mean(interest[:opening_bins])),
         float(np.mean(interest[-opening_bins:])),
@@ -714,7 +713,7 @@ def timeline_summary(timeline: SemanticTimeline, curve_fps: float = 2.0) -> dict
     counts: dict[str, int] = {}
     for event in timeline.events:
         counts[event.kind] = counts.get(event.kind, 0) + 1
-    stride = max(1, int(round(timeline.fps / curve_fps)))
+    stride = max(1, round(timeline.fps / curve_fps))
     curve = [
         {
             "time": round(float(timeline.times[index]), 3),

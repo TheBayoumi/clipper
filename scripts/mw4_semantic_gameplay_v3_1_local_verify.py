@@ -34,7 +34,7 @@ def _merge_windows(
             merged.append((start, end, [(index, event)]))
         else:
             old_start, old_end, members = merged[-1]
-            merged[-1] = (old_start, max(old_end, end), members + [(index, event)])
+            merged[-1] = (old_start, max(old_end, end), [*members, (index, event)])
     return merged
 
 
@@ -194,12 +194,12 @@ def hitmarker_metrics(
     )
     if not np.any(diagonal) or not np.any(control):
         return empty
-    before = max(1, int(math.ceil(search_before_seconds * fps)))
-    after = max(1, int(math.ceil(search_after_seconds * fps)))
+    before = max(1, math.ceil(search_before_seconds * fps))
+    after = max(1, math.ceil(search_after_seconds * fps))
     left = max(0, event_index - before)
     right = min(len(frames) - 1, event_index + after)
-    far = max(2, int(round(baseline_far_seconds * fps)))
-    near = max(1, int(round(baseline_near_seconds * fps)))
+    far = max(2, round(baseline_far_seconds * fps))
+    near = max(1, round(baseline_near_seconds * fps))
     best = dict(empty)
     for candidate_index in range(left, right + 1):
         baseline_start = max(0, candidate_index - far)
@@ -260,7 +260,7 @@ def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> An
                 f"local interaction verifier decoded zero frames for {start:.3f}-{end:.3f}s"
             )
         for index, event in members:
-            event_index = int(round((float(event.time) - start) * fps))
+            event_index = round((float(event.time) - start) * fps)
             metrics = hitmarker_metrics(
                 frames,
                 event_index,

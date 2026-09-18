@@ -21,7 +21,7 @@ def _source_order(allocation: dict[str, Any]) -> list[str]:
     explicit = [str(item) for item in allocation.get("source_order") or []]
     if explicit:
         return explicit
-    return [str(item) for item in allocation.get("source_allocations", {}).keys()]
+    return [str(item) for item in allocation.get("source_allocations", {})]
 
 
 def render_matrix(allocation_path: Path, github_output: Path) -> list[dict[str, Any]]:

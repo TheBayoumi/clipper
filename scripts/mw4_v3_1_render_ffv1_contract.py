@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import json
 import sys
 import tempfile
@@ -99,7 +100,7 @@ def _transport_timing_qa(
         raise RuntimeError(f"{label}: non-positive NUT timing metadata: {profile}")
 
     pts = media.packet_pts(path)
-    deltas = [right - left for left, right in zip(pts, pts[1:])]
+    deltas = [right - left for left, right in itertools.pairwise(pts)]
     nonpositive = [(index, value) for index, value in enumerate(deltas) if value <= 0]
     frame_period = Fraction(1, 1) / timing.nominal_rate
     cadence_mismatches = [
@@ -209,7 +210,7 @@ def _verify_lossless_piece(
         mismatch = next(
             (
                 item
-                for item, pair in enumerate(zip(source_hashes, piece_hashes))
+                for item, pair in enumerate(zip(source_hashes, piece_hashes, strict=False))
                 if pair[0] != pair[1]
             ),
             None,
@@ -489,7 +490,7 @@ def _render_canonical_lossless_master(
         mismatch = next(
             (
                 index
-                for index, pair in enumerate(zip(expected_hashes, master_hashes))
+                for index, pair in enumerate(zip(expected_hashes, master_hashes, strict=False))
                 if pair[0] != pair[1]
             ),
             None,

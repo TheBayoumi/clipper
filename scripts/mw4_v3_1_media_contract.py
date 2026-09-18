@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import json
 import subprocess
 from collections.abc import Iterable
@@ -280,7 +281,7 @@ def verify_cfr_timeline(path: Path, timing: VideoTimingContract, *, label: str) 
     actual_tb = _fraction(profile["time_base"], label=f"{label} time_base")
     actual_rate = _fraction(profile["r_frame_rate"], label=f"{label} r_frame_rate")
     pts = packet_pts(path)
-    deltas = [right - left for left, right in zip(pts, pts[1:])]
+    deltas = [right - left for left, right in itertools.pairwise(pts)]
     bad = [(index, value) for index, value in enumerate(deltas) if value != timing.ticks_per_frame]
     checks = {
         "time_base_matches_source": actual_tb == timing.time_base,
@@ -313,7 +314,7 @@ def verify_monotonic_timeline(
     actual_tb = _fraction(profile["time_base"], label=f"{label} time_base")
     actual_rate = _fraction(profile["r_frame_rate"], label=f"{label} r_frame_rate")
     pts = packet_pts(path)
-    deltas = [right - left for left, right in zip(pts, pts[1:])]
+    deltas = [right - left for left, right in itertools.pairwise(pts)]
     nonpositive = [(index, value) for index, value in enumerate(deltas) if value <= 0]
     checks = {
         "time_base_matches_source": actual_tb == timing.time_base,
@@ -388,10 +389,7 @@ def metadata_match_checks(
     for field in VIDEO_METADATA_FIELDS:
         left = str(source.get(field) or "")
         right = str(other.get(field) or "")
-        if is_known(left):
-            ok = right == left
-        else:
-            ok = not is_known(right)
+        ok = right == left if is_known(left) else not is_known(right)
         checks[f"{prefix}_{field}_matches_source"] = ok
     return checks
 

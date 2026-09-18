@@ -333,8 +333,8 @@ def _plan_for_span(
         effects,
         evidence,
         None,
-        reasons
-        + (
+        (
+            *reasons,
             f"verified payoff anchor {anchor_time:.3f}s receives an independent source-region proposal search",
             "automatic scene cuts are soft evidence; verified stringout cuts remain hard source-integrity walls",
             "all hostile, duration, quality and verified-cut gates remain unchanged",

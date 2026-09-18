@@ -107,9 +107,9 @@ def _build_hardened_shots(
         if 0.35 < value < duration - 0.35 and all(abs(value - old) >= 0.18 for old in cuts):
             cuts.append(value)
     guard = float(config.get("semantic_analysis", {}).get("scene_change_guard_seconds", 0.12))
-    boundaries = [0.0] + cuts + [duration]
+    boundaries = [0.0, *cuts, duration]
     shots: list[ShotSpan] = []
-    for index, (left, right) in enumerate(zip(boundaries, boundaries[1:])):
+    for index, (left, right) in enumerate(itertools.pairwise(boundaries)):
         start = left if index == 0 else min(right, left + guard)
         end = right if index == len(boundaries) - 2 else max(start, right - guard)
         if end - start >= 1.0:
@@ -372,7 +372,7 @@ def _normal_plans(
             effects,
             chain,
             None,
-            reasons + ("exact verified-combat-island story bounds",),
+            (*reasons, "exact verified-combat-island story bounds"),
         )
         if not quality.plan_integrity_violations(
             plan,
@@ -589,7 +589,7 @@ def _group_structure_failures(
         failures.append(
             "first verified body island starts beyond Finishing Move continuation reach"
         )
-    for left, right in zip(engagements, engagements[1:]):
+    for left, right in itertools.pairwise(engagements):
         gap = float(right.start) - float(left.end)
         if gap < -_EPS:
             failures.append("verified body islands overlap or reverse")
@@ -808,7 +808,7 @@ def _finishing_open_plans(
                     )
                     continue
 
-                segments = (hero,) + body_segments_tuple
+                segments = (hero, *body_segments_tuple)
                 output_duration = sum(quality._segment_duration(segment) for segment in segments)
                 opening = max(
                     0.90,

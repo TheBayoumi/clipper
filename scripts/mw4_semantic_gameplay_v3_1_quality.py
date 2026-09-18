@@ -66,21 +66,21 @@ def _explained_mask(
     for engagement in engagements:
         i0 = max(
             0,
-            int(math.floor((float(engagement.start) - pre) * timeline.fps)),
+            math.floor((float(engagement.start) - pre) * timeline.fps),
         )
         i1 = min(
             len(mask),
-            int(math.ceil((float(engagement.end) + post) * timeline.fps)),
+            math.ceil((float(engagement.end) + post) * timeline.fps),
         )
         mask[i0:i1] = True
     if finishing is not None:
         i0 = max(
             0,
-            int(math.floor((float(finishing.start) - 0.12) * timeline.fps)),
+            math.floor((float(finishing.start) - 0.12) * timeline.fps),
         )
         i1 = min(
             len(mask),
-            int(math.ceil((float(finishing.end) + 0.18) * timeline.fps)),
+            math.ceil((float(finishing.end) + 0.18) * timeline.fps),
         )
         mask[i0:i1] = True
     return mask
@@ -94,8 +94,8 @@ def _longest_unexplained_low_run(
     finishing: FinishingMoveSpan | None,
     config: dict[str, Any],
 ) -> float:
-    i0 = max(0, int(math.floor(start * timeline.fps)))
-    i1 = min(len(timeline.times), int(math.ceil(end * timeline.fps)))
+    i0 = max(0, math.floor(start * timeline.fps))
+    i1 = min(len(timeline.times), math.ceil(end * timeline.fps))
     if i1 <= i0:
         return float("inf")
     threshold = float(config["semantic_editor"]["dull"].get("low_interest_threshold", 0.30))
@@ -118,8 +118,8 @@ def _quality_metrics(
 ) -> tuple[float, float, float, float, float, float, float]:
     sig = timeline.signals
     fps = timeline.fps
-    i0 = max(0, int(math.floor(start * fps)))
-    i1 = min(len(timeline.times), int(math.ceil(end * fps)))
+    i0 = max(0, math.floor(start * fps))
+    i1 = min(len(timeline.times), math.ceil(end * fps))
     raw_interest = np.asarray(sig["interest"][i0:i1], dtype=np.float32)
     if raw_interest.size == 0:
         return (0.0,) * 7
@@ -141,7 +141,7 @@ def _quality_metrics(
         min(end, start + 1.25),
     )
     opening_slice = np.asarray(
-        sig["interest"][i0 : min(i1, i0 + max(1, int(round(1.1 * fps))))],
+        sig["interest"][i0 : min(i1, i0 + max(1, round(1.1 * fps)))],
         dtype=np.float32,
     )
     opening_explained = explained[: len(opening_slice)]
@@ -479,7 +479,7 @@ def plan_integrity_violations(
         ):
             failures.append(f"segment {index + 1} crosses a sustained reload/search/recovery break")
 
-    for index, (left, right) in enumerate(zip(plan.segments, plan.segments[1:])):
+    for index, (left, right) in enumerate(zip(plan.segments, plan.segments[1:], strict=False)):
         if right.start <= left.end + 0.02:
             continue
         left_shot = core._shot_index(
@@ -544,7 +544,7 @@ def plan_integrity_violations(
             if body and float(body[0].start) - float(hero.end) > max_first_gap + _EPS:
                 failures.append("Finishing Move first continuation starts beyond configured reach")
 
-            for index, (segment, engagement) in enumerate(zip(body, engagements)):
+            for index, (segment, engagement) in enumerate(zip(body, engagements, strict=False)):
                 if segment.reason != "verified_combat_island_body":
                     failures.append("Finishing Move body contains a non-island segment")
                     continue

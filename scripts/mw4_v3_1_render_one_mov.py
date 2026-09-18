@@ -315,7 +315,11 @@ def _render_canonical_lossless_master(
     )
     if expected_hashes != master_hashes:
         mismatch = next(
-            (i for i, pair in enumerate(zip(expected_hashes, master_hashes)) if pair[0] != pair[1]),
+            (
+                i
+                for i, pair in enumerate(zip(expected_hashes, master_hashes, strict=False))
+                if pair[0] != pair[1]
+            ),
             None,
         )
         raise RuntimeError(

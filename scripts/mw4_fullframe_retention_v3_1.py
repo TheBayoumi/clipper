@@ -507,7 +507,7 @@ def _select_from_allocation(
             f"{source_key}: allocation plan payload count {len(raw_plans)} != key count {len(wanted)}"
         )
     selected: list[semantic.SemanticPlanV31] = []
-    for expected_key, raw_plan in zip(wanted, raw_plans):
+    for expected_key, raw_plan in zip(wanted, raw_plans, strict=False):
         actual_key = _plan_key_from_dict(raw_plan)
         if actual_key != expected_key:
             raise RuntimeError(
