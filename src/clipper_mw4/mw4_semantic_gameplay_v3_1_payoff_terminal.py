@@ -349,13 +349,16 @@ def self_test(base: Any) -> None:
         config,
     )
     if not any(
-        start - _EPS <= 10.0 <= end + _EPS
-        and 10.0 - _EPS <= end - start <= 12.0 + _EPS
+        start - _EPS <= 10.0 <= end + _EPS and 10.0 - _EPS <= end - start <= 12.0 + _EPS
         for start, end in variants
     ):
-        raise AssertionError("terminal-aware proposal search did not produce a 10-12 second anchor clip")
+        raise AssertionError(
+            "terminal-aware proposal search did not produce a 10-12 second anchor clip"
+        )
     if any(end - start > 12.0 + _EPS for start, end in variants):
-        raise AssertionError("terminal-aware proposal search exceeded the 12 second campaign maximum")
+        raise AssertionError(
+            "terminal-aware proposal search exceeded the 12 second campaign maximum"
+        )
     if any(end >= 27.0 - _EPS for _, end in variants):
         raise AssertionError("distant payoff incorrectly stretched one fighting scene into another")
     print("MW4 terminal-aware verified-payoff proposal self-test: PASS")

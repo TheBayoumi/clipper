@@ -415,9 +415,11 @@ def _adaptive_source_selection(
     selected = list(best_per_scene.values())
 
     batch = config.get("batch_selection", {})
-    if verified_count > 0 and bool(
-        batch.get("require_verified_finishing_move_when_available", True)
-    ) and not any(plan.get("finishing_move") is not None for plan in selected):
+    if (
+        verified_count > 0
+        and bool(batch.get("require_verified_finishing_move_when_available", True))
+        and not any(plan.get("finishing_move") is not None for plan in selected)
+    ):
         raise AssertionError(f"{source}: verified Finishing Move has no valid canonical plan")
 
     return sorted(
@@ -794,7 +796,9 @@ def _self_test() -> None:
     }
     selected = _adaptive_source_selection("test", [low_a, low_b, high], 0, config)
     if {plan["plan_key"] for plan in selected} != {"high", "low-b"}:
-        raise AssertionError("allocator did not keep one best clip for every distinct fighting scene")
+        raise AssertionError(
+            "allocator did not keep one best clip for every distinct fighting scene"
+        )
 
     payoff = {"time": 175.917, "kinds": ["outcome_like"]}
     finisher = {

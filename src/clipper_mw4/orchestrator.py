@@ -132,9 +132,10 @@ def _assert_scene_derived_allocation(path: Path) -> None:
         )
 
     duration = dict(allocation.get("duration_contract") or {})
-    if float(duration.get("minimum_seconds", -1.0)) != 10.0 or float(
-        duration.get("maximum_seconds", -1.0)
-    ) != 12.0:
+    if (
+        float(duration.get("minimum_seconds", -1.0)) != 10.0
+        or float(duration.get("maximum_seconds", -1.0)) != 12.0
+    ):
         raise RuntimeError(f"orchestrator allocation has wrong duration contract: {duration}")
 
     print(
