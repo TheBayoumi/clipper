@@ -104,7 +104,6 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     _configure_logging(args.verbose)
