@@ -1,4 +1,4 @@
-name: MW4 lint unsafe-fix audit
+name: MW4 lint audited fixes
 
 on:
   push:
@@ -8,21 +8,41 @@ on:
       - .github/workflows/mw4_lint_autofix.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  audit:
+  fix:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: feat/mw4-fullframe-retention-v3-1
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
-      - name: Audit non-E501 unsafe Ruff fixes
+      - name: Apply audited Ruff transformations
         run: >-
           ruff check .
           --select RUF046,B905,RUF005,RUF007,RUF012,E731,SIM118,SIM108
-          --fix --unsafe-fixes --diff || true
+          --fix --unsafe-fixes
+      - name: Format
+        run: ruff format .
+      - name: Verify Ruff
+        run: ruff check .
+      - name: Verify formatting
+        run: ruff format --check .
+      - name: Commit audited lint cleanup
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "style(mw4): apply audited Ruff cleanup"
+          git push origin HEAD:feat/mw4-fullframe-retention-v3-1
