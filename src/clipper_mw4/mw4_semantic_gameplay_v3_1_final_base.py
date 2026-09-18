@@ -1030,6 +1030,7 @@ def diagnose_source(
             "local_interaction_verifier": dict(
                 getattr(timeline, "_local_interaction_diagnostics", {})
             ),
+            "proposal_diagnostics": dict(getattr(timeline, "_proposal_diagnostics", {})),
             "finishing_move_continuation_diagnostics": list(
                 getattr(timeline, "_finishing_continuation_diagnostics", [])
             ),

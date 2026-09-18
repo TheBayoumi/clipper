@@ -36,7 +36,9 @@ def local_confirmation(event: Any, config: dict[str, Any]) -> tuple[bool, float]
     minimum = _f(cfg.get("minimum_hitmarker_score", 0.34), 0.34)
     attempted = _f(evidence.get("local_refine_attempted")) >= 0.5
     score = _f(evidence.get("local_hitmarker_score"))
-    return bool(attempted and score >= minimum), score
+    explicit = evidence.get("local_direct_interaction")
+    confirmed = score >= minimum if explicit is None else _f(explicit) >= 0.5
+    return bool(attempted and confirmed), score
 
 
 def hostile_decision(event: Any, config: dict[str, Any]) -> HostileDecision:

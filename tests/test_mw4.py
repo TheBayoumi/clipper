@@ -154,3 +154,37 @@ def test_mw4_render_matrix_rejects_cardinality_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="render matrix does not match"):
         workflow_support.render_matrix(allocation, github_output)
+
+
+def test_mw4_scene_identity_wins_over_terminal_payoff() -> None:
+    config = {
+        "batch_selection": {"require_verified_finishing_move_when_available": True},
+        "semantic_editor": {"selection": {"finishing_move_bonus": 0.14}},
+    }
+    candidates = [
+        {
+            "plan_key": "same-scene-earlier",
+            "combat_scene_id": "combat:3:10.000:14.000",
+            "score": 0.70,
+            "effect_events": [{"kind": "outcome_like", "time": 12.0}],
+        },
+        {
+            "plan_key": "same-scene-best",
+            "combat_scene_id": "combat:3:10.000:14.000",
+            "score": 0.95,
+            "effect_events": [{"kind": "outcome_like", "time": 13.5}],
+        },
+        {
+            "plan_key": "different-scene",
+            "combat_scene_id": "combat:3:20.000:24.000",
+            "score": 0.80,
+            "effect_events": [{"kind": "outcome_like", "time": 23.0}],
+        },
+    ]
+
+    selected = mw4_contract._adaptive_source_selection("test", candidates, 0, config)
+
+    assert {plan["plan_key"] for plan in selected} == {
+        "same-scene-best",
+        "different-scene",
+    }

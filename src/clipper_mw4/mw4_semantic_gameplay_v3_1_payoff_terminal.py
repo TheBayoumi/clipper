@@ -103,6 +103,31 @@ def _terminal_aware_variants(
                     continue
                 candidates.add((round(start, 3), round(end, 3)))
 
+    sweep_step = max(
+        0.10,
+        min(
+            0.50,
+            _f(editor.get("anchor_boundary_sweep_step_seconds", 0.25), 0.25),
+        ),
+    )
+    for target in sorted({minimum, preferred, maximum}):
+        earliest = max(region_start, anchor_time - target)
+        latest = min(anchor_time, region_end - target)
+        if latest < earliest - _EPS:
+            continue
+        cursor = earliest
+        while cursor <= latest + _EPS:
+            start = max(earliest, min(cursor, latest))
+            end = start + target
+            if (
+                region_start - _EPS <= start
+                and end <= region_end + _EPS
+                and start - _EPS <= anchor_time <= end + _EPS
+            ):
+                candidates.add((round(start, 3), round(end, 3)))
+            cursor += sweep_step
+        candidates.add((round(latest, 3), round(latest + target, 3)))
+
     endings = tuple(preferred_endings) or (anchor_time + preferred_tail,)
     ordered = sorted(
         candidates,
@@ -113,7 +138,7 @@ def _terminal_aware_variants(
             item[1],
         ),
     )
-    return tuple(ordered[:64])
+    return tuple(ordered)
 
 
 def _anchor_plans(

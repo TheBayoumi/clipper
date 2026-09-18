@@ -407,9 +407,70 @@ def _automatic_finishing_candidates(
     return [asdict(span) for span in heuristic if float(span.confidence) >= review_threshold]
 
 
+def _candidate_anchor_time(payload: dict[str, Any]) -> float | None:
+    finishing = payload.get("finishing_move")
+    if finishing is not None:
+        return float(finishing.get("payoff", finishing["start"]))
+
+    marker = "verified payoff anchor "
+    for reason in payload.get("editorial_reasons") or []:
+        text = str(reason)
+        if marker not in text:
+            continue
+        suffix = text.split(marker, 1)[1]
+        token = suffix.split("s", 1)[0]
+        try:
+            return float(token)
+        except ValueError:
+            continue
+
+    anchors: list[float] = []
+    for engagement in payload.get("engagements") or []:
+        for event in engagement.get("events") or []:
+            if set(event.get("kinds") or []).intersection({"outcome_like", "impact"}):
+                anchors.append(float(event["time"]))
+    return anchors[-1] if anchors else None
+
+
+def _candidate_scene_id(payload: dict[str, Any], anchor_time: float | None) -> str | None:
+    finishing = payload.get("finishing_move")
+    if finishing is not None:
+        return (
+            "finishing:"
+            f"{float(finishing['start']):.3f}:"
+            f"{float(finishing.get('payoff', finishing['start'])):.3f}:"
+            f"{float(finishing['end']):.3f}"
+        )
+    engagements = list(payload.get("engagements") or [])
+    if not engagements:
+        return None
+
+    def distance(item: dict[str, Any]) -> tuple[float, float]:
+        start = float(item["start"])
+        end = float(item["end"])
+        if anchor_time is None:
+            return (0.0, start)
+        event_times = [float(event["time"]) for event in item.get("events") or []]
+        event_distance = min((abs(value - anchor_time) for value in event_times), default=float("inf"))
+        interval_distance = 0.0 if start - 0.35 <= anchor_time <= end + 0.35 else min(
+            abs(anchor_time - start),
+            abs(anchor_time - end),
+        )
+        return (min(event_distance, interval_distance), start)
+
+    engagement = min(engagements, key=distance)
+    return (
+        f"combat:{int(engagement.get('shot_index', -1))}:"
+        f"{float(engagement['start']):.3f}:{float(engagement['end']):.3f}"
+    )
+
+
 def _candidate_dict(plan: semantic.SemanticPlanV31) -> dict[str, Any]:
     payload = asdict(plan)
     payload["plan_key"] = _plan_key_from_dict(payload)
+    anchor_time = _candidate_anchor_time(payload)
+    payload["semantic_anchor_time"] = round(anchor_time, 3) if anchor_time is not None else None
+    payload["combat_scene_id"] = _candidate_scene_id(payload, anchor_time)
     return payload
 
 

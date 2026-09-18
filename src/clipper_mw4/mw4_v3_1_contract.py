@@ -390,6 +390,9 @@ def _importance_score(plan: dict[str, Any], config: dict[str, Any]) -> float:
 
 
 def _primary_scene_key(plan: dict[str, Any]) -> tuple[str, float | str]:
+    scene_id = str(plan.get("combat_scene_id") or "")
+    if scene_id:
+        return ("combat_scene", scene_id)
     finishing = plan.get("finishing_move")
     if finishing is not None:
         return ("finishing_move", round(float(finishing.get("payoff", finishing["start"])), 3))

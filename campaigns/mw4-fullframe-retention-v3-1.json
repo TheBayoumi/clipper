@@ -6,7 +6,7 @@
     "beam_width": 2048,
     "require_allocation_before_render": true,
     "require_verified_finishing_move_when_available": true,
-    "notes": "The orchestrator derives clip count independently for each official reel from distinct canonical fighting/payoff scenes that pass hostile, source-integrity and quality gates. Every qualified distinct scene must receive exactly one 10–12 second canonical clip; there is no static per-source or batch clip-count ceiling."
+    "notes": "The orchestrator derives clip count independently for each official reel from canonical combat-scene identities attached to qualified 10-12 second proposals. Every qualified distinct fighting scene must receive exactly one canonical clip; payoff timestamps are not scene identities and there is no static per-source or batch clip-count ceiling."
   },
   "output": {
     "width": 1920,
@@ -76,8 +76,9 @@
     "local_interaction_verifier": {
       "enabled": true,
       "minimum_hitmarker_score": 0.34,
+      "minimum_outcome_assisted_hitmarker_score": 0.28,
       "hitmarker_outer_radius_fraction": 0.105,
-      "policy": "Every hostile classification requires local centered direct player-target interaction confirmation. Generic motion, contact, HUD state, color, minimap state and operator appearance never establish hostile identity."
+      "policy": "Every hostile classification requires locally verified player-target interaction. Strong outcome-like events may use a near-threshold hitmarker only when direct contact/impact plus outcome/combat evidence independently agree; generic HUD motion remains unknown."
     },
     "minimum_hostile_event_score": 0.64,
     "outcome_minimum": 0.52,
@@ -158,6 +159,7 @@
   },
   "semantic_editor": {
     "engine": "semantic-editor-v3.1-final",
+    "anchor_boundary_sweep_step_seconds": 0.25,
     "minimum_output_seconds": 10.0,
     "maximum_output_seconds": 12.0,
     "preferred_output_seconds": 11.0,

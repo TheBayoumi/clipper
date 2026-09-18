@@ -218,6 +218,38 @@ def hitmarker_metrics(
     return best
 
 
+def _confirmation_mode(event: Any, score: float, config: dict[str, Any]) -> str:
+    local = _cfg(config)
+    direct_minimum = float(local.get("minimum_hitmarker_score", 0.34))
+    if score >= direct_minimum:
+        return "direct_hitmarker"
+
+    assisted_minimum = float(local.get("minimum_outcome_assisted_hitmarker_score", 0.28))
+    if not 0.0 < assisted_minimum < direct_minimum:
+        raise RuntimeError(
+            "minimum_outcome_assisted_hitmarker_score must be positive and below "
+            "minimum_hitmarker_score"
+        )
+
+    kinds = set(getattr(event, "kinds", ()) or ())
+    evidence = dict(getattr(event, "evidence", {}) or {})
+    verifier = config.get("combat_state_verifier", {})
+    outcome = float(evidence.get("outcome", 0.0))
+    combat = float(evidence.get("combat", 0.0))
+    impact = float(evidence.get("impact", 0.0))
+    has_direct_context = bool(kinds.intersection({"contact", "impact"}))
+
+    if (
+        "outcome_like" in kinds
+        and has_direct_context
+        and score >= assisted_minimum
+        and outcome >= float(verifier.get("outcome_minimum", 0.52))
+        and max(combat, impact) >= float(verifier.get("payoff_combat_minimum", 0.42))
+    ):
+        return "outcome_assisted_hitmarker"
+    return "unconfirmed"
+
+
 def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> Any:
     cfg = _cfg(config)
     if not bool(cfg.get("enabled", True)):
@@ -271,6 +303,8 @@ def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> An
                 baseline_near_seconds=float(cfg.get("baseline_near_seconds", 0.16)),
                 outer_radius_fraction=outer_radius_fraction,
             )
+            confirmation_mode = _confirmation_mode(event, float(metrics["score"]), config)
+            confirmed = confirmation_mode != "unconfirmed"
             evidence = dict(getattr(event, "evidence", {}) or {})
             evidence.update(
                 {
@@ -283,7 +317,10 @@ def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> An
                     "local_hitmarker_offset_seconds": round(
                         float(metrics["offset_frames"]) / fps, 4
                     ),
-                    "local_direct_interaction": 1.0 if float(metrics["score"]) >= minimum else 0.0,
+                    "local_direct_interaction": 1.0 if confirmed else 0.0,
+                    "local_confirmation_mode": 1.0 if confirmation_mode == "direct_hitmarker" else (
+                        0.5 if confirmation_mode == "outcome_assisted_hitmarker" else 0.0
+                    ),
                 }
             )
             updated[index] = replace(event, evidence=evidence)
@@ -293,7 +330,8 @@ def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> An
                     "kinds": list(getattr(event, "kinds", ()) or ()),
                     "score": round(float(metrics["score"]), 4),
                     "offset_seconds": round(float(metrics["offset_frames"]) / fps, 4),
-                    "confirmed": float(metrics["score"]) >= minimum,
+                    "confirmed": confirmed,
+                    "confirmation_mode": confirmation_mode,
                 }
             )
     timeline.consolidated_events = tuple(updated)
@@ -302,10 +340,13 @@ def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> An
         "verified_event_count": sum(1 for item in diagnostics if item["confirmed"]),
         "decode_window_count": len(windows),
         "minimum_hitmarker_score": minimum,
+        "minimum_outcome_assisted_hitmarker_score": float(
+            cfg.get("minimum_outcome_assisted_hitmarker_score", 0.28)
+        ),
         "hitmarker_outer_radius_fraction": round(outer_radius_fraction, 4),
         "event_search_before_seconds": search_before,
         "event_search_after_seconds": search_after,
-        "policy": "candidate-centered temporal search for a spatially specific centered hitmarker using full MW4 marker-arm geometry; ambiguous motion, color and off-center HUD changes remain unknown",
+        "policy": "candidate-centered temporal search for a spatially specific centered hitmarker; outcome-like events may use a stricter multi-signal assisted path only when near-threshold hitmarker evidence is accompanied by direct contact/impact and strong outcome/combat evidence",
         "events": diagnostics,
     }
     return timeline
@@ -360,4 +401,28 @@ def self_test() -> None:
         raise AssertionError(
             f"static reticle geometry was misclassified as transient hitmarker: {negative3}"
         )
+    from types import SimpleNamespace
+
+    assisted_config = {
+        "combat_state_verifier": {
+            "outcome_minimum": 0.52,
+            "payoff_combat_minimum": 0.42,
+            "local_interaction_verifier": {
+                "minimum_hitmarker_score": 0.34,
+                "minimum_outcome_assisted_hitmarker_score": 0.28,
+            },
+        }
+    }
+    assisted_event = SimpleNamespace(
+        kinds=("combat_burst", "contact", "outcome_like"),
+        evidence={"outcome": 0.82, "combat": 0.74, "impact": 0.0},
+    )
+    if _confirmation_mode(assisted_event, 0.30, assisted_config) != "outcome_assisted_hitmarker":
+        raise AssertionError("strong kill outcome with near-threshold hitmarker was not recovered")
+    ambiguous_event = SimpleNamespace(
+        kinds=("outcome_like",),
+        evidence={"outcome": 0.82, "combat": 0.74, "impact": 0.0},
+    )
+    if _confirmation_mode(ambiguous_event, 0.30, assisted_config) != "unconfirmed":
+        raise AssertionError("outcome-only HUD change was incorrectly promoted to a kill")
     print("MW4 local direct-interaction verifier self-test: PASS")
