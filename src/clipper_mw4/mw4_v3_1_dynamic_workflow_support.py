@@ -55,8 +55,7 @@ def render_matrix(allocation_path: Path, github_output: Path) -> list[dict[str, 
     selected_count = int(allocation.get("selected_count", -1))
     if derived_count < 0 or selected_count != derived_count:
         raise RuntimeError(
-            "orchestrator cardinality mismatch: "
-            f"target={derived_count} selected={selected_count}"
+            f"orchestrator cardinality mismatch: target={derived_count} selected={selected_count}"
         )
     if len(include) != derived_count:
         raise RuntimeError(
