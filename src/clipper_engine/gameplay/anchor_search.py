@@ -607,4 +607,44 @@ def self_test() -> None:
     )
     if hard_region != (0.0, 6.0):
         raise AssertionError("verified stringout cut did not remain a hard proposal boundary")
+
+    event = type(
+        "Event",
+        (),
+        {
+            "time": 4.8,
+            "kinds": ("outcome_like",),
+            "confidence": 0.95,
+            "evidence": {
+                "local_refine_attempted": 1.0,
+                "local_hitmarker_score": 0.95,
+                "combat": 0.90,
+                "outcome": 0.90,
+                "impact": 0.90,
+                "audio_transient": 0.90,
+                "center_motion": 0.90,
+            },
+        },
+    )()
+    decision_config = {
+        "combat_state_verifier": {
+            "enabled": True,
+            "local_interaction_verifier": {
+                "enabled": True,
+                "minimum_hitmarker_score": 0.34,
+            },
+            "minimum_hostile_event_score": 0.64,
+            "outcome_minimum": 0.52,
+            "payoff_combat_minimum": 0.42,
+            "impact_minimum": 0.64,
+            "impact_combat_minimum": 0.55,
+            "strong_combat_minimum": 0.70,
+            "strong_combat_audio_transient_minimum": 0.62,
+            "strong_combat_center_motion_minimum": 0.40,
+        }
+    }
+    hostile_timeline = type("HostileTimeline", (), {"consolidated_events": (event,)})()
+    if _span_hostile_events(hostile_timeline, 0.0, 10.0, decision_config) != (event,):
+        raise AssertionError("anchor search did not use the canonical interaction verifier")
+
     print("MW4 payoff-complete verified-source-region proposal self-test: PASS")
