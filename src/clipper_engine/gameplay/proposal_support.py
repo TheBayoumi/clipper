@@ -5,8 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from . import combat
-from . import interaction
+from . import combat, interaction
 from . import semantics as core
 
 Engagement = core.Engagement

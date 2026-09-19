@@ -3,9 +3,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any, ClassVar
 
-from . import analysis
-
-from . import quality
+from . import analysis, quality
 from . import source_spans as canonical
 
 SemanticPlan = canonical.SemanticPlan
@@ -325,8 +323,10 @@ def _plan_for_span(
         None,
         (
             *reasons,
-            f"verified payoff anchor {anchor_time:.3f}s receives an independent source-region proposal search",
-            "source-integrity and semantic-admissibility gates are hard; quality ranks legal framings",
+            f"verified payoff anchor {anchor_time:.3f}s receives an independent "
+            "source-region proposal search",
+            "source-integrity and semantic-admissibility gates are hard; "
+            "quality ranks legal framings",
         ),
         round(anchor_time, 3),
         quality_diagnostics,
@@ -527,7 +527,10 @@ def build_plans_for_source(
     diagnostics = dict(getattr(timeline, "_proposal_diagnostics", {}) or {})
     diagnostics.update(
         {
-            "proposal_architecture": "every_verified_payoff_anchor_to_verified_source_region_quality_gated_span",
+            "proposal_architecture": (
+                "every_verified_payoff_anchor_to_verified_source_region_"
+                "quality_gated_span"
+            ),
             "finishing_move_variants_collapsed_per_verified_move": True,
             "automatic_scene_cuts_are_soft_for_normal_payoff_proposals": True,
             "verified_stringout_cuts_remain_hard": True,
@@ -588,7 +591,8 @@ def self_test() -> None:
         start <= 4.8 <= end and end - start >= 10.0 - _EPS and end > 5.2 for start, end in variants
     ):
         raise AssertionError(
-            "verified payoff near an automatic cut cannot receive a campaign-length source-region proposal"
+            "verified payoff near an automatic cut cannot receive a campaign-length "
+            "source-region proposal"
         )
 
     cut_config = {

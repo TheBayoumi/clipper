@@ -7,11 +7,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ..gameplay import contract
-from ..gameplay import candidates
-from . import ffv1
-from . import helpers
-from . import source_fidelity
+from ..gameplay import candidates, contract
+from . import ffv1, helpers, source_fidelity
 
 
 def _write(path: Path, payload: dict[str, Any]) -> None:

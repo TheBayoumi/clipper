@@ -257,7 +257,8 @@ def timing_from_profile(profile: dict[str, Any]) -> VideoTimingContract:
     timescale = Fraction(1, 1) / time_base
     if timescale.denominator != 1:
         raise RuntimeError(
-            "source video time_base cannot be represented exactly by an integer MOV track timescale: "
+            "source video time_base cannot be represented exactly by an integer MOV "
+            "track timescale: "
             f"time_base={fraction_text(time_base)}"
         )
     ticks_per_frame = timescale / nominal_rate
@@ -518,7 +519,8 @@ def validate_delivery_compatibility(contract: SourceMediaContract, config: dict[
         if wanted != contract.video.timing.nominal_rate:
             failures.append(
                 "delivery fps conflicts with source-native timing: "
-                f"delivery={configured_fps} source={fraction_text(contract.video.timing.nominal_rate)}"
+                f"delivery={configured_fps} "
+                f"source={fraction_text(contract.video.timing.nominal_rate)}"
             )
     if failures:
         raise RuntimeError(

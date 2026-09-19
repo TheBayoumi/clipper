@@ -3,15 +3,11 @@ from __future__ import annotations
 import itertools
 from typing import Any
 
-from . import analysis
-
 import numpy as np
 
-from . import semantics as core
-from . import combat
-from . import interaction
+from . import analysis, combat, interaction, quality
 from . import proposal_support as support
-from . import quality
+from . import semantics as core
 
 Engagement = core.Engagement
 EditSegment = core.EditSegment
@@ -256,7 +252,9 @@ def normal_plans(
             if not (minimum - _EPS <= output_duration <= maximum + _EPS):
                 diagnostics["normal_duration_reject_count"] += 1
                 continue
-            if core._intersects_excluded(start, end, excluded) or analysis._protected_finishing_overlap(
+            if core._intersects_excluded(
+                start, end, excluded
+            ) or analysis._protected_finishing_overlap(
                 timeline,
                 start,
                 end,
@@ -340,7 +338,8 @@ def normal_plans(
                 (
                     *reasons,
                     "verified hostile evidence anchors a contiguous same-shot source proposal",
-                    "semantic reload/search/recovery gaps are evaluated by unchanged quality gates rather than treated as source cuts",
+                    "semantic reload/search/recovery gaps are evaluated by unchanged "
+                    "quality gates rather than treated as source cuts",
                 ),
             )
             integrity = plan_integrity_violations(
@@ -874,9 +873,12 @@ def finishing_open_plans(
                     span,
                     (
                         "verified Finishing Move opens the clip",
-                        "body moments are payoff-anchored contiguous source spans inside one real source shot",
-                        "semantic reload/search/recovery gaps remain subject to unchanged quality gates instead of becoming source-cut boundaries",
-                        "every body moment retains an independently verified hostile payoff and unchanged component quality floors",
+                        "body moments are payoff-anchored contiguous source spans inside "
+                        "one real source shot",
+                        "semantic reload/search/recovery gaps remain subject to unchanged "
+                        "quality gates instead of becoming source-cut boundaries",
+                        "every body moment retains an independently verified hostile payoff "
+                        "and unchanged component quality floors",
                         "terminal body moment passes the unchanged ending-quality gate",
                     ),
                 )
@@ -1027,7 +1029,8 @@ def self_test() -> None:
     natural_end = 156.70
     if max(starts) <= 154.617 + _EPS:
         raise AssertionError(
-            "payoff-anchored source-span search cannot move its opening forward to capture later same-shot action"
+            "payoff-anchored source-span search cannot move its opening forward to "
+            "capture later same-shot action"
         )
     expanded_start = max(starts)
     expanded_end = min(170.0, expanded_start + 6.5)

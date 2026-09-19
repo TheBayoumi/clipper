@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+
 def run(command: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=True, text=True, capture_output=capture)
 

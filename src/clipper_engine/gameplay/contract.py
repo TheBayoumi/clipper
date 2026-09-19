@@ -60,7 +60,8 @@ def validate_configuration(config: dict[str, Any]) -> None:
         errors.append("finishing_move_max_continuation_gap_seconds must be positive")
     if body_gap <= 0.0 or body_gap > first_gap + _EPS:
         errors.append(
-            "finishing_move_body_hard_cut_max_source_gap_seconds must be positive and <= first continuation reach"
+            "finishing_move_body_hard_cut_max_source_gap_seconds must be positive "
+            "and <= first continuation reach"
         )
 
     if "allow_planned_transition_for_semantic_montage" in config.get("source_integrity", {}):
@@ -143,7 +144,9 @@ def _shared_source_seconds(left: dict[str, Any], right: dict[str, Any]) -> float
     return _merged_length(intersections)
 
 def _semantic_anchor_times(plan: dict[str, Any]) -> list[float]:
-    anchors: set[float] = {round(float(item), 3) for item in (plan.get("covered_payoff_anchor_times") or [])}
+    anchors: set[float] = {
+        round(float(item), 3) for item in (plan.get("covered_payoff_anchor_times") or [])
+    }
     finishing = plan.get("finishing_move")
     if finishing is not None:
         anchors.add(round(float(finishing.get("payoff", finishing["start"])), 3))
@@ -278,12 +281,14 @@ def _finishing_plan_failures(
             )
         if abs(float(segment["start"]) - float(engagement["start"])) > _EPS:
             failures.append(
-                f"{source} clip {index}: body segment {pos + 1} does not start at canonical island boundary"
+                f"{source} clip {index}: body segment {pos + 1} does not start "
+                "at canonical island boundary"
             )
         expected_end = round(float(engagement["end"]), 3)
         if abs(float(segment["end"]) - expected_end) > _EPS:
             failures.append(
-                f"{source} clip {index}: body segment {pos + 1} does not end at canonical island boundary"
+                f"{source} clip {index}: body segment {pos + 1} does not end "
+                "at canonical island boundary"
             )
         if not any(_event_has_payoff(event) for event in (engagement.get("events") or [])):
             failures.append(
@@ -297,7 +302,8 @@ def _finishing_plan_failures(
                 )
             elif gap > hard_cut_gap + _EPS:
                 failures.append(
-                    f"{source} clip {index}: Finishing Move body hard-cut source gap exceeds contract"
+                    f"{source} clip {index}: Finishing Move body hard-cut source gap "
+                    "exceeds contract"
                 )
     return failures
 

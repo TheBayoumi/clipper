@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import itertools
 import json
-import sys
 import tempfile
 from dataclasses import replace
 from fractions import Fraction
@@ -665,7 +664,8 @@ def _source_fidelity_qa(
         raise RuntimeError(
             f"source-fidelity QA failed: SSIM={ssim:.6f} minimum={minimum_ssim:.6f}; "
             f"PSNR={psnr:.3f}dB minimum={minimum_psnr:.3f}dB; "
-            f"reference_frames={reference_profile['frame_count']} output_frames={output_profile['frame_count']}"
+            f"reference_frames={reference_profile['frame_count']} "
+            f"output_frames={output_profile['frame_count']}"
         )
     return {
         "checks": checks,
@@ -680,9 +680,10 @@ def _source_fidelity_qa(
         "reference_transport": reference_transport,
         "output_timing": output_timing,
         "reference": (
-            "original-source media contract remains authoritative; source->FFV1/NUT decoded frames "
-            "must match exactly; NUT timing must preserve source frame cadence in rational seconds; "
-            "the final H.264 must restore source-native time base and representable video metadata; "
+            "original-source media contract remains authoritative; source->FFV1/NUT "
+            "decoded frames must match exactly; NUT timing must preserve source frame cadence "
+            "in rational seconds; the final H.264 must restore source-native time base and "
+            "representable video metadata; "
             "only final H.264 generation loss is measured by SSIM/PSNR"
         ),
     }

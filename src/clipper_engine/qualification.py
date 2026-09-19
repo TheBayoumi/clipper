@@ -26,7 +26,9 @@ def validate_batch(
     if actual != expected:
         failures.append(f"batch summaries cover {sorted(actual)}, expected {sorted(expected)}")
     if len(summaries) != len(expected):
-        failures.append(f"expected exactly {len(expected)} source summaries, found {len(summaries)}")
+        failures.append(
+            f"expected exactly {len(expected)} source summaries, found {len(summaries)}"
+        )
 
     total_selected = 0
     total_rendered = 0

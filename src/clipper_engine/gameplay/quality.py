@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import itertools
 import math
 from typing import Any
 
 import numpy as np
 
+from . import combat, interaction
 from . import semantics as core
-from . import combat
-from . import interaction
 
 Engagement = core.Engagement
 FinishingMoveSpan = core.FinishingMoveSpan
@@ -284,7 +284,7 @@ def story_admissibility_failures(
             for event in engagement.events
         )
     ]
-    for left, right in zip(active, active[1:], strict=False):
+    for left, right in itertools.pairwise(active):
         gap_start = float(left.end)
         gap_end = float(right.start)
         if gap_end <= gap_start + _EPS:
@@ -706,7 +706,8 @@ def plan_integrity_violations(
                     or abs(float(segment.end) - float(engagement.end)) > _EPS
                 ):
                     failures.append(
-                        "Finishing Move body segment does not preserve exact canonical combat-island bounds"
+                        "Finishing Move body segment does not preserve exact canonical "
+                        "combat-island bounds"
                     )
                 if index:
                     gap = float(segment.start) - float(body[index - 1].end)

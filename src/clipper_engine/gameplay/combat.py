@@ -15,6 +15,52 @@ def _f(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def validate_configuration(config: dict[str, Any]) -> None:
+    verifier = config.get("combat_state_verifier", {})
+    errors: list[str] = []
+    if not bool(verifier.get("enabled", False)):
+        errors.append("combat_state_verifier.enabled must be true")
+
+    bounded_keys = (
+        "traversal_break_threshold",
+        "recovery_break_threshold",
+        "break_combat_ceiling",
+        "break_outcome_ceiling",
+        "break_impact_ceiling",
+        "combat_island_support_floor",
+        "minimum_bridge_combat_support_fraction",
+    )
+    positive_keys = (
+        "maximum_continuity_break_run_seconds",
+        "maximum_combat_island_quiet_run_seconds",
+        "minimum_combat_island_seconds",
+        "maximum_verified_inter_engagement_gap_seconds",
+    )
+
+    for key in bounded_keys:
+        try:
+            value = float(verifier[key])
+        except (KeyError, TypeError, ValueError):
+            errors.append(f"{key} must be explicitly configured as a number in [0, 1]")
+            continue
+        if not 0.0 <= value <= 1.0:
+            errors.append(f"{key} must be in [0, 1], got {value}")
+
+    for key in positive_keys:
+        try:
+            value = float(verifier[key])
+        except (KeyError, TypeError, ValueError):
+            errors.append(f"{key} must be explicitly configured as a positive number")
+            continue
+        if value <= 0.0:
+            errors.append(f"{key} must be positive, got {value}")
+
+    if errors:
+        raise RuntimeError(
+            "combat_state_verifier configuration violation: " + "; ".join(errors)
+        )
+
+
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
     out: list[tuple[int, int]] = []
     start: int | None = None

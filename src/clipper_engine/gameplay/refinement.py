@@ -346,7 +346,12 @@ def annotate_timeline(source: Path, timeline: Any, config: dict[str, Any]) -> An
         "hitmarker_outer_radius_fraction": round(outer_radius_fraction, 4),
         "event_search_before_seconds": search_before,
         "event_search_after_seconds": search_after,
-        "policy": "candidate-centered temporal search for a spatially specific centered hitmarker; outcome-like events may use a stricter multi-signal assisted path only when near-threshold hitmarker evidence is accompanied by direct contact/impact and strong outcome/combat evidence",
+        "policy": (
+            "candidate-centered temporal search for a spatially specific centered hitmarker; "
+            "outcome-like events may use a stricter multi-signal assisted path only when "
+            "near-threshold hitmarker evidence is accompanied by direct contact/impact and "
+            "strong outcome/combat evidence"
+        ),
         "events": diagnostics,
     }
     return timeline
@@ -372,7 +377,8 @@ def self_test() -> None:
     wide_positive = hitmarker_metrics(wide, 10, fps)
     if wide_positive["score"] < 0.34:
         raise AssertionError(
-            f"full-size centered MW4 hitmarker arms were clipped by verifier geometry: {wide_positive}"
+            "full-size centered MW4 hitmarker arms were clipped by verifier geometry: "
+            f"{wide_positive}"
         )
 
     shifted = np.full((22, height, width, 3), 45, dtype=np.uint8)

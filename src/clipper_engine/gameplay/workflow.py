@@ -9,7 +9,8 @@ from typing import Any
 from .. import qualification
 from ..profiles import GameplayProfile, load_profile
 from ..rendering import worker
-from ..sources import catalog, mediasilo, qa as source_qa
+from ..sources import catalog, mediasilo
+from ..sources import qa as source_qa
 from . import allocation, analysis, candidates, planning, workflow_support
 
 

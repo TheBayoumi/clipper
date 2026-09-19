@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -622,7 +621,8 @@ def _source_fidelity_qa(
         raise RuntimeError(
             "source-fidelity metadata/timeline mismatch before SSIM/PSNR: "
             f"checks={checks}; source={source_profile}; reference={reference_profile}; "
-            f"output={output_profile}; reference_timing={reference_timing}; output_timing={output_timing}"
+            f"output={output_profile}; reference_timing={reference_timing}; "
+            f"output_timing={output_timing}"
         )
 
     ssim = _metric(
@@ -680,7 +680,8 @@ def _source_fidelity_qa(
         raise RuntimeError(
             f"source-fidelity QA failed: SSIM={ssim:.6f} minimum={minimum_ssim:.6f}; "
             f"PSNR={psnr:.3f}dB minimum={minimum_psnr:.3f}dB; "
-            f"reference_frames={reference_profile['frame_count']} output_frames={output_profile['frame_count']}"
+            f"reference_frames={reference_profile['frame_count']} "
+            f"output_frames={output_profile['frame_count']}"
         )
     return {
         "checks": checks,

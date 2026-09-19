@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 
-
 def _read(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 

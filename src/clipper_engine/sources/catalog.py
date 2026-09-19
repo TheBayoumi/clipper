@@ -146,7 +146,8 @@ def discover(
     sources = _assign_keys(discovered)
     if expected_count is not None and len(sources) != expected_count:
         raise RuntimeError(
-            f"MediaSilo source catalog contains {len(sources)} source video masters; expected {expected_count}; "
+            f"MediaSilo source catalog contains {len(sources)} source video masters; "
+            f"expected {expected_count}; "
             f"titles={[item['title'] for item in sources]}"
         )
     payload = {"source_count": len(sources), "sources": sources}

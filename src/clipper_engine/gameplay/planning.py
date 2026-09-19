@@ -4,7 +4,6 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from . import analysis
-
 from . import anchor_search as canonical
 
 SemanticPlan = canonical.SemanticPlan
@@ -306,7 +305,10 @@ def build_plans_for_source(
     diagnostics = dict(getattr(timeline, "_proposal_diagnostics", {}) or {})
     diagnostics.update(
         {
-            "proposal_architecture": "independent verified-payoff anchor search with terminal-aware legal-window refinement",
+            "proposal_architecture": (
+                "independent verified-payoff anchor search with terminal-aware "
+                "legal-window refinement"
+            ),
             "finishing_move_variants_collapsed_per_verified_move": True,
             "automatic_scene_cuts_are_soft_for_normal_payoff_proposals": True,
             "verified_stringout_cuts_remain_hard": True,

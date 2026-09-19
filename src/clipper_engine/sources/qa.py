@@ -45,11 +45,13 @@ def certify(source: Path, source_key: str, resolved_path: Path, output: Path) ->
     declared_height = resolved.get("height")
     if declared_width and int(declared_width) != contract.video.width:
         raise RuntimeError(
-            f"MediaSilo source metadata width={declared_width} differs from file width={contract.video.width}"
+            f"MediaSilo source metadata width={declared_width} differs from file "
+            f"width={contract.video.width}"
         )
     if declared_height and int(declared_height) != contract.video.height:
         raise RuntimeError(
-            f"MediaSilo source metadata height={declared_height} differs from file height={contract.video.height}"
+            f"MediaSilo source metadata height={declared_height} differs from file "
+            f"height={contract.video.height}"
         )
 
     payload = {
@@ -72,7 +74,8 @@ def certify(source: Path, source_key: str, resolved_path: Path, output: Path) ->
     print(
         "ORIGINAL SOURCE MASTER VERIFIED "
         f"type=source bytes={actual_size} geometry={contract.video.width}x{contract.video.height} "
-        f"rate={media.fraction_text(timing.nominal_rate)} time_base={media.fraction_text(timing.time_base)} "
+        f"rate={media.fraction_text(timing.nominal_rate)} "
+        f"time_base={media.fraction_text(timing.time_base)} "
         f"pts_step={timing.ticks_per_frame} timescale={timing.track_timescale} "
         f"sha256={payload['sha256'][:16]}..."
     )
@@ -106,7 +109,8 @@ def verify(source: Path, manifest_path: Path) -> dict[str, Any]:
     print(
         "staged ORIGINAL source verified "
         f"bytes={source.stat().st_size} geometry={contract.video.width}x{contract.video.height} "
-        f"rate={media.fraction_text(timing.nominal_rate)} time_base={media.fraction_text(timing.time_base)} "
+        f"rate={media.fraction_text(timing.nominal_rate)} "
+        f"time_base={media.fraction_text(timing.time_base)} "
         f"pts_step={timing.ticks_per_frame} sha256={digest[:16]}..."
     )
     return manifest

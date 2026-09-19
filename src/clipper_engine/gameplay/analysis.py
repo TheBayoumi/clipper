@@ -1,15 +1,12 @@
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from . import combat
-from . import interaction
-from . import player_state
-from . import quality
-from . import refinement
+from . import combat, interaction, player_state, quality, refinement
 from . import semantics as core
 
 ShotSpan = core.ShotSpan
@@ -80,7 +77,8 @@ def validate_configuration(config: dict[str, Any]) -> None:
         errors.append("obsolete semantic-montage source-transition key must be removed")
     if "allow_unverified_automatic" in config.get("finishing_move_detector", {}):
         errors.append(
-            "automatic Finishing Move acceptance switch must be removed; discovery is diagnostics-only"
+            "automatic Finishing Move acceptance switch must be removed; "
+            "discovery is diagnostics-only"
         )
 
     continuation = config.get("combat_state_verifier", {}).get("finishing_continuation", {})
@@ -99,7 +97,8 @@ def validate_configuration(config: dict[str, Any]) -> None:
         errors.append("finishing_move_max_continuation_gap_seconds must be positive")
     if body_gap <= 0.0 or body_gap > first_gap + _EPS:
         errors.append(
-            "Finishing Move body hard-cut gap must be positive and no larger than first-continuation reach"
+            "Finishing Move body hard-cut gap must be positive and no larger than "
+            "first-continuation reach"
         )
 
     if errors:

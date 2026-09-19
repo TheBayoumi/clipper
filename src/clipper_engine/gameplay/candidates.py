@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from . import analysis
-from . import features
+from . import analysis, features
 
 ENGINE = "deterministic-gameplay"
 EDITOR = "semantic-editor"
@@ -211,14 +211,16 @@ def _select_from_allocation(
     raw_plans = list(source_allocation.get("plans") or [])
     if len(raw_plans) != len(wanted):
         raise RuntimeError(
-            f"{source_key}: allocation plan payload count {len(raw_plans)} != key count {len(wanted)}"
+            f"{source_key}: allocation plan payload count {len(raw_plans)} "
+            f"!= key count {len(wanted)}"
         )
     selected: list[analysis.SemanticPlan] = []
     for expected_key, raw_plan in zip(wanted, raw_plans, strict=False):
         actual_key = _plan_key_from_dict(raw_plan)
         if actual_key != expected_key:
             raise RuntimeError(
-                f"{source_key}: allocation plan payload hash {actual_key} != approved key {expected_key}"
+                f"{source_key}: allocation plan payload hash {actual_key} "
+                f"!= approved key {expected_key}"
             )
         selected.append(_plan_from_dict(raw_plan))
     return selected, allocation
