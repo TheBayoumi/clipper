@@ -60,4 +60,4 @@ packages = ["clipper"]
 
 [tool.setuptools.package-data]
 clipper = ["py.typed"]
-clipper_engine = ["profiles/*.json"]
+clipper_engine = ["py.typed", "profiles/*.json"]
