@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -381,7 +382,7 @@ def build(
     coarse: tuple[Any, ...],
     config: dict[str, Any],
     core: Any,
-    combat: Any,
+    hostile_decision: Callable[[Any, dict[str, Any]], Any],
     Engagement: Any,
 ) -> tuple[Any, ...]:
     """Build exact gap-split islands without conflating hostile evidence with edit eligibility."""
@@ -389,7 +390,7 @@ def build(
     minimum = _f(cfg.get("minimum_combat_island_seconds", 1.0), 1.0)
     hard = gap_signal(timeline, config)
     anchors = [
-        (event, combat.hostile_decision(event, config)) for event in timeline.consolidated_events
+        (event, hostile_decision(event, config)) for event in timeline.consolidated_events
     ]
     anchors = [(event, decision) for event, decision in anchors if decision.hostile]
     combat_islands: list[Any] = []
@@ -574,7 +575,12 @@ def self_test() -> None:
         }
     }
     recovered = build(
-        recovery_timeline, coarse, recovery_config, FakeCore, FakeCombat, fake_engagement
+        recovery_timeline,
+        coarse,
+        recovery_config,
+        FakeCore,
+        FakeCombat.hostile_decision,
+        fake_engagement,
     )
     if not any(event_b in item.events for item in recovered):
         raise AssertionError(
@@ -623,7 +629,12 @@ def self_test() -> None:
         },
     )()
     short_islands = build(
-        short_timeline, (), recovery_config, FakeCore, ShortCombat, fake_engagement
+        short_timeline,
+        (),
+        recovery_config,
+        FakeCore,
+        ShortCombat.hostile_decision,
+        fake_engagement,
     )
     if short_islands:
         raise AssertionError(

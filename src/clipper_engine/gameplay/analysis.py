@@ -211,7 +211,7 @@ def analyze_source(
         coarse,
         config,
         core,
-        combat,
+        interaction.hostile_decision,
         Engagement,
     )
     timeline.signals["combat_island_gap"] = combat.gap_signal(timeline, config)

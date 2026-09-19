@@ -446,29 +446,6 @@ def x264_vui_params(profile: dict[str, Any]) -> list[str]:
     return params
 
 
-def lossless_video_args(profile: dict[str, Any]) -> list[str]:
-    timing = timing_from_profile(profile)
-    vui = x264_vui_params(profile)
-    args = [
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-qp",
-        "0",
-        *profile_output_args(profile),
-    ]
-    if vui:
-        args += ["-x264-params", ":".join(vui)]
-    args += [
-        "-video_track_timescale",
-        str(timing.track_timescale),
-        "-threads:v",
-        "4",
-    ]
-    return args
-
-
 def merge_x264_params(args: list[str], extra_params: list[str]) -> list[str]:
     if not extra_params:
         return list(args)

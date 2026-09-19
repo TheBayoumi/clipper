@@ -276,7 +276,6 @@ def _stage_plan_source(
     contract = media.inspect_source(original_source, verify_timeline=True)
     media.validate_delivery_compatibility(contract, config)
     source_profile = source._profile_with_contract(contract)
-    source._ACTIVE_SOURCE_PROFILE = dict(source_profile)
 
     source_info = source.renderer.probe(original_source)
     source_duration = float(source_info["format"]["duration"])
