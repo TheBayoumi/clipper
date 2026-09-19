@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any, ClassVar
 
-from . import analysis, quality
+from . import analysis, interaction, quality
 from . import source_spans as canonical
 
 SemanticPlan = canonical.SemanticPlan
@@ -160,7 +160,7 @@ def _span_hostile_events(
         event
         for event in timeline.consolidated_events
         if start - _EPS <= float(event.time) <= end + _EPS
-        and canonical.combat.hostile_decision(event, config).hostile
+        and interaction.hostile_decision(event, config).hostile
     )
 
 
@@ -186,7 +186,7 @@ def _span_proposal(
     events = _span_hostile_events(timeline, start, end, config)
     if not events:
         return None
-    scores = [canonical.combat.hostile_decision(event, config).score for event in events]
+    scores = [interaction.hostile_decision(event, config).score for event in events]
     shot_index = int(canonical.core._shot_index(timeline.shots, anchor_time))
     return Engagement(
         round(start, 3),
