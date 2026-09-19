@@ -276,6 +276,7 @@ def normal_plans(
     """Return only independently searched verified-payoff proposals."""
     return _anchor_plans(timeline, config, excluded, source_key)
 
+
 def build_plans_for_source(
     timeline: Any,
     config: dict[str, Any],

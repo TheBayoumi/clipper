@@ -336,6 +336,7 @@ def _plan_for_span(
         return None, "source_integrity:" + "|".join(integrity[:3])
     return plan, "qualified"
 
+
 def _anchor_plans(
     timeline: Any,
     config: dict[str, Any],
@@ -528,8 +529,7 @@ def build_plans_for_source(
     diagnostics.update(
         {
             "proposal_architecture": (
-                "every_verified_payoff_anchor_to_verified_source_region_"
-                "quality_gated_span"
+                "every_verified_payoff_anchor_to_verified_source_region_quality_gated_span"
             ),
             "finishing_move_variants_collapsed_per_verified_move": True,
             "automatic_scene_cuts_are_soft_for_normal_payoff_proposals": True,

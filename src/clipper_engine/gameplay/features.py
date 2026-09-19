@@ -327,5 +327,3 @@ def analyze_source(source: Path, config: dict[str, Any]) -> SemanticTimeline:
     return SemanticTimeline(
         fps=fps, duration=length / fps, times=times, signals=signals, events=events
     )
-
-

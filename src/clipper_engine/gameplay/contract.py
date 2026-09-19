@@ -10,12 +10,15 @@ EXPECTED_EDITOR = "semantic-editor"
 EXPECTED_MODE = "engagement_driven_hardened_source_integrity"
 _EPS = 1e-3
 
+
 def _load(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
 
 def _write(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
 
 def validate_configuration(config: dict[str, Any]) -> None:
     errors: list[str] = []
@@ -90,6 +93,7 @@ def validate_configuration(config: dict[str, Any]) -> None:
             "MW4 V3.1 canonical contract configuration violation: " + "; ".join(errors)
         )
 
+
 def plan_key(plan: dict[str, Any]) -> str:
     finishing = plan.get("finishing_move")
     payload = {
@@ -116,6 +120,7 @@ def plan_key(plan: dict[str, Any]) -> str:
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:24]
 
+
 def _source_intervals(plan: dict[str, Any]) -> list[tuple[float, float]]:
     intervals: list[tuple[float, float]] = []
     for segment in plan.get("segments") or []:
@@ -124,6 +129,7 @@ def _source_intervals(plan: dict[str, Any]) -> list[tuple[float, float]]:
         if end > start:
             intervals.append((start, end))
     return intervals
+
 
 def _merged_length(intervals: list[tuple[float, float]]) -> float:
     merged: list[list[float]] = []
@@ -134,6 +140,7 @@ def _merged_length(intervals: list[tuple[float, float]]) -> float:
             merged[-1][1] = max(merged[-1][1], end)
     return sum(end - start for start, end in merged)
 
+
 def _shared_source_seconds(left: dict[str, Any], right: dict[str, Any]) -> float:
     intersections: list[tuple[float, float]] = []
     for a0, a1 in _source_intervals(left):
@@ -142,6 +149,7 @@ def _shared_source_seconds(left: dict[str, Any], right: dict[str, Any]) -> float
             if end > start:
                 intersections.append((start, end))
     return _merged_length(intersections)
+
 
 def _semantic_anchor_times(plan: dict[str, Any]) -> list[float]:
     anchors: set[float] = {
@@ -160,6 +168,7 @@ def _semantic_anchor_times(plan: dict[str, Any]) -> list[float]:
                 anchors.add(round(float(event["time"]), 3))
     return sorted(anchors)
 
+
 def _same_finishing_move(left: dict[str, Any], right: dict[str, Any], tolerance: float) -> bool:
     a, b = left.get("finishing_move"), right.get("finishing_move")
     if a is None or b is None:
@@ -167,6 +176,7 @@ def _same_finishing_move(left: dict[str, Any], right: dict[str, Any], tolerance:
     if abs(float(a.get("payoff", a["start"])) - float(b.get("payoff", b["start"]))) <= tolerance:
         return True
     return max(float(a["start"]), float(b["start"])) < min(float(a["end"]), float(b["end"]))
+
 
 def plans_conflict(left: dict[str, Any], right: dict[str, Any], config: dict[str, Any]) -> bool:
     policy = config.get("duplicate_policy", {})
@@ -193,6 +203,7 @@ def plans_conflict(left: dict[str, Any], right: dict[str, Any], config: dict[str
     fraction = shared / shorter if shorter > 0 else 0.0
     return shared >= substantial_seconds or fraction >= substantial_fraction
 
+
 def _ordering_failures(source: str, index: int, plan: dict[str, Any]) -> list[str]:
     segments = list(plan.get("segments") or [])
     if not segments:
@@ -217,10 +228,12 @@ def _ordering_failures(source: str, index: int, plan: dict[str, Any]) -> list[st
             )
     return failures
 
+
 def _event_has_payoff(event: dict[str, Any]) -> bool:
     return bool(
         {str(item) for item in (event.get("kinds") or [])}.intersection({"outcome_like", "impact"})
     )
+
 
 def _finishing_plan_failures(
     source: str, index: int, plan: dict[str, Any], config: dict[str, Any]
@@ -357,4 +370,3 @@ def _importance_score(plan: dict[str, Any], config: dict[str, Any]) -> float:
             config.get("semantic_editor", {}).get("selection", {}).get("finishing_move_bonus", 0.14)
         )
     return score
-

@@ -12,6 +12,7 @@ ENGINE = "deterministic-gameplay"
 EDITOR = "semantic-editor"
 CANDIDATE_MODE = "engagement_driven_hardened_source_integrity"
 
+
 def _plan_key_from_dict(plan: dict[str, Any]) -> str:
     finishing = plan.get("finishing_move")
     payload = {

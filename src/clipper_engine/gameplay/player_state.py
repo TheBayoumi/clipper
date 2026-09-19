@@ -11,9 +11,7 @@ def _future_mean(values: np.ndarray, bins: int) -> np.ndarray:
     for index in range(len(values)):
         right = min(len(values), index + bins + 1)
         out[index] = (
-            float(np.mean(values[index + 1 : right]))
-            if right > index + 1
-            else float(values[index])
+            float(np.mean(values[index + 1 : right])) if right > index + 1 else float(values[index])
         )
     return out
 
@@ -78,10 +76,7 @@ def annotate_timeline(timeline: Any, config: dict[str, Any]) -> Any:
     )
 
     score = np.clip(
-        0.34 * recent_red
-        + 0.24 * transition
-        + 0.28 * activity_drop
-        + 0.14 * post_recovery,
+        0.34 * recent_red + 0.24 * transition + 0.28 * activity_drop + 0.14 * post_recovery,
         0.0,
         1.0,
     )

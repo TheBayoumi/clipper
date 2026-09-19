@@ -11,11 +11,13 @@ from . import semantics as core
 Engagement = core.Engagement
 _EPS = 1e-3
 
+
 def _f(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
         return default
+
 
 def _support_components(timeline: Any, config: dict[str, Any]) -> tuple[Engagement, ...]:
     """Build maximal same-shot, hard-gap-free support regions around verified hostile evidence.
@@ -58,6 +60,7 @@ def _support_components(timeline: Any, config: dict[str, Any]) -> tuple[Engageme
         )
     return tuple(sorted(out, key=lambda item: (item.start, item.end)))
 
+
 def _component_chains(
     components: tuple[Engagement, ...],
     config: dict[str, Any],
@@ -80,4 +83,3 @@ def _component_chains(
                 break
             chains.append(tuple(chain))
     return tuple(chains)
-

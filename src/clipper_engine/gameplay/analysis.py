@@ -20,6 +20,7 @@ PAYOFF_KINDS = core.PAYOFF_KINDS
 plan_integrity_violations = quality.plan_integrity_violations
 _EPS = 1e-3
 
+
 def _f(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)

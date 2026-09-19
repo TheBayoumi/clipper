@@ -10,6 +10,7 @@ from typing import Any
 def run(command: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=True, text=True, capture_output=capture)
 
+
 def probe(path: Path) -> dict[str, Any]:
     result = run(
         [
@@ -25,6 +26,7 @@ def probe(path: Path) -> dict[str, Any]:
         capture=True,
     )
     return json.loads(result.stdout)
+
 
 def _encode_args(config: dict[str, Any], mode: str) -> list[str]:
     settings = config["output"]
@@ -87,6 +89,7 @@ def _encode_args(config: dict[str, Any], mode: str) -> list[str]:
         "2",
     ]
 
+
 def validate_output(
     path: Path, config: dict[str, Any], *, mode: str = "production"
 ) -> dict[str, Any]:
@@ -122,6 +125,7 @@ def validate_output(
         )
     return {"checks": checks, "probe": data}
 
+
 def create_contact_sheets(video: Path, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     run(
@@ -141,10 +145,10 @@ def create_contact_sheets(video: Path, output_dir: Path) -> None:
         ]
     )
 
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         while chunk := stream.read(8 * 1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
-

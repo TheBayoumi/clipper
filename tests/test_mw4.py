@@ -105,9 +105,7 @@ def test_exact_allocator_prefers_one_candidate_covering_multiple_outcomes() -> N
         _candidate("first", 8.0, 18.0, [15.0], 0.95),
         _candidate("second", 15.0, 25.0, [20.0], 0.95),
     ]
-    selected = allocation._solve_source(
-        "test", candidates, {15.0, 20.0}, False, config
-    )
+    selected = allocation._solve_source("test", candidates, {15.0, 20.0}, False, config)
     assert [item["plan_key"] for item in selected] == ["multi"]
 
 
@@ -125,9 +123,7 @@ def test_allocator_fails_when_conflicts_make_qualified_coverage_impossible() -> 
         _candidate("second", 10.5, 20.5, [18.0], 0.8),
     ]
     with pytest.raises(AssertionError, match="no conflict-free allocation"):
-        allocation._solve_source(
-            "test", candidates, {12.0, 18.0}, False, config
-        )
+        allocation._solve_source("test", candidates, {12.0, 18.0}, False, config)
 
 
 def test_profile_override_must_still_declare_mw4(tmp_path: Path) -> None:

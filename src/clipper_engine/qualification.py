@@ -58,8 +58,10 @@ def validate_batch(
             failures.append(f"{source}: allocation reports selected candidate conflicts")
         dispositions = list(source_allocation.get("outcome_dispositions") or [])
         unresolved = [
-            entry for entry in dispositions
-            if entry.get("disposition") not in {
+            entry
+            for entry in dispositions
+            if entry.get("disposition")
+            not in {
                 "covered_by_selected_clip",
                 "no_admissible_candidate",
             }

@@ -927,5 +927,3 @@ def preflight() -> dict[str, Any]:
             )
         )
         return results
-
-

@@ -279,10 +279,7 @@ def story_admissibility_failures(
     active = [
         engagement
         for engagement in sorted(engagements, key=lambda item: float(item.start))
-        if any(
-            interaction.hostile_decision(event, config).hostile
-            for event in engagement.events
-        )
+        if any(interaction.hostile_decision(event, config).hostile for event in engagement.events)
     ]
     for left, right in itertools.pairwise(active):
         gap_start = float(left.end)

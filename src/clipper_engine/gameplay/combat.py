@@ -56,9 +56,7 @@ def validate_configuration(config: dict[str, Any]) -> None:
             errors.append(f"{key} must be positive, got {value}")
 
     if errors:
-        raise RuntimeError(
-            "combat_state_verifier configuration violation: " + "; ".join(errors)
-        )
+        raise RuntimeError("combat_state_verifier configuration violation: " + "; ".join(errors))
 
 
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:

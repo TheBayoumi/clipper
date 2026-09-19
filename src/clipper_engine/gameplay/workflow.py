@@ -24,9 +24,7 @@ def _source_settings(
     args: argparse.Namespace,
 ) -> tuple[str, int]:
     review_url = str(getattr(args, "review_url", None) or profile.source_review_url)
-    expected_count = int(
-        getattr(args, "expected_count", None) or profile.expected_source_count
-    )
+    expected_count = int(getattr(args, "expected_count", None) or profile.expected_source_count)
     if not review_url:
         raise RuntimeError("MW4 profile has no MediaSilo review URL")
     if expected_count <= 0:

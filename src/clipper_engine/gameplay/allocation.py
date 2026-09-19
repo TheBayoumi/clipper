@@ -285,9 +285,9 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
             )
         )
         selected = _solve_source(source, valid, qualified, require_finisher, config)
-        selected_coverage = set().union(
-            *(_candidate_coverage(plan) for plan in selected)
-        ) if selected else set()
+        selected_coverage = (
+            set().union(*(_candidate_coverage(plan) for plan in selected)) if selected else set()
+        )
         uncovered_qualified = sorted(qualified - selected_coverage)
         if uncovered_qualified:
             raise AssertionError(
@@ -346,9 +346,7 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         "target_count": total_selected,
         "selected_count": total_selected,
         "duration_contract": {"minimum_seconds": 10.0, "maximum_seconds": 12.0},
-        "distribution": {
-            source: int(allocations[source]["count"]) for source in source_order
-        },
+        "distribution": {source: int(allocations[source]["count"]) for source in source_order},
         "verified_finishing_move_count": total_verified_finishers,
         "selected_finishing_move_count": total_selected_finishers,
         "source_allocations": allocations,
