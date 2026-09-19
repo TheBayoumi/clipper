@@ -389,9 +389,7 @@ def build(
     cfg = config["combat_state_verifier"]
     minimum = _f(cfg.get("minimum_combat_island_seconds", 1.0), 1.0)
     hard = gap_signal(timeline, config)
-    anchors = [
-        (event, hostile_decision(event, config)) for event in timeline.consolidated_events
-    ]
+    anchors = [(event, hostile_decision(event, config)) for event in timeline.consolidated_events]
     anchors = [(event, decision) for event, decision in anchors if decision.hostile]
     combat_islands: list[Any] = []
     for envelope in coarse:
