@@ -37,7 +37,12 @@ def _asset_response_matches(
     path = urllib.parse.urlparse(url).path.rstrip("/")
     expected = [f"/quicklinks/{review_id}/assets"]
     if folder_id:
-        expected.append(f"/folders/{folder_id}/assets")
+        expected.extend(
+            [
+                f"/quicklinks/{review_id}/folders/{folder_id}/assets",
+                f"/folders/{folder_id}/assets",
+            ]
+        )
     return any(path.endswith(candidate) for candidate in expected)
 
 
@@ -205,12 +210,16 @@ def capture_assets(
                         )
                         asset_ids = payload.get("assetIds") if isinstance(payload, dict) else None
                         asset_id_count = len(asset_ids) if isinstance(asset_ids, list) else 0
-                        header_names = sorted(
-                            _forward_request_headers(response.request).keys()
-                        )
+                        header_names = sorted(_forward_request_headers(response.request).keys())
+                        public_flags = {
+                            key: payload.get(key)
+                            for key in ("public", "private", "password", "signed")
+                            if isinstance(payload, dict)
+                        }
                         diagnostic = (
                             f"shape={_payload_shape(payload)}:"
                             f"asset_id_count={asset_id_count}:"
+                            f"access_flags={public_flags}:"
                             f"request_header_names={header_names}"
                         )
                         if diagnostic not in quicklink_metadata_diagnostics:
@@ -247,7 +256,11 @@ def capture_assets(
                         origin, headers = quicklink_request_context[0]
                         provider_paths = [f"/v3/quicklinks/{review_id}/assets"]
                         if folder_id:
-                            provider_paths.append(f"/v3/folders/{folder_id}/assets")
+                            provider_paths = [
+                                f"/v3/quicklinks/{review_id}/folders/{folder_id}/assets",
+                                *provider_paths,
+                                f"/v3/folders/{folder_id}/assets",
+                            ]
                         for provider_path in provider_paths:
                             api_response = page.context.request.get(
                                 origin + provider_path,
@@ -291,7 +304,12 @@ def capture_assets(
     if not captured:
         expected_routes = [f"/quicklinks/{review_id}/assets"]
         if folder_id:
-            expected_routes.append(f"/folders/{folder_id}/assets")
+            expected_routes.extend(
+                [
+                    f"/quicklinks/{review_id}/folders/{folder_id}/assets",
+                    f"/folders/{folder_id}/assets",
+                ]
+            )
         raise RuntimeError(
             "MediaSilo assets were not resolved after 3 attempts; "
             f"navigation={final_navigation or ['unavailable']}; "
@@ -409,9 +427,14 @@ def self_test() -> None:
         raise AssertionError("MediaSilo folder identifier parsing failed")
 
     quicklink_url = f"https://api.mediasilo.com/v3/quicklinks/{review_id}/assets"
+    review_folder_url = (
+        f"https://api.mediasilo.com/v3/quicklinks/{review_id}/folders/{folder_id}/assets"
+    )
     folder_url = f"https://api.mediasilo.com/v3/folders/{folder_id}/assets?_page=0"
     if not _asset_response_matches(quicklink_url, review_id, folder_id):
         raise AssertionError("MediaSilo QuickLink asset route is not recognized")
+    if not _asset_response_matches(review_folder_url, review_id, folder_id):
+        raise AssertionError("MediaSilo QuickLink folder asset route is not recognized")
     if not _asset_response_matches(folder_url, review_id, folder_id):
         raise AssertionError("MediaSilo folder asset route is not recognized")
 
