@@ -73,15 +73,18 @@ def _assign_keys(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def _capture_assets(review_url: str) -> list[dict[str, Any]]:
-    return mediasilo.capture_assets(review_url)
+def _capture_assets(
+    review_url: str,
+    expected_count: int | None = None,
+) -> list[dict[str, Any]]:
+    return mediasilo.capture_assets(review_url, expected_count=expected_count)
 
 
 def discover(
     review_url: str, output: Path, github_output: Path | None, expected_count: int | None
 ) -> dict[str, Any]:
     discovered: list[dict[str, Any]] = []
-    for asset in _capture_assets(review_url):
+    for asset in _capture_assets(review_url, expected_count):
         selected = _source_derivative(asset)
         if selected is None:
             continue

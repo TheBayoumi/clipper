@@ -41,26 +41,71 @@ def _asset_response_matches(
     return any(path.endswith(candidate) for candidate in expected)
 
 
+def _is_asset_payload(item: dict[str, Any]) -> bool:
+    return bool(
+        (item.get("title") or item.get("fileName"))
+        and isinstance(item.get("derivatives"), list)
+    )
+
+
 def _asset_list(payload: Any) -> list[dict[str, Any]] | None:
     if isinstance(payload, list):
         items = [dict(item) for item in payload if isinstance(item, dict)]
-        if items and any(
-            (item.get("title") or item.get("fileName"))
-            and isinstance(item.get("derivatives"), list)
-            for item in items
-        ):
-            return items
+        assets = [item for item in items if _is_asset_payload(item)]
+        if assets:
+            return assets
+        for item in items:
+            nested = _asset_list(item)
+            if nested:
+                return nested
         return None
 
     if isinstance(payload, dict):
-        for key in ("assets", "items", "results", "data"):
-            assets = _asset_list(payload.get(key))
+        if _is_asset_payload(payload):
+            return [dict(payload)]
+        preferred_keys = ("assets", "items", "results", "data", "content", "children")
+        for key in preferred_keys:
+            nested = payload.get(key)
+            assets = _asset_list(nested)
             if assets:
                 return assets
+        for key, nested in payload.items():
+            if key in preferred_keys:
+                continue
+            if isinstance(nested, (dict, list)):
+                assets = _asset_list(nested)
+                if assets:
+                    return assets
     return None
 
 
-def capture_assets(review_url: str) -> list[dict[str, Any]]:
+def _is_provider_url(url: str) -> bool:
+    hostname = (urllib.parse.urlparse(url).hostname or "").lower()
+    return (
+        hostname == "mediasilo.com"
+        or hostname.endswith(".mediasilo.com")
+        or hostname == "shift.io"
+        or hostname.endswith(".shift.io")
+    )
+
+
+def _asset_identity(asset: dict[str, Any]) -> str:
+    for key in ("id", "uuid", "assetId", "assetUuid"):
+        value = asset.get(key)
+        if value:
+            return f"{key}:{value}"
+    return "title:" + str(asset.get("title") or asset.get("fileName") or "")
+
+
+def _sanitized_route(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    return f"{parsed.hostname or 'unknown'}{parsed.path}"
+
+
+def capture_assets(
+    review_url: str,
+    expected_count: int | None = None,
+) -> list[dict[str, Any]]:
     """Capture source-catalog assets from the public MediaSilo review session.
 
     MediaSilo review pages have used both folder-assets and QuickLink-assets REST
@@ -74,8 +119,10 @@ def capture_assets(review_url: str) -> list[dict[str, Any]]:
         raise RuntimeError("Playwright is required for MediaSilo source discovery") from exc
 
     review_id, folder_id = _review_identifiers(review_url)
-    holder: list[list[dict[str, Any]] | None] = [None]
-    resolved_route: list[str | None] = [None]
+    canonical_assets: dict[str, dict[str, Any]] = {}
+    fallback_assets: dict[str, dict[str, Any]] = {}
+    observed_json_routes: list[str] = []
+    final_navigation: list[str] = []
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
@@ -94,44 +141,75 @@ def capture_assets(review_url: str) -> list[dict[str, Any]]:
                 )
 
                 def handle(response: Any) -> None:
-                    if response.status != 200 or not _asset_response_matches(
-                        response.url,
-                        review_id,
-                        folder_id,
-                    ):
+                    if response.status != 200 or not _is_provider_url(response.url):
                         return
+                    content_type = str(response.headers.get("content-type") or "").lower()
+                    if "json" not in content_type:
+                        return
+                    route = _sanitized_route(response.url)
+                    if route not in observed_json_routes and len(observed_json_routes) < 40:
+                        observed_json_routes.append(route)
                     try:
                         assets = _asset_list(response.json())
                     except Exception:
                         return
-                    if assets:
-                        holder[0] = assets
-                        resolved_route[0] = urllib.parse.urlparse(response.url).path
+                    if not assets:
+                        return
+                    target = (
+                        canonical_assets
+                        if _asset_response_matches(response.url, review_id, folder_id)
+                        else fallback_assets
+                    )
+                    for asset in assets:
+                        target[_asset_identity(asset)] = asset
 
                 page.on("response", handle)
                 try:
-                    page.goto(review_url, wait_until="domcontentloaded", timeout=90000)
+                    navigation = page.goto(
+                        review_url,
+                        wait_until="domcontentloaded",
+                        timeout=90000,
+                    )
                     page.wait_for_timeout(30000)
+                    final_navigation[:] = [
+                        f"status={navigation.status if navigation else 'none'} "
+                        f"url={_sanitized_route(page.url)}"
+                    ]
                 finally:
                     page.close()
-                if holder[0]:
+
+                captured = canonical_assets or fallback_assets
+                if captured and (
+                    expected_count is None or len(captured) >= expected_count
+                ):
+                    route_mode = "canonical-route" if canonical_assets else "schema-fallback"
                     print(
                         f"MediaSilo assets resolved on attempt {attempt} "
-                        f"via {resolved_route[0]}"
+                        f"via {route_mode} count={len(captured)}"
                     )
                     break
         finally:
             browser.close()
 
-    if not holder[0]:
+    captured = canonical_assets or fallback_assets
+    if not captured:
         expected_routes = [f"/quicklinks/{review_id}/assets"]
         if folder_id:
             expected_routes.append(f"/folders/{folder_id}/assets")
         raise RuntimeError(
             "MediaSilo assets were not resolved after 3 attempts; "
-            f"expected provider asset routes={expected_routes}"
+            f"navigation={final_navigation or ['unavailable']}; "
+            f"expected_provider_asset_routes={expected_routes}; "
+            f"observed_provider_json_routes={observed_json_routes}"
         )
-    return holder[0]
+    if expected_count is not None and len(captured) < expected_count:
+        raise RuntimeError(
+            "MediaSilo review exposed an incomplete asset set; "
+            f"captured={len(captured)} expected_at_least={expected_count}; "
+            f"navigation={final_navigation or ['unavailable']}; "
+            f"observed_provider_json_routes={observed_json_routes}"
+        )
+    return list(captured.values())
 
 
 def _select_original_source(assets: list[dict[str, Any]], source_key: str) -> dict[str, Any]:
@@ -177,7 +255,10 @@ def _select_original_source(assets: list[dict[str, Any]], source_key: str) -> di
 def resolve(source_key: str, review_url: str, output: Path) -> dict[str, Any]:
     if source_key not in OFFICIAL_FILES:
         raise RuntimeError(f"unknown official source key: {source_key}")
-    selected = _select_original_source(capture_assets(review_url), source_key)
+    selected = _select_original_source(
+        capture_assets(review_url, expected_count=len(OFFICIAL_FILES)),
+        source_key,
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(selected, indent=2), encoding="utf-8")
     print(f"official MediaSilo source selected: {selected['title']} type=source")
@@ -241,6 +322,10 @@ def self_test() -> None:
         raise AssertionError("MediaSilo list asset payload was not recognized")
     if _asset_list({"data": {"assets": [asset]}}) != [asset]:
         raise AssertionError("MediaSilo wrapped asset payload was not recognized")
+    if not _is_provider_url("https://api.mediasilo.com/v3/quicklinks/example/assets"):
+        raise AssertionError("MediaSilo provider URL recognition failed")
+    if _is_provider_url("https://example.invalid/assets"):
+        raise AssertionError("non-MediaSilo provider URL was accepted")
     print("MediaSilo canonical review asset resolver self-test: PASS")
 
 
