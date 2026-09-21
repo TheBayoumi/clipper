@@ -6,7 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from . import analysis, features
+from . import analysis, features, interaction
 
 ENGINE = "deterministic-gameplay"
 EDITOR = "semantic-editor"
@@ -82,20 +82,44 @@ def _candidate_anchor_time(payload: dict[str, Any]) -> float | None:
     return anchors[-1] if anchors else None
 
 
-def _covered_anchor_times(payload: dict[str, Any], kinds: set[str]) -> list[float]:
+def _covered_verified_anchor_times(
+    plan: analysis.SemanticPlan,
+    timeline: analysis.SemanticTimeline,
+    config: dict[str, Any],
+    kinds: set[str],
+) -> list[float]:
+    """Return explicit pre-grouping verified anchor coverage for a candidate.
+
+    Coverage follows the candidate's actual source segments and the canonical hostile
+    verifier. It must not be reconstructed from combat-island membership because a
+    real verified outcome can be structurally non-islandable.
+    """
+    intervals = [
+        (float(segment.start), float(segment.end))
+        for segment in plan.segments
+        if float(segment.end) > float(segment.start)
+    ]
     anchors: set[float] = set()
-    for event in payload.get("effect_events") or []:
-        if str(event.get("kind", "")) in kinds and "time" in event:
-            anchors.add(round(float(event["time"]), 3))
-    for engagement in payload.get("engagements") or []:
-        for event in engagement.get("events") or []:
-            event_kinds = {str(item) for item in (event.get("kinds") or [])}
-            if event_kinds.intersection(kinds) and "time" in event:
-                anchors.add(round(float(event["time"]), 3))
+    for event in timeline.consolidated_events:
+        event_kinds = {str(item) for item in (event.kinds or ())}
+        if not event_kinds.intersection(kinds):
+            continue
+        event_time = float(event.time)
+        if not any(
+            start - 1e-3 <= event_time <= end + 1e-3 for start, end in intervals
+        ):
+            continue
+        if not interaction.hostile_decision(event, config).hostile:
+            continue
+        anchors.add(round(event_time, 3))
     return sorted(anchors)
 
 
-def _candidate_dict(plan: analysis.SemanticPlan) -> dict[str, Any]:
+def _candidate_dict(
+    plan: analysis.SemanticPlan,
+    timeline: analysis.SemanticTimeline,
+    config: dict[str, Any],
+) -> dict[str, Any]:
     payload = asdict(plan)
     payload["plan_key"] = _plan_key_from_dict(payload)
     anchor_time = plan.proposal_anchor_time
@@ -104,9 +128,17 @@ def _candidate_dict(plan: analysis.SemanticPlan) -> dict[str, Any]:
     payload["proposal_anchor_time"] = (
         round(float(anchor_time), 3) if anchor_time is not None else None
     )
-    payload["covered_outcome_anchor_times"] = _covered_anchor_times(payload, {"outcome_like"})
-    payload["covered_payoff_anchor_times"] = _covered_anchor_times(
-        payload, {"outcome_like", "impact"}
+    payload["covered_outcome_anchor_times"] = _covered_verified_anchor_times(
+        plan,
+        timeline,
+        config,
+        {"outcome_like"},
+    )
+    payload["covered_payoff_anchor_times"] = _covered_verified_anchor_times(
+        plan,
+        timeline,
+        config,
+        {"outcome_like", "impact"},
     )
     return payload
 
@@ -248,7 +280,7 @@ def analyze_source_file(
         "candidate_mode": CANDIDATE_MODE,
         "diagnostics": diagnostics,
         "candidate_count_after_semantic_gates": len(plans),
-        "candidate_pool": [_candidate_dict(plan) for plan in plans],
+        "candidate_pool": [_candidate_dict(plan, timeline, config) for plan in plans],
         "verified_finishing_move_count": len(timeline.finishing_moves),
         "verified_finishing_moves": [asdict(span) for span in timeline.finishing_moves],
         "automatic_finishing_move_candidates": automatic_candidates,
@@ -269,3 +301,55 @@ def analyze_source_file(
         )
     )
     return payload
+
+
+def self_test() -> None:
+    event = type(
+        "Event",
+        (),
+        {
+            "time": 5.0,
+            "kinds": ("combat_burst", "outcome_like"),
+            "confidence": 0.95,
+            "evidence": {
+                "local_refine_attempted": 1.0,
+                "local_hitmarker_score": 0.95,
+                "combat": 0.90,
+                "outcome": 0.90,
+                "impact": 0.90,
+                "audio_transient": 0.90,
+                "center_motion": 0.90,
+            },
+        },
+    )()
+    segment = type("Segment", (), {"start": 0.0, "end": 10.0})()
+    plan = type("Plan", (), {"segments": (segment,)})()
+    timeline = type("Timeline", (), {"consolidated_events": (event,)})()
+    config = {
+        "combat_state_verifier": {
+            "enabled": True,
+            "local_interaction_verifier": {
+                "enabled": True,
+                "minimum_hitmarker_score": 0.34,
+            },
+            "minimum_hostile_event_score": 0.64,
+            "outcome_minimum": 0.52,
+            "payoff_combat_minimum": 0.42,
+            "impact_minimum": 0.64,
+            "impact_combat_minimum": 0.55,
+            "strong_combat_minimum": 0.70,
+            "strong_combat_audio_transient_minimum": 0.62,
+            "strong_combat_center_motion_minimum": 0.40,
+        }
+    }
+    coverage = _covered_verified_anchor_times(
+        plan,
+        timeline,
+        config,
+        {"outcome_like"},
+    )
+    if coverage != [5.0]:
+        raise AssertionError(
+            "candidate outcome coverage incorrectly depends on combat-island membership"
+        )
+    print("gameplay explicit verified-anchor coverage self-test: PASS")

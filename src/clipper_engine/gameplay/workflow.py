@@ -127,6 +127,8 @@ def self_test(profile: GameplayProfile) -> None:
     analysis.validate_configuration(profile.config)
     analysis.self_test()
     planning.self_test()
+    candidates.self_test()
+    allocation.self_test()
     print(
         json.dumps(
             {

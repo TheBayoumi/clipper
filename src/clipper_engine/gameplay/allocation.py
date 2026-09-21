@@ -22,10 +22,12 @@ def _source_order(keys: Any) -> tuple[str, ...]:
 def _required_outcome_anchors(manifest: dict[str, Any]) -> tuple[float, ...]:
     semantic = dict(manifest.get("diagnostics") or manifest.get("semantic_diagnostics") or {})
     local = dict(semantic.get("local_interaction_verifier") or {})
+    if "verified_hostile_event_assignment" not in local:
+        raise AssertionError("analysis manifest missing canonical verified hostile assignment")
     anchors = {
         round(float(item["time"]), 3)
-        for item in (local.get("events") or [])
-        if item.get("confirmed") and "outcome_like" in (item.get("kinds") or [])
+        for item in (local.get("verified_hostile_event_assignment") or [])
+        if item.get("hostile_verified") and "outcome_like" in (item.get("kinds") or [])
     }
     return tuple(sorted(anchors))
 
@@ -352,3 +354,37 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         "source_allocations": allocations,
         "status": "PASS",
     }
+
+
+def self_test() -> None:
+    manifest = {
+        "diagnostics": {
+            "local_interaction_verifier": {
+                "events": [
+                    {
+                        "time": 1.0,
+                        "kinds": ["outcome_like"],
+                        "confirmed": True,
+                    }
+                ],
+                "verified_hostile_event_assignment": [
+                    {
+                        "time": 2.0,
+                        "kinds": ["outcome_like"],
+                        "hostile_verified": True,
+                        "disposition": "non_islandable_hard_gap_event",
+                    },
+                    {
+                        "time": 3.0,
+                        "kinds": ["outcome_like"],
+                        "hostile_verified": False,
+                    },
+                ],
+            }
+        }
+    }
+    if _required_outcome_anchors(manifest) != (2.0,):
+        raise AssertionError(
+            "allocation required outcomes are not sourced from canonical hostile verification"
+        )
+    print("gameplay required-outcome authority self-test: PASS")

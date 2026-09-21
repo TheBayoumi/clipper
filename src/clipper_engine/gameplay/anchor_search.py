@@ -50,15 +50,24 @@ def _verified_payoff_anchors(
     timeline: Any,
     config: dict[str, Any],
 ) -> tuple[Any, ...]:
+    """Enumerate verified payoff anchors before combat-island grouping.
+
+    Combat islands are evidence groupings, not cardinality authorities. A directly
+    verified hostile payoff must receive its own legal-window search even when it
+    falls inside a hard semantic gap and cannot belong to a combat island.
+    """
     seen: set[float] = set()
     anchors: list[Any] = []
-    for engagement in timeline.engagements:
-        for event in quality.verified_payoff_events(engagement, config):
-            key = round(float(event.time), 3)
-            if key in seen:
-                continue
-            seen.add(key)
-            anchors.append(event)
+    for event in timeline.consolidated_events:
+        if not any(kind in interaction.PAYOFF_KINDS for kind in event.kinds):
+            continue
+        if not interaction.hostile_decision(event, config).hostile:
+            continue
+        key = round(float(event.time), 3)
+        if key in seen:
+            continue
+        seen.add(key)
+        anchors.append(event)
     return tuple(sorted(anchors, key=lambda item: float(item.time)))
 
 
@@ -428,6 +437,7 @@ def _anchor_plans(
         {
             "verified_payoff_anchor_count": len(anchors),
             "payoff_anchor_times": [round(float(item.time), 3) for item in anchors],
+            "payoff_anchor_source": "pre_grouping_direct_hostile_verification",
             "payoff_anchor_span_variant_count": attempted,
             "payoff_anchor_qualified_anchor_count": qualified_anchor_count,
             "payoff_anchor_unrepresented_count": len(anchors) - qualified_anchor_count,
@@ -529,7 +539,8 @@ def build_plans_for_source(
     diagnostics.update(
         {
             "proposal_architecture": (
-                "every_verified_payoff_anchor_to_verified_source_region_quality_gated_span"
+                "every_pre_grouping_verified_payoff_anchor_to_verified_source_region_"
+                "quality_gated_span"
             ),
             "finishing_move_variants_collapsed_per_verified_move": True,
             "automatic_scene_cuts_are_soft_for_normal_payoff_proposals": True,
@@ -646,5 +657,9 @@ def self_test() -> None:
     hostile_timeline = type("HostileTimeline", (), {"consolidated_events": (event,)})()
     if _span_hostile_events(hostile_timeline, 0.0, 10.0, decision_config) != (event,):
         raise AssertionError("anchor search did not use the canonical interaction verifier")
+    if _verified_payoff_anchors(hostile_timeline, decision_config) != (event,):
+        raise AssertionError(
+            "verified payoff enumeration incorrectly depends on combat-island grouping"
+        )
 
     print("MW4 payoff-complete verified-source-region proposal self-test: PASS")
