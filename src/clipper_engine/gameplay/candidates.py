@@ -105,9 +105,7 @@ def _covered_verified_anchor_times(
         if not event_kinds.intersection(kinds):
             continue
         event_time = float(event.time)
-        if not any(
-            start - 1e-3 <= event_time <= end + 1e-3 for start, end in intervals
-        ):
+        if not any(start - 1e-3 <= event_time <= end + 1e-3 for start, end in intervals):
             continue
         if not interaction.hostile_decision(event, config).hostile:
             continue
