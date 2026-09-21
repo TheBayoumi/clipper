@@ -111,10 +111,7 @@ def _forward_request_headers(request: Any) -> dict[str, str]:
     headers = dict(request.all_headers())
     blocked = {"host", "content-length", "connection"}
     token_chars = frozenset(
-        "!#$%&'*+-.^_`|~"
-        "0123456789"
-        "abcdefghijklmnopqrstuvwxyz"
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
     )
     forwarded: dict[str, str] = {}
     for key, value in headers.items():
