@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -137,6 +138,19 @@ def _payload_shape(payload: Any) -> str:
     return type(payload).__name__
 
 
+def _api_credentials() -> tuple[str, str] | None:
+    key = os.environ.get("MEDIASILO_API_KEY", "").strip()
+    secret = os.environ.get("MEDIASILO_API_SECRET", "").strip()
+    if bool(key) != bool(secret):
+        raise RuntimeError(
+            "MediaSilo API credentials are incomplete; configure both "
+            "MEDIASILO_API_KEY and MEDIASILO_API_SECRET"
+        )
+    if not key:
+        return None
+    return key, secret
+
+
 def capture_assets(
     review_url: str,
     expected_count: int | None = None,
@@ -162,6 +176,7 @@ def capture_assets(
     final_navigation: list[str] = []
     quicklink_request_context: list[tuple[str, dict[str, str]] | None] = [None]
     direct_probe_diagnostics: list[str] = []
+    api_credentials = _api_credentials()
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
@@ -253,9 +268,25 @@ def capture_assets(
                         expected_count is not None and len(captured) < expected_count
                     )
                     if needs_direct_probe and quicklink_request_context[0] is not None:
-                        origin, headers = quicklink_request_context[0]
+                        origin, browser_headers = quicklink_request_context[0]
+                        request_headers = browser_headers
+                        credential_mode = "public-review-session"
                         provider_paths = [f"/v3/quicklinks/{review_id}/assets"]
-                        if folder_id:
+                        if api_credentials is not None:
+                            api_key, api_secret = api_credentials
+                            request_headers = {
+                                "accept": "application/json",
+                                "x-key": api_key,
+                                "x-secret": api_secret,
+                            }
+                            credential_mode = "official-api"
+                            if folder_id:
+                                provider_paths = [
+                                    f"/v3/folders/{folder_id}/assets",
+                                    f"/v3/quicklinks/{review_id}/folders/{folder_id}/assets",
+                                    *provider_paths,
+                                ]
+                        elif folder_id:
                             provider_paths = [
                                 f"/v3/quicklinks/{review_id}/folders/{folder_id}/assets",
                                 *provider_paths,
@@ -264,11 +295,14 @@ def capture_assets(
                         for provider_path in provider_paths:
                             api_response = page.context.request.get(
                                 origin + provider_path,
-                                headers=headers,
+                                headers=request_headers,
                                 timeout=30000,
                                 fail_on_status_code=False,
                             )
-                            diagnostic = f"{provider_path}:status={api_response.status}"
+                            diagnostic = (
+                                f"{provider_path}:status={api_response.status}:"
+                                f"auth={credential_mode}"
+                            )
                             if api_response.status == 200:
                                 try:
                                     payload = api_response.json()
@@ -317,6 +351,7 @@ def capture_assets(
             f"observed_provider_json_routes={observed_json_routes}; "
             f"observed_browser_data_routes={observed_data_routes}; "
             f"quicklink_metadata={quicklink_metadata_diagnostics}; "
+            f"api_credentials_configured={api_credentials is not None}; "
             f"direct_asset_probe={direct_probe_diagnostics}"
         )
     if expected_count is not None and len(captured) < expected_count:
@@ -327,6 +362,7 @@ def capture_assets(
             f"observed_provider_json_routes={observed_json_routes}; "
             f"observed_browser_data_routes={observed_data_routes}; "
             f"quicklink_metadata={quicklink_metadata_diagnostics}; "
+            f"api_credentials_configured={api_credentials is not None}; "
             f"direct_asset_probe={direct_probe_diagnostics}"
         )
     return list(captured.values())
