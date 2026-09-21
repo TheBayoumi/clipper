@@ -102,9 +102,24 @@ def _sanitized_route(url: str) -> str:
 
 
 def _forward_request_headers(request: Any) -> dict[str, str]:
+    """Return only ordinary HTTP field headers safe for APIRequestContext.
+
+    Browser requests can expose HTTP/2 pseudo-headers such as :authority. Those
+    are transport metadata, not regular HTTP field names, and Playwright rejects
+    them when supplied through the headers argument of APIRequestContext.
+    """
     headers = dict(request.all_headers())
     blocked = {"host", "content-length", "connection"}
-    return {key: value for key, value in headers.items() if key.lower() not in blocked}
+    token_chars = frozenset("!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    forwarded: dict[str, str] = {}
+    for key, value in headers.items():
+        normalized = str(key)
+        if normalized.lower() in blocked:
+            continue
+        if not normalized or any(char not in token_chars for char in normalized):
+            continue
+        forwarded[normalized] = str(value)
+    return forwarded
 
 
 def _payload_shape(payload: Any) -> str:
@@ -385,6 +400,28 @@ def self_test() -> None:
         raise AssertionError("non-MediaSilo provider URL was accepted")
     if _payload_shape({"assetIds": ["a", "b"]}) != "dict_keys=assetIds":
         raise AssertionError("MediaSilo diagnostic payload shape is unstable")
+
+    class _SyntheticRequest:
+        @staticmethod
+        def all_headers() -> dict[str, str]:
+            return {
+                ":authority": "api.mediasilo.com",
+                ":method": "GET",
+                "authorization": "Bearer synthetic",
+                "user-agent": "synthetic-agent",
+                "host": "api.mediasilo.com",
+                "content-length": "0",
+                "x-invalid header": "discard-me",
+            }
+
+    forwarded = _forward_request_headers(_SyntheticRequest())
+    if forwarded != {
+        "authorization": "Bearer synthetic",
+        "user-agent": "synthetic-agent",
+    }:
+        raise AssertionError(
+            "MediaSilo browser request headers were not sanitized for APIRequestContext"
+        )
     print("MediaSilo canonical review asset resolver self-test: PASS")
 
 
