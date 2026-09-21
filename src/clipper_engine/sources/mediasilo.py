@@ -43,8 +43,7 @@ def _asset_response_matches(
 
 def _is_asset_payload(item: dict[str, Any]) -> bool:
     return bool(
-        (item.get("title") or item.get("fileName"))
-        and isinstance(item.get("derivatives"), list)
+        (item.get("title") or item.get("fileName")) and isinstance(item.get("derivatives"), list)
     )
 
 
@@ -102,6 +101,20 @@ def _sanitized_route(url: str) -> str:
     return f"{parsed.hostname or 'unknown'}{parsed.path}"
 
 
+def _forward_request_headers(request: Any) -> dict[str, str]:
+    headers = dict(request.all_headers())
+    blocked = {"host", "content-length", "connection"}
+    return {key: value for key, value in headers.items() if key.lower() not in blocked}
+
+
+def _payload_shape(payload: Any) -> str:
+    if isinstance(payload, dict):
+        return "dict_keys=" + ",".join(sorted(str(key) for key in payload)[:24])
+    if isinstance(payload, list):
+        return f"list_length={len(payload)}"
+    return type(payload).__name__
+
+
 def capture_assets(
     review_url: str,
     expected_count: int | None = None,
@@ -123,6 +136,8 @@ def capture_assets(
     fallback_assets: dict[str, dict[str, Any]] = {}
     observed_json_routes: list[str] = []
     final_navigation: list[str] = []
+    quicklink_request_context: list[tuple[str, dict[str, str]] | None] = [None]
+    direct_probe_diagnostics: list[str] = []
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
@@ -146,9 +161,16 @@ def capture_assets(
                     content_type = str(response.headers.get("content-type") or "").lower()
                     if "json" not in content_type:
                         return
+                    parsed_response_url = urllib.parse.urlparse(response.url)
                     route = _sanitized_route(response.url)
                     if route not in observed_json_routes and len(observed_json_routes) < 40:
                         observed_json_routes.append(route)
+                    if parsed_response_url.path.rstrip("/") == f"/v3/quicklinks/{review_id}":
+                        origin = f"{parsed_response_url.scheme}://{parsed_response_url.netloc}"
+                        quicklink_request_context[0] = (
+                            origin,
+                            _forward_request_headers(response.request),
+                        )
                     try:
                         assets = _asset_list(response.json())
                     except Exception:
@@ -175,13 +197,48 @@ def capture_assets(
                         f"status={navigation.status if navigation else 'none'} "
                         f"url={_sanitized_route(page.url)}"
                     ]
+
+                    captured = canonical_assets or fallback_assets
+                    needs_direct_probe = not captured or (
+                        expected_count is not None and len(captured) < expected_count
+                    )
+                    if needs_direct_probe and quicklink_request_context[0] is not None:
+                        origin, headers = quicklink_request_context[0]
+                        provider_paths = [f"/v3/quicklinks/{review_id}/assets"]
+                        if folder_id:
+                            provider_paths.append(f"/v3/folders/{folder_id}/assets")
+                        for provider_path in provider_paths:
+                            api_response = page.context.request.get(
+                                origin + provider_path,
+                                headers=headers,
+                                timeout=30000,
+                                fail_on_status_code=False,
+                            )
+                            diagnostic = (
+                                f"{provider_path}:status={api_response.status}"
+                            )
+                            if api_response.status == 200:
+                                try:
+                                    payload = api_response.json()
+                                except Exception:
+                                    payload = None
+                                diagnostic += f":shape={_payload_shape(payload)}"
+                                assets = _asset_list(payload)
+                                if assets:
+                                    for asset in assets:
+                                        canonical_assets[_asset_identity(asset)] = asset
+                            if diagnostic not in direct_probe_diagnostics:
+                                direct_probe_diagnostics.append(diagnostic)
+                            captured = canonical_assets or fallback_assets
+                            if captured and (
+                                expected_count is None or len(captured) >= expected_count
+                            ):
+                                break
                 finally:
                     page.close()
 
                 captured = canonical_assets or fallback_assets
-                if captured and (
-                    expected_count is None or len(captured) >= expected_count
-                ):
+                if captured and (expected_count is None or len(captured) >= expected_count):
                     route_mode = "canonical-route" if canonical_assets else "schema-fallback"
                     print(
                         f"MediaSilo assets resolved on attempt {attempt} "
@@ -200,14 +257,16 @@ def capture_assets(
             "MediaSilo assets were not resolved after 3 attempts; "
             f"navigation={final_navigation or ['unavailable']}; "
             f"expected_provider_asset_routes={expected_routes}; "
-            f"observed_provider_json_routes={observed_json_routes}"
+            f"observed_provider_json_routes={observed_json_routes}; "
+            f"direct_asset_probe={direct_probe_diagnostics}"
         )
     if expected_count is not None and len(captured) < expected_count:
         raise RuntimeError(
             "MediaSilo review exposed an incomplete asset set; "
             f"captured={len(captured)} expected_at_least={expected_count}; "
             f"navigation={final_navigation or ['unavailable']}; "
-            f"observed_provider_json_routes={observed_json_routes}"
+            f"observed_provider_json_routes={observed_json_routes}; "
+            f"direct_asset_probe={direct_probe_diagnostics}"
         )
     return list(captured.values())
 
@@ -326,6 +385,8 @@ def self_test() -> None:
         raise AssertionError("MediaSilo provider URL recognition failed")
     if _is_provider_url("https://example.invalid/assets"):
         raise AssertionError("non-MediaSilo provider URL was accepted")
+    if _payload_shape({"assetIds": ["a", "b"]}) != "dict_keys=assetIds":
+        raise AssertionError("MediaSilo diagnostic payload shape is unstable")
     print("MediaSilo canonical review asset resolver self-test: PASS")
 
 
