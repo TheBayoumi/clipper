@@ -152,6 +152,8 @@ def capture_assets(
     canonical_assets: dict[str, dict[str, Any]] = {}
     fallback_assets: dict[str, dict[str, Any]] = {}
     observed_json_routes: list[str] = []
+    observed_data_routes: list[str] = []
+    quicklink_metadata_diagnostics: list[str] = []
     final_navigation: list[str] = []
     quicklink_request_context: list[tuple[str, dict[str, str]] | None] = [None]
     direct_probe_diagnostics: list[str] = []
@@ -173,25 +175,47 @@ def capture_assets(
                 )
 
                 def handle(response: Any) -> None:
+                    resource_type = str(getattr(response.request, "resource_type", "") or "")
+                    route = _sanitized_route(response.url)
+                    if resource_type in {"xhr", "fetch"}:
+                        diagnostic = f"{route}:status={response.status}"
+                        if (
+                            diagnostic not in observed_data_routes
+                            and len(observed_data_routes) < 80
+                        ):
+                            observed_data_routes.append(diagnostic)
+
                     if response.status != 200 or not _is_provider_url(response.url):
                         return
                     content_type = str(response.headers.get("content-type") or "").lower()
                     if "json" not in content_type:
                         return
                     parsed_response_url = urllib.parse.urlparse(response.url)
-                    route = _sanitized_route(response.url)
                     if route not in observed_json_routes and len(observed_json_routes) < 40:
                         observed_json_routes.append(route)
+                    try:
+                        payload = response.json()
+                    except Exception:
+                        return
                     if parsed_response_url.path.rstrip("/") == f"/v3/quicklinks/{review_id}":
                         origin = f"{parsed_response_url.scheme}://{parsed_response_url.netloc}"
                         quicklink_request_context[0] = (
                             origin,
                             _forward_request_headers(response.request),
                         )
-                    try:
-                        assets = _asset_list(response.json())
-                    except Exception:
-                        return
+                        asset_ids = payload.get("assetIds") if isinstance(payload, dict) else None
+                        asset_id_count = len(asset_ids) if isinstance(asset_ids, list) else 0
+                        header_names = sorted(
+                            _forward_request_headers(response.request).keys()
+                        )
+                        diagnostic = (
+                            f"shape={_payload_shape(payload)}:"
+                            f"asset_id_count={asset_id_count}:"
+                            f"request_header_names={header_names}"
+                        )
+                        if diagnostic not in quicklink_metadata_diagnostics:
+                            quicklink_metadata_diagnostics.append(diagnostic)
+                    assets = _asset_list(payload)
                     if not assets:
                         return
                     target = (
@@ -273,6 +297,8 @@ def capture_assets(
             f"navigation={final_navigation or ['unavailable']}; "
             f"expected_provider_asset_routes={expected_routes}; "
             f"observed_provider_json_routes={observed_json_routes}; "
+            f"observed_browser_data_routes={observed_data_routes}; "
+            f"quicklink_metadata={quicklink_metadata_diagnostics}; "
             f"direct_asset_probe={direct_probe_diagnostics}"
         )
     if expected_count is not None and len(captured) < expected_count:
@@ -281,6 +307,8 @@ def capture_assets(
             f"captured={len(captured)} expected_at_least={expected_count}; "
             f"navigation={final_navigation or ['unavailable']}; "
             f"observed_provider_json_routes={observed_json_routes}; "
+            f"observed_browser_data_routes={observed_data_routes}; "
+            f"quicklink_metadata={quicklink_metadata_diagnostics}; "
             f"direct_asset_probe={direct_probe_diagnostics}"
         )
     return list(captured.values())
