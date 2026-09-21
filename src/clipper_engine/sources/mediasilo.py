@@ -214,9 +214,7 @@ def capture_assets(
                                 timeout=30000,
                                 fail_on_status_code=False,
                             )
-                            diagnostic = (
-                                f"{provider_path}:status={api_response.status}"
-                            )
+                            diagnostic = f"{provider_path}:status={api_response.status}"
                             if api_response.status == 200:
                                 try:
                                     payload = api_response.json()
