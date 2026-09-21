@@ -6,7 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-FOLDER_ASSET_PATH = "/folders/3b199368-5974-4eb1-a450-327a4e84c260/assets"
+from . import mediasilo
+
 KNOWN_TITLES = {
     "MW4_BetaTopPlays_Stringout_16X9_R1.mp4": "r1",
     "BestOfBeta_Stringout_Batch2.mp4": "batch2",
@@ -73,51 +74,7 @@ def _assign_keys(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _capture_assets(review_url: str) -> list[dict[str, Any]]:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise RuntimeError("Playwright is required for MediaSilo source discovery") from exc
-
-    holder: list[list[dict[str, Any]] | None] = [None]
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(
-            headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
-        try:
-            for attempt in range(1, 4):
-                page = browser.new_page(
-                    viewport={"width": 1440, "height": 1000},
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/139.0.0.0 Safari/537.36"
-                    ),
-                )
-
-                def handle(response: Any) -> None:
-                    if FOLDER_ASSET_PATH not in response.url or response.status != 200:
-                        return
-                    try:
-                        data = response.json()
-                    except Exception:
-                        return
-                    if isinstance(data, list) and data:
-                        holder[0] = data
-
-                page.on("response", handle)
-                try:
-                    page.goto(review_url, wait_until="domcontentloaded", timeout=90000)
-                    page.wait_for_timeout(30000)
-                finally:
-                    page.close()
-                if holder[0]:
-                    print(f"MediaSilo assets resolved on attempt {attempt}")
-                    break
-        finally:
-            browser.close()
-    if not holder[0]:
-        raise RuntimeError("MediaSilo assets were not resolved after 3 attempts")
-    return holder[0]
+    return mediasilo.capture_assets(review_url)
 
 
 def discover(

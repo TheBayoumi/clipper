@@ -129,6 +129,7 @@ def self_test(profile: GameplayProfile) -> None:
     planning.self_test()
     candidates.self_test()
     allocation.self_test()
+    mediasilo.self_test()
     print(
         json.dumps(
             {
