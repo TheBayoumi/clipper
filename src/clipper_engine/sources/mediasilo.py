@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -137,6 +138,17 @@ def _payload_shape(payload: Any) -> str:
     return type(payload).__name__
 
 
+def _quicklink_is_expired(expires_ms: Any, now_ms: int | None = None) -> bool:
+    if expires_ms in (None, "", 0, "0"):
+        return False
+    try:
+        expires = int(expires_ms)
+    except (TypeError, ValueError):
+        return False
+    current = int(time.time() * 1000) if now_ms is None else now_ms
+    return expires <= current
+
+
 def capture_assets(
     review_url: str,
     expected_count: int | None = None,
@@ -159,6 +171,7 @@ def capture_assets(
     observed_json_routes: list[str] = []
     observed_data_routes: list[str] = []
     quicklink_metadata_diagnostics: list[str] = []
+    quicklink_expiry: list[int | None] = [None]
     final_navigation: list[str] = []
     quicklink_request_context: list[tuple[str, dict[str, str]] | None] = [None]
     direct_probe_diagnostics: list[str] = []
@@ -217,6 +230,10 @@ def capture_assets(
                             if isinstance(payload, dict)
                         }
                         expires = payload.get("expires") if isinstance(payload, dict) else None
+                        try:
+                            quicklink_expiry[0] = int(expires) if expires is not None else None
+                        except (TypeError, ValueError):
+                            quicklink_expiry[0] = None
                         configuration = (
                             payload.get("configuration") if isinstance(payload, dict) else None
                         )
@@ -260,6 +277,11 @@ def capture_assets(
                     ]
 
                     captured = canonical_assets or fallback_assets
+                    if _quicklink_is_expired(quicklink_expiry[0]):
+                        raise RuntimeError(
+                            "MediaSilo public review has expired; "
+                            f"review_id={review_id}; expires_ms={quicklink_expiry[0]}"
+                        )
                     needs_direct_probe = not captured or (
                         expected_count is not None and len(captured) < expected_count
                     )
@@ -268,9 +290,7 @@ def capture_assets(
                         provider_paths = [f"/v3/quicklinks/{review_id}/assets"]
                         if folder_id:
                             provider_paths = [
-                                f"/v3/quicklinks/{review_id}/folders/{folder_id}/assets",
-                                *provider_paths,
-                                f"/v3/folders/{folder_id}/assets",
+                                f"/v3/quicklinks/{review_id}/folders/{folder_id}/assets"
                             ]
                         for provider_path in provider_paths:
                             api_response = page.context.request.get(
@@ -464,6 +484,10 @@ def self_test() -> None:
         raise AssertionError("non-MediaSilo provider URL was accepted")
     if _payload_shape({"assetIds": ["a", "b"]}) != "dict_keys=assetIds":
         raise AssertionError("MediaSilo diagnostic payload shape is unstable")
+    if not _quicklink_is_expired(1_789_932_479_546, now_ms=1_789_932_479_547):
+        raise AssertionError("expired MediaSilo QuickLink was not rejected")
+    if _quicklink_is_expired(1_789_932_479_546, now_ms=1_789_932_479_545):
+        raise AssertionError("active MediaSilo QuickLink was rejected")
 
     class _SyntheticRequest:
         @staticmethod
