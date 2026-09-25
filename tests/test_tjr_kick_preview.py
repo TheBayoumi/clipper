@@ -86,8 +86,7 @@ def test_ranked_clips_must_be_distinct() -> None:
 
 def test_whisper_words_are_grouped_into_short_timed_captions(tmp_path: Path) -> None:
     words = [
-        SimpleNamespace(start=i * 0.6, end=i * 0.6 + 0.48, word=f" word{i}")
-        for i in range(14)
+        SimpleNamespace(start=i * 0.6, end=i * 0.6 + 0.48, word=f" word{i}") for i in range(14)
     ]
     raw = SimpleNamespace(
         start=0.0,
