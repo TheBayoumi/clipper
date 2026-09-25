@@ -11,17 +11,19 @@ automatically eligible for this trading-content campaign.
 Ruff, strict mypy, pytest (95% minimum coverage), a campaign policy check and
 a synthetic FFmpeg render canary on branch pushes and pull requests.
 
-**Real footage is never fetched or rendered on a branch push.** GitHub-hosted
-IP addresses triggered YouTube bot verification when fetching TJR's public
-video, so the real run now uses an explicitly approved mirror of that same
-original. The original video ID is pinned as `8PYgFVB0GHE` on the official
-TJR YouTube channel. Do not replace it with a third-party repost.
+The existing verified Google Drive workflow is available by manual dispatch;
+it requires a known authentic original and a pinned SHA-256. Public YouTube
+downloads previously hit bot verification on GitHub-hosted runners. The
+alternative review-only Kick job attempts direct public VOD acquisition on
+branch pushes; that job must actually produce MP4 artifacts before it can
+be considered successful.
 
 ## Automatic official Kick VOD preview (review only)
 
-A branch push now runs a separate `kick_preview` job in parallel with tests. It attempts two
-**pinned VODs on the official TJR Kick channel**, which the campaign explicitly
-permits, downloads a limited 14-minute original-HD excerpt, transcribes actual
+A branch push runs a separate `kick_preview` job in parallel with tests. It
+discovers currently available VODs through **TJR's official Kick channel feed**
+and extracts their verified HLS URLs, falling back to pinned VODs if necessary.
+It downloads a limited 14-minute original-HD excerpt, transcribes actual
 speech, scores two 20–42-second moments, renders 1080×1920 H.264/AAC MP4s with
 captions, fully decodes each output and uploads MP4/SRT/preview/QA artifacts.
 It does **not** publish, attest live campaign budget or imply Whop approval.
