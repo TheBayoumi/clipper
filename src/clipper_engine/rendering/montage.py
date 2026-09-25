@@ -38,41 +38,62 @@ def _escape_filter_path(path: Path) -> str:
 def filter_graph(
     plan: dict[str, Any], profile: CampaignProfile, title_path: Path, font: Path
 ) -> str:
-    """Single deterministic composition graph over independently certified video pieces."""
+    """Exact-frame preview-hook -> original -> comparison -> final A/B edit."""
     output = profile.config["output"]
     fps = rate(profile)
-    title = str(plan["montage"]["approved_on_screen_text"])
-    width, height = int(output["width"]), int(output["height"])
-    font_size = min(max(8, round(height * 0.037)), max(8, int(width * 1.35 / len(title))))
-    border_size = max(3, round(height * 0.01))
+    edit = plan["montage"]
+    title = edit["title"]
+    source_frames = int(edit["full_source_frames"])
+    hook = edit["hook"]
+    comparison_frames = int(edit["comparison_frames"])
+    ending_frames = int(edit["ending_frames"])
+    font_size = max(8, round(int(output["height"]) * 0.043))
+    padding = max(3, round(int(output["height"]) * 0.012))
+    margin = max(12, round(int(output["width"]) * 0.034))
+    y = max(9, round(int(output["height"]) * 0.054))
     title_filter = (
         "drawtext="
         f"fontfile='{_escape_filter_path(font)}':"
         f"textfile='{_escape_filter_path(title_path)}':"
         f"fontsize={font_size}:fontcolor=white:"
-        f"box=1:boxcolor=black@0.84:boxborderw={border_size}:"
-        "x=(w-text_w)/2:y=36"
+        f"line_spacing={max(2, font_size // 6)}:"
+        f"box=1:boxcolor=black@0.76:boxborderw={padding}:"
+        "expansion=none:"
+        f"x=w-text_w-{margin}:y={y}:"
+        f"enable='between(n,{title['start_frame']},{title['end_frame'] - 1})'"
     )
-    source_frames = int(plan["source"]["frames"])
-    comparison_frames = int(plan["montage"]["comparison_frames"])
-    ending_start = int(plan["montage"]["ending_start_frame"])
+    if title["position"] != "upper_right":
+        raise MontageRejection("invalid_title_position", "unapproved title safe-zone")
+    hstart = float(Fraction(int(hook["start_frame"]), 1) / fps)
+    hend = float(Fraction(int(hook["start_frame"] + hook["frames"]), 1) / fps)
+    hlen = float(Fraction(int(hook["frames"]), 1) / fps)
     source_seconds = float(Fraction(source_frames, 1) / fps)
     comparison_seconds = float(Fraction(comparison_frames, 1) / fps)
-    ending_start_seconds = float(Fraction(ending_start, 1) / fps)
+    ending_seconds = float(Fraction(ending_frames, 1) / fps)
+    # Only audio from the one certified source track, retained at normal playback rate.
+    # Visual switches are under a continuous source-native audio passage to avoid pops.
     return ";".join(
         [
+            "[3:v]setpts=PTS-STARTPTS[vhook]",
             "[0:v]setpts=PTS-STARTPTS[vfull]",
             "[1:v]setpts=PTS-STARTPTS[vcompare]",
             "[2:v]setpts=PTS-STARTPTS[vfinal]",
-            "[vfull][vcompare][vfinal]concat=n=3:v=1:a=0,"
+            "[vhook][vfull][vcompare][vfinal]concat=n=4:v=1:a=0,"
             f"fps={fps.numerator}/{fps.denominator},"
             f"format={output['pixel_format']},{title_filter}[outv]",
-            "[0:a]asplit=3[afull][acompare][afinal]",
-            f"[afull]atrim=start=0:end={source_seconds:.9f},asetpts=PTS-STARTPTS[au0]",
-            f"[acompare]atrim=start=0:end={comparison_seconds:.9f},asetpts=PTS-STARTPTS[au1]",
-            f"[afinal]atrim=start={ending_start_seconds:.9f}:end={source_seconds:.9f},"
-            "asetpts=PTS-STARTPTS[au2]",
-            "[au0][au1][au2]concat=n=3:v=0:a=1,"
+            "[0:a]asplit=4[ahook][afull][acompare][afinal]",
+            f"[ahook]atrim=start={hstart:.9f}:end={hend:.9f},"
+            f"asetpts=PTS-STARTPTS,apad=pad_dur=0.1,atrim=duration={hlen:.9f}[au0]",
+            f"[afull]atrim=start=0:end={source_seconds:.9f},"
+            "asetpts=PTS-STARTPTS,apad=pad_dur=0.1,"
+            f"atrim=duration={source_seconds:.9f}[au1]",
+            f"[acompare]atrim=start=0.8:end={0.8 + comparison_seconds:.9f},"
+            "asetpts=PTS-STARTPTS,apad=pad_dur=0.1,"
+            f"atrim=duration={comparison_seconds:.9f}[au2]",
+            f"[afinal]atrim=start=1.8:end={1.8 + ending_seconds:.9f},"
+            "asetpts=PTS-STARTPTS,apad=pad_dur=0.1,"
+            f"atrim=duration={ending_seconds:.9f}[au3]",
+            "[au0][au1][au2][au3]concat=n=4:v=0:a=1,"
             f"aresample={int(output['audio_sample_rate'])}:async=1:first_pts=0[outa]",
         ]
     )
@@ -112,25 +133,36 @@ def _comparison_piece(
     profile: CampaignProfile,
     source_profile: dict[str, Any],
 ) -> tuple[Path, dict[str, Any]]:
-    """Bounded still extraction avoids buffering the whole 1080p reel four times."""
+    """Full-frame original-size visual-state comparison: wipe or intentional A/B cuts."""
     before, after = workspace / "before.png", workspace / "after.png"
-    _still_frame(staged, int(plan["evidence"]["before_frame"]), before)
-    _still_frame(staged, int(plan["evidence"]["after_frame"]), after)
+    before_frame = int(plan["evidence"]["before_frame"])
+    after_frame = int(plan["evidence"]["after_frame"])
+    _still_frame(staged, before_frame, before)
+    _still_frame(staged, after_frame, after)
     output = profile.config["output"]
     fps = rate(profile)
-    width, height = int(output["width"]), int(output["height"])
-    if width % 2 or height % 2:
-        raise MontageRejection("geometry_invalid", "comparison dimensions must be even")
-    half_width, half_height = width // 2, height // 2
-    pad_y = (height - half_height) // 2
     frames = int(plan["montage"]["comparison_frames"])
+    mode = plan["montage"]["comparison_mode"]
+    if mode == "wipe":
+        # Keep both operator groups full-sized. Start with a readable before state,
+        # wipe in the after state, and let the after state settle before the final beat.
+        wipe_offset = float(Fraction(frames // 6, 1) / fps)
+        wipe_duration = float(Fraction(2 * frames // 3, 1) / fps)
+        transition = (
+            "[left][right]blend=all_expr="
+            f"'if(lte(X/W,(T-{wipe_offset:.9f})/{wipe_duration:.9f}),B,A)'"
+        )
+    elif mode == "cuts":
+        transition = "[left][right]blend=all_expr='if(lt(T,0.45)+between(T,1.05,1.35),A,B)'"
+    else:
+        raise MontageRejection("invalid_comparison_mode", str(mode))
     graph = ";".join(
         [
-            f"[0:v]scale={half_width}:{half_height}:flags=lanczos,"
-            f"pad={half_width}:{height}:0:{pad_y}:black,setsar=1[left]",
-            f"[1:v]scale={half_width}:{half_height}:flags=lanczos,"
-            f"pad={half_width}:{height}:0:{pad_y}:black,setsar=1[right]",
-            f"[left][right]hstack=inputs=2,"
+            f"[0:v]fps={fps.numerator}/{fps.denominator},"
+            "format=yuv420p,setsar=1,setpts=PTS-STARTPTS[left]",
+            f"[1:v]fps={fps.numerator}/{fps.denominator},"
+            "format=yuv420p,setsar=1,setpts=PTS-STARTPTS[right]",
+            f"{transition},trim=end_frame={frames},"
             f"fps={fps.numerator}/{fps.denominator},"
             f"format={output['pixel_format']}[outv]",
         ]
@@ -145,22 +177,20 @@ def _comparison_piece(
             "error",
             "-threads:v",
             "1",
+            "-filter_complex_threads",
+            "1",
             "-framerate",
             str(output["fps"]),
             "-loop",
             "1",
             "-i",
             str(before),
-            "-threads:v",
-            "1",
             "-framerate",
             str(output["fps"]),
             "-loop",
             "1",
             "-i",
             str(after),
-            "-filter_complex_threads",
-            "1",
             "-filter_complex",
             graph,
             "-map",
@@ -174,33 +204,54 @@ def _comparison_piece(
             "-threads:v",
             "1",
             *media.profile_output_args(source_profile),
+            *media.color_metadata_tag_args(source_profile),
             "-f",
             "nut",
             str(path),
         ]
     )
     measured = media.video_profile(path, count_frames=True)
-    if measured["frame_count"] != frames or measured["codec_name"] != "ffv1":
-        raise RuntimeError(f"comparison has wrong frame count or codec: {measured}")
+    dimensions = measured["width"] == int(output["width"]) and measured["height"] == int(
+        output["height"]
+    )
+    if measured["frame_count"] != frames or measured["codec_name"] != "ffv1" or not dimensions:
+        raise RuntimeError(f"full-frame comparison contract failed: {measured}")
     return path, {
-        "before_frame": int(plan["evidence"]["before_frame"]),
-        "after_frame": int(plan["evidence"]["after_frame"]),
+        "before_frame": before_frame,
+        "after_frame": after_frame,
+        "comparison_mode": mode,
         "comparison_frames": frames,
         "frame_count_exact": measured["frame_count"] == frames,
-        "video_codec": measured["codec_name"],
+        "full_frame": dimensions,
+        "no_black_bar_layout": True,
         "source_only": True,
     }
 
 
-def _ending_piece(
+def _source_windows_piece(
     staged: Path,
     workspace: Path,
-    plan: dict[str, Any],
+    filename: str,
+    windows: list[dict[str, Any]],
     source_profile: dict[str, Any],
 ) -> tuple[Path, dict[str, Any]]:
-    start = int(plan["montage"]["ending_start_frame"])
-    frames = int(plan["montage"]["ending_frames"])
-    path = workspace / "ending.nut"
+    """Render calibrated native windows to one FFV1/NUT piece; verify every decoded frame."""
+    if not windows:
+        raise RuntimeError("source windows are empty")
+    total = sum(int(shot["frames"]) for shot in windows)
+    filter_parts = [
+        f"[0:v]split={len(windows)}" + "".join(f"[raw{i}]" for i in range(len(windows)))
+    ]
+    for i, shot in enumerate(windows):
+        start = int(shot["start_frame"])
+        finish = start + int(shot["frames"])
+        filter_parts.append(
+            f"[raw{i}]trim=start_frame={start}:end_frame={finish},setpts=PTS-STARTPTS[cut{i}]"
+        )
+    filter_parts.append(
+        "".join(f"[cut{i}]" for i in range(len(windows))) + f"concat=n={len(windows)}:v=1:a=0[outv]"
+    )
+    path = workspace / filename
     media.run(
         [
             "ffmpeg",
@@ -210,22 +261,24 @@ def _ending_piece(
             "error",
             "-threads:v",
             "1",
+            "-filter_complex_threads",
+            "1",
             "-i",
             str(staged),
-            "-vf",
-            f"trim=start_frame={start}:end_frame={start + frames},setpts=PTS-STARTPTS",
+            "-filter_complex",
+            ";".join(filter_parts),
+            "-map",
+            "[outv]",
             "-vsync",
             "0",
             "-frames:v",
-            str(frames),
+            str(total),
             "-c:v",
             "ffv1",
             "-level",
             "3",
             "-threads:v",
             "1",
-            # The FFV1/NUT stream carries source color tags separately. Forcing
-            # -color_range here can alter decoded pixels before a lossless copy.
             "-pix_fmt",
             str(source_profile["pix_fmt"]),
             *media.color_metadata_tag_args(source_profile),
@@ -236,14 +289,24 @@ def _ending_piece(
         ]
     )
     original = media.frame_hashes(staged, pix_fmt=str(source_profile["pix_fmt"]))
-    piece = media.frame_hashes(path, pix_fmt=str(source_profile["pix_fmt"]))
-    verified = bool(piece) and original[start : start + frames] == piece
+    measured = media.frame_hashes(path, pix_fmt=str(source_profile["pix_fmt"]))
+    expected = [
+        hash_value
+        for shot in windows
+        for hash_value in original[
+            int(shot["start_frame"]) : int(shot["start_frame"]) + int(shot["frames"])
+        ]
+    ]
+    verified = bool(measured) and expected == measured
     if not verified:
-        raise RuntimeError("source->reveal FFV1/NUT decoded frame hashes diverged")
+        raise RuntimeError(f"source->{filename} FFV1/NUT decoded frame hashes diverged")
+    video = media.video_profile(path, count_frames=True)
+    if video["frame_count"] != total or video["codec_name"] != "ffv1":
+        raise RuntimeError(f"{filename} has wrong frame count or codec")
     return path, {
-        "source_window_start_frame": start,
-        "frame_count": len(piece),
-        "source_to_reveal_hashes_exact": verified,
+        "windows": windows,
+        "frame_count": len(measured),
+        "source_to_piece_hashes_exact": verified,
     }
 
 
@@ -318,7 +381,10 @@ def _qa(
         "source_stage_lossless": all(stage["checks"].values()),
         "comparison_from_verified_source_frames": stage["comparison"]["source_only"]
         and stage["comparison"]["frame_count_exact"],
-        "reveal_source_hashes_exact": stage["reveal"]["source_to_reveal_hashes_exact"],
+        "hook_source_hashes_exact": stage["hook"]["source_to_piece_hashes_exact"],
+        "reveal_source_hashes_exact": stage["reveal"]["source_to_piece_hashes_exact"],
+        "full_frame_comparison": stage["comparison"]["full_frame"]
+        and stage["comparison"]["no_black_bar_layout"],
         "canonical_ffv1_nut": canonical_video["codec_name"] == "ffv1" and ffv1._is_nut(canonical),
         "canonical_color_metadata_tags_exact": all(
             canonical_colors.get(field) == value for field, value in source_colors.items()
@@ -375,21 +441,27 @@ def render(
 ) -> dict[str, Any]:
     validate_plan(plan, source, profile)
     output_dir.mkdir(parents=True, exist_ok=True)
-    target = output_dir / "warzone_operator_toggle.mp4"
+    target = output_dir / f"{profile.name}_{plan['montage']['comparison_mode']}.mp4"
     output = profile.config["output"]
     with tempfile.TemporaryDirectory(prefix="clipper-montage-", dir=output_dir) as directory:
         workspace = Path(directory)
         staged = workspace / "source_lossless.nut"
         canonical = workspace / "canonical_montage.nut"
         title = workspace / "approved_title.txt"
-        title.write_text(plan["montage"]["approved_on_screen_text"], encoding="utf-8")
+        title.write_text("\n".join(plan["montage"]["title"]["lines"]), encoding="utf-8")
         staging = ffv1.stage_native_source(source, staged)
         source_profile = staging["source_profile"]
         comparison, comparison_qa = _comparison_piece(
             staged, workspace, plan, profile, source_profile
         )
-        ending, ending_qa = _ending_piece(staged, workspace, plan, source_profile)
+        hook, hook_qa = _source_windows_piece(
+            staged, workspace, "hook.nut", [plan["montage"]["hook"]], source_profile
+        )
+        ending, ending_qa = _source_windows_piece(
+            staged, workspace, "ending.nut", plan["montage"]["ending_shots"], source_profile
+        )
         staging["comparison"] = comparison_qa
+        staging["hook"] = hook_qa
         staging["reveal"] = ending_qa
         graph = filter_graph(plan, profile, title, _fontfile())
         total = float(plan["montage"]["output_seconds"])
@@ -412,6 +484,10 @@ def render(
                 "1",
                 "-i",
                 str(ending),
+                "-threads:v",
+                "1",
+                "-i",
+                str(hook),
                 "-filter_complex_threads",
                 "1",
                 "-filter_complex",

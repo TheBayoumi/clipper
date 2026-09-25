@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 
 from clipper.cli import main
@@ -139,10 +140,10 @@ def test_campaign_cli_stage_routes_to_shared_workflow() -> None:
 def test_plan_frame_grid_preview(source: Path, profile: CampaignProfile) -> None:
     plan = montage.build_plan(source, profile)
     assert plan["status"] == "PREVIEW_ONLY"
-    assert plan["montage"]["output_frames"] == 330
+    assert plan["montage"]["output_frames"] == 315
     assert plan["montage"]["full_source_frames"] == 178
-    assert plan["montage"]["comparison_frames"] == 82
-    assert plan["montage"]["ending_frames"] == 70
+    assert plan["montage"]["comparison_frames"] == 60
+    assert plan["montage"]["ending_frames"] == 62
     assert plan["audio"]["added_music"] is False
     assert plan["evidence"]["verified_transformation"] is True
     montage.validate_plan(plan, source, profile)
@@ -273,7 +274,7 @@ def test_certified_montage_full_stack(
 ) -> None:
     profile, result = full_render
     assert result["status"] == "PASS"
-    assert result["qa"]["encoded_video_frames"] == 330
+    assert result["qa"]["encoded_video_frames"] == 315
     assert 10 <= result["qa"]["encoded_duration_seconds"] <= 12
     assert all(result["staging"]["checks"].values())
     # FFmpeg/x264 builds differ in which color fields they emit for synthetic
@@ -293,7 +294,7 @@ def test_certified_montage_full_stack(
         tmp_path / "acceptance.json",
     )
     assert qualified["status"] == "PASS"
-    assert qualified["encoded_frames"] == 330
+    assert qualified["encoded_frames"] == 315
 
 
 def test_uncertified_preview_cannot_qualify(
@@ -328,13 +329,91 @@ def test_composite_filter_uses_only_source_and_approved_copy(
     text.write_text(approved["montage"]["approved_on_screen_text"])
     with patch.object(renderer, "_fontfile", return_value=Path("/etc/hosts")):
         graph = renderer.filter_graph(approved, profile, text, renderer._fontfile())
+    assert "[3:v]setpts=PTS-STARTPTS[vhook]" in graph
     assert "[0:v]setpts=PTS-STARTPTS[vfull]" in graph
     assert "[1:v]setpts=PTS-STARTPTS[vcompare]" in graph
     assert "[2:v]setpts=PTS-STARTPTS[vfinal]" in graph
-    assert "[vfull][vcompare][vfinal]concat=n=3:v=1:a=0" in graph
-    assert "concat=n=3:v=0:a=1" in graph
-    assert "[0:a]asplit=3" in graph
+    assert "[vhook][vfull][vcompare][vfinal]concat=n=4:v=1:a=0" in graph
+    assert "[0:a]asplit=4" in graph
+    assert "concat=n=4:v=0:a=1" in graph
+    assert "enable='between(n,20,111)'" in graph
     assert "amovie=" not in graph
     assert "drawtext=" in graph
     assert "textfile=" in graph
     assert "[outv]" in graph and "[outa]" in graph
+
+
+@pytest.mark.parametrize(
+    ("mode", "text_choice"),
+    [("wipe", 1), ("cuts", 2)],
+)
+def test_editorial_modes_preserve_approved_text_and_legal_windows(
+    source: Path, profile: CampaignProfile, mode: str, text_choice: int
+) -> None:
+    p = montage.build_plan(source, profile, comparison_mode=mode, approved_text_index=text_choice)
+    montage.validate_plan(p, source, profile)
+    edit = p["montage"]
+    assert edit["comparison_mode"] == mode
+    assert edit["hook"] == {"start_frame": 55, "frames": 15}
+    assert edit["full_source_frames"] == 178
+    assert edit["comparison_frames"] == 60
+    assert edit["ending_frames"] == 62
+    assert edit["output_frames"] == 315
+    assert " ".join(edit["title"]["lines"]) == edit["approved_on_screen_text"]
+    assert edit["title"]["position"] == "upper_right"
+    assert edit["title"]["start_frame"] == 20
+    assert edit["title"]["end_frame"] == 112
+    assert sum(x["frames"] for x in edit["ending_shots"]) == 62
+    assert (
+        edit["approved_on_screen_text"]
+        == profile.config["editorial"]["approved_text"][text_choice - 1]
+    )
+
+
+def test_reject_invalid_mode_and_tampered_approval(source: Path, profile: CampaignProfile) -> None:
+    with pytest.raises(montage.MontageRejection, match="invalid_comparison_mode"):
+        montage.build_plan(source, profile, comparison_mode="half_strip")
+    p = montage.build_plan(source, profile)
+    p["montage"]["title"]["lines"] = ["IMPROVISED HOOK"]
+    with pytest.raises(montage.MontageRejection, match="title_changed"):
+        montage.validate_plan(p, source, profile)
+
+
+def test_alternate_comparison_render_fills_frame(
+    source: Path, profile: CampaignProfile, tmp_path: Path
+) -> None:
+    plan = montage.build_plan(source, profile, comparison_mode="cuts", approved_text_index=2)
+    result = renderer.render(source, profile, plan, tmp_path / "cuts")
+    assert result["status"] == "PREVIEW_ONLY"
+    assert result["qa"]["encoded_video_frames"] == 315
+    assert result["qa"]["checks"]["full_frame_comparison"]
+    assert result["qa"]["checks"]["hook_source_hashes_exact"]
+    assert result["qa"]["checks"]["reveal_source_hashes_exact"]
+    assert result["staging"]["comparison"]["comparison_mode"] == "cuts"
+    frame = (
+        plan["montage"]["hook"]["frames"]
+        + plan["montage"]["full_source_frames"]
+        + plan["montage"]["comparison_frames"] // 2
+    )
+    # The old strip had completely black upper and lower thirds.
+    completed = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(result["file"]),
+            "-vf",
+            f"select=eq(n\\,{frame}),format=gray",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    image = np.frombuffer(completed.stdout, dtype=np.uint8).reshape(180, 320)
+    assert float(np.mean(image[:25, :])) > 12.0
+    assert float(np.mean(image[-25:, :])) > 12.0

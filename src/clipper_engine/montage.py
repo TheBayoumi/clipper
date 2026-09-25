@@ -15,7 +15,7 @@ import numpy.typing as npt
 from . import media_contract as media
 from .profiles import CampaignProfile
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class MontageRejection(ValueError):
@@ -92,6 +92,8 @@ def build_plan(
     source: Path,
     profile: CampaignProfile,
     certified_manifest: dict[str, Any] | None = None,
+    comparison_mode: str = "wipe",
+    approved_text_index: int | None = None,
 ) -> dict[str, Any]:
     """Construct a deterministic, visually justified legal montage before rendering."""
     config = profile.config
@@ -187,17 +189,69 @@ def build_plan(
     high = _frames(editorial["maximum_output_seconds"], fps)
     if not low <= target <= high:
         raise MontageRejection("invalid_duration_config", "preferred duration out of bounds")
-    ending_frames = min(int(Fraction(7, 3) * fps), frame_count - after)
-    comparison_frames = target - frame_count - ending_frames
-    if frame_count >= target or comparison_frames < int(fps):
+    allowed_modes = editorial.get("comparison_modes", ["wipe"])
+    if comparison_mode not in allowed_modes:
         raise MontageRejection(
-            "no_admissible_montage", "insufficient material for meaningful comparison and reveal"
+            "invalid_comparison_mode", f"{comparison_mode} not in {allowed_modes}"
         )
-    selected_text = str(editorial["selected_text"])
+    comparison_frames = _frames(editorial["comparison_seconds"], fps)
+    hook = {
+        "start_frame": int(states["hook_start_frame"]),
+        "frames": int(states["hook_frames"]),
+    }
+    shots = [dict(shot) for shot in states["ending_shots"]]
+    if not shots or [shot["state"] for shot in shots] != ["before", "after", "before", "after"]:
+        raise MontageRejection(
+            "invalid_switch_pattern", "ending requires calibrated A/B/A/B payoff"
+        )
+    for shot in shots:
+        start_frame = int(shot["start_frame"])
+        shot_frames = int(shot["frames"])
+        if shot_frames <= 0 or start_frame < 0 or start_frame + shot_frames > frame_count:
+            raise MontageRejection("ending_window_invalid", "ending shot lies outside source")
+        if shot["state"] == "before" and start_frame + shot_frames >= after:
+            raise MontageRejection(
+                "ending_window_invalid", "before shot includes after-state frames"
+            )
+        if shot["state"] == "after" and start_frame < after:
+            raise MontageRejection(
+                "ending_window_invalid", "after shot precedes verified after-state"
+            )
+    if hook["frames"] <= 0 or not 0 <= hook["start_frame"] < frame_count:
+        raise MontageRejection("hook_window_invalid", "transformation hook is outside source")
+    if hook["start_frame"] + hook["frames"] > frame_count:
+        raise MontageRejection("hook_window_invalid", "transformation hook overruns source")
+    ending_frames = sum(int(shot["frames"]) for shot in shots)
+    if hook["frames"] + frame_count + comparison_frames + ending_frames != target:
+        raise MontageRejection(
+            "no_admissible_montage",
+            "calibrated hook, original, comparison and switch must land on exact target",
+        )
+    if approved_text_index is None:
+        selected_text = str(editorial["selected_text"])
+    else:
+        if not 1 <= approved_text_index <= len(editorial["approved_text"]):
+            raise MontageRejection("unapproved_text", "text index outside approved choices")
+        selected_text = str(editorial["approved_text"][approved_text_index - 1])
     if selected_text not in editorial["approved_text"]:
         raise MontageRejection("unapproved_text", "on-screen text must be an exact approved line")
     if "Carry Forward" in selected_text:
         raise MontageRejection("prohibited_on_screen_copy", "Carry Forward is caption-only")
+    title_lines = editorial["title_lines"].get(selected_text, [])
+    if not isinstance(title_lines, list) or " ".join(title_lines) != selected_text:
+        raise MontageRejection("unapproved_text_layout", "title lines alter approved campaign text")
+    title_start = int(editorial["title_start_frame"])
+    title_end = int(editorial["title_end_frame"])
+    title = {
+        "start_frame": title_start,
+        "end_frame": title_end,
+        "position": str(editorial["title_position"]),
+        "lines": title_lines,
+    }
+    if not 0 <= title_start < title_end <= target:
+        raise MontageRejection("invalid_title_window", "title window outside delivery")
+    if title["position"] != "upper_right":
+        raise MontageRejection("invalid_title_position", "title must clear the source logo")
 
     source_info = {
         "sha256": digest,
@@ -221,11 +275,14 @@ def build_plan(
             "verified_transformation": True,
         },
         "montage": {
-            "type": "source_comparison_reveal",
+            "type": "full_frame_toggle",
+            "comparison_mode": comparison_mode,
+            "hook": hook,
             "full_source_frames": frame_count,
             "comparison_frames": comparison_frames,
-            "ending_start_frame": frame_count - ending_frames,
+            "ending_shots": shots,
             "ending_frames": ending_frames,
+            "title": title,
             "output_frames": target,
             "output_seconds": float(Fraction(target, 1) / fps),
             "approved_on_screen_text": selected_text,
@@ -242,20 +299,64 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
         raise MontageRejection("profile_changed", "regenerate the plan under the current profile")
     if plan.get("source", {}).get("sha256") != sha256(source):
         raise MontageRejection("source_changed", "source digest differs from the approved plan")
+    if plan.get("source", {}).get("fps") != (
+        f"{rate(profile).numerator}/{rate(profile).denominator}"
+    ):
+        raise MontageRejection("source_fps_mismatch", "source rate is not the planned rate")
     montage = plan["montage"]
-    source_frames = int(plan["source"]["frames"])
-    expected = source_frames + int(montage["comparison_frames"]) + int(montage["ending_frames"])
-    target = _frames(profile.config["editorial"]["preferred_output_seconds"], rate(profile))
-    if int(montage["output_frames"]) != expected or target != expected:
-        raise MontageRejection("frame_grid_mismatch", "frame-exact plan is inconsistent")
+    editorial = profile.config["editorial"]
+    states = editorial["verified_visual_states"].get(plan["source"]["filename"])
+    if states is None:
+        raise MontageRejection("uncalibrated_source", "plan source has no verified states")
+    expected_hook = {
+        "start_frame": int(states["hook_start_frame"]),
+        "frames": int(states["hook_frames"]),
+    }
+    expected_shots = [dict(shot) for shot in states["ending_shots"]]
+    if montage["hook"] != expected_hook or montage["ending_shots"] != expected_shots:
+        raise MontageRejection("source_window_changed", "source-native edit windows were modified")
+    if montage.get("type") != "full_frame_toggle":
+        raise MontageRejection("montage_type", "plan must use the legal full-frame edit")
+    if montage.get("comparison_mode") not in editorial["comparison_modes"]:
+        raise MontageRejection("invalid_comparison_mode", "unknown comparison layout")
+    if int(montage["full_source_frames"]) != int(states["source_frames"]):
+        raise MontageRejection("source_frames_changed", "full source is not retained")
+    if int(plan["source"]["frames"]) != int(states["source_frames"]):
+        raise MontageRejection("source_frames_changed", "source frame count differs")
     before = int(plan["evidence"]["before_frame"])
     after = int(plan["evidence"]["after_frame"])
-    if not 0 <= before < after < source_frames:
-        raise MontageRejection("invalid_evidence", "state boundaries are invalid")
-    if int(montage["ending_start_frame"]) != source_frames - int(montage["ending_frames"]):
-        raise MontageRejection("invalid_reveal", "reveal is not a contiguous source-native tail")
-    if montage["approved_on_screen_text"] not in profile.config["editorial"]["approved_text"]:
+    if (before, after) != (int(states["before_frame"]), int(states["after_frame"])):
+        raise MontageRejection("evidence_changed", "visual-state anchors were modified")
+    if int(montage["comparison_frames"]) != _frames(editorial["comparison_seconds"], rate(profile)):
+        raise MontageRejection("frame_grid_mismatch", "comparison differs from profile")
+    expected_ending = sum(int(s["frames"]) for s in expected_shots)
+    expected_frames = (
+        expected_hook["frames"]
+        + int(states["source_frames"])
+        + int(montage["comparison_frames"])
+        + expected_ending
+    )
+    target = _frames(editorial["preferred_output_seconds"], rate(profile))
+    if (
+        int(montage["ending_frames"]) != expected_ending
+        or int(montage["output_frames"]) != expected_frames
+        or target != expected_frames
+    ):
+        raise MontageRejection("frame_grid_mismatch", "frame-exact plan is inconsistent")
+    text = montage["approved_on_screen_text"]
+    if text not in editorial["approved_text"]:
         raise MontageRejection("unapproved_text", "on-screen copy is not approved")
+    title = montage["title"]
+    if (
+        title["lines"] != editorial["title_lines"].get(text)
+        or title["start_frame"] != editorial["title_start_frame"]
+        or title["end_frame"] != editorial["title_end_frame"]
+        or title["position"] != editorial["title_position"]
+        or " ".join(title["lines"]) != text
+    ):
+        raise MontageRejection(
+            "title_changed", "title differs from approved copy/safe-zone schedule"
+        )
     if plan.get("audio") != {
         "policy": "source_audio_only",
         "source_track": "0:a:0",

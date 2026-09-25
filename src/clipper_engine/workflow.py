@@ -81,9 +81,17 @@ def plan(
     source: Path,
     source_qa_path: Path | None,
     output: Path,
+    comparison_mode: str = "wipe",
+    approved_text_index: int | None = None,
 ) -> dict[str, Any]:
     certificate = _certification(source, source_qa_path, profile)
-    result = montage.build_plan(source, profile, certificate)
+    result = montage.build_plan(
+        source,
+        profile,
+        certificate,
+        comparison_mode=comparison_mode,
+        approved_text_index=approved_text_index,
+    )
     _write(output, result)
     return result
 
@@ -178,7 +186,14 @@ def run_campaign(args: argparse.Namespace) -> int:
     elif command == "acquire":
         result = acquire(profile, args.source_key, args.output_dir)
     elif command == "plan":
-        result = plan(profile, args.source, args.source_qa, args.output)
+        result = plan(
+            profile,
+            args.source,
+            args.source_qa,
+            args.output,
+            comparison_mode=args.comparison_mode,
+            approved_text_index=args.approved_text_index,
+        )
     elif command == "render":
         result = render(profile, args.source, args.source_qa, args.plan, args.output_dir)
     elif command == "qualify":

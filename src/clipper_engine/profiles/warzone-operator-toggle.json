@@ -24,7 +24,7 @@
   },
   "editorial": {
     "minimum_output_seconds": 10,
-    "preferred_output_seconds": 11,
+    "preferred_output_seconds": 10.5,
     "maximum_output_seconds": 12,
     "source_audio_only": true,
     "allow_added_music": false,
@@ -40,7 +40,31 @@
         "source_frames": 178,
         "before_frame": 20,
         "after_frame": 108,
-        "verification": "Calibrated against supplied original campaign video; validate against any newly discovered original."
+        "verification": "Calibrated against supplied original campaign video; validate against any newly discovered original.",
+        "hook_start_frame": 55,
+        "hook_frames": 15,
+        "ending_shots": [
+          {
+            "state": "before",
+            "start_frame": 14,
+            "frames": 11
+          },
+          {
+            "state": "after",
+            "start_frame": 120,
+            "frames": 10
+          },
+          {
+            "state": "before",
+            "start_frame": 24,
+            "frames": 7
+          },
+          {
+            "state": "after",
+            "start_frame": 144,
+            "frames": 34
+          }
+        ]
       }
     },
     "visual_state_roi": [
@@ -49,7 +73,29 @@
       0.85,
       0.83
     ],
-    "minimum_changed_pixel_fraction": 0.4
+    "minimum_changed_pixel_fraction": 0.4,
+    "comparison_seconds": 2,
+    "comparison_modes": [
+      "wipe",
+      "cuts"
+    ],
+    "title_start_frame": 20,
+    "title_end_frame": 112,
+    "title_position": "upper_right",
+    "title_lines": {
+      "Operator Toggle Introduced for Call of Duty: Warzone": [
+        "Operator Toggle Introduced",
+        "for Call of Duty: Warzone"
+      ],
+      "Call of Duty: Warzone Season 1 Adds a New Operator Skin Toggle": [
+        "Call of Duty: Warzone Season 1",
+        "Adds a New Operator Skin Toggle"
+      ],
+      "See Call of Duty: Warzone Your Way with the New Operator Skin Toggle": [
+        "See Call of Duty: Warzone Your Way",
+        "with the New Operator Skin Toggle"
+      ]
+    }
   },
   "output": {
     "width": 1920,

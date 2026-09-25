@@ -103,6 +103,28 @@ jobs:
             --render-manifest delivery/render_manifest.json \
             --output delivery/acceptance.json
 
+      - name: Build second approved copy with full-frame A/B cuts
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle plan             --source "$SOURCE_FILE"             --source-qa "source/$SOURCE_KEY.source_qa.json"             --comparison-mode cuts             --approved-text-index 2             --output plan_cuts.json
+
+      - name: Render alternate full-frame A/B montage from certified source
+        timeout-minutes: 35
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle render             --source "$SOURCE_FILE"             --source-qa "source/$SOURCE_KEY.source_qa.json"             --plan plan_cuts.json             --output-dir delivery_cuts
+
+      - name: Qualify alternate A/B original-source contract
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle qualify             --render-manifest delivery_cuts/render_manifest.json             --output delivery_cuts/acceptance.json
+
       - name: Preserve evidence and delivery
         if: always()
         uses: actions/upload-artifact@v4
@@ -112,7 +134,9 @@ jobs:
           retention-days: 30
           path: |
             source_catalog.json
-            plan.json
+            plan*.json
             source/*.source_qa.json
             delivery/*.json
             delivery/*.mp4
+            delivery_cuts/*.json
+            delivery_cuts/*.mp4

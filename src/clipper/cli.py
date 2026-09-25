@@ -101,6 +101,8 @@ def _add_campaign_parser(
     plan = stages.add_parser("plan", help="plan an announcement montage")
     plan.add_argument("--source", type=Path, required=True)
     plan.add_argument("--source-qa", type=Path)
+    plan.add_argument("--comparison-mode", choices=("wipe", "cuts"), default="wipe")
+    plan.add_argument("--approved-text-index", type=int)
     plan.add_argument("--output", type=Path, required=True)
     plan.add_argument("--config", type=Path)
     render = stages.add_parser("render", help="render a planned announcement montage")
