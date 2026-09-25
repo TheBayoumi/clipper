@@ -67,6 +67,12 @@ jobs:
           assert brief["watermark_url"] is None
           print("TJR campaign restrictions: PASS")
           PY
+      - name: Install FFmpeg for HD canary
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
       - name: Render and inspect a synthetic HD FFmpeg canary
         run: |
           set -euo pipefail
