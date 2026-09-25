@@ -19,7 +19,7 @@ TJR YouTube channel. Do not replace it with a third-party repost.
 
 ## Automatic official Kick VOD preview (review only)
 
-A branch push now runs a separate `kick_preview` job after tests. It attempts two
+A branch push now runs a separate `kick_preview` job in parallel with tests. It attempts two
 **pinned VODs on the official TJR Kick channel**, which the campaign explicitly
 permits, downloads a limited 14-minute original-HD excerpt, transcribes actual
 speech, scores two 20–42-second moments, renders 1080×1920 H.264/AAC MP4s with

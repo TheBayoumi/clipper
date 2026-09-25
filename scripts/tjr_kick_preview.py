@@ -17,12 +17,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from clipper.models import ClipCandidate, TranscriptSegment
+from clipper.brief import load_brief
 from clipper.render import FFmpegRenderer
 from clipper.scoring import score_transcript, select_diverse_clips
 from clipper.transcript import transcribe_with_faster_whisper
 from scripts.tjr_quality import check_full_decode, probe_original, probe_video
-from clipper.brief import load_brief
 
 LOGGER = logging.getLogger("tjr-kick")
 # URLs are public VODs on TJR's official Kick channel, an approved Reach source.

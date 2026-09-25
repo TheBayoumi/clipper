@@ -115,7 +115,6 @@ jobs:
 
   kick_preview:
     name: Render real TJR Kick VOD review clips (no publishing)
-    needs: tests
     if: github.event_name == 'push' && github.ref == 'refs/heads/feat/tjr-weekly-hd-actions'
     runs-on: ubuntu-24.04
     timeout-minutes: 75
