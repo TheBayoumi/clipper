@@ -1,8 +1,9 @@
 """Campaign-specific technical and encoding guards."""
 
+import json
 import runpy
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 import yaml
@@ -16,6 +17,9 @@ _tjr_qa = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts" / "
 QualityError = _tjr_qa["QualityError"]
 check_campaign_brief = _tjr_qa["check_campaign_brief"]
 probe_video = _tjr_qa["probe_video"]
+probe_original = _tjr_qa["probe_original"]
+prepare_staged_brief = _tjr_qa["prepare_staged_brief"]
+validate_artifacts = _tjr_qa["validate_artifacts"]
 
 
 @pytest.fixture
@@ -89,3 +93,72 @@ def test_render_fails_closed(tmp_path: Path, name: str, value: str) -> None:
 def test_probe_rejects_missing_file(tmp_path: Path) -> None:
     with pytest.raises(QualityError, match="empty or missing"):
         probe_video(tmp_path / "not-created.mp4")
+
+
+def test_staged_brief_requires_verified_budget_source_and_hash(
+    campaign_brief: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "runtime" / "brief.yaml"
+    url = "https://drive.google.com/file/d/ApprovedFile123/view?usp=sharing"
+    monkeypatch.setenv("TJR_SOURCE_MEDIA_URL", url)
+    monkeypatch.setenv("TJR_SOURCE_MEDIA_SHA256", "a" * 64)
+    with pytest.raises(QualityError, match="confirm live campaign budget"):
+        prepare_staged_brief(campaign_brief, output)
+    monkeypatch.setenv("TJR_BUDGET_CONFIRMED", "true")
+    monkeypatch.setenv("TJR_SOURCE_VERIFIED", "true")
+    assert prepare_staged_brief(campaign_brief, output) == output
+    parsed = check_campaign_brief(output)
+    assert parsed["source_media_urls"] == {"8PYgFVB0GHE": url}
+    monkeypatch.setenv("TJR_SOURCE_MEDIA_SHA256", "invalid-hash")
+    with pytest.raises(QualityError, match="64-character"):
+        prepare_staged_brief(campaign_brief, tmp_path / "invalid.yaml")
+    monkeypatch.setenv("TJR_SOURCE_MEDIA_SHA256", "a" * 64)
+    monkeypatch.setenv("TJR_SOURCE_MEDIA_URL", "https://untrusted.invalid/asset.mp4")
+    with pytest.raises(QualityError, match="Google Drive"):
+        prepare_staged_brief(campaign_brief, tmp_path / "rejected.yaml")
+    assert not (tmp_path / "rejected.yaml").exists()
+
+
+def test_staged_original_must_have_real_hd_resolution(tmp_path: Path) -> None:
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"test source bytes")
+    hd = Mock(stdout=json.dumps({"streams": [
+        {"codec_type": "video", "width": 1920, "height": 1080}
+    ]}))
+    sd = Mock(stdout=json.dumps({"streams": [
+        {"codec_type": "video", "width": 640, "height": 480}
+    ]}))
+    with patch("subprocess.run", return_value=hd):
+        assert probe_original(source) == {"width": 1920, "height": 1080}
+    with patch("subprocess.run", return_value=sd), pytest.raises(
+        QualityError, match="below 720p"
+    ):
+        probe_original(source)
+
+
+def test_staged_original_hash_must_match(
+    campaign_brief: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "TJR_SOURCE_MEDIA_URL",
+        "https://drive.google.com/file/d/ApprovedFile123/view",
+    )
+    monkeypatch.setenv("TJR_SOURCE_MEDIA_SHA256", "a" * 64)
+    monkeypatch.setenv("TJR_BUDGET_CONFIRMED", "true")
+    monkeypatch.setenv("TJR_SOURCE_VERIFIED", "true")
+    runtime = prepare_staged_brief(campaign_brief, tmp_path / "runtime.yaml")
+    run = tmp_path / "artifacts" / "sample"
+    original = run / "work" / "8PYgFVB0GHE" / "source.mp4"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(b"this does not match the pinned SHA-256")
+    (run / "manifest.json").write_text(
+        json.dumps({
+            "errors": [],
+            "discovered_videos": [{"channel_id": "UCGHBUXjDCeiIXNdKR0HUZnA"}],
+            "planned_clips": [{"video_id": "8PYgFVB0GHE"}],
+            "rendered_clips": [{"video_id": "8PYgFVB0GHE"}],
+        }),
+        encoding="utf-8",
+    )
+    with pytest.raises(QualityError, match="hash differs"):
+        validate_artifacts(runtime, tmp_path / "artifacts")
