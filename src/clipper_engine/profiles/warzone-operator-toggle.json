@@ -95,7 +95,8 @@
         "See Call of Duty: Warzone Your Way",
         "with the New Operator Skin Toggle"
       ]
-    }
+    },
+    "audio_declick_ms": 12
   },
   "output": {
     "width": 1920,

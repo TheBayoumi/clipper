@@ -70,6 +70,9 @@ def filter_graph(
     source_seconds = float(Fraction(source_frames, 1) / fps)
     comparison_seconds = float(Fraction(comparison_frames, 1) / fps)
     ending_seconds = float(Fraction(ending_frames, 1) / fps)
+    fade = float(profile.config["editorial"].get("audio_declick_ms", 12)) / 1000.0
+    if not 0.002 <= fade <= min(hlen, comparison_seconds, ending_seconds) / 4:
+        raise MontageRejection("audio_declick_invalid", "source-only edit-edge fade out of range")
     # Only audio from the one certified source track, retained at normal playback rate.
     # Visual switches are under a continuous source-native audio passage to avoid pops.
     return ";".join(
@@ -83,16 +86,24 @@ def filter_graph(
             f"format={output['pixel_format']},{title_filter}[outv]",
             "[0:a]asplit=4[ahook][afull][acompare][afinal]",
             f"[ahook]atrim=start={hstart:.9f}:end={hend:.9f},"
-            f"asetpts=PTS-STARTPTS,apad=pad_dur=0.1,atrim=duration={hlen:.9f}[au0]",
+            f"asetpts=PTS-STARTPTS,apad=pad_dur=0.1,atrim=duration={hlen:.9f},"
+            f"afade=t=in:st=0:d={fade:.4f},"
+            f"afade=t=out:st={hlen - fade:.9f}:d={fade:.4f}[au0]",
             f"[afull]atrim=start=0:end={source_seconds:.9f},"
             "asetpts=PTS-STARTPTS,apad=pad_dur=0.1,"
-            f"atrim=duration={source_seconds:.9f}[au1]",
+            f"atrim=duration={source_seconds:.9f},"
+            f"afade=t=in:st=0:d={fade:.4f},"
+            f"afade=t=out:st={source_seconds - fade:.9f}:d={fade:.4f}[au1]",
             f"[acompare]atrim=start=0.8:end={0.8 + comparison_seconds:.9f},"
             "asetpts=PTS-STARTPTS,apad=pad_dur=0.1,"
-            f"atrim=duration={comparison_seconds:.9f}[au2]",
+            f"atrim=duration={comparison_seconds:.9f},"
+            f"afade=t=in:st=0:d={fade:.4f},"
+            f"afade=t=out:st={comparison_seconds - fade:.9f}:d={fade:.4f}[au2]",
             f"[afinal]atrim=start=1.8:end={1.8 + ending_seconds:.9f},"
             "asetpts=PTS-STARTPTS,apad=pad_dur=0.1,"
-            f"atrim=duration={ending_seconds:.9f}[au3]",
+            f"atrim=duration={ending_seconds:.9f},"
+            f"afade=t=in:st=0:d={fade:.4f},"
+            f"afade=t=out:st={ending_seconds - fade:.9f}:d={fade:.4f}[au3]",
             "[au0][au1][au2][au3]concat=n=4:v=0:a=1,"
             f"aresample={int(output['audio_sample_rate'])}:async=1:first_pts=0[outa]",
         ]
@@ -149,8 +160,8 @@ def _comparison_piece(
         wipe_offset = float(Fraction(frames // 6, 1) / fps)
         wipe_duration = float(Fraction(2 * frames // 3, 1) / fps)
         transition = (
-            "[left][right]blend=all_expr="
-            f"'if(lte(X/W,(T-{wipe_offset:.9f})/{wipe_duration:.9f}),B,A)'"
+            "[left][right]xfade=transition=wiperight:"
+            f"duration={wipe_duration:.9f}:offset={wipe_offset:.9f}"
         )
     elif mode == "cuts":
         transition = "[left][right]blend=all_expr='if(lt(T,0.45)+between(T,1.05,1.35),A,B)'"
@@ -158,10 +169,10 @@ def _comparison_piece(
         raise MontageRejection("invalid_comparison_mode", str(mode))
     graph = ";".join(
         [
-            f"[0:v]fps={fps.numerator}/{fps.denominator},"
-            "format=yuv420p,setsar=1,setpts=PTS-STARTPTS[left]",
-            f"[1:v]fps={fps.numerator}/{fps.denominator},"
-            "format=yuv420p,setsar=1,setpts=PTS-STARTPTS[right]",
+            f"[0:v]format=yuv420p,setsar=1,setpts=PTS-STARTPTS,"
+            f"fps={fps.numerator}/{fps.denominator}[left]",
+            f"[1:v]format=yuv420p,setsar=1,setpts=PTS-STARTPTS,"
+            f"fps={fps.numerator}/{fps.denominator}[right]",
             f"{transition},trim=end_frame={frames},"
             f"fps={fps.numerator}/{fps.denominator},"
             f"format={output['pixel_format']}[outv]",

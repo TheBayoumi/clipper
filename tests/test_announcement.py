@@ -337,6 +337,8 @@ def test_composite_filter_uses_only_source_and_approved_copy(
     assert "[0:a]asplit=4" in graph
     assert "concat=n=4:v=0:a=1" in graph
     assert "enable='between(n,20,111)'" in graph
+    assert graph.count("afade=t=in") == 4
+    assert graph.count("afade=t=out") == 4
     assert "amovie=" not in graph
     assert "drawtext=" in graph
     assert "textfile=" in graph
