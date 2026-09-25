@@ -67,6 +67,44 @@ jobs:
           assert brief["watermark_url"] is None
           print("TJR campaign restrictions: PASS")
           PY
+      - name: Render and inspect a synthetic HD FFmpeg canary
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tjr-ffmpeg-canary
+          ffmpeg -nostdin -v error -y \
+            -f lavfi -i testsrc2=size=1280x720:rate=30 \
+            -f lavfi -i sine=frequency=440:sample_rate=48000 \
+            -t 2 -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+            -c:a aac /tmp/tjr-ffmpeg-canary/source.mp4
+          CLIPPER_RENDER_PRESET=medium CLIPPER_RENDER_THREADS=2 python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+          from clipper.models import ClipCandidate, TranscriptSegment
+          from clipper.render import FFmpegRenderer
+
+          root = Path("/tmp/tjr-ffmpeg-canary")
+          source, output = root / "source.mp4", root / "output.mp4"
+          FFmpegRenderer().render(
+              source, output,
+              ClipCandidate("synthetic-canary", 0, 2, "Synthetic QA only", 1.0),
+              [TranscriptSegment(0, 2, "Synthetic QA only - do not publish")],
+          )
+          probe = subprocess.run(
+              ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)],
+              capture_output=True, text=True, check=True,
+          )
+          streams = json.loads(probe.stdout)["streams"]
+          video = next(s for s in streams if s["codec_type"] == "video")
+          assert (video["width"], video["height"]) == (1080, 1920)
+          assert video["codec_name"] == "h264" and video["pix_fmt"] == "yuv420p"
+          assert any(s["codec_type"] == "audio" for s in streams)
+          subprocess.run(
+              ["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i",
+               str(output), "-f", "null", "-"], check=True,
+          )
+          print("Synthetic HD render and full media decode: PASS")
+          PY
 
   render:
     name: Render and QA real TJR HD clips
