@@ -1,0 +1,47 @@
+# Reach TJR Weekly. Reviewed against https://reachclipping.com/TJR (2026-09-25).
+# This authorizes only TJR's own verified YouTube channel, not third-party reposts.
+campaign_id: reach-tjr-weekly-20260925
+title: TJR
+objective: Find self-contained funny reactions, memorable quotes, trading psychology and authentic risk-management moments featuring TJR, with context intact.
+keywords:
+  - trading
+  - mindset
+  - risk
+  - loss
+  - money
+  - discipline
+  - reaction
+negative_keywords:
+  - guaranteed returns
+  - risk free
+required_phrases: []
+language: en
+region_code: US
+clip_count: 3
+min_clip_seconds: 20
+max_clip_seconds: 42
+source_limit: 6
+max_clips_per_source: 1
+published_after: "2026-08-01T00:00:00Z"
+source_channel_ids:
+  - UCGHBUXjDCeiIXNdKR0HUZnA # https://www.youtube.com/@TJRTrades
+allowed_video_ids: []
+source_media_urls: {}
+# Official campaign permits any video, stream or clip featuring TJR.
+# Keep source channel allow-listed to avoid unrelated reposts.
+rights_confirmed: true
+attribution_required: true
+watermark_text: null
+watermark_url: null
+required_hashtags:
+  - "#TJR"
+posting_requirements:
+  - "Video must feature TJR and must not portray him negatively."
+  - "No added logos, watermarks, AI-generated footage or AI-generated voices."
+  - "Only TikTok, Instagram Reels or YouTube Shorts."
+  - "At least 50% of the audience from USA, Canada, UK, Australia and New Zealand."
+  - "For new accounts, use TJR-related or trading-related branding."
+  - "Minimum 5000 views and Reach manual approval for payout."
+  - "Connect social account to Whop and submit link within 30 minutes of posting."
+  - "Never buy, manipulate or exchange views, likes or engagement."
+  - "Verify remaining campaign budget and eligibility in Whop before publishing."
