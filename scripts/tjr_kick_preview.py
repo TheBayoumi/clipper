@@ -19,12 +19,33 @@ from typing import Any
 from urllib.parse import urlparse
 
 from clipper.brief import load_brief
+from clipper.models import ClipCandidate, TranscriptSegment
 from clipper.render import FFmpegRenderer
 from clipper.scoring import score_transcript, select_diverse_clips
 from clipper.transcript import transcribe_with_faster_whisper
 from scripts.tjr_quality import check_full_decode, probe_original, probe_video
 
 LOGGER = logging.getLogger("tjr-kick")
+HIGH_RISK_SPEECH = re.compile(r"\b(?:retard(?:ed)?|dumbass)\b", re.IGNORECASE)
+
+
+def skip_high_risk_context(
+    candidates: list[ClipCandidate],
+    transcript: list[TranscriptSegment],
+) -> list[ClipCandidate]:
+    """Reject windows touching an abusive/slur segment, including boundary bleed."""
+    flagged = [
+        (max(0.0, segment.start - 0.75), segment.end + 0.75)
+        for segment in transcript
+        if HIGH_RISK_SPEECH.search(segment.text)
+    ]
+    return [
+        candidate
+        for candidate in candidates
+        if not any(candidate.start < end and candidate.end > start for start, end in flagged)
+    ]
+
+
 # URLs are public VODs on TJR's official Kick channel, an approved Reach source.
 PINNED_VODS = (
     "https://kick.com/tjr/videos/01a0aa4e-7680-7082-ae4f-62301f7a038b",
@@ -261,7 +282,9 @@ def render_preview(root: Path, brief_path: Path) -> Path:
         if not transcript:
             raise RuntimeError("source has no identifiable English speech")
         source_id = assert_official_vod(selected_url, allow_unpinned=True)
-        candidates = score_transcript(brief, source_id, transcript, limit=30)
+        candidates = skip_high_risk_context(
+            score_transcript(brief, source_id, transcript, limit=60), transcript
+        )
         chosen = select_diverse_clips(candidates, clip_count=2, max_per_source=2)
         if not chosen:
             raise RuntimeError("no 20-42 second spoken excerpts met campaign timing rules")
