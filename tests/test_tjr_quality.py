@@ -122,17 +122,15 @@ def test_staged_brief_requires_verified_budget_source_and_hash(
 def test_staged_original_must_have_real_hd_resolution(tmp_path: Path) -> None:
     source = tmp_path / "source.mp4"
     source.write_bytes(b"test source bytes")
-    hd = Mock(stdout=json.dumps({"streams": [
-        {"codec_type": "video", "width": 1920, "height": 1080}
-    ]}))
-    sd = Mock(stdout=json.dumps({"streams": [
-        {"codec_type": "video", "width": 640, "height": 480}
-    ]}))
+    hd = Mock(
+        stdout=json.dumps({"streams": [{"codec_type": "video", "width": 1920, "height": 1080}]})
+    )
+    sd = Mock(
+        stdout=json.dumps({"streams": [{"codec_type": "video", "width": 640, "height": 480}]})
+    )
     with patch("subprocess.run", return_value=hd):
         assert probe_original(source) == {"width": 1920, "height": 1080}
-    with patch("subprocess.run", return_value=sd), pytest.raises(
-        QualityError, match="below 720p"
-    ):
+    with patch("subprocess.run", return_value=sd), pytest.raises(QualityError, match="below 720p"):
         probe_original(source)
 
 
@@ -152,12 +150,14 @@ def test_staged_original_hash_must_match(
     original.parent.mkdir(parents=True)
     original.write_bytes(b"this does not match the pinned SHA-256")
     (run / "manifest.json").write_text(
-        json.dumps({
-            "errors": [],
-            "discovered_videos": [{"channel_id": "UCGHBUXjDCeiIXNdKR0HUZnA"}],
-            "planned_clips": [{"video_id": "8PYgFVB0GHE"}],
-            "rendered_clips": [{"video_id": "8PYgFVB0GHE"}],
-        }),
+        json.dumps(
+            {
+                "errors": [],
+                "discovered_videos": [{"channel_id": "UCGHBUXjDCeiIXNdKR0HUZnA"}],
+                "planned_clips": [{"video_id": "8PYgFVB0GHE"}],
+                "rendered_clips": [{"video_id": "8PYgFVB0GHE"}],
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(QualityError, match="hash differs"):
