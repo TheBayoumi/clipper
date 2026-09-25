@@ -72,6 +72,7 @@ def test_tjr_hd_render_profile(tmp_path: Path) -> None:
     assert command[command.index("-crf") + 1] == "18"
     assert command[command.index("-threads") + 1] == "2"
     assert "scale=1080:1920" in " ".join(command)
+    assert "setsar=1" in " ".join(command)
 
 
 @pytest.mark.parametrize(
