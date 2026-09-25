@@ -7,6 +7,7 @@ on:
       - ".github/workflows/tjr-weekly-hd.yml"
       - "campaigns/reach-tjr-weekly.yaml"
       - "scripts/tjr_quality.py"
+      - "scripts/tjr_kick_preview.py"
       - "src/clipper/render.py"
       - "src/clipper/youtube.py"
       - "tests/test_tjr_quality.py"
@@ -111,6 +112,51 @@ jobs:
           )
           print("Synthetic HD render and full media decode: PASS")
           PY
+
+  kick_preview:
+    name: Render real TJR Kick VOD review clips (no publishing)
+    needs: tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/tjr-weekly-hd-actions'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      CLIPPER_RENDER_PRESET: medium
+      CLIPPER_RENDER_CRF: "18"
+      CLIPPER_RENDER_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install FFmpeg and source/transcription dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python -m pip install -e ".[asr]"
+          yt-dlp --version
+      - name: Download official TJR Kick VOD and render real HD drafts
+        run: |
+          set -euo pipefail
+          python -m scripts.tjr_kick_preview \
+            --artifact-root tjr-artifacts \
+            --brief campaigns/reach-tjr-weekly.yaml
+      - name: Upload MP4s, SRTs, preview frames, QA and source diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-real-kick-hd-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tjr-artifacts/**/clips/*.mp4
+            tjr-artifacts/**/clips/*.srt
+            tjr-artifacts/**/clips/*-preview.png
+            tjr-artifacts/**/tjr-qa-report.json
+            tjr-artifacts/**/source-acquisition-errors.json
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: warn
 
   render:
     name: Render and QA real TJR HD clips

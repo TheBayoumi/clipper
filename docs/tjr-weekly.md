@@ -17,6 +17,18 @@ video, so the real run now uses an explicitly approved mirror of that same
 original. The original video ID is pinned as `8PYgFVB0GHE` on the official
 TJR YouTube channel. Do not replace it with a third-party repost.
 
+## Automatic official Kick VOD preview (review only)
+
+A branch push now runs a separate `kick_preview` job after tests. It attempts two
+**pinned VODs on the official TJR Kick channel**, which the campaign explicitly
+permits, downloads a limited 14-minute original-HD excerpt, transcribes actual
+speech, scores two 20–42-second moments, renders 1080×1920 H.264/AAC MP4s with
+captions, fully decodes each output and uploads MP4/SRT/preview/QA artifacts.
+It does **not** publish, attest live campaign budget or imply Whop approval.
+The older user-supplied Google Drive workflow remains available separately if
+public VOD acquisition fails. Any source or render failure is visible in GitHub
+Actions logs and the error diagnostics artifact.
+
 ## One-time source setup for a real campaign render
 
 1. Independently obtain the authentic source video from the campaign-permitted
