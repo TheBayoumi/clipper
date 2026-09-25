@@ -2,9 +2,9 @@
 
 import runpy
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from pathlib import Path
 
 import pytest
 
@@ -89,7 +89,12 @@ def test_whisper_words_are_grouped_into_short_timed_captions(tmp_path: Path) -> 
         SimpleNamespace(start=i * 0.6, end=i * 0.6 + 0.48, word=f" word{i}")
         for i in range(14)
     ]
-    raw = SimpleNamespace(start=0.0, end=8.3, text=" ".join(f"word{i}" for i in range(14)), words=words)
+    raw = SimpleNamespace(
+        start=0.0,
+        end=8.3,
+        text=" ".join(f"word{i}" for i in range(14)),
+        words=words,
+    )
     model = Mock()
     model.transcribe.return_value = (iter([raw]), None)
     fake = SimpleNamespace(WhisperModel=Mock(return_value=model))

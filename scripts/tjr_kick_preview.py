@@ -78,7 +78,9 @@ def transcribe_tjr_words(source: Path) -> list[TranscriptSegment]:
         if not words:
             if segment.text.strip() and segment.end > segment.start:
                 captions.append(
-                    TranscriptSegment(float(segment.start), float(segment.end), segment.text.strip())
+                    TranscriptSegment(
+                        float(segment.start), float(segment.end), segment.text.strip()
+                    )
                 )
             continue
         group: list[Any] = []
