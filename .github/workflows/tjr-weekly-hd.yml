@@ -19,6 +19,17 @@ on:
       - "src/clipper/**"
       - "tests/**"
   workflow_dispatch:
+    inputs:
+      budget_confirmed:
+        description: "I checked Whop and the TJR campaign is accepting submissions with budget."
+        required: true
+        type: boolean
+        default: false
+      source_verified:
+        description: "I verified the staged video is authentic authorized TJR footage."
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -60,11 +71,14 @@ jobs:
   render:
     name: Render and QA real TJR HD clips
     needs: tests
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
-      YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+      TJR_SOURCE_MEDIA_URL: ${{ secrets.TJR_SOURCE_MEDIA_URL }}
+      TJR_SOURCE_MEDIA_SHA256: ${{ secrets.TJR_SOURCE_MEDIA_SHA256 }}
+      TJR_BUDGET_CONFIRMED: ${{ inputs.budget_confirmed }}
+      TJR_SOURCE_VERIFIED: ${{ inputs.source_verified }}
       CLIPPER_WHISPER_MODEL: small.en
       CLIPPER_WHISPER_DEVICE: cpu
       CLIPPER_WHISPER_COMPUTE_TYPE: int8
@@ -85,16 +99,22 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
           python -m pip install -e ".[asr]"
           ffmpeg -version | head -n 1
+      - name: Prepare verified staged TJR original (secret URL and SHA-256)
+        run: |
+          set -euo pipefail
+          python scripts/tjr_quality.py --prepare \
+            --brief campaigns/reach-tjr-weekly.yaml \
+            --output-brief tjr-runtime/brief.yaml
       - name: Execute rights-gated TJR source pipeline
         run: |
           set -euo pipefail
-          clipper validate --brief campaigns/reach-tjr-weekly.yaml
-          clipper run --brief campaigns/reach-tjr-weekly.yaml --artifact-root tjr-artifacts
+          clipper validate --brief tjr-runtime/brief.yaml > /dev/null
+          clipper run --brief tjr-runtime/brief.yaml --artifact-root tjr-artifacts
       - name: Technical acceptance and full decode
         run: |
           set -euo pipefail
           python scripts/tjr_quality.py \
-            --brief campaigns/reach-tjr-weekly.yaml \
+            --brief tjr-runtime/brief.yaml \
             --artifact-root tjr-artifacts
           while IFS= read -r -d '' clip; do
             ffmpeg -nostdin -v error -ss 3 -i "$clip" -frames:v 1 \
@@ -107,7 +127,6 @@ jobs:
           name: tjr-weekly-hd-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             tjr-artifacts/**/manifest.json
-            tjr-artifacts/**/brief.normalized.json
             tjr-artifacts/**/tjr-qa-report.json
             tjr-artifacts/**/clips/*.mp4
             tjr-artifacts/**/clips/*.srt
