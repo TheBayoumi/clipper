@@ -81,7 +81,7 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/tjr-ffmpeg-canary
           ffmpeg -nostdin -v error -y \
-            -f lavfi -i testsrc2=size=1280x720:rate=30 \
+            -f lavfi -i "testsrc2=size=1280x720:rate=30,setsar=4/3" \
             -f lavfi -i sine=frequency=440:sample_rate=48000 \
             -t 2 -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
             -c:a aac /tmp/tjr-ffmpeg-canary/source.mp4
@@ -107,6 +107,7 @@ jobs:
           video = next(s for s in streams if s["codec_type"] == "video")
           assert (video["width"], video["height"]) == (1080, 1920)
           assert video["codec_name"] == "h264" and video["pix_fmt"] == "yuv420p"
+          assert video.get("sample_aspect_ratio") == "1:1"
           assert any(s["codec_type"] == "audio" for s in streams)
           subprocess.run(
               ["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i",
