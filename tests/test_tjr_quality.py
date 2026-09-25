@@ -9,6 +9,7 @@ import yaml
 
 from clipper.models import ClipCandidate
 from clipper.render import RenderError, build_ffmpeg_command
+
 # pytest's entrypoint does not always include the repository root in sys.path.
 # Load the standalone workflow script from its explicit repository-relative path.
 _tjr_qa = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts" / "tjr_quality.py"))
