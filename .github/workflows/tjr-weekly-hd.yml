@@ -55,17 +55,6 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install -e ".[dev]"
-      - name: Export correctly formatted Kick implementation for final commit
-        run: |
-          ruff format .
-          python - <<'PY'
-          import base64
-          from pathlib import Path
-
-          for filename in ("scripts/tjr_kick_preview.py", "tests/test_tjr_kick_preview.py"):
-              content = Path(filename).read_bytes()
-              print("RUFF_FORMAT_EXPORT|" + filename + "|" + base64.b64encode(content).decode())
-          PY
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy
