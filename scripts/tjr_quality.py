@@ -75,10 +75,7 @@ def check_campaign_brief(path: Path) -> dict[str, Any]:
 
 def prepare_staged_brief(template: Path, output: Path) -> Path:
     """Prepare private runtime brief after explicit manual campaign/source verification."""
-    if (
-        os.getenv("TJR_BUDGET_CONFIRMED") != "true"
-        or os.getenv("TJR_SOURCE_VERIFIED") != "true"
-    ):
+    if os.getenv("TJR_BUDGET_CONFIRMED") != "true" or os.getenv("TJR_SOURCE_VERIFIED") != "true":
         raise QualityError("confirm live campaign budget and authentic TJR source")
     sha = os.getenv("TJR_SOURCE_MEDIA_SHA256", "")
     if not re.fullmatch(r"[0-9a-fA-F]{64}", sha):
