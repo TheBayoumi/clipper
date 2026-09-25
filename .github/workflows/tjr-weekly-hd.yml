@@ -1,0 +1,117 @@
+name: TJR Weekly HD clipping
+
+on:
+  push:
+    branches: [feat/tjr-weekly-hd-actions]
+    paths:
+      - ".github/workflows/tjr-weekly-hd.yml"
+      - "campaigns/reach-tjr-weekly.yaml"
+      - "scripts/tjr_quality.py"
+      - "src/clipper/render.py"
+      - "src/clipper/youtube.py"
+      - "tests/test_tjr_quality.py"
+      - "tests/test_render.py"
+  pull_request:
+    paths:
+      - ".github/workflows/tjr-weekly-hd.yml"
+      - "campaigns/reach-tjr-weekly.yaml"
+      - "scripts/tjr_quality.py"
+      - "src/clipper/**"
+      - "tests/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tjr-hd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    name: Validate source, policy and code
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy
+      - run: pytest
+      - name: Validate campaign rules
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from scripts.tjr_quality import check_campaign_brief
+
+          brief = check_campaign_brief(Path("campaigns/reach-tjr-weekly.yaml"))
+          assert brief["required_hashtags"] == ["#TJR"]
+          assert brief["watermark_url"] is None
+          print("TJR campaign restrictions: PASS")
+          PY
+
+  render:
+    name: Render and QA real TJR HD clips
+    needs: tests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+      CLIPPER_WHISPER_MODEL: small.en
+      CLIPPER_WHISPER_DEVICE: cpu
+      CLIPPER_WHISPER_COMPUTE_TYPE: int8
+      CLIPPER_RENDER_PRESET: slow
+      CLIPPER_RENDER_CRF: "18"
+      CLIPPER_RENDER_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install FFmpeg and clipper
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python -m pip install -e ".[asr]"
+          ffmpeg -version | head -n 1
+      - name: Execute rights-gated TJR source pipeline
+        run: |
+          set -euo pipefail
+          clipper validate --brief campaigns/reach-tjr-weekly.yaml
+          clipper run --brief campaigns/reach-tjr-weekly.yaml --artifact-root tjr-artifacts
+      - name: Technical acceptance and full decode
+        run: |
+          set -euo pipefail
+          python scripts/tjr_quality.py \
+            --brief campaigns/reach-tjr-weekly.yaml \
+            --artifact-root tjr-artifacts
+          while IFS= read -r -d '' clip; do
+            ffmpeg -nostdin -v error -ss 3 -i "$clip" -frames:v 1 \
+              -y "${clip%.mp4}-preview.png"
+          done < <(find tjr-artifacts -path '*/clips/*.mp4' -print0)
+      - name: Upload clips, source manifest and QA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-weekly-hd-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tjr-artifacts/**/manifest.json
+            tjr-artifacts/**/brief.normalized.json
+            tjr-artifacts/**/tjr-qa-report.json
+            tjr-artifacts/**/clips/*.mp4
+            tjr-artifacts/**/clips/*.srt
+            tjr-artifacts/**/clips/*-preview.png
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: warn

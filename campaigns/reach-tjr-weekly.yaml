@@ -17,15 +17,16 @@ negative_keywords:
 required_phrases: []
 language: en
 region_code: US
-clip_count: 3
+clip_count: 2
 min_clip_seconds: 20
 max_clip_seconds: 42
-source_limit: 6
-max_clips_per_source: 1
-published_after: "2026-08-01T00:00:00Z"
+source_limit: 1
+max_clips_per_source: 2
+published_after: "2026-05-01T00:00:00Z"
 source_channel_ids:
   - UCGHBUXjDCeiIXNdKR0HUZnA # https://www.youtube.com/@TJRTrades
-allowed_video_ids: []
+allowed_video_ids:
+  - 8PYgFVB0GHE # Official TJR June 2026 trading video; clip footage must show TJR
 source_media_urls: {}
 # Official campaign permits any video, stream or clip featuring TJR.
 # Keep source channel allow-listed to avoid unrelated reposts.

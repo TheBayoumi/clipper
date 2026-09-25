@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -61,6 +62,16 @@ def build_ffmpeg_command(
     width: int = 1080,
     height: int = 1920,
 ) -> list[str]:
+    preset = os.getenv("CLIPPER_RENDER_PRESET", "ultrafast").strip().lower()
+    if preset not in {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"}:
+        raise RenderError("CLIPPER_RENDER_PRESET is not an allowed x264 preset")
+    try:
+        crf = int(os.getenv("CLIPPER_RENDER_CRF", "20"))
+        threads = int(os.getenv("CLIPPER_RENDER_THREADS", "1"))
+    except ValueError as exc:
+        raise RenderError("render CRF and threads must be integers") from exc
+    if not 16 <= crf <= 28 or not 1 <= threads <= 4:
+        raise RenderError("render CRF must be 16-28 and threads must be 1-4")
     escaped_subtitles = _escape_filter_path(Path(subtitle_path))
     blur_width = max(180, width // 3)
     blur_height = max(320, height // 3)
@@ -110,11 +121,11 @@ def build_ffmpeg_command(
         "-c:v",
         "libx264",
         "-preset",
-        "ultrafast",
+        preset,
         "-crf",
-        "20",
+        str(crf),
         "-threads",
-        "1",
+        str(threads),
         "-c:a",
         "aac",
         "-b:a",

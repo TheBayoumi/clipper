@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from fractions import Fraction
@@ -33,8 +34,16 @@ def check_campaign_brief(path: Path) -> dict[str, Any]:
         raise QualityError("campaign brief is not an object")
     if data.get("source_channel_ids") != [OFFICIAL_TJR_CHANNEL]:
         raise QualityError("source must be restricted to TJR's verified YouTube channel")
-    if data.get("allowed_video_ids") or data.get("source_media_urls"):
-        raise QualityError("video overrides require separate rights and creator verification")
+    video_ids = data.get("allowed_video_ids", [])
+    if (
+        not isinstance(video_ids, list)
+        or not all(isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{11}", v)
+                   for v in video_ids)
+        or len(video_ids) != len(set(video_ids))
+    ):
+        raise QualityError("allowed_video_ids must be unique YouTube video IDs")
+    if data.get("source_media_urls"):
+        raise QualityError("unverified direct source media is not permitted")
     if data.get("rights_confirmed") is not True:
         raise QualityError("campaign clipping permission has not been verified")
     if data.get("watermark_text") or data.get("watermark_url"):
@@ -125,6 +134,11 @@ def validate_artifacts(brief: Path, artifact_root: Path) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("errors"):
         raise QualityError(f"pipeline errors: {manifest['errors']}")
+    discovered = manifest.get("discovered_videos", [])
+    if not discovered or any(
+        video.get("channel_id") != OFFICIAL_TJR_CHANNEL for video in discovered
+    ):
+        raise QualityError("all discovered sources must be TJR's verified channel")
     planned = manifest.get("planned_clips") or []
     rendered = manifest.get("rendered_clips") or []
     if not planned or len(planned) != len(rendered):
