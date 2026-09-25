@@ -4,6 +4,7 @@
 Source acquisition is public and provenance-pinned. This command does NOT
 verify Whop eligibility, authorize publishing, or certify editorial quality.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -90,14 +91,10 @@ def _official_vod_feed() -> list[dict[str, Any]]:
                     continue
                 video = item.get("video") if isinstance(item.get("video"), dict) else item
                 livestream = (
-                    video.get("livestream")
-                    if isinstance(video.get("livestream"), dict)
-                    else {}
+                    video.get("livestream") if isinstance(video.get("livestream"), dict) else {}
                 )
                 channel = (
-                    livestream.get("channel")
-                    if isinstance(livestream.get("channel"), dict)
-                    else {}
+                    livestream.get("channel") if isinstance(livestream.get("channel"), dict) else {}
                 )
                 slug = str(channel.get("slug") or "tjr").lower()
                 if slug != "tjr":
@@ -219,6 +216,7 @@ def fetch_official_excerpt(
     probe_original(source)
     return source, metadata
 
+
 def render_preview(root: Path, brief_path: Path) -> Path:
     brief = load_brief(brief_path)
     if not brief.rights_confirmed or brief.watermark_url or brief.watermark_text:
@@ -276,20 +274,34 @@ def render_preview(root: Path, brief_path: Path) -> Path:
             check_full_decode(output)
             preview = output.with_name(output.stem + "-preview.png")
             invoke(
-                ["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", "3",
-                 "-i", str(output), "-frames:v", "1", str(preview)],
+                [
+                    "ffmpeg",
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-y",
+                    "-ss",
+                    "3",
+                    "-i",
+                    str(output),
+                    "-frames:v",
+                    "1",
+                    str(preview),
+                ],
                 timeout=90,
             )
-            produced.append({
-                **technical,
-                "file": str(output.relative_to(run_dir)),
-                "subtitle": str(output.with_suffix(".srt").relative_to(run_dir)),
-                "preview": str(preview.relative_to(run_dir)),
-                "source_url": selected_url,
-                "source_start_in_excerpt": round(clip.start, 3),
-                "source_end_in_excerpt": round(clip.end, 3),
-                "score": clip.score,
-            })
+            produced.append(
+                {
+                    **technical,
+                    "file": str(output.relative_to(run_dir)),
+                    "subtitle": str(output.with_suffix(".srt").relative_to(run_dir)),
+                    "preview": str(preview.relative_to(run_dir)),
+                    "source_url": selected_url,
+                    "source_start_in_excerpt": round(clip.start, 3),
+                    "source_end_in_excerpt": round(clip.end, 3),
+                    "score": clip.score,
+                }
+            )
             LOGGER.info("Rendered and full-decoded %s", output.name)
         with source.open("rb") as handle:
             digest = hashlib.file_digest(handle, "sha256").hexdigest()
@@ -328,9 +340,7 @@ def render_preview(root: Path, brief_path: Path) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-root", type=Path, default=Path("tjr-artifacts"))
-    parser.add_argument(
-        "--brief", type=Path, default=Path("campaigns/reach-tjr-weekly.yaml")
-    )
+    parser.add_argument("--brief", type=Path, default=Path("campaigns/reach-tjr-weekly.yaml"))
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     print(render_preview(args.artifact_root, args.brief))
