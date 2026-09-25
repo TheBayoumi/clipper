@@ -373,13 +373,11 @@ def render_preview(root: Path, brief_path: Path) -> Path:
         )
         chosen = select_independent_clips(candidates, clip_count=2)
         (run_dir / "word-aligned-transcript.json").write_text(
-            json.dumps([item.to_dict() for item in transcript], indent=2) + "
-",
+            json.dumps([item.to_dict() for item in transcript], indent=2) + "\n",
             encoding="utf-8",
         )
         (run_dir / "ranked-clean-candidates.json").write_text(
-            json.dumps([item.to_dict() for item in candidates[:30]], indent=2) + "
-",
+            json.dumps([item.to_dict() for item in candidates[:30]], indent=2) + "\n",
             encoding="utf-8",
         )
         if not chosen:
