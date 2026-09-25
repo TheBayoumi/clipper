@@ -37,8 +37,10 @@ def check_campaign_brief(path: Path) -> dict[str, Any]:
     video_ids = data.get("allowed_video_ids", [])
     if (
         not isinstance(video_ids, list)
-        or not all(isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{11}", v)
-                   for v in video_ids)
+        or not all(
+            isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{11}", v)
+            for v in video_ids
+        )
         or len(video_ids) != len(set(video_ids))
     ):
         raise QualityError("allowed_video_ids must be unique YouTube video IDs")
@@ -63,8 +65,14 @@ def probe_video(path: Path) -> dict[str, Any]:
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "error", "-show_streams", "-show_format",
-                "-of", "json", str(path),
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_streams",
+                "-show_format",
+                "-of",
+                "json",
+                str(path),
             ],
             check=True,
             capture_output=True,
@@ -114,8 +122,18 @@ def probe_video(path: Path) -> dict[str, Any]:
 def check_full_decode(path: Path) -> None:
     try:
         subprocess.run(
-            ["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i", str(path),
-             "-f", "null", "-"],
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-xerror",
+                "-i",
+                str(path),
+                "-f",
+                "null",
+                "-",
+            ],
             check=True,
             capture_output=True,
             text=True,
@@ -163,11 +181,13 @@ def validate_artifacts(brief: Path, artifact_root: Path) -> dict[str, Any]:
             raise QualityError(f"missing burned-caption SRT: {subtitles.name}")
         inspected = probe_video(output)
         check_full_decode(output)
-        inspected.update({
-            "source_url": source_url,
-            "source_start": float(item["start"]),
-            "source_end": float(item["end"]),
-        })
+        inspected.update(
+            {
+                "source_url": source_url,
+                "source_start": float(item["start"]),
+                "source_end": float(item["end"]),
+            }
+        )
         results.append(inspected)
     return {
         "status": "TECHNICAL_QA_PASSED__HUMAN_REVIEW_REQUIRED",
@@ -176,7 +196,7 @@ def validate_artifacts(brief: Path, artifact_root: Path) -> dict[str, Any]:
         "manual_checks": [
             "Confirm TJR appears in every video, and clips preserve the original context.",
             "Inspect every frame for pre-existing source logos and forbidden watermarks.",
-            "Review subtitle accuracy, framing, first-two-second hook, audio and any financial claims.",
+            "Review subtitle accuracy, framing, hook, audio and financial claims.",
             "Verify source permissions, live campaign budget, #TJR, account branding and audience.",
             "Publish manually; submit the public URL to Whop within 30 minutes.",
         ],

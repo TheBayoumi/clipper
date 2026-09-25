@@ -79,9 +79,8 @@ def test_tjr_hd_render_profile(tmp_path: Path) -> None:
 )
 def test_render_fails_closed(tmp_path: Path, name: str, value: str) -> None:
     clip = ClipCandidate("v", 0, 23, "text", 1.0)
-    with patch.dict("os.environ", {name: value}):
-        with pytest.raises(RenderError):
-            build_ffmpeg_command("src.mp4", "out.mp4", clip, tmp_path / "captions.srt")
+    with patch.dict("os.environ", {name: value}), pytest.raises(RenderError):
+        build_ffmpeg_command("src.mp4", "out.mp4", clip, tmp_path / "captions.srt")
 
 
 def test_probe_rejects_missing_file(tmp_path: Path) -> None:
