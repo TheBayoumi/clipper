@@ -8,13 +8,16 @@ campaign approval. Never treat this report as permission to publish.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -37,12 +40,26 @@ def check_campaign_brief(path: Path) -> dict[str, Any]:
     video_ids = data.get("allowed_video_ids", [])
     if (
         not isinstance(video_ids, list)
+        or not video_ids
         or not all(isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{11}", v) for v in video_ids)
         or len(video_ids) != len(set(video_ids))
     ):
         raise QualityError("allowed_video_ids must be unique YouTube video IDs")
-    if data.get("source_media_urls"):
-        raise QualityError("unverified direct source media is not permitted")
+    mirrors = data.get("source_media_urls") or {}
+    if not isinstance(mirrors, dict):
+        raise QualityError("source_media_urls must be a mapping")
+    if mirrors:
+        if len(video_ids) != 1 or set(mirrors) != set(video_ids):
+            raise QualityError("mirrored media must match the pinned TJR video ID")
+        for url in mirrors.values():
+            parsed = urlparse(url) if isinstance(url, str) else None
+            if (
+                parsed is None
+                or parsed.scheme != "https"
+                or parsed.hostname != "drive.google.com"
+                or not re.fullmatch(r"/file/d/[A-Za-z0-9_-]+/view/?", parsed.path)
+            ):
+                raise QualityError("mirror must be a Google Drive file/view HTTPS URL")
     if data.get("rights_confirmed") is not True:
         raise QualityError("campaign clipping permission has not been verified")
     if data.get("watermark_text") or data.get("watermark_url"):
@@ -54,6 +71,61 @@ def check_campaign_brief(path: Path) -> dict[str, Any]:
     if int(data.get("max_clip_seconds", -1)) != 42:
         raise QualityError("expected 42 second maximum clip length")
     return data
+
+
+def prepare_staged_brief(template: Path, output: Path) -> Path:
+    """Prepare private runtime brief after explicit manual campaign/source verification."""
+    if (
+        os.getenv("TJR_BUDGET_CONFIRMED") != "true"
+        or os.getenv("TJR_SOURCE_VERIFIED") != "true"
+    ):
+        raise QualityError("confirm live campaign budget and authentic TJR source")
+    sha = os.getenv("TJR_SOURCE_MEDIA_SHA256", "")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", sha):
+        raise QualityError("TJR_SOURCE_MEDIA_SHA256 must be a 64-character hex digest")
+    data = check_campaign_brief(template)
+    media_url = os.getenv("TJR_SOURCE_MEDIA_URL", "").strip()
+    data["source_media_urls"] = {data["allowed_video_ids"][0]: media_url}
+    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        output.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        check_campaign_brief(output)
+    except Exception:
+        output.unlink(missing_ok=True)
+        raise
+    return output
+
+
+def probe_original(path: Path) -> dict[str, int]:
+    """Reject source files below 720p before delivering 1080p output."""
+    if not path.is_file() or path.stat().st_size == 0:
+        raise QualityError("downloaded original TJR source is missing")
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_streams",
+                "-of",
+                "json",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+        streams = json.loads(probe.stdout)["streams"]
+        video = next(item for item in streams if item.get("codec_type") == "video")
+        width, height = int(video["width"]), int(video["height"])
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise QualityError("unable to probe staged original footage") from exc
+    except (ValueError, KeyError, TypeError, StopIteration) as exc:
+        raise QualityError("invalid original video metadata") from exc
+    if min(width, height) < 720 or max(width, height) < 1280:
+        raise QualityError("original footage is below 720p HD")
+    return {"width": width, "height": height}
 
 
 def probe_video(path: Path) -> dict[str, Any]:
@@ -141,7 +213,7 @@ def check_full_decode(path: Path) -> None:
 
 
 def validate_artifacts(brief: Path, artifact_root: Path) -> dict[str, Any]:
-    check_campaign_brief(brief)
+    config = check_campaign_brief(brief)
     manifests = sorted(artifact_root.glob("*/manifest.json"))
     if len(manifests) != 1:
         raise QualityError(f"expected exactly one manifest; got {len(manifests)}")
@@ -159,6 +231,22 @@ def validate_artifacts(brief: Path, artifact_root: Path) -> dict[str, Any]:
     if not planned or len(planned) != len(rendered):
         raise QualityError("every planned clip must render and at least one is required")
     run_dir = manifest_path.parent.resolve()
+    source_details: dict[str, Any] = {"mode": "public YouTube"}
+    mirrors = config.get("source_media_urls") or {}
+    if mirrors:
+        expected = os.getenv("TJR_SOURCE_MEDIA_SHA256", "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected):
+            raise QualityError("staged source SHA-256 secret is missing")
+        video_id = config["allowed_video_ids"][0]
+        original = run_dir / "work" / video_id / "source.mp4"
+        if not original.is_file():
+            raise QualityError("staged original not found in campaign run")
+        with original.open("rb") as handle:
+            actual = hashlib.file_digest(handle, "sha256").hexdigest()
+        if actual != expected:
+            raise QualityError("staged original hash differs from approved media")
+        source_details = {"mode": "SHA-256 pinned mirror", "sha256": actual}
+        source_details.update(probe_original(original))
     results: list[dict[str, Any]] = []
     seen: set[tuple[str, float, float]] = set()
     for item in rendered:
@@ -189,6 +277,7 @@ def validate_artifacts(brief: Path, artifact_root: Path) -> dict[str, Any]:
     return {
         "status": "TECHNICAL_QA_PASSED__HUMAN_REVIEW_REQUIRED",
         "campaign": "reach-tjr-weekly",
+        "source": source_details,
         "clips": results,
         "manual_checks": [
             "Confirm TJR appears in every video, and clips preserve the original context.",
@@ -203,9 +292,19 @@ def validate_artifacts(brief: Path, artifact_root: Path) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--brief", type=Path, required=True)
-    parser.add_argument("--artifact-root", type=Path, required=True)
+    parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument("--prepare", action="store_true")
+    parser.add_argument("--output-brief", type=Path)
     args = parser.parse_args()
     try:
+        if args.prepare:
+            if args.output_brief is None:
+                raise QualityError("--output-brief is required for --prepare")
+            prepare_staged_brief(args.brief, args.output_brief)
+            print("Verified staged-source brief ready (media URL not logged).")
+            return 0
+        if args.artifact_root is None:
+            raise QualityError("--artifact-root is required for QA")
         report = validate_artifacts(args.brief, args.artifact_root)
     except (QualityError, OSError, json.JSONDecodeError) as exc:
         print(f"TJR QA FAILED: {exc}", file=sys.stderr)
