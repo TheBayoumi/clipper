@@ -102,10 +102,10 @@ def build_ffmpeg_command(
         filter_complex = (
             base_filter
             + ";[1:v]scale=180:-1:force_original_aspect_ratio=decrease[wm];"
-            + "[captioned][wm]overlay=W-w-48:48:format=auto,format=yuv420p[v]"
+            + "[captioned][wm]overlay=W-w-48:48:format=auto,format=yuv420p,setsar=1[v]"
         )
     else:
-        filter_complex = base_filter + ";[captioned]format=yuv420p[v]"
+        filter_complex = base_filter + ";[captioned]format=yuv420p,setsar=1[v]"
     return [
         *inputs,
         "-t",
