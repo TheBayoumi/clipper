@@ -37,10 +37,7 @@ def check_campaign_brief(path: Path) -> dict[str, Any]:
     video_ids = data.get("allowed_video_ids", [])
     if (
         not isinstance(video_ids, list)
-        or not all(
-            isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{11}", v)
-            for v in video_ids
-        )
+        or not all(isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{11}", v) for v in video_ids)
         or len(video_ids) != len(set(video_ids))
     ):
         raise QualityError("allowed_video_ids must be unique YouTube video IDs")

@@ -38,9 +38,7 @@ def test_campaign_accepts_verified_video_ids(campaign_brief: Path) -> None:
         ("source_media_urls", {"8PYgFVB0GHE": "https://example.com/video.mp4"}),
     ],
 )
-def test_campaign_rejects_unsafe_changes(
-    campaign_brief: Path, field: str, value: object
-) -> None:
+def test_campaign_rejects_unsafe_changes(campaign_brief: Path, field: str, value: object) -> None:
     data = yaml.safe_load(campaign_brief.read_text(encoding="utf-8"))
     data[field] = value
     campaign_brief.write_text(yaml.safe_dump(data), encoding="utf-8")
@@ -58,9 +56,7 @@ def test_tjr_hd_render_profile(tmp_path: Path) -> None:
             "CLIPPER_RENDER_THREADS": "2",
         },
     ):
-        command = build_ffmpeg_command(
-            "source.mp4", "out.mp4", clip, tmp_path / "captions.srt"
-        )
+        command = build_ffmpeg_command("source.mp4", "out.mp4", clip, tmp_path / "captions.srt")
     assert command[command.index("-preset") + 1] == "slow"
     assert command[command.index("-crf") + 1] == "18"
     assert command[command.index("-threads") + 1] == "2"
