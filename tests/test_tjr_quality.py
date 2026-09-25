@@ -1,5 +1,6 @@
 """Campaign-specific technical and encoding guards."""
 
+import runpy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,7 +9,12 @@ import yaml
 
 from clipper.models import ClipCandidate
 from clipper.render import RenderError, build_ffmpeg_command
-from scripts.tjr_quality import QualityError, check_campaign_brief, probe_video
+# pytest's entrypoint does not always include the repository root in sys.path.
+# Load the standalone workflow script from its explicit repository-relative path.
+_tjr_qa = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts" / "tjr_quality.py"))
+QualityError = _tjr_qa["QualityError"]
+check_campaign_brief = _tjr_qa["check_campaign_brief"]
+probe_video = _tjr_qa["probe_video"]
 
 
 @pytest.fixture
