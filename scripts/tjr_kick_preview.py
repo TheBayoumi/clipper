@@ -260,7 +260,7 @@ def render_preview(root: Path, brief_path: Path) -> Path:
         )
         if not transcript:
             raise RuntimeError("source has no identifiable English speech")
-        source_id = assert_official_vod(selected_url)
+        source_id = assert_official_vod(selected_url, allow_unpinned=True)
         candidates = score_transcript(brief, source_id, transcript, limit=30)
         chosen = select_diverse_clips(candidates, clip_count=2, max_per_source=2)
         if not chosen:
