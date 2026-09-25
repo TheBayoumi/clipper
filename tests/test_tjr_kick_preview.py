@@ -2,6 +2,8 @@
 
 import runpy
 import sys
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,9 @@ script = runpy.run_path(
 assert_official_vod = script["assert_official_vod"]
 PINNED_VODS = script["PINNED_VODS"]
 skip_high_risk_context = script["skip_high_risk_context"]
+select_independent_clips = script["select_independent_clips"]
+transcribe_tjr_words = script["transcribe_tjr_words"]
+mask_known_sponsor_banner = script["mask_known_sponsor_banner"]
 _trusted_kick_playlist = script["_trusted_kick_playlist"]
 
 
@@ -70,3 +75,31 @@ def test_high_risk_spoken_context_is_not_selected() -> None:
         ClipCandidate("official-tjr", 31, 60, "independent advice", 7.0),
     ]
     assert skip_high_risk_context(candidates, transcript) == [candidates[1]]
+
+
+def test_ranked_clips_must_be_distinct() -> None:
+    first = ClipCandidate("tjr", 100, 134, "one", 10.0)
+    repeated = ClipCandidate("tjr", 111, 145, "same topic", 9.0)
+    fresh = ClipCandidate("tjr", 180, 212, "new topic", 8.0)
+    assert select_independent_clips([first, repeated, fresh]) == [first, fresh]
+
+
+def test_whisper_words_are_grouped_into_short_timed_captions(tmp_path: Path) -> None:
+    words = [
+        SimpleNamespace(start=i * 0.6, end=i * 0.6 + 0.48, word=f" word{i}")
+        for i in range(14)
+    ]
+    raw = SimpleNamespace(start=0.0, end=8.3, text=" ".join(f"word{i}" for i in range(14)), words=words)
+    model = Mock()
+    model.transcribe.return_value = (iter([raw]), None)
+    fake = SimpleNamespace(WhisperModel=Mock(return_value=model))
+    with patch.dict(sys.modules, {"faster_whisper": fake}):
+        captions = transcribe_tjr_words(tmp_path / "source.mp4")
+    assert len(captions) >= 3
+    assert all(caption.duration < 3.2 for caption in captions)
+    assert "word13" in captions[-1].text
+    assert model.transcribe.call_args.kwargs["word_timestamps"] is True
+
+
+def test_unknown_layout_does_not_auto_remove_pixels(tmp_path: Path) -> None:
+    assert mask_known_sponsor_banner(tmp_path / "nothing.mp4", "unreviewed-vod") is False

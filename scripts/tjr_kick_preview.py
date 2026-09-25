@@ -21,8 +21,7 @@ from urllib.parse import urlparse
 from clipper.brief import load_brief
 from clipper.models import ClipCandidate, TranscriptSegment
 from clipper.render import FFmpegRenderer
-from clipper.scoring import score_transcript, select_diverse_clips
-from clipper.transcript import transcribe_with_faster_whisper
+from clipper.scoring import score_transcript
 from scripts.tjr_quality import check_full_decode, probe_original, probe_video
 
 LOGGER = logging.getLogger("tjr-kick")
@@ -44,6 +43,95 @@ def skip_high_risk_context(
         for candidate in candidates
         if not any(candidate.start < end and candidate.end > start for start, end in flagged)
     ]
+
+
+def select_independent_clips(
+    candidates: list[ClipCandidate], *, clip_count: int = 2
+) -> list[ClipCandidate]:
+    """Never return two materially overlapping moments from the same VOD."""
+    chosen: list[ClipCandidate] = []
+    for candidate in candidates:
+        if any(
+            max(0.0, min(candidate.end, previous.end) - max(candidate.start, previous.start))
+            / max(0.001, min(candidate.duration, previous.duration))
+            > 0.10
+            for previous in chosen
+        ):
+            continue
+        chosen.append(candidate)
+        if len(chosen) == clip_count:
+            break
+    return chosen
+
+
+def transcribe_tjr_words(source: Path) -> list[TranscriptSegment]:
+    """Align short captions to actual spoken words rather than 20-second ASR paragraphs."""
+    from faster_whisper import WhisperModel
+
+    model = WhisperModel("small.en", device="cpu", compute_type="int8")
+    raw_segments, _ = model.transcribe(
+        str(source), language="en", vad_filter=True, beam_size=5, word_timestamps=True
+    )
+    captions: list[TranscriptSegment] = []
+    for segment in raw_segments:
+        words = list(segment.words or [])
+        if not words:
+            if segment.text.strip() and segment.end > segment.start:
+                captions.append(
+                    TranscriptSegment(float(segment.start), float(segment.end), segment.text.strip())
+                )
+            continue
+        group: list[Any] = []
+        for word in words:
+            start, end = float(word.start), float(word.end)
+            if end <= start or not word.word.strip():
+                continue
+            if group and (
+                len(group) >= 7
+                or end - float(group[0].start) >= 3.1
+                or (
+                    str(group[-1].word).rstrip().endswith((".", "!", "?"))
+                    and end - float(group[0].start) >= 0.9
+                )
+            ):
+                text = "".join(str(item.word) for item in group).strip()
+                captions.append(
+                    TranscriptSegment(float(group[0].start), float(group[-1].end), text)
+                )
+                group = []
+            group.append(word)
+        if group:
+            text = "".join(str(item.word) for item in group).strip()
+            captions.append(TranscriptSegment(float(group[0].start), float(group[-1].end), text))
+    return captions
+
+
+# These coordinates have been visually inspected ONLY for this September 2026 VOD.
+# New VOD layouts remain review-only until a human checks embedded logos.
+KNOWN_SPONSOR_OVERLAY_VODS = {"0f6e7571-6930-48e2-8e41-505dd7c3f48e"}
+
+
+def mask_known_sponsor_banner(output: Path, source_id: str) -> bool:
+    """Remove a fixed sponsor billboard from the verified VOD without hiding TJR."""
+    if source_id not in KNOWN_SPONSOR_OVERLAY_VODS:
+        return False
+    temporary = output.with_name(output.stem + ".masked.mp4")
+    try:
+        invoke(
+            [
+                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(output),
+                "-vf", "delogo=x=386:y=1180:w=330:h=98:show=0,format=yuv420p,setsar=1",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                "-threads", "2", "-c:a", "copy", "-movflags", "+faststart",
+                str(temporary),
+            ],
+            timeout=900,
+        )
+        temporary.replace(output)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
 
 
 # URLs are public VODs on TJR's official Kick channel, an approved Reach source.
@@ -276,16 +364,24 @@ def render_preview(root: Path, brief_path: Path) -> Path:
         if source is None:
             raise RuntimeError("official Kick VOD acquisition failed; see diagnostic artifact")
 
-        transcript = transcribe_with_faster_whisper(
-            source, model_name="small.en", device="cpu", compute_type="int8", language="en"
-        )
+        transcript = transcribe_tjr_words(source)
         if not transcript:
             raise RuntimeError("source has no identifiable English speech")
         source_id = assert_official_vod(selected_url, allow_unpinned=True)
         candidates = skip_high_risk_context(
             score_transcript(brief, source_id, transcript, limit=60), transcript
         )
-        chosen = select_diverse_clips(candidates, clip_count=2, max_per_source=2)
+        chosen = select_independent_clips(candidates, clip_count=2)
+        (run_dir / "word-aligned-transcript.json").write_text(
+            json.dumps([item.to_dict() for item in transcript], indent=2) + "
+",
+            encoding="utf-8",
+        )
+        (run_dir / "ranked-clean-candidates.json").write_text(
+            json.dumps([item.to_dict() for item in candidates[:30]], indent=2) + "
+",
+            encoding="utf-8",
+        )
         if not chosen:
             raise RuntimeError("no 20-42 second spoken excerpts met campaign timing rules")
         renderer = FFmpegRenderer()
@@ -293,6 +389,7 @@ def render_preview(root: Path, brief_path: Path) -> Path:
         for index, clip in enumerate(chosen, start=1):
             output = run_dir / "clips" / f"{index:02d}-tjr-kick.mp4"
             renderer.render(source, output, clip, transcript)
+            sponsor_masked = mask_known_sponsor_banner(output, source_id)
             technical = probe_video(output)
             check_full_decode(output)
             preview = output.with_name(output.stem + "-preview.png")
@@ -323,6 +420,7 @@ def render_preview(root: Path, brief_path: Path) -> Path:
                     "source_start_in_excerpt": round(clip.start, 3),
                     "source_end_in_excerpt": round(clip.end, 3),
                     "score": clip.score,
+                    "known_sponsor_billboard_masked": sponsor_masked,
                 }
             )
             LOGGER.info("Rendered and full-decoded %s", output.name)

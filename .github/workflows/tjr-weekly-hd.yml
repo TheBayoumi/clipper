@@ -156,6 +156,8 @@ jobs:
             tjr-artifacts/**/clips/*-preview.png
             tjr-artifacts/**/tjr-qa-report.json
             tjr-artifacts/**/source-acquisition-errors.json
+            tjr-artifacts/**/word-aligned-transcript.json
+            tjr-artifacts/**/ranked-clean-candidates.json
           retention-days: 14
           compression-level: 0
           if-no-files-found: warn

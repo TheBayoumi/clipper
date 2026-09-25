@@ -24,8 +24,12 @@ A branch push runs a separate `kick_preview` job in parallel with tests. It
 discovers currently available VODs through **TJR's official Kick channel feed**
 and extracts their verified HLS URLs, falling back to pinned VODs if necessary.
 It downloads a limited 14-minute original-HD excerpt, transcribes actual
-speech, scores two 20–42-second moments, renders 1080×1920 H.264/AAC MP4s with
-captions, fully decodes each output and uploads MP4/SRT/preview/QA artifacts.
+speech with word timestamps, rejects known abusive-language windows and selects
+non-overlapping 20–42-second moments. It renders 1080×1920 H.264/AAC MP4s,
+fully decodes each output and uploads MP4/SRT/preview/QA plus timestamped
+transcript and ranked-selection evidence. For the visually checked September
+2026 VOD layout only, it masks an embedded sponsor billboard; every other
+source layout still requires manual frame-by-frame logo review.
 It does **not** publish, attest live campaign budget or imply Whop approval.
 The older user-supplied Google Drive workflow remains available separately if
 public VOD acquisition fails. Any source or render failure is visible in GitHub
