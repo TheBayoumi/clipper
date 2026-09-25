@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from clipper_engine.gameplay.workflow import run_mw4
+from clipper_engine.workflow import run_campaign
 
 from .brief import load_brief
 from .pipeline import PipelineSettings, run_pipeline
@@ -82,6 +83,38 @@ def _add_mw4_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
     batch.add_argument("--output-dir", type=Path, required=True)
 
 
+def _add_campaign_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    campaign = subparsers.add_parser(
+        "campaign", help="run an approved campaign using the Clipper production engine"
+    )
+    campaign.add_argument("profile", choices=("warzone-operator-toggle",))
+    stages = campaign.add_subparsers(dest="campaign_command", required=True)
+    discover = stages.add_parser("discover", help="discover approved MediaSilo originals")
+    discover.add_argument("--output", type=Path, required=True)
+    discover.add_argument("--config", type=Path)
+    acquire = stages.add_parser("acquire", help="fetch and certify an approved original")
+    acquire.add_argument("--source-key", required=True)
+    acquire.add_argument("--output-dir", type=Path, required=True)
+    acquire.add_argument("--config", type=Path)
+    plan = stages.add_parser("plan", help="plan an announcement montage")
+    plan.add_argument("--source", type=Path, required=True)
+    plan.add_argument("--source-qa", type=Path)
+    plan.add_argument("--output", type=Path, required=True)
+    plan.add_argument("--config", type=Path)
+    render = stages.add_parser("render", help="render a planned announcement montage")
+    render.add_argument("--source", type=Path, required=True)
+    render.add_argument("--source-qa", type=Path)
+    render.add_argument("--plan", type=Path, required=True)
+    render.add_argument("--output-dir", type=Path, required=True)
+    render.add_argument("--config", type=Path)
+    qualify = stages.add_parser("qualify", help="qualify rendered campaign delivery")
+    qualify.add_argument("--render-manifest", type=Path, required=True)
+    qualify.add_argument("--output", type=Path, required=True)
+    qualify.add_argument("--config", type=Path)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="clipper",
@@ -106,6 +139,7 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     _add_mw4_parser(subparsers)
+    _add_campaign_parser(subparsers)
     return parser
 
 
@@ -131,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "mw4":
             return run_mw4(args)
+        if args.command == "campaign":
+            return run_campaign(args)
     except Exception as exc:
         logging.getLogger("clipper").error("%s", exc)
         return 1

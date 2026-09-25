@@ -7,20 +7,20 @@ from pathlib import Path
 from typing import Any
 
 from .. import qualification
-from ..profiles import GameplayProfile, load_profile
+from ..profiles import CampaignProfile, load_profile
 from ..rendering import worker
 from ..sources import catalog, mediasilo
 from ..sources import qa as source_qa
 from . import allocation, analysis, candidates, planning, workflow_support
 
 
-def _profile_from_args(args: argparse.Namespace) -> GameplayProfile:
+def _profile_from_args(args: argparse.Namespace) -> CampaignProfile:
     override = getattr(args, "config", None)
     return load_profile("mw4", override)
 
 
 def _source_settings(
-    profile: GameplayProfile,
+    profile: CampaignProfile,
     args: argparse.Namespace,
 ) -> tuple[str, int]:
     review_url = str(getattr(args, "review_url", None) or profile.source_review_url)
@@ -32,7 +32,7 @@ def _source_settings(
     return review_url, expected_count
 
 
-def discover(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, Any]:
+def discover(profile: CampaignProfile, args: argparse.Namespace) -> dict[str, Any]:
     review_url, expected_count = _source_settings(profile, args)
     return catalog.discover(
         review_url,
@@ -42,7 +42,7 @@ def discover(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, An
     )
 
 
-def analyze(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, Any]:
+def analyze(profile: CampaignProfile, args: argparse.Namespace) -> dict[str, Any]:
     review_url, expected_count = _source_settings(profile, args)
     args.source_dir.mkdir(parents=True, exist_ok=True)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -66,7 +66,7 @@ def analyze(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, Any
     )
 
 
-def allocate(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, Any]:
+def allocate(profile: CampaignProfile, args: argparse.Namespace) -> dict[str, Any]:
     try:
         result = allocation.allocate(args.analysis_root, profile.config)
     except AssertionError as exc:
@@ -90,7 +90,7 @@ def allocate(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, An
     return result
 
 
-def render_one(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, Any]:
+def render_one(profile: CampaignProfile, args: argparse.Namespace) -> dict[str, Any]:
     source_path = args.source_dir / f"{args.source_key}.mp4"
     qa_path = args.source_dir / f"{args.source_key}.source_qa.json"
     source_qa.verify(source_path, qa_path)
@@ -106,7 +106,7 @@ def render_one(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, 
     )
 
 
-def batch_contract(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, Any]:
+def batch_contract(profile: CampaignProfile, args: argparse.Namespace) -> dict[str, Any]:
     workflow_support.batch_summaries(
         args.allocation,
         profile.config,
@@ -123,7 +123,7 @@ def batch_contract(profile: GameplayProfile, args: argparse.Namespace) -> dict[s
     return result
 
 
-def self_test(profile: GameplayProfile) -> None:
+def self_test(profile: CampaignProfile) -> None:
     analysis.validate_configuration(profile.config)
     analysis.self_test()
     planning.self_test()

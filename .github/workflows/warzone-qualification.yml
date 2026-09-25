@@ -1,0 +1,130 @@
+name: Warzone source and montage qualification
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/warzone-operator-toggle
+    paths:
+      - .github/workflows/warzone-qualification.yml
+      - src/clipper/cli.py
+      - src/clipper_engine/**
+      - tests/test_announcement.py
+      - pyproject.toml
+  pull_request:
+    paths:
+      - .github/workflows/warzone-qualification.yml
+      - src/clipper/cli.py
+      - src/clipper_engine/**
+      - tests/test_announcement.py
+      - pyproject.toml
+
+concurrency:
+  group: warzone-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  qualify-official-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Clipper and public-review discovery runtime
+        run: |
+          set -euo pipefail
+          python -m pip install -e ".[mw4]"
+          python -m playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+
+      - name: Discover official originals without credentials
+        id: source
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle discover --output source_catalog.json
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          catalog = json.loads(Path("source_catalog.json").read_text())
+          profile = json.loads(
+              Path("src/clipper_engine/profiles/warzone-operator-toggle.json").read_text()
+          )
+          calibrated = profile["editorial"]["verified_visual_states"]
+          matched = [
+              entry for entry in catalog["sources"]
+              if (entry.get("file_name") or entry["title"]) in calibrated
+              and entry["derivative_type"] == "source"
+          ]
+          if len(matched) != 1:
+              raise RuntimeError(
+                  "expected exactly one calibrated official original; "
+                  f"found {len(matched)} in public MediaSilo review"
+              )
+          original = matched[0]
+          name = str(original.get("file_name") or original["title"])
+          suffix = Path(name).suffix.lower()
+          if suffix not in {".mp4", ".mov", ".mxf", ".m4v"}:
+              raise RuntimeError(f"unsupported official source extension: {name}")
+          print(f"source_key={original['source_key']}")
+          print(f"source_file=source/{original['source_key']}{suffix}")
+          PY
+
+      - name: Acquire and certify the original from public MediaSilo review
+        env:
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle acquire \
+            --source-key "$SOURCE_KEY" --output-dir source
+
+      - name: Plan source-grounded legal visual-state comparison
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle plan \
+            --source "$SOURCE_FILE" \
+            --source-qa "source/$SOURCE_KEY.source_qa.json" \
+            --output plan.json
+
+      - name: Render full frame FFV1/PCM stage and delivery
+        timeout-minutes: 35
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle render \
+            --source "$SOURCE_FILE" \
+            --source-qa "source/$SOURCE_KEY.source_qa.json" \
+            --plan plan.json --output-dir delivery
+
+      - name: Qualify original-source and encoded-delivery contracts
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle qualify \
+            --render-manifest delivery/render_manifest.json \
+            --output delivery/acceptance.json
+
+      - name: Preserve evidence and delivery
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: warzone-qualification-${{ github.sha }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            source_catalog.json
+            plan.json
+            source/*.source_qa.json
+            delivery/*.json
+            delivery/*.mp4

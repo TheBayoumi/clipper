@@ -8,7 +8,7 @@ from typing import Any
 
 
 @dataclass(frozen=True)
-class GameplayProfile:
+class CampaignProfile:
     name: str
     config: dict[str, Any]
 
@@ -29,9 +29,9 @@ def _packaged_profile(name: str) -> dict[str, Any]:
     return json.loads(resource.read_text(encoding="utf-8"))
 
 
-def load_profile(name: str, override: Path | None = None) -> GameplayProfile:
-    if name != "mw4":
-        raise ValueError(f"unknown gameplay profile: {name}")
+def load_profile(name: str, override: Path | None = None) -> CampaignProfile:
+    if name not in {"mw4", "warzone-operator-toggle"}:
+        raise ValueError(f"unknown campaign profile: {name}")
     config = (
         json.loads(override.read_text(encoding="utf-8"))
         if override is not None
@@ -40,4 +40,4 @@ def load_profile(name: str, override: Path | None = None) -> GameplayProfile:
     profile_name = str(config.get("profile", name))
     if profile_name != name:
         raise ValueError(f"profile file declares {profile_name!r}, expected {name!r}")
-    return GameplayProfile(name=name, config=config)
+    return CampaignProfile(name=name, config=config)

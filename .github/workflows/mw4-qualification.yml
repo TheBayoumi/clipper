@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - feat/mw4-fullframe-retention-v3-1
+      - feat/warzone-operator-toggle
     paths:
       - .github/workflows/mw4-qualification.yml
       - .github/mw4-production-trigger

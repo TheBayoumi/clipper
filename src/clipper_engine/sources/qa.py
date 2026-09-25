@@ -56,6 +56,7 @@ def certify(source: Path, source_key: str, resolved_path: Path, output: Path) ->
 
     payload = {
         "source_key": source_key,
+        "review_url": resolved.get("review_url"),
         "title": resolved.get("title"),
         "file_name": resolved.get("file_name"),
         "derivative_type": "source",

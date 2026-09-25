@@ -94,6 +94,7 @@ def discover(
         discovered.append(
             {
                 "title": str(asset.get("title") or asset.get("fileName") or "untitled"),
+                "review_url": review_url,
                 "file_name": asset.get("fileName"),
                 "url": url,
                 "derivative_type": "source",
@@ -110,7 +111,7 @@ def discover(
             f"expected {expected_count}; "
             f"titles={[item['title'] for item in sources]}"
         )
-    payload = {"source_count": len(sources), "sources": sources}
+    payload = {"review_url": review_url, "source_count": len(sources), "sources": sources}
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     if github_output is not None:

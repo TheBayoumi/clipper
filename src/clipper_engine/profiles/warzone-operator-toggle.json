@@ -1,0 +1,77 @@
+{
+  "profile": "warzone-operator-toggle",
+  "kind": "announcement",
+  "campaign": "Call of Duty - Warzone Operator Skin Toggle Announcement Clipping",
+  "source_profile": {
+    "provider": "mediasilo",
+    "review_url": "https://app.mediasilo.com/review/6ab59118da53275cf5f972c8",
+    "minimum_count": 1,
+    "require_original_source": true
+  },
+  "capabilities": {
+    "gameplay_analysis": {
+      "enabled": false
+    },
+    "visual_state_comparison": {
+      "enabled": true
+    },
+    "announcement_montage": {
+      "enabled": true
+    },
+    "approved_text_overlay": {
+      "enabled": true
+    }
+  },
+  "editorial": {
+    "minimum_output_seconds": 10,
+    "preferred_output_seconds": 11,
+    "maximum_output_seconds": 12,
+    "source_audio_only": true,
+    "allow_added_music": false,
+    "minimum_state_difference": 0.08,
+    "approved_text": [
+      "Operator Toggle Introduced for Call of Duty: Warzone",
+      "Call of Duty: Warzone Season 1 Adds a New Operator Skin Toggle",
+      "See Call of Duty: Warzone Your Way with the New Operator Skin Toggle"
+    ],
+    "selected_text": "Operator Toggle Introduced for Call of Duty: Warzone",
+    "verified_visual_states": {
+      "MW4_MTX_Toggle_v08_16x9_1.mp4": {
+        "source_frames": 178,
+        "before_frame": 20,
+        "after_frame": 108,
+        "verification": "Calibrated against supplied original campaign video; validate against any newly discovered original."
+      }
+    },
+    "visual_state_roi": [
+      0.17,
+      0.17,
+      0.85,
+      0.83
+    ],
+    "minimum_changed_pixel_fraction": 0.4
+  },
+  "output": {
+    "width": 1920,
+    "height": 1080,
+    "fps": "30/1",
+    "video_codec": "libx264",
+    "audio_codec": "aac",
+    "audio_sample_rate": 48000,
+    "audio_channels": 2,
+    "pixel_format": "yuv420p",
+    "video_crf": 18,
+    "video_preset": "medium",
+    "format": "mp4"
+  },
+  "platform": {
+    "destinations": [
+      "tiktok",
+      "instagram_reels"
+    ],
+    "caption_tag": "@callofduty",
+    "disclosure": "#Ad",
+    "on_screen_carry_forward": false,
+    "minimum_live_days": 30
+  }
+}

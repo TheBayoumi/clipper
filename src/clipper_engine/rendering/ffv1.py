@@ -824,3 +824,81 @@ def preflight() -> dict[str, Any]:
             )
         )
         return results
+
+
+def stage_native_source(original: Path, target: Path) -> dict[str, Any]:
+    """Certified full-source FFV1/PCM NUT stage using original frame hashes as authority."""
+    if target.suffix != ".nut":
+        raise ValueError("lossless transport must use NUT")
+    contract = media.inspect_source(original, verify_timeline=True)
+    profile = source._profile_with_contract(contract)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    media.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(original),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0",
+            *_ffv1_video_args(profile),
+            "-threads:v",
+            "2",
+            "-vsync",
+            "0",
+            "-c:a",
+            "pcm_s16le",
+            "-ar",
+            str(contract.audio.sample_rate),
+            "-ac",
+            str(contract.audio.channels),
+            "-f",
+            "nut",
+            str(target),
+        ]
+    )
+    stage_video = media.video_profile(target, count_frames=True)
+    stage_audio = media.audio_profile(target)
+    expected = media.frame_hashes(original, pix_fmt=contract.video.pix_fmt)
+    actual = media.frame_hashes(target, pix_fmt=contract.video.pix_fmt)
+    original_pts, stage_pts = media.packet_pts(original), media.packet_pts(target)
+    source_tb = contract.video.timing.time_base
+    stage_tb = media.timing_from_profile(stage_video).time_base
+    pts_match = len(original_pts) == len(stage_pts) and all(
+        (left - original_pts[0]) * source_tb == (right - stage_pts[0]) * stage_tb
+        for left, right in zip(original_pts, stage_pts, strict=True)
+    )
+    checks = {
+        "container_nut": _is_nut(target),
+        "video_ffv1": stage_video["codec_name"] == "ffv1",
+        "audio_pcm": stage_audio["codec_name"] == "pcm_s16le",
+        "frame_hashes_exact": bool(expected) and expected == actual,
+        "frame_count_exact": len(expected) == stage_video["frame_count"],
+        "presentation_time_exact": pts_match,
+        "source_frame_rate_exact": stage_video["r_frame_rate"]
+        == media.fraction_text(contract.video.timing.nominal_rate),
+        "source_geometry_exact": (stage_video["width"], stage_video["height"])
+        == (contract.video.width, contract.video.height),
+        "source_pixel_format_exact": stage_video["pix_fmt"] == contract.video.pix_fmt,
+        "audio_sample_rate_exact": stage_audio["sample_rate"] == contract.audio.sample_rate,
+        "audio_channels_exact": stage_audio["channels"] == contract.audio.channels,
+    }
+    media.verify_cfr_timeline(
+        target, media.timing_from_profile(stage_video), label="montage FFV1/NUT stage"
+    )
+    if not all(checks.values()):
+        raise RuntimeError(f"source-native FFV1/NUT stage failed: {checks}")
+    return {
+        "checks": checks,
+        "frame_count": len(expected),
+        "source_profile": profile,
+        "stage_video": stage_video,
+        "stage_audio": stage_audio,
+        "source_time_base": media.fraction_text(source_tb),
+        "stage_time_base": media.fraction_text(stage_tb),
+    }

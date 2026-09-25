@@ -7,6 +7,7 @@ on:
     branches:
       - main
       - feat/mw4-fullframe-retention-v3-1
+      - feat/warzone-operator-toggle
 
 permissions:
   contents: read
@@ -29,4 +30,5 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy
+      - run: mypy --strict --follow-imports=silent src/clipper_engine/montage.py src/clipper_engine/workflow.py src/clipper_engine/rendering/montage.py
       - run: pytest

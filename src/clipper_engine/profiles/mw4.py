@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import GameplayProfile, load_profile
+from . import CampaignProfile, load_profile
 
 
-def profile(override: Path | None = None) -> GameplayProfile:
+def profile(override: Path | None = None) -> CampaignProfile:
     return load_profile("mw4", override)
