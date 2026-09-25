@@ -224,7 +224,11 @@ def _ending_piece(
             "3",
             "-threads:v",
             "1",
-            *media.profile_output_args(source_profile),
+            # The FFV1/NUT stream carries source color tags separately. Forcing
+            # -color_range here can alter decoded pixels before a lossless copy.
+            "-pix_fmt",
+            str(source_profile["pix_fmt"]),
+            *media.color_metadata_tag_args(source_profile),
             "-an",
             "-f",
             "nut",
@@ -307,12 +311,21 @@ def _qa(
     duration = float(probe["format"]["duration"])
     expected_frames = int(plan["montage"]["output_frames"])
     fps = f"{rate(profile).numerator}/{rate(profile).denominator}"
+    source_colors = stage["source_color_metadata"]
+    canonical_colors = media.stream_color_tags(canonical)
+    delivery_colors = media.source_color_metadata(delivery_video)
     checks = {
         "source_stage_lossless": all(stage["checks"].values()),
         "comparison_from_verified_source_frames": stage["comparison"]["source_only"]
         and stage["comparison"]["frame_count_exact"],
         "reveal_source_hashes_exact": stage["reveal"]["source_to_reveal_hashes_exact"],
         "canonical_ffv1_nut": canonical_video["codec_name"] == "ffv1" and ffv1._is_nut(canonical),
+        "canonical_color_metadata_tags_exact": all(
+            canonical_colors.get(field) == value for field, value in source_colors.items()
+        ),
+        "delivery_color_metadata_exact": all(
+            delivery_colors.get(field) == value for field, value in source_colors.items()
+        ),
         "encoded_h264": delivery_video["codec_name"] == "h264",
         "canonical_frames_exact": canonical_video["frame_count"] == expected_frames,
         "encoded_frames_exact": delivery_video["frame_count"] == expected_frames,
@@ -348,6 +361,9 @@ def _qa(
         "psnr_db": psnr,
         "video_profile": delivery_video,
         "audio_profile": audio,
+        "source_color_metadata": source_colors,
+        "canonical_color_metadata_tags": canonical_colors,
+        "delivery_color_metadata": delivery_colors,
     }
 
 
@@ -419,6 +435,7 @@ def render(
                 "-ac",
                 str(output["audio_channels"]),
                 *media.profile_output_args(source_profile),
+                *media.color_metadata_tag_args(source_profile),
                 "-t",
                 f"{total:.9f}",
                 "-f",

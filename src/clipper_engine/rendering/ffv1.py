@@ -847,6 +847,7 @@ def stage_native_source(original: Path, target: Path) -> dict[str, Any]:
             "-map",
             "0:a:0",
             *_ffv1_video_args(profile),
+            *media.color_metadata_tag_args(profile),
             "-threads:v",
             "2",
             "-vsync",
@@ -864,6 +865,8 @@ def stage_native_source(original: Path, target: Path) -> dict[str, Any]:
     )
     stage_video = media.video_profile(target, count_frames=True)
     stage_audio = media.audio_profile(target)
+    source_colors = media.source_color_metadata(profile)
+    stage_color_tags = media.stream_color_tags(target)
     expected = media.frame_hashes(original, pix_fmt=contract.video.pix_fmt)
     actual = media.frame_hashes(target, pix_fmt=contract.video.pix_fmt)
     original_pts, stage_pts = media.packet_pts(original), media.packet_pts(target)
@@ -885,6 +888,9 @@ def stage_native_source(original: Path, target: Path) -> dict[str, Any]:
         "source_geometry_exact": (stage_video["width"], stage_video["height"])
         == (contract.video.width, contract.video.height),
         "source_pixel_format_exact": stage_video["pix_fmt"] == contract.video.pix_fmt,
+        "source_color_metadata_tags_exact": all(
+            stage_color_tags.get(field) == value for field, value in source_colors.items()
+        ),
         "audio_sample_rate_exact": stage_audio["sample_rate"] == contract.audio.sample_rate,
         "audio_channels_exact": stage_audio["channels"] == contract.audio.channels,
     }
@@ -899,6 +905,8 @@ def stage_native_source(original: Path, target: Path) -> dict[str, Any]:
         "source_profile": profile,
         "stage_video": stage_video,
         "stage_audio": stage_audio,
+        "source_color_metadata": source_colors,
+        "stage_color_tags": stage_color_tags,
         "source_time_base": media.fraction_text(source_tb),
         "stage_time_base": media.fraction_text(stage_tb),
     }

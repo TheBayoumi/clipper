@@ -56,6 +56,16 @@ def source(tmp_path_factory: pytest.TempPathFactory) -> Path:
             "10",
             "-pix_fmt",
             "yuv420p",
+            "-color_range",
+            "tv",
+            "-colorspace",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-color_primaries",
+            "bt709",
+            "-chroma_sample_location",
+            "left",
             "-video_track_timescale",
             "15360",
             "-c:a",
@@ -266,6 +276,14 @@ def test_certified_montage_full_stack(
     assert result["qa"]["encoded_video_frames"] == 330
     assert 10 <= result["qa"]["encoded_duration_seconds"] <= 12
     assert all(result["staging"]["checks"].values())
+    # FFmpeg/x264 builds differ in which color fields they emit for synthetic
+    # lavfi input; all explicitly emitted source fields must survive exactly.
+    expected_colors = result["staging"]["source_color_metadata"]
+    assert expected_colors["color_range"] == "tv"
+    assert expected_colors["color_space"] == "bt709"
+    assert result["staging"]["stage_color_tags"] == expected_colors
+    assert result["qa"]["canonical_color_metadata_tags"] == expected_colors
+    assert result["qa"]["delivery_color_metadata"] == expected_colors
     assert all(result["qa"]["checks"].values())
     assert result["qa"]["ssim"] >= 0.96
     assert result["qa"]["psnr_db"] >= 35

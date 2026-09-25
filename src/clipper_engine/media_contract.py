@@ -413,6 +413,60 @@ def profile_output_args(profile: dict[str, Any]) -> list[str]:
     return args
 
 
+_COLOR_METADATA_FIELDS = (
+    "color_range",
+    "color_space",
+    "color_transfer",
+    "color_primaries",
+    "chroma_location",
+)
+
+
+def source_color_metadata(profile: dict[str, Any]) -> dict[str, str]:
+    """Known source color values are authoritative, never inferred from a re-encode."""
+    return {
+        field: str(profile[field])
+        for field in _COLOR_METADATA_FIELDS
+        if is_known(str(profile.get(field) or ""))
+    }
+
+
+def color_metadata_tag_args(profile: dict[str, Any]) -> list[str]:
+    """NUT/FFV1 cannot expose source color codec flags; persist them as stream tags."""
+    args: list[str] = []
+    for key, value in source_color_metadata(profile).items():
+        args += ["-metadata:s:v:0", f"{key}={value}"]
+    return args
+
+
+def stream_color_tags(path: Path) -> dict[str, str]:
+    probe = json.loads(
+        run_capture(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream_tags",
+                "-of",
+                "json",
+                str(path),
+            ]
+        ).stdout
+    )
+    streams = probe.get("streams") or []
+    if len(streams) != 1:
+        raise RuntimeError(f"expected one video stream for color metadata: {path}")
+    tags = streams[0].get("tags") or {}
+    return {
+        field: str(tags[field])
+        for field in _COLOR_METADATA_FIELDS
+        if is_known(str(tags.get(field) or ""))
+    }
+
+
 _CHROMA_X264 = {
     "left": "0",
     "center": "1",

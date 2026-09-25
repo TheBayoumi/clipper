@@ -6,13 +6,6 @@ on:
     branches:
       - feat/mw4-fullframe-retention-v3-1
       - feat/warzone-operator-toggle
-    paths:
-      - .github/workflows/mw4-qualification.yml
-      - .github/mw4-production-trigger
-      - pyproject.toml
-      - src/clipper_engine/profiles/mw4.json
-      - src/clipper/cli.py
-      - src/clipper_engine/**/*.py
 
 concurrency:
   group: mw4-production-${{ github.ref }}
