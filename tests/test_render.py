@@ -32,7 +32,7 @@ def test_build_ffmpeg_command_contains_vertical_and_audio_filters(tmp_path: Path
     assert "FontSize=10" in joined
     assert "MarginV=28" in joined
     assert "loudnorm=I=-14" in joined
-    assert ";[captioned]format=yuv420p[v]" in joined
+    assert ";[captioned]format=yuv420p,setsar=1[v]" in joined
     assert "libx264" in command
     assert "ultrafast" in command
     assert command[command.index("-threads") + 1] == "1"
