@@ -5,19 +5,7 @@ on:
   push:
     branches:
       - feat/warzone-operator-toggle
-    paths:
-      - .github/workflows/warzone-qualification.yml
-      - src/clipper/cli.py
-      - src/clipper_engine/**
-      - tests/test_announcement.py
-      - pyproject.toml
   pull_request:
-    paths:
-      - .github/workflows/warzone-qualification.yml
-      - src/clipper/cli.py
-      - src/clipper_engine/**
-      - tests/test_announcement.py
-      - pyproject.toml
 
 concurrency:
   group: warzone-qualification-${{ github.ref }}
