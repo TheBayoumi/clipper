@@ -16,6 +16,8 @@ on:
       - "src/clipper/transcript.py"
       - "src/clipper/render.py"
       - "src/clipper/tiktok.py"
+      - "src/clipper/source_fidelity.py"
+      - "tests/test_source_fidelity.py"
       - "tests/test_tiktok.py"
       - "src/clipper/youtube.py"
       - "tests/test_tjr_quality.py"
@@ -150,7 +152,6 @@ jobs:
     timeout-minutes: 100
     env:
       CLIPPER_RENDER_PRESET: slow
-      CLIPPER_RENDER_CRF: "14"
       CLIPPER_RENDER_THREADS: "4"
       TJR_CAPTION_STYLE: B
       TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
@@ -379,7 +380,7 @@ jobs:
           - UCGHBUXjDCeiIXNdKR0HUZnA
           - UCZen39LQJPx04GjPj7FOMcw
     runs-on: ubuntu-24.04
-    timeout-minutes: 100
+    timeout-minutes: 180
     permissions:
       contents: read
     env:
@@ -485,6 +486,8 @@ jobs:
             tjr-modal-artifacts/**/clips/*.mp4
             tjr-modal-artifacts/**/clips/*.srt
             tjr-modal-artifacts/**/clips/*.ass
+            tjr-modal-artifacts/**/clips/*.quality.json
+            tjr-modal-artifacts/**/clips/*.ssim.txt
             tjr-modal-artifacts/**/clips/*-preview.png
             tjr-modal-artifacts/**/clips/*-contact.png
             tjr-modal-artifacts/**/editorial-candidate-audit.json

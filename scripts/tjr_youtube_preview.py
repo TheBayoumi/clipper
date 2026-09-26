@@ -16,6 +16,7 @@ import subprocess
 import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from clipper.brief import load_brief
 from clipper.models import ClipCandidate
 from clipper.render import FFmpegRenderer
 from clipper.scoring import score_transcript
+from clipper.source_fidelity import probe_source_profile
 from clipper.transcript import transcribe_with_faster_whisper
 from scripts.tjr_editorial import select_editorial_moments
 from scripts.tjr_quality import check_full_decode, probe_original, probe_video
@@ -493,6 +495,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                         ) from exc
         if source is None or chosen_video is None:
             raise RuntimeError("no recent approved-channel YouTube original could be downloaded")
+        source_profile = probe_source_profile(source)
         step = "transcription"
         segments = transcribe_with_faster_whisper(
             source,
@@ -551,8 +554,14 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 segments,
                 editorial_layout=layout,
                 tiktok_hook=pick.hook if caption_style == "B" else None,
+                source_profile=source_profile if caption_style == "B" else None,
             )
             details = probe_video(out)
+            if (
+                caption_style == "B"
+                and abs(details["fps"] - float(Fraction(source_profile.fps))) > 0.04
+            ):
+                raise RuntimeError("finished TikTok output changed native source frame rate")
             check_full_decode(out)
             thumbnail = out.with_name(out.stem + "-preview.png")
             invoke(
@@ -602,6 +611,12 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                         else None
                     ),
                     "file_megabytes": round(out.stat().st_size / 1_000_000, 2),
+                    "source_fidelity": renderer.quality_results.get(str(out.resolve())),
+                    "source_matched_quality": (
+                        str(out.with_suffix(".quality.json").relative_to(run_dir))
+                        if caption_style == "B"
+                        else None
+                    ),
                     "hook_score": pick.hook_score,
                     "editorial_reasons": list(pick.reasons),
                     "publication_status": "AI_SCREEN_PASSED__VISUAL_REVIEW_REQUIRED",
@@ -630,6 +645,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             "source_published_at": chosen_video.published,
             "source_sha256": digest,
             "source_dimensions": probe_original(source),
+            "source_profile": source_profile.as_dict(),
             "clips": completed,
             "source_attempts": errors,
             "manual_checks": [

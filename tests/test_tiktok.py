@@ -45,7 +45,7 @@ def test_short_clip_or_empty_caption_does_not_create_hook_or_dialogue(tmp_path: 
         clip,
         [
             TranscriptSegment(0, 0.03, "tiny"),
-            TranscriptSegment(0.2, 0.5, ""),
+            TranscriptSegment(0.2, 0.30, "tiny"),
         ],
         tmp_path / "empty.ass",
         hook_text="",

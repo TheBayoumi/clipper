@@ -198,8 +198,8 @@ def probe_video(path: Path) -> dict[str, Any]:
         if Fraction(video.get("sample_aspect_ratio", "1:1").replace(":", "/")) != 1:
             raise QualityError("clip must have square pixels")
         fps = Fraction(video.get("avg_frame_rate", "0/1"))
-        if not 29 <= float(fps) <= 61:
-            raise QualityError("clip frame rate must be between 29 and 61 fps")
+        if not 23 <= float(fps) <= 61:
+            raise QualityError("clip frame rate must retain a supported native 23-61 fps")
         duration = float(info["format"]["duration"])
         if not MIN_SECONDS - 0.5 <= duration <= MAX_SECONDS + 0.5:
             raise QualityError(f"clip duration outside {MIN_SECONDS}-{MAX_SECONDS}s: {duration}")

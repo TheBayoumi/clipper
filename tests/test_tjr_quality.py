@@ -220,3 +220,32 @@ def test_known_tjr_livestream_editorial_layout_crops_source_sponsor_area(tmp_pat
             editorial_layout="tjr-trading-logo-safe",
             watermark_path=tmp_path / "brand.png",
         )
+
+
+def test_native_23976_and_25fps_match_original_qa(tmp_path: Path) -> None:
+    from fractions import Fraction
+
+    for value in ("24000/1001", "25/1"):
+        good = Mock(
+            stdout=json.dumps(
+                {
+                    "streams": [
+                        {
+                            "codec_type": "video",
+                            "codec_name": "h264",
+                            "pix_fmt": "yuv420p",
+                            "sample_aspect_ratio": "1:1",
+                            "width": 1080,
+                            "height": 1920,
+                            "avg_frame_rate": value,
+                        },
+                        {"codec_type": "audio", "codec_name": "aac"},
+                    ],
+                    "format": {"duration": "28.3"},
+                }
+            )
+        )
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"authentic fixture data")
+        with patch("subprocess.run", return_value=good):
+            assert probe_video(clip)["fps"] == pytest.approx(float(Fraction(value)))

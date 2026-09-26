@@ -10,6 +10,12 @@ from fractions import Fraction
 from pathlib import Path
 
 from .models import ClipCandidate, TranscriptSegment
+from .source_fidelity import (
+    SourceProfile,
+    compare_encoded_to_composition,
+    crf_attempts,
+    probe_source_profile,
+)
 from .tiktok import create_tiktok_ass
 
 
@@ -66,6 +72,8 @@ def build_ffmpeg_command(
     height: int = 1920,
     editorial_layout: str = "default",
     source_fps: str | None = None,
+    crf_override: int | None = None,
+    source_profile: SourceProfile | None = None,
 ) -> list[str]:
     preset = os.getenv("CLIPPER_RENDER_PRESET", "ultrafast").strip().lower()
     if preset not in {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"}:
@@ -75,8 +83,10 @@ def build_ffmpeg_command(
         threads = int(os.getenv("CLIPPER_RENDER_THREADS", "1"))
     except ValueError as exc:
         raise RenderError("render CRF and threads must be integers") from exc
-    if not 16 <= crf <= 28 or not 1 <= threads <= 4:
-        raise RenderError("render CRF must be 16-28 and threads must be 1-4")
+    if crf_override is not None:
+        crf = crf_override
+    if not 12 <= crf <= 28 or not 1 <= threads <= 4:
+        raise RenderError("render CRF must be 12-28 and threads must be 1-4")
     escaped_subtitles = _escape_filter_path(Path(subtitle_path))
     is_tiktok = Path(subtitle_path).suffix.lower() == ".ass"
     caption_filter = (
@@ -97,11 +107,11 @@ def build_ffmpeg_command(
     if source_fps:
         try:
             rate = Fraction(source_fps)
-            if not 24 <= float(rate) <= 60:
+            if not 23 <= float(rate) <= 61:
                 raise ValueError("unsupported source frame rate")
         except (ValueError, ZeroDivisionError) as exc:
             raise RenderError("invalid original source frame rate") from exc
-        fps = source_fps if float(rate) >= 29 else "30"
+        fps = source_fps
     else:
         fps = "30"
     blur_width = max(180, width // 3)
@@ -182,6 +192,21 @@ def build_ffmpeg_command(
             if is_tiktok
             else []
         ),
+        *(
+            ["-colorspace", source_profile.color_space]
+            if source_profile and source_profile.color_space in {"bt709", "smpte170m"}
+            else []
+        ),
+        *(
+            ["-color_trc", source_profile.color_transfer]
+            if source_profile and source_profile.color_transfer in {"bt709", "smpte170m"}
+            else []
+        ),
+        *(
+            ["-color_primaries", source_profile.color_primaries]
+            if source_profile and source_profile.color_primaries in {"bt709", "smpte170m"}
+            else []
+        ),
         "-movflags",
         "+faststart",
         str(output_path),
@@ -212,7 +237,7 @@ def _source_frame_rate(path: Path) -> str:
         streams = json.loads(probe.stdout)["streams"]
         source = streams[0]
         rate = str(source.get("avg_frame_rate") or source.get("r_frame_rate") or "")
-        if 24 <= float(Fraction(rate)) <= 60:
+        if 23 <= float(Fraction(rate)) <= 61:
             return rate
         raise ValueError("unusable native frame rate")
     except (
@@ -232,6 +257,7 @@ class FFmpegRenderer:
     def __init__(self) -> None:
         if not shutil.which("ffmpeg"):
             raise RenderError("ffmpeg is not installed or not on PATH")
+        self.quality_results: dict[str, dict[str, object]] = {}
 
     def render(
         self,
@@ -242,6 +268,7 @@ class FFmpegRenderer:
         watermark_path: Path | None = None,
         editorial_layout: str = "default",
         tiktok_hook: str | None = None,
+        source_profile: SourceProfile | None = None,
     ) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         subtitle_path = output_path.with_suffix(".srt")
@@ -256,22 +283,79 @@ class FFmpegRenderer:
             if tiktok_hook is not None
             else subtitle_path
         )
-        native_fps = _source_frame_rate(source_path) if tiktok_hook is not None else None
-        command = build_ffmpeg_command(
-            source_path,
-            output_path,
-            clip,
-            burn_in,
-            watermark_path=watermark_path,
-            editorial_layout=editorial_layout,
-            source_fps=native_fps,
+        native = (
+            (source_profile or probe_source_profile(source_path))
+            if tiktok_hook is not None
+            else None
         )
-        try:
-            subprocess.run(command, check=True, capture_output=True, text=True, timeout=900)
-        except subprocess.CalledProcessError as exc:
-            raise RenderError((exc.stderr or exc.stdout or str(exc))[-2000:]) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise RenderError("ffmpeg render timed out after 900 seconds") from exc
-        if not output_path.is_file() or output_path.stat().st_size == 0:
-            raise RenderError(f"ffmpeg did not create a valid output: {output_path}")
-        return output_path
+        rates = crf_attempts(native) if native else (None,)
+        evidence: list[dict[str, float | int]] = []
+        stats_path = output_path.with_suffix(".ssim.txt")
+        self.quality_results.pop(str(output_path.resolve()), None)
+        for crf in rates:
+            command = build_ffmpeg_command(
+                source_path,
+                output_path,
+                clip,
+                burn_in,
+                watermark_path=watermark_path,
+                editorial_layout=editorial_layout,
+                source_fps=native.fps if native else None,
+                crf_override=crf,
+                source_profile=native,
+            )
+            try:
+                subprocess.run(command, check=True, capture_output=True, text=True, timeout=900)
+            except subprocess.CalledProcessError as exc:
+                raise RenderError((exc.stderr or exc.stdout or str(exc))[-2000:]) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise RenderError("ffmpeg render timed out after 900 seconds") from exc
+            if not output_path.is_file() or output_path.stat().st_size == 0:
+                raise RenderError(f"ffmpeg did not create a valid output: {output_path}")
+            if native is None:
+                return output_path
+            if crf is None:
+                raise RenderError("source-matched encoding requires measured attempt")
+            try:
+                measured, compared = compare_encoded_to_composition(
+                    command,
+                    source=source_path,
+                    output=output_path,
+                    clip_start=clip.start,
+                    duration=clip.duration,
+                    fps=native.fps,
+                    stats_path=stats_path,
+                )
+            except Exception:
+                output_path.unlink(missing_ok=True)
+                raise
+            evidence.append({"crf": crf, "mean_ssim": measured, "frames_compared": compared})
+            if measured < 0.99:
+                continue
+            report: dict[str, object] = {
+                "status": "MEASURED_SOURCE_MATCHED_ENCODING",
+                "source_profile": native.as_dict(),
+                "output_cadence": native.fps,
+                "output_format": "1080x1920 H.264 high yuv420p",
+                "source_to_delivery_mean_ssim": measured,
+                "minimum_mean_ssim": 0.99,
+                "compared_frames": compared,
+                "accepted_crf": crf,
+                "attempts": evidence,
+                "output_bytes": output_path.stat().st_size,
+                "measurement_method": (
+                    "frame-level SSIM against decoded original with the identical "
+                    "crop, animated ASS overlay, pixel format and native cadence "
+                    "before the final H.264 encode"
+                ),
+                "editorial_visual_approval": False,
+            }
+            report_path = output_path.with_suffix(".quality.json")
+            report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            self.quality_results[str(output_path.resolve())] = report
+            return output_path
+        output_path.unlink(missing_ok=True)
+        raise RenderError(
+            "final render did not match the actual source composition at "
+            "mean frame SSIM 0.99 or higher: " + str(evidence)
+        )

@@ -157,7 +157,9 @@ def test_tiktok_renderer_writes_editable_ass_and_original_srt(tmp_path: Path) ->
     segments = [TranscriptSegment(0, 1.1, "Why did"), TranscriptSegment(1.1, 2.0, "this happen?")]
     source, output = tmp_path / "original.mp4", tmp_path / "clip.mp4"
     source.write_bytes(b"source")
-    fake_probe = Mock(stdout='{"streams": [{"avg_frame_rate": "30000/1001"}]}')
+    from clipper.source_fidelity import SourceProfile
+
+    profile = SourceProfile(1920, 1080, "30000/1001", "h264", "yuv420p", 4500000, 192000)
 
     def fake_ffmpeg(command: list[str], **_kwargs: object) -> Mock:
         assert "ass='" in " ".join(command)
@@ -168,18 +170,26 @@ def test_tiktok_renderer_writes_editable_ass_and_original_srt(tmp_path: Path) ->
         patch("clipper.render.shutil.which", return_value="/usr/bin/ffmpeg"),
         patch(
             "clipper.render.subprocess.run",
-            side_effect=lambda cmd, **kw: (
-                fake_probe if cmd[0] == "ffprobe" else fake_ffmpeg(cmd, **kw)
-            ),
+            side_effect=fake_ffmpeg,
         ) as run,
+        patch(
+            "clipper.render.compare_encoded_to_composition",
+            return_value=(0.996, 360),
+        ) as ssim,
     ):
         renderer = FFmpegRenderer()
-        result = renderer.render(source, output, clip, segments, tiktok_hook=clip.text)
+        result = renderer.render(
+            source, output, clip, segments,
+            tiktok_hook=clip.text, source_profile=profile,
+        )
         assert result == output
-        assert "ass='" in " ".join(run.call_args_list[1].args[0])
-        assert "fps=30000/1001" in " ".join(run.call_args_list[1].args[0])
+        assert "ass='" in " ".join(run.call_args_list[0].args[0])
+        assert "fps=30000/1001" in " ".join(run.call_args_list[0].args[0])
+        assert ssim.call_count == 1
+        assert renderer.quality_results[str(output.resolve())]["accepted_crf"] == 18
     assert output.with_suffix(".ass").is_file()
     assert output.with_suffix(".srt").is_file()
+    assert output.with_suffix(".quality.json").is_file()
 
 
 def test_style_b_native_frame_rate_validation(tmp_path: Path) -> None:
