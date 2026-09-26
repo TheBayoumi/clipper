@@ -318,6 +318,24 @@ def prioritize_campaign_moments(videos: list[OfficialVideo]) -> list[OfficialVid
     return sorted(videos, key=priority, reverse=True)
 
 
+
+def constrain_official_sources(
+    candidates: list[OfficialVideo], requested_id: str | None
+) -> list[OfficialVideo]:
+    """Honor an explicit exact YouTube source instead of trying other videos.
+
+    No unverified URL and no fallback to other creators or Kick are accepted.
+    """
+    if not requested_id:
+        return prioritize_campaign_moments(candidates)
+    if not VIDEO_ID.fullmatch(requested_id):
+        raise RuntimeError("selected source_video_id must be exactly 11 YouTube ID characters")
+    matches = [video for video in candidates if video.video_id == requested_id]
+    if len(matches) != 1 or matches[0].channel_id not in CHANNELS:
+        raise RuntimeError("selected source_video_id is not in either Reach-listed channel feed")
+    return matches
+
+
 def select_separate_clips(candidates: list[ClipCandidate], count: int = 2) -> list[ClipCandidate]:
     chosen: list[ClipCandidate] = []
     for candidate in sorted(candidates, key=lambda item: (-item.score, item.start)):
@@ -372,7 +390,11 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         bot_challenges = 0
         # Put full videos before Shorts: a new 15-second hashtag Short is not
         # a suitable 20-42s clip source and must not consume the bot budget.
-        for video in prioritize_campaign_moments(candidates)[:8]:
+        requested_id = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip()
+        official_candidates = constrain_official_sources(candidates, requested_id)
+        if requested_id:
+            LOGGER.info("Using explicitly requested official YouTube video ID: %s", requested_id)
+        for video in official_candidates[:8]:
             step = "official_metadata"
             try:
                 metadata = verified_youtube_metadata(video)
