@@ -47,7 +47,10 @@ def filter_graph(
     fps = rate(profile)
     edit = plan["montage"]
     title = edit["title"]
-    source_frames = int(edit["full_source_frames"])
+    source_window = edit["source_window"]
+    source_start = int(source_window["start_frame"])
+    source_frames = int(source_window["frames"])
+    excerpt = source_start != 0 or source_frames != int(edit["full_source_frames"])
     hook = edit["hook"]
     comparison_frames = int(edit["comparison_frames"])
     ending_frames = int(edit["ending_frames"])
@@ -72,6 +75,8 @@ def filter_graph(
     hend = float(Fraction(int(hook["start_frame"] + hook["frames"]), 1) / fps)
     hlen = float(Fraction(int(hook["frames"]), 1) / fps)
     source_seconds = float(Fraction(source_frames, 1) / fps)
+    source_start_seconds = float(Fraction(source_start, 1) / fps)
+    source_end_seconds = float(Fraction(source_start + source_frames, 1) / fps)
     comparison_seconds = float(Fraction(comparison_frames, 1) / fps)
     ending_seconds = float(Fraction(ending_frames, 1) / fps)
     fade = float(profile.config["editorial"].get("audio_declick_ms", 12)) / 1000.0
@@ -83,7 +88,7 @@ def filter_graph(
     return ";".join(
         [
             "[3:v]setpts=PTS-STARTPTS[vhook]",
-            "[0:v]setpts=PTS-STARTPTS[vfull]",
+            ("[4:v]setpts=PTS-STARTPTS[vfull]" if excerpt else "[0:v]setpts=PTS-STARTPTS[vfull]"),
             "[1:v]setpts=PTS-STARTPTS[vcompare]",
             "[2:v]setpts=PTS-STARTPTS[vfinal]",
             "[vhook][vfull][vcompare][vfinal]concat=n=4:v=1:a=0,"
@@ -94,7 +99,7 @@ def filter_graph(
             f"asetpts=PTS-STARTPTS,apad=pad_dur=0.1,atrim=duration={hlen:.9f},"
             f"afade=t=in:st=0:d={fade:.4f},"
             f"afade=t=out:st={hlen - fade:.9f}:d={fade:.4f}[au0]",
-            f"[afull]atrim=start=0:end={source_seconds:.9f},"
+            f"[afull]atrim=start={source_start_seconds:.9f}:end={source_end_seconds:.9f},"
             "asetpts=PTS-STARTPTS,apad=pad_dur=0.1,"
             f"atrim=duration={source_seconds:.9f},"
             f"afade=t=in:st=0:d={fade:.4f},"
@@ -404,6 +409,17 @@ def _qa(
         "comparison_from_verified_source_frames": stage["comparison"]["source_only"]
         and stage["comparison"]["frame_count_exact"],
         "hook_source_hashes_exact": stage["hook"]["source_to_piece_hashes_exact"],
+        **(
+            {
+                "source_excerpt_hashes_exact": stage["source_excerpt"][
+                    "source_to_piece_hashes_exact"
+                ]
+                and stage["source_excerpt"]["frame_count"]
+                == plan["montage"]["source_window"]["frames"]
+            }
+            if "source_excerpt" in stage
+            else {}
+        ),
         "reveal_source_hashes_exact": stage["reveal"]["source_to_piece_hashes_exact"],
         "full_frame_comparison": stage["comparison"]["full_frame"]
         and stage["comparison"]["no_black_bar_layout"],
@@ -427,7 +443,11 @@ def _qa(
         "source_audio_channels": audio["channels"] == int(output["audio_channels"]),
         "encoded_duration": float(editorial["minimum_output_seconds"])
         <= duration
-        <= float(editorial["maximum_output_seconds"]),
+        <= float(
+            editorial.get("mode_timing", {})
+            .get(plan["montage"]["comparison_mode"], {})
+            .get("maximum_output_seconds", editorial["maximum_output_seconds"])
+        ),
         "exact_nominal_frame_duration": math.isclose(
             duration, expected_frames / float(rate(profile)), abs_tol=0.055
         ),
@@ -466,6 +486,7 @@ def _render_canonical(
     source_profile: dict[str, Any],
     plan: dict[str, Any],
     total: float,
+    source_excerpt: Path | None = None,
 ) -> None:
     media.run(
         [
@@ -490,6 +511,7 @@ def _render_canonical(
             "1",
             "-i",
             str(hook),
+            *(["-threads:v", "1", "-i", str(source_excerpt)] if source_excerpt is not None else []),
             "-filter_complex_threads",
             "1",
             "-filter_complex",
@@ -557,6 +579,16 @@ def render(
         staging["comparison"] = comparison_qa
         staging["hook"] = hook_qa
         staging["reveal"] = ending_qa
+        source_window = plan["montage"]["source_window"]
+        selected_excerpt = int(source_window["start_frame"]) != 0 or int(
+            source_window["frames"]
+        ) != int(plan["montage"]["full_source_frames"])
+        source_excerpt: Path | None = None
+        if selected_excerpt:
+            source_excerpt, source_excerpt_qa = _source_windows_piece(
+                staged, workspace, "source_excerpt.nut", [source_window], source_profile
+            )
+            staging["source_excerpt"] = source_excerpt_qa
         graph = filter_graph(plan, profile, title, _fontfile())
         total = float(plan["montage"]["output_seconds"])
         _render_canonical(
@@ -570,6 +602,7 @@ def render(
             source_profile,
             plan,
             total,
+            source_excerpt=source_excerpt,
         )
         media.run(
             [
@@ -635,6 +668,7 @@ def render(
                 source_profile,
                 plan,
                 total,
+                source_excerpt=source_excerpt,
             )
             portrait = portrait_matte.render_portrait(
                 clean,

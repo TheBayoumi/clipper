@@ -561,8 +561,8 @@ def _cascade_test_profile(profile: CampaignProfile) -> CampaignProfile:
     values["output"]["portrait_matte"]["enabled"] = True
     values["output"]["portrait_matte"]["width"] = 180
     values["output"]["portrait_matte"]["height"] = 320
-    values["output"]["portrait_matte"]["target_size_mb"] = 2.0
-    values["output"]["portrait_matte"]["size_tolerance_mb"] = 1.0
+    values["output"]["portrait_matte"]["target_size_mb"] = 1.0
+    values["output"]["portrait_matte"]["size_tolerance_mb"] = 0.5
     return CampaignProfile(name=CAMPAIGN, config=values)
 
 
@@ -572,38 +572,61 @@ def test_cascade_is_configured_by_profile_not_a_second_pipeline(
     p = _cascade_test_profile(profile)
     assert p.config["editorial"]["minimum_output_seconds"] == 5
     plan = montage.build_plan(source, p, comparison_mode="cascade")
-    assert plan["montage"]["output_frames"] == 240
-    assert plan["montage"]["output_seconds"] == 8.0
-    assert plan["montage"]["full_source_frames"] == 178
-    assert plan["montage"]["hook"] == {"start_frame": 55, "frames": 12}
-    assert plan["montage"]["comparison_frames"] == 30
-    assert [shot["frames"] for shot in plan["montage"]["ending_shots"]] == [5, 5, 5, 5]
-    assert plan["montage"]["comparison_mode"] == "cascade"
-    start = 12 + 178
+    edit = plan["montage"]
+    assert edit["output_frames"] == 165
+    assert edit["output_seconds"] == 5.5
+    assert edit["full_source_frames"] == 178  # Original master, certified in full.
+    assert edit["source_window"] == {"start_frame": 14, "frames": 96}
+    assert edit["hook"] == {"start_frame": 55, "frames": 10}
+    assert edit["comparison_frames"] == 39
+    assert [shot["frames"] for shot in edit["ending_shots"]] == [5, 5, 5, 5]
+    assert edit["comparison_mode"] == "cascade"
+    start = edit["hook"]["frames"] + edit["source_window"]["frames"]
     expected = {
-        start + 0: [0, 0, 0],
-        start + 4: [0, 0, 0],
-        start + 7: [1, 0, 0],
-        start + 16: [1, 1, 0],
-        start + 25: [1, 1, 1],
-        220: [0, 0, 0],
-        225: [1, 1, 1],
-        230: [0, 0, 0],
-        235: [1, 1, 1],
-        239: [1, 1, 1],
+        start: [0, 0, 0],
+        start + 3: [0, 0, 0],
+        start + 6: [1, 0, 0],
+        start + 18: [1, 1, 0],
+        start + 30: [1, 1, 1],
+        145: [0, 0, 0],
+        150: [1, 1, 1],
+        155: [0, 0, 0],
+        160: [1, 1, 1],
+        164: [1, 1, 1],
     }
     for frame, expected_states in expected.items():
         fill = portrait_matte.toggle_progress(frame, plan, p)
         actual = panel_compositor.states_for_output(frame, plan, p, fill)
         assert actual == pytest.approx(expected_states)
         assert fill == pytest.approx(sum(expected_states) / 3)
-    for local in range(30):
+    for local in range(edit["comparison_frames"]):
         frame = start + local
         fill = portrait_matte.toggle_progress(frame, plan, p)
         assert fill == pytest.approx(sum(panel_compositor.stage_progress(local, plan, p)) / 3)
     original = montage.build_plan(source, p, comparison_mode="wipe")
     assert original["montage"]["output_frames"] == 315
+    assert original["montage"]["source_window"] == {"start_frame": 0, "frames": 178}
     assert original["montage"]["comparison_frames"] == 60
+
+
+@pytest.mark.parametrize(
+    "bad_window",
+    [
+        {"start_frame": 21, "frames": 96},  # Excludes verified BEFORE anchor.
+        {"start_frame": 14, "frames": 94},  # Excludes verified AFTER anchor.
+        {"start_frame": -1, "frames": 96},
+        {"start_frame": 14, "frames": 165},
+        {"start_frame": 14, "frames": 0},
+        {"start_frame": 14},
+    ],
+)
+def test_source_excerpt_must_retain_both_verified_visual_states(
+    source: Path, profile: CampaignProfile, bad_window: dict[str, int]
+) -> None:
+    p = _cascade_test_profile(profile)
+    p.config["editorial"]["mode_timing"]["cascade"]["source_window"] = bad_window
+    with pytest.raises(montage.MontageRejection, match="source_window_invalid"):
+        montage.build_plan(source, p, comparison_mode="cascade")
 
 
 @pytest.mark.parametrize(
@@ -613,6 +636,7 @@ def test_cascade_is_configured_by_profile_not_a_second_pipeline(
         ("ending_shot_frames", [5, 5, 8, 5]),
         ("ending_shot_frames", [5, 5, 5]),
         ("comparison_seconds", 1.01),
+        ("maximum_output_seconds", 5),
     ],
 )
 def test_cascade_rejects_invalid_short_edit_timing(
@@ -620,7 +644,10 @@ def test_cascade_rejects_invalid_short_edit_timing(
 ) -> None:
     p = _cascade_test_profile(profile)
     p.config["editorial"]["mode_timing"]["cascade"][key] = bad_value
-    with pytest.raises(montage.MontageRejection, match=r"mode_timing_invalid|off_frame_grid"):
+    with pytest.raises(
+        montage.MontageRejection,
+        match=r"mode_timing_invalid|off_frame_grid|invalid_duration_config",
+    ):
         montage.build_plan(source, p, comparison_mode="cascade")
 
 
@@ -675,12 +702,16 @@ def test_cascade_produces_full_duration_original_source_portrait(
     assert rendered["staging"]["comparison"]["comparison_mode"] == "cascade"
     assert rendered["staging"]["comparison"]["frame_count_exact"]
     assert rendered["staging"]["comparison"]["full_frame"]
-    assert panel_qa["frame_count"] == 240
+    assert rendered["staging"]["source_excerpt"]["windows"] == [{"start_frame": 14, "frames": 96}]
+    assert rendered["staging"]["source_excerpt"]["source_to_piece_hashes_exact"]
+    assert rendered["staging"]["source_excerpt"]["frame_count"] == 96
+    assert rendered["qa"]["checks"]["source_excerpt_hashes_exact"]
+    assert panel_qa["frame_count"] == 165
     assert panel_qa["panel_count"] == 3
     assert panel_qa["text_synced"] is True
-    assert panel_qa["switch_frames"] == [194, 203, 212]
-    assert panel_qa["sampled_states"]["190"] == [0, 0, 0]
-    assert panel_qa["sampled_states"]["219"] == [1, 1, 1]
+    assert panel_qa["switch_frames"] == [109, 121, 133]
+    assert panel_qa["sampled_states"]["106"] == [0, 0, 0]
+    assert panel_qa["sampled_states"]["144"] == [1, 1, 1]
     assert (
         panel_qa["source_still_sha256"]
         == (rendered["staging"]["comparison"]["source_still_sha256"])
@@ -688,14 +719,14 @@ def test_cascade_produces_full_duration_original_source_portrait(
     assert all(qa["checks"].values())
     assert len(qa["cascade_panel_pixel_differences"]) == 3
     assert all(delta > 2.5 for delta in qa["cascade_panel_pixel_differences"])
-    assert qa["frame_count"] == 240
-    assert qa["encoded_duration"] == pytest.approx(8.0, abs=0.055)
-    assert qa["file_size_mb"] == pytest.approx(2.0, abs=1.0)
+    assert qa["frame_count"] == 165
+    assert qa["encoded_duration"] == pytest.approx(5.5, abs=0.055)
+    assert qa["file_size_mb"] == pytest.approx(1.0, abs=0.5)
     assert len(qa["matte_sampled_frames"]) == 3
     assert all(sample["max_error"] <= 2 for sample in qa["matte_sampled_frames"])
-    assert rendered["portrait"]["title"]["text_visible_frames"] == 240
+    assert rendered["portrait"]["title"]["text_visible_frames"] == 165
     assert rendered["portrait"]["title"]["progress_samples"]["0"] == 0
-    assert rendered["portrait"]["title"]["progress_samples"]["239"] == 1
+    assert rendered["portrait"]["title"]["progress_samples"]["164"] == 1
     accepted = qualify_campaign(
         p, output / "render_manifest.json", tmp_path / "cascade_acceptance.json"
     )
@@ -711,6 +742,11 @@ def test_cascade_produces_full_duration_original_source_portrait(
     tampered.write_text(json.dumps(manifest))
     with pytest.raises(montage.MontageRejection, match="cascade_stills"):
         qualify_campaign(p, tampered, tmp_path / "rejected_stills.json")
+    manifest["portrait"]["cascade"] = copy.deepcopy(rendered["portrait"]["cascade"])
+    manifest["staging"]["source_excerpt"]["source_to_piece_hashes_exact"] = False
+    tampered.write_text(json.dumps(manifest))
+    with pytest.raises(montage.MontageRejection, match="source_excerpt"):
+        qualify_campaign(p, tampered, tmp_path / "rejected_excerpt.json")
 
 
 def test_cascade_is_covered_by_existing_official_qualification_workflow() -> None:

@@ -61,7 +61,7 @@ def states_for_output(
     frame: int, plan: dict[str, Any], profile: CampaignProfile, global_progress: float
 ) -> list[float]:
     edit = plan["montage"]
-    start = int(edit["hook"]["frames"]) + int(edit["full_source_frames"])
+    start = int(edit["hook"]["frames"]) + int(edit["source_window"]["frames"])
     end = start + int(edit["comparison_frames"])
     if start <= frame < end:
         return stage_progress(frame - start, plan, profile)
@@ -225,7 +225,7 @@ def render_panels(
     )
     folder = workspace / "cascade_panels"
     folder.mkdir(exist_ok=True)
-    comparison_start = int(edit["hook"]["frames"]) + int(edit["full_source_frames"])
+    comparison_start = int(edit["hook"]["frames"]) + int(edit["source_window"]["frames"])
     sample_frames = {
         0,
         frames - 1,
@@ -268,7 +268,7 @@ def render_panels(
         image.save(folder / f"{n:04d}.png", compress_level=3)
         if n in sample_frames:
             sampled[str(n)] = [round(v, 6) for v in states]
-    start = int(edit["hook"]["frames"]) + int(edit["full_source_frames"])
+    start = int(edit["hook"]["frames"]) + int(edit["source_window"]["frames"])
     for n in range(int(edit["comparison_frames"])):
         panel_state = stage_progress(n, plan, profile)
         if abs(sum(panel_state) / 3 - source_progress[start + n]) > 1e-8:

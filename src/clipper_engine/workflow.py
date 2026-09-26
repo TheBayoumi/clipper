@@ -139,6 +139,23 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
         raise montage.MontageRejection("delivery_hash", "delivery is missing or has changed")
     if not all(manifest["qa"]["checks"].values()):
         raise montage.MontageRejection("technical_qa", "render manifest reports failed checks")
+    edit = manifest["plan"]["montage"]
+    selected_window = edit["source_window"]
+    is_excerpt = int(selected_window["start_frame"]) != 0 or int(selected_window["frames"]) != int(
+        edit["full_source_frames"]
+    )
+    if is_excerpt:
+        excerpt = manifest["staging"].get("source_excerpt")
+        if (
+            not isinstance(excerpt, dict)
+            or excerpt.get("windows") != [selected_window]
+            or excerpt.get("frame_count") != int(selected_window["frames"])
+            or excerpt.get("source_to_piece_hashes_exact") is not True
+            or manifest["qa"]["checks"].get("source_excerpt_hashes_exact") is not True
+        ):
+            raise montage.MontageRejection(
+                "source_excerpt", "selected source window lacks exact source->FFV1 frame proof"
+            )
     portrait: dict[str, Any] | None = manifest.get("portrait")
     if profile.config["output"].get("portrait_matte", {}).get("enabled", False):
         if not isinstance(portrait, dict):
@@ -171,7 +188,7 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
                 profile, int(manifest["plan"]["montage"]["comparison_frames"])
             )
             starts = int(manifest["plan"]["montage"]["hook"]["frames"]) + int(
-                manifest["plan"]["montage"]["full_source_frames"]
+                manifest["plan"]["montage"]["source_window"]["frames"]
             )
             if (
                 panel_qa.get("switch_frames")
@@ -228,7 +245,11 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
     if (
         not float(editorial["minimum_output_seconds"])
         <= duration
-        <= float(editorial["maximum_output_seconds"])
+        <= float(
+            editorial.get("mode_timing", {})
+            .get(manifest["plan"]["montage"]["comparison_mode"], {})
+            .get("maximum_output_seconds", editorial["maximum_output_seconds"])
+        )
     ):
         raise montage.MontageRejection("encoded_duration", f"actual duration {duration:.6f}s")
     result = {

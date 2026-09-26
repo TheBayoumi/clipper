@@ -73,7 +73,8 @@ def toggle_progress(frame: int, plan: dict[str, Any], profile: CampaignProfile) 
     if not source_event_start < source_event_end:
         raise MontageRejection("toggle_event_invalid", "source visual-event interval is invalid")
     hook_frames = int(edit["hook"]["frames"])
-    source_frames = int(edit["full_source_frames"])
+    source_frames = int(edit["source_window"]["frames"])
+    source_window_start = int(edit["source_window"]["start_frame"])
     comparison_frames = int(edit["comparison_frames"])
     comparison_start = hook_frames + source_frames
     ending_start = comparison_start + comparison_frames
@@ -82,7 +83,7 @@ def toggle_progress(frame: int, plan: dict[str, Any], profile: CampaignProfile) 
         source_frame = int(edit["hook"]["start_frame"]) + frame
         return _ease((source_frame - source_event_start) / (source_event_end - source_event_start))
     if frame < comparison_start:
-        source_frame = frame - hook_frames
+        source_frame = source_window_start + frame - hook_frames
         return _ease((source_frame - source_event_start) / (source_event_end - source_event_start))
     if frame < ending_start:
         local = frame - comparison_start
@@ -565,6 +566,13 @@ def render_portrait(
     actual_colors = media.source_color_metadata(actual)
     ssim = metric(canonical, file, "ssim", r"All:([0-9.]+)")
     psnr = metric(canonical, file, "psnr", r"average:([0-9.]+)")
+    mode = str(plan["montage"]["comparison_mode"])
+    mode_calibration = profile.config["editorial"].get("mode_timing", {}).get(mode, {})
+    max_seconds = float(
+        mode_calibration.get(
+            "maximum_output_seconds", profile.config["editorial"]["maximum_output_seconds"]
+        )
+    )
     checks = {
         "portrait_canonical_ffv1_nut": stage["codec_name"] == "ffv1" and ffv1._is_nut(canonical),
         "portrait_video_frame_count_exact": actual["frame_count"] == frames
@@ -572,7 +580,7 @@ def render_portrait(
         "portrait_encoded_duration": abs(actual_duration - duration) < 0.04
         and float(profile.config["editorial"]["minimum_output_seconds"])
         <= actual_duration
-        <= float(profile.config["editorial"]["maximum_output_seconds"]),
+        <= max_seconds,
         "portrait_dimensions": (actual["width"], actual["height"]) == (width, height),
         "portrait_frame_rate": actual["avg_frame_rate"] == f"{fps.numerator}/{fps.denominator}",
         "approved_text_full_duration": title_qa["text_visible_frames"] == frames,
@@ -593,7 +601,9 @@ def render_portrait(
     if cascade:
         if panel_qa is None:
             raise RuntimeError("missing cascade panel metadata")
-        start = int(plan["montage"]["hook"]["frames"]) + int(plan["montage"]["full_source_frames"])
+        start = int(plan["montage"]["hook"]["frames"]) + int(
+            plan["montage"]["source_window"]["frames"]
+        )
         after_frame = start + int(plan["montage"]["comparison_frames"]) - 1
         select = f"select=eq(n\\,{start})+eq(n\\,{after_frame}),format=rgb24"
         decoded = subprocess.run(

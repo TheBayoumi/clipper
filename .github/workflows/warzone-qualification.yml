@@ -120,14 +120,18 @@ jobs:
           assert acceptance["status"] == "PASS", acceptance
           assert edit["comparison_mode"] == "cascade"
           assert edit["full_source_frames"] == 178
-          assert edit["output_frames"] == 240
-          assert portrait["qa"]["frame_count"] == 240
-          assert portrait["title"]["text_visible_frames"] == 240
+          assert edit["source_window"] == {"start_frame": 14, "frames": 96}
+          assert manifest["staging"]["source_excerpt"]["frame_count"] == 96
+          assert manifest["staging"]["source_excerpt"]["source_to_piece_hashes_exact"]
+          assert manifest["qa"]["checks"]["source_excerpt_hashes_exact"]
+          assert edit["output_frames"] == 165
+          assert portrait["qa"]["frame_count"] == 165
+          assert portrait["title"]["text_visible_frames"] == 165
           assert portrait["cascade"]["panel_count"] == 3
           assert all(portrait["qa"]["checks"].values()), portrait["qa"]
-          assert 5 <= portrait["qa"]["encoded_duration"] < 10, portrait["qa"]
+          assert 5 <= portrait["qa"]["encoded_duration"] <= 6, portrait["qa"]
           print(
-              "QUALIFIED SHORT CASCADE: source frames=178, output frames=240, "
+              "QUALIFIED 5.5s CASCADE: certified source=178 frames, excerpt=96, output=165, "
               f"encoded duration={portrait['qa']['encoded_duration']}s, "
               f"delivery={portrait['file']}"
           )
