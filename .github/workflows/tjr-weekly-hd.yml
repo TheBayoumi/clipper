@@ -1,0 +1,567 @@
+name: TJR Weekly HD clipping
+
+on:
+  push:
+    branches: [feat/tjr-weekly-hd-actions]
+    paths:
+      - ".github/workflows/tjr-weekly-hd.yml"
+      - "campaigns/reach-tjr-weekly.yaml"
+      - "scripts/tjr_quality.py"
+      - "scripts/tjr_youtube_preview.py"
+      - "scripts/tjr_modal_probe.py"
+      - "scripts/tjr_editorial.py"
+      - "scripts/tjr_browser_probe.py"
+      - "tests/test_tjr_editorial.py"
+      - "tests/test_transcript.py"
+      - "src/clipper/transcript.py"
+      - "src/clipper/render.py"
+      - "src/clipper/tiktok.py"
+      - "tests/test_tiktok.py"
+      - "src/clipper/youtube.py"
+      - "tests/test_tjr_quality.py"
+      - "tests/test_tjr_youtube_preview.py"
+      - "tests/test_tjr_browser_probe.py"
+      - "tests/test_render.py"
+      - "pyproject.toml"
+  pull_request:
+    paths:
+      - ".github/workflows/tjr-weekly-hd.yml"
+      - "campaigns/reach-tjr-weekly.yaml"
+      - "scripts/tjr_quality.py"
+      - "scripts/tjr_youtube_preview.py"
+      - "src/clipper/**"
+      - "tests/**"
+  workflow_dispatch:
+    inputs:
+      budget_confirmed:
+        description: "I checked Whop and the TJR campaign is accepting submissions with budget."
+        required: true
+        type: boolean
+        default: false
+      source_mode:
+        description: "Choose public YouTube extraction or an independently verified original mirror."
+        required: true
+        type: choice
+        options: [youtube_direct, verified_mirror]
+        default: youtube_direct
+      source_verified:
+        description: "I verified the staged video is authentic authorized TJR footage."
+        required: true
+        type: boolean
+        default: false
+      source_video_id:
+        description: "Exact 11-character video ID from the two campaign-listed YouTube channels."
+        required: true
+        type: string
+        default: "p2LU37eat70"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tjr-hd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    name: Validate source, policy and code
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy
+      - run: pytest
+      - name: Validate campaign rules
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from scripts.tjr_quality import check_campaign_brief
+
+          brief = check_campaign_brief(Path("campaigns/reach-tjr-weekly.yaml"))
+          assert brief["required_hashtags"] == ["#TJR"]
+          assert brief["watermark_url"] is None
+          assert set(brief["source_channel_ids"]) == {
+              "UCGHBUXjDCeiIXNdKR0HUZnA",
+              "UCZen39LQJPx04GjPj7FOMcw",
+          }
+          print("Reach YouTube source policy: PASS")
+          PY
+      - name: Install FFmpeg for HD canary
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+      - name: Render and inspect a synthetic HD FFmpeg canary
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tjr-ffmpeg-canary
+          ffmpeg -nostdin -v error -y \
+            -f lavfi -i "testsrc2=size=1280x720:rate=30,setsar=4/3" \
+            -f lavfi -i sine=frequency=440:sample_rate=48000 \
+            -t 2 -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+            -c:a aac /tmp/tjr-ffmpeg-canary/source.mp4
+          CLIPPER_RENDER_PRESET=medium CLIPPER_RENDER_THREADS=2 python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+          from clipper.models import ClipCandidate, TranscriptSegment
+          from clipper.render import FFmpegRenderer
+
+          root = Path("/tmp/tjr-ffmpeg-canary")
+          source, output = root / "source.mp4", root / "output.mp4"
+          FFmpegRenderer().render(
+              source, output,
+              ClipCandidate("synthetic-canary", 0, 2, "Synthetic QA only", 1.0),
+              [TranscriptSegment(0, 2, "Synthetic QA only - do not publish")],
+          )
+          probe = subprocess.run(
+              ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)],
+              capture_output=True, text=True, check=True,
+          )
+          streams = json.loads(probe.stdout)["streams"]
+          video = next(s for s in streams if s["codec_type"] == "video")
+          assert (video["width"], video["height"]) == (1080, 1920)
+          assert video["codec_name"] == "h264" and video["pix_fmt"] == "yuv420p"
+          assert video.get("sample_aspect_ratio") == "1:1"
+          assert any(s["codec_type"] == "audio" for s in streams)
+          subprocess.run(
+              ["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i",
+               str(output), "-f", "null", "-"], check=True,
+          )
+          print("Synthetic HD render and full media decode: PASS")
+          PY
+
+
+  youtube_preview:
+    name: Render drafts only from Reach-listed YouTube channels
+    needs: tests
+    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'youtube_direct'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      CLIPPER_RENDER_PRESET: slow
+      CLIPPER_RENDER_CRF: "14"
+      CLIPPER_RENDER_THREADS: "4"
+      TJR_CAPTION_STYLE: B
+      TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install FFmpeg, Chrome display, and YouTube transcription dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg xvfb x11-utils
+          python -m pip install -e ".[asr]"
+      - name: Mint YouTube playback tokens on the fly in a real browser
+        run: |
+          set -euo pipefail
+          python -m pip install -U "yt-dlp[default]" "yt-dlp-getpot-wpc==1.1.2"
+          CHROME="$(command -v google-chrome-stable || command -v google-chrome || command -v chromium)"
+          if [[ -z "$CHROME" ]]; then
+            echo "::error::This runner has no Chromium-compatible browser."
+            exit 1
+          fi
+          Xvfb :99 -screen 0 1366x768x24 -nolisten tcp > "$RUNNER_TEMP/tjr-xvfb.log" 2>&1 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          echo "YT_DLP_WPC_BROWSER_PATH=$CHROME" >> "$GITHUB_ENV"
+          export DISPLAY=:99
+          for attempt in $(seq 1 20); do
+            if xdpyinfo -display :99 >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          xdpyinfo -display :99 >/dev/null
+          python - <<'PY'
+          from importlib.metadata import version
+          print("yt-dlp:", version("yt-dlp"))
+          print("yt-dlp-getpot-wpc:", version("yt-dlp-getpot-wpc"))
+          PY
+          echo "Browser token generation is enabled without account cookies."
+      - name: Load optional persistent YouTube session if previously authorized
+        env:
+          COOKIES_B64: ${{ secrets.TJR_YOUTUBE_COOKIES_B64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${COOKIES_B64:-}" ]]; then
+            echo "No session secret required: attempting public YouTube playback with dynamic browser tokens."
+            exit 0
+          fi
+          umask 077
+          COOKIE_FILE="$RUNNER_TEMP/tjr-youtube-cookies.txt"
+          printf '%s' "$COOKIES_B64" | base64 --decode > "$COOKIE_FILE"
+          if ! grep -q -m1 -E '^# (Netscape HTTP Cookie File|HTTP Cookie File)' "$COOKIE_FILE"; then
+            echo "::error::Invalid optional YouTube cookie jar; refusing to pass it to the downloader."
+            rm -f "$COOKIE_FILE"
+            exit 1
+          fi
+          if ! awk 'BEGIN {found=0} $1 ~ /^([.]?youtube[.]com|#HttpOnly_[.]?youtube[.]com)$/ {found=1} END {exit !found}' "$COOKIE_FILE"; then
+            echo "::error::Optional jar contains no YouTube session cookies."
+            rm -f "$COOKIE_FILE"
+            exit 1
+          fi
+          echo "YOUTUBE_COOKIES_FILE=$COOKIE_FILE" >> "$GITHUB_ENV"
+          echo "Previously authorized session loaded automatically; no per-video manual setup."
+      - name: Probe REAL official YouTube watch page in Chrome; acquire original if playable
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/tjr-youtube-artifacts/browser-capture"
+          python -m scripts.tjr_browser_probe --root "$ROOT"
+          echo "TJR_BROWSER_CAPTURE_FILE=$ROOT/browser-source.json" >> "$GITHUB_ENV"
+      - name: Check source channel IDs and acquire authentic YouTube HD original
+        run: |
+          set -euo pipefail
+          python -m scripts.tjr_youtube_preview \
+            --artifact-root tjr-youtube-artifacts \
+            --brief campaigns/reach-tjr-weekly.yaml
+      - name: Remove ephemeral YouTube viewer session
+        if: always()
+        run: rm -f "$RUNNER_TEMP/tjr-youtube-cookies.txt"
+      - name: Upload verified MP4s or YouTube-source diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-real-youtube-hd-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tjr-youtube-artifacts/**/clips/*.mp4
+            tjr-youtube-artifacts/**/clips/*.srt
+            tjr-youtube-artifacts/**/clips/*-preview.png
+            tjr-youtube-artifacts/**/tjr-youtube-qa-report.json
+            tjr-youtube-artifacts/**/source-acquisition-errors.json
+            tjr-youtube-artifacts/**/official-source-candidates.json
+            tjr-youtube-artifacts/**/browser-probe.json
+            tjr-youtube-artifacts/**/browser-source.json
+            tjr-youtube-artifacts/**/transcript.json
+            tjr-youtube-artifacts/**/ranked-candidates.json
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: warn
+
+
+
+
+  youtube_alternate_egress:
+    name: Verify and render original YouTube on ${{ matrix.os }}
+    needs: tests
+    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'youtube_direct'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 80
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Prepare independent cookie-free YouTube transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e . "yt-dlp[default]" "curl-cffi>=0.15,<1"
+          mkdir -p tjr-alt-egress
+      - name: Confirm original source and HD formats on this runner's network
+        shell: bash
+        env:
+          ALT_EGRESS_PLATFORM: ${{ matrix.os }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from scripts.tjr_youtube_preview import (
+              constrain_official_sources, discover_official_uploads, verified_youtube_metadata,
+          )
+          report_file = Path("tjr-alt-egress/verified-transport.json")
+          report = {"platform": os.environ["ALT_EGRESS_PLATFORM"], "status": "BLOCKED", "tried": []}
+          try:
+              candidates, failures = discover_official_uploads()
+              report["discovery_failures"] = failures
+              requested = os.environ.get("TJR_SOURCE_VIDEO_ID", "").strip()
+              for video in constrain_official_sources(candidates, requested)[:3]:
+                  try:
+                      info = verified_youtube_metadata(video)
+                      formats = info.get("formats") or []
+                      if not any(
+                          isinstance(fmt, dict)
+                          and int(fmt.get("height") or 0) >= 720
+                          and fmt.get("vcodec") not in ("none", None)
+                          for fmt in formats
+                      ):
+                          raise RuntimeError("No verified HD video formats")
+                      report.update({"status": "ORIGINAL_HD_FORMATS_ACCESSIBLE",
+                                     "video_url": video.url, "channel_id": video.channel_id})
+                      with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as envfile:
+                          envfile.write("TJR_SOURCE_VIDEO_ID=" + video.video_id + "\n")
+                      break
+                  except Exception as exc:
+                      reason = "BOT_CHALLENGE" if "Sign in to confirm" in str(exc) else type(exc).__name__
+                      report["tried"].append({"video_url": video.url, "reason": reason})
+              if report["status"] != "ORIGINAL_HD_FORMATS_ACCESSIBLE":
+                  raise RuntimeError("YouTube blocked verified originals on alternate runner")
+          finally:
+              report_file.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+          print("Verified original video:", report["video_url"])
+          PY
+      - name: Prepare real HD rendering only if the video is accessible
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            if [[ "$RUNNER_OS" == "Windows" ]]; then
+              choco install ffmpeg -y --no-progress
+              echo 'C:\ProgramData\chocolatey\bin' >> "$GITHUB_PATH"
+            else
+              brew install ffmpeg
+            fi
+          fi
+          python -m pip install -e ".[asr]"
+      - name: Render, source-verify, and fully decode real campaign MP4s
+        shell: bash
+        env:
+          CLIPPER_RENDER_PRESET: medium
+          CLIPPER_RENDER_CRF: "18"
+          CLIPPER_RENDER_THREADS: "2"
+        run: |
+          set -euo pipefail
+          python -m scripts.tjr_youtube_preview \
+            --brief campaigns/reach-tjr-weekly.yaml \
+            --artifact-root tjr-alt-egress
+      - name: Upload real YouTube clips or runner-specific diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-youtube-alt-${{ matrix.os }}-${{ github.run_id }}
+          path: |
+            tjr-alt-egress/verified-transport.json
+            tjr-alt-egress/**/clips/*.mp4
+            tjr-alt-egress/**/clips/*.srt
+            tjr-alt-egress/**/clips/*-preview.png
+            tjr-alt-egress/**/tjr-youtube-qa-report.json
+            tjr-alt-egress/**/source-acquisition-errors.json
+            tjr-alt-egress/**/official-source-candidates.json
+            tjr-alt-egress/**/transcript.json
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: warn
+
+
+  youtube_modal_egress:
+    name: Modal originals + editorial drafts (${{ matrix.channel_id }})
+    needs: tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/tjr-weekly-hd-actions'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        channel_id:
+          - UCGHBUXjDCeiIXNdKR0HUZnA
+          - UCZen39LQJPx04GjPj7FOMcw
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    permissions:
+      contents: read
+    env:
+      TJR_MODAL_CHANNEL_ID: ${{ matrix.channel_id }}
+      TJR_EDITORIAL_BATCH_LIMIT: '12'
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      CLIPPER_RENDER_PRESET: medium
+      CLIPPER_RENDER_CRF: "18"
+      CLIPPER_RENDER_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Prepare official-channel metadata and private Modal transfer
+        run: |
+          set -euo pipefail
+          python -m pip install -e . "curl-cffi>=0.15,<1" "modal>=1,<2"
+          python -m py_compile scripts/tjr_modal_probe.py
+      - name: Download real original YouTube video on the verified independent network
+        env:
+          TJR_MODAL_STAGE_ORIGINAL: "1"
+        run: |
+          set -euo pipefail
+          modal run -m scripts.tjr_modal_probe
+      - name: Transfer staged original privately and verify exact SHA-256
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+          from scripts.tjr_quality import probe_original
+
+          staging = json.loads(
+              Path("tjr-modal-probe/staged-original.json").read_text(encoding="utf-8")
+          )
+          if staging.get("status") != "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED":
+              raise RuntimeError("Modal did not stage a real approved original")
+          remote = str(staging.get("source_remote_path") or "")
+          if not re.fullmatch(r"runs/\d{4,20}-\d{1,4}/[A-Za-z0-9_-]{11}/original\.(?:mp4|mkv|webm)", remote):
+              raise RuntimeError("Modal staged source filename is not approved")
+          original = Path("tjr-modal-stage") / ("source" + Path(remote).suffix)
+          original.parent.mkdir(parents=True, exist_ok=True)
+          subprocess.run(
+              ["modal", "volume", "get", "clipper-tjr-source-transport",
+               remote, str(original)],
+              check=True,
+          )
+          with original.open("rb") as media:
+              actual = hashlib.file_digest(media, "sha256").hexdigest()
+          if actual != staging["source_sha256"]:
+              raise RuntimeError("Modal source transfer failed SHA-256 verification")
+          probe_original(original)
+          manifest = {
+              "video_id": staging["video_id"],
+              "channel_id": staging["channel_id"],
+              "public_video_url": staging["public_video_url"],
+              "duration": staging["duration"],
+              "title": staging["title"],
+              "source_path": str(original.resolve()),
+              "source_sha256": actual,
+              "source_transport": "modal_exact_original_youtube",
+          }
+          manifest_path = Path("tjr-modal-stage/verified-source.json").resolve()
+          manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write("TJR_BROWSER_CAPTURE_FILE=" + str(manifest_path) + "\n")
+              env.write("TJR_SOURCE_VIDEO_ID=" + staging["video_id"] + "\n")
+          print("REAL_APPROVED_YOUTUBE_ORIGINAL_SHA256_VERIFIED")
+          PY
+      - name: Transcribe and render genuine 1080x1920 campaign review drafts
+        run: |
+          set -euo pipefail
+          python -m pip install -e ".[asr]"
+          python -m scripts.tjr_youtube_preview \
+            --brief campaigns/reach-tjr-weekly.yaml \
+            --artifact-root tjr-modal-artifacts
+      - name: Purge temporarily staged private original
+        if: always()
+        run: |
+          if [[ -f tjr-modal-probe/staged-original.json ]] && command -v modal; then
+            FILE="$(python -c 'import json; print(json.load(open("tjr-modal-probe/staged-original.json"))["source_remote_path"])')"
+            modal volume rm clipper-tjr-source-transport "$FILE" || true
+          fi
+      - name: Upload actual YouTube MP4s, SRT captions, source provenance and QA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-real-original-youtube-hd-${{ matrix.channel_id }}-${{ github.run_id }}
+          path: |
+            tjr-modal-probe/verified-original-egress.json
+            tjr-modal-probe/staged-original.json
+            tjr-modal-artifacts/**/clips/*.mp4
+            tjr-modal-artifacts/**/clips/*.srt
+            tjr-modal-artifacts/**/clips/*.ass
+            tjr-modal-artifacts/**/clips/*-preview.png
+            tjr-modal-artifacts/**/clips/*-contact.png
+            tjr-modal-artifacts/**/editorial-candidate-audit.json
+            tjr-modal-artifacts/**/ranked-candidates.json
+            tjr-modal-artifacts/**/tjr-youtube-qa-report.json
+            tjr-modal-artifacts/**/source-acquisition-errors.json
+            tjr-modal-artifacts/**/official-source-candidates.json
+            tjr-modal-artifacts/**/transcript.json
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: warn
+
+
+  render:
+    name: Render and QA real TJR HD clips
+    needs: tests
+    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'verified_mirror'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      TJR_SOURCE_MEDIA_URL: ${{ secrets.TJR_SOURCE_MEDIA_URL }}
+      TJR_SOURCE_MEDIA_SHA256: ${{ secrets.TJR_SOURCE_MEDIA_SHA256 }}
+      TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
+      TJR_BUDGET_CONFIRMED: ${{ inputs.budget_confirmed }}
+      TJR_SOURCE_VERIFIED: ${{ inputs.source_verified }}
+      CLIPPER_WHISPER_MODEL: small.en
+      CLIPPER_WHISPER_DEVICE: cpu
+      CLIPPER_WHISPER_COMPUTE_TYPE: int8
+      CLIPPER_RENDER_PRESET: slow
+      CLIPPER_RENDER_CRF: "18"
+      CLIPPER_RENDER_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install FFmpeg and clipper
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python -m pip install -e ".[asr]"
+          ffmpeg -version | head -n 1
+      - name: Prepare verified staged TJR original (secret URL and SHA-256)
+        run: |
+          set -euo pipefail
+          python -m scripts.tjr_quality --prepare \
+            --brief campaigns/reach-tjr-weekly.yaml \
+            --output-brief tjr-runtime/brief.yaml
+      - name: Execute rights-gated TJR source pipeline
+        run: |
+          set -euo pipefail
+          clipper validate --brief tjr-runtime/brief.yaml > /dev/null
+          clipper run --brief tjr-runtime/brief.yaml --artifact-root tjr-artifacts
+      - name: Technical acceptance and full decode
+        run: |
+          set -euo pipefail
+          python -m scripts.tjr_quality \
+            --brief tjr-runtime/brief.yaml \
+            --artifact-root tjr-artifacts
+          while IFS= read -r -d '' clip; do
+            ffmpeg -nostdin -v error -ss 3 -i "$clip" -frames:v 1 \
+              -y "${clip%.mp4}-preview.png"
+          done < <(find tjr-artifacts -path '*/clips/*.mp4' -print0)
+      - name: Upload clips, source manifest and QA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-weekly-hd-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tjr-artifacts/**/manifest.json
+            tjr-artifacts/**/tjr-qa-report.json
+            tjr-artifacts/**/clips/*.mp4
+            tjr-artifacts/**/clips/*.srt
+            tjr-artifacts/**/clips/*-preview.png
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: warn

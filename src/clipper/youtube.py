@@ -214,7 +214,8 @@ class YouTubeClient:
             "--no-playlist",
             "--no-warnings",
             "-f",
-            "bv*[height<=1080]+ba/b[height<=1080]",
+            "bv*[width<=1920][height<=1920][width>=720][height>=720]+ba/"
+            "b[width<=1920][height<=1920]/bv*+ba/b",
             "--merge-output-format",
             "mp4",
             "-o",

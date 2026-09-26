@@ -101,6 +101,7 @@ def transcribe_with_faster_whisper(
     device: str = "auto",
     compute_type: str = "int8",
     language: str | None = None,
+    word_timestamps: bool = False,
 ) -> list[TranscriptSegment]:
     try:
         from faster_whisper import WhisperModel  # type: ignore[import-not-found]
@@ -116,8 +117,48 @@ def transcribe_with_faster_whisper(
         language=language,
         vad_filter=True,
         beam_size=5,
-        word_timestamps=False,
+        word_timestamps=word_timestamps,
     )
+    if word_timestamps:
+        # Actual Whisper word times keep short captions aligned with speech;
+        # never distribute a long ASR sentence over invented timestamps.
+        aligned: list[TranscriptSegment] = []
+        for sentence in raw_segments:
+            words = [
+                word
+                for word in (getattr(sentence, "words", None) or [])
+                if word.start is not None
+                and word.end is not None
+                and float(word.end) > float(word.start)
+                and word.word.strip()
+            ]
+            if not words:
+                if sentence.text.strip() and sentence.end > sentence.start:
+                    aligned.append(
+                        TranscriptSegment(
+                            float(sentence.start), float(sentence.end), sentence.text.strip()
+                        )
+                    )
+                continue
+            group: list[str] = []
+            group_start = float(words[0].start)
+            previous_end = group_start
+            for word in words:
+                start, end = float(word.start), float(word.end)
+                if group and (len(group) >= 6 or end - group_start > 2.6):
+                    aligned.append(
+                        TranscriptSegment(group_start, previous_end, "".join(group).strip())
+                    )
+                    group = []
+                    group_start = start
+                group.append(word.word)
+                previous_end = end
+                if word.word.rstrip().endswith((".", "!", "?")) and len(group) >= 3:
+                    aligned.append(TranscriptSegment(group_start, end, "".join(group).strip()))
+                    group = []
+            if group:
+                aligned.append(TranscriptSegment(group_start, previous_end, "".join(group).strip()))
+        return aligned
     return [
         TranscriptSegment(float(segment.start), float(segment.end), segment.text.strip())
         for segment in raw_segments

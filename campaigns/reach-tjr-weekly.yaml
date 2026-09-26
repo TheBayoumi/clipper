@@ -1,0 +1,49 @@
+# Reach TJR Weekly. Reviewed against https://reachclipping.com/TJR (2026-09-25).
+# Only YouTube channels explicitly listed on the official Reach TJR page.
+campaign_id: reach-tjr-weekly-20260925
+title: TJR
+objective: Find self-contained funny reactions, memorable quotes, trading psychology and authentic risk-management moments featuring TJR, with context intact.
+keywords:
+  - trading
+  - mindset
+  - risk
+  - loss
+  - money
+  - discipline
+  - reaction
+negative_keywords:
+  - guaranteed returns
+  - risk free
+required_phrases: []
+language: en
+region_code: US
+clip_count: 12
+min_clip_seconds: 20
+max_clip_seconds: 42
+source_limit: 12
+max_clips_per_source: 12
+published_after: "2026-09-01T00:00:00Z"
+source_channel_ids:
+  - UCGHBUXjDCeiIXNdKR0HUZnA # https://www.youtube.com/@TJRTrades
+  - UCZen39LQJPx04GjPj7FOMcw # https://www.youtube.com/@TRichesTrades
+allowed_video_ids:
+  - 8PYgFVB0GHE # Legacy verified-mirror fallback only; automatic selection uses channel feeds
+source_media_urls: {}
+# Reach also permits TJR Kick/Instagram/TikTok, but this production uses YouTube only.
+# No random searches, reposts or silent platform fallbacks.
+rights_confirmed: true
+attribution_required: true
+watermark_text: null
+watermark_url: null
+required_hashtags:
+  - "#TJR"
+posting_requirements:
+  - "Video must feature TJR and must not portray him negatively."
+  - "No logos of any kind, including logos already embedded in source footage; no AI-generated footage or voices."
+  - "Only TikTok, Instagram Reels or YouTube Shorts."
+  - "At least 50% of the audience from USA, Canada, UK, Australia and New Zealand."
+  - "For new accounts, use TJR-related or trading-related branding."
+  - "Minimum 5000 views and Reach manual approval for payout."
+  - "Connect social account to Whop and submit link within 30 minutes of posting."
+  - "Never buy, manipulate or exchange views, likes or engagement."
+  - "Verify remaining campaign budget and eligibility in Whop before publishing."

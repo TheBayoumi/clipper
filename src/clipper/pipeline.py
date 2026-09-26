@@ -102,9 +102,7 @@ def _download_google_drive_media(url: str, output_path: Path, *, max_bytes: int)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(output_path.suffix + ".part")
     try:
-        downloaded = gdown.download(  # type: ignore[attr-defined]
-            url=url, output=str(temporary), quiet=True
-        )
+        downloaded = gdown.download(url=url, output=str(temporary), quiet=True)
         if not downloaded or not temporary.is_file():
             raise RuntimeError("Google Drive media download did not create a file")
         size = temporary.stat().st_size
