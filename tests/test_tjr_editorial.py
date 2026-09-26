@@ -29,7 +29,8 @@ def test_preserves_authentic_reaction_hook() -> None:
 def test_selects_distinct_moments_without_two_clip_cap() -> None:
     text = "what just happened i never expected to see a move like that "
     text += "the risk on this trade is important and the position needs "
-    text += "proper management before the price moves against us right now and we avoid another risky mistake"
+    text += "proper management before the price moves against us right now "
+    text += "and we avoid another risky mistake"
     inputs = [clip(i * 45, text + f" number {i}", 20 - i) for i in range(5)]
     chosen, rejected = select_editorial_moments(inputs, batch_limit=10)
     # Repetitive scripts are deduplicated even at separate timestamps.

@@ -142,10 +142,13 @@ def transcribe_with_faster_whisper(
                 continue
             group: list[str] = []
             group_start = float(words[0].start)
+            previous_end = group_start
             for word in words:
                 start, end = float(word.start), float(word.end)
                 if group and (len(group) >= 6 or end - group_start > 2.6):
-                    aligned.append(TranscriptSegment(group_start, previous_end, "".join(group).strip()))
+                    aligned.append(
+                        TranscriptSegment(group_start, previous_end, "".join(group).strip())
+                    )
                     group = []
                     group_start = start
                 group.append(word.word)

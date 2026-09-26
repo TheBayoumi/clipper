@@ -358,7 +358,9 @@ def main() -> None:
             "UCGHBUXjDCeiIXNdKR0HUZnA",
             "UCZen39LQJPx04GjPj7FOMcw",
         }:
-            raise RuntimeError("requested channel is not one of the Reach-approved YouTube channels")
+            raise RuntimeError(
+                "requested channel is not one of the Reach-approved YouTube channels"
+            )
         requested_video = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip() or None
         official = constrain_official_sources(candidates, requested_id=requested_video)
         if channel_id:
