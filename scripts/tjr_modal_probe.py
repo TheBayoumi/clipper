@@ -29,12 +29,8 @@ image = (
 volume = modal.Volume.from_name("clipper-tjr-source-transport", create_if_missing=True)
 
 
-@app.function(
-    image=image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=2048
-)
-def inspect_original_youtube(
-    candidates: list[dict[str, str]], run_key: str = ""
-) -> dict[str, Any]:
+@app.function(image=image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=2048)
+def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = "") -> dict[str, Any]:
     """Inspect only feed-listed original video IDs and their exact expected owners."""
     import yt_dlp
 
@@ -245,9 +241,7 @@ def main() -> None:
             raise RuntimeError("No feed-confirmed campaign YouTube videos")
         stage_media = os.getenv("TJR_MODAL_STAGE_ORIGINAL") == "1"
         run_key = (
-            os.environ["GITHUB_RUN_ID"]
-            + "-"
-            + os.environ.get("GITHUB_RUN_ATTEMPT", "1")
+            os.environ["GITHUB_RUN_ID"] + "-" + os.environ.get("GITHUB_RUN_ATTEMPT", "1")
             if stage_media
             else ""
         )
@@ -278,9 +272,7 @@ def main() -> None:
                     {"region": region or "default", "status": str(candidate.get("status"))}
                 )
             except Exception as exc:
-                region_attempts.append(
-                    {"region": region or "default", "error": type(exc).__name__}
-                )
+                region_attempts.append({"region": region or "default", "error": type(exc).__name__})
         result["region_attempts"] = region_attempts
         result["discovery_failures"] = discovery_failures
         output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
