@@ -41,6 +41,14 @@ def test_only_official_reach_channel_feeds_are_accepted(channel_id: str) -> None
     assert videos[0].url == "https://www.youtube.com/watch?v=8PYgFVB0GHE"
 
 
+def test_live_official_feed_with_uc_prefix_elided_is_normalized() -> None:
+    channel = "UCGHBUXjDCeiIXNdKR0HUZnA"
+    raw = atom_feed(channel).replace(channel.encode(), channel.removeprefix("UC").encode())
+    videos = parse_official_feed(raw, channel)
+    assert len(videos) == 1
+    assert videos[0].channel_id == channel
+
+
 def test_wrong_feed_owner_fails_closed() -> None:
     with pytest.raises(ValueError, match="owner mismatch"):
         parse_official_feed(atom_feed("UC-not-approved"), "UCGHBUXjDCeiIXNdKR0HUZnA")

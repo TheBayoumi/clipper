@@ -48,8 +48,13 @@ publish anything to TikTok or submit any clips to Whop.
 
 ## YouTube access failure and exact-source fallback
 
-If YouTube blocks GitHub-hosted IP addresses, the job fails with a precise
-source-acquisition-errors.json artifact. A passing synthetic render or an
+If YouTube blocks GitHub-hosted IP addresses, the job fails with precise
+source-acquisition-errors.json diagnostics and a sanitized
+`official-source-candidates.json` containing real video links discovered
+from the two official channel feeds. Live YouTube RSS was observed returning
+a channel ID without its `UC` prefix; this is accepted only when the exact
+remaining ID matches an allowlisted channel. Real media download is still
+separately verified and cannot be bypassed by RSS metadata alone. A passing synthetic render or an
 unrelated Kick MP4 is never reported as a successful YouTube result.
 
 The separate, manual render workflow remains available for an independently

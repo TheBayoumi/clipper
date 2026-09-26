@@ -163,6 +163,7 @@ jobs:
             tjr-youtube-artifacts/**/clips/*-preview.png
             tjr-youtube-artifacts/**/tjr-youtube-qa-report.json
             tjr-youtube-artifacts/**/source-acquisition-errors.json
+            tjr-youtube-artifacts/**/official-source-candidates.json
             tjr-youtube-artifacts/**/transcript.json
             tjr-youtube-artifacts/**/ranked-candidates.json
           retention-days: 14
