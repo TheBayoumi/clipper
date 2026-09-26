@@ -76,8 +76,34 @@ def inspect_original_youtube(candidates: list[dict[str, str]]) -> dict[str, Any]
             if not hd:
                 attempts.append({"url": url, "reason": "NO_DOWNLOADABLE_HD_FORMAT"})
                 continue
+            # Formats advertised in metadata are not proof that the signed
+            # GoogleVideo endpoint actually serves bytes on this network.
+            import tempfile
+
+            with tempfile.TemporaryDirectory(prefix="tjr-modal-youtube-") as scratch:
+                with yt_dlp.YoutubeDL(
+                    {
+                        "quiet": True,
+                        "no_warnings": True,
+                        "noplaylist": True,
+                        "test": True,
+                        "format": "bv*[height>=720]/b[height>=720]",
+                        "outtmpl": str(Path(scratch) / "original.%(ext)s"),
+                        "retries": 1,
+                        "socket_timeout": 20,
+                    }
+                ) as probe:
+                    transfer_status = probe.download([url])
+                actual_bytes = sum(
+                    path.stat().st_size
+                    for path in Path(scratch).glob("original.*")
+                    if path.is_file()
+                )
+                if transfer_status != 0 or actual_bytes < 1024:
+                    attempts.append({"url": url, "reason": "HD_MEDIA_BYTES_NOT_VERIFIED"})
+                    continue
             return {
-                "status": "EXACT_OFFICIAL_YOUTUBE_HD_ACCESSIBLE",
+                "status": "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED",
                 "source_url": url,
                 "source_video_id": video_id,
                 "source_channel_id": channel_id,
@@ -116,7 +142,7 @@ def main() -> None:
         result = inspect_original_youtube.remote(inputs)
         result["discovery_failures"] = discovery_failures
         output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-        if result["status"] != "EXACT_OFFICIAL_YOUTUBE_HD_ACCESSIBLE":
+        if result["status"] != "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED":
             raise RuntimeError("Modal network also cannot fetch these official original videos")
         print("Verified original YouTube URL:", result["source_url"])
     except Exception:
