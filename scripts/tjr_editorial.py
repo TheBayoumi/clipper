@@ -78,7 +78,9 @@ def evaluate_candidate(candidate: ClipCandidate) -> EditorialPick | None:
     if hook_score <= 0:
         return None
     density = len(words) / max(candidate.duration, 1.0)
-    if density < 1.15 or density > 5.0:
+    # Genuine reaction hooks can be delivered deliberately; do not reject
+    # authentic moments solely for moderately paced speech.
+    if density < 0.90 or density > 5.0:
         return None
     unfinished = any(text.lower().rstrip(" .!?").endswith(x) for x in _UNFINISHED_ENDINGS)
     editorial_score = candidate.score + hook_score * 4.0 - int(unfinished) * 3.0
