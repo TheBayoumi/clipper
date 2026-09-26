@@ -4,6 +4,7 @@
 This is a supplemental transport diagnostic and original-media attempt. It
 never treats successful channel discovery or generated tokens as a video.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -168,9 +169,7 @@ def run_probe(root: Path) -> Path:
     browser_name = os.environ.get("YT_DLP_WPC_BROWSER_PATH", "").strip()
     browser = Path(browser_name)
     if not browser.is_file():
-        report.write_text(
-            json.dumps({"status": "MISSING_CHROME", "attempts": []}, indent=2) + "\n"
-        )
+        report.write_text(json.dumps({"status": "MISSING_CHROME", "attempts": []}, indent=2) + "\n")
         return report
     candidates, failures = discover_official_uploads()
     requested = os.environ.get("TJR_SOURCE_VIDEO_ID", "").strip()
