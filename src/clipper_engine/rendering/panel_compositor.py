@@ -23,7 +23,11 @@ def _ease(value: float) -> float:
 
 
 def config(profile: CampaignProfile, comparison_frames: int) -> dict[str, Any]:
-    settings: dict[str, Any] = profile.config["output"]["portrait_matte"]["cascade"]
+    matte = profile.config["output"]["portrait_matte"]
+    settings: dict[str, Any] = {
+        **matte["cascade"],
+        "operator_rois": matte["operator_rois"],
+    }
     regions = settings["operator_rois"]
     boundaries = settings["main_band_boundaries"]
     starts = settings["switch_start_frames"]
@@ -46,6 +50,56 @@ def config(profile: CampaignProfile, comparison_frames: int) -> dict[str, Any]:
         ):
             raise MontageRejection("cascade_roi", "normalized Operator ROI is invalid")
     return settings
+
+
+def spotlight_config(profile: CampaignProfile, comparison_frames: int) -> dict[str, Any]:
+    """Validate the single-focus/three-operator montage against one profile schedule."""
+    matte = profile.config["output"]["portrait_matte"]
+    settings: dict[str, Any] = {**matte["spotlight"], "operator_rois": matte["operator_rois"]}
+    order = settings["operator_order"]
+    segment = int(settings["focus_frames"])
+    switch = int(settings["switch_after_frames"])
+    group = int(settings["group_frames"])
+    if (
+        len(settings["operator_rois"]) != 3
+        or len(order) != 3
+        or sorted(order) != [0, 1, 2]
+        or segment < 2
+        or not 1 <= switch < segment
+        or group < 3
+        or segment * len(order) + group != comparison_frames
+        or min(
+            int(settings["focus_card_width"]),
+            int(settings["focus_card_height"]),
+            int(settings["group_card_height"]),
+            int(settings["margin"]),
+            int(settings["gap"]),
+            int(settings["panel_top"]),
+        )
+        < 1
+    ):
+        raise MontageRejection("spotlight_calibration", "invalid focus, group or frame schedule")
+    for roi in settings["operator_rois"]:
+        if len(roi) != 4 or not (0 <= roi[0] < roi[2] <= 1 and 0 <= roi[1] < roi[3] <= 1):
+            raise MontageRejection("spotlight_roi", "invalid normalized source-only crop")
+    return settings
+
+
+def spotlight_stage(
+    local_frame: int, plan: dict[str, Any], profile: CampaignProfile
+) -> tuple[int | None, float]:
+    """Return one focused Operator and its verified visual state, or the group payoff."""
+    frames = int(plan["montage"]["comparison_frames"])
+    if not 0 <= local_frame < frames:
+        raise MontageRejection("spotlight_timeline", "comparison frame outside planned grid")
+    cfg = spotlight_config(profile, frames)
+    segment = int(cfg["focus_frames"])
+    index = local_frame // segment
+    if index >= len(cfg["operator_order"]):
+        return None, 1.0
+    return int(cfg["operator_order"][index]), float(
+        local_frame % segment >= int(cfg["switch_after_frames"])
+    )
 
 
 def stage_progress(local_frame: int, plan: dict[str, Any], profile: CampaignProfile) -> list[float]:
@@ -91,7 +145,10 @@ def render_comparison(
 ) -> tuple[Path, dict[str, Any]]:
     """Build the canonical full-frame staggered comparison from verified source stills."""
     frames = int(plan["montage"]["comparison_frames"])
-    cfg = config(profile, frames)
+    mode = str(plan["montage"]["comparison_mode"])
+    if mode not in {"cascade", "spotlight"}:
+        raise MontageRejection("invalid_comparison_mode", mode)
+    cfg = config(profile, frames) if mode == "cascade" else spotlight_config(profile, frames)
     before = Image.open(before_path).convert("RGB")
     after = Image.open(after_path).convert("RGB")
     if before.size != after.size or before.size != (
@@ -99,28 +156,48 @@ def render_comparison(
         int(profile.config["output"]["height"]),
     ):
         raise MontageRejection("cascade_stills", "verified stills differ from certified geometry")
-    folder = workspace / "cascade_comparison_frames"
+    folder = workspace / "panel_comparison_frames"
     folder.mkdir(exist_ok=True)
     w, h = before.size
-    x_boundaries = [round(float(v) * w) for v in cfg["main_band_boundaries"]]
-    sampled: dict[str, list[float]] = {}
+    sampled: dict[str, Any] = {}
     sample_set = {0, frames - 1}
-    for start in cfg["switch_start_frames"]:
-        sample_set.update({int(start), int(start) + int(cfg["transition_frames"])})
-    for n in range(frames):
-        states = stage_progress(n, plan, profile)
-        frame = before.copy()
-        for index, progress in enumerate(states):
-            x0, x1 = x_boundaries[index : index + 2]
-            if progress <= 0:
-                continue
-            frame.paste(
-                Image.blend(before.crop((x0, 0, x1, h)), after.crop((x0, 0, x1, h)), progress),
-                (x0, 0),
+    if mode == "cascade":
+        x_boundaries = [round(float(v) * w) for v in cfg["main_band_boundaries"]]
+        for start in cfg["switch_start_frames"]:
+            sample_set.update({int(start), int(start) + int(cfg["transition_frames"])})
+    else:
+        for i in range(len(cfg["operator_order"])):
+            focus_start = i * int(cfg["focus_frames"])
+            sample_set.update(
+                {
+                    focus_start,
+                    focus_start + int(cfg["switch_after_frames"]) - 1,
+                    focus_start + int(cfg["switch_after_frames"]),
+                }
             )
+        sample_set.add(int(cfg["focus_frames"]) * len(cfg["operator_order"]))
+    for n in range(frames):
+        if mode == "cascade":
+            states = stage_progress(n, plan, profile)
+            frame = before.copy()
+            for index, progress in enumerate(states):
+                x0, x1 = x_boundaries[index : index + 2]
+                if progress <= 0:
+                    continue
+                frame.paste(
+                    Image.blend(before.crop((x0, 0, x1, h)), after.crop((x0, 0, x1, h)), progress),
+                    (x0, 0),
+                )
+        else:
+            focus, progress = spotlight_stage(n, plan, profile)
+            frame = before if progress <= 0 else after
         frame.save(folder / f"{n:04d}.png", compress_level=3)
         if n in sample_set:
-            sampled[str(n)] = [round(v, 6) for v in states]
+            sampled[str(n)] = (
+                [round(v, 6) for v in states]
+                if mode == "cascade"
+                else {"focus": focus, "after": progress}
+            )
     target = workspace / "comparison.nut"
     fps = rate(profile)
     media.run(
@@ -155,11 +232,11 @@ def render_comparison(
     exact = measured["frame_count"] == frames and measured["codec_name"] == "ffv1"
     geometry = (measured["width"], measured["height"]) == (w, h)
     if not (exact and geometry):
-        raise RuntimeError(f"Clipper cascade canonical comparison failed QA: {measured}")
+        raise RuntimeError(f"Clipper panel comparison failed full-frame QA: {measured}")
     return target, {
         "before_frame": int(plan["evidence"]["before_frame"]),
         "after_frame": int(plan["evidence"]["after_frame"]),
-        "comparison_mode": "cascade",
+        "comparison_mode": mode,
         "comparison_frames": frames,
         "frame_count_exact": exact,
         "full_frame": geometry,
@@ -169,7 +246,7 @@ def render_comparison(
             "before": hashlib.sha256(before_path.read_bytes()).hexdigest(),
             "after": hashlib.sha256(after_path.read_bytes()).hexdigest(),
         },
-        "operator_cascade_states": sampled,
+        "panel_comparison_states": sampled,
         "verified_source_regions": cfg["operator_rois"],
     }
 
@@ -185,6 +262,17 @@ def render_panels(
     source_progress: list[float],
 ) -> dict[str, Any]:
     """Generate bottom-matte panel sequence, matched to the same output frame grid."""
+    if plan["montage"]["comparison_mode"] == "spotlight":
+        return render_spotlight_panels(
+            before_path,
+            after_path,
+            workspace,
+            plan,
+            profile,
+            canvas_width,
+            bottom_height,
+            source_progress,
+        )
     edit = plan["montage"]
     frames = int(edit["output_frames"])
     cfg = config(profile, int(edit["comparison_frames"]))
@@ -223,7 +311,7 @@ def render_panels(
     ImageDraw.Draw(mask).rounded_rectangle(
         (0, 0, panel_width - 1, panel_height - 1), radius=radius, fill=255
     )
-    folder = workspace / "cascade_panels"
+    folder = workspace / "panel_frames"
     folder.mkdir(exist_ok=True)
     comparison_start = int(edit["hook"]["frames"]) + int(edit["source_window"]["frames"])
     sample_frames = {
@@ -297,4 +385,186 @@ def render_panels(
         ],
         "source_only": True,
         "text_synced": True,
+    }
+
+
+def render_spotlight_panels(
+    before_path: Path,
+    after_path: Path,
+    workspace: Path,
+    plan: dict[str, Any],
+    profile: CampaignProfile,
+    canvas_width: int,
+    bottom_height: int,
+    source_progress: list[float],
+) -> dict[str, Any]:
+    """Single-Operator close-ups followed by a three-Operator group payoff.
+
+    Both focus crops and the group cards come exclusively from the exact verified
+    source stills also used by Clipper's canonical comparison stage.
+    """
+    edit = plan["montage"]
+    frames = int(edit["output_frames"])
+    cfg = spotlight_config(profile, int(edit["comparison_frames"]))
+    if len(source_progress) != frames:
+        raise MontageRejection("spotlight_timeline", "title and spotlight have different grids")
+    scale = canvas_width / 1080
+    margin = max(2, round(int(cfg["margin"]) * scale))
+    gap = max(2, round(int(cfg["gap"]) * scale))
+    y = max(3, round(int(cfg["panel_top"]) * scale))
+    wide = min(canvas_width - 2 * margin, round(int(cfg["focus_card_width"]) * scale))
+    high = round(int(cfg["focus_card_height"]) * scale)
+    group_high = round(int(cfg["group_card_height"]) * scale)
+    group_wide = (canvas_width - 2 * margin - 2 * gap) // 3
+    if (
+        wide < 20
+        or high < 20
+        or group_wide < 14
+        or group_high < 20
+        or y + max(high, group_high) >= bottom_height - max(4, round(35 * scale))
+    ):
+        raise MontageRejection("spotlight_layout", "focus or final-group cards exceed bottom matte")
+    focus_x = (canvas_width - wide) // 2
+    matte = profile.config["output"]["portrait_matte"]
+    bg = ImageColor.getrgb(str(matte["background_hex"]))[:3]
+    gold = ImageColor.getrgb(str(matte["accent_hex"]))[:3]
+    original = Image.open(before_path).convert("RGB")
+    alternate = Image.open(after_path).convert("RGB")
+    if original.size != alternate.size:
+        raise MontageRejection("spotlight_stills", "certified source still geometry differs")
+    crops: dict[str, list[Image.Image]] = {}
+    for name, source in (("before", original), ("after", alternate)):
+        crops[name + "_focus"] = [
+            ImageOps.fit(
+                _crop(source, roi),
+                (wide, high),
+                method=Image.Resampling.LANCZOS,
+                centering=(0.5, 0.43),
+            )
+            for roi in cfg["operator_rois"]
+        ]
+        crops[name + "_group"] = [
+            ImageOps.fit(
+                _crop(source, roi),
+                (group_wide, group_high),
+                method=Image.Resampling.LANCZOS,
+            )
+            for roi in cfg["operator_rois"]
+        ]
+    focus_mask = Image.new("L", (wide, high), 0)
+    group_mask = Image.new("L", (group_wide, group_high), 0)
+    radius = max(2, round(12 * scale))
+    ImageDraw.Draw(focus_mask).rounded_rectangle((0, 0, wide - 1, high - 1), radius, fill=255)
+    ImageDraw.Draw(group_mask).rounded_rectangle(
+        (0, 0, group_wide - 1, group_high - 1), radius, fill=255
+    )
+    folder = workspace / "panel_frames"
+    folder.mkdir(exist_ok=True)
+    compare_start = int(edit["hook"]["frames"]) + int(edit["source_window"]["frames"])
+    compare_end = compare_start + int(edit["comparison_frames"])
+    order = [int(v) for v in cfg["operator_order"]]
+    switch = int(cfg["switch_after_frames"])
+    segment = int(cfg["focus_frames"])
+    group_start = compare_start + len(order) * segment
+    samples: dict[str, dict[str, Any]] = {}
+    sample_indices = {0, frames - 1, compare_start, group_start, compare_end - 1}
+    for pos in range(len(order)):
+        sample_indices.update(
+            {
+                compare_start + pos * segment,
+                compare_start + pos * segment + switch - 1,
+                compare_start + pos * segment + switch,
+            }
+        )
+    for n in range(frames):
+        if compare_start <= n < compare_end:
+            focus, after_value = spotlight_stage(n - compare_start, plan, profile)
+            if after_value != source_progress[n]:
+                raise MontageRejection(
+                    "spotlight_text_sync", "verified appearance and highlighted title differ"
+                )
+        elif n < compare_start:
+            # During the retained real footage, cycle a single source-only crop
+            # without misrepresenting the source frame's measured visual state.
+            focus = order[min(len(order) - 1, n * len(order) // max(1, compare_start))]
+            after_value = source_progress[n]
+        else:
+            focus = None
+            after_value = source_progress[n]
+        image = Image.new("RGB", (canvas_width, bottom_height), bg)
+        draw = ImageDraw.Draw(image)
+        if focus is not None:
+            if after_value <= 0:
+                card = crops["before_focus"][focus]
+            elif after_value >= 1:
+                card = crops["after_focus"][focus]
+            else:
+                card = Image.blend(
+                    crops["before_focus"][focus], crops["after_focus"][focus], after_value
+                )
+            image.paste(card, (focus_x, y), focus_mask)
+            draw.rounded_rectangle(
+                (focus_x, y, focus_x + wide - 1, y + high - 1),
+                radius=radius,
+                outline=tuple(
+                    round(a * (1 - after_value) + b * after_value)
+                    for a, b in zip((83, 87, 91), gold, strict=True)
+                ),
+                width=max(1, round(3 * scale)),
+            )
+            # Graphic-only step markers, no unapproved campaign wording.
+            dot_w = max(3, round(36 * scale))
+            dot_gap = max(2, round(14 * scale))
+            dots_left = (canvas_width - 3 * dot_w - 2 * dot_gap) // 2
+            dots_y = y + high + max(5, round(15 * scale))
+            for i, op in enumerate(order):
+                draw.rounded_rectangle(
+                    (
+                        dots_left + i * (dot_w + dot_gap),
+                        dots_y,
+                        dots_left + i * (dot_w + dot_gap) + dot_w,
+                        dots_y + max(2, round(4 * scale)),
+                    ),
+                    radius=max(1, round(2 * scale)),
+                    fill=gold if op == focus else (75, 78, 81),
+                )
+        else:
+            for i, op in enumerate(order):
+                left = margin + i * (group_wide + gap)
+                if after_value <= 0:
+                    card = crops["before_group"][op]
+                elif after_value >= 1:
+                    card = crops["after_group"][op]
+                else:
+                    card = Image.blend(
+                        crops["before_group"][op], crops["after_group"][op], after_value
+                    )
+                image.paste(card, (left, y), group_mask)
+                draw.rounded_rectangle(
+                    (left, y, left + group_wide - 1, y + group_high - 1),
+                    radius=radius,
+                    outline=gold if after_value >= 1 else (83, 87, 91),
+                    width=max(1, round(3 * scale)),
+                )
+        image.save(folder / f"{n:04d}.png", compress_level=3)
+        if n in sample_indices:
+            samples[str(n)] = {"focus": focus, "after": round(after_value, 6)}
+    return {
+        "folder": str(folder),
+        "frame_count": frames,
+        "mode": "spotlight",
+        "source_only": True,
+        "text_synced": True,
+        "focus_order": order,
+        "focus_frames": segment,
+        "switch_after_frames": switch,
+        "group_frames": int(cfg["group_frames"]),
+        "switch_frames": [compare_start + i * segment + switch for i in range(len(order))],
+        "group_start_frame": group_start,
+        "focus_box": [focus_x, y, focus_x + wide, y + high],
+        "sampled_states": samples,
+        "source_still_sha256": {
+            "before": hashlib.sha256(before_path.read_bytes()).hexdigest(),
+            "after": hashlib.sha256(after_path.read_bytes()).hexdigest(),
+        },
     }

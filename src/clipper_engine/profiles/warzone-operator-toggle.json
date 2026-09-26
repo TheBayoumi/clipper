@@ -80,7 +80,8 @@
     "comparison_modes": [
       "wipe",
       "cuts",
-      "cascade"
+      "cascade",
+      "spotlight"
     ],
     "title_start_frame": 20,
     "title_end_frame": 112,
@@ -115,6 +116,22 @@
         "source_window": {
           "start_frame": 14,
           "frames": 96
+        }
+      },
+      "spotlight": {
+        "preferred_output_seconds": 5.5,
+        "comparison_seconds": 1.5,
+        "hook_frames": 10,
+        "ending_shot_frames": [
+          5,
+          5,
+          5,
+          5
+        ],
+        "maximum_output_seconds": 6,
+        "source_window": {
+          "start_frame": 20,
+          "frames": 90
         }
       }
     }
@@ -160,26 +177,6 @@
       "size_tolerance_mb": 2.0,
       "audio_kbps": 320,
       "cascade": {
-        "operator_rois": [
-          [
-            0.245,
-            0.16,
-            0.438,
-            0.74
-          ],
-          [
-            0.405,
-            0.12,
-            0.6,
-            0.75
-          ],
-          [
-            0.567,
-            0.13,
-            0.76,
-            0.75
-          ]
-        ],
         "main_band_boundaries": [
           0.0,
           0.42,
@@ -201,6 +198,47 @@
         "gap": 18,
         "panel_top": 55,
         "panel_height": 460
+      },
+      "operator_rois": [
+        [
+          0.245,
+          0.16,
+          0.438,
+          0.74
+        ],
+        [
+          0.405,
+          0.12,
+          0.6,
+          0.75
+        ],
+        [
+          0.567,
+          0.13,
+          0.76,
+          0.75
+        ]
+      ],
+      "spotlight": {
+        "operator_order": [
+          0,
+          1,
+          2
+        ],
+        "focus_frames": 12,
+        "switch_after_frames": 5,
+        "group_frames": 9,
+        "focus_card_width": 720,
+        "focus_card_height": 500,
+        "group_card_height": 460,
+        "margin": 56,
+        "gap": 18,
+        "panel_top": 50
+      }
+    },
+    "mode_encoding": {
+      "spotlight": {
+        "video_crf": 15
       }
     }
   },

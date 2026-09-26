@@ -167,7 +167,11 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
             raise montage.MontageRejection(
                 "portrait_hash", "portrait delivery is missing or changed"
             )
-        from .rendering.portrait_matte import CASCADE_REQUIRED_CHECKS, PORTRAIT_REQUIRED_CHECKS
+        from .rendering.portrait_matte import (
+            CASCADE_REQUIRED_CHECKS,
+            PORTRAIT_REQUIRED_CHECKS,
+            SPOTLIGHT_REQUIRED_CHECKS,
+        )
 
         required_checks = PORTRAIT_REQUIRED_CHECKS
         if manifest["plan"]["montage"]["comparison_mode"] == "cascade":
@@ -197,6 +201,55 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
             ):
                 raise montage.MontageRejection(
                     "cascade_schedule", "panel switches do not follow calibrated timeline"
+                )
+
+        if manifest["plan"]["montage"]["comparison_mode"] == "spotlight":
+            from .rendering import panel_compositor
+
+            required_checks = required_checks | SPOTLIGHT_REQUIRED_CHECKS
+            cmp_qa = manifest["staging"]["comparison"]
+            panel_qa = portrait.get("spotlight")
+            if (
+                not isinstance(panel_qa, dict)
+                or panel_qa.get("source_still_sha256") != cmp_qa.get("source_still_sha256")
+                or panel_qa.get("frame_count") != edit["output_frames"]
+            ):
+                raise montage.MontageRejection(
+                    "spotlight_stills", "spotlight does not use the certified comparison stills"
+                )
+            cfg = panel_compositor.spotlight_config(profile, int(edit["comparison_frames"]))
+            compare_start = int(edit["hook"]["frames"]) + int(edit["source_window"]["frames"])
+            switch_frames = [
+                compare_start + i * int(cfg["focus_frames"]) + int(cfg["switch_after_frames"])
+                for i in range(3)
+            ]
+            if (
+                panel_qa.get("focus_order") != cfg["operator_order"]
+                or panel_qa.get("switch_frames") != switch_frames
+                or panel_qa.get("group_start_frame") != compare_start + 3 * int(cfg["focus_frames"])
+                or panel_qa.get("text_synced") is not True
+            ):
+                raise montage.MontageRejection(
+                    "spotlight_schedule", "spotlight no longer follows its calibrated story"
+                )
+
+        if manifest["plan"]["montage"]["comparison_mode"] == "spotlight":
+            storyboard = portrait.get("storyboard")
+            expected_story_frames = [
+                0,
+                *switch_frames,
+                compare_start + 3 * int(cfg["focus_frames"]) + 2,
+                int(edit["output_frames"]) - 1,
+            ]
+            if (
+                not isinstance(storyboard, dict)
+                or storyboard.get("frames") != expected_story_frames
+                or storyboard.get("source") != "actual_encoded_delivery"
+                or not Path(str(storyboard.get("file") or "")).is_file()
+                or montage.sha256(Path(str(storyboard["file"]))) != storyboard.get("sha256")
+            ):
+                raise montage.MontageRejection(
+                    "spotlight_storyboard", "actual-render storyboard is missing or changed"
                 )
 
         portrait_checks = portrait.get("qa", {}).get("checks", {})

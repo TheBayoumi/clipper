@@ -46,6 +46,16 @@ PORTRAIT_REQUIRED_CHECKS = frozenset(
 )
 
 
+SPOTLIGHT_REQUIRED_CHECKS = frozenset(
+    {
+        "portrait_spotlight_schedule",
+        "portrait_spotlight_verified_stills",
+        "portrait_spotlight_text_sync",
+        "portrait_spotlight_encoded_state_changes",
+    }
+)
+
+
 CASCADE_REQUIRED_CHECKS = frozenset(
     {
         "portrait_cascade_three_panels",
@@ -95,6 +105,10 @@ def toggle_progress(frame: int, plan: dict[str, Any], profile: CampaignProfile) 
             from . import panel_compositor
 
             return sum(panel_compositor.stage_progress(local, plan, profile)) / 3
+        if edit["comparison_mode"] == "spotlight":
+            from . import panel_compositor
+
+            return panel_compositor.spotlight_stage(local, plan, profile)[1]
         if edit["comparison_mode"] == "cuts":
             elapsed = Fraction(local, 1) / rate(profile)
             return float(
@@ -266,6 +280,17 @@ def render_title_frames(
     folder = workspace / "approved_title_frames"
     folder.mkdir(parents=True, exist_ok=True)
     sample_indices = {0, 3, 9, 15, 73, 79, 193, 203, 223, 243, 253, 264, 274, 281, frames - 1}
+    if plan["montage"]["comparison_mode"] == "spotlight":
+        from . import panel_compositor
+
+        cfg = panel_compositor.spotlight_config(profile, int(plan["montage"]["comparison_frames"]))
+        start = int(plan["montage"]["hook"]["frames"]) + int(
+            plan["montage"]["source_window"]["frames"]
+        )
+        for i in range(3):
+            change = start + i * int(cfg["focus_frames"]) + int(cfg["switch_after_frames"])
+            sample_indices.update({change - 1, change})
+        sample_indices.add(start + 3 * int(cfg["focus_frames"]))
     samples: dict[str, float] = {}
     word_box = (0, 0, 0, 0)
     for n in range(frames):
@@ -296,6 +321,79 @@ def render_title_frames(
     }
 
 
+def _encoded_spotlight_storyboard(
+    file: Path, output_dir: Path, plan: dict[str, Any], panel_qa: dict[str, Any]
+) -> dict[str, Any]:
+    """A QA storyboard built only from actual encoded delivery frames."""
+    indices = [
+        0,
+        *[int(v) for v in panel_qa["switch_frames"]],
+        int(panel_qa["group_start_frame"]) + 2,
+        int(plan["montage"]["output_frames"]) - 1,
+    ]
+    if indices != sorted(set(indices)) or len(indices) != 6:
+        raise RuntimeError("invalid spotlight storyboard frame selection")
+    video = media.video_profile(file, count_frames=True)
+    width, height = int(video["width"]), int(video["height"])
+    filter_select = "+".join(f"eq(n\\,{n})" for n in indices)
+    data = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(file),
+            "-vf",
+            f"select={filter_select},format=rgb24",
+            "-fps_mode",
+            "passthrough",
+            "-frames:v",
+            str(len(indices)),
+            "-f",
+            "rawvideo",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    bytes_per = width * height * 3
+    if len(data) != bytes_per * len(indices):
+        raise RuntimeError("encoded spotlight QA storyboard has missing frames")
+    tile_w = 320
+    tile_h = round(tile_w * height / width)
+    label_h = 37
+    canvas = Image.new("RGB", (3 * tile_w, 2 * (tile_h + label_h)), (15, 17, 21))
+    captions = (
+        "REAL SOURCE HOOK",
+        "OPERATOR 1",
+        "OPERATOR 2",
+        "OPERATOR 3",
+        "GROUP PAYOFF",
+        "FINAL FRAME",
+    )
+    font = _font(17)
+    drawer = ImageDraw.Draw(canvas)
+    for i, (n, name) in enumerate(zip(indices, captions, strict=True)):
+        frame = Image.frombytes("RGB", (width, height), data[i * bytes_per : (i + 1) * bytes_per])
+        thumb = frame.resize((tile_w, tile_h), Image.Resampling.LANCZOS)
+        x = (i % 3) * tile_w
+        y = (i // 3) * (tile_h + label_h)
+        canvas.paste(thumb, (x, y))
+        drawer.text(
+            (x + 10, y + tile_h + 5), f"{name} - {n / 30:.2f}s", font=font, fill=(248, 218, 92)
+        )
+    path = output_dir / "operator_spotlight_storyboard.jpg"
+    canvas.save(path, quality=88, optimize=True)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return {
+        "file": str(path.resolve()),
+        "sha256": digest,
+        "frames": indices,
+        "source": "actual_encoded_delivery",
+    }
+
+
 def render_portrait(
     clean_canonical: Path,
     output_dir: Path,
@@ -309,7 +407,10 @@ def render_portrait(
 ) -> dict[str, Any]:
     """Generate source-only-audio, exact-frame FFV1 portrait stage and MP4 delivery."""
     title_qa = render_title_frames(workspace, plan, profile)
-    cascade = plan["montage"]["comparison_mode"] == "cascade"
+    mode = str(plan["montage"]["comparison_mode"])
+    cascade = mode == "cascade"
+    spotlight = mode == "spotlight"
+    panel_mode = cascade or spotlight
     width, height = (int(z) for z in title_qa["canvas"])
     top = int(title_qa["top_height"])
     center = int(title_qa["center_height"])
@@ -320,11 +421,11 @@ def render_portrait(
     file = output_dir / f"{profile.name}_{plan['montage']['comparison_mode']}_portrait.mp4"
     background = str(profile.config["output"]["portrait_matte"]["background_hex"])
     panel_qa: dict[str, Any] | None = None
-    if cascade:
+    if panel_mode:
         from . import panel_compositor
 
         if comparison_stills is None or expected_still_hashes is None:
-            raise MontageRejection("cascade_stills", "verified source comparison stills required")
+            raise MontageRejection("panel_stills", "verified source comparison stills required")
         full_progress = [toggle_progress(n, plan, profile) for n in range(frames)]
         panel_qa = panel_compositor.render_panels(
             comparison_stills[0],
@@ -337,7 +438,7 @@ def render_portrait(
             full_progress,
         )
         if panel_qa["source_still_sha256"] != expected_still_hashes:
-            raise MontageRejection("cascade_stills", "panels do not match certified comparison")
+            raise MontageRejection("panel_stills", "panels do not match certified comparison")
         graph = (
             f"[0:v]scale={width}:{center}:flags=lanczos,setsar=1,"
             f"pad={width}:{height}:0:{top}:color=0x{background.lstrip('#')}[base];"
@@ -372,9 +473,9 @@ def render_portrait(
                     "-framerate",
                     f"{fps.numerator}/{fps.denominator}",
                     "-i",
-                    str(workspace / "cascade_panels" / "%04d.png"),
+                    str(workspace / "panel_frames" / "%04d.png"),
                 ]
-                if cascade
+                if panel_mode
                 else []
             ),
             "-filter_complex_threads",
@@ -641,6 +742,52 @@ def render_portrait(
             difference = ImageChops.difference(before_rgb.crop(box), after_rgb.crop(box))
             panel_differences.append(round(sum(ImageStat.Stat(difference).mean) / 3, 4))
 
+    spotlight_differences: list[float] = []
+    if spotlight:
+        if panel_qa is None:
+            raise RuntimeError("missing spotlight panel metadata")
+        switch_frames = [int(v) for v in panel_qa["switch_frames"]]
+        samples = sorted({n for switch in switch_frames for n in (switch - 1, switch)})
+        selected = "+".join(f"eq(n\\,{n})" for n in samples)
+        raw = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                str(file),
+                "-vf",
+                f"select={selected},format=rgb24",
+                "-fps_mode",
+                "passthrough",
+                "-frames:v",
+                str(len(samples)),
+                "-f",
+                "rawvideo",
+                "-",
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
+        bytes_per_frame = width * height * 3
+        if len(raw) != len(samples) * bytes_per_frame:
+            raise RuntimeError("encoded spotlight frame-pair proof is incomplete")
+        spotlight_decoded = {
+            n: Image.frombytes(
+                "RGB",
+                (width, height),
+                raw[i * bytes_per_frame : (i + 1) * bytes_per_frame],
+            )
+            for i, n in enumerate(samples)
+        }
+        x0, y0, x1, y1 = (int(v) for v in panel_qa["focus_box"])
+        focus_box = (x0 + 3, top + center + y0 + 3, x1 - 3, top + center + y1 - 3)
+        for n in switch_frames:
+            pixel_change = ImageChops.difference(
+                spotlight_decoded[n - 1].crop(focus_box), spotlight_decoded[n].crop(focus_box)
+            )
+            spotlight_differences.append(round(sum(ImageStat.Stat(pixel_change).mean) / 3, 4))
+
     if cascade:
         if panel_qa is None or expected_still_hashes is None:
             raise RuntimeError("missing cascade QA")
@@ -655,9 +802,47 @@ def render_portrait(
         checks["portrait_cascade_panels_visible"] = len(panel_differences) == 3 and all(
             delta > 2.5 for delta in panel_differences
         )
-    required = PORTRAIT_REQUIRED_CHECKS | (CASCADE_REQUIRED_CHECKS if cascade else frozenset())
+    if spotlight:
+        if panel_qa is None or expected_still_hashes is None:
+            raise RuntimeError("missing spotlight QA")
+        from . import panel_compositor
+
+        cfg = panel_compositor.spotlight_config(profile, int(plan["montage"]["comparison_frames"]))
+        compare_start = int(plan["montage"]["hook"]["frames"]) + int(
+            plan["montage"]["source_window"]["frames"]
+        )
+        expected_switches = [
+            compare_start + i * int(cfg["focus_frames"]) + int(cfg["switch_after_frames"])
+            for i in range(3)
+        ]
+        checks["portrait_spotlight_schedule"] = (
+            panel_qa["focus_order"] == cfg["operator_order"]
+            and panel_qa["switch_frames"] == expected_switches
+            and panel_qa["group_start_frame"] == compare_start + 3 * int(cfg["focus_frames"])
+            and panel_qa["frame_count"] == frames
+        )
+        checks["portrait_spotlight_verified_stills"] = (
+            panel_qa["source_still_sha256"] == expected_still_hashes
+            and panel_qa["source_only"] is True
+        )
+        checks["portrait_spotlight_text_sync"] = panel_qa["text_synced"] is True
+        checks["portrait_spotlight_encoded_state_changes"] = len(
+            spotlight_differences
+        ) == 3 and all(change > 2.5 for change in spotlight_differences)
+    required = PORTRAIT_REQUIRED_CHECKS | (
+        CASCADE_REQUIRED_CHECKS
+        if cascade
+        else SPOTLIGHT_REQUIRED_CHECKS
+        if spotlight
+        else frozenset()
+    )
     if set(checks) != required or not all(checks.values()):
         raise RuntimeError(f"portrait QA failed: {checks}")
+    storyboard = (
+        _encoded_spotlight_storyboard(file, output_dir, plan, panel_qa)
+        if spotlight and panel_qa is not None
+        else None
+    )
     hasher = hashlib.sha256()
     with file.open("rb") as stream:
         while block := stream.read(4 * 1024 * 1024):
@@ -678,12 +863,15 @@ def render_portrait(
             "matte_rgb_max_error": matte_rgb_error,
             "matte_sampled_frames": sampled_mattes,
             "cascade_panel_pixel_differences": panel_differences,
+            "spotlight_pixel_differences": spotlight_differences,
             "video_profile": actual,
             "audio_profile": audio,
             "ssim": ssim,
             "psnr_db": psnr,
         },
         "title": title_qa,
-        "cascade": panel_qa,
+        "cascade": panel_qa if cascade else None,
+        "spotlight": panel_qa if spotlight else None,
+        "storyboard": storyboard,
         "canonical_ffv1_nut": True,
     }

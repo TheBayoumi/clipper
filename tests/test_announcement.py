@@ -50,6 +50,12 @@ def source(tmp_path_factory: pytest.TempPathFactory) -> Path:
             "1:a:0",
             "-frames:v",
             "178",
+            "-vf",
+            (
+                "drawbox=x=78:y=32:w=48:h=95:color=gray@0.4:t=fill:enable='gte(n,65)',"
+                "drawbox=x=140:y=25:w=49:h=106:color=gray@0.4:t=fill:enable='gte(n,65)',"
+                "drawbox=x=200:y=30:w=46:h=100:color=gray@0.4:t=fill:enable='gte(n,65)'"
+            ),
             "-c:v",
             "libx264",
             "-preset",
@@ -673,7 +679,11 @@ def test_cascade_rejects_invalid_calibration(
     source: Path, profile: CampaignProfile, bad_key: str, bad_value: object
 ) -> None:
     p = _cascade_test_profile(profile)
-    p.config["output"]["portrait_matte"]["cascade"][bad_key] = bad_value
+    region = p.config["output"]["portrait_matte"]
+    if bad_key == "operator_rois":
+        region[bad_key] = bad_value
+    else:
+        region["cascade"][bad_key] = bad_value
     with pytest.raises(montage.MontageRejection, match="cascade_"):
         montage.build_plan(source, p, comparison_mode="cascade")
 
@@ -758,3 +768,144 @@ def test_cascade_is_covered_by_existing_official_qualification_workflow() -> Non
         "Plan source-grounded legal visual-state comparison"
     )
     assert "warzone-cascade-" + chr(36) + "{{ github.sha }}" in workflow
+
+
+def test_cli_uses_profile_configured_spotlight() -> None:
+    with patch("clipper.cli.run_campaign", return_value=0) as mocked:
+        assert (
+            main(
+                [
+                    "campaign",
+                    CAMPAIGN,
+                    "plan",
+                    "--source",
+                    "source.mp4",
+                    "--output",
+                    "spotlight.json",
+                    "--comparison-mode",
+                    "spotlight",
+                ]
+            )
+            == 0
+        )
+    assert mocked.call_args.args[0].comparison_mode == "spotlight"
+
+
+def test_spotlight_plan_retains_verified_anchors_and_uses_shared_clipper(
+    source: Path, profile: CampaignProfile
+) -> None:
+    p = _cascade_test_profile(profile)
+    plan = montage.build_plan(source, p, comparison_mode="spotlight")
+    edit = plan["montage"]
+    assert edit["output_frames"] == 165
+    assert edit["output_seconds"] == 5.5
+    assert edit["full_source_frames"] == 178
+    assert edit["source_window"] == {"start_frame": 20, "frames": 90}
+    assert edit["comparison_frames"] == 45
+    assert edit["hook"] == {"start_frame": 55, "frames": 10}
+    assert [shot["frames"] for shot in edit["ending_shots"]] == [5, 5, 5, 5]
+    assert edit["approved_on_screen_text"] == p.config["editorial"]["approved_text"][0]
+    start = 100
+    checks = {
+        start: (0, 0),
+        start + 4: (0, 0),
+        start + 5: (0, 1),
+        start + 12: (1, 0),
+        start + 17: (1, 1),
+        start + 24: (2, 0),
+        start + 29: (2, 1),
+        start + 36: (None, 1),
+        start + 44: (None, 1),
+    }
+    for frame, (op, state) in checks.items():
+        assert panel_compositor.spotlight_stage(frame - start, plan, p) == (op, state)
+        assert portrait_matte.toggle_progress(frame, plan, p) == state
+    montage.validate_plan(plan, source, p)
+
+
+@pytest.mark.parametrize(
+    ("name", "bad_value"),
+    [
+        ("operator_order", [0, 0, 2]),
+        ("focus_frames", 9),
+        ("switch_after_frames", 12),
+        ("group_frames", 5),
+        ("focus_card_height", 0),
+    ],
+)
+def test_spotlight_rejects_invalid_layout(
+    source: Path, profile: CampaignProfile, name: str, bad_value: object
+) -> None:
+    p = _cascade_test_profile(profile)
+    p.config["output"]["portrait_matte"]["spotlight"][name] = bad_value
+    with pytest.raises(montage.MontageRejection, match="spotlight_calibration"):
+        montage.build_plan(source, p, comparison_mode="spotlight")
+
+
+def test_spotlight_certified_shared_pipeline_and_fail_closed_qualification(
+    source: Path,
+    profile: CampaignProfile,
+    certificate: tuple[Path, dict[str, Any]],
+    tmp_path: Path,
+) -> None:
+    p = _cascade_test_profile(profile)
+    planned = tmp_path / "spotlight_plan.json"
+    plan = plan_campaign(
+        p,
+        source,
+        certificate[0],
+        planned,
+        comparison_mode="spotlight",
+        approved_text_index=1,
+    )
+    assert plan["status"] == "PLANNED"
+    output = tmp_path / "spotlight"
+    rendered = render_campaign(p, source, certificate[0], planned, output)
+    portrait = rendered["portrait"]
+    assert rendered["staging"]["source_excerpt"]["source_to_piece_hashes_exact"]
+    assert rendered["staging"]["source_excerpt"]["windows"] == [{"start_frame": 20, "frames": 90}]
+    assert rendered["staging"]["comparison"]["comparison_mode"] == "spotlight"
+    assert rendered["staging"]["comparison"]["frame_count_exact"]
+    assert rendered["staging"]["comparison"]["full_frame"]
+    assert rendered["qa"]["checks"]["source_excerpt_hashes_exact"]
+    assert all(rendered["qa"]["checks"].values())
+    assert portrait["spotlight"]["focus_order"] == [0, 1, 2]
+    assert portrait["spotlight"]["switch_frames"] == [105, 117, 129]
+    assert portrait["spotlight"]["group_start_frame"] == 136
+    assert portrait["spotlight"]["text_synced"]
+    assert (
+        portrait["spotlight"]["source_still_sha256"]
+        == (rendered["staging"]["comparison"]["source_still_sha256"])
+    )
+    assert portrait["qa"]["frame_count"] == 165
+    assert portrait["qa"]["encoded_duration"] == pytest.approx(5.5, abs=0.055)
+    assert portrait["title"]["text_visible_frames"] == 165
+    assert all(portrait["qa"]["checks"].values())
+    assert len(portrait["qa"]["spotlight_pixel_differences"]) == 3
+    assert all(v > 2.5 for v in portrait["qa"]["spotlight_pixel_differences"])
+    assert portrait["storyboard"]["frames"] == [0, 105, 117, 129, 138, 164]
+    assert Path(portrait["storyboard"]["file"]).is_file()
+    qualified = qualify_campaign(
+        p, output / "render_manifest.json", tmp_path / "spotlight_acceptance.json"
+    )
+    assert qualified["status"] == "PASS"
+    manifest = json.loads((output / "render_manifest.json").read_text())
+    manifest["portrait"]["spotlight"]["focus_order"] = [2, 1, 0]
+    tampered = tmp_path / "tampered_spotlight.json"
+    tampered.write_text(json.dumps(manifest))
+    with pytest.raises(montage.MontageRejection, match="spotlight_schedule"):
+        qualify_campaign(p, tampered, tmp_path / "fail.json")
+    manifest["portrait"]["spotlight"] = copy.deepcopy(rendered["portrait"]["spotlight"])
+    manifest["portrait"]["spotlight"]["source_still_sha256"]["before"] = "invalid"
+    tampered.write_text(json.dumps(manifest))
+    with pytest.raises(montage.MontageRejection, match="spotlight_stills"):
+        qualify_campaign(p, tampered, tmp_path / "fail_stills.json")
+
+
+def test_official_warzone_workflow_qualifies_spotlight_and_publishes_video() -> None:
+    workflow = Path(".github/workflows/warzone-qualification.yml").read_text()
+    assert "--comparison-mode spotlight" in workflow
+    assert "delivery_spotlight/render_manifest.json" in workflow
+    assert "delivery_spotlight/*.mp4" in workflow
+    assert "delivery_spotlight/*.jpg" in workflow
+    assert "warzone-spotlight-" + chr(36) + "{{ github.sha }}" in workflow

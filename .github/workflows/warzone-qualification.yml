@@ -148,6 +148,78 @@ jobs:
             source/*.source_qa.json
             delivery_cascade/*.json
             delivery_cascade/*.mp4
+            delivery_spotlight/*.json
+            delivery_spotlight/*.mp4
+            delivery_spotlight/*.jpg
+
+      - name: Plan new source-verified Operator Spotlight
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle plan \
+            --source "$SOURCE_FILE" \
+            --source-qa "source/$SOURCE_KEY.source_qa.json" \
+            --comparison-mode spotlight \
+            --approved-text-index 1 \
+            --output plan_spotlight.json
+
+      - name: Render Operator Spotlight using shared Clipper panel compositor
+        timeout-minutes: 35
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle render \
+            --source "$SOURCE_FILE" \
+            --source-qa "source/$SOURCE_KEY.source_qa.json" \
+            --plan plan_spotlight.json \
+            --output-dir delivery_spotlight
+
+      - name: Qualify Spotlight certified source visual states and 5-6 second delivery
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle qualify \
+            --render-manifest delivery_spotlight/render_manifest.json \
+            --output delivery_spotlight/acceptance.json
+          python - <<'CHECK'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("delivery_spotlight/render_manifest.json").read_text())
+          acceptance = json.loads(Path("delivery_spotlight/acceptance.json").read_text())
+          edit = manifest["plan"]["montage"]
+          portrait = manifest["portrait"]
+          assert acceptance["status"] == "PASS"
+          assert edit["comparison_mode"] == "spotlight"
+          assert edit["output_frames"] == 165
+          assert edit["full_source_frames"] == 178
+          assert edit["source_window"] == {"start_frame": 20, "frames": 90}
+          assert manifest["staging"]["source_excerpt"]["source_to_piece_hashes_exact"]
+          assert portrait["spotlight"]["focus_order"] == [0, 1, 2]
+          assert portrait["spotlight"]["switch_frames"] == [105, 117, 129]
+          assert portrait["spotlight"]["text_synced"]
+          assert portrait["title"]["text_visible_frames"] == 165
+          assert 5 <= portrait["qa"]["encoded_duration"] <= 6
+          assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
+          assert Path(portrait["storyboard"]["file"]).is_file()
+          print("OPERATOR SPOTLIGHT QUALIFIED:", portrait["file"])
+          CHECK
+
+      - name: Publish Operator Spotlight video, actual-render storyboard and QA
+        uses: actions/upload-artifact@v4
+        with:
+          name: warzone-spotlight-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            plan_spotlight.json
+            source/*.source_qa.json
+            delivery_spotlight/*.json
+            delivery_spotlight/*.mp4
+            delivery_spotlight/*.jpg
 
       - name: Plan source-grounded legal visual-state comparison
         env:

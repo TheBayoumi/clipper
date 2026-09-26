@@ -164,7 +164,7 @@ def _comparison_piece(
     fps = rate(profile)
     frames = int(plan["montage"]["comparison_frames"])
     mode = plan["montage"]["comparison_mode"]
-    if mode == "cascade":
+    if mode in {"cascade", "spotlight"}:
         from . import panel_compositor
 
         return panel_compositor.render_comparison(
@@ -460,7 +460,9 @@ def _qa(
     checks["canonical_to_delivery_ssim"] = ssim >= 0.96
     checks["canonical_to_delivery_psnr_db"] = psnr >= 35.0
     if not all(checks.values()):
-        raise RuntimeError(f"announcement technical QA failed: {checks}")
+        raise RuntimeError(
+            f"announcement technical QA failed: {checks}; SSIM={ssim:.6f}, PSNR={psnr:.3f} dB"
+        )
     return {
         "checks": checks,
         "encoded_duration_seconds": duration,
@@ -559,6 +561,10 @@ def render(
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / f"{profile.name}_{plan['montage']['comparison_mode']}.mp4"
     output = profile.config["output"]
+    mode_encoding = output.get("mode_encoding", {}).get(plan["montage"]["comparison_mode"], {})
+    video_crf = int(mode_encoding.get("video_crf", output["video_crf"]))
+    if not 0 <= video_crf <= 51:
+        raise MontageRejection("invalid_video_crf", "profile encoding CRF must be 0 through 51")
     with tempfile.TemporaryDirectory(prefix="clipper-montage-", dir=output_dir) as directory:
         workspace = Path(directory)
         staged = workspace / "source_lossless.nut"
@@ -624,7 +630,7 @@ def render(
                 "-preset",
                 str(output["video_preset"]),
                 "-crf",
-                str(output["video_crf"]),
+                str(video_crf),
                 "-threads:v",
                 "2",
                 "-r",
