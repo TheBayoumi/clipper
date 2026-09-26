@@ -83,7 +83,10 @@ def test_source_probe_reads_actual_ffprobe_data(tmp_path: Path) -> None:
     with patch("clipper.source_fidelity.subprocess.run", return_value=result):
         assert probe_source_profile(tmp_path / "real.mp4").width == 1920
     with (
-        patch("clipper.source_fidelity.subprocess.run", side_effect=CalledProcessError(1, "ffprobe")),
+        patch(
+            "clipper.source_fidelity.subprocess.run",
+            side_effect=CalledProcessError(1, "ffprobe"),
+        ),
         pytest.raises(FidelityError, match="probe"),
     ):
         probe_source_profile(tmp_path / "bad.mp4")
