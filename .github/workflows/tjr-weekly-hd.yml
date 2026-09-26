@@ -245,6 +245,119 @@ jobs:
 
 
 
+
+  youtube_alternate_egress:
+    name: Verify and render original YouTube on ${{ matrix.os }}
+    needs: tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/tjr-weekly-hd-actions'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 80
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Prepare independent cookie-free YouTube transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e . "yt-dlp[default]" "curl-cffi>=0.15,<1"
+          mkdir -p tjr-alt-egress
+      - name: Confirm original source and HD formats on this runner's network
+        shell: bash
+        env:
+          ALT_EGRESS_PLATFORM: ${{ matrix.os }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from scripts.tjr_youtube_preview import (
+              constrain_official_sources, discover_official_uploads, verified_youtube_metadata,
+          )
+          report_file = Path("tjr-alt-egress/verified-transport.json")
+          report = {"platform": os.environ["ALT_EGRESS_PLATFORM"], "status": "BLOCKED", "tried": []}
+          try:
+              candidates, failures = discover_official_uploads()
+              report["discovery_failures"] = failures
+              requested = os.environ.get("TJR_SOURCE_VIDEO_ID", "").strip()
+              for video in constrain_official_sources(candidates, requested)[:3]:
+                  try:
+                      info = verified_youtube_metadata(video)
+                      formats = info.get("formats") or []
+                      if not any(
+                          isinstance(fmt, dict)
+                          and int(fmt.get("height") or 0) >= 720
+                          and fmt.get("vcodec") not in ("none", None)
+                          for fmt in formats
+                      ):
+                          raise RuntimeError("No verified HD video formats")
+                      report.update({"status": "ORIGINAL_HD_FORMATS_ACCESSIBLE",
+                                     "video_url": video.url, "channel_id": video.channel_id})
+                      with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as envfile:
+                          envfile.write("TJR_SOURCE_VIDEO_ID=" + video.video_id + "\n")
+                      break
+                  except Exception as exc:
+                      reason = "BOT_CHALLENGE" if "Sign in to confirm" in str(exc) else type(exc).__name__
+                      report["tried"].append({"video_url": video.url, "reason": reason})
+              if report["status"] != "ORIGINAL_HD_FORMATS_ACCESSIBLE":
+                  raise RuntimeError("YouTube blocked verified originals on alternate runner")
+          finally:
+              report_file.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+          print("Verified original video:", report["video_url"])
+          PY
+      - name: Prepare real HD rendering only if the video is accessible
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            if [[ "$RUNNER_OS" == "Windows" ]]; then
+              choco install ffmpeg -y --no-progress
+              echo 'C:\ProgramData\chocolatey\bin' >> "$GITHUB_PATH"
+            else
+              brew install ffmpeg
+            fi
+          fi
+          python -m pip install -e ".[asr]"
+      - name: Render, source-verify, and fully decode real campaign MP4s
+        shell: bash
+        env:
+          CLIPPER_RENDER_PRESET: medium
+          CLIPPER_RENDER_CRF: "18"
+          CLIPPER_RENDER_THREADS: "2"
+        run: |
+          set -euo pipefail
+          python -m scripts.tjr_youtube_preview \
+            --brief campaigns/reach-tjr-weekly.yaml \
+            --artifact-root tjr-alt-egress
+      - name: Upload real YouTube clips or runner-specific diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-youtube-alt-${{ matrix.os }}-${{ github.run_id }}
+          path: |
+            tjr-alt-egress/verified-transport.json
+            tjr-alt-egress/**/clips/*.mp4
+            tjr-alt-egress/**/clips/*.srt
+            tjr-alt-egress/**/clips/*-preview.png
+            tjr-alt-egress/**/tjr-youtube-qa-report.json
+            tjr-alt-egress/**/source-acquisition-errors.json
+            tjr-alt-egress/**/official-source-candidates.json
+            tjr-alt-egress/**/transcript.json
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: warn
+
   render:
     name: Render and QA real TJR HD clips
     needs: tests
