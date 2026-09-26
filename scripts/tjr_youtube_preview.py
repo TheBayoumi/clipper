@@ -195,7 +195,19 @@ def invoke(command: list[str], *, timeout: int) -> subprocess.CompletedProcess[s
 def verified_youtube_metadata(video: OfficialVideo) -> dict[str, Any]:
     """Do not trust a title, channel handle, RSS alone, or search result for provenance."""
     errors: list[str] = []
-    for extra in ([], ["--impersonate", "chrome"]):
+    # PO tokens help with media formats, but a runner-level bot challenge may
+    # reject metadata before the provider can be consulted. Try supported
+    # client surfaces against the SAME feed-verified original video ID.
+    client_variants = (
+        (),
+        ("--extractor-args", "youtube:player_client=web_safari"),
+        ("--extractor-args", "youtube:player_client=tv_simply"),
+        ("--extractor-args", "youtube:player_client=web_embedded"),
+        ("--extractor-args", "youtube:player_client=android_vr"),
+        ("--impersonate", "chrome", "--extractor-args", "youtube:player_client=web_safari"),
+    )
+    for variant in client_variants:
+        extra = list(variant)
         try:
             result = invoke(
                 [
@@ -220,34 +232,47 @@ def verified_youtube_metadata(video: OfficialVideo) -> dict[str, Any]:
                 raise RuntimeError("current livestream is not a completed source video")
             if float(metadata.get("duration") or 0) < 90:
                 raise RuntimeError("video is shorter than the requested clipping workflow")
+            metadata["_verified_client_args"] = extra
             return metadata
         except (ValueError, TypeError, RuntimeError, json.JSONDecodeError) as exc:
             errors.append(str(exc)[-600:])
     raise RuntimeError("source metadata unavailable: " + " | ".join(errors))
 
 
-def download_original_excerpt(video: OfficialVideo, work: Path) -> Path:
+def download_original_excerpt(
+    video: OfficialVideo, work: Path, *, metadata: dict[str, Any] | None = None
+) -> Path:
     work.mkdir(parents=True, exist_ok=True)
-    args = [
+    common = [
         "yt-dlp",
         "--no-playlist",
         "--no-warnings",
         "--merge-output-format",
         "mp4",
-        "--extractor-args",
-        "youtube:player_client=mweb",
         "--download-sections",
         "*00:00:00-00:14:00",
         "-f",
         "bv*[height>=720][height<=1080]+ba/b[height>=720]/bv*+ba/b",
         "-o",
         str(work / "source.%(ext)s"),
-        video.url,
     ]
+    preferred = tuple((metadata or {}).get("_verified_client_args") or ())
+    client_variants = (
+        preferred,
+        ("--extractor-args", "youtube:player_client=mweb"),
+        ("--extractor-args", "youtube:player_client=web_safari"),
+        ("--extractor-args", "youtube:player_client=tv_simply"),
+        ("--extractor-args", "youtube:player_client=web_embedded"),
+        ("--extractor-args", "youtube:player_client=android_vr"),
+    )
     errors: list[str] = []
-    for extra in ([], ["--impersonate", "chrome"]):
+    attempted: set[tuple[str, ...]] = set()
+    for variant in client_variants:
+        if variant in attempted:
+            continue
+        attempted.add(variant)
         try:
-            invoke([*args[:1], *extra, *args[1:]], timeout=1500)
+            invoke([common[0], *variant, *common[1:], video.url], timeout=1500)
             files = sorted(
                 p
                 for p in work.glob("source.*")
@@ -258,9 +283,24 @@ def download_original_excerpt(video: OfficialVideo, work: Path) -> Path:
             probe_original(files[0])
             return files[0]
         except RuntimeError as exc:
-            errors.append(str(exc)[-700:])
+            errors.append(f"{' '.join(variant) or 'default'}: {str(exc)[-550:]}")
     raise RuntimeError("verified YouTube media inaccessible: " + " | ".join(errors))
 
+
+def prioritize_campaign_moments(videos: list[OfficialVideo]) -> list[OfficialVideo]:
+    """Prefer long-form, TJR-featured campaign moments over newer hashtag Shorts.
+
+    Still inspect and independently validate each actual owner and duration.
+    """
+    def priority(video: OfficialVideo) -> tuple[int, str]:
+        title = video.title.lower().strip()
+        if title in {"", "unknown", "#tjr"} or ("#" in title and len(title) < 45):
+            return (0, video.published)
+        if any(term in title for term in ("trading", "livestream", "react", "tjr and", "stream")):
+            return (2, video.published)
+        return (1, video.published)
+
+    return sorted(videos, key=priority, reverse=True)
 
 def select_separate_clips(candidates: list[ClipCandidate], count: int = 2) -> list[ClipCandidate]:
     chosen: list[ClipCandidate] = []
@@ -314,12 +354,16 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         source: Path | None = None
         metadata: dict[str, Any] = {}
         bot_challenges = 0
-        for video in candidates[:8]:
+        # Put full videos before Shorts: a new 15-second hashtag Short is not
+        # a suitable 20–42s clip source and must not consume the bot budget.
+        for video in prioritize_campaign_moments(candidates)[:8]:
             step = "official_metadata"
             try:
                 metadata = verified_youtube_metadata(video)
                 step = "youtube_original_download"
-                source = download_original_excerpt(video, run_dir / "work" / video.video_id)
+                source = download_original_excerpt(
+                    video, run_dir / "work" / video.video_id, metadata=metadata
+                )
                 chosen_video = video
                 break
             except (RuntimeError, ValueError) as exc:
