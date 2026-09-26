@@ -131,7 +131,6 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
     import hashlib
     import re
     import subprocess
-
     from pathlib import Path
 
     video_id = str(selected["source_video_id"])
