@@ -59,6 +59,7 @@ ACQUISITION_STRATEGIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
+
 def _yt_command(args: tuple[str, ...], url: str) -> list[str]:
     return [
         "yt-dlp",
@@ -76,6 +77,7 @@ def _yt_command(args: tuple[str, ...], url: str) -> list[str]:
         *args,
         url,
     ]
+
 
 def _transport_error(output: str) -> str:
     lower = output.lower()
@@ -400,9 +402,7 @@ def main() -> None:
                 ):
                     result["selected_modal_egress"] = label
                     break
-                region_attempts.append(
-                    {"egress": label, "status": str(candidate.get("status"))}
-                )
+                region_attempts.append({"egress": label, "status": str(candidate.get("status"))})
             except Exception as exc:
                 region_attempts.append({"egress": label, "error": type(exc).__name__})
         result["region_attempts"] = region_attempts
