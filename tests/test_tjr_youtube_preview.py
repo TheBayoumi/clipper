@@ -139,16 +139,22 @@ def test_metadata_accepts_matching_official_channel_and_nonlive_video() -> None:
 
 def test_campaign_prefers_a_recent_eligible_full_video_to_newer_hashtag_shorts() -> None:
     full = OfficialVideo(
-        "p2LU37eat70", "UCZen39LQJPx04GjPj7FOMcw",
-        "Live Day Trading Making $18,350", "2026-09-25T16:01:53+00:00",
+        "p2LU37eat70",
+        "UCZen39LQJPx04GjPj7FOMcw",
+        "Live Day Trading Making $18,350",
+        "2026-09-25T16:01:53+00:00",
     )
     short = OfficialVideo(
-        "Uwlp9JBpdLc", "UCGHBUXjDCeiIXNdKR0HUZnA",
-        "Method #tjrtrades #tjr", "2026-09-26T00:58:31+00:00",
+        "Uwlp9JBpdLc",
+        "UCGHBUXjDCeiIXNdKR0HUZnA",
+        "Method #tjrtrades #tjr",
+        "2026-09-26T00:58:31+00:00",
     )
     unknown = OfficialVideo(
-        "5JR-dmmcpfw", "UCGHBUXjDCeiIXNdKR0HUZnA",
-        "unknown", "2026-09-25T22:04:46+00:00",
+        "5JR-dmmcpfw",
+        "UCGHBUXjDCeiIXNdKR0HUZnA",
+        "unknown",
+        "2026-09-25T22:04:46+00:00",
     )
     ordered = prioritize_campaign_moments([short, unknown, full])
     assert ordered == [full, short, unknown]
