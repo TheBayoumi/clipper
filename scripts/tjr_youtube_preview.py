@@ -318,7 +318,6 @@ def prioritize_campaign_moments(videos: list[OfficialVideo]) -> list[OfficialVid
     return sorted(videos, key=priority, reverse=True)
 
 
-
 def constrain_official_sources(
     candidates: list[OfficialVideo], requested_id: str | None
 ) -> list[OfficialVideo]:
