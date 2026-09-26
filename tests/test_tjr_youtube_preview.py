@@ -16,6 +16,7 @@ verified_youtube_metadata = SCRIPT["verified_youtube_metadata"]
 select_separate_clips = SCRIPT["select_separate_clips"]
 OfficialVideo = SCRIPT["OfficialVideo"]
 CHANNELS = SCRIPT["CHANNELS"]
+_auth_args = SCRIPT["_auth_args"]
 prioritize_campaign_moments = SCRIPT["prioritize_campaign_moments"]
 
 
@@ -158,3 +159,17 @@ def test_campaign_prefers_a_recent_eligible_full_video_to_newer_hashtag_shorts()
     )
     ordered = prioritize_campaign_moments([short, unknown, full])
     assert ordered == [full, short, unknown]
+
+
+def test_optional_auth_uses_only_explicit_existing_cookie_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("YOUTUBE_COOKIES_FILE", raising=False)
+    assert _auth_args() == []
+    jar = tmp_path / "dedicated-viewer-cookies.txt"
+    jar.write_text("# Netscape HTTP Cookie File\\n", encoding="utf-8")
+    monkeypatch.setenv("YOUTUBE_COOKIES_FILE", str(jar))
+    assert _auth_args() == ["--cookies", str(jar)]
+    jar.unlink()
+    with pytest.raises(RuntimeError, match="empty or unavailable"):
+        _auth_args()

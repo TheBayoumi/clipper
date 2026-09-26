@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import subprocess
 import urllib.request
@@ -180,6 +181,17 @@ def discover_official_uploads() -> tuple[list[OfficialVideo], list[dict[str, str
     return list(unique.values()), failures
 
 
+def _auth_args() -> list[str]:
+    """Optionally use an encrypted, explicitly supplied dedicated viewer session."""
+    value = os.environ.get("YOUTUBE_COOKIES_FILE", "").strip()
+    if not value:
+        return []
+    path = Path(value)
+    if not path.is_file() or not path.stat().st_size:
+        raise RuntimeError("configured YouTube cookie file is empty or unavailable")
+    return ["--cookies", str(path)]
+
+
 def invoke(command: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout)
@@ -212,6 +224,7 @@ def verified_youtube_metadata(video: OfficialVideo) -> dict[str, Any]:
             result = invoke(
                 [
                     "yt-dlp",
+                    *_auth_args(),
                     "--no-warnings",
                     "--no-playlist",
                     "--skip-download",
@@ -245,6 +258,7 @@ def download_original_excerpt(
     work.mkdir(parents=True, exist_ok=True)
     common = [
         "yt-dlp",
+        *_auth_args(),
         "--no-playlist",
         "--no-warnings",
         "--merge-output-format",

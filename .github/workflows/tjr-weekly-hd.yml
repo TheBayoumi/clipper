@@ -29,6 +29,12 @@ on:
         required: true
         type: boolean
         default: false
+      source_mode:
+        description: "Choose public YouTube extraction or an independently verified original mirror."
+        required: true
+        type: choice
+        options: [youtube_direct, verified_mirror]
+        default: youtube_direct
       source_verified:
         description: "I verified the staged video is authentic authorized TJR footage."
         required: true
@@ -130,7 +136,7 @@ jobs:
   youtube_preview:
     name: Render drafts only from Reach-listed YouTube channels
     needs: tests
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/tjr-weekly-hd-actions'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/feat/tjr-weekly-hd-actions') || (github.event_name == 'workflow_dispatch' && inputs.source_mode == 'youtube_direct')
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     env:
@@ -168,12 +174,34 @@ jobs:
           done
           docker ps --filter name=tjr-pot-provider
           yt-dlp --version
+      - name: Load optional YouTube-only viewer session from encrypted Actions secret
+        env:
+          COOKIES_B64: ${{ secrets.TJR_YOUTUBE_COOKIES_B64 }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${COOKIES_B64:-}" ]]; then
+            umask 077
+            COOKIE_FILE="$RUNNER_TEMP/tjr-youtube-cookies.txt"
+            printf '%s' "$COOKIES_B64" | base64 --decode > "$COOKIE_FILE"
+            if ! grep -q -E '^# (Netscape HTTP Cookie File|HTTP Cookie File)' "$COOKIE_FILE"; then
+              echo "::error::The secret must contain a base64-encoded Netscape cookie jar."
+              rm -f "$COOKIE_FILE"
+              exit 1
+            fi
+            echo "YOUTUBE_COOKIES_FILE=$COOKIE_FILE" >> "$GITHUB_ENV"
+            echo "Optional dedicated viewer session loaded without exposing cookies."
+          else
+            echo "No YouTube session configured; trying unauthenticated approved videos."
+          fi
       - name: Check source channel IDs and acquire authentic YouTube HD original
         run: |
           set -euo pipefail
           python -m scripts.tjr_youtube_preview \
             --artifact-root tjr-youtube-artifacts \
             --brief campaigns/reach-tjr-weekly.yaml
+      - name: Remove ephemeral YouTube viewer session
+        if: always()
+        run: rm -f "$RUNNER_TEMP/tjr-youtube-cookies.txt"
       - name: Upload verified MP4s or YouTube-source diagnostic report
         if: always()
         uses: actions/upload-artifact@v4
@@ -193,83 +221,11 @@ jobs:
           if-no-files-found: warn
 
 
-  youtube_proxy_probe:
-    name: Probe exact approved YouTube ID via documented public transports
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/tjr-weekly-hd-actions'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Probe approved video ONLY, do not download or select third-party footage
-        run: |
-          python3 - <<'PY'
-          import json
-          from urllib.parse import urlparse
-          from urllib.request import Request, urlopen
-
-          video_id = "p2LU37eat70"
-          expected = "UCZen39LQJPx04GjPj7FOMcw"
-          endpoints = [
-              ("piped", "https://pipedapi.kavin.rocks/streams/" + video_id),
-              ("piped", "https://pipedapi.leptons.xyz/streams/" + video_id),
-              ("piped", "https://pipedapi.nosebs.ru/streams/" + video_id),
-              ("invidious", "https://inv.nadeko.net/api/v1/videos/" + video_id),
-          ]
-          report = {"video_id": video_id, "approved_channel_id": expected, "results": []}
-          for kind, url in endpoints:
-              entry = {"transport": kind, "instance": urlparse(url).hostname}
-              try:
-                  req = Request(
-                      url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-                  )
-                  with urlopen(req, timeout=13) as response:
-                      obj = json.loads(response.read(3_000_000))
-                  if kind == "piped":
-                      uploader = str(obj.get("uploaderUrl") or "")
-                      streams = obj.get("videoStreams") or []
-                      audio = obj.get("audioStreams") or []
-                      duration = obj.get("duration")
-                      trusted = uploader.rstrip("/").endswith("/channel/" + expected)
-                  else:
-                      uploader = str(obj.get("authorId") or "")
-                      streams = obj.get("adaptiveFormats") or []
-                      audio = streams
-                      duration = obj.get("lengthSeconds")
-                      trusted = uploader == expected
-                  entry.update({
-                      "owner_verified": trusted,
-                      "owner": uploader[:100],
-                      "duration": duration,
-                      "video_stream_count": len(streams),
-                      "audio_stream_count": len(audio),
-                      "stream_hosts": sorted({
-                          urlparse(str(s.get("url") or "")).hostname
-                          for s in streams if s.get("url")
-                      })[:8],
-                  })
-              except Exception as exc:
-                  entry["error"] = (type(exc).__name__ + ": " + str(exc))[:300]
-              report["results"].append(entry)
-              print(json.dumps(entry))
-          with open("tjr-exact-source-transport-probe.json", "w", encoding="utf-8") as handle:
-              json.dump(report, handle, indent=2)
-          if not any(item.get("owner_verified") and item.get("video_stream_count", 0)
-                     for item in report["results"]):
-              print("No independently owner-verified video transport is available.")
-          PY
-      - name: Preserve only sanitized source transport diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tjr-youtube-source-transport-probe-${{ github.run_id }}
-          path: tjr-exact-source-transport-probe.json
-          retention-days: 3
-          if-no-files-found: warn
-
 
   render:
     name: Render and QA real TJR HD clips
     needs: tests
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'verified_mirror'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:

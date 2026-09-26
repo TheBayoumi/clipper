@@ -15,7 +15,9 @@ Kick clips are NOT substitutes for this user's requested YouTube sources.
 - Only TikTok, Instagram Reels and YouTube Shorts are accepted.
 - At least 50% of the audience must be in USA, CA, AU, UK or NZ.
 - Include #TJR in the published post's caption.
-- No added logos, AI-generated videos, or manipulated engagement/reposts.
+- No logos of ANY kind (including source overlays), AI-generated videos, or manipulated engagement/reposts.
+- Current public campaign rate is $1.50 per 1,000 views on TikTok, Instagram and YouTube;
+  $15 minimum and $500 maximum per approved submission. Budget is not verified.
 - Accounts with a substantially different niche may be rejected; Double
   Coverage-only accounts should stay dedicated to that separate campaign.
 - Minimum 5,000 views AND Reach approval before a payout; connect social
@@ -100,3 +102,30 @@ channel and YouTube watch URL, and hashes the independently staged original.
 This does NOT verify that a user-supplied MP4 visually matches the URL;
 source authenticity still requires explicit human review. No live Whop funds, account eligibility,
 or human editorial acceptance has been verified.
+
+## GitHub-only optional authenticated access
+
+On 2026-09-26, the latest GitHub-hosted public YouTube download attempt failed
+with a YouTube bot-confirmation challenge for actual feed-listed approved
+videos, even after attempting multiple player clients and a local PO-token
+provider. A one-time diagnostic also found no independently verified playable
+source for the same official YouTube ID on three public Piped endpoints and
+one public Invidious endpoint. Those are *transport checks*, not new sources.
+
+For an authorized dedicated YouTube viewing account, add an encrypted GitHub
+Actions secret named `TJR_YOUTUBE_COOKIES_B64` containing a base64-encoded
+Netscape-format cookie export from that dedicated account. Do NOT paste
+cookies into GitHub commits, action inputs, logs, messages, or this chat.
+Use a separate viewing account rather than primary personal accounts;
+YouTube session cookies are sensitive credentials and can expire or be revoked.
+The workflow creates a mode-600 temporary cookie jar on its ephemeral runner,
+passes it only to yt-dlp, and deletes it at the end of the attempt. Neither
+cookies nor the original source media are included in uploaded artifacts.
+Providing cookies still does **not** guarantee playback from a data-center IP.
+
+When the workflow is registered on the default branch, use `Actions → TJR
+Weekly HD clipping → Run workflow`, select `youtube_direct` (no Drive copy)
+for the cookie-based YouTube-only path, or `verified_mirror` for the
+independently obtained approved-channel original with hash-pinned Google Drive
+staging and explicit budget/source verification. The former is review-only;
+no manual publication or Whop submission takes place.
