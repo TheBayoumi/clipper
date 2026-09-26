@@ -152,6 +152,33 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: Require private authorized YouTube session before costly rendering
+        env:
+          COOKIES_B64: ${{ secrets.TJR_YOUTUBE_COOKIES_B64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          COOKIE_FILE="$RUNNER_TEMP/tjr-youtube-cookies.txt"
+          if [[ -z "${COOKIES_B64:-}" ]]; then
+            mkdir -p tjr-youtube-artifacts/session-preflight
+            printf '%s\\n' '{"stage":"session_preflight","error":"GitHub Actions secret TJR_YOUTUBE_COOKIES_B64 is missing; no authenticated YouTube download attempted."}' > tjr-youtube-artifacts/session-preflight/source-acquisition-errors.json
+            echo "::error::Add TJR_YOUTUBE_COOKIES_B64 in repository Settings > Secrets and variables > Actions before running YouTube media acquisition."
+            exit 1
+          fi
+          if ! printf '%s' "$COOKIES_B64" | base64 --decode > "$COOKIE_FILE"; then
+            echo "::error::Invalid base64 YouTube session secret."
+            exit 1
+          fi
+          if ! grep -q -m1 -E '^# (Netscape HTTP Cookie File|HTTP Cookie File)' "$COOKIE_FILE"; then
+            echo "::error::The secret must decode to a Netscape-format cookie jar."
+            exit 1
+          fi
+          if ! awk 'BEGIN {found=0} !/^#/ && $1 ~ /(^|[.])youtube[.]com$/ {found=1} END {exit !found}' "$COOKIE_FILE"; then
+            echo "::error::The cookie jar contains no youtube.com session cookies."
+            exit 1
+          fi
+          echo "YOUTUBE_COOKIES_FILE=$COOKIE_FILE" >> "$GITHUB_ENV"
+          echo "Dedicated YouTube session loaded privately; media provenance and playback still require verification."
       - name: Install FFmpeg and real YouTube transcription dependencies
         run: |
           sudo apt-get update -qq
@@ -175,25 +202,6 @@ jobs:
           done
           docker ps --filter name=tjr-pot-provider
           yt-dlp --version
-      - name: Load optional YouTube-only viewer session from encrypted Actions secret
-        env:
-          COOKIES_B64: ${{ secrets.TJR_YOUTUBE_COOKIES_B64 }}
-        run: |
-          set -euo pipefail
-          if [[ -n "${COOKIES_B64:-}" ]]; then
-            umask 077
-            COOKIE_FILE="$RUNNER_TEMP/tjr-youtube-cookies.txt"
-            printf '%s' "$COOKIES_B64" | base64 --decode > "$COOKIE_FILE"
-            if ! grep -q -E '^# (Netscape HTTP Cookie File|HTTP Cookie File)' "$COOKIE_FILE"; then
-              echo "::error::The secret must contain a base64-encoded Netscape cookie jar."
-              rm -f "$COOKIE_FILE"
-              exit 1
-            fi
-            echo "YOUTUBE_COOKIES_FILE=$COOKIE_FILE" >> "$GITHUB_ENV"
-            echo "Optional dedicated viewer session loaded without exposing cookies."
-          else
-            echo "No YouTube session configured; trying unauthenticated approved videos."
-          fi
       - name: Check source channel IDs and acquire authentic YouTube HD original
         run: |
           set -euo pipefail
