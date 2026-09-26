@@ -113,7 +113,17 @@ def test_word_aligned_whisper_keeps_real_word_timestamps_and_fallback(tmp_path: 
     words = [
         SimpleNamespace(start=i * 0.4, end=i * 0.4 + 0.3, word=token)
         for i, token in enumerate(
-            ["Wait", " what", " happened?", " I", " just", " watched", " that", " candle", " reverse"]
+            [
+                "Wait",
+                " what",
+                " happened?",
+                " I",
+                " just",
+                " watched",
+                " that",
+                " candle",
+                " reverse",
+            ]
         )
     ]
     words.extend(
