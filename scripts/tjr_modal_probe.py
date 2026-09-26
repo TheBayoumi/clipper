@@ -216,7 +216,6 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
     }
 
 
-
 @app.local_entrypoint()
 def main() -> None:
     from scripts.tjr_youtube_preview import (
@@ -242,11 +241,7 @@ def main() -> None:
             raise RuntimeError("Modal network also cannot fetch these official original videos")
         print("Verified original YouTube URL:", result["source_url"])
         if os.getenv("TJR_MODAL_STAGE_ORIGINAL") == "1":
-            run_key = (
-                os.environ["GITHUB_RUN_ID"]
-                + "-"
-                + os.environ.get("GITHUB_RUN_ATTEMPT", "1")
-            )
+            run_key = os.environ["GITHUB_RUN_ID"] + "-" + os.environ.get("GITHUB_RUN_ATTEMPT", "1")
             staging = stage_official_original.remote(result, run_key)
             (root / "staged-original.json").write_text(
                 json.dumps(staging, indent=2) + "\n",
