@@ -20,6 +20,7 @@ probe_video = _tjr_qa["probe_video"]
 probe_original = _tjr_qa["probe_original"]
 prepare_staged_brief = _tjr_qa["prepare_staged_brief"]
 validate_artifacts = _tjr_qa["validate_artifacts"]
+_resolve_approved_youtube_video = _tjr_qa["_resolve_approved_youtube_video"]
 
 
 @pytest.fixture
@@ -103,13 +104,20 @@ def test_staged_brief_requires_verified_budget_source_and_hash(
     url = "https://drive.google.com/file/d/ApprovedFile123/view?usp=sharing"
     monkeypatch.setenv("TJR_SOURCE_MEDIA_URL", url)
     monkeypatch.setenv("TJR_SOURCE_MEDIA_SHA256", "a" * 64)
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "p2LU37eat70")
+    monkeypatch.setitem(
+        prepare_staged_brief.__globals__,
+        "_resolve_approved_youtube_video",
+        lambda video_id: "UCZen39LQJPx04GjPj7FOMcw",
+    )
     with pytest.raises(QualityError, match="confirm live campaign budget"):
         prepare_staged_brief(campaign_brief, output)
     monkeypatch.setenv("TJR_BUDGET_CONFIRMED", "true")
     monkeypatch.setenv("TJR_SOURCE_VERIFIED", "true")
     assert prepare_staged_brief(campaign_brief, output) == output
     parsed = check_campaign_brief(output)
-    assert parsed["source_media_urls"] == {"8PYgFVB0GHE": url}
+    assert parsed["source_media_urls"] == {"p2LU37eat70": url}
+    assert parsed["source_channel_ids"] == ["UCZen39LQJPx04GjPj7FOMcw"]
     monkeypatch.setenv("TJR_SOURCE_MEDIA_SHA256", "invalid-hash")
     with pytest.raises(QualityError, match="64-character"):
         prepare_staged_brief(campaign_brief, tmp_path / "invalid.yaml")
@@ -143,19 +151,25 @@ def test_staged_original_hash_must_match(
         "https://drive.google.com/file/d/ApprovedFile123/view",
     )
     monkeypatch.setenv("TJR_SOURCE_MEDIA_SHA256", "a" * 64)
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "p2LU37eat70")
+    monkeypatch.setitem(
+        prepare_staged_brief.__globals__,
+        "_resolve_approved_youtube_video",
+        lambda video_id: "UCZen39LQJPx04GjPj7FOMcw",
+    )
     monkeypatch.setenv("TJR_BUDGET_CONFIRMED", "true")
     monkeypatch.setenv("TJR_SOURCE_VERIFIED", "true")
     runtime = prepare_staged_brief(campaign_brief, tmp_path / "runtime.yaml")
     run = tmp_path / "artifacts" / "sample"
-    original = run / "work" / "8PYgFVB0GHE" / "source.mp4"
+    original = run / "work" / "p2LU37eat70" / "source.mp4"
     original.parent.mkdir(parents=True)
     original.write_bytes(b"this does not match the pinned SHA-256")
     (run / "manifest.json").write_text(
         json.dumps(
             {
                 "errors": [],
-                "discovered_videos": [{"channel_id": "UCGHBUXjDCeiIXNdKR0HUZnA"}],
-                "planned_clips": [{"video_id": "8PYgFVB0GHE"}],
+                "discovered_videos": [{"channel_id": "UCZen39LQJPx04GjPj7FOMcw"}],
+                "planned_clips": [{"video_id": "p2LU37eat70"}],
                 "rendered_clips": [{"video_id": "8PYgFVB0GHE"}],
             }
         ),
@@ -163,3 +177,19 @@ def test_staged_original_hash_must_match(
     )
     with pytest.raises(QualityError, match="hash differs"):
         validate_artifacts(runtime, tmp_path / "artifacts")
+
+
+def test_staged_source_rejects_non_campaign_video_id(
+    campaign_brief: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TJR_SOURCE_MEDIA_URL", "https://drive.google.com/file/d/ApprovedFile123/view")
+    monkeypatch.setenv("TJR_SOURCE_MEDIA_SHA256", "a" * 64)
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "invalid")
+    monkeypatch.setenv("TJR_BUDGET_CONFIRMED", "true")
+    monkeypatch.setenv("TJR_SOURCE_VERIFIED", "true")
+    output = tmp_path / "rejected-brief.yaml"
+    with pytest.raises(QualityError, match="11-character YouTube"):
+        _resolve_approved_youtube_video("invalid")
+    with pytest.raises(QualityError, match="11-character YouTube"):
+        prepare_staged_brief(campaign_brief, output)
+    assert not output.exists()

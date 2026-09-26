@@ -34,6 +34,11 @@ on:
         required: true
         type: boolean
         default: false
+      source_video_id:
+        description: "Exact 11-character video ID from the two campaign-listed YouTube channels."
+        required: true
+        type: string
+        default: "p2LU37eat70"
 
 permissions:
   contents: read
@@ -179,6 +184,7 @@ jobs:
     env:
       TJR_SOURCE_MEDIA_URL: ${{ secrets.TJR_SOURCE_MEDIA_URL }}
       TJR_SOURCE_MEDIA_SHA256: ${{ secrets.TJR_SOURCE_MEDIA_SHA256 }}
+      TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
       TJR_BUDGET_CONFIRMED: ${{ inputs.budget_confirmed }}
       TJR_SOURCE_VERIFIED: ${{ inputs.source_verified }}
       CLIPPER_WHISPER_MODEL: small.en
@@ -204,7 +210,7 @@ jobs:
       - name: Prepare verified staged TJR original (secret URL and SHA-256)
         run: |
           set -euo pipefail
-          python scripts/tjr_quality.py --prepare \
+          python -m scripts.tjr_quality --prepare \
             --brief campaigns/reach-tjr-weekly.yaml \
             --output-brief tjr-runtime/brief.yaml
       - name: Execute rights-gated TJR source pipeline
@@ -215,7 +221,7 @@ jobs:
       - name: Technical acceptance and full decode
         run: |
           set -euo pipefail
-          python scripts/tjr_quality.py \
+          python -m scripts.tjr_quality \
             --brief tjr-runtime/brief.yaml \
             --artifact-root tjr-artifacts
           while IFS= read -r -d '' clip; do

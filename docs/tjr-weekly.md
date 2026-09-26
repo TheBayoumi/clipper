@@ -93,8 +93,10 @@ or previous Kick clips for genuine approved-channel YouTube footage.
 To produce a new draft while direct YouTube downloads remain blocked,
 independently obtain a genuine original from the exact official YouTube URL,
 verify its owner and that TJR appears, then stage its unchanged HD MP4
-privately with a matching SHA-256. **The separate manual fallback remains
-pinned to older ID `8PYgFVB0GHE`; it must be adapted and tested to accept
-a different verified official video ID before these newer videos can be
-rendered through that fallback.** No live Whop funds, account eligibility,
+privately with a matching SHA-256. **The manual fallback now accepts a `source_video_id` workflow input instead
+of automatically choosing the old `8PYgFVB0GHE` ID.** It checks the selected
+ID against live official channel feeds, pins the corresponding verified
+channel and YouTube watch URL, and hashes the independently staged original.
+This does NOT verify that a user-supplied MP4 visually matches the URL;
+source authenticity still requires explicit human review. No live Whop funds, account eligibility,
 or human editorial acceptance has been verified.

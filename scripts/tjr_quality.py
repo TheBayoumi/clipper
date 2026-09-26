@@ -36,7 +36,14 @@ def check_campaign_brief(path: Path) -> dict[str, Any]:
     data: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise QualityError("campaign brief is not an object")
-    if data.get("source_channel_ids") != OFFICIAL_TJR_CHANNELS:
+    channels = data.get("source_channel_ids")
+    pinned_channel = (
+        isinstance(channels, list)
+        and len(channels) == 1
+        and channels[0] in OFFICIAL_TJR_CHANNELS
+        and bool(data.get("source_media_urls"))
+    )
+    if channels != OFFICIAL_TJR_CHANNELS and not pinned_channel:
         raise QualityError("source must be restricted to Reach's two listed TJR YouTube channels")
     video_ids = data.get("allowed_video_ids", [])
     if (
@@ -74,8 +81,24 @@ def check_campaign_brief(path: Path) -> dict[str, Any]:
     return data
 
 
+def _resolve_approved_youtube_video(video_id: str) -> str:
+    """Check a selected original's ID against the TWO real official channel feeds."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+        raise QualityError("TJR_SOURCE_VIDEO_ID must be an 11-character YouTube video ID")
+    from scripts.tjr_youtube_preview import discover_official_uploads
+
+    listings, _failures = discover_official_uploads()
+    channels = {item.channel_id for item in listings if item.video_id == video_id}
+    if len(channels) != 1 or not channels.issubset(set(OFFICIAL_TJR_CHANNELS)):
+        raise QualityError(
+            "selected video ID was not confirmed in either current Reach-listed "
+            "official YouTube channel feed; do not substitute an unrelated mirror"
+        )
+    return channels.pop()
+
+
 def prepare_staged_brief(template: Path, output: Path) -> Path:
-    """Prepare private runtime brief after explicit manual campaign/source verification."""
+    """Prepare a source-ID- and SHA-pinned brief after explicit user verification."""
     if os.getenv("TJR_BUDGET_CONFIRMED") != "true" or os.getenv("TJR_SOURCE_VERIFIED") != "true":
         raise QualityError("confirm live campaign budget and authentic TJR source")
     sha = os.getenv("TJR_SOURCE_MEDIA_SHA256", "")
@@ -83,7 +106,14 @@ def prepare_staged_brief(template: Path, output: Path) -> Path:
         raise QualityError("TJR_SOURCE_MEDIA_SHA256 must be a 64-character hex digest")
     data = check_campaign_brief(template)
     media_url = os.getenv("TJR_SOURCE_MEDIA_URL", "").strip()
-    data["source_media_urls"] = {data["allowed_video_ids"][0]: media_url}
+    # Reject malformed mirror URLs before making external source-discovery requests.
+    if not re.fullmatch(r"https://drive[.]google[.]com/file/d/[A-Za-z0-9_-]+/view/?(?:[?].*)?", media_url):
+        raise QualityError("mirror must be a Google Drive file/view HTTPS URL")
+    video_id = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip()
+    channel_id = _resolve_approved_youtube_video(video_id)
+    data["source_channel_ids"] = [channel_id]
+    data["allowed_video_ids"] = [video_id]
+    data["source_media_urls"] = {video_id: media_url}
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
         output.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
@@ -243,7 +273,13 @@ def validate_artifacts(brief: Path, artifact_root: Path) -> dict[str, Any]:
             actual = hashlib.file_digest(handle, "sha256").hexdigest()
         if actual != expected:
             raise QualityError("staged original hash differs from approved media")
-        source_details = {"mode": "SHA-256 pinned mirror", "sha256": actual}
+        source_details = {
+            "mode": "SHA-256 pinned mirror",
+            "sha256": actual,
+            "source_video_id": video_id,
+            "source_channel_id": config["source_channel_ids"][0],
+            "source_url": f"https://www.youtube.com/watch?v={video_id}",
+        }
         source_details.update(probe_original(original))
     results: list[dict[str, Any]] = []
     seen: set[tuple[str, float, float]] = set()
