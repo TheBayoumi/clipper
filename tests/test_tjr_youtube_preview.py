@@ -16,6 +16,7 @@ verified_youtube_metadata = SCRIPT["verified_youtube_metadata"]
 select_separate_clips = SCRIPT["select_separate_clips"]
 OfficialVideo = SCRIPT["OfficialVideo"]
 CHANNELS = SCRIPT["CHANNELS"]
+prioritize_campaign_moments = SCRIPT["prioritize_campaign_moments"]
 
 
 def atom_feed(channel_id: str, entry_channel: str | None = None) -> bytes:
@@ -134,3 +135,20 @@ def test_metadata_accepts_matching_official_channel_and_nonlive_video() -> None:
     )
     with patch.dict(verified_youtube_metadata.__globals__, {"invoke": Mock(return_value=valid)}):
         assert verified_youtube_metadata(official)["channel_id"] == official.channel_id
+
+
+def test_campaign_prefers_a_recent_eligible_full_video_to_newer_hashtag_shorts() -> None:
+    full = OfficialVideo(
+        "p2LU37eat70", "UCZen39LQJPx04GjPj7FOMcw",
+        "Live Day Trading Making $18,350", "2026-09-25T16:01:53+00:00",
+    )
+    short = OfficialVideo(
+        "Uwlp9JBpdLc", "UCGHBUXjDCeiIXNdKR0HUZnA",
+        "Method #tjrtrades #tjr", "2026-09-26T00:58:31+00:00",
+    )
+    unknown = OfficialVideo(
+        "5JR-dmmcpfw", "UCGHBUXjDCeiIXNdKR0HUZnA",
+        "unknown", "2026-09-25T22:04:46+00:00",
+    )
+    ordered = prioritize_campaign_moments([short, unknown, full])
+    assert ordered == [full, short, unknown]
