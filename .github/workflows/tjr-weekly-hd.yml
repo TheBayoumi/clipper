@@ -173,7 +173,7 @@ jobs:
             echo "::error::The secret must decode to a Netscape-format cookie jar."
             exit 1
           fi
-          if ! awk 'BEGIN {found=0} !/^#/ && $1 ~ /(^|[.])youtube[.]com$/ {found=1} END {exit !found}' "$COOKIE_FILE"; then
+          if ! awk 'BEGIN {found=0} $1 ~ /^([.]?youtube[.]com|#HttpOnly_[.]?youtube[.]com)$/ {found=1} END {exit !found}' "$COOKIE_FILE"; then
             echo "::error::The cookie jar contains no youtube.com session cookies."
             exit 1
           fi
