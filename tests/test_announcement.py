@@ -472,6 +472,8 @@ def test_certified_portrait_delivery_sync_and_full_duration_copy(
     values["output"]["portrait_matte"]["enabled"] = True
     values["output"]["portrait_matte"]["width"] = 180
     values["output"]["portrait_matte"]["height"] = 320
+    values["output"]["portrait_matte"]["target_size_mb"] = 2.0
+    values["output"]["portrait_matte"]["size_tolerance_mb"] = 1.0
     p = CampaignProfile(name=CAMPAIGN, config=values)
     manifest_path, _ = certificate
     plan_path = tmp_path / "portrait_plan.json"
@@ -493,6 +495,8 @@ def test_certified_portrait_delivery_sync_and_full_duration_copy(
     assert portrait["title"]["progress_samples"]["0"] == 0.0
     assert portrait["title"]["progress_samples"]["314"] == 1.0
     assert all(portrait["qa"]["checks"].values())
+    assert portrait["qa"]["matte_rgb_max_error"] <= 2
+    assert 1.0 <= portrait["qa"]["file_size_mb"] <= 3.0
     accepted = qualify_campaign(
         p,
         tmp_path / "portrait" / "render_manifest.json",

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import subprocess
 from collections.abc import Callable
 from fractions import Fraction
@@ -38,6 +39,8 @@ PORTRAIT_REQUIRED_CHECKS = frozenset(
         "portrait_source_audio_only",
         "portrait_ssim",
         "portrait_psnr_db",
+        "portrait_mattes_match",
+        "portrait_target_size",
         "portrait_color_metadata",
     }
 )
@@ -297,9 +300,10 @@ def render_portrait(
     duration = float(Fraction(frames, 1) / fps)
     canonical = workspace / "portrait_canonical.nut"
     file = output_dir / f"{profile.name}_{plan['montage']['comparison_mode']}_portrait.mp4"
+    background = str(profile.config["output"]["portrait_matte"]["background_hex"])
     graph = (
         f"[0:v]scale={width}:{center}:flags=lanczos,setsar=1,"
-        f"pad={width}:{height}:0:{top}:color=black[base];"
+        f"pad={width}:{height}:0:{top}:color=0x{background.lstrip('#')}[base];"
         f"[base][1:v]overlay=0:0:shortest=1:format=auto,"
         "format=yuv420p[outv]"
     )
@@ -349,6 +353,33 @@ def render_portrait(
             str(canonical),
         ]
     )
+    matte = profile.config["output"]["portrait_matte"]
+    size_target_mb = float(matte["target_size_mb"])
+    size_tolerance_mb = float(matte["size_tolerance_mb"])
+    audio_kbps = int(matte["audio_kbps"])
+    if not (size_target_mb > size_tolerance_mb > 0 and audio_kbps > 0):
+        raise MontageRejection("invalid_portrait_target", "size target/tolerance/audio invalid")
+    # Decimal MB, with a small MP4 muxing allowance. This is real
+    # two-pass encoding, not video padding or artificial filler bytes.
+    video_kbps = round((size_target_mb * 8000 / duration - audio_kbps) * 0.995)
+    if video_kbps < 150:
+        raise MontageRejection("invalid_portrait_target", "bit budget insufficient for video")
+    passlog = str(workspace / "portrait_twopass")
+    common_video = [
+        "-map",
+        "0:v:0",
+        "-c:v",
+        str(profile.config["output"]["video_codec"]),
+        "-preset",
+        str(profile.config["output"]["video_preset"]),
+        "-b:v",
+        f"{video_kbps}k",
+        "-threads:v",
+        "2",
+        "-r",
+        f"{fps.numerator}/{fps.denominator}",
+        *media.profile_output_args(source_profile),
+    ]
     media.run(
         [
             "ffmpeg",
@@ -360,29 +391,43 @@ def render_portrait(
             "1",
             "-i",
             str(canonical),
-            "-map",
-            "0:v:0",
+            *common_video,
+            "-pass",
+            "1",
+            "-passlogfile",
+            passlog,
+            "-an",
+            "-f",
+            "null",
+            os.devnull,
+        ]
+    )
+    media.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-threads:v",
+            "1",
+            "-i",
+            str(canonical),
+            *common_video,
+            "-pass",
+            "2",
+            "-passlogfile",
+            passlog,
             "-map",
             "0:a:0",
-            "-c:v",
-            str(profile.config["output"]["video_codec"]),
-            "-preset",
-            str(profile.config["output"]["video_preset"]),
-            "-crf",
-            str(profile.config["output"]["video_crf"]),
-            "-threads:v",
-            "2",
-            "-r",
-            f"{fps.numerator}/{fps.denominator}",
             "-c:a",
             str(profile.config["output"]["audio_codec"]),
             "-b:a",
-            "320k",
+            f"{audio_kbps}k",
             "-ar",
             str(profile.config["output"]["audio_sample_rate"]),
             "-ac",
             str(profile.config["output"]["audio_channels"]),
-            *media.profile_output_args(source_profile),
             *media.color_metadata_tag_args(source_profile),
             "-video_track_timescale",
             str(media.timing_from_profile(source_profile).track_timescale),
@@ -411,6 +456,32 @@ def render_portrait(
         ).stdout
     )
     actual_duration = float(probe["format"]["duration"])
+    filesize_mb = file.stat().st_size / 1_000_000
+    # Compare DECODED top and bottom pixel colors, not merely config strings.
+    still = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(file),
+            "-vf",
+            "select=eq(n\\,0),format=rgb24",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    sample = Image.frombytes("RGB", (width, height), still.stdout)
+    top_rgb = sample.getpixel((width // 18, max(2, top // 8)))
+    bottom_rgb = sample.getpixel((width // 18, height - max(2, top // 8)))
+    if not isinstance(top_rgb, tuple) or not isinstance(bottom_rgb, tuple):
+        raise RuntimeError("decoded RGB matte verification failed")
+    matte_rgb_error = max(abs(int(a) - int(b)) for a, b in zip(top_rgb, bottom_rgb, strict=True))
     expected_colors = media.source_color_metadata(source_profile)
     actual_colors = media.source_color_metadata(actual)
     ssim = metric(canonical, file, "ssim", r"All:([0-9.]+)")
@@ -431,6 +502,8 @@ def render_portrait(
         and audio["channels"] == int(profile.config["output"]["audio_channels"]),
         "portrait_ssim": ssim >= 0.96,
         "portrait_psnr_db": psnr >= 35.0,
+        "portrait_mattes_match": matte_rgb_error <= 2,
+        "portrait_target_size": abs(filesize_mb - size_target_mb) <= size_tolerance_mb,
         "portrait_color_metadata": all(
             actual_colors.get(k) == v for k, v in expected_colors.items()
         ),
@@ -448,6 +521,13 @@ def render_portrait(
             "checks": checks,
             "frame_count": frames,
             "encoded_duration": actual_duration,
+            "file_size_mb": filesize_mb,
+            "target_size_mb": size_target_mb,
+            "size_tolerance_mb": size_tolerance_mb,
+            "video_bitrate_kbps": video_kbps,
+            "matte_top_rgb": list(top_rgb),
+            "matte_bottom_rgb": list(bottom_rgb),
+            "matte_rgb_max_error": matte_rgb_error,
             "video_profile": actual,
             "audio_profile": audio,
             "ssim": ssim,

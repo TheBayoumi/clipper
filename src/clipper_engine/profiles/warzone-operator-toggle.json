@@ -136,7 +136,10 @@
           "Your Way with the New",
           "Operator Skin {Toggle}"
         ]
-      }
+      },
+      "target_size_mb": 32.0,
+      "size_tolerance_mb": 2.0,
+      "audio_kbps": 320
     }
   },
   "platform": {
