@@ -26,8 +26,15 @@ image = (
 )
 
 
-@app.function(image=image, timeout=180, cpu=1)
-def inspect_original_youtube(candidates: list[dict[str, str]]) -> dict[str, Any]:
+volume = modal.Volume.from_name("clipper-tjr-source-transport", create_if_missing=True)
+
+
+@app.function(
+    image=image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=2048
+)
+def inspect_original_youtube(
+    candidates: list[dict[str, str]], run_key: str = ""
+) -> dict[str, Any]:
     """Inspect only feed-listed original video IDs and their exact expected owners."""
     import yt_dlp
 
@@ -103,7 +110,7 @@ def inspect_original_youtube(candidates: list[dict[str, str]]) -> dict[str, Any]
                 if transfer_status != 0 or actual_bytes < 1024:
                     attempts.append({"url": url, "reason": "HD_MEDIA_BYTES_NOT_VERIFIED"})
                     continue
-            return {
+            result: dict[str, Any] = {
                 "status": "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED",
                 "source_url": url,
                 "source_video_id": video_id,
@@ -112,6 +119,11 @@ def inspect_original_youtube(candidates: list[dict[str, str]]) -> dict[str, Any]
                 "title": str(metadata.get("title") or "")[:160],
                 "attempts": attempts,
             }
+            # Keep playback validation and full download on the SAME egress IP.
+            # A second .remote() call may be assigned to a blocked worker.
+            if run_key:
+                result["staging"] = stage_official_original.local(result, run_key)
+            return result
         except Exception as exc:
             reason = (
                 "YOUTUBE_IP_OR_LOGIN_CHALLENGE"
@@ -120,9 +132,6 @@ def inspect_original_youtube(candidates: list[dict[str, str]]) -> dict[str, Any]
             )
             attempts.append({"url": url, "reason": reason})
     return {"status": "NO_ACCESSIBLE_ORIGINAL_YOUTUBE", "attempts": attempts}
-
-
-volume = modal.Volume.from_name("clipper-tjr-source-transport", create_if_missing=True)
 
 
 @app.function(image=image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=2048)
@@ -234,22 +243,63 @@ def main() -> None:
         ]
         if not inputs:
             raise RuntimeError("No feed-confirmed campaign YouTube videos")
-        result = inspect_original_youtube.remote(inputs)
+        stage_media = os.getenv("TJR_MODAL_STAGE_ORIGINAL") == "1"
+        run_key = (
+            os.environ["GITHUB_RUN_ID"]
+            + "-"
+            + os.environ.get("GITHUB_RUN_ATTEMPT", "1")
+            if stage_media
+            else ""
+        )
+        region_attempts: list[dict[str, str]] = []
+        result: dict[str, Any] = {
+            "status": "NO_ACCESSIBLE_ORIGINAL_YOUTUBE",
+            "attempts": [],
+        }
+        # Regional egress is tested at most three times; stop immediately on
+        # a real HD transfer. Never treat a metadata-only hit as successful.
+        for region in (None, "eu-west", "us-west"):
+            provider = (
+                inspect_original_youtube
+                if region is None
+                else inspect_original_youtube.with_options(region=region)
+            )
+            try:
+                candidate = provider.remote(inputs, run_key)
+                result = candidate
+                if candidate.get("status") == "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED":
+                    if not stage_media or candidate.get("staging", {}).get(
+                        "status"
+                    ) == "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED":
+                        result["selected_modal_region"] = region or "default"
+                        break
+                region_attempts.append(
+                    {"region": region or "default", "status": str(candidate.get("status"))}
+                )
+            except Exception as exc:
+                region_attempts.append(
+                    {"region": region or "default", "error": type(exc).__name__}
+                )
+        result["region_attempts"] = region_attempts
         result["discovery_failures"] = discovery_failures
         output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         if result["status"] != "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED":
-            raise RuntimeError("Modal network also cannot fetch these official original videos")
+            raise RuntimeError(
+                "No tested Modal region could fetch HD bytes from the official YouTube video"
+            )
         print("Verified original YouTube URL:", result["source_url"])
-        if os.getenv("TJR_MODAL_STAGE_ORIGINAL") == "1":
-            run_key = os.environ["GITHUB_RUN_ID"] + "-" + os.environ.get("GITHUB_RUN_ATTEMPT", "1")
-            staging = stage_official_original.remote(result, run_key)
+        if stage_media:
+            staging = result.get("staging")
+            if (
+                not isinstance(staging, dict)
+                or staging.get("status") != "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED"
+            ):
+                raise RuntimeError("No same-worker verified HD original was staged")
             (root / "staged-original.json").write_text(
                 json.dumps(staging, indent=2) + "\n",
                 encoding="utf-8",
             )
-            result["staging"] = staging
-            output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-            print("Verified original media staged privately in Modal Volume")
+            print("Verified original media staged on the same Modal worker")
     except Exception:
         if not output.is_file():
             output.write_text(
