@@ -8,10 +8,12 @@ on:
       - "campaigns/reach-tjr-weekly.yaml"
       - "scripts/tjr_quality.py"
       - "scripts/tjr_youtube_preview.py"
+      - "scripts/tjr_browser_probe.py"
       - "src/clipper/render.py"
       - "src/clipper/youtube.py"
       - "tests/test_tjr_quality.py"
       - "tests/test_tjr_youtube_preview.py"
+      - "tests/test_tjr_browser_probe.py"
       - "tests/test_render.py"
       - "pyproject.toml"
   pull_request:
@@ -206,6 +208,12 @@ jobs:
           fi
           echo "YOUTUBE_COOKIES_FILE=$COOKIE_FILE" >> "$GITHUB_ENV"
           echo "Previously authorized session loaded automatically; no per-video manual setup."
+      - name: Probe REAL official YouTube watch page in Chrome; acquire original if playable
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/tjr-youtube-artifacts/browser-capture"
+          python -m scripts.tjr_browser_probe --root "$ROOT"
+          echo "TJR_BROWSER_CAPTURE_FILE=$ROOT/browser-source.json" >> "$GITHUB_ENV"
       - name: Check source channel IDs and acquire authentic YouTube HD original
         run: |
           set -euo pipefail
@@ -227,6 +235,8 @@ jobs:
             tjr-youtube-artifacts/**/tjr-youtube-qa-report.json
             tjr-youtube-artifacts/**/source-acquisition-errors.json
             tjr-youtube-artifacts/**/official-source-candidates.json
+            tjr-youtube-artifacts/**/browser-probe.json
+            tjr-youtube-artifacts/**/browser-source.json
             tjr-youtube-artifacts/**/transcript.json
             tjr-youtube-artifacts/**/ranked-candidates.json
           retention-days: 14

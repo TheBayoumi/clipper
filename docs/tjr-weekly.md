@@ -127,6 +127,18 @@ web_safari. The older local bgutil provider failed to clear YouTube's
 runner-level bot confirmation challenge; it is not treated as proof of
 successful access.
 
+The runner also attempts an actual Chrome watch-page load of up to two
+feed-listed official YouTube videos. If Chrome's original YouTube player
+identifies both the exact video and the exact allowlisted channel and
+provides an HTTPS GoogleVideo video/audio pair at >=720p, FFmpeg can
+acquire only the first 14 minutes of that original. The downloaded
+file is re-probed, SHA-256 hashed, and checked by the main pipeline
+before ASR and any final MP4 rendering. Signed CDN URLs and browser
+session cookies never appear in uploaded artifacts; the sanitized
+browser-probe.json records only the real playback status and success
+or failure of media acquisition. If Chrome also receives a bot
+challenge, automatic guest playback cannot overcome an IP-level block.
+
 Successful acquisition STILL requires actual extracted video metadata
 whose owner channel ID matches the exact Reach allowlist, a playable
 high-definition original, a full media-decode check and real MP4

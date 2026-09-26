@@ -355,6 +355,47 @@ def constrain_official_sources(
     return matches
 
 
+def load_verified_browser_original(
+    path: Path, candidates: list[OfficialVideo]
+) -> tuple[OfficialVideo, Path, dict[str, Any]] | None:
+    """Use Chrome-extracted HD bytes ONLY when exact original and checksum match."""
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise RuntimeError("browser original manifest is not an object")
+    selected = next(
+        (
+            item
+            for item in candidates
+            if item.video_id == data.get("video_id")
+            and item.channel_id == data.get("channel_id")
+            and item.url == data.get("public_video_url")
+        ),
+        None,
+    )
+    if selected is None:
+        raise RuntimeError("browser original is not in the verified official channel feed")
+    if int(data.get("duration") or 0) < 90:
+        raise RuntimeError("browser original is too short for the campaign")
+    original = Path(str(data.get("source_path") or ""))
+    if not original.is_file() or not re.fullmatch(r"[0-9a-f]{64}", str(data.get("source_sha256"))):
+        raise RuntimeError("browser original is missing or has no valid SHA-256")
+    with original.open("rb") as source_bytes:
+        actual_digest = hashlib.file_digest(source_bytes, "sha256").hexdigest()
+    if actual_digest != data["source_sha256"]:
+        raise RuntimeError("browser original SHA-256 does not match Chrome capture manifest")
+    probe_original(original)
+    metadata: dict[str, Any] = {
+        "id": selected.video_id,
+        "channel_id": selected.channel_id,
+        "title": str(data.get("title") or selected.title),
+        "duration": int(data["duration"]),
+        "_transport": "chrome_original_googlevideo_https",
+    }
+    return selected, original, metadata
+
+
 def select_separate_clips(candidates: list[ClipCandidate], count: int = 2) -> list[ClipCandidate]:
     chosen: list[ClipCandidate] = []
     for candidate in sorted(candidates, key=lambda item: (-item.score, item.start)):
@@ -413,7 +454,24 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         official_candidates = constrain_official_sources(candidates, requested_id)
         if requested_id:
             LOGGER.info("Using explicitly requested official YouTube video ID: %s", requested_id)
-        for video in official_candidates[:8]:
+        browser_capture_file = os.getenv("TJR_BROWSER_CAPTURE_FILE", "").strip()
+        if browser_capture_file:
+            step = "verified_browser_capture"
+            try:
+                captured = load_verified_browser_original(
+                    Path(browser_capture_file), official_candidates
+                )
+                if captured is not None:
+                    chosen_video, source, metadata = captured
+                    LOGGER.info(
+                        "Chrome obtained real original HD bytes from official video %s",
+                        chosen_video.video_id,
+                    )
+            except (ValueError, OSError, RuntimeError) as exc:
+                errors.append(
+                    {"source": "verified Chrome browser capture", "error": str(exc)[:650]}
+                )
+        for video in official_candidates[:8] if source is None else []:
             step = "official_metadata"
             try:
                 metadata = verified_youtube_metadata(video)
