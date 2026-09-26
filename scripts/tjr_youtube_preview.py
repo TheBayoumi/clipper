@@ -355,7 +355,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         metadata: dict[str, Any] = {}
         bot_challenges = 0
         # Put full videos before Shorts: a new 15-second hashtag Short is not
-        # a suitable 20–42s clip source and must not consume the bot budget.
+        # a suitable 20-42s clip source and must not consume the bot budget.
         for video in prioritize_campaign_moments(candidates)[:8]:
             step = "official_metadata"
             try:
