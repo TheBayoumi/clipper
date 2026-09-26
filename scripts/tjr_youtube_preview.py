@@ -234,6 +234,8 @@ def download_original_excerpt(video: OfficialVideo, work: Path) -> Path:
         "--no-warnings",
         "--merge-output-format",
         "mp4",
+        "--extractor-args",
+        "youtube:player_client=mweb",
         "--download-sections",
         "*00:00:00-00:14:00",
         "-f",
