@@ -76,7 +76,7 @@ def parse_official_feed(xml: bytes, expected_channel: str) -> list[OfficialVideo
         items.append(
             OfficialVideo(
                 video_id=video_id,
-                channel_id=channel_id,
+                channel_id=expected_channel,
                 title=(entry.findtext(f"{ATOM}title") or "").strip(),
                 published=published,
             )
