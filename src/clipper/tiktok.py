@@ -40,7 +40,7 @@ def hook_from_quote(quote: str) -> str:
         return ""
     take: list[str] = []
     for word in words[:9]:
-        if take and len(" ".join(take + [word])) > 42:
+        if take and len(" ".join([*take, word])) > 42:
             break
         take.append(word)
         if word.endswith(("?", "!")) and len(take) >= 3:
@@ -63,7 +63,7 @@ def _two_lines(text: str, *, max_chars: int = 20) -> str:
     first: list[str] = []
     second: list[str] = []
     for word in words:
-        if not second and (not first or len(" ".join(first + [word])) <= max_chars):
+        if not second and (not first or len(" ".join([*first, word])) <= max_chars):
             first.append(word)
         else:
             second.append(word)
