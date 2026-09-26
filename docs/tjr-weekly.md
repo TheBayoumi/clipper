@@ -64,3 +64,37 @@ its URL and exact SHA-256 belong in repository Actions secrets
 TJR_SOURCE_MEDIA_URL and TJR_SOURCE_MEDIA_SHA256. The existing manual path
 is pinned to YouTube ID 8PYgFVB0GHE and is NOT presumed to be newest.
 No browser cookies or personal profiles are requested or committed.
+
+## Dated YouTube acquisition audit — 2026-09-26
+
+GitHub Actions [run 36205868637](https://github.com/TheBayoumi/clipper/actions/runs/36205868637)
+passed all code, policy and synthetic video tests and obtained 20 candidate
+video IDs directly from the official two YouTube channel feeds. The archive
+`tjr-real-youtube-hd-36205868637-1` includes
+`official-source-candidates.json` and `source-acquisition-errors.json`.
+This is verified channel *discovery*, not independently verified playback
+metadata, visual content, or a completed edit.
+
+Three feed-listed candidate videos from September 25, 2026 (UTC):
+- @TJRTrades: https://www.youtube.com/watch?v=5JR-dmmcpfw
+  (22:04:46 UTC, feed gave no usable title; duration/content not verified)
+- @TRichesTrades: https://www.youtube.com/watch?v=p2LU37eat70
+  ("Live Day Trading Making $18,350", 16:01:53 UTC; duration/content not verified)
+- @TRichesTrades: https://www.youtube.com/watch?v=D9J3-dqV6JI
+  ("TJR Reacts to the TJR and Aiden videos..", 13:54:41 UTC;
+  duration/content not verified)
+
+The actual media-acquisition job FAILED because YouTube requires browser
+sign-in to confirm the GitHub runner is not a bot for both attempted videos,
+even with Chrome impersonation. There were **zero YouTube MP4s** in that
+artifact. Never substitute successful synthetic clips, unaudited sources
+or previous Kick clips for genuine approved-channel YouTube footage.
+
+To produce a new draft while direct YouTube downloads remain blocked,
+independently obtain a genuine original from the exact official YouTube URL,
+verify its owner and that TJR appears, then stage its unchanged HD MP4
+privately with a matching SHA-256. **The separate manual fallback remains
+pinned to older ID `8PYgFVB0GHE`; it must be adapted and tested to accept
+a different verified official video ID before these newer videos can be
+rendered through that fallback.** No live Whop funds, account eligibility,
+or human editorial acceptance has been verified.
