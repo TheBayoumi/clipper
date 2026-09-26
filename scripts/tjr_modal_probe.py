@@ -267,12 +267,13 @@ def main() -> None:
             try:
                 candidate = provider.remote(inputs, run_key)
                 result = candidate
-                if candidate.get("status") == "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED":
-                    if not stage_media or candidate.get("staging", {}).get(
-                        "status"
-                    ) == "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED":
-                        result["selected_modal_region"] = region or "default"
-                        break
+                if candidate.get("status") == "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED" and (
+                    not stage_media
+                    or candidate.get("staging", {}).get("status")
+                    == "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED"
+                ):
+                    result["selected_modal_region"] = region or "default"
+                    break
                 region_attempts.append(
                     {"region": region or "default", "status": str(candidate.get("status"))}
                 )
