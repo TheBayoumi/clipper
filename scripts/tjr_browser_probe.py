@@ -222,7 +222,8 @@ def run_probe(root: Path) -> Path:
             if transfer_status != "CAPTURED_HD_ORIGINAL":
                 destination.unlink(missing_ok=True)
                 continue
-            digest = hashlib.sha256(destination.read_bytes()).hexdigest()
+            with destination.open("rb") as media:
+                digest = hashlib.file_digest(media, "sha256").hexdigest()
             source_manifest.write_text(
                 json.dumps(
                     {
@@ -244,10 +245,11 @@ def run_probe(root: Path) -> Path:
         except (OSError, ValueError, subprocess.TimeoutExpired, RuntimeError) as exc:
             record["browser_playability"] = type(exc).__name__
             results.append(record)
+    state = "CAPTURED_HD_ORIGINAL" if source_manifest.is_file() else "NO_BROWSER_ORIGINAL"
     report.write_text(
         json.dumps(
             {
-                "status": "CAPTURED_HD_ORIGINAL" if source_manifest.is_file() else "NO_BROWSER_ORIGINAL",
+                "status": state,
                 "attempts": results,
                 "discovery_failures": failures,
             },
@@ -256,7 +258,7 @@ def run_probe(root: Path) -> Path:
         + "\n",
         encoding="utf-8",
     )
-    LOGGER.info("Chrome original acquisition: %s", "success" if source_manifest.is_file() else "unavailable")
+    LOGGER.info("Chrome original acquisition: %s", state)
     return report
 
 
