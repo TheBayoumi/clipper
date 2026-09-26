@@ -133,7 +133,12 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
                 if metadata_run.returncode:
                     reason = _transport_error(metadata_run.stderr)
                     attempts.append(
-                        {"url": url, "strategy": strategy_name, "stage": "metadata", "reason": reason}
+                        {
+                            "url": url,
+                            "strategy": strategy_name,
+                            "stage": "metadata",
+                            "reason": reason,
+                        }
                     )
                     if reason == "YOUTUBE_IP_OR_LOGIN_CHALLENGE":
                         ip_challenges += 1
@@ -144,13 +149,19 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
                 if not isinstance(metadata, dict):
                     raise RuntimeError("YouTube metadata is not an object")
                 if metadata.get("id") != video_id or metadata.get("channel_id") != channel_id:
-                    attempts.append({"url": url, "strategy": strategy_name, "reason": "VIDEO_OWNER_MISMATCH"})
+                    attempts.append(
+                        {"url": url, "strategy": strategy_name, "reason": "VIDEO_OWNER_MISMATCH"}
+                    )
                     break
                 if metadata.get("live_status") == "is_live":
-                    attempts.append({"url": url, "strategy": strategy_name, "reason": "ONGOING_LIVESTREAM"})
+                    attempts.append(
+                        {"url": url, "strategy": strategy_name, "reason": "ONGOING_LIVESTREAM"}
+                    )
                     break
                 if float(metadata.get("duration") or 0) < 90:
-                    attempts.append({"url": url, "strategy": strategy_name, "reason": "SHORT_VIDEO"})
+                    attempts.append(
+                        {"url": url, "strategy": strategy_name, "reason": "SHORT_VIDEO"}
+                    )
                     break
                 formats = metadata.get("formats") or []
                 hd = any(
@@ -160,7 +171,9 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
                     for item in formats
                 )
                 if not hd:
-                    attempts.append({"url": url, "strategy": strategy_name, "reason": "NO_HD_FORMAT"})
+                    attempts.append(
+                        {"url": url, "strategy": strategy_name, "reason": "NO_HD_FORMAT"}
+                    )
                     continue
                 # Verify actual bytes, not just the extractor's advertised formats.
                 with tempfile.TemporaryDirectory(prefix="tjr-modal-real-youtube-") as temp:
