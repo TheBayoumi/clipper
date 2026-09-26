@@ -152,56 +152,60 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Require private authorized YouTube session before costly rendering
+      - name: Install FFmpeg, Chrome display, and YouTube transcription dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg xvfb x11-utils
+          python -m pip install -e ".[asr]"
+      - name: Mint YouTube playback tokens on the fly in a real browser
+        run: |
+          set -euo pipefail
+          python -m pip install -U "yt-dlp[default]" "yt-dlp-getpot-wpc==1.1.2"
+          CHROME="$(command -v google-chrome-stable || command -v google-chrome || command -v chromium)"
+          if [[ -z "$CHROME" ]]; then
+            echo "::error::This runner has no Chromium-compatible browser."
+            exit 1
+          fi
+          Xvfb :99 -screen 0 1366x768x24 -nolisten tcp > "$RUNNER_TEMP/tjr-xvfb.log" 2>&1 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          echo "YT_DLP_WPC_BROWSER_PATH=$CHROME" >> "$GITHUB_ENV"
+          export DISPLAY=:99
+          for attempt in $(seq 1 20); do
+            if xdpyinfo -display :99 >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          xdpyinfo -display :99 >/dev/null
+          python - <<'PY'
+          from importlib.metadata import version
+          print("yt-dlp:", version("yt-dlp"))
+          print("yt-dlp-getpot-wpc:", version("yt-dlp-getpot-wpc"))
+          PY
+          echo "Browser token generation is enabled without account cookies."
+      - name: Load optional persistent YouTube session if previously authorized
         env:
           COOKIES_B64: ${{ secrets.TJR_YOUTUBE_COOKIES_B64 }}
         run: |
           set -euo pipefail
+          if [[ -z "${COOKIES_B64:-}" ]]; then
+            echo "No session secret required: attempting public YouTube playback with dynamic browser tokens."
+            exit 0
+          fi
           umask 077
           COOKIE_FILE="$RUNNER_TEMP/tjr-youtube-cookies.txt"
-          if [[ -z "${COOKIES_B64:-}" ]]; then
-            mkdir -p tjr-youtube-artifacts/session-preflight
-            echo '{"stage":"session_preflight","error":"GitHub Actions secret TJR_YOUTUBE_COOKIES_B64 is missing; no authenticated YouTube download attempted."}' > tjr-youtube-artifacts/session-preflight/source-acquisition-errors.json
-            echo "::error::Add TJR_YOUTUBE_COOKIES_B64 in repository Settings > Secrets and variables > Actions before running YouTube media acquisition."
-            exit 1
-          fi
-          if ! printf '%s' "$COOKIES_B64" | base64 --decode > "$COOKIE_FILE"; then
-            echo "::error::Invalid base64 YouTube session secret."
-            exit 1
-          fi
+          printf '%s' "$COOKIES_B64" | base64 --decode > "$COOKIE_FILE"
           if ! grep -q -m1 -E '^# (Netscape HTTP Cookie File|HTTP Cookie File)' "$COOKIE_FILE"; then
-            echo "::error::The secret must decode to a Netscape-format cookie jar."
+            echo "::error::Invalid optional YouTube cookie jar; refusing to pass it to the downloader."
+            rm -f "$COOKIE_FILE"
             exit 1
           fi
           if ! awk 'BEGIN {found=0} $1 ~ /^([.]?youtube[.]com|#HttpOnly_[.]?youtube[.]com)$/ {found=1} END {exit !found}' "$COOKIE_FILE"; then
-            echo "::error::The cookie jar contains no youtube.com session cookies."
+            echo "::error::Optional jar contains no YouTube session cookies."
+            rm -f "$COOKIE_FILE"
             exit 1
           fi
           echo "YOUTUBE_COOKIES_FILE=$COOKIE_FILE" >> "$GITHUB_ENV"
-          echo "Dedicated YouTube session loaded privately; media provenance and playback still require verification."
-      - name: Install FFmpeg and real YouTube transcription dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg
-          python -m pip install -e ".[asr]"
-          yt-dlp --version
-      - name: Start local PO-token provider for YouTube playback
-        run: |
-          set -euo pipefail
-          docker run --name tjr-pot-provider -d --init \
-            -p 127.0.0.1:4416:4416 \
-            brainicism/bgutil-ytdlp-pot-provider:2.0.0
-          python -m pip install -U "yt-dlp[default]" "bgutil-ytdlp-pot-provider==2.0.0"
-          for attempt in $(seq 1 30); do
-            if python -c "import socket; s=socket.create_connection(('127.0.0.1', 4416),timeout=2); s.close()" >/dev/null 2>&1; then break; fi
-            if ! docker inspect -f '{{.State.Running}}' tjr-pot-provider | grep -qx true; then
-              docker logs tjr-pot-provider
-              exit 1
-            fi
-            sleep 2
-          done
-          docker ps --filter name=tjr-pot-provider
-          yt-dlp --version
+          echo "Previously authorized session loaded automatically; no per-video manual setup."
       - name: Check source channel IDs and acquire authentic YouTube HD original
         run: |
           set -euo pipefail
