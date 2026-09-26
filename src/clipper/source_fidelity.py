@@ -5,6 +5,7 @@ quality, especially across AV1/VP9/H.264. Use it to choose only the FIRST
 encoding attempt, then compare the decoded master against the exact same
 uncompressed editorial composition (including Style B captions) with SSIM.
 """
+
 from __future__ import annotations
 
 import json
@@ -193,9 +194,7 @@ def compare_encoded_to_composition(
             scores.append(float(match.group(1)))
     expected_frames = duration * float(Fraction(fps))
     if len(scores) < max(1, math.floor(expected_frames * 0.94)):
-        raise FidelityError(
-            f"insufficient comparable frames: {len(scores)}/{expected_frames:.0f}"
-        )
+        raise FidelityError(f"insufficient comparable frames: {len(scores)}/{expected_frames:.0f}")
     if not scores or any(not math.isfinite(value) for value in scores):
         raise FidelityError("invalid frame-level SSIM statistics")
     return round(sum(scores) / len(scores), 6), len(scores)

@@ -103,8 +103,13 @@ def test_ssim_compares_same_layout_and_rejects_missing_frames(tmp_path: Path) ->
 
     with patch("clipper.source_fidelity.subprocess.run", side_effect=fake_ffmpeg):
         score, count = compare_encoded_to_composition(
-            filter_cmd, source=original, output=rendered,
-            clip_start=8, duration=2, fps="30/1", stats_path=stats,
+            filter_cmd,
+            source=original,
+            output=rendered,
+            clip_start=8,
+            duration=2,
+            fps="30/1",
+            stats_path=stats,
         )
     assert score == 0.995 and count == 60
     with (
@@ -113,8 +118,13 @@ def test_ssim_compares_same_layout_and_rejects_missing_frames(tmp_path: Path) ->
     ):
         stats.unlink()
         compare_encoded_to_composition(
-            filter_cmd, source=original, output=rendered,
-            clip_start=8, duration=2, fps="30/1", stats_path=stats,
+            filter_cmd,
+            source=original,
+            output=rendered,
+            clip_start=8,
+            duration=2,
+            fps="30/1",
+            stats_path=stats,
         )
     assert not stats.exists()
 
@@ -122,8 +132,13 @@ def test_ssim_compares_same_layout_and_rejects_missing_frames(tmp_path: Path) ->
 def test_ssim_rejects_wrong_graph_and_comparison_failure(tmp_path: Path) -> None:
     with pytest.raises(FidelityError, match="unrecorded"):
         compare_encoded_to_composition(
-            [], source=tmp_path / "a", output=tmp_path / "b",
-            clip_start=0, duration=2, fps="30/1", stats_path=tmp_path / "q",
+            [],
+            source=tmp_path / "a",
+            output=tmp_path / "b",
+            clip_start=0,
+            duration=2,
+            fps="30/1",
+            stats_path=tmp_path / "q",
         )
     with (
         patch(
@@ -134,6 +149,10 @@ def test_ssim_rejects_wrong_graph_and_comparison_failure(tmp_path: Path) -> None
     ):
         compare_encoded_to_composition(
             ["-filter_complex", "format=yuv420p,setsar=1[v]"],
-            source=tmp_path / "a", output=tmp_path / "b",
-            clip_start=0, duration=2, fps="30/1", stats_path=tmp_path / "q",
+            source=tmp_path / "a",
+            output=tmp_path / "b",
+            clip_start=0,
+            duration=2,
+            fps="30/1",
+            stats_path=tmp_path / "q",
         )

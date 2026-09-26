@@ -179,8 +179,12 @@ def test_tiktok_renderer_writes_editable_ass_and_original_srt(tmp_path: Path) ->
     ):
         renderer = FFmpegRenderer()
         result = renderer.render(
-            source, output, clip, segments,
-            tiktok_hook=clip.text, source_profile=profile,
+            source,
+            output,
+            clip,
+            segments,
+            tiktok_hook=clip.text,
+            source_profile=profile,
         )
         assert result == output
         assert "ass='" in " ".join(run.call_args_list[0].args[0])
