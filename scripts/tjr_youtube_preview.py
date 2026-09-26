@@ -495,8 +495,12 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             raise RuntimeError("no recent approved-channel YouTube original could be downloaded")
         step = "transcription"
         segments = transcribe_with_faster_whisper(
-            source, model_name="small.en", device="cpu", compute_type="int8", language="en",
-            word_timestamps=True
+            source,
+            model_name="small.en",
+            device="cpu",
+            compute_type="int8",
+            language="en",
+            word_timestamps=True,
         )
         if not segments:
             raise RuntimeError("the original footage contains no usable English speech")
@@ -561,9 +565,18 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             sheet = out.with_name(out.stem + "-contact.png")
             invoke(
                 [
-                    "ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(out),
-                    "-vf", "fps=1/6,scale=270:480,tile=4x1",
-                    "-frames:v", "1", str(sheet),
+                    "ffmpeg",
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-y",
+                    "-i",
+                    str(out),
+                    "-vf",
+                    "fps=1/6,scale=270:480,tile=4x1",
+                    "-frames:v",
+                    "1",
+                    str(sheet),
                 ],
                 timeout=110,
             )
