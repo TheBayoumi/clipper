@@ -111,3 +111,54 @@ def test_create_srt_strips_youtube_speaker_marker(tmp_path: Path) -> None:
     content = path.read_text(encoding="utf-8")
     assert ">>" not in content
     assert "Speaker turn starts here." in content
+
+
+def test_style_b_high_quality_native_cadence_and_ass_filter(tmp_path: Path) -> None:
+    clip = ClipCandidate("p2LU37eat70", 0, 30, "Wait what happened?", 10)
+    with patch.dict(
+        "os.environ",
+        {"CLIPPER_RENDER_PRESET": "slow", "CLIPPER_RENDER_CRF": "14",
+         "CLIPPER_RENDER_THREADS": "4"},
+    ):
+        command = build_ffmpeg_command(
+            "source.mp4", "out.mp4", clip, tmp_path / "style.ass",
+            editorial_layout="tjr-trading-logo-safe", source_fps="60000/1001",
+        )
+    encoded = " ".join(command)
+    assert "ass='" in encoded
+    assert "fps=60000/1001" in encoded
+    assert "-crf 14" in encoded and "-preset slow" in encoded
+    assert "-b:a 320k" in encoded
+    assert "-pix_fmt yuv420p" in encoded
+    assert "aq-mode=3" in encoded
+    with pytest.raises(RenderError, match="invalid original"):
+        build_ffmpeg_command("source.mp4", "out.mp4", clip, tmp_path / "style.ass",
+                             source_fps="0/0")
+    with pytest.raises(RenderError, match="forbids"):
+        build_ffmpeg_command("source.mp4", "out.mp4", clip, tmp_path / "style.ass",
+                             watermark_path=tmp_path / "logo.png")
+
+
+def test_tiktok_renderer_writes_editable_ass_and_original_srt(tmp_path: Path) -> None:
+    clip = ClipCandidate("v", 0, 12, "Why did this happen?", 2)
+    segments = [TranscriptSegment(0, 1.1, "Why did"), TranscriptSegment(1.1, 2.0, "this happen?")]
+    source, output = tmp_path / "original.mp4", tmp_path / "clip.mp4"
+    source.write_bytes(b"source")
+    fake_probe = Mock(stdout='{"streams": [{"avg_frame_rate": "30000/1001"}]}')
+
+    def fake_ffmpeg(command: list[str], **_kwargs: object) -> Mock:
+        assert "ass='" in " ".join(command)
+        output.write_bytes(b"encoded")
+        return Mock()
+
+    with (
+        patch("clipper.render.shutil.which", return_value="/usr/bin/ffmpeg"),
+        patch("clipper.render.subprocess.run", side_effect=[fake_probe, fake_ffmpeg]) as run,
+    ):
+        renderer = FFmpegRenderer()
+        result = renderer.render(source, output, clip, segments, tiktok_hook=clip.text)
+        assert result == output
+        assert "ass='" in " ".join(run.call_args_list[1].args[0])
+        assert "fps=30000/1001" in " ".join(run.call_args_list[1].args[0])
+    assert output.with_suffix(".ass").is_file()
+    assert output.with_suffix(".srt").is_file()

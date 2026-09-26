@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
 from collections.abc import Sequence
+from fractions import Fraction
 from pathlib import Path
 
 from .models import ClipCandidate, TranscriptSegment
+from .tiktok import create_tiktok_ass
 
 
 class RenderError(RuntimeError):
@@ -62,6 +65,7 @@ def build_ffmpeg_command(
     width: int = 1080,
     height: int = 1920,
     editorial_layout: str = "default",
+    source_fps: str | None = None,
 ) -> list[str]:
     preset = os.getenv("CLIPPER_RENDER_PRESET", "ultrafast").strip().lower()
     if preset not in {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"}:
@@ -74,6 +78,32 @@ def build_ffmpeg_command(
     if not 16 <= crf <= 28 or not 1 <= threads <= 4:
         raise RenderError("render CRF must be 16-28 and threads must be 1-4")
     escaped_subtitles = _escape_filter_path(Path(subtitle_path))
+    is_tiktok = Path(subtitle_path).suffix.lower() == ".ass"
+    caption_filter = (
+        f"ass='{escaped_subtitles}'"
+        if is_tiktok
+        else (
+            f"subtitles='{escaped_subtitles}':"
+            "force_style='FontName=DejaVu Sans,FontSize=10,Alignment=2,"
+            "MarginV=28,MarginL=24,MarginR=24,Outline=2,Shadow=0,"
+            "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000'"
+        )
+    )
+    if is_tiktok:
+        if width != 1080 or height != 1920:
+            raise RenderError("Style B requires an exact 1080x1920 vertical output")
+        if watermark_path is not None:
+            raise RenderError("Style B forbids adding any logos or watermarks")
+    if source_fps:
+        try:
+            rate = Fraction(source_fps)
+            if not 24 <= float(rate) <= 60:
+                raise ValueError("unsupported source frame rate")
+        except (ValueError, ZeroDivisionError) as exc:
+            raise RenderError("invalid original source frame rate") from exc
+        fps = source_fps if float(rate) >= 29 else "30"
+    else:
+        fps = "30"
     blur_width = max(180, width // 3)
     blur_height = max(320, height // 3)
     base_filter = (
@@ -82,10 +112,7 @@ def build_ffmpeg_command(
         f"crop={blur_width}:{blur_height},gblur=sigma=18,scale={width}:{height}[bg2];"
         f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
         f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,"
-        f"subtitles='{escaped_subtitles}':"
-        "force_style='FontName=DejaVu Sans,FontSize=10,Alignment=2,"
-        "MarginV=28,MarginL=24,MarginR=24,Outline=2,Shadow=0,"
-        "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000',fps=30[captioned]"
+        f"{caption_filter},fps={fps}[captioned]"
     )
     if editorial_layout not in {"default", "tjr-trading-logo-safe"}:
         raise RenderError("unknown editorial layout; never silently bypass logo guard")
@@ -102,10 +129,7 @@ def build_ffmpeg_command(
             "color=c=0x10131a:s=1080x1920:r=30[canvas];"
             "[canvas][top]overlay=0:180[layout];"
             "[layout][face]overlay=0:830,"
-            f"subtitles='{escaped_subtitles}':"
-            "force_style='FontName=DejaVu Sans,FontSize=15,Alignment=2,"
-            "MarginV=105,MarginL=40,MarginR=40,Outline=3,Shadow=0,"
-            "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000',fps=30[captioned]"
+            f"{caption_filter},fps={fps}[captioned]"
         )
     inputs = [
         "ffmpeg",
@@ -150,11 +174,41 @@ def build_ffmpeg_command(
         "-c:a",
         "aac",
         "-b:a",
-        "192k",
+        "320k" if is_tiktok else "192k",
+        "-pix_fmt",
+        "yuv420p",
+        *(
+            ["-profile:v", "high", "-x264-params", "aq-mode=3:aq-strength=1.05"]
+            if is_tiktok
+            else []
+        ),
         "-movflags",
         "+faststart",
         str(output_path),
     ]
+
+
+def _source_frame_rate(path: Path) -> str:
+    """Read the original cadence so Style B does not create fake 60fps."""
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=avg_frame_rate,r_frame_rate",
+                "-of", "json", str(path),
+            ],
+            capture_output=True, text=True, check=True, timeout=40,
+        )
+        streams = json.loads(probe.stdout)["streams"]
+        source = streams[0]
+        rate = str(source.get("avg_frame_rate") or source.get("r_frame_rate") or "")
+        if 24 <= float(Fraction(rate)) <= 60:
+            return rate
+        raise ValueError("unusable native frame rate")
+    except (OSError, ValueError, KeyError, IndexError, TypeError,
+            ZeroDivisionError, subprocess.CalledProcessError,
+            subprocess.TimeoutExpired) as exc:
+        raise RenderError("Style B could not verify the native source frame rate") from exc
 
 
 class FFmpegRenderer:
@@ -170,17 +224,28 @@ class FFmpegRenderer:
         segments: Sequence[TranscriptSegment],
         watermark_path: Path | None = None,
         editorial_layout: str = "default",
+        tiktok_hook: str | None = None,
     ) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         subtitle_path = output_path.with_suffix(".srt")
         create_srt(clip, segments, subtitle_path)
+        burn_in = (
+            create_tiktok_ass(
+                clip, segments, output_path.with_suffix(".ass"),
+                hook_text=tiktok_hook,
+            )
+            if tiktok_hook is not None
+            else subtitle_path
+        )
+        native_fps = _source_frame_rate(source_path) if tiktok_hook is not None else None
         command = build_ffmpeg_command(
             source_path,
             output_path,
             clip,
-            subtitle_path,
+            burn_in,
             watermark_path=watermark_path,
             editorial_layout=editorial_layout,
+            source_fps=native_fps,
         )
         try:
             subprocess.run(command, check=True, capture_output=True, text=True, timeout=900)

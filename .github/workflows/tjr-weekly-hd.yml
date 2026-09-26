@@ -15,6 +15,8 @@ on:
       - "tests/test_transcript.py"
       - "src/clipper/transcript.py"
       - "src/clipper/render.py"
+      - "src/clipper/tiktok.py"
+      - "tests/test_tiktok.py"
       - "src/clipper/youtube.py"
       - "tests/test_tjr_quality.py"
       - "tests/test_tjr_youtube_preview.py"
@@ -147,9 +149,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     env:
-      CLIPPER_RENDER_PRESET: medium
-      CLIPPER_RENDER_CRF: "18"
-      CLIPPER_RENDER_THREADS: "2"
+      CLIPPER_RENDER_PRESET: slow
+      CLIPPER_RENDER_CRF: "14"
+      CLIPPER_RENDER_THREADS: "4"
+      TJR_CAPTION_STYLE: B
       TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
     steps:
       - uses: actions/checkout@v5
@@ -481,13 +484,12 @@ jobs:
             tjr-modal-probe/staged-original.json
             tjr-modal-artifacts/**/clips/*.mp4
             tjr-modal-artifacts/**/clips/*.srt
+            tjr-modal-artifacts/**/clips/*.ass
             tjr-modal-artifacts/**/clips/*-preview.png
-            tjr-modal-artifacts/**/clips/*-contact.png
             tjr-modal-artifacts/**/clips/*-contact.png
             tjr-modal-artifacts/**/editorial-candidate-audit.json
             tjr-modal-artifacts/**/ranked-candidates.json
             tjr-modal-artifacts/**/tjr-youtube-qa-report.json
-            tjr-modal-artifacts/**/editorial-candidate-audit.json
             tjr-modal-artifacts/**/source-acquisition-errors.json
             tjr-modal-artifacts/**/official-source-candidates.json
             tjr-modal-artifacts/**/transcript.json

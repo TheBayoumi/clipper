@@ -529,6 +529,9 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         )
         step = "render_and_decode"
         renderer = FFmpegRenderer()
+        caption_style = os.getenv("TJR_CAPTION_STYLE", "").strip().upper()
+        if caption_style not in {"", "B"}:
+            raise RuntimeError("unknown TJR caption style")
         completed: list[dict[str, Any]] = []
         for number, pick in enumerate(picks, start=1):
             clip = pick.clip
@@ -541,7 +544,10 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 and probe_original(source) == {"width": 1920, "height": 1080}
                 else "default"
             )
-            renderer.render(source, out, clip, segments, editorial_layout=layout)
+            renderer.render(
+                source, out, clip, segments, editorial_layout=layout,
+                tiktok_hook=pick.hook if caption_style == "B" else None,
+            )
             details = probe_video(out)
             check_full_decode(out)
             thumbnail = out.with_name(out.stem + "-preview.png")
@@ -584,6 +590,13 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 {
                     **details,
                     "hook_candidate": pick.hook,
+                    "caption_style": "B" if caption_style == "B" else "legacy_srt",
+                    "burned_in_hook": caption_style == "B",
+                    "ass_sidecar": (
+                        str(out.with_suffix(".ass").relative_to(run_dir))
+                        if caption_style == "B" else None
+                    ),
+                    "file_megabytes": round(out.stat().st_size / 1_000_000, 2),
                     "hook_score": pick.hook_score,
                     "editorial_reasons": list(pick.reasons),
                     "publication_status": "AI_SCREEN_PASSED__VISUAL_REVIEW_REQUIRED",
