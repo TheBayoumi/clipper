@@ -178,12 +178,16 @@ def test_optional_auth_uses_only_explicit_existing_cookie_file(
 
 def test_explicit_youtube_source_cannot_fall_back_to_other_videos() -> None:
     official = OfficialVideo(
-        "p2LU37eat70", "UCZen39LQJPx04GjPj7FOMcw",
-        "Live Day Trading Making $18,350", "2026-09-25T16:01:53+00:00",
+        "p2LU37eat70",
+        "UCZen39LQJPx04GjPj7FOMcw",
+        "Live Day Trading Making $18,350",
+        "2026-09-25T16:01:53+00:00",
     )
     other = OfficialVideo(
-        "D9J3-dqV6JI", "UCZen39LQJPx04GjPj7FOMcw",
-        "TJR Reacts to the TJR and Aiden videos", "2026-09-25T13:54:41+00:00",
+        "D9J3-dqV6JI",
+        "UCZen39LQJPx04GjPj7FOMcw",
+        "TJR Reacts to the TJR and Aiden videos",
+        "2026-09-25T13:54:41+00:00",
     )
     assert constrain_official_sources([other, official], official.video_id) == [official]
     with pytest.raises(RuntimeError, match="not in either Reach-listed"):
