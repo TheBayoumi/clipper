@@ -26,6 +26,7 @@ from clipper.models import ClipCandidate
 from clipper.render import FFmpegRenderer
 from clipper.scoring import score_transcript
 from clipper.transcript import transcribe_with_faster_whisper
+from scripts.tjr_editorial import select_editorial_moments
 from scripts.tjr_quality import check_full_decode, probe_original, probe_video
 
 LOGGER = logging.getLogger("tjr-youtube")
@@ -494,29 +495,49 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             raise RuntimeError("no recent approved-channel YouTube original could be downloaded")
         step = "transcription"
         segments = transcribe_with_faster_whisper(
-            source, model_name="small.en", device="cpu", compute_type="int8", language="en"
+            source, model_name="small.en", device="cpu", compute_type="int8", language="en",
+            word_timestamps=True
         )
         if not segments:
             raise RuntimeError("the original footage contains no usable English speech")
         step = "clip_selection"
-        ranked = score_transcript(brief, chosen_video.video_id, segments, limit=60)
-        selected = select_separate_clips(ranked, count=brief.clip_count)
-        if len(selected) != brief.clip_count:
-            raise RuntimeError("insufficient distinct 20-42-second moments in source excerpt")
+        ranked = score_transcript(brief, chosen_video.video_id, segments, limit=900)
+        batch_limit = int(os.getenv("TJR_EDITORIAL_BATCH_LIMIT", str(brief.clip_count)))
+        picks, rejected = select_editorial_moments(ranked, batch_limit=batch_limit)
+        if not picks:
+            raise RuntimeError("no distinct moments passed the spoken-hook screen")
+        LOGGER.info("EDITORIAL_HOOK_SCREEN_PASSED=%d", len(picks))
         (run_dir / "transcript.json").write_text(
             json.dumps([s.to_dict() for s in segments], indent=2) + "\n",
             encoding="utf-8",
         )
         (run_dir / "ranked-candidates.json").write_text(
-            json.dumps([c.to_dict() for c in ranked[:30]], indent=2) + "\n",
+            json.dumps([c.to_dict() for c in ranked[:150]], indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (run_dir / "editorial-candidate-audit.json").write_text(
+            json.dumps(
+                {"selected": [pick.to_dict() for pick in picks], "rejected": rejected[:250]},
+                indent=2,
+            )
+            + "\n",
             encoding="utf-8",
         )
         step = "render_and_decode"
         renderer = FFmpegRenderer()
         completed: list[dict[str, Any]] = []
-        for number, clip in enumerate(selected, start=1):
+        for number, pick in enumerate(picks, start=1):
+            clip = pick.clip
             out = run_dir / "clips" / f"{number:02d}-tjr-youtube-{chosen_video.video_id}.mp4"
-            renderer.render(source, out, clip, segments)
+            # Explicit approved crop for the visually audited 2026-09-25
+            # TRiches livestream. New layouts remain review-only until audited.
+            layout = (
+                "tjr-trading-logo-safe"
+                if chosen_video.video_id == "p2LU37eat70"
+                and probe_original(source) == {"width": 1920, "height": 1080}
+                else "default"
+            )
+            renderer.render(source, out, clip, segments, editorial_layout=layout)
             details = probe_video(out)
             check_full_decode(out)
             thumbnail = out.with_name(out.stem + "-preview.png")
@@ -537,9 +558,25 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 ],
                 timeout=90,
             )
+            sheet = out.with_name(out.stem + "-contact.png")
+            invoke(
+                [
+                    "ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(out),
+                    "-vf", "fps=1/6,scale=270:480,tile=4x1",
+                    "-frames:v", "1", str(sheet),
+                ],
+                timeout=110,
+            )
             completed.append(
                 {
                     **details,
+                    "hook_candidate": pick.hook,
+                    "hook_score": pick.hook_score,
+                    "editorial_reasons": list(pick.reasons),
+                    "publication_status": "AI_SCREEN_PASSED__VISUAL_REVIEW_REQUIRED",
+                    "logo_safe_layout": layout,
+                    "logo_compliance_verified": False,
+                    "contact_sheet": str(sheet.relative_to(run_dir)),
                     "file": str(out.relative_to(run_dir)),
                     "srt": str(out.with_suffix(".srt").relative_to(run_dir)),
                     "preview": str(thumbnail.relative_to(run_dir)),
@@ -552,7 +589,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         with source.open("rb") as media:
             digest = hashlib.file_digest(media, "sha256").hexdigest()
         report = {
-            "status": "TECHNICAL_QA_PASSED__HUMAN_REVIEW_REQUIRED",
+            "status": "TECHNICAL_QA_AND_AI_SCREEN_PASSED__VISUAL_REVIEW_REQUIRED",
             "campaign": brief.campaign_id,
             "source_platform": "youtube",
             "source_url": chosen_video.url,

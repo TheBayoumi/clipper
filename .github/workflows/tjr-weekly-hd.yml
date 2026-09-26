@@ -9,7 +9,10 @@ on:
       - "scripts/tjr_quality.py"
       - "scripts/tjr_youtube_preview.py"
       - "scripts/tjr_modal_probe.py"
+      - "scripts/tjr_editorial.py"
       - "scripts/tjr_browser_probe.py"
+      - "tests/test_tjr_editorial.py"
+      - "src/clipper/transcript.py"
       - "src/clipper/render.py"
       - "src/clipper/youtube.py"
       - "tests/test_tjr_quality.py"
@@ -361,14 +364,23 @@ jobs:
 
 
   youtube_modal_egress:
-    name: Fetch official original from Modal, render and QA on GitHub runner
+    name: Modal originals + editorial drafts (${{ matrix.channel_id }})
     needs: tests
     if: github.event_name == 'push' && github.ref == 'refs/heads/feat/tjr-weekly-hd-actions'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        channel_id:
+          - UCGHBUXjDCeiIXNdKR0HUZnA
+          - UCZen39LQJPx04GjPj7FOMcw
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     permissions:
       contents: read
     env:
+      TJR_MODAL_CHANNEL_ID: ${{ matrix.channel_id }}
+      TJR_EDITORIAL_BATCH_LIMIT: '12'
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       CLIPPER_RENDER_PRESET: medium
@@ -413,7 +425,7 @@ jobs:
           if staging.get("status") != "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED":
               raise RuntimeError("Modal did not stage a real approved original")
           remote = str(staging.get("source_remote_path") or "")
-          if not re.fullmatch(r"runs/\d{4,20}-\d{1,4}/original\.(?:mp4|mkv|webm)", remote):
+          if not re.fullmatch(r"runs/\d{4,20}-\d{1,4}/[A-Za-z0-9_-]{11}/original\.(?:mp4|mkv|webm)", remote):
               raise RuntimeError("Modal staged source filename is not approved")
           original = Path("tjr-modal-stage") / ("source" + Path(remote).suffix)
           original.parent.mkdir(parents=True, exist_ok=True)
@@ -462,12 +474,15 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tjr-real-original-youtube-hd-${{ github.run_id }}
+          name: tjr-real-original-youtube-hd-${{ matrix.channel_id }}-${{ github.run_id }}
           path: |
             tjr-modal-probe/verified-original-egress.json
             tjr-modal-artifacts/**/clips/*.mp4
             tjr-modal-artifacts/**/clips/*.srt
             tjr-modal-artifacts/**/clips/*-preview.png
+            tjr-modal-artifacts/**/clips/*-contact.png
+            tjr-modal-artifacts/**/editorial-candidate-audit.json
+            tjr-modal-artifacts/**/ranked-candidates.json
             tjr-modal-artifacts/**/tjr-youtube-qa-report.json
             tjr-modal-artifacts/**/source-acquisition-errors.json
             tjr-modal-artifacts/**/official-source-candidates.json

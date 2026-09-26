@@ -61,6 +61,7 @@ def build_ffmpeg_command(
     watermark_path: str | Path | None = None,
     width: int = 1080,
     height: int = 1920,
+    editorial_layout: str = "default",
 ) -> list[str]:
     preset = os.getenv("CLIPPER_RENDER_PRESET", "ultrafast").strip().lower()
     if preset not in {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"}:
@@ -86,6 +87,26 @@ def build_ffmpeg_command(
         "MarginV=28,MarginL=24,MarginR=24,Outline=2,Shadow=0,"
         "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000',fps=30[captioned]"
     )
+    if editorial_layout not in {"default", "tjr-trading-logo-safe"}:
+        raise RenderError("unknown editorial layout; never silently bypass logo guard")
+    if editorial_layout == "tjr-trading-logo-safe":
+        if watermark_path is not None or (width, height) != (1080, 1920):
+            raise RenderError("TJR logo-safe crop rejects logos or nonvertical outputs")
+        # This known TRiches livestream layout has chart above the webcam,
+        # with sponsor strips in the lower-right source region. No pixel of
+        # that sponsor area enters the output; no logo is added by Clipper.
+        base_filter = (
+            "[0:v]split=2[chart][webcam];"
+            "[chart]crop=1460:600:280:20,scale=1080:445:flags=lanczos[top];"
+            "[webcam]crop=565:335:20:710,scale=1080:640:flags=lanczos[face];"
+            "color=c=0x10131a:s=1080x1920:r=30[canvas];"
+            "[canvas][top]overlay=0:180[layout];"
+            "[layout][face]overlay=0:830,"
+            f"subtitles='{escaped_subtitles}':"
+            "force_style='FontName=DejaVu Sans,FontSize=15,Alignment=2,"
+            "MarginV=105,MarginL=40,MarginR=40,Outline=3,Shadow=0,"
+            "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000',fps=30[captioned]"
+        )
     inputs = [
         "ffmpeg",
         "-hide_banner",
@@ -148,6 +169,7 @@ class FFmpegRenderer:
         clip: ClipCandidate,
         segments: Sequence[TranscriptSegment],
         watermark_path: Path | None = None,
+        editorial_layout: str = "default",
     ) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         subtitle_path = output_path.with_suffix(".srt")
@@ -158,6 +180,7 @@ class FFmpegRenderer:
             clip,
             subtitle_path,
             watermark_path=watermark_path,
+            editorial_layout=editorial_layout,
         )
         try:
             subprocess.run(command, check=True, capture_output=True, text=True, timeout=900)

@@ -111,7 +111,7 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
     }
     attempts: list[dict[str, str]] = []
     ip_challenges = 0
-    for candidate in candidates[:3]:
+    for candidate in candidates[:6]:
         video_id = candidate["video_id"]
         channel_id = candidate["channel_id"]
         url = f"https://www.youtube.com/watch?v={video_id}"
@@ -254,7 +254,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
     url = f"https://www.youtube.com/watch?v={video_id}"
     if url != selected.get("source_url"):
         raise RuntimeError("original source URL mismatch")
-    folder = Path("/tjr-media") / "runs" / run_key
+    folder = Path("/tjr-media") / "runs" / run_key / video_id
     folder.mkdir(parents=True, exist_ok=True)
     verified_strategy = str(selected.get("transport_strategy") or "")
     extractor_args = next(
@@ -333,7 +333,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
         "video_id": video_id,
         "channel_id": channel_id,
         "public_video_url": url,
-        "source_remote_path": f"runs/{run_key}/{original.name}",
+        "source_remote_path": f"runs/{run_key}/{video_id}/{original.name}",
         "source_sha256": digest,
         "size_bytes": original.stat().st_size,
         "title": str(selected.get("title") or ""),
@@ -353,9 +353,20 @@ def main() -> None:
     output = root / "verified-original-egress.json"
     try:
         candidates, discovery_failures = discover_official_uploads()
-        official = constrain_official_sources(candidates, requested_id=None)
+        channel_id = os.getenv("TJR_MODAL_CHANNEL_ID", "").strip()
+        if channel_id and channel_id not in {
+            "UCGHBUXjDCeiIXNdKR0HUZnA",
+            "UCZen39LQJPx04GjPj7FOMcw",
+        }:
+            raise RuntimeError("requested channel is not one of the Reach-approved YouTube channels")
+        requested_video = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip() or None
+        official = constrain_official_sources(candidates, requested_id=requested_video)
+        if channel_id:
+            official = [item for item in official if item.channel_id == channel_id]
+        # One pipeline job per channel. Each selects its own latest verified
+        # long-form original; identical GitHub run IDs cannot collide on Volume.
         inputs = [
-            {"video_id": item.video_id, "channel_id": item.channel_id} for item in official[:3]
+            {"video_id": item.video_id, "channel_id": item.channel_id} for item in official[:8]
         ]
         if not inputs:
             raise RuntimeError("No feed-confirmed campaign YouTube videos")

@@ -195,3 +195,28 @@ def test_staged_source_rejects_non_campaign_video_id(
     with pytest.raises(QualityError, match="11-character YouTube"):
         prepare_staged_brief(campaign_brief, output)
     assert not output.exists()
+
+
+def test_known_tjr_livestream_editorial_layout_crops_source_sponsor_area(tmp_path: Path) -> None:
+    clip = ClipCandidate("p2LU37eat70", 8, 37, "authentic quote", 10.0)
+    command = build_ffmpeg_command(
+        "original-1920x1080.mp4",
+        "review.mp4",
+        clip,
+        tmp_path / "captions.srt",
+        editorial_layout="tjr-trading-logo-safe",
+    )
+    graph = command[command.index("-filter_complex") + 1]
+    assert "crop=1460:600:280:20" in graph
+    assert "crop=565:335:20:710" in graph
+    assert "subtitles=" in graph
+    assert "gblur" not in graph
+    with pytest.raises(RenderError, match="rejects logos"):
+        build_ffmpeg_command(
+            "original.mp4",
+            "review.mp4",
+            clip,
+            tmp_path / "captions.srt",
+            editorial_layout="tjr-trading-logo-safe",
+            watermark_path=tmp_path / "brand.png",
+        )

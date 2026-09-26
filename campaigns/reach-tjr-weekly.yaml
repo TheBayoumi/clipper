@@ -17,11 +17,11 @@ negative_keywords:
 required_phrases: []
 language: en
 region_code: US
-clip_count: 2
+clip_count: 12
 min_clip_seconds: 20
 max_clip_seconds: 42
-source_limit: 4
-max_clips_per_source: 2
+source_limit: 12
+max_clips_per_source: 12
 published_after: "2026-09-01T00:00:00Z"
 source_channel_ids:
   - UCGHBUXjDCeiIXNdKR0HUZnA # https://www.youtube.com/@TJRTrades
