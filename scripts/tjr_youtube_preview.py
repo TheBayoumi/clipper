@@ -13,7 +13,7 @@ import logging
 import re
 import subprocess
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -55,8 +55,12 @@ def parse_official_feed(xml: bytes, expected_channel: str) -> list[OfficialVideo
     feed = ET.fromstring(xml)
     yt_channel = (feed.findtext(f"{YT}channelId") or "").strip()
     atom_id = (feed.findtext(f"{ATOM}id") or "").strip()
-    atom_channel = atom_id.removeprefix("yt:channel:")
-    if yt_channel != expected_channel and atom_channel != expected_channel:
+    atom_channel = atom_id.removeprefix("yt:channel:") if atom_id else ""
+    # Live YouTube feeds observed on 2026-09-26 expose IDs without the UC prefix.
+    # Only accept the EXACT suffix of a previously approved, full channel ID.
+    trusted_forms = {expected_channel, expected_channel.removeprefix("UC")}
+    reported = [owner for owner in (yt_channel, atom_channel) if owner]
+    if not reported or any(owner not in trusted_forms for owner in reported):
         raise ValueError(
             "YouTube feed owner mismatch: "
             f"root={feed.tag!r} yt_channel={yt_channel[:40]!r} "
@@ -67,7 +71,7 @@ def parse_official_feed(xml: bytes, expected_channel: str) -> list[OfficialVideo
         video_id = (entry.findtext(f"{YT}videoId") or "").strip()
         channel_id = (entry.findtext(f"{YT}channelId") or expected_channel).strip()
         published = (entry.findtext(f"{ATOM}published") or "").strip()
-        if not VIDEO_ID.fullmatch(video_id) or channel_id != expected_channel or not published:
+        if not VIDEO_ID.fullmatch(video_id) or channel_id not in trusted_forms or not published:
             continue
         items.append(
             OfficialVideo(
@@ -287,11 +291,27 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
     try:
         candidates, failures = discover_official_uploads()
         errors.extend(failures)
+        (run_dir / "official-source-candidates.json").write_text(
+            json.dumps(
+                [
+                    {
+                        **asdict(item),
+                        "url": item.url,
+                        "channel_handle": CHANNELS[item.channel_id],
+                    }
+                    for item in candidates[:20]
+                ],
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         if not candidates:
             raise RuntimeError("both official YouTube channel feeds unavailable")
         chosen_video: OfficialVideo | None = None
         source: Path | None = None
         metadata: dict[str, Any] = {}
+        bot_challenges = 0
         for video in candidates[:8]:
             step = "official_metadata"
             try:
@@ -302,6 +322,13 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 break
             except (RuntimeError, ValueError) as exc:
                 errors.append({"source": video.url, "error": str(exc)[-1400:]})
+                if "Sign in to confirm" in str(exc):
+                    bot_challenges += 1
+                    if bot_challenges >= 2:
+                        raise RuntimeError(
+                            "YouTube bot confirmation blocks this GitHub-hosted runner; "
+                            "use an authentic original from one of the verified source URLs"
+                        ) from exc
         if source is None or chosen_video is None:
             raise RuntimeError("no recent approved-channel YouTube original could be downloaded")
         step = "transcription"
