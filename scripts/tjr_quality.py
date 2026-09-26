@@ -107,7 +107,10 @@ def prepare_staged_brief(template: Path, output: Path) -> Path:
     data = check_campaign_brief(template)
     media_url = os.getenv("TJR_SOURCE_MEDIA_URL", "").strip()
     # Reject malformed mirror URLs before making external source-discovery requests.
-    if not re.fullmatch(r"https://drive[.]google[.]com/file/d/[A-Za-z0-9_-]+/view/?(?:[?].*)?", media_url):
+    if not re.fullmatch(
+        r"https://drive[.]google[.]com/file/d/[A-Za-z0-9_-]+/view/?(?:[?].*)?",
+        media_url,
+    ):
         raise QualityError("mirror must be a Google Drive file/view HTTPS URL")
     video_id = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip()
     channel_id = _resolve_approved_youtube_video(video_id)
