@@ -12,11 +12,12 @@ import logging
 import re
 import subprocess
 import urllib.request
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import defusedxml.ElementTree as ET
 
 from clipper.brief import load_brief
 from clipper.models import ClipCandidate
@@ -241,7 +242,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         ranked = score_transcript(brief, chosen_video.video_id, segments, limit=60)
         selected = select_separate_clips(ranked, count=brief.clip_count)
         if len(selected) != brief.clip_count:
-            raise RuntimeError("insufficient distinct 20–42-second moments in source excerpt")
+            raise RuntimeError("insufficient distinct 20-42-second moments in source excerpt")
         (run_dir / "transcript.json").write_text(
             json.dumps([s.to_dict() for s in segments], indent=2) + "\n",
             encoding="utf-8",

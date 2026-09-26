@@ -87,9 +87,11 @@ def test_youtube_metadata_must_match_original_video_and_exact_channel() -> None:
             }
         )
     )
-    with patch.dict(verified_youtube_metadata.__globals__, {"invoke": Mock(return_value=wrong)}):
-        with pytest.raises(RuntimeError, match="metadata unavailable"):
-            verified_youtube_metadata(official)
+    with (
+        patch.dict(verified_youtube_metadata.__globals__, {"invoke": Mock(return_value=wrong)}),
+        pytest.raises(RuntimeError, match="metadata unavailable"),
+    ):
+        verified_youtube_metadata(official)
 
 
 def test_metadata_accepts_matching_official_channel_and_nonlive_video() -> None:
