@@ -8,6 +8,7 @@ on:
       - "campaigns/reach-tjr-weekly.yaml"
       - "scripts/tjr_quality.py"
       - "scripts/tjr_youtube_preview.py"
+      - "scripts/tjr_modal_probe.py"
       - "scripts/tjr_browser_probe.py"
       - "src/clipper/render.py"
       - "src/clipper/youtube.py"
@@ -138,7 +139,7 @@ jobs:
   youtube_preview:
     name: Render drafts only from Reach-listed YouTube channels
     needs: tests
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/feat/tjr-weekly-hd-actions') || (github.event_name == 'workflow_dispatch' && inputs.source_mode == 'youtube_direct')
+    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'youtube_direct'
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     env:
@@ -249,7 +250,7 @@ jobs:
   youtube_alternate_egress:
     name: Verify and render original YouTube on ${{ matrix.os }}
     needs: tests
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/tjr-weekly-hd-actions'
+    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'youtube_direct'
     strategy:
       fail-fast: false
       matrix:
@@ -356,6 +357,44 @@ jobs:
             tjr-alt-egress/**/transcript.json
           retention-days: 7
           compression-level: 0
+          if-no-files-found: warn
+
+
+  youtube_modal_egress:
+    name: Probe exact original YouTube via existing Modal account
+    needs: tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/tjr-weekly-hd-actions'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    permissions:
+      contents: read
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Prepare original YouTube discovery and Modal CLI
+        run: |
+          set -euo pipefail
+          python -m pip install -e . "curl-cffi>=0.15,<1" "modal>=1,<2"
+          python -m py_compile scripts/tjr_modal_probe.py
+      - name: Probe authorized original-video transport from alternate Modal egress
+        run: |
+          set -euo pipefail
+          modal run -m scripts.tjr_modal_probe
+      - name: Upload sanitized remote-video-access result, never credentials
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-original-youtube-modal-egress-${{ github.run_id }}
+          path: tjr-modal-probe/verified-original-egress.json
+          retention-days: 7
           if-no-files-found: warn
 
   render:
