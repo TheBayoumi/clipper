@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 import yaml
 
 OFFICIAL_TJR_CHANNEL = "UCGHBUXjDCeiIXNdKR0HUZnA"
+OFFICIAL_TJR_CHANNELS = [OFFICIAL_TJR_CHANNEL, "UCZen39LQJPx04GjPj7FOMcw"]
 EXPECTED_SIZE = (1080, 1920)
 MIN_SECONDS = 20.0
 MAX_SECONDS = 42.0
@@ -35,8 +36,8 @@ def check_campaign_brief(path: Path) -> dict[str, Any]:
     data: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise QualityError("campaign brief is not an object")
-    if data.get("source_channel_ids") != [OFFICIAL_TJR_CHANNEL]:
-        raise QualityError("source must be restricted to TJR's verified YouTube channel")
+    if data.get("source_channel_ids") != OFFICIAL_TJR_CHANNELS:
+        raise QualityError("source must be restricted to Reach's two listed TJR YouTube channels")
     video_ids = data.get("allowed_video_ids", [])
     if (
         not isinstance(video_ids, list)
@@ -220,9 +221,9 @@ def validate_artifacts(brief: Path, artifact_root: Path) -> dict[str, Any]:
         raise QualityError(f"pipeline errors: {manifest['errors']}")
     discovered = manifest.get("discovered_videos", [])
     if not discovered or any(
-        video.get("channel_id") != OFFICIAL_TJR_CHANNEL for video in discovered
+        video.get("channel_id") not in OFFICIAL_TJR_CHANNELS for video in discovered
     ):
-        raise QualityError("all discovered sources must be TJR's verified channel")
+        raise QualityError("all discovered sources must be one of Reach's TJR YouTube channels")
     planned = manifest.get("planned_clips") or []
     rendered = manifest.get("rendered_clips") or []
     if not planned or len(planned) != len(rendered):

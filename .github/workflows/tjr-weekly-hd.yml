@@ -7,11 +7,11 @@ on:
       - ".github/workflows/tjr-weekly-hd.yml"
       - "campaigns/reach-tjr-weekly.yaml"
       - "scripts/tjr_quality.py"
-      - "scripts/tjr_kick_preview.py"
+      - "scripts/tjr_youtube_preview.py"
       - "src/clipper/render.py"
       - "src/clipper/youtube.py"
       - "tests/test_tjr_quality.py"
-      - "tests/test_tjr_kick_preview.py"
+      - "tests/test_tjr_youtube_preview.py"
       - "tests/test_render.py"
       - "pyproject.toml"
   pull_request:
@@ -19,6 +19,7 @@ on:
       - ".github/workflows/tjr-weekly-hd.yml"
       - "campaigns/reach-tjr-weekly.yaml"
       - "scripts/tjr_quality.py"
+      - "scripts/tjr_youtube_preview.py"
       - "src/clipper/**"
       - "tests/**"
   workflow_dispatch:
@@ -68,7 +69,11 @@ jobs:
           brief = check_campaign_brief(Path("campaigns/reach-tjr-weekly.yaml"))
           assert brief["required_hashtags"] == ["#TJR"]
           assert brief["watermark_url"] is None
-          print("TJR campaign restrictions: PASS")
+          assert set(brief["source_channel_ids"]) == {
+              "UCGHBUXjDCeiIXNdKR0HUZnA",
+              "UCZen39LQJPx04GjPj7FOMcw",
+          }
+          print("Reach YouTube source policy: PASS")
           PY
       - name: Install FFmpeg for HD canary
         run: |
@@ -116,11 +121,13 @@ jobs:
           print("Synthetic HD render and full media decode: PASS")
           PY
 
-  kick_preview:
-    name: Render real TJR Kick VOD review clips (no publishing)
+
+  youtube_preview:
+    name: Render drafts only from Reach-listed YouTube channels
+    needs: tests
     if: github.event_name == 'push' && github.ref == 'refs/heads/feat/tjr-weekly-hd-actions'
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 100
     env:
       CLIPPER_RENDER_PRESET: medium
       CLIPPER_RENDER_CRF: "18"
@@ -133,31 +140,31 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install FFmpeg and source/transcription dependencies
+      - name: Install FFmpeg and real YouTube transcription dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg
           python -m pip install -e ".[asr]"
           yt-dlp --version
-      - name: Download official TJR Kick VOD and render real HD drafts
+      - name: Check source channel IDs and acquire authentic YouTube HD original
         run: |
           set -euo pipefail
-          python -m scripts.tjr_kick_preview \
-            --artifact-root tjr-artifacts \
+          python -m scripts.tjr_youtube_preview \
+            --artifact-root tjr-youtube-artifacts \
             --brief campaigns/reach-tjr-weekly.yaml
-      - name: Upload MP4s, SRTs, preview frames, QA and source diagnostics
+      - name: Upload verified MP4s or YouTube-source diagnostic report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tjr-real-kick-hd-${{ github.run_id }}-${{ github.run_attempt }}
+          name: tjr-real-youtube-hd-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            tjr-artifacts/**/clips/*.mp4
-            tjr-artifacts/**/clips/*.srt
-            tjr-artifacts/**/clips/*-preview.png
-            tjr-artifacts/**/tjr-qa-report.json
-            tjr-artifacts/**/source-acquisition-errors.json
-            tjr-artifacts/**/word-aligned-transcript.json
-            tjr-artifacts/**/ranked-clean-candidates.json
+            tjr-youtube-artifacts/**/clips/*.mp4
+            tjr-youtube-artifacts/**/clips/*.srt
+            tjr-youtube-artifacts/**/clips/*-preview.png
+            tjr-youtube-artifacts/**/tjr-youtube-qa-report.json
+            tjr-youtube-artifacts/**/source-acquisition-errors.json
+            tjr-youtube-artifacts/**/transcript.json
+            tjr-youtube-artifacts/**/ranked-candidates.json
           retention-days: 14
           compression-level: 0
           if-no-files-found: warn

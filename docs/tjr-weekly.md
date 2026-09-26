@@ -1,79 +1,61 @@
-# TJR Weekly HD campaign
+# Reach TJR — YouTube-only production
 
-Official source and campaign requirements: https://reachclipping.com/TJR (reviewed 2026-09-25).
-Implementation: `feat/tjr-weekly-hd-actions`. Review: PR #7.
-A Double Coverage-specific account such as `@DCOvertimeClips` is **not**
-automatically eligible for this trading-content campaign.
+Official campaign (checked 2026-09-26): https://reachclipping.com/TJR
+Official sources: https://www.youtube.com/@TJRTrades and
+https://www.youtube.com/@TRichesTrades
 
-## GitHub Actions behavior
+For this production, ONLY these two channels are accepted. Although Reach
+also permits official Kick/Instagram/TikTok content featuring TJR, the older
+Kick clips are NOT substitutes for this user's requested YouTube sources.
 
-[The TJR Weekly HD workflow](../.github/workflows/tjr-weekly-hd.yml) runs
-Ruff, strict mypy, pytest (95% minimum coverage), a campaign policy check and
-a synthetic FFmpeg render canary on branch pushes and pull requests.
+## Official campaign rules
 
-The existing verified Google Drive workflow is available by manual dispatch;
-it requires a known authentic original and a pinned SHA-256. Public YouTube
-downloads previously hit bot verification on GitHub-hosted runners. The
-alternative review-only Kick job attempts direct public VOD acquisition on
-branch pushes; that job must actually produce MP4 artifacts before it can
-be considered successful.
+- Source must actually feature TJR and not portray him negatively.
+- Choose funny moments, memorable quotes, or genuine TJR reactions.
+- Only TikTok, Instagram Reels and YouTube Shorts are accepted.
+- At least 50% of the audience must be in USA, CA, AU, UK or NZ.
+- Include #TJR in the published post's caption.
+- No added logos, AI-generated videos, or manipulated engagement/reposts.
+- Accounts with a substantially different niche may be rejected; Double
+  Coverage-only accounts should stay dedicated to that separate campaign.
+- Minimum 5,000 views AND Reach approval before a payout; connect social
+  accounts to Whop, post, then submit the public URL within 30 minutes.
+- Verify live Whop budget and account eligibility before publication.
+  The campaign page currently exposes budget placeholders, not a verified
+  available-funds balance.
 
-## Automatic official Kick VOD preview (review only)
+## Strictly verified direct YouTube workflow
 
-A branch push runs a separate `kick_preview` job in parallel with tests. It
-discovers currently available VODs through **TJR's official Kick channel feed**
-and extracts their verified HLS URLs, falling back to pinned VODs if necessary.
-It downloads a limited 14-minute original-HD excerpt, transcribes actual
-speech with word timestamps, rejects known abusive-language windows and selects
-non-overlapping 20–42-second moments. It renders 1080×1920 H.264/AAC MP4s,
-fully decodes each output and uploads MP4/SRT/preview/QA plus timestamped
-transcript and ranked-selection evidence. For the visually checked September
-2026 VOD layout only, it masks an embedded sponsor billboard; every other
-source layout still requires manual frame-by-frame logo review.
-It does **not** publish, attest live campaign budget or imply Whop approval.
-The older user-supplied Google Drive workflow remains available separately if
-public VOD acquisition fails. Any source or render failure is visible in GitHub
-Actions logs and the error diagnostics artifact.
+On an approved branch push, GitHub Actions first runs format, mypy, tests
+and synthetic encoding checks. When those pass, youtube_preview reads the
+real official YouTube RSS upload feeds for BOTH allowlisted channel IDs,
+sorts candidates by published time, and independently verifies each video's
+YouTube metadata owner ID and video ID before attempting a real HD download.
+It NEVER falls back to generic search, third-party reposts or Kick.
 
-## One-time source setup for a real campaign render
+For the newest playable long-form video, it takes up to fourteen minutes of
+real footage, verifies HD original dimensions, transcribes real English
+speech, selects two non-overlapping 20–42-second moments, and renders true
+1080×1920 H.264/AAC captioned review drafts. Both files undergo ffprobe
+technical QA and a full media decode. The published source URL, owner,
+publication date, clip timestamps, original hash, SRTs and preview frames
+are included in the GitHub Actions artifact.
 
-1. Independently obtain the authentic source video from the campaign-permitted
-   TJR source. Review it to ensure that TJR appears, there are no forbidden
-   preexisting logos, the original is at least 720p and the clip context is sound.
-2. Upload that **unaltered original MP4** to a Google Drive file with Viewer
-   access for anyone who has the link. Do not upload it to a public GitHub repo.
-   The required URL shape is `https://drive.google.com/file/d/<ID>/view`.
-3. Hash that exact MP4 before upload using `sha256sum tjr-original.mp4`
-   (PowerShell: `Get-FileHash .\tjr-original.mp4 -Algorithm SHA256`).
-   Do not replace or re-encode the file after obtaining its digest.
-4. Set these repository **Actions secrets**, not public variables or commits:
-   `TJR_SOURCE_MEDIA_URL` (the Drive Viewer URL) and
-   `TJR_SOURCE_MEDIA_SHA256` (the exact 64-character digest).
-   This action requires a repository administrator. Do not share any account
-   cookies or upload your personal browser profile.
-5. Verify the live remaining TJR campaign budget and your account eligibility
-   in Whop. Public cached listings do not agree on the remaining funds.
+Human review MUST still verify that TJR is visible, the lines and captions
+are accurate, no forbidden source logos are present, the original context
+is intact, and the creative hook is compelling. The workflow does NOT
+publish anything to TikTok or submit any clips to Whop.
 
-Once the PR is merged and GitHub registers the workflow on the default branch,
-go to **Actions → TJR Weekly HD clipping → Run workflow**. Select the branch
-and explicitly check both **budget_confirmed** and **source_verified**.
-The workflow validates the staged source link, downloads the original,
-compares SHA-256 byte-for-byte against the approved file, verifies at least
-720p source detail, renders and performs full output decode plus ffprobe QA.
-The Drive URL is not printed and normalized briefs are not uploaded as public
-artifacts. The source copy remains only in the ephemeral runner.
+## YouTube access failure and exact-source fallback
 
-## Produced artifacts and checks
+If YouTube blocks GitHub-hosted IP addresses, the job fails with a precise
+source-acquisition-errors.json artifact. A passing synthetic render or an
+unrelated Kick MP4 is never reported as a successful YouTube result.
 
-Each accepted result is a 1080 × 1920 H.264/AAC 30 fps MP4, x264 slow/CRF 18,
-with English captions, no added logos and sound normalization. The ZIP
-contains candidate MP4s, matching SRT files, thumbnails, a timestamped source
-manifest and `tjr-qa-report.json`. Artifacts expire after 14 days.
-
-**Technical acceptance is not campaign approval.** Before posting, manually
-inspect every rendered video for actual TJR appearance, accurate captions,
-correct context and framing, no embedded logos or synthetic footage, and
-appropriate treatment of financial claims. Use a TJR/trading-relevant account,
-verify that at least 50% of your audience is from USA/Canada/UK/Australia/NZ,
-include `#TJR`, and submit the published URL to Whop within 30 minutes.
-No TikTok publication, engagement or Whop submission is automated.
+The separate, manual render workflow remains available for an independently
+obtained authorized original from the same official YouTube source. That
+source must be unchanged, >=720p, and uploaded to a Google Drive viewer URL;
+its URL and exact SHA-256 belong in repository Actions secrets
+TJR_SOURCE_MEDIA_URL and TJR_SOURCE_MEDIA_SHA256. The existing manual path
+is pinned to YouTube ID 8PYgFVB0GHE and is NOT presumed to be newest.
+No browser cookies or personal profiles are requested or committed.

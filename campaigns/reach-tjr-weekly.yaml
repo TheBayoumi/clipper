@@ -1,5 +1,5 @@
 # Reach TJR Weekly. Reviewed against https://reachclipping.com/TJR (2026-09-25).
-# This authorizes only TJR's own verified YouTube channel, not third-party reposts.
+# Only YouTube channels explicitly listed on the official Reach TJR page.
 campaign_id: reach-tjr-weekly-20260925
 title: TJR
 objective: Find self-contained funny reactions, memorable quotes, trading psychology and authentic risk-management moments featuring TJR, with context intact.
@@ -20,16 +20,17 @@ region_code: US
 clip_count: 2
 min_clip_seconds: 20
 max_clip_seconds: 42
-source_limit: 1
+source_limit: 4
 max_clips_per_source: 2
-published_after: "2026-05-01T00:00:00Z"
+published_after: "2026-09-01T00:00:00Z"
 source_channel_ids:
   - UCGHBUXjDCeiIXNdKR0HUZnA # https://www.youtube.com/@TJRTrades
+  - UCZen39LQJPx04GjPj7FOMcw # https://www.youtube.com/@TRichesTrades
 allowed_video_ids:
-  - 8PYgFVB0GHE # Official TJR June 2026 trading video; clip footage must show TJR
+  - 8PYgFVB0GHE # Legacy verified-mirror fallback only; automatic selection uses channel feeds
 source_media_urls: {}
-# Official campaign permits any video, stream or clip featuring TJR.
-# Keep source channel allow-listed to avoid unrelated reposts.
+# Reach also permits TJR Kick/Instagram/TikTok, but this production uses YouTube only.
+# No random searches, reposts or silent platform fallbacks.
 rights_confirmed: true
 attribution_required: true
 watermark_text: null
