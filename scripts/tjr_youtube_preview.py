@@ -4,6 +4,7 @@
 No Kick/reposts/search results. Verify the video owner independently before
 acquisition, and fail closed if YouTube denies direct media access.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -172,7 +173,8 @@ def download_original_excerpt(video: OfficialVideo, work: Path) -> Path:
         try:
             invoke([*args[:1], *extra, *args[1:]], timeout=1500)
             files = sorted(
-                p for p in work.glob("source.*")
+                p
+                for p in work.glob("source.*")
                 if p.is_file() and p.suffix.lower() in {".mp4", ".mkv", ".webm"}
             )
             if not files:
@@ -262,8 +264,18 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             thumbnail = out.with_name(out.stem + "-preview.png")
             invoke(
                 [
-                    "ffmpeg", "-nostdin", "-v", "error", "-y",
-                    "-ss", "3", "-i", str(out), "-frames:v", "1", str(thumbnail),
+                    "ffmpeg",
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-y",
+                    "-ss",
+                    "3",
+                    "-i",
+                    str(out),
+                    "-frames:v",
+                    "1",
+                    str(thumbnail),
                 ],
                 timeout=90,
             )
