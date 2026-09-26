@@ -126,7 +126,7 @@ def build_ffmpeg_command(
             "[0:v]split=2[chart][webcam];"
             "[chart]crop=1460:600:280:20,scale=1080:445:flags=lanczos[top];"
             "[webcam]crop=565:335:20:710,scale=1080:640:flags=lanczos[face];"
-            "color=c=0x10131a:s=1080x1920:r=30[canvas];"
+            f"color=c=0x10131a:s=1080x1920:r={fps}[canvas];"
             "[canvas][top]overlay=0:180[layout];"
             "[layout][face]overlay=0:830,"
             f"{caption_filter},fps={fps}[captioned]"
@@ -193,11 +193,21 @@ def _source_frame_rate(path: Path) -> str:
     try:
         probe = subprocess.run(
             [
-                "ffprobe", "-v", "error", "-select_streams", "v:0",
-                "-show_entries", "stream=avg_frame_rate,r_frame_rate",
-                "-of", "json", str(path),
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=avg_frame_rate,r_frame_rate",
+                "-of",
+                "json",
+                str(path),
             ],
-            capture_output=True, text=True, check=True, timeout=40,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=40,
         )
         streams = json.loads(probe.stdout)["streams"]
         source = streams[0]
@@ -205,9 +215,16 @@ def _source_frame_rate(path: Path) -> str:
         if 24 <= float(Fraction(rate)) <= 60:
             return rate
         raise ValueError("unusable native frame rate")
-    except (OSError, ValueError, KeyError, IndexError, TypeError,
-            ZeroDivisionError, subprocess.CalledProcessError,
-            subprocess.TimeoutExpired) as exc:
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        IndexError,
+        TypeError,
+        ZeroDivisionError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as exc:
         raise RenderError("Style B could not verify the native source frame rate") from exc
 
 
@@ -231,7 +248,9 @@ class FFmpegRenderer:
         create_srt(clip, segments, subtitle_path)
         burn_in = (
             create_tiktok_ass(
-                clip, segments, output_path.with_suffix(".ass"),
+                clip,
+                segments,
+                output_path.with_suffix(".ass"),
                 hook_text=tiktok_hook,
             )
             if tiktok_hook is not None

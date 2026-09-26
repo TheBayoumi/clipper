@@ -3,6 +3,7 @@
 Write a separate editable ASS sidecar; publication remains subject to visual
 review for logos, context and caption accuracy. No fabricated hook claims.
 """
+
 from __future__ import annotations
 
 import re
@@ -12,8 +13,25 @@ from pathlib import Path
 from .models import ClipCandidate, TranscriptSegment
 
 _ACCENT = frozenset(
-    {"WAIT", "WHAT", "WHY", "HOW", "NEVER", "NO", "STOP", "RISK", "LOSS", "PROFIT",
-     "MONEY", "DAMN", "CRAZY", "MISTAKE", "WIN", "LOST", "TRUTH"}
+    {
+        "WAIT",
+        "WHAT",
+        "WHY",
+        "HOW",
+        "NEVER",
+        "NO",
+        "STOP",
+        "RISK",
+        "LOSS",
+        "PROFIT",
+        "MONEY",
+        "DAMN",
+        "CRAZY",
+        "MISTAKE",
+        "WIN",
+        "LOST",
+        "TRUTH",
+    }
 )
 _WORD = re.compile(r"\S+")
 _HOOK_ANCHOR = re.compile(
@@ -34,7 +52,7 @@ def hook_from_quote(quote: str) -> str:
         return ""
     anchor = _HOOK_ANCHOR.search(cleaned[:125])
     if anchor is not None:
-        cleaned = cleaned[anchor.start():]
+        cleaned = cleaned[anchor.start() :]
     words = _WORD.findall(cleaned)
     if not words:
         return ""
@@ -75,9 +93,7 @@ def _highlight(text: str) -> str:
     parts = text.split()
     for i, word in enumerate(parts):
         if word.strip(".,!?$").upper() in _ACCENT or any(x.isdigit() for x in word):
-            parts[i] = (
-                r"{\c&H0059DEFF&}" + word + r"{\c&H00FFFFFF&}"
-            )
+            parts[i] = r"{\c&H0059DEFF&}" + word + r"{\c&H00FFFFFF&}"
             break
     return " ".join(parts)
 
@@ -141,17 +157,13 @@ def create_tiktok_ass(
         # Show no more than six measured words per pop caption; fallback
         # sentence transcripts remain in the complete editable SRT sidecar.
         caption = _two_lines(" ".join(original.upper().split()[:6]), max_chars=19)
-        caption = _highlight(caption.replace(r"\N", " __LINE__ ")).replace(
-            "__LINE__", r"\N"
-        )
+        caption = _highlight(caption.replace(r"\N", " __LINE__ ")).replace("__LINE__", r"\N")
         animation = (
             r"{\an5\pos(540,1510)\fscx86\fscy86"
             r"\t(0,140,\fscx100\fscy100)\fad(45,65)}"
         )
         events.append(
-            "Dialogue: 2,"
-            f"{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,"
-            f"{animation}{caption}"
+            f"Dialogue: 2,{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,{animation}{caption}"
         )
     output.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
     return output

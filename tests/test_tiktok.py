@@ -1,4 +1,5 @@
 """TikTok overlays preserve genuine speech and 9:16 text-safe placement."""
+
 from pathlib import Path
 
 from clipper.models import ClipCandidate, TranscriptSegment
@@ -50,3 +51,11 @@ def test_short_clip_or_empty_caption_does_not_create_hook_or_dialogue(tmp_path: 
         hook_text="",
     )
     assert "Dialogue:" not in path.read_text()
+
+
+def test_blank_caption_and_numeric_accent() -> None:
+    from clipper.tiktok import _highlight, _two_lines
+
+    assert _two_lines("") == ""
+    assert r"{\c&H0059DEFF&}" in _highlight("10K is the real number")
+    assert _highlight("ordinary words here") == "ordinary words here"

@@ -545,7 +545,11 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 else "default"
             )
             renderer.render(
-                source, out, clip, segments, editorial_layout=layout,
+                source,
+                out,
+                clip,
+                segments,
+                editorial_layout=layout,
                 tiktok_hook=pick.hook if caption_style == "B" else None,
             )
             details = probe_video(out)
@@ -594,7 +598,8 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                     "burned_in_hook": caption_style == "B",
                     "ass_sidecar": (
                         str(out.with_suffix(".ass").relative_to(run_dir))
-                        if caption_style == "B" else None
+                        if caption_style == "B"
+                        else None
                     ),
                     "file_megabytes": round(out.stat().st_size / 1_000_000, 2),
                     "hook_score": pick.hook_score,

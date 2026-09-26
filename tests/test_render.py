@@ -117,12 +117,19 @@ def test_style_b_high_quality_native_cadence_and_ass_filter(tmp_path: Path) -> N
     clip = ClipCandidate("p2LU37eat70", 0, 30, "Wait what happened?", 10)
     with patch.dict(
         "os.environ",
-        {"CLIPPER_RENDER_PRESET": "slow", "CLIPPER_RENDER_CRF": "14",
-         "CLIPPER_RENDER_THREADS": "4"},
+        {
+            "CLIPPER_RENDER_PRESET": "slow",
+            "CLIPPER_RENDER_CRF": "14",
+            "CLIPPER_RENDER_THREADS": "4",
+        },
     ):
         command = build_ffmpeg_command(
-            "source.mp4", "out.mp4", clip, tmp_path / "style.ass",
-            editorial_layout="tjr-trading-logo-safe", source_fps="60000/1001",
+            "source.mp4",
+            "out.mp4",
+            clip,
+            tmp_path / "style.ass",
+            editorial_layout="tjr-trading-logo-safe",
+            source_fps="60000/1001",
         )
     encoded = " ".join(command)
     assert "ass='" in encoded
@@ -132,11 +139,17 @@ def test_style_b_high_quality_native_cadence_and_ass_filter(tmp_path: Path) -> N
     assert "-pix_fmt yuv420p" in encoded
     assert "aq-mode=3" in encoded
     with pytest.raises(RenderError, match="invalid original"):
-        build_ffmpeg_command("source.mp4", "out.mp4", clip, tmp_path / "style.ass",
-                             source_fps="0/0")
+        build_ffmpeg_command(
+            "source.mp4", "out.mp4", clip, tmp_path / "style.ass", source_fps="0/0"
+        )
     with pytest.raises(RenderError, match="forbids"):
-        build_ffmpeg_command("source.mp4", "out.mp4", clip, tmp_path / "style.ass",
-                             watermark_path=tmp_path / "logo.png")
+        build_ffmpeg_command(
+            "source.mp4",
+            "out.mp4",
+            clip,
+            tmp_path / "style.ass",
+            watermark_path=tmp_path / "logo.png",
+        )
 
 
 def test_tiktok_renderer_writes_editable_ass_and_original_srt(tmp_path: Path) -> None:
@@ -153,7 +166,12 @@ def test_tiktok_renderer_writes_editable_ass_and_original_srt(tmp_path: Path) ->
 
     with (
         patch("clipper.render.shutil.which", return_value="/usr/bin/ffmpeg"),
-        patch("clipper.render.subprocess.run", side_effect=[fake_probe, fake_ffmpeg]) as run,
+        patch(
+            "clipper.render.subprocess.run",
+            side_effect=lambda cmd, **kw: (
+                fake_probe if cmd[0] == "ffprobe" else fake_ffmpeg(cmd, **kw)
+            ),
+        ) as run,
     ):
         renderer = FFmpegRenderer()
         result = renderer.render(source, output, clip, segments, tiktok_hook=clip.text)
@@ -162,3 +180,22 @@ def test_tiktok_renderer_writes_editable_ass_and_original_srt(tmp_path: Path) ->
         assert "fps=30000/1001" in " ".join(run.call_args_list[1].args[0])
     assert output.with_suffix(".ass").is_file()
     assert output.with_suffix(".srt").is_file()
+
+
+def test_style_b_native_frame_rate_validation(tmp_path: Path) -> None:
+    from clipper.render import _source_frame_rate
+
+    successful = Mock(stdout='{"streams":[{"avg_frame_rate":"25/1"}]}')
+    with patch("clipper.render.subprocess.run", return_value=successful):
+        assert _source_frame_rate(tmp_path / "source.mp4") == "25/1"
+    failed = Mock(stdout='{"streams":[{"avg_frame_rate":"0/0"}]}')
+    with (
+        patch("clipper.render.subprocess.run", return_value=failed),
+        pytest.raises(RenderError, match="native source frame rate"),
+    ):
+        _source_frame_rate(tmp_path / "source.mp4")
+    with (
+        patch("clipper.render.subprocess.run", side_effect=TimeoutExpired(["ffprobe"], 40)),
+        pytest.raises(RenderError, match="native source frame rate"),
+    ):
+        _source_frame_rate(tmp_path / "source.mp4")
