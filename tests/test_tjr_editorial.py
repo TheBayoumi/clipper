@@ -1,4 +1,5 @@
 """Pure quality controls for scalable TJR editorial selection."""
+
 import pytest
 
 from clipper.models import ClipCandidate
@@ -10,16 +11,22 @@ def clip(start: float, text: str, score: float = 8) -> ClipCandidate:
 
 
 def test_rejects_filler_and_weak_openers() -> None:
-    filler = clip(0, "okay so like we should be doing the thing and then we wait "
-                  "and it gets there i guess now we can go and look at it tomorrow "
-                  "and wait to see what happens")
+    filler = clip(
+        0,
+        "okay so like we should be doing the thing and then we wait "
+        "and it gets there i guess now we can go and look at it tomorrow "
+        "and wait to see what happens",
+    )
     assert evaluate_candidate(filler) is None
 
 
 def test_preserves_authentic_reaction_hook() -> None:
-    moment = clip(0, "damn wait what the hell just happened to the price i was "
-                  "short and the market moved much faster than i expected "
-                  "so i have to manage my position before getting stopped out again")
+    moment = clip(
+        0,
+        "damn wait what the hell just happened to the price i was "
+        "short and the market moved much faster than i expected "
+        "so i have to manage my position before getting stopped out again",
+    )
     pick = evaluate_candidate(moment)
     assert pick is not None
     assert pick.hook_score >= 2
