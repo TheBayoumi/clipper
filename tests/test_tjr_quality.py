@@ -182,7 +182,9 @@ def test_staged_original_hash_must_match(
 def test_staged_source_rejects_non_campaign_video_id(
     campaign_brief: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("TJR_SOURCE_MEDIA_URL", "https://drive.google.com/file/d/ApprovedFile123/view")
+    monkeypatch.setenv(
+        "TJR_SOURCE_MEDIA_URL", "https://drive.google.com/file/d/ApprovedFile123/view"
+    )
     monkeypatch.setenv("TJR_SOURCE_MEDIA_SHA256", "a" * 64)
     monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "invalid")
     monkeypatch.setenv("TJR_BUDGET_CONFIRMED", "true")
