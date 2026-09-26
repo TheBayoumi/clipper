@@ -18,6 +18,7 @@ OfficialVideo = SCRIPT["OfficialVideo"]
 CHANNELS = SCRIPT["CHANNELS"]
 _auth_args = SCRIPT["_auth_args"]
 prioritize_campaign_moments = SCRIPT["prioritize_campaign_moments"]
+dynamic_browser_variants = SCRIPT["dynamic_browser_variants"]
 constrain_official_sources = SCRIPT["constrain_official_sources"]
 
 
@@ -194,3 +195,30 @@ def test_explicit_youtube_source_cannot_fall_back_to_other_videos() -> None:
         constrain_official_sources([other, official], "aaaaaaaaaaa")
     with pytest.raises(RuntimeError, match="exactly 11"):
         constrain_official_sources([other, official], "not-a-video-id")
+
+
+def test_dynamic_guest_tokens_do_not_require_exported_account_cookies(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    browser = tmp_path / "chrome"
+    browser.write_text("test executable", encoding="utf-8")
+    monkeypatch.delenv("YOUTUBE_COOKIES_FILE", raising=False)
+    monkeypatch.setenv("YT_DLP_WPC_BROWSER_PATH", str(browser))
+    variants = dynamic_browser_variants()
+    assert len(variants) == 2
+    assert all(
+        "youtubepot-wpc:browser_path=" + str(browser) in variant
+        for variant in variants
+    )
+    assert "youtube:player_client=mweb" in variants[0]
+    assert _auth_args() == []
+
+
+def test_dynamic_browser_is_optional_but_bad_config_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("YT_DLP_WPC_BROWSER_PATH", raising=False)
+    assert dynamic_browser_variants() == ()
+    monkeypatch.setenv("YT_DLP_WPC_BROWSER_PATH", str(tmp_path / "missing-chrome"))
+    with pytest.raises(RuntimeError, match="browser executable is missing"):
+        dynamic_browser_variants()
