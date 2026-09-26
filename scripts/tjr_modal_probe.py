@@ -109,8 +109,7 @@ def main() -> None:
         candidates, discovery_failures = discover_official_uploads()
         official = constrain_official_sources(candidates, requested_id=None)
         inputs = [
-            {"video_id": item.video_id, "channel_id": item.channel_id}
-            for item in official[:3]
+            {"video_id": item.video_id, "channel_id": item.channel_id} for item in official[:3]
         ]
         if not inputs:
             raise RuntimeError("No feed-confirmed campaign YouTube videos")
@@ -123,10 +122,7 @@ def main() -> None:
     except Exception:
         if not output.is_file():
             output.write_text(
-                json.dumps(
-                    {"status": "MODAL_PROBE_FAILED_BEFORE_REMOTE_RESULT"}, indent=2
-                )
-                + "\n",
+                json.dumps({"status": "MODAL_PROBE_FAILED_BEFORE_REMOTE_RESULT"}, indent=2) + "\n",
                 encoding="utf-8",
             )
         raise
