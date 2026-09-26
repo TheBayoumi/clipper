@@ -103,6 +103,17 @@ This does NOT verify that a user-supplied MP4 visually matches the URL;
 source authenticity still requires explicit human review. No live Whop funds, account eligibility,
 or human editorial acceptance has been verified.
 
+## Exact YouTube source selection
+
+The `youtube_direct` workflow now accepts the same `source_video_id` input
+as the verified-mirror route. If a video ID is supplied, it MUST appear
+in a current feed from one of the two campaign-listed channels; the
+workflow must not silently substitute newer Shorts, Kick VODs or other
+trading creators if download fails. Without an explicit ID, it selects
+recent long-form videos from those two channels. The preferred recent
+feed-listed example is `p2LU37eat70`, but neither its current
+availability nor its media download from the runner is guaranteed.
+
 ## GitHub-only optional authenticated access
 
 On 2026-09-26, the latest GitHub-hosted public YouTube download attempt failed
