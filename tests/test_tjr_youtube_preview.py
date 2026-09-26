@@ -206,10 +206,7 @@ def test_dynamic_guest_tokens_do_not_require_exported_account_cookies(
     monkeypatch.setenv("YT_DLP_WPC_BROWSER_PATH", str(browser))
     variants = dynamic_browser_variants()
     assert len(variants) == 2
-    assert all(
-        "youtubepot-wpc:browser_path=" + str(browser) in variant
-        for variant in variants
-    )
+    assert all("youtubepot-wpc:browser_path=" + str(browser) in variant for variant in variants)
     assert "youtube:player_client=mweb" in variants[0]
     assert _auth_args() == []
 
