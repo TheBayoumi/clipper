@@ -292,6 +292,7 @@ def prioritize_campaign_moments(videos: list[OfficialVideo]) -> list[OfficialVid
 
     Still inspect and independently validate each actual owner and duration.
     """
+
     def priority(video: OfficialVideo) -> tuple[int, str]:
         title = video.title.lower().strip()
         if title in {"", "unknown", "#tjr"} or ("#" in title and len(title) < 45):
@@ -301,6 +302,7 @@ def prioritize_campaign_moments(videos: list[OfficialVideo]) -> list[OfficialVid
         return (1, video.published)
 
     return sorted(videos, key=priority, reverse=True)
+
 
 def select_separate_clips(candidates: list[ClipCandidate], count: int = 2) -> list[ClipCandidate]:
     chosen: list[ClipCandidate] = []
