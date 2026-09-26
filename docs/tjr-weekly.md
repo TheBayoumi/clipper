@@ -114,44 +114,35 @@ recent long-form videos from those two channels. The preferred recent
 feed-listed example is `p2LU37eat70`, but neither its current
 availability nor its media download from the runner is guaranteed.
 
-## REQUIRED dedicated YouTube viewing session
+## Fully automatic public YouTube acquisition (no cookie exports)
 
-Repeated attempts from GitHub-hosted runner IPs are blocked by YouTube's
-account challenge, including alternate yt-dlp player clients and a local
-PO-token provider. Repository Actions secret inventory checked 2026-09-26:
-`TJR_YOUTUBE_COOKIES_B64` **is not present**. Do not create an empty secret
-or pretend that a session exists.
+The default GitHub Actions job runs directly against videos from the two
+Reach-listed official YouTube channels. It does **not** require users to
+export browser cookies, sign in for each video, or manually upload source
+MP4s. On each new runner it installs yt-dlp with its up-to-date JavaScript
+solver and the experimental yt-dlp-getpot-wpc v1.1.2 plugin, starts the
+runner's Chrome browser under a virtual display, and lets the plugin mint
+**fresh per-video guest playback tokens on demand** for mweb and
+web_safari. The older local bgutil provider failed to clear YouTube's
+runner-level bot confirmation challenge; it is not treated as proof of
+successful access.
 
-The YouTube preview job now checks for a valid authorized session BEFORE
-downloading FFmpeg, the ASR model, or starting the PO-token service. If the
-secret is missing, it fails immediately and publishes a JSON diagnostic.
-Neither the secret nor decoded session cookies are ever uploaded as artifacts.
+Successful acquisition STILL requires actual extracted video metadata
+whose owner channel ID matches the exact Reach allowlist, a playable
+high-definition original, a full media-decode check and real MP4
+artifacts. Both dynamic-browser client variants and selected plain
+YouTube clients are attempted when an approved video is accessible.
+If YouTube blocks the GitHub-hosted runner IP *before* playback tokens
+can help, the job must report that blocker and upload diagnostics, not
+claim success or substitute Kick content.
 
-**Secure, one-time user action (do not send credentials in chat):**
-1. Use a separate authorized YouTube viewing account. In a single private
-   browser window, sign in, navigate to `https://www.youtube.com/robots.txt`
-   in that tab, export only `youtube.com` cookies using a trusted
-   Netscape-format exporter, and close the private window. This is the
-   current yt-dlp project's prescribed approach to avoid session rotation.
-   Using any account with third-party downloaders can risk account suspension.
-2. Windows PowerShell, in the directory containing the exported
-   `youtube-cookies.txt`:
-   ```powershell
-   [Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path .\youtube-cookies.txt).Path)) | Set-Clipboard
-   ```
-3. Open `https://github.com/TheBayoumi/clipper/settings/secrets/actions/new`.
-   Secret name: `TJR_YOUTUBE_COOKIES_B64`. Paste the clipboard's base64
-   value into the secret value, and click **Add secret**.
-   Never commit, log, upload to Drive, or paste cookie files/base64 into chat.
-   Clear the clipboard afterwards and securely delete the exported copy.
-4. Because the workflow is still only on draft PR #7's feature branch
-   (not `main`), the existing failed push workflow
-   `36209597694` can be re-run using **Re-run failed jobs** after setting
-   the secret. That re-executes the actual YouTube acquisition with newly
-   available repository secrets; it does not require merging the draft PR.
-   Only count clips when real MP4s and the YouTube-specific QA report exist.
+A `TJR_YOUTUBE_COOKIES_B64` repository secret is an OPTIONAL
+one-time fallback for users who voluntarily authorize a dedicated
+viewer account. The public acquisition flow works without that secret
+when YouTube permits anonymous browser playback. No secret is generated,
+committed, requested per video, or silently synthesized.
 
-## Authenticated YouTube technical background
+## Optional authenticated-session fallback
 
 On 2026-09-26, the latest GitHub-hosted public YouTube download attempt failed
 with a YouTube bot-confirmation challenge for actual feed-listed approved
@@ -171,7 +162,7 @@ passes it only to yt-dlp, and deletes it at the end of the attempt. Neither
 cookies nor the original source media are included in uploaded artifacts.
 Providing cookies still does **not** guarantee playback from a data-center IP.
 
-When the workflow is registered on the default branch, use `Actions → TJR
+If the workflow is registered on the default branch, use `Actions → TJR
 Weekly HD clipping → Run workflow`, select `youtube_direct` (no Drive copy)
 for the cookie-based YouTube-only path, or `verified_mirror` for the
 independently obtained approved-channel original with hash-pinned Google Drive
