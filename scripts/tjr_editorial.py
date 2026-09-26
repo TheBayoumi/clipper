@@ -3,6 +3,7 @@
 Select every sufficiently strong, non-overlapping original quote/reaction within
 the configured render-time budget; do not impose an arbitrary two-clip limit.
 """
+
 from __future__ import annotations
 
 import re
@@ -117,8 +118,7 @@ def select_editorial_moments(
     chosen: list[EditorialPick] = []
     for pick in ordered:
         overlap = any(
-            pick.clip.start < other.clip.end + 1.5
-            and other.clip.start < pick.clip.end + 1.5
+            pick.clip.start < other.clip.end + 1.5 and other.clip.start < pick.clip.end + 1.5
             for other in chosen
         )
         if overlap or any(_similar(pick, other) for other in chosen):
