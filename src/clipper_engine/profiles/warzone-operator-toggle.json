@@ -233,7 +233,11 @@
         "group_card_height": 460,
         "margin": 56,
         "gap": 18,
-        "panel_top": 50
+        "panel_top": 50,
+        "focus_crop_center": [
+          0.5,
+          0.18
+        ]
       }
     },
     "mode_encoding": {

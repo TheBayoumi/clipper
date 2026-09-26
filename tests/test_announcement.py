@@ -831,6 +831,8 @@ def test_spotlight_plan_retains_verified_anchors_and_uses_shared_clipper(
         ("switch_after_frames", 12),
         ("group_frames", 5),
         ("focus_card_height", 0),
+        ("focus_crop_center", [0.5, 1.4]),
+        ("focus_crop_center", [0.5]),
     ],
 )
 def test_spotlight_rejects_invalid_layout(

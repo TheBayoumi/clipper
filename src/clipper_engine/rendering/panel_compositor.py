@@ -79,6 +79,15 @@ def spotlight_config(profile: CampaignProfile, comparison_frames: int) -> dict[s
         < 1
     ):
         raise MontageRejection("spotlight_calibration", "invalid focus, group or frame schedule")
+    crop_center = settings.get("focus_crop_center")
+    if (
+        not isinstance(crop_center, list)
+        or len(crop_center) != 2
+        or not all(isinstance(v, (int, float)) and 0 <= v <= 1 for v in crop_center)
+    ):
+        raise MontageRejection(
+            "spotlight_calibration", "source-grounded spotlight focus center is invalid"
+        )
     for roi in settings["operator_rois"]:
         if len(roi) != 4 or not (0 <= roi[0] < roi[2] <= 1 and 0 <= roi[1] < roi[3] <= 1):
             raise MontageRejection("spotlight_roi", "invalid normalized source-only crop")
@@ -439,7 +448,10 @@ def render_spotlight_panels(
                 _crop(source, roi),
                 (wide, high),
                 method=Image.Resampling.LANCZOS,
-                centering=(0.5, 0.43),
+                centering=(
+                    float(cfg["focus_crop_center"][0]),
+                    float(cfg["focus_crop_center"][1]),
+                ),
             )
             for roi in cfg["operator_rois"]
         ]
