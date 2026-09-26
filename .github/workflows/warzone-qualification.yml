@@ -17,7 +17,7 @@ permissions:
 jobs:
   qualify-official-source:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -125,6 +125,39 @@ jobs:
           set -euo pipefail
           clipper campaign warzone-operator-toggle qualify             --render-manifest delivery_cuts/render_manifest.json             --output delivery_cuts/acceptance.json
 
+      - name: Plan certified-source three-Operator cascade
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle plan \
+            --source "$SOURCE_FILE" \
+            --source-qa "source/$SOURCE_KEY.source_qa.json" \
+            --comparison-mode cascade \
+            --approved-text-index 1 \
+            --output plan_cascade.json
+
+      - name: Render Clipper three-panel cascade using original source
+        timeout-minutes: 35
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle render \
+            --source "$SOURCE_FILE" \
+            --source-qa "source/$SOURCE_KEY.source_qa.json" \
+            --plan plan_cascade.json \
+            --output-dir delivery_cascade
+
+      - name: Qualify cascade source, panel synchronization and encoded delivery
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle qualify \
+            --render-manifest delivery_cascade/render_manifest.json \
+            --output delivery_cascade/acceptance.json
+
       - name: Preserve evidence and delivery
         if: always()
         uses: actions/upload-artifact@v4
@@ -140,3 +173,5 @@ jobs:
             delivery/*.mp4
             delivery_cuts/*.json
             delivery_cuts/*.mp4
+            delivery_cascade/*.json
+            delivery_cascade/*.mp4

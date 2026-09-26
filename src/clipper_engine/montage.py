@@ -201,6 +201,14 @@ def build_plan(
             "invalid_comparison_mode", f"{comparison_mode} not in {allowed_modes}"
         )
     comparison_frames = _frames(editorial["comparison_seconds"], fps)
+    if comparison_mode == "cascade":
+        from .rendering import panel_compositor
+
+        if not output.get("portrait_matte", {}).get("enabled", False):
+            raise MontageRejection(
+                "cascade_layout", "cascade requires Clipper portrait compositing"
+            )
+        panel_compositor.config(profile, comparison_frames)
     hook = {
         "start_frame": int(states["hook_start_frame"]),
         "frames": int(states["hook_frames"]),
@@ -327,6 +335,14 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
         raise MontageRejection("montage_type", "plan must use the legal full-frame edit")
     if montage.get("comparison_mode") not in editorial["comparison_modes"]:
         raise MontageRejection("invalid_comparison_mode", "unknown comparison layout")
+    if montage["comparison_mode"] == "cascade":
+        from .rendering import panel_compositor
+
+        if not profile.config["output"].get("portrait_matte", {}).get("enabled", False):
+            raise MontageRejection(
+                "cascade_layout", "cascade requires Clipper portrait compositing"
+            )
+        panel_compositor.config(profile, int(montage["comparison_frames"]))
     if int(montage["full_source_frames"]) != int(states["source_frames"]):
         raise MontageRejection("source_frames_changed", "full source is not retained")
     if int(plan["source"]["frames"]) != int(states["source_frames"]):

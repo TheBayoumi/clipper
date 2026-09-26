@@ -150,12 +150,42 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
             raise montage.MontageRejection(
                 "portrait_hash", "portrait delivery is missing or changed"
             )
-        from .rendering.portrait_matte import PORTRAIT_REQUIRED_CHECKS
+        from .rendering.portrait_matte import CASCADE_REQUIRED_CHECKS, PORTRAIT_REQUIRED_CHECKS
+
+        required_checks = PORTRAIT_REQUIRED_CHECKS
+        if manifest["plan"]["montage"]["comparison_mode"] == "cascade":
+            required_checks = required_checks | CASCADE_REQUIRED_CHECKS
+            from .rendering import panel_compositor
+
+            cmp_qa = manifest["staging"]["comparison"]
+            panel_qa = portrait.get("cascade")
+            if (
+                not isinstance(panel_qa, dict)
+                or panel_qa.get("source_still_sha256") != cmp_qa.get("source_still_sha256")
+                or panel_qa.get("frame_count") != manifest["plan"]["montage"]["output_frames"]
+            ):
+                raise montage.MontageRejection(
+                    "cascade_stills", "the portrait panels differ from certified source stills"
+                )
+            cfg = panel_compositor.config(
+                profile, int(manifest["plan"]["montage"]["comparison_frames"])
+            )
+            starts = int(manifest["plan"]["montage"]["hook"]["frames"]) + int(
+                manifest["plan"]["montage"]["full_source_frames"]
+            )
+            if (
+                panel_qa.get("switch_frames")
+                != [starts + int(n) for n in cfg["switch_start_frames"]]
+                or panel_qa.get("text_synced") is not True
+            ):
+                raise montage.MontageRejection(
+                    "cascade_schedule", "panel switches do not follow calibrated timeline"
+                )
 
         portrait_checks = portrait.get("qa", {}).get("checks", {})
         if (
             not isinstance(portrait_checks, dict)
-            or set(portrait_checks) != PORTRAIT_REQUIRED_CHECKS
+            or set(portrait_checks) != required_checks
             or not all(value is True for value in portrait_checks.values())
         ):
             raise montage.MontageRejection(

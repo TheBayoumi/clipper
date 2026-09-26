@@ -159,6 +159,12 @@ def _comparison_piece(
     fps = rate(profile)
     frames = int(plan["montage"]["comparison_frames"])
     mode = plan["montage"]["comparison_mode"]
+    if mode == "cascade":
+        from . import panel_compositor
+
+        return panel_compositor.render_comparison(
+            before, after, workspace, plan, profile, source_profile
+        )
     if mode == "wipe":
         # Keep both operator groups full-sized. Start with a readable before state,
         # wipe in the after state, and let the after state settle before the final beat.
@@ -638,6 +644,8 @@ def render(
                 profile,
                 source_profile,
                 _metric,
+                comparison_stills=(workspace / "before.png", workspace / "after.png"),
+                expected_still_hashes=staging["comparison"].get("source_still_sha256"),
             )
 
     manifest = {

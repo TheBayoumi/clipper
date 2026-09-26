@@ -16,7 +16,7 @@ from clipper.cli import main
 from clipper_engine import montage
 from clipper_engine.profiles import CampaignProfile, load_profile
 from clipper_engine.rendering import montage as renderer
-from clipper_engine.rendering import portrait_matte
+from clipper_engine.rendering import panel_compositor, portrait_matte
 from clipper_engine.sources import qa
 from clipper_engine.workflow import plan as plan_campaign
 from clipper_engine.workflow import qualify as qualify_campaign
@@ -530,3 +530,132 @@ def test_plan_rejects_tampered_verified_toggle_event(
     with pytest.raises(montage.MontageRejection, match="toggle_event_changed"):
         plan["evidence"]["toggle_motion_start_frame"] = 1
         montage.validate_plan(plan, source, p)
+
+
+def _cascade_test_profile(profile: CampaignProfile) -> CampaignProfile:
+    values = copy.deepcopy(profile.config)
+    values["output"]["portrait_matte"]["enabled"] = True
+    values["output"]["portrait_matte"]["width"] = 180
+    values["output"]["portrait_matte"]["height"] = 320
+    values["output"]["portrait_matte"]["target_size_mb"] = 2.0
+    values["output"]["portrait_matte"]["size_tolerance_mb"] = 1.0
+    return CampaignProfile(name=CAMPAIGN, config=values)
+
+
+def test_cascade_is_configured_by_profile_not_a_second_pipeline(
+    source: Path, profile: CampaignProfile
+) -> None:
+    p = _cascade_test_profile(profile)
+    plan = montage.build_plan(source, p, comparison_mode="cascade")
+    assert plan["montage"]["output_frames"] == 315
+    assert plan["montage"]["full_source_frames"] == 178
+    assert plan["montage"]["comparison_frames"] == 60
+    assert plan["montage"]["comparison_mode"] == "cascade"
+    start = 15 + 178
+    expected = {
+        start + 0: [0, 0, 0],
+        start + 8: [0, 0, 0],
+        start + 12: [1, 0, 0],
+        start + 27: [1, 1, 0],
+        start + 42: [1, 1, 1],
+        253: [0, 0, 0],
+        264: [1, 1, 1],
+        274: [0, 0, 0],
+        314: [1, 1, 1],
+    }
+    for frame, expected_states in expected.items():
+        fill = portrait_matte.toggle_progress(frame, plan, p)
+        actual = panel_compositor.states_for_output(frame, plan, p, fill)
+        assert actual == pytest.approx(expected_states)
+        assert fill == pytest.approx(sum(expected_states) / 3)
+    for local in range(60):
+        frame = start + local
+        fill = portrait_matte.toggle_progress(frame, plan, p)
+        assert fill == pytest.approx(sum(panel_compositor.stage_progress(local, plan, p)) / 3)
+
+
+@pytest.mark.parametrize(
+    ("bad_key", "bad_value"),
+    [
+        ("operator_rois", [[0, 0, 2, 1]] * 3),
+        ("switch_start_frames", [40, 20, 8]),
+        ("switch_order", [0, 0, 2]),
+        ("transition_frames", 40),
+    ],
+)
+def test_cascade_rejects_invalid_calibration(
+    source: Path, profile: CampaignProfile, bad_key: str, bad_value: object
+) -> None:
+    p = _cascade_test_profile(profile)
+    p.config["output"]["portrait_matte"]["cascade"][bad_key] = bad_value
+    with pytest.raises(montage.MontageRejection, match="cascade_"):
+        montage.build_plan(source, p, comparison_mode="cascade")
+
+
+def test_cascade_produces_full_duration_original_source_portrait(
+    source: Path,
+    profile: CampaignProfile,
+    certificate: tuple[Path, dict[str, Any]],
+    tmp_path: Path,
+) -> None:
+    p = _cascade_test_profile(profile)
+    plan_file = tmp_path / "plan_cascade.json"
+    plan = plan_campaign(
+        p,
+        source,
+        certificate[0],
+        plan_file,
+        comparison_mode="cascade",
+        approved_text_index=1,
+    )
+    assert plan["montage"]["comparison_mode"] == "cascade"
+    output = tmp_path / "cascade"
+    rendered = render_campaign(p, source, certificate[0], plan_file, output)
+    qa = rendered["portrait"]["qa"]
+    panel_qa = rendered["portrait"]["cascade"]
+    assert rendered["staging"]["comparison"]["comparison_mode"] == "cascade"
+    assert rendered["staging"]["comparison"]["frame_count_exact"]
+    assert rendered["staging"]["comparison"]["full_frame"]
+    assert panel_qa["frame_count"] == 315
+    assert panel_qa["panel_count"] == 3
+    assert panel_qa["text_synced"] is True
+    assert panel_qa["switch_frames"] == [201, 216, 231]
+    assert panel_qa["sampled_states"]["193"] == [0, 0, 0]
+    assert panel_qa["sampled_states"]["246"] == [1, 1, 1]
+    assert (
+        panel_qa["source_still_sha256"]
+        == (rendered["staging"]["comparison"]["source_still_sha256"])
+    )
+    assert all(qa["checks"].values())
+    assert len(qa["cascade_panel_pixel_differences"]) == 3
+    assert all(delta > 2.5 for delta in qa["cascade_panel_pixel_differences"])
+    assert qa["frame_count"] == 315
+    assert qa["encoded_duration"] == pytest.approx(10.5, abs=0.055)
+    assert qa["file_size_mb"] == pytest.approx(2.0, abs=1.0)
+    assert len(qa["matte_sampled_frames"]) == 3
+    assert all(sample["max_error"] <= 2 for sample in qa["matte_sampled_frames"])
+    assert rendered["portrait"]["title"]["text_visible_frames"] == 315
+    assert rendered["portrait"]["title"]["progress_samples"]["0"] == 0
+    assert rendered["portrait"]["title"]["progress_samples"]["314"] == 1
+    accepted = qualify_campaign(
+        p, output / "render_manifest.json", tmp_path / "cascade_acceptance.json"
+    )
+    assert accepted["status"] == "PASS"
+    assert accepted["primary_delivery"] == rendered["portrait"]["file"]
+    manifest = json.loads((output / "render_manifest.json").read_text())
+    manifest["portrait"]["cascade"]["switch_frames"] = [0, 1, 2]
+    tampered = tmp_path / "invalid_cascade.json"
+    tampered.write_text(json.dumps(manifest))
+    with pytest.raises(montage.MontageRejection, match="cascade_schedule"):
+        qualify_campaign(p, tampered, tmp_path / "rejected_acceptance.json")
+    manifest["portrait"]["cascade"]["source_still_sha256"]["before"] = "tampered"
+    tampered.write_text(json.dumps(manifest))
+    with pytest.raises(montage.MontageRejection, match="cascade_stills"):
+        qualify_campaign(p, tampered, tmp_path / "rejected_stills.json")
+
+
+def test_cascade_is_covered_by_existing_official_qualification_workflow() -> None:
+    workflow = Path(".github/workflows/warzone-qualification.yml").read_text()
+    assert "--comparison-mode cascade" in workflow
+    assert "delivery_cascade/render_manifest.json" in workflow
+    assert "delivery_cascade/*.mp4" in workflow

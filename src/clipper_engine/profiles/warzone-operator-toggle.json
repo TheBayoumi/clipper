@@ -79,7 +79,8 @@
     "comparison_seconds": 2,
     "comparison_modes": [
       "wipe",
-      "cuts"
+      "cuts",
+      "cascade"
     ],
     "title_start_frame": 20,
     "title_end_frame": 112,
@@ -139,7 +140,50 @@
       },
       "target_size_mb": 32.0,
       "size_tolerance_mb": 2.0,
-      "audio_kbps": 320
+      "audio_kbps": 320,
+      "cascade": {
+        "operator_rois": [
+          [
+            0.245,
+            0.16,
+            0.438,
+            0.74
+          ],
+          [
+            0.405,
+            0.12,
+            0.6,
+            0.75
+          ],
+          [
+            0.567,
+            0.13,
+            0.76,
+            0.75
+          ]
+        ],
+        "main_band_boundaries": [
+          0.0,
+          0.42,
+          0.58,
+          1.0
+        ],
+        "switch_order": [
+          0,
+          1,
+          2
+        ],
+        "switch_start_frames": [
+          8,
+          23,
+          38
+        ],
+        "transition_frames": 4,
+        "margin": 56,
+        "gap": 18,
+        "panel_top": 55,
+        "panel_height": 460
+      }
     }
   },
   "platform": {

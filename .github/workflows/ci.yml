@@ -31,5 +31,5 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy
-      - run: mypy --strict --follow-imports=silent src/clipper_engine/montage.py src/clipper_engine/workflow.py src/clipper_engine/rendering/montage.py src/clipper_engine/rendering/portrait_matte.py
+      - run: mypy --strict --follow-imports=silent src/clipper_engine/montage.py src/clipper_engine/workflow.py src/clipper_engine/rendering/montage.py src/clipper_engine/rendering/portrait_matte.py src/clipper_engine/rendering/panel_compositor.py
       - run: pytest

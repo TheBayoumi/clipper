@@ -17,7 +17,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageColor, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont, ImageStat
 
 from .. import media_contract as media
 from ..montage import MontageRejection, rate
@@ -42,6 +42,16 @@ PORTRAIT_REQUIRED_CHECKS = frozenset(
         "portrait_mattes_match",
         "portrait_target_size",
         "portrait_color_metadata",
+    }
+)
+
+
+CASCADE_REQUIRED_CHECKS = frozenset(
+    {
+        "portrait_cascade_three_panels",
+        "portrait_cascade_verified_stills",
+        "portrait_cascade_text_sync",
+        "portrait_cascade_panels_visible",
     }
 )
 
@@ -80,6 +90,10 @@ def toggle_progress(frame: int, plan: dict[str, Any], profile: CampaignProfile) 
             start = comparison_frames // 6
             duration = 2 * comparison_frames // 3
             return _ease((local - start) / duration)
+        if edit["comparison_mode"] == "cascade":
+            from . import panel_compositor
+
+            return sum(panel_compositor.stage_progress(local, plan, profile)) / 3
         if edit["comparison_mode"] == "cuts":
             elapsed = Fraction(local, 1) / rate(profile)
             return float(
@@ -289,9 +303,12 @@ def render_portrait(
     profile: CampaignProfile,
     source_profile: dict[str, Any],
     metric: Callable[[Path, Path, str, str], float],
+    comparison_stills: tuple[Path, Path] | None = None,
+    expected_still_hashes: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Generate source-only-audio, exact-frame FFV1 portrait stage and MP4 delivery."""
     title_qa = render_title_frames(workspace, plan, profile)
+    cascade = plan["montage"]["comparison_mode"] == "cascade"
     width, height = (int(z) for z in title_qa["canvas"])
     top = int(title_qa["top_height"])
     center = int(title_qa["center_height"])
@@ -301,12 +318,39 @@ def render_portrait(
     canonical = workspace / "portrait_canonical.nut"
     file = output_dir / f"{profile.name}_{plan['montage']['comparison_mode']}_portrait.mp4"
     background = str(profile.config["output"]["portrait_matte"]["background_hex"])
-    graph = (
-        f"[0:v]scale={width}:{center}:flags=lanczos,setsar=1,"
-        f"pad={width}:{height}:0:{top}:color=0x{background.lstrip('#')}[base];"
-        f"[base][1:v]overlay=0:0:shortest=1:format=auto,"
-        "format=yuv420p[outv]"
-    )
+    panel_qa: dict[str, Any] | None = None
+    if cascade:
+        from . import panel_compositor
+
+        if comparison_stills is None or expected_still_hashes is None:
+            raise MontageRejection("cascade_stills", "verified source comparison stills required")
+        full_progress = [toggle_progress(n, plan, profile) for n in range(frames)]
+        panel_qa = panel_compositor.render_panels(
+            comparison_stills[0],
+            comparison_stills[1],
+            workspace,
+            plan,
+            profile,
+            width,
+            height - top - center,
+            full_progress,
+        )
+        if panel_qa["source_still_sha256"] != expected_still_hashes:
+            raise MontageRejection("cascade_stills", "panels do not match certified comparison")
+        graph = (
+            f"[0:v]scale={width}:{center}:flags=lanczos,setsar=1,"
+            f"pad={width}:{height}:0:{top}:color=0x{background.lstrip('#')}[base];"
+            "[base][1:v]overlay=0:0:shortest=1:format=auto[with_title];"
+            f"[with_title][2:v]overlay=0:{top + center}:shortest=1:format=auto,"
+            "format=yuv420p[outv]"
+        )
+    else:
+        graph = (
+            f"[0:v]scale={width}:{center}:flags=lanczos,setsar=1,"
+            f"pad={width}:{height}:0:{top}:color=0x{background.lstrip('#')}[base];"
+            "[base][1:v]overlay=0:0:shortest=1:format=auto,"
+            "format=yuv420p[outv]"
+        )
     media.run(
         [
             "ffmpeg",
@@ -322,6 +366,16 @@ def render_portrait(
             f"{fps.numerator}/{fps.denominator}",
             "-i",
             str(workspace / "approved_title_frames" / "%04d.png"),
+            *(
+                [
+                    "-framerate",
+                    f"{fps.numerator}/{fps.denominator}",
+                    "-i",
+                    str(workspace / "cascade_panels" / "%04d.png"),
+                ]
+                if cascade
+                else []
+            ),
             "-filter_complex_threads",
             "1",
             "-filter_complex",
@@ -457,7 +511,9 @@ def render_portrait(
     )
     actual_duration = float(probe["format"]["duration"])
     filesize_mb = file.stat().st_size / 1_000_000
-    # Compare DECODED top and bottom pixel colors, not merely config strings.
+    # Validate ENCODED top and bottom mattes at opening, comparison and ending.
+    sampled_frames = [0, frames // 2, frames - 1]
+    selected_frames = "+".join(f"eq(n\\,{n})" for n in sampled_frames)
     still = subprocess.run(
         [
             "ffmpeg",
@@ -466,9 +522,11 @@ def render_portrait(
             "-i",
             str(file),
             "-vf",
-            "select=eq(n\\,0),format=rgb24",
+            f"select={selected_frames},format=rgb24",
+            "-fps_mode",
+            "passthrough",
             "-frames:v",
-            "1",
+            str(len(sampled_frames)),
             "-f",
             "rawvideo",
             "-",
@@ -476,12 +534,33 @@ def render_portrait(
         check=True,
         capture_output=True,
     )
-    sample = Image.frombytes("RGB", (width, height), still.stdout)
-    top_rgb = sample.getpixel((width // 18, max(2, top // 8)))
-    bottom_rgb = sample.getpixel((width // 18, height - max(2, top // 8)))
-    if not isinstance(top_rgb, tuple) or not isinstance(bottom_rgb, tuple):
-        raise RuntimeError("decoded RGB matte verification failed")
-    matte_rgb_error = max(abs(int(a) - int(b)) for a, b in zip(top_rgb, bottom_rgb, strict=True))
+    frame_bytes = width * height * 3
+    if len(still.stdout) != frame_bytes * len(sampled_frames):
+        raise RuntimeError("decoded portrait sample count differs from qualified delivery")
+    sampled_mattes: list[dict[str, Any]] = []
+    matte_rgb_error = 0
+    for index, n in enumerate(sampled_frames):
+        rgb = Image.frombytes(
+            "RGB",
+            (width, height),
+            still.stdout[index * frame_bytes : (index + 1) * frame_bytes],
+        )
+        top_rgb = rgb.getpixel((width // 18, max(2, top // 8)))
+        bottom_rgb = rgb.getpixel((width // 18, height - max(2, top // 8)))
+        if not isinstance(top_rgb, tuple) or not isinstance(bottom_rgb, tuple):
+            raise RuntimeError("decoded RGB matte verification failed")
+        delta = max(abs(int(a) - int(b)) for a, b in zip(top_rgb, bottom_rgb, strict=True))
+        matte_rgb_error = max(matte_rgb_error, delta)
+        sampled_mattes.append(
+            {
+                "frame": n,
+                "top_rgb": list(top_rgb),
+                "bottom_rgb": list(bottom_rgb),
+                "max_error": delta,
+            }
+        )
+    top_rgb = tuple(sampled_mattes[0]["top_rgb"])
+    bottom_rgb = tuple(sampled_mattes[0]["bottom_rgb"])
     expected_colors = media.source_color_metadata(source_profile)
     actual_colors = media.source_color_metadata(actual)
     ssim = metric(canonical, file, "ssim", r"All:([0-9.]+)")
@@ -508,7 +587,64 @@ def render_portrait(
             actual_colors.get(k) == v for k, v in expected_colors.items()
         ),
     }
-    if set(checks) != PORTRAIT_REQUIRED_CHECKS or not all(checks.values()):
+    panel_differences: list[float] = []
+    if cascade:
+        if panel_qa is None:
+            raise RuntimeError("missing cascade panel metadata")
+        start = int(plan["montage"]["hook"]["frames"]) + int(plan["montage"]["full_source_frames"])
+        after_frame = start + int(plan["montage"]["comparison_frames"]) - 1
+        select = f"select=eq(n\\,{start})+eq(n\\,{after_frame}),format=rgb24"
+        decoded = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                str(file),
+                "-vf",
+                select,
+                "-fps_mode",
+                "passthrough",
+                "-frames:v",
+                "2",
+                "-f",
+                "rawvideo",
+                "-",
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
+        frame_bytes = width * height * 3
+        if len(decoded) != 2 * frame_bytes:
+            raise RuntimeError("encoded cascade panel frames missing")
+        before_rgb = Image.frombytes("RGB", (width, height), decoded[:frame_bytes])
+        after_rgb = Image.frombytes("RGB", (width, height), decoded[frame_bytes:])
+        for x0, y0, x1, y1 in panel_qa["panel_boxes"]:
+            box = (
+                int(x0) + 2,
+                top + center + int(y0) + 2,
+                int(x1) - 2,
+                top + center + int(y1) - 2,
+            )
+            difference = ImageChops.difference(before_rgb.crop(box), after_rgb.crop(box))
+            panel_differences.append(round(sum(ImageStat.Stat(difference).mean) / 3, 4))
+
+    if cascade:
+        if panel_qa is None or expected_still_hashes is None:
+            raise RuntimeError("missing cascade QA")
+        checks["portrait_cascade_three_panels"] = (
+            panel_qa["panel_count"] == 3 and panel_qa["frame_count"] == frames
+        )
+        checks["portrait_cascade_verified_stills"] = (
+            panel_qa["source_still_sha256"] == expected_still_hashes
+            and panel_qa["source_only"] is True
+        )
+        checks["portrait_cascade_text_sync"] = panel_qa["text_synced"] is True
+        checks["portrait_cascade_panels_visible"] = len(panel_differences) == 3 and all(
+            delta > 2.5 for delta in panel_differences
+        )
+    required = PORTRAIT_REQUIRED_CHECKS | (CASCADE_REQUIRED_CHECKS if cascade else frozenset())
+    if set(checks) != required or not all(checks.values()):
         raise RuntimeError(f"portrait QA failed: {checks}")
     hasher = hashlib.sha256()
     with file.open("rb") as stream:
@@ -528,11 +664,14 @@ def render_portrait(
             "matte_top_rgb": list(top_rgb),
             "matte_bottom_rgb": list(bottom_rgb),
             "matte_rgb_max_error": matte_rgb_error,
+            "matte_sampled_frames": sampled_mattes,
+            "cascade_panel_pixel_differences": panel_differences,
             "video_profile": actual,
             "audio_profile": audio,
             "ssim": ssim,
             "psnr_db": psnr,
         },
         "title": title_qa,
+        "cascade": panel_qa,
         "canonical_ffv1_nut": True,
     }
