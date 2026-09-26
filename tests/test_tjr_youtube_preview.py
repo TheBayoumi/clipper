@@ -42,8 +42,21 @@ def test_only_official_reach_channel_feeds_are_accepted(channel_id: str) -> None
 
 
 def test_wrong_feed_owner_fails_closed() -> None:
-    with pytest.raises(ValueError, match="different channel"):
+    with pytest.raises(ValueError, match="owner mismatch"):
         parse_official_feed(atom_feed("UC-not-approved"), "UCGHBUXjDCeiIXNdKR0HUZnA")
+
+
+def test_root_atom_channel_id_is_accepted_if_yt_channel_id_is_absent() -> None:
+    channel = "UCGHBUXjDCeiIXNdKR0HUZnA"
+    source = atom_feed(channel)
+    source = source.replace(
+        f"<yt:channelId>{channel}</yt:channelId>".encode(),
+        f"<id>yt:channel:{channel}</id>".encode(),
+        1,
+    )
+    videos = parse_official_feed(source, channel)
+    assert len(videos) == 1
+    assert videos[0].channel_id == channel
 
 
 def test_foreign_video_entries_are_ignored() -> None:
