@@ -361,16 +361,19 @@ jobs:
 
 
   youtube_modal_egress:
-    name: Probe exact original YouTube via existing Modal account
+    name: Fetch official original from Modal, render and QA on GitHub runner
     needs: tests
     if: github.event_name == 'push' && github.ref == 'refs/heads/feat/tjr-weekly-hd-actions'
     runs-on: ubuntu-24.04
-    timeout-minutes: 22
+    timeout-minutes: 100
     permissions:
       contents: read
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      CLIPPER_RENDER_PRESET: medium
+      CLIPPER_RENDER_CRF: "18"
+      CLIPPER_RENDER_THREADS: "2"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -379,23 +382,100 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Prepare original YouTube discovery and Modal CLI
+      - name: Prepare official-channel metadata and private Modal transfer
         run: |
           set -euo pipefail
           python -m pip install -e . "curl-cffi>=0.15,<1" "modal>=1,<2"
           python -m py_compile scripts/tjr_modal_probe.py
-      - name: Probe authorized original-video transport from alternate Modal egress
+      - name: Download real original YouTube video on the verified independent network
+        env:
+          TJR_MODAL_STAGE_ORIGINAL: "1"
         run: |
           set -euo pipefail
           modal run -m scripts.tjr_modal_probe
-      - name: Upload sanitized remote-video-access result, never credentials
+      - name: Transfer staged original privately and verify exact SHA-256
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+          from scripts.tjr_quality import probe_original
+
+          staging = json.loads(
+              Path("tjr-modal-probe/staged-original.json").read_text(encoding="utf-8")
+          )
+          if staging.get("status") != "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED":
+              raise RuntimeError("Modal did not stage a real approved original")
+          remote = str(staging.get("source_remote_path") or "")
+          if not re.fullmatch(r"runs/\d{4,20}-\d{1,4}/original\.(?:mp4|mkv|webm)", remote):
+              raise RuntimeError("Modal staged source filename is not approved")
+          original = Path("tjr-modal-stage") / ("source" + Path(remote).suffix)
+          original.parent.mkdir(parents=True, exist_ok=True)
+          subprocess.run(
+              ["modal", "volume", "get", "clipper-tjr-source-transport",
+               remote, str(original)],
+              check=True,
+          )
+          with original.open("rb") as media:
+              actual = hashlib.file_digest(media, "sha256").hexdigest()
+          if actual != staging["source_sha256"]:
+              raise RuntimeError("Modal source transfer failed SHA-256 verification")
+          probe_original(original)
+          manifest = {
+              "video_id": staging["video_id"],
+              "channel_id": staging["channel_id"],
+              "public_video_url": staging["public_video_url"],
+              "duration": staging["duration"],
+              "title": staging["title"],
+              "source_path": str(original.resolve()),
+              "source_sha256": actual,
+              "source_transport": "modal_exact_original_youtube",
+          }
+          manifest_path = Path("tjr-modal-stage/verified-source.json").resolve()
+          manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write("TJR_BROWSER_CAPTURE_FILE=" + str(manifest_path) + "\n")
+              env.write("TJR_SOURCE_VIDEO_ID=" + staging["video_id"] + "\n")
+          print("REAL_APPROVED_YOUTUBE_ORIGINAL_SHA256_VERIFIED")
+          PY
+      - name: Transcribe and render genuine 1080x1920 campaign review drafts
+        run: |
+          set -euo pipefail
+          python -m pip install -e ".[asr]"
+          python -m scripts.tjr_youtube_preview \
+            --brief campaigns/reach-tjr-weekly.yaml \
+            --artifact-root tjr-modal-artifacts
+      - name: Purge temporarily staged private original
+        if: always()
+        run: |
+          if [[ -f tjr-modal-probe/staged-original.json ]] && command -v modal; then
+            FILE="$(python -c 'import json; print(json.load(open("tjr-modal-probe/staged-original.json"))["source_remote_path"])')"
+            modal volume rm clipper-tjr-source-transport "$FILE" || true
+          fi
+      - name: Upload actual YouTube MP4s, SRT captions, source provenance and QA
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tjr-original-youtube-modal-egress-${{ github.run_id }}
-          path: tjr-modal-probe/verified-original-egress.json
-          retention-days: 7
+          name: tjr-real-original-youtube-hd-${{ github.run_id }}
+          path: |
+            tjr-modal-probe/verified-original-egress.json
+            tjr-modal-artifacts/**/clips/*.mp4
+            tjr-modal-artifacts/**/clips/*.srt
+            tjr-modal-artifacts/**/clips/*-preview.png
+            tjr-modal-artifacts/**/tjr-youtube-qa-report.json
+            tjr-modal-artifacts/**/source-acquisition-errors.json
+            tjr-modal-artifacts/**/official-source-candidates.json
+            tjr-modal-artifacts/**/transcript.json
+          retention-days: 14
+          compression-level: 0
           if-no-files-found: warn
+
 
   render:
     name: Render and QA real TJR HD clips

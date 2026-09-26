@@ -8,6 +8,7 @@ not a different video source. No original bytes or browser cookies are uploaded.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,7 @@ import modal
 app = modal.App("clipper-tjr-official-youtube-probe")
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .apt_install("curl", "unzip", "ca-certificates")
+    .apt_install("curl", "unzip", "ca-certificates", "ffmpeg")
     .run_commands(
         "curl -fsSL https://deno.land/install.sh | sh",
         "ln -sf /root/.deno/bin/deno /usr/local/bin/deno",
@@ -121,6 +122,102 @@ def inspect_original_youtube(candidates: list[dict[str, str]]) -> dict[str, Any]
     return {"status": "NO_ACCESSIBLE_ORIGINAL_YOUTUBE", "attempts": attempts}
 
 
+volume = modal.Volume.from_name("clipper-tjr-source-transport", create_if_missing=True)
+
+
+@app.function(image=image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=2048)
+def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str, Any]:
+    """Download actual allowlisted original bytes via the verified Modal network."""
+    import hashlib
+    import re
+    import subprocess
+
+    from pathlib import Path
+
+    video_id = str(selected["source_video_id"])
+    channel_id = str(selected["source_channel_id"])
+    if (
+        channel_id not in {"UCGHBUXjDCeiIXNdKR0HUZnA", "UCZen39LQJPx04GjPj7FOMcw"}
+        or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id)
+        or not re.fullmatch(r"\d{4,20}-\d{1,4}", run_key)
+    ):
+        raise RuntimeError("staging rejected an unapproved channel, ID or run identifier")
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    if url != selected.get("source_url"):
+        raise RuntimeError("original source URL mismatch")
+    folder = Path("/tjr-media") / "runs" / run_key
+    folder.mkdir(parents=True, exist_ok=True)
+    command = [
+        "yt-dlp",
+        "--no-playlist",
+        "--no-warnings",
+        "--merge-output-format",
+        "mp4",
+        "--download-sections",
+        "*00:00:00-00:14:00",
+        "-f",
+        "bv*[height>=720][height<=1080]+ba/b[height>=720]/bv*+ba/b",
+        "--no-part",
+        "-o",
+        str(folder / "original.%(ext)s"),
+        url,
+    ]
+    try:
+        outcome = subprocess.run(command, capture_output=True, timeout=1330, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("original YouTube excerpt download exceeded the remote limit") from exc
+    if outcome.returncode:
+        raise RuntimeError(
+            f"original YouTube download failed on verified network: exit {outcome.returncode}"
+        )
+    source_files = [
+        item
+        for item in folder.glob("original.*")
+        if item.is_file() and item.suffix.lower() in {".mp4", ".mkv", ".webm"}
+    ]
+    if len(source_files) != 1:
+        raise RuntimeError("source download did not produce exactly one media file")
+    original = source_files[0]
+    inspect = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_streams",
+            "-of",
+            "json",
+            str(original),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=50,
+        check=True,
+    )
+    streams = json.loads(inspect.stdout)["streams"]
+    if not any(
+        stream.get("codec_type") == "video" and int(stream.get("height") or 0) >= 720
+        for stream in streams
+    ):
+        raise RuntimeError("staged original has no HD video stream")
+    if not any(stream.get("codec_type") == "audio" for stream in streams):
+        raise RuntimeError("staged original is missing its original audio")
+    with original.open("rb") as media:
+        digest = hashlib.file_digest(media, "sha256").hexdigest()
+    volume.commit()
+    return {
+        "status": "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED",
+        "video_id": video_id,
+        "channel_id": channel_id,
+        "public_video_url": url,
+        "source_remote_path": f"runs/{run_key}/{original.name}",
+        "source_sha256": digest,
+        "size_bytes": original.stat().st_size,
+        "title": str(selected.get("title") or ""),
+        "duration": float(selected.get("duration") or 0),
+    }
+
+
+
 @app.local_entrypoint()
 def main() -> None:
     from scripts.tjr_youtube_preview import (
@@ -145,6 +242,20 @@ def main() -> None:
         if result["status"] != "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED":
             raise RuntimeError("Modal network also cannot fetch these official original videos")
         print("Verified original YouTube URL:", result["source_url"])
+        if os.getenv("TJR_MODAL_STAGE_ORIGINAL") == "1":
+            run_key = (
+                os.environ["GITHUB_RUN_ID"]
+                + "-"
+                + os.environ.get("GITHUB_RUN_ATTEMPT", "1")
+            )
+            staging = stage_official_original.remote(result, run_key)
+            (root / "staged-original.json").write_text(
+                json.dumps(staging, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            result["staging"] = staging
+            output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            print("Verified original media staged privately in Modal Volume")
     except Exception:
         if not output.is_file():
             output.write_text(
