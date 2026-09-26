@@ -570,7 +570,9 @@ def render_portrait(
         "portrait_video_frame_count_exact": actual["frame_count"] == frames
         and stage["frame_count"] == frames,
         "portrait_encoded_duration": abs(actual_duration - duration) < 0.04
-        and 10 <= actual_duration <= 12,
+        and float(profile.config["editorial"]["minimum_output_seconds"])
+        <= actual_duration
+        <= float(profile.config["editorial"]["maximum_output_seconds"]),
         "portrait_dimensions": (actual["width"], actual["height"]) == (width, height),
         "portrait_frame_rate": actual["avg_frame_rate"] == f"{fps.numerator}/{fps.denominator}",
         "approved_text_full_duration": title_qa["text_visible_frames"] == frames,

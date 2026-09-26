@@ -23,7 +23,7 @@
     }
   },
   "editorial": {
-    "minimum_output_seconds": 10,
+    "minimum_output_seconds": 5,
     "preferred_output_seconds": 10.5,
     "maximum_output_seconds": 12,
     "source_audio_only": true,
@@ -99,7 +99,20 @@
         "with the New Operator Skin Toggle"
       ]
     },
-    "audio_declick_ms": 12
+    "audio_declick_ms": 12,
+    "mode_timing": {
+      "cascade": {
+        "preferred_output_seconds": 8,
+        "comparison_seconds": 1,
+        "hook_frames": 12,
+        "ending_shot_frames": [
+          5,
+          5,
+          5,
+          5
+        ]
+      }
+    }
   },
   "output": {
     "width": 1920,
@@ -174,11 +187,11 @@
           2
         ],
         "switch_start_frames": [
-          8,
-          23,
-          38
+          4,
+          13,
+          22
         ],
-        "transition_frames": 4,
+        "transition_frames": 3,
         "margin": 56,
         "gap": 18,
         "panel_top": 55,

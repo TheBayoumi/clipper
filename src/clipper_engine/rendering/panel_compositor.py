@@ -104,7 +104,9 @@ def render_comparison(
     w, h = before.size
     x_boundaries = [round(float(v) * w) for v in cfg["main_band_boundaries"]]
     sampled: dict[str, list[float]] = {}
-    sample_set = {0, 8, 11, 12, 23, 26, 27, 38, 41, 42, frames - 1}
+    sample_set = {0, frames - 1}
+    for start in cfg["switch_start_frames"]:
+        sample_set.update({int(start), int(start) + int(cfg["transition_frames"])})
     for n in range(frames):
         states = stage_progress(n, plan, profile)
         frame = before.copy()
@@ -223,7 +225,20 @@ def render_panels(
     )
     folder = workspace / "cascade_panels"
     folder.mkdir(exist_ok=True)
-    sample_frames = {0, 15, 60, 74, 92, 183, 193, 204, 219, 234, 246, 253, 264, 314}
+    comparison_start = int(edit["hook"]["frames"]) + int(edit["full_source_frames"])
+    sample_frames = {
+        0,
+        frames - 1,
+        comparison_start,
+        comparison_start + int(edit["comparison_frames"]) - 1,
+    }
+    for start in cfg["switch_start_frames"]:
+        sample_frames.update(
+            {
+                comparison_start + int(start),
+                comparison_start + int(start) + int(cfg["transition_frames"]),
+            }
+        )
     sampled: dict[str, list[float]] = {}
     for n in range(frames):
         states = states_for_output(n, plan, profile, source_progress[n])

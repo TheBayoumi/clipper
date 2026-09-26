@@ -88,6 +88,66 @@ def _thumbnail(source: Path, frame: int, fps: Fraction) -> npt.NDArray[np.uint8]
     return np.frombuffer(completed.stdout, dtype=np.uint8).reshape(54, 96)
 
 
+def resolve_mode_timing(
+    editorial: dict[str, Any],
+    states: dict[str, Any],
+    comparison_mode: str,
+    fps: Fraction,
+) -> tuple[int, int, dict[str, int], list[dict[str, Any]]]:
+    """Resolve a Clipper montage's legal frame-grid schedule from profile calibration.
+
+    The verified source anchors and window STARTS remain authoritative. A mode
+    can choose a shorter subset of calibrated hook/reveal windows; it may not
+    invent source moments or increase a window beyond its verified interval.
+    """
+    styles = editorial.get("mode_timing", {})
+    style = styles.get(comparison_mode, {})
+    if not isinstance(style, dict) or set(style) - {
+        "preferred_output_seconds",
+        "comparison_seconds",
+        "hook_frames",
+        "ending_shot_frames",
+    }:
+        raise MontageRejection("mode_timing_invalid", "unknown montage timing calibration")
+    target = _frames(
+        style.get("preferred_output_seconds", editorial["preferred_output_seconds"]), fps
+    )
+    low = _frames(editorial["minimum_output_seconds"], fps)
+    high = _frames(editorial["maximum_output_seconds"], fps)
+    if not low <= target <= high:
+        raise MontageRejection("invalid_duration_config", "duration outside calibrated bounds")
+    comparison_frames = _frames(
+        style.get("comparison_seconds", editorial["comparison_seconds"]), fps
+    )
+    if comparison_frames < 1:
+        raise MontageRejection("mode_timing_invalid", "comparison must contain positive frames")
+    hook = {
+        "start_frame": int(states["hook_start_frame"]),
+        "frames": int(style.get("hook_frames", states["hook_frames"])),
+    }
+    if not 0 < hook["frames"] <= int(states["hook_frames"]):
+        raise MontageRejection("mode_timing_invalid", "hook exceeds verified source window")
+    event_start = int(states["toggle_motion_start_frame"])
+    event_end = int(states["toggle_motion_end_frame"])
+    if not hook["start_frame"] <= event_start < event_end <= hook["start_frame"] + hook["frames"]:
+        raise MontageRejection("mode_timing_invalid", "hook must retain the verified toggle event")
+    shots: list[dict[str, Any]] = [dict(shot) for shot in states["ending_shots"]]
+    sizes = style.get("ending_shot_frames")
+    if sizes is not None:
+        if not isinstance(sizes, list) or len(sizes) != len(shots):
+            raise MontageRejection(
+                "mode_timing_invalid", "one reveal duration per verified shot required"
+            )
+        for shot, size in zip(shots, sizes, strict=True):
+            size = int(size)
+            if not 0 < size <= int(shot["frames"]):
+                raise MontageRejection(
+                    "mode_timing_invalid", "reveal exceeds its verified source window"
+                )
+            shot["frames"] = size
+    return target, comparison_frames, hook, shots
+
+
 def build_plan(
     source: Path,
     profile: CampaignProfile,
@@ -190,17 +250,14 @@ def build_plan(
         )
 
     editorial = config["editorial"]
-    target = _frames(editorial["preferred_output_seconds"], fps)
-    low = _frames(editorial["minimum_output_seconds"], fps)
-    high = _frames(editorial["maximum_output_seconds"], fps)
-    if not low <= target <= high:
-        raise MontageRejection("invalid_duration_config", "preferred duration out of bounds")
     allowed_modes = editorial.get("comparison_modes", ["wipe"])
     if comparison_mode not in allowed_modes:
         raise MontageRejection(
             "invalid_comparison_mode", f"{comparison_mode} not in {allowed_modes}"
         )
-    comparison_frames = _frames(editorial["comparison_seconds"], fps)
+    target, comparison_frames, hook, shots = resolve_mode_timing(
+        editorial, states, comparison_mode, fps
+    )
     if comparison_mode == "cascade":
         from .rendering import panel_compositor
 
@@ -209,11 +266,6 @@ def build_plan(
                 "cascade_layout", "cascade requires Clipper portrait compositing"
             )
         panel_compositor.config(profile, comparison_frames)
-    hook = {
-        "start_frame": int(states["hook_start_frame"]),
-        "frames": int(states["hook_frames"]),
-    }
-    shots = [dict(shot) for shot in states["ending_shots"]]
     if not shots or [shot["state"] for shot in shots] != ["before", "after", "before", "after"]:
         raise MontageRejection(
             "invalid_switch_pattern", "ending requires calibrated A/B/A/B payoff"
@@ -324,11 +376,9 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
     states = editorial["verified_visual_states"].get(plan["source"]["filename"])
     if states is None:
         raise MontageRejection("uncalibrated_source", "plan source has no verified states")
-    expected_hook = {
-        "start_frame": int(states["hook_start_frame"]),
-        "frames": int(states["hook_frames"]),
-    }
-    expected_shots = [dict(shot) for shot in states["ending_shots"]]
+    target, comparison_frames, expected_hook, expected_shots = resolve_mode_timing(
+        editorial, states, str(montage.get("comparison_mode")), rate(profile)
+    )
     if montage["hook"] != expected_hook or montage["ending_shots"] != expected_shots:
         raise MontageRejection("source_window_changed", "source-native edit windows were modified")
     if montage.get("type") != "full_frame_toggle":
@@ -357,7 +407,7 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
         raise MontageRejection("toggle_event_changed", "source-verified toggle trigger was changed")
     if (before, after) != (int(states["before_frame"]), int(states["after_frame"])):
         raise MontageRejection("evidence_changed", "visual-state anchors were modified")
-    if int(montage["comparison_frames"]) != _frames(editorial["comparison_seconds"], rate(profile)):
+    if int(montage["comparison_frames"]) != comparison_frames:
         raise MontageRejection("frame_grid_mismatch", "comparison differs from profile")
     expected_ending = sum(int(s["frames"]) for s in expected_shots)
     expected_frames = (
@@ -366,7 +416,6 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
         + int(montage["comparison_frames"])
         + expected_ending
     )
-    target = _frames(editorial["preferred_output_seconds"], rate(profile))
     if (
         int(montage["ending_frames"]) != expected_ending
         or int(montage["output_frames"]) != expected_frames

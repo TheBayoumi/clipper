@@ -106,6 +106,33 @@ jobs:
             --render-manifest delivery_cascade/render_manifest.json \
             --output delivery_cascade/acceptance.json
 
+      - name: Verify shortened cascade still meets actual campaign minimum
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("delivery_cascade/render_manifest.json").read_text())
+          acceptance = json.loads(Path("delivery_cascade/acceptance.json").read_text())
+          edit = manifest["plan"]["montage"]
+          portrait = manifest["portrait"]
+          assert acceptance["status"] == "PASS", acceptance
+          assert edit["comparison_mode"] == "cascade"
+          assert edit["full_source_frames"] == 178
+          assert edit["output_frames"] == 240
+          assert portrait["qa"]["frame_count"] == 240
+          assert portrait["title"]["text_visible_frames"] == 240
+          assert portrait["cascade"]["panel_count"] == 3
+          assert all(portrait["qa"]["checks"].values()), portrait["qa"]
+          assert 5 <= portrait["qa"]["encoded_duration"] < 10, portrait["qa"]
+          print(
+              "QUALIFIED SHORT CASCADE: source frames=178, output frames=240, "
+              f"encoded duration={portrait['qa']['encoded_duration']}s, "
+              f"delivery={portrait['file']}"
+          )
+          PY
+
       - name: Publish qualified three-Operator cascade
         uses: actions/upload-artifact@v4
         with:

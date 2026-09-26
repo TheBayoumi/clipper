@@ -570,32 +570,67 @@ def test_cascade_is_configured_by_profile_not_a_second_pipeline(
     source: Path, profile: CampaignProfile
 ) -> None:
     p = _cascade_test_profile(profile)
+    assert p.config["editorial"]["minimum_output_seconds"] == 5
     plan = montage.build_plan(source, p, comparison_mode="cascade")
-    assert plan["montage"]["output_frames"] == 315
+    assert plan["montage"]["output_frames"] == 240
+    assert plan["montage"]["output_seconds"] == 8.0
     assert plan["montage"]["full_source_frames"] == 178
-    assert plan["montage"]["comparison_frames"] == 60
+    assert plan["montage"]["hook"] == {"start_frame": 55, "frames": 12}
+    assert plan["montage"]["comparison_frames"] == 30
+    assert [shot["frames"] for shot in plan["montage"]["ending_shots"]] == [5, 5, 5, 5]
     assert plan["montage"]["comparison_mode"] == "cascade"
-    start = 15 + 178
+    start = 12 + 178
     expected = {
         start + 0: [0, 0, 0],
-        start + 8: [0, 0, 0],
-        start + 12: [1, 0, 0],
-        start + 27: [1, 1, 0],
-        start + 42: [1, 1, 1],
-        253: [0, 0, 0],
-        264: [1, 1, 1],
-        274: [0, 0, 0],
-        314: [1, 1, 1],
+        start + 4: [0, 0, 0],
+        start + 7: [1, 0, 0],
+        start + 16: [1, 1, 0],
+        start + 25: [1, 1, 1],
+        220: [0, 0, 0],
+        225: [1, 1, 1],
+        230: [0, 0, 0],
+        235: [1, 1, 1],
+        239: [1, 1, 1],
     }
     for frame, expected_states in expected.items():
         fill = portrait_matte.toggle_progress(frame, plan, p)
         actual = panel_compositor.states_for_output(frame, plan, p, fill)
         assert actual == pytest.approx(expected_states)
         assert fill == pytest.approx(sum(expected_states) / 3)
-    for local in range(60):
+    for local in range(30):
         frame = start + local
         fill = portrait_matte.toggle_progress(frame, plan, p)
         assert fill == pytest.approx(sum(panel_compositor.stage_progress(local, plan, p)) / 3)
+    original = montage.build_plan(source, p, comparison_mode="wipe")
+    assert original["montage"]["output_frames"] == 315
+    assert original["montage"]["comparison_frames"] == 60
+
+
+@pytest.mark.parametrize(
+    ("key", "bad_value"),
+    [
+        ("hook_frames", 6),
+        ("ending_shot_frames", [5, 5, 8, 5]),
+        ("ending_shot_frames", [5, 5, 5]),
+        ("comparison_seconds", 1.01),
+    ],
+)
+def test_cascade_rejects_invalid_short_edit_timing(
+    source: Path, profile: CampaignProfile, key: str, bad_value: object
+) -> None:
+    p = _cascade_test_profile(profile)
+    p.config["editorial"]["mode_timing"]["cascade"][key] = bad_value
+    with pytest.raises(montage.MontageRejection, match=r"mode_timing_invalid|off_frame_grid"):
+        montage.build_plan(source, p, comparison_mode="cascade")
+
+
+def test_campaign_five_second_minimum_is_not_confused_with_editing_target(
+    source: Path, profile: CampaignProfile
+) -> None:
+    p = _cascade_test_profile(profile)
+    p.config["editorial"]["mode_timing"]["cascade"]["preferred_output_seconds"] = 4
+    with pytest.raises(montage.MontageRejection, match="invalid_duration_config"):
+        montage.build_plan(source, p, comparison_mode="cascade")
 
 
 @pytest.mark.parametrize(
@@ -640,12 +675,12 @@ def test_cascade_produces_full_duration_original_source_portrait(
     assert rendered["staging"]["comparison"]["comparison_mode"] == "cascade"
     assert rendered["staging"]["comparison"]["frame_count_exact"]
     assert rendered["staging"]["comparison"]["full_frame"]
-    assert panel_qa["frame_count"] == 315
+    assert panel_qa["frame_count"] == 240
     assert panel_qa["panel_count"] == 3
     assert panel_qa["text_synced"] is True
-    assert panel_qa["switch_frames"] == [201, 216, 231]
-    assert panel_qa["sampled_states"]["193"] == [0, 0, 0]
-    assert panel_qa["sampled_states"]["246"] == [1, 1, 1]
+    assert panel_qa["switch_frames"] == [194, 203, 212]
+    assert panel_qa["sampled_states"]["190"] == [0, 0, 0]
+    assert panel_qa["sampled_states"]["219"] == [1, 1, 1]
     assert (
         panel_qa["source_still_sha256"]
         == (rendered["staging"]["comparison"]["source_still_sha256"])
@@ -653,14 +688,14 @@ def test_cascade_produces_full_duration_original_source_portrait(
     assert all(qa["checks"].values())
     assert len(qa["cascade_panel_pixel_differences"]) == 3
     assert all(delta > 2.5 for delta in qa["cascade_panel_pixel_differences"])
-    assert qa["frame_count"] == 315
-    assert qa["encoded_duration"] == pytest.approx(10.5, abs=0.055)
+    assert qa["frame_count"] == 240
+    assert qa["encoded_duration"] == pytest.approx(8.0, abs=0.055)
     assert qa["file_size_mb"] == pytest.approx(2.0, abs=1.0)
     assert len(qa["matte_sampled_frames"]) == 3
     assert all(sample["max_error"] <= 2 for sample in qa["matte_sampled_frames"])
-    assert rendered["portrait"]["title"]["text_visible_frames"] == 315
+    assert rendered["portrait"]["title"]["text_visible_frames"] == 240
     assert rendered["portrait"]["title"]["progress_samples"]["0"] == 0
-    assert rendered["portrait"]["title"]["progress_samples"]["314"] == 1
+    assert rendered["portrait"]["title"]["progress_samples"]["239"] == 1
     accepted = qualify_campaign(
         p, output / "render_manifest.json", tmp_path / "cascade_acceptance.json"
     )
