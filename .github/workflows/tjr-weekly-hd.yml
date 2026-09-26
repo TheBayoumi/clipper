@@ -151,6 +151,23 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
           python -m pip install -e ".[asr]"
           yt-dlp --version
+      - name: Start local PO-token provider for YouTube playback
+        run: |
+          set -euo pipefail
+          docker run --name tjr-pot-provider -d --init \
+            -p 127.0.0.1:4416:4416 \
+            brainicism/bgutil-ytdlp-pot-provider:2.0.0
+          python -m pip install -U "yt-dlp[default]" "bgutil-ytdlp-pot-provider==2.0.0"
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4416/ >/dev/null 2>&1; then break; fi
+            if ! docker inspect -f '{{.State.Running}}' tjr-pot-provider | grep -qx true; then
+              docker logs tjr-pot-provider
+              exit 1
+            fi
+            sleep 2
+          done
+          docker ps --filter name=tjr-pot-provider
+          yt-dlp --version
       - name: Check source channel IDs and acquire authentic YouTube HD original
         run: |
           set -euo pipefail
