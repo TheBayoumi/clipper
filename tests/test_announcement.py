@@ -139,6 +139,30 @@ def test_campaign_cli_stage_routes_to_shared_workflow() -> None:
         assert mocked.call_args.args[0].profile == CAMPAIGN
 
 
+def test_campaign_cli_accepts_profile_configured_cascade_mode() -> None:
+    with patch("clipper.cli.run_campaign", return_value=0) as mocked:
+        assert (
+            main(
+                [
+                    "campaign",
+                    CAMPAIGN,
+                    "plan",
+                    "--source",
+                    "source.mp4",
+                    "--output",
+                    "cascade.json",
+                    "--comparison-mode",
+                    "cascade",
+                ]
+            )
+            == 0
+        )
+    args = mocked.call_args.args[0]
+    assert args.profile == CAMPAIGN
+    assert args.campaign_command == "plan"
+    assert args.comparison_mode == "cascade"
+
+
 def test_plan_frame_grid_preview(source: Path, profile: CampaignProfile) -> None:
     plan = montage.build_plan(source, profile)
     assert plan["status"] == "PREVIEW_ONLY"
@@ -659,3 +683,7 @@ def test_cascade_is_covered_by_existing_official_qualification_workflow() -> Non
     assert "--comparison-mode cascade" in workflow
     assert "delivery_cascade/render_manifest.json" in workflow
     assert "delivery_cascade/*.mp4" in workflow
+    assert workflow.index("Plan certified-source three-Operator cascade") < workflow.index(
+        "Plan source-grounded legal visual-state comparison"
+    )
+    assert "warzone-cascade-" + chr(36) + "{{ github.sha }}" in workflow

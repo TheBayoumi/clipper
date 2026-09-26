@@ -263,7 +263,9 @@ def run_campaign(args: argparse.Namespace) -> int:
             args.source,
             args.source_qa,
             args.output,
-            comparison_mode=args.comparison_mode,
+            comparison_mode=(
+                args.comparison_mode or profile.config["editorial"]["comparison_modes"][0]
+            ),
             approved_text_index=args.approved_text_index,
         )
     elif command == "render":
