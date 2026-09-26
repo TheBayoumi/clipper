@@ -53,12 +53,19 @@ def parse_official_feed(xml: bytes, expected_channel: str) -> list[OfficialVideo
     if expected_channel not in CHANNELS:
         raise ValueError("non-campaign YouTube channel")
     feed = ET.fromstring(xml)
-    if feed.findtext(f"{YT}channelId") != expected_channel:
-        raise ValueError("YouTube feed belongs to a different channel")
+    yt_channel = (feed.findtext(f"{YT}channelId") or "").strip()
+    atom_id = (feed.findtext(f"{ATOM}id") or "").strip()
+    atom_channel = atom_id.removeprefix("yt:channel:")
+    if yt_channel != expected_channel and atom_channel != expected_channel:
+        raise ValueError(
+            "YouTube feed owner mismatch: "
+            f"root={feed.tag!r} yt_channel={yt_channel[:40]!r} "
+            f"atom_id={atom_id[:60]!r}"
+        )
     items: list[OfficialVideo] = []
     for entry in feed.findall(f"{ATOM}entry"):
         video_id = (entry.findtext(f"{YT}videoId") or "").strip()
-        channel_id = (entry.findtext(f"{YT}channelId") or "").strip()
+        channel_id = (entry.findtext(f"{YT}channelId") or expected_channel).strip()
         published = (entry.findtext(f"{ATOM}published") or "").strip()
         if not VIDEO_ID.fullmatch(video_id) or channel_id != expected_channel or not published:
             continue
@@ -70,6 +77,60 @@ def parse_official_feed(xml: bytes, expected_channel: str) -> list[OfficialVideo
                 published=published,
             )
         )
+    return items
+
+
+def _flat_channel_playlist(channel_id: str) -> list[OfficialVideo]:
+    """Backup discovery from the SAME allowlisted YouTube channel, never ytsearch."""
+    if channel_id not in CHANNELS:
+        raise ValueError("not a Reach-listed channel")
+    url = f"https://www.youtube.com/channel/{channel_id}/videos"
+    result = invoke(
+        [
+            "yt-dlp",
+            "--flat-playlist",
+            "--dump-json",
+            "--no-warnings",
+            "--playlist-end",
+            "10",
+            url,
+        ],
+        timeout=180,
+    )
+    items: list[OfficialVideo] = []
+    for line in result.stdout.splitlines():
+        if not line.startswith("{"):
+            continue
+        entry = json.loads(line)
+        if not isinstance(entry, dict):
+            continue
+        video_id = str(entry.get("id") or "")
+        listed_owner = str(entry.get("channel_id") or "")
+        if not VIDEO_ID.fullmatch(video_id):
+            continue
+        if listed_owner and listed_owner != channel_id:
+            continue
+        timestamp = entry.get("release_timestamp") or entry.get("timestamp")
+        published = (
+            datetime.fromtimestamp(float(timestamp), UTC).isoformat()
+            if timestamp is not None
+            else ""
+        )
+        items.append(
+            OfficialVideo(
+                video_id=video_id,
+                channel_id=channel_id,
+                title=str(entry.get("title") or ""),
+                published=published,
+            )
+        )
+    if not items:
+        raise RuntimeError("official channel playlist did not expose any candidate videos")
+    LOGGER.info(
+        "Found %d candidates in official %s channel playlist; metadata still unverified",
+        len(items),
+        CHANNELS[channel_id],
+    )
     return items
 
 
@@ -98,7 +159,16 @@ def discover_official_uploads() -> tuple[list[OfficialVideo], list[dict[str, str
             candidates.extend(items)
         except Exception as exc:
             failures.append({"source": url, "error": f"{type(exc).__name__}: {exc}"[:500]})
-    # Entries are sorted by their actual published timestamps, not ytsearch relevance.
+            try:
+                candidates.extend(_flat_channel_playlist(channel_id))
+            except Exception as fallback_exc:
+                failures.append(
+                    {
+                        "source": f"https://www.youtube.com/channel/{channel_id}/videos",
+                        "error": f"{type(fallback_exc).__name__}: {fallback_exc}"[-1000:],
+                    }
+                )
+    # Prefer actual RSS publish times; flat-playlist entries without dates rank last.
     candidates.sort(key=lambda item: item.published, reverse=True)
     unique: dict[str, OfficialVideo] = {}
     for item in candidates:
