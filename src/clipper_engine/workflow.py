@@ -139,6 +139,43 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
         raise montage.MontageRejection("delivery_hash", "delivery is missing or has changed")
     if not all(manifest["qa"]["checks"].values()):
         raise montage.MontageRejection("technical_qa", "render manifest reports failed checks")
+    portrait: dict[str, Any] | None = manifest.get("portrait")
+    if profile.config["output"].get("portrait_matte", {}).get("enabled", False):
+        if not isinstance(portrait, dict):
+            raise montage.MontageRejection(
+                "portrait_missing", "approved full-duration, source-synced portrait is required"
+            )
+        portrait_path = Path(str(portrait.get("file") or ""))
+        if not portrait_path.is_file() or montage.sha256(portrait_path) != portrait.get("sha256"):
+            raise montage.MontageRejection(
+                "portrait_hash", "portrait delivery is missing or changed"
+            )
+        from .rendering.portrait_matte import PORTRAIT_REQUIRED_CHECKS
+
+        portrait_checks = portrait.get("qa", {}).get("checks", {})
+        if (
+            not isinstance(portrait_checks, dict)
+            or set(portrait_checks) != PORTRAIT_REQUIRED_CHECKS
+            or not all(value is True for value in portrait_checks.values())
+        ):
+            raise montage.MontageRejection(
+                "portrait_qa", "portrait technical or semantic QA failed"
+            )
+        from . import media_contract as media
+
+        portrait_video = media.video_profile(portrait_path, count_frames=True)
+        portrait_size = profile.config["output"]["portrait_matte"]
+        if (
+            (portrait_video["width"], portrait_video["height"])
+            != (int(portrait_size["width"]), int(portrait_size["height"]))
+            or portrait_video["frame_count"] != int(manifest["plan"]["montage"]["output_frames"])
+            or portrait["title"]["text_visible_frames"] != portrait_video["frame_count"]
+            or portrait["title"]["approved_copy"]
+            != manifest["plan"]["montage"]["approved_on_screen_text"]
+        ):
+            raise montage.MontageRejection(
+                "portrait_contract", "portrait frame grid, safe-title schedule or geometry changed"
+            )
     # Check the encoded delivery rather than relying on an old JSON assertion.
     from . import media_contract as media
 
@@ -174,6 +211,11 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
         "allowed_on_screen_copy": manifest["plan"]["montage"]["approved_on_screen_text"],
         "audio_policy": "source_audio_only",
     }
+    if portrait is not None:
+        result["primary_delivery"] = portrait["file"]
+        result["primary_delivery_sha256"] = portrait["sha256"]
+        result["portrait_sync"] = portrait["title"]["progress_samples"]
+        result["portrait_text_visible_frames"] = portrait["title"]["text_visible_frames"]
     _write(output, result)
     return result
 

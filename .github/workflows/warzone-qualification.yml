@@ -109,7 +109,7 @@ jobs:
           SOURCE_KEY: ${{ steps.source.outputs.source_key }}
         run: |
           set -euo pipefail
-          clipper campaign warzone-operator-toggle plan             --source "$SOURCE_FILE"             --source-qa "source/$SOURCE_KEY.source_qa.json"             --comparison-mode cuts             --approved-text-index 2             --output plan_cuts.json
+          clipper campaign warzone-operator-toggle plan             --source "$SOURCE_FILE"             --source-qa "source/$SOURCE_KEY.source_qa.json"             --comparison-mode cuts             --approved-text-index 1             --output plan_cuts.json
 
       - name: Render alternate full-frame A/B montage from certified source
         timeout-minutes: 35

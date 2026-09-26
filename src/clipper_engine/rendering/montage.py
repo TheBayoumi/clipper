@@ -36,7 +36,11 @@ def _escape_filter_path(path: Path) -> str:
 
 
 def filter_graph(
-    plan: dict[str, Any], profile: CampaignProfile, title_path: Path, font: Path
+    plan: dict[str, Any],
+    profile: CampaignProfile,
+    title_path: Path,
+    font: Path,
+    show_embedded_title: bool = True,
 ) -> str:
     """Exact-frame preview-hook -> original -> comparison -> final A/B edit."""
     output = profile.config["output"]
@@ -73,6 +77,7 @@ def filter_graph(
     fade = float(profile.config["editorial"].get("audio_declick_ms", 12)) / 1000.0
     if not 0.002 <= fade <= min(hlen, comparison_seconds, ending_seconds) / 4:
         raise MontageRejection("audio_declick_invalid", "source-only edit-edge fade out of range")
+    title_chain = f",{title_filter}" if show_embedded_title else ""
     # Only audio from the one certified source track, retained at normal playback rate.
     # Visual switches are under a continuous source-native audio passage to avoid pops.
     return ";".join(
@@ -83,7 +88,7 @@ def filter_graph(
             "[2:v]setpts=PTS-STARTPTS[vfinal]",
             "[vhook][vfull][vcompare][vfinal]concat=n=4:v=1:a=0,"
             f"fps={fps.numerator}/{fps.denominator},"
-            f"format={output['pixel_format']},{title_filter}[outv]",
+            f"format={output['pixel_format']}{title_chain}[outv]",
             "[0:a]asplit=4[ahook][afull][acompare][afinal]",
             f"[ahook]atrim=start={hstart:.9f}:end={hend:.9f},"
             f"asetpts=PTS-STARTPTS,apad=pad_dur=0.1,atrim=duration={hlen:.9f},"
@@ -444,6 +449,78 @@ def _qa(
     }
 
 
+def _render_canonical(
+    staged: Path,
+    comparison: Path,
+    ending: Path,
+    hook: Path,
+    graph: str,
+    canonical: Path,
+    output: dict[str, Any],
+    source_profile: dict[str, Any],
+    plan: dict[str, Any],
+    total: float,
+) -> None:
+    media.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-threads:v",
+            "1",
+            "-i",
+            str(staged),
+            "-threads:v",
+            "1",
+            "-i",
+            str(comparison),
+            "-threads:v",
+            "1",
+            "-i",
+            str(ending),
+            "-threads:v",
+            "1",
+            "-i",
+            str(hook),
+            "-filter_complex_threads",
+            "1",
+            "-filter_complex",
+            graph,
+            "-map",
+            "[outv]",
+            "-map",
+            "[outa]",
+            "-frames:v",
+            str(plan["montage"]["output_frames"]),
+            "-c:v",
+            "ffv1",
+            "-level",
+            "3",
+            "-threads:v",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            "-ar",
+            str(output["audio_sample_rate"]),
+            "-ac",
+            str(output["audio_channels"]),
+            *media.profile_output_args(source_profile),
+            *media.color_metadata_tag_args(source_profile),
+            "-t",
+            f"{total:.9f}",
+            "-f",
+            "nut",
+            str(canonical),
+        ]
+    )
+    if media.video_profile(canonical, count_frames=True)["frame_count"] != int(
+        plan["montage"]["output_frames"]
+    ):
+        raise RuntimeError("canonical montage is not exact on its frame grid")
+
+
 def render(
     source: Path,
     profile: CampaignProfile,
@@ -476,64 +553,18 @@ def render(
         staging["reveal"] = ending_qa
         graph = filter_graph(plan, profile, title, _fontfile())
         total = float(plan["montage"]["output_seconds"])
-        media.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-threads:v",
-                "1",
-                "-i",
-                str(staged),
-                "-threads:v",
-                "1",
-                "-i",
-                str(comparison),
-                "-threads:v",
-                "1",
-                "-i",
-                str(ending),
-                "-threads:v",
-                "1",
-                "-i",
-                str(hook),
-                "-filter_complex_threads",
-                "1",
-                "-filter_complex",
-                graph,
-                "-map",
-                "[outv]",
-                "-map",
-                "[outa]",
-                "-frames:v",
-                str(plan["montage"]["output_frames"]),
-                "-c:v",
-                "ffv1",
-                "-level",
-                "3",
-                "-threads:v",
-                "1",
-                "-c:a",
-                "pcm_s16le",
-                "-ar",
-                str(output["audio_sample_rate"]),
-                "-ac",
-                str(output["audio_channels"]),
-                *media.profile_output_args(source_profile),
-                *media.color_metadata_tag_args(source_profile),
-                "-t",
-                f"{total:.9f}",
-                "-f",
-                "nut",
-                str(canonical),
-            ]
+        _render_canonical(
+            staged,
+            comparison,
+            ending,
+            hook,
+            graph,
+            canonical,
+            output,
+            source_profile,
+            plan,
+            total,
         )
-        if media.video_profile(canonical, count_frames=True)["frame_count"] != int(
-            plan["montage"]["output_frames"]
-        ):
-            raise RuntimeError("canonical visual montage is not exact on frame grid")
         media.run(
             [
                 "ffmpeg",
@@ -578,6 +609,36 @@ def render(
             ]
         )
         qa = _qa(canonical, target, staging, plan, profile)
+        portrait: dict[str, Any] | None = None
+        if output.get("portrait_matte", {}).get("enabled", False):
+            from . import portrait_matte
+
+            # Source-fidelity landscape QA retains its embedded approved copy.
+            # The portrait derivative starts from an independently encoded CLEAN
+            # canonical edit to prevent duplicate typography over the Operators.
+            clean = workspace / "clean_canonical.nut"
+            clean_graph = filter_graph(plan, profile, title, _fontfile(), show_embedded_title=False)
+            _render_canonical(
+                staged,
+                comparison,
+                ending,
+                hook,
+                clean_graph,
+                clean,
+                output,
+                source_profile,
+                plan,
+                total,
+            )
+            portrait = portrait_matte.render_portrait(
+                clean,
+                output_dir,
+                workspace,
+                plan,
+                profile,
+                source_profile,
+                _metric,
+            )
 
     manifest = {
         "schema_version": 1,
@@ -589,6 +650,7 @@ def render(
         "sha256": sha256(target),
         "staging": staging,
         "qa": qa,
+        "portrait": portrait,
         "status": "PASS" if plan["source"]["certified"] else "PREVIEW_ONLY",
     }
     path = output_dir / "render_manifest.json"

@@ -163,6 +163,12 @@ def build_plan(
         raise MontageRejection(
             "roi_invalid", "visual state ROI must be a valid normalized rectangle"
         )
+    toggle_motion_start = int(states.get("toggle_motion_start_frame", before))
+    toggle_motion_end = int(states.get("toggle_motion_end_frame", after))
+    if not before < toggle_motion_start < toggle_motion_end < after:
+        raise MontageRejection(
+            "toggle_event_invalid", "source transition calibration must lie between verified states"
+        )
     first = _thumbnail(source, before, fps).astype(np.float32)
     second = _thumbnail(source, after, fps).astype(np.float32)
     x0, y0, x1, y1 = (
@@ -269,6 +275,8 @@ def build_plan(
         "evidence": {
             "before_frame": before,
             "after_frame": after,
+            "toggle_motion_start_frame": toggle_motion_start,
+            "toggle_motion_end_frame": toggle_motion_end,
             "state_difference": round(visual_difference, 6),
             "changed_pixel_fraction": round(changed_fraction, 6),
             "roi": roi,
@@ -325,6 +333,12 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
         raise MontageRejection("source_frames_changed", "source frame count differs")
     before = int(plan["evidence"]["before_frame"])
     after = int(plan["evidence"]["after_frame"])
+    if int(plan["evidence"].get("toggle_motion_start_frame", -1)) != int(
+        states.get("toggle_motion_start_frame", before)
+    ) or int(plan["evidence"].get("toggle_motion_end_frame", -1)) != int(
+        states.get("toggle_motion_end_frame", after)
+    ):
+        raise MontageRejection("toggle_event_changed", "source-verified toggle trigger was changed")
     if (before, after) != (int(states["before_frame"]), int(states["after_frame"])):
         raise MontageRejection("evidence_changed", "visual-state anchors were modified")
     if int(montage["comparison_frames"]) != _frames(editorial["comparison_seconds"], rate(profile)):

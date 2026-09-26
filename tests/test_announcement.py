@@ -16,6 +16,7 @@ from clipper.cli import main
 from clipper_engine import montage
 from clipper_engine.profiles import CampaignProfile, load_profile
 from clipper_engine.rendering import montage as renderer
+from clipper_engine.rendering import portrait_matte
 from clipper_engine.sources import qa
 from clipper_engine.workflow import plan as plan_campaign
 from clipper_engine.workflow import qualify as qualify_campaign
@@ -90,6 +91,7 @@ def profile(tmp_path: Path) -> CampaignProfile:
     values = copy.deepcopy(load_profile(CAMPAIGN).config)
     values["output"]["width"] = 320
     values["output"]["height"] = 180
+    values["output"]["portrait_matte"]["enabled"] = False
     values["editorial"]["minimum_state_difference"] = 0.005
     values["editorial"]["minimum_changed_pixel_fraction"] = 0.05
     path = tmp_path / "profile.json"
@@ -244,6 +246,7 @@ def full_render(
     cfg = copy.deepcopy(load_profile(CAMPAIGN).config)
     cfg["output"]["width"] = 320
     cfg["output"]["height"] = 180
+    cfg["output"]["portrait_matte"]["enabled"] = False
     cfg["editorial"]["minimum_state_difference"] = 0.005
     cfg["editorial"]["minimum_changed_pixel_fraction"] = 0.05
     profile = CampaignProfile(name=CAMPAIGN, config=cfg)
@@ -419,3 +422,107 @@ def test_alternate_comparison_render_fills_frame(
     image = np.frombuffer(completed.stdout, dtype=np.uint8).reshape(180, 320)
     assert float(np.mean(image[:25, :])) > 12.0
     assert float(np.mean(image[-25:, :])) > 12.0
+
+
+def test_toggle_word_follows_exact_visual_state_timeline(
+    source: Path, profile: CampaignProfile
+) -> None:
+    plan = montage.build_plan(source, profile)
+    assert plan["evidence"]["toggle_motion_start_frame"] == 57
+    assert plan["evidence"]["toggle_motion_end_frame"] == 64
+    progress = portrait_matte.toggle_progress
+    expected = {
+        0: 0.0,
+        9: 1.0,
+        15: 0.0,
+        72: 0.0,
+        79: 1.0,
+        193: 0.0,
+        203: 0.0,
+        223: 0.5,
+        243: 1.0,
+        253: 0.0,
+        263: 0.0,
+        264: 1.0,
+        274: 0.0,
+        281: 1.0,
+        314: 1.0,
+    }
+    for output_frame, visual_state in expected.items():
+        assert progress(output_frame, plan, profile) == pytest.approx(visual_state)
+    other = montage.build_plan(source, profile, comparison_mode="cuts")
+    assert progress(206, other, profile) == 0.0
+    assert progress(207, other, profile) == 1.0
+    assert progress(224, other, profile) == 1.0
+    assert progress(225, other, profile) == 0.0
+    assert progress(233, other, profile) == 0.0
+    assert progress(234, other, profile) == 1.0
+
+
+@pytest.mark.parametrize(("mode", "text_choice"), [("wipe", 1), ("cuts", 2)])
+def test_certified_portrait_delivery_sync_and_full_duration_copy(
+    source: Path,
+    profile: CampaignProfile,
+    certificate: tuple[Path, dict[str, Any]],
+    tmp_path: Path,
+    mode: str,
+    text_choice: int,
+) -> None:
+    values = copy.deepcopy(profile.config)
+    values["output"]["portrait_matte"]["enabled"] = True
+    values["output"]["portrait_matte"]["width"] = 180
+    values["output"]["portrait_matte"]["height"] = 320
+    p = CampaignProfile(name=CAMPAIGN, config=values)
+    manifest_path, _ = certificate
+    plan_path = tmp_path / "portrait_plan.json"
+    plan = plan_campaign(
+        p,
+        source,
+        manifest_path,
+        plan_path,
+        comparison_mode=mode,
+        approved_text_index=text_choice,
+    )
+    result = render_campaign(p, source, manifest_path, plan_path, tmp_path / "portrait")
+    portrait = result["portrait"]
+    assert portrait is not None
+    assert portrait["qa"]["frame_count"] == 315
+    assert portrait["qa"]["encoded_duration"] == pytest.approx(10.5, abs=0.055)
+    assert portrait["title"]["text_visible_frames"] == 315
+    assert portrait["title"]["approved_copy"] == plan["montage"]["approved_on_screen_text"]
+    assert portrait["title"]["progress_samples"]["0"] == 0.0
+    assert portrait["title"]["progress_samples"]["314"] == 1.0
+    assert all(portrait["qa"]["checks"].values())
+    accepted = qualify_campaign(
+        p,
+        tmp_path / "portrait" / "render_manifest.json",
+        tmp_path / "portrait_acceptance.json",
+    )
+    assert accepted["status"] == "PASS"
+    assert accepted["primary_delivery"] == portrait["file"]
+    assert accepted["portrait_text_visible_frames"] == 315
+
+    manifest = json.loads((tmp_path / "portrait" / "render_manifest.json").read_text())
+    manifest["portrait"]["qa"]["checks"] = {}
+    bad = tmp_path / "portrait_qa_bad.json"
+    bad.write_text(json.dumps(manifest))
+    with pytest.raises(montage.MontageRejection, match="portrait_qa"):
+        qualify_campaign(p, bad, tmp_path / "wrong_qa.json")
+    manifest["portrait"] = None
+    missing = tmp_path / "portrait_missing.json"
+    missing.write_text(json.dumps(manifest))
+    with pytest.raises(montage.MontageRejection, match="portrait_missing"):
+        qualify_campaign(p, missing, tmp_path / "missing_qa.json")
+
+
+def test_plan_rejects_tampered_verified_toggle_event(
+    source: Path, profile: CampaignProfile
+) -> None:
+    wrong = copy.deepcopy(profile.config)
+    wrong["output"]["portrait_matte"]["enabled"] = True
+    p = CampaignProfile(name=CAMPAIGN, config=wrong)
+    plan = montage.build_plan(source, p)
+    assert plan["status"] == "PREVIEW_ONLY"
+    with pytest.raises(montage.MontageRejection, match="toggle_event_changed"):
+        plan["evidence"]["toggle_motion_start_frame"] = 1
+        montage.validate_plan(plan, source, p)

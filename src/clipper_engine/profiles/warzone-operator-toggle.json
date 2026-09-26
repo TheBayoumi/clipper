@@ -64,7 +64,9 @@
             "start_frame": 144,
             "frames": 34
           }
-        ]
+        ],
+        "toggle_motion_start_frame": 57,
+        "toggle_motion_end_frame": 64
       }
     },
     "visual_state_roi": [
@@ -109,7 +111,33 @@
     "pixel_format": "yuv420p",
     "video_crf": 18,
     "video_preset": "medium",
-    "format": "mp4"
+    "format": "mp4",
+    "portrait_matte": {
+      "enabled": true,
+      "width": 1080,
+      "height": 1920,
+      "text_full_duration": true,
+      "background_hex": "#0F1115",
+      "text_hex": "#FAFAFA",
+      "accent_hex": "#FFD848",
+      "title_layouts": {
+        "Operator Toggle Introduced for Call of Duty: Warzone": [
+          "Operator {Toggle}",
+          "Introduced for",
+          "Call of Duty: Warzone"
+        ],
+        "Call of Duty: Warzone Season 1 Adds a New Operator Skin Toggle": [
+          "Call of Duty: Warzone",
+          "Season 1 Adds a New",
+          "Operator Skin {Toggle}"
+        ],
+        "See Call of Duty: Warzone Your Way with the New Operator Skin Toggle": [
+          "See Call of Duty: Warzone",
+          "Your Way with the New",
+          "Operator Skin {Toggle}"
+        ]
+      }
+    }
   },
   "platform": {
     "destinations": [
