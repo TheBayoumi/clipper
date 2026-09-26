@@ -143,6 +143,7 @@ jobs:
       CLIPPER_RENDER_PRESET: medium
       CLIPPER_RENDER_CRF: "18"
       CLIPPER_RENDER_THREADS: "2"
+      TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
     steps:
       - uses: actions/checkout@v5
         with:
