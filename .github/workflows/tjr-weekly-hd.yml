@@ -12,6 +12,7 @@ on:
       - "scripts/tjr_editorial.py"
       - "scripts/tjr_browser_probe.py"
       - "tests/test_tjr_editorial.py"
+      - "tests/test_transcript.py"
       - "src/clipper/transcript.py"
       - "src/clipper/render.py"
       - "src/clipper/youtube.py"
@@ -477,13 +478,16 @@ jobs:
           name: tjr-real-original-youtube-hd-${{ matrix.channel_id }}-${{ github.run_id }}
           path: |
             tjr-modal-probe/verified-original-egress.json
+            tjr-modal-probe/staged-original.json
             tjr-modal-artifacts/**/clips/*.mp4
             tjr-modal-artifacts/**/clips/*.srt
             tjr-modal-artifacts/**/clips/*-preview.png
             tjr-modal-artifacts/**/clips/*-contact.png
+            tjr-modal-artifacts/**/clips/*-contact.png
             tjr-modal-artifacts/**/editorial-candidate-audit.json
             tjr-modal-artifacts/**/ranked-candidates.json
             tjr-modal-artifacts/**/tjr-youtube-qa-report.json
+            tjr-modal-artifacts/**/editorial-candidate-audit.json
             tjr-modal-artifacts/**/source-acquisition-errors.json
             tjr-modal-artifacts/**/official-source-candidates.json
             tjr-modal-artifacts/**/transcript.json
