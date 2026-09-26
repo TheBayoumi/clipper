@@ -204,16 +204,35 @@ def invoke(command: list[str], *, timeout: int) -> subprocess.CompletedProcess[s
         raise RuntimeError(f"{command[0]}: {detail[-1200:]}") from exc
 
 
+def dynamic_browser_variants() -> tuple[tuple[str, ...], ...]:
+    """Mint per-video guest playback tokens using a fresh runner browser.
+
+    Browser-token generation is an automatic public-video transport attempt,
+    not a substitute for authenticated access if YouTube blocks runner IPs.
+    """
+    browser = os.getenv("YT_DLP_WPC_BROWSER_PATH", "").strip()
+    if not browser:
+        return ()
+    path = Path(browser)
+    if not path.is_file():
+        raise RuntimeError("dynamic YouTube token browser executable is missing")
+    plugin = ("--extractor-args", f"youtubepot-wpc:browser_path={path}")
+    return (
+        ("--extractor-args", "youtube:player_client=mweb", *plugin),
+        ("--extractor-args", "youtube:player_client=web_safari", *plugin),
+    )
+
+
 def verified_youtube_metadata(video: OfficialVideo) -> dict[str, Any]:
     """Do not trust a title, channel handle, RSS alone, or search result for provenance."""
     errors: list[str] = []
-    # PO tokens help with media formats, but a runner-level bot challenge may
-    # reject metadata before the provider can be consulted. Try supported
-    # client surfaces against the SAME feed-verified original video ID.
+    # Try browser-minted guest PO tokens first. YouTube may still independently
+    # refuse GitHub's public IP before any video metadata can be retrieved.
     client_variants = (
-        (),
+        *dynamic_browser_variants(),
+        ("--extractor-args", "youtube:player_client=mweb"),
+        ("--extractor-args", "youtube:player_client=tv"),
         ("--extractor-args", "youtube:player_client=web_safari"),
-        ("--extractor-args", "youtube:player_client=tv_simply"),
         ("--extractor-args", "youtube:player_client=web_embedded"),
         ("--extractor-args", "youtube:player_client=android_vr"),
         ("--impersonate", "chrome", "--extractor-args", "youtube:player_client=web_safari"),
@@ -273,9 +292,10 @@ def download_original_excerpt(
     preferred = tuple((metadata or {}).get("_verified_client_args") or ())
     client_variants = (
         preferred,
+        *dynamic_browser_variants(),
         ("--extractor-args", "youtube:player_client=mweb"),
+        ("--extractor-args", "youtube:player_client=tv"),
         ("--extractor-args", "youtube:player_client=web_safari"),
-        ("--extractor-args", "youtube:player_client=tv_simply"),
         ("--extractor-args", "youtube:player_client=web_embedded"),
         ("--extractor-args", "youtube:player_client=android_vr"),
     )
