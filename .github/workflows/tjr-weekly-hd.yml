@@ -159,7 +159,7 @@ jobs:
             brainicism/bgutil-ytdlp-pot-provider:2.0.0
           python -m pip install -U "yt-dlp[default]" "bgutil-ytdlp-pot-provider==2.0.0"
           for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:4416/ >/dev/null 2>&1; then break; fi
+            if python -c "import socket; s=socket.create_connection(('127.0.0.1', 4416),timeout=2); s.close()" >/dev/null 2>&1; then break; fi
             if ! docker inspect -f '{{.State.Running}}' tjr-pot-provider | grep -qx true; then
               docker logs tjr-pot-provider
               exit 1
