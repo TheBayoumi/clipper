@@ -377,8 +377,8 @@ jobs:
       max-parallel: 1
       matrix:
         channel_id:
-          - UCGHBUXjDCeiIXNdKR0HUZnA
           - UCZen39LQJPx04GjPj7FOMcw
+          - UCGHBUXjDCeiIXNdKR0HUZnA
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     permissions:
@@ -388,9 +388,9 @@ jobs:
       TJR_EDITORIAL_BATCH_LIMIT: '12'
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      CLIPPER_RENDER_PRESET: medium
-      CLIPPER_RENDER_CRF: "18"
-      CLIPPER_RENDER_THREADS: "2"
+      CLIPPER_RENDER_PRESET: slow
+      CLIPPER_RENDER_THREADS: "4"
+      TJR_CAPTION_STYLE: B
     steps:
       - uses: actions/checkout@v5
         with:
