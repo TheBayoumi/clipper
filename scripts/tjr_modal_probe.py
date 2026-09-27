@@ -274,12 +274,49 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
     return {"status": status, "attempts": attempts}
 
 
+def verify_staged_media_probe(
+    *, returncode: int, stdout: str, stderr: str, expected_seconds: float
+) -> float:
+    """Check actual HD bytes before publishing them to the shared Modal volume."""
+    if returncode:
+        raise RuntimeError(
+            "CORRUPT_OR_INCOMPLETE_HD_TRANSFER: ffprobe failed: " + stderr.strip()[-400:]
+        )
+    try:
+        media_info = json.loads(stdout)
+        streams = media_info["streams"]
+        staged_seconds = float(media_info["format"]["duration"])
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("CORRUPT_OR_INCOMPLETE_HD_TRANSFER: invalid ffprobe metadata") from exc
+    if not isinstance(streams, list) or not 0 < staged_seconds < float("inf"):
+        raise RuntimeError("CORRUPT_OR_INCOMPLETE_HD_TRANSFER: invalid stream or duration")
+    minimum = min(expected_seconds, 3600.0)
+    if staged_seconds + 30 < minimum:
+        raise RuntimeError(
+            "SOURCE_DURATION_INCOMPLETE: staged media ends before the verified scan window"
+        )
+    if not any(
+        isinstance(stream, dict)
+        and stream.get("codec_type") == "video"
+        and int(stream.get("height") or 0) >= 720
+        for stream in streams
+    ):
+        raise RuntimeError("MISSING_HD_VIDEO_STREAM")
+    if not any(
+        isinstance(stream, dict) and stream.get("codec_type") == "audio"
+        for stream in streams
+    ):
+        raise RuntimeError("MISSING_AUDIO_STREAM")
+    return staged_seconds
+
+
 @app.function(image=image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=2048)
 def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str, Any]:
     """Download actual allowlisted original bytes via the verified Modal network."""
     import hashlib
     import re
     import subprocess
+    import tempfile
     from pathlib import Path
 
     video_id = str(selected["source_video_id"])
@@ -302,77 +339,74 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
     )
     if extractor_args is None:
         raise RuntimeError("unrecognized previously verified original YouTube transport")
-    command = [
-        "yt-dlp",
-        "--ignore-config",
-        "--js-runtimes",
-        "node",
-        *extractor_args,
-        "--retries",
-        "10",
-        "--fragment-retries",
-        "10",
-        "--no-playlist",
-        "--no-warnings",
-        "--merge-output-format",
-        "mp4",
-        *source_download_sections(float(selected.get("duration") or 0)),
-        "-f",
-        "bv*[height>=720][height<=1080]+ba/b[height>=720]/bv*+ba/b",
-        "--no-part",
-        "-o",
-        str(folder / "original.%(ext)s"),
-        url,
-    ]
-    try:
-        outcome = subprocess.run(command, capture_output=True, timeout=1330, check=False)
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("original YouTube excerpt download exceeded the remote limit") from exc
-    if outcome.returncode:
-        raise RuntimeError(
-            f"original YouTube download failed on verified network: exit {outcome.returncode}"
+    # Each source/transport attempt receives a fresh private directory.
+    # Never let a partial prior download look like a successful new original.
+    with tempfile.TemporaryDirectory(prefix="acquire-", dir=folder) as scratch:
+        scratch_dir = Path(scratch)
+        command = [
+            "yt-dlp",
+            "--ignore-config",
+            "--js-runtimes",
+            "node",
+            *extractor_args,
+            "--retries",
+            "10",
+            "--fragment-retries",
+            "10",
+            "--no-playlist",
+            "--no-warnings",
+            "--merge-output-format",
+            "mp4",
+            *source_download_sections(float(selected.get("duration") or 0)),
+            "-f",
+            "bv*[height>=720][height<=1080]+ba/b[height>=720]/bv*+ba/b",
+            "--no-part",
+            "-o",
+            str(scratch_dir / "original.%(ext)s"),
+            url,
+        ]
+        try:
+            outcome = subprocess.run(command, capture_output=True, timeout=1330, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("ORIGINAL_TRANSFER_TIMEOUT") from exc
+        if outcome.returncode:
+            reason = _transport_error(outcome.stderr.decode("utf-8", errors="replace"))
+            raise RuntimeError(f"ORIGINAL_TRANSFER_FAILED: exit={outcome.returncode} {reason}")
+        source_files = [
+            item
+            for item in scratch_dir.glob("original.*")
+            if item.is_file() and item.suffix.lower() in {".mp4", ".mkv", ".webm"}
+        ]
+        if len(source_files) != 1 or source_files[0].stat().st_size < 1024:
+            raise RuntimeError("ORIGINAL_TRANSFER_MISSING_OR_TOO_SMALL")
+        downloaded = source_files[0]
+        inspect = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_streams",
+                "-show_format",
+                "-of",
+                "json",
+                str(downloaded),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=50,
+            check=False,
         )
-    source_files = [
-        item
-        for item in folder.glob("original.*")
-        if item.is_file() and item.suffix.lower() in {".mp4", ".mkv", ".webm"}
-    ]
-    if len(source_files) != 1:
-        raise RuntimeError("source download did not produce exactly one media file")
-    original = source_files[0]
-    inspect = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_streams",
-            "-show_format",
-            "-of",
-            "json",
-            str(original),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=50,
-        check=True,
-    )
-    media_info = json.loads(inspect.stdout)
-    streams = media_info["streams"]
-    staged_seconds = float(media_info["format"]["duration"])
-    expected_seconds = float(selected.get("duration") or 0)
-    if staged_seconds <= 0:
-        raise RuntimeError("staged original has no measurable duration")
-    if expected_seconds <= 3600 and staged_seconds + 30 < expected_seconds:
-        raise RuntimeError("staged original ended before the verified full YouTube video")
-    if not any(
-        stream.get("codec_type") == "video" and int(stream.get("height") or 0) >= 720
-        for stream in streams
-    ):
-        raise RuntimeError("staged original has no HD video stream")
-    if not any(stream.get("codec_type") == "audio" for stream in streams):
-        raise RuntimeError("staged original is missing its original audio")
-    with original.open("rb") as media:
-        digest = hashlib.file_digest(media, "sha256").hexdigest()
+        staged_seconds = verify_staged_media_probe(
+            returncode=inspect.returncode,
+            stdout=inspect.stdout,
+            stderr=inspect.stderr,
+            expected_seconds=float(selected.get("duration") or 0),
+        )
+        with downloaded.open("rb") as media:
+            digest = hashlib.file_digest(media, "sha256").hexdigest()
+        # Publish only verified media; failed attempts leave no corrupt original.
+        original = folder / f"original{downloaded.suffix.lower()}"
+        os.replace(downloaded, original)
     volume.commit()
     return {
         "status": "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED",

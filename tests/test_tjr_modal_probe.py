@@ -191,3 +191,72 @@ def test_modal_source_windowing_matches_runner_without_remote_editor_import(
     source_sections = script["source_download_sections"]
     for seconds in (120, 2642, 3600, 3601, 7200):
         assert source_sections(seconds) == youtube_scan_section_args(seconds)
+
+
+def test_staging_probe_rejects_corrupt_partial_and_missing_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A metadata hit must never turn a damaged download into a staged original."""
+    fake = SimpleNamespace(
+        App=lambda *_args, **_kwargs: _FakeApp(),
+        Image=MagicMock(),
+        Volume=MagicMock(),
+    )
+    monkeypatch.setitem(sys.modules, "modal", fake)
+    script = runpy.run_path(
+        str(Path(__file__).resolve().parents[1] / "scripts" / "tjr_modal_probe.py")
+    )
+    verify = script["verify_staged_media_probe"]
+    good_streams = [
+        {"codec_type": "video", "height": 1080},
+        {"codec_type": "audio"},
+    ]
+    with pytest.raises(RuntimeError, match="CORRUPT_OR_INCOMPLETE_HD_TRANSFER"):
+        verify(
+            returncode=1,
+            stdout="",
+            stderr="moov atom not found",
+            expected_seconds=2642,
+        )
+    with pytest.raises(RuntimeError, match="SOURCE_DURATION_INCOMPLETE"):
+        verify(
+            returncode=0,
+            stdout=json.dumps(
+                {"streams": good_streams, "format": {"duration": "840"}}
+            ),
+            stderr="",
+            expected_seconds=2642,
+        )
+    with pytest.raises(RuntimeError, match="MISSING_AUDIO_STREAM"):
+        verify(
+            returncode=0,
+            stdout=json.dumps(
+                {"streams": good_streams[:1], "format": {"duration": "2642"}}
+            ),
+            stderr="",
+            expected_seconds=2642,
+        )
+    assert (
+        verify(
+            returncode=0,
+            stdout=json.dumps(
+                {"streams": good_streams, "format": {"duration": "2642"}}
+            ),
+            stderr="",
+            expected_seconds=2642,
+        )
+        == 2642
+    )
+    # An approved two-hour original may stage only its declared first hour.
+    assert (
+        verify(
+            returncode=0,
+            stdout=json.dumps(
+                {"streams": good_streams, "format": {"duration": "3600"}}
+            ),
+            stderr="",
+            expected_seconds=7200,
+        )
+        == 3600
+    )
+
