@@ -154,9 +154,7 @@ def test_plain_client_succeeds_after_provider_bot_challenge(
                 "title": "LIVE TRADING",
                 "formats": [{"height": 1080, "vcodec": "avc1"}],
             }
-            return subprocess.CompletedProcess(
-                command, 0, stdout=json.dumps(metadata), stderr=""
-            )
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(metadata), stderr="")
         if "--test" in command:
             template = Path(command[command.index("-o") + 1])
             output = Path(str(template).replace("%(ext)s", "mp4"))
