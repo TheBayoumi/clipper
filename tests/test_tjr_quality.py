@@ -249,3 +249,84 @@ def test_native_23976_and_25fps_match_original_qa(tmp_path: Path) -> None:
         clip.write_bytes(b"authentic fixture data")
         with patch("subprocess.run", return_value=good):
             assert probe_video(clip)["fps"] == pytest.approx(float(Fraction(value)))
+
+
+def test_mirror_staging_uses_exact_hash_and_a_shared_source_manifest(
+    campaign_brief: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    stage_verified_mirror = _tjr_qa["stage_verified_mirror"]
+    original = b"test original video bytes"
+    expected = hashlib.sha256(original).hexdigest()
+    mirror_url = "https://drive.google.com/file/d/ApprovedFile123/view"
+    monkeypatch.setenv("TJR_SOURCE_MEDIA_URL", mirror_url)
+    monkeypatch.setenv("TJR_SOURCE_MEDIA_SHA256", expected)
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "p2LU37eat70")
+    monkeypatch.setenv("TJR_BUDGET_CONFIRMED", "true")
+    monkeypatch.setenv("TJR_SOURCE_VERIFIED", "true")
+    monkeypatch.setitem(
+        prepare_staged_brief.__globals__,
+        "_resolve_approved_youtube_video",
+        lambda video_id: "UCZen39LQJPx04GjPj7FOMcw",
+    )
+    brief = prepare_staged_brief(campaign_brief, tmp_path / "approved.yaml")
+    output = tmp_path / "stage" / "original.mp4"
+    manifest = tmp_path / "stage" / "manifest.json"
+
+    def download(url: str, destination: Path, **kwargs: object) -> Path:
+        assert url == mirror_url and kwargs["expected_kind"] == "media"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(original)
+        return destination
+
+    probe = Mock(stdout=json.dumps({
+        "streams": [{"codec_type": "video", "width": 1920, "height": 1080}]
+    }))
+    duration = Mock(stdout="125.5\n")
+    with (
+        patch("clipper.pipeline._download_asset", side_effect=download),
+        patch("subprocess.run", side_effect=[probe, duration]),
+    ):
+        assert stage_verified_mirror(brief, output, manifest) == manifest
+    record = json.loads(manifest.read_text(encoding="utf-8"))
+    assert record["source_sha256"] == expected
+    assert record["video_id"] == "p2LU37eat70"
+    assert record["channel_id"] == "UCZen39LQJPx04GjPj7FOMcw"
+    assert record["source_transport"] == "approved_sha256_mirror"
+    assert record["duration"] == 125.5
+    assert "drive.google.com" not in manifest.read_text(encoding="utf-8")
+
+
+def test_staging_rejects_wrong_hash_and_deletes_untrusted_media(
+    campaign_brief: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage_verified_mirror = _tjr_qa["stage_verified_mirror"]
+    monkeypatch.setenv(
+        "TJR_SOURCE_MEDIA_URL", "https://drive.google.com/file/d/ApprovedFile123/view"
+    )
+    monkeypatch.setenv("TJR_SOURCE_MEDIA_SHA256", "a" * 64)
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "p2LU37eat70")
+    monkeypatch.setenv("TJR_BUDGET_CONFIRMED", "true")
+    monkeypatch.setenv("TJR_SOURCE_VERIFIED", "true")
+    monkeypatch.setitem(
+        prepare_staged_brief.__globals__,
+        "_resolve_approved_youtube_video",
+        lambda video_id: "UCZen39LQJPx04GjPj7FOMcw",
+    )
+    brief = prepare_staged_brief(campaign_brief, tmp_path / "approved.yaml")
+    output = tmp_path / "stage" / "original.mp4"
+    manifest = tmp_path / "stage" / "manifest.json"
+
+    def untrusted_download(url: str, destination: Path, **kwargs: object) -> Path:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"wrong mirror bytes")
+        return destination
+
+    with (
+        patch("clipper.pipeline._download_asset", side_effect=untrusted_download),
+        pytest.raises(QualityError, match="SHA-256 differs"),
+    ):
+        stage_verified_mirror(brief, output, manifest)
+    assert not output.exists()
+    assert not manifest.exists()
