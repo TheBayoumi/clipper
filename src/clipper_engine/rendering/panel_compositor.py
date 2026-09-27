@@ -115,6 +115,7 @@ def snapback_config(profile: CampaignProfile, comparison_frames: int) -> dict[st
     """Validate a source-still after->before->after comparison on the exact frame grid."""
     cfg: dict[str, Any] = profile.config["output"]["portrait_matte"]["snapback"]
     if set(cfg) != {
+        "focus_operator_index",
         "after_preview_frames",
         "before_hold_frames",
         "transition_frames",
@@ -135,6 +136,24 @@ def snapback_config(profile: CampaignProfile, comparison_frames: int) -> dict[st
         or any(int(cfg[key]) <= 0 for key in ("margin", "gap", "panel_top", "panel_height"))
     ):
         raise MontageRejection("snapback_calibration", "preview/rewind/reveal must fit comparison")
+    rois = profile.config["output"]["portrait_matte"].get("operator_rois")
+    index = cfg.get("focus_operator_index")
+    if (
+        isinstance(index, bool)
+        or not isinstance(index, int)
+        or not isinstance(rois, list)
+        or len(rois) != 3
+        or not 0 <= index < len(rois)
+        or any(
+            not isinstance(roi, list)
+            or len(roi) != 4
+            or not (0 <= roi[0] < roi[2] <= 1 and 0 <= roi[1] < roi[3] <= 1)
+            for roi in rois
+        )
+    ):
+        raise MontageRejection(
+            "snapback_calibration", "focus index must select a verified source Operator ROI"
+        )
     return cfg
 
 
@@ -697,11 +716,20 @@ def render_snapback_panels(
     if before.size != after.size:
         raise MontageRejection("snapback_stills", "certified before/after geometries differ")
 
-    # Contain each entire 16:9 team shot, never crop an Operator out of the comparison.
+    # Crop only the auxiliary comparison cards from verified source stills;
+    # the main source video remains full-frame and source-faithful.
+    focus_index = int(cfg["focus_operator_index"])
+    focus_roi = matte["operator_rois"][focus_index]
+
     def card_image(source: Image.Image) -> Image.Image:
         card = Image.new("RGB", (width, height), bg)
-        thumb = ImageOps.contain(source, (width - 8, height - 10), method=Image.Resampling.LANCZOS)
-        card.paste(thumb, ((width - thumb.width) // 2, (height - thumb.height) // 2))
+        thumb = ImageOps.fit(
+            _crop(source, focus_roi),
+            (width - 8, height - 10),
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.18),
+        )
+        card.paste(thumb, (4, 5))
         return card
 
     cards = (card_image(before), card_image(after))
@@ -760,6 +788,8 @@ def render_snapback_panels(
     return {
         "folder": str(folder),
         "mode": "snapback",
+        "focus_operator_index": focus_index,
+        "focus_roi": focus_roi,
         "frame_count": frames,
         "panel_count": 2,
         "panel_boxes": boxes,
