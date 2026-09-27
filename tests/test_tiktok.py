@@ -209,7 +209,10 @@ def test_editorial_hook_variants_are_supported_by_their_transcripts() -> None:
         ("Never copy trade blindly when the price is moving.", "WHY HE WARNS ABOUT COPY TRADING"),
         ("The stop loss got hit before the reversal.", "WHAT HAPPENS WHEN THE STOP GETS HIT?"),
         ("I will wait before I enter the market.", "WHY HE'S WAITING TO ENTER THIS TRADE"),
-        ("There was a massive sell-off but I would not short.", "WHY HE'S NOT SHORTING THE SELLOFF"),
+        (
+            "There was a massive sell-off but I would not short.",
+            "WHY HE'S NOT SHORTING THE SELLOFF",
+        ),
         ("We reviewed this meme coin chart yesterday.", "WHAT MATTERS IN A MEMECOIN TRADE?"),
         ("The order block is still a useful concept.", "DO ORDER BLOCKS REALLY MATTER HERE?"),
         ("We looked at the screenshot together.", "WHAT'S THE REAL TAKEAWAY HERE?"),
