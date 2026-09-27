@@ -41,11 +41,16 @@ on:
         type: boolean
         default: false
       source_mode:
-        description: "Choose public YouTube extraction or an independently verified original mirror."
+        description: "Choose verified Modal originals, direct YouTube, or an authorized mirror."
         required: true
         type: choice
-        options: [youtube_direct, verified_mirror]
-        default: youtube_direct
+        options: [modal_direct, youtube_direct, verified_mirror]
+        default: modal_direct
+      clip_limit:
+        description: "Maximum review drafts per source (1-20); fewer if insufficient distinct moments."
+        required: true
+        type: number
+        default: 12
       source_verified:
         description: "I verified the staged video is authentic authorized TJR footage."
         required: true
@@ -55,7 +60,7 @@ on:
         description: "Exact 11-character video ID from the two campaign-listed YouTube channels."
         required: true
         type: string
-        default: "p2LU37eat70"
+        default: ""
 
 permissions:
   contents: read
@@ -147,13 +152,14 @@ jobs:
   youtube_preview:
     name: Render drafts only from Reach-listed YouTube channels
     needs: tests
-    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'youtube_direct'
+    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'youtube_direct' && inputs.budget_confirmed
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     env:
       CLIPPER_RENDER_PRESET: slow
       CLIPPER_RENDER_THREADS: "4"
-      TJR_CAPTION_STYLE: B
+      TJR_CAPTION_STYLE: B2
+      TJR_EDITORIAL_BATCH_LIMIT: ${{ inputs.clip_limit }}
       TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
     steps:
       - uses: actions/checkout@v5
@@ -259,7 +265,7 @@ jobs:
   youtube_alternate_egress:
     name: Verify and render original YouTube on ${{ matrix.os }}
     needs: tests
-    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'youtube_direct'
+    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'youtube_direct' && inputs.budget_confirmed
     strategy:
       fail-fast: false
       matrix:
@@ -347,7 +353,7 @@ jobs:
           CLIPPER_RENDER_THREADS: "2"
         run: |
           set -euo pipefail
-          python -m scripts.tjr_youtube_preview \
+          TJR_CAPTION_STYLE=B2 TJR_EDITORIAL_BATCH_LIMIT=${{ inputs.clip_limit }} python -m scripts.tjr_youtube_preview \
             --brief campaigns/reach-tjr-weekly.yaml \
             --artifact-root tjr-alt-egress
       - name: Upload real YouTube clips or runner-specific diagnostics
@@ -373,7 +379,7 @@ jobs:
   youtube_modal_egress:
     name: Modal originals + editorial drafts (${{ matrix.channel_id }})
     needs: tests
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/tjr-weekly-hd-actions'
+    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'modal_direct' && inputs.budget_confirmed
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -393,6 +399,8 @@ jobs:
       CLIPPER_RENDER_PRESET: slow
       CLIPPER_RENDER_THREADS: "4"
       TJR_CAPTION_STYLE: B2
+      TJR_EDITORIAL_BATCH_LIMIT: ${{ inputs.clip_limit }}
+      TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -506,7 +514,7 @@ jobs:
   render:
     name: Render and QA real TJR HD clips
     needs: tests
-    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'verified_mirror'
+    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'verified_mirror' && inputs.budget_confirmed && inputs.source_verified
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
@@ -521,6 +529,8 @@ jobs:
       CLIPPER_RENDER_PRESET: slow
       CLIPPER_RENDER_CRF: "18"
       CLIPPER_RENDER_THREADS: "2"
+      TJR_CAPTION_STYLE: B2
+      TJR_EDITORIAL_BATCH_LIMIT: ${{ inputs.clip_limit }}
     steps:
       - uses: actions/checkout@v5
         with:
