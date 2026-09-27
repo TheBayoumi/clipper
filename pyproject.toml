@@ -35,7 +35,7 @@ clipper = "clipper.cli:main"
 where = ["src"]
 
 [tool.pytest.ini_options]
-addopts = "-q --strict-markers --disable-warnings --cov=clipper --cov-report=term-missing --cov-fail-under=95"
+addopts = "-q --strict-markers --disable-warnings --cov=clipper --cov=scripts.tjr_editorial --cov-report=term-missing --cov-fail-under=95"
 testpaths = ["tests"]
 
 [tool.ruff]
