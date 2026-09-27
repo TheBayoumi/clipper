@@ -259,11 +259,16 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
                     result["staging"] = stage_official_original.local(result, run_key)
                 return result
             except (OSError, ValueError, subprocess.TimeoutExpired, RuntimeError) as exc:
+                # Preserve the verified staging failure type in durable JSON.
+                # A corrupt downloaded file is not a YouTube bot challenge.
+                detail = str(exc)[:360] if isinstance(exc, RuntimeError) else ""
                 attempts.append(
                     {
                         "url": url,
                         "strategy": strategy_name,
-                        "reason": type(exc).__name__,
+                        "reason": f"{type(exc).__name__}: {detail}"
+                        if detail
+                        else type(exc).__name__,
                     }
                 )
     status = (

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import runpy
 import subprocess
@@ -191,6 +192,7 @@ def test_modal_source_windowing_matches_runner_without_remote_editor_import(
     source_sections = script["source_download_sections"]
     for seconds in (120, 2642, 3600, 3601, 7200):
         assert source_sections(seconds) == youtube_scan_section_args(seconds)
+    assert "tjr_youtube_preview" not in inspect.getsource(script["stage_official_original"])
 
 
 def test_staging_probe_rejects_corrupt_partial_and_missing_streams(
@@ -251,4 +253,3 @@ def test_staging_probe_rejects_corrupt_partial_and_missing_streams(
         )
         == 3600
     )
-
