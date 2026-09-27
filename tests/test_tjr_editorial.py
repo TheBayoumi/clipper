@@ -158,7 +158,9 @@ def test_manual_review_supplies_visual_rating_and_integrity_verdict() -> None:
         visual_score=4.5,
         visual_notes="Source and final portrait crop manually inspected; TJR and chart visible.",
         integrity_passed=True,
-        integrity_notes="Creative hook matches source audio and actual payoff after full-context review.",
+        integrity_notes=(
+            "Creative hook matches source audio and actual payoff after full-context review."
+        ),
     )
     result = evaluate_candidate(clip(0, STRONG_SEGMENT), review=review)
     assert result is not None
