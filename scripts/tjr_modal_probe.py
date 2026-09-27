@@ -269,6 +269,8 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
     import subprocess
     from pathlib import Path
 
+    from scripts.tjr_youtube_preview import youtube_scan_section_args
+
     video_id = str(selected["source_video_id"])
     channel_id = str(selected["source_channel_id"])
     if (
@@ -303,8 +305,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
         "--no-warnings",
         "--merge-output-format",
         "mp4",
-        "--download-sections",
-        "*00:00:00-00:14:00",
+        *youtube_scan_section_args(float(selected.get("duration") or 0)),
         "-f",
         "bv*[height>=720][height<=1080]+ba/b[height>=720]/bv*+ba/b",
         "--no-part",
@@ -334,6 +335,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
             "-v",
             "error",
             "-show_streams",
+            "-show_format",
             "-of",
             "json",
             str(original),
@@ -343,7 +345,14 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
         timeout=50,
         check=True,
     )
-    streams = json.loads(inspect.stdout)["streams"]
+    media_info = json.loads(inspect.stdout)
+    streams = media_info["streams"]
+    staged_seconds = float(media_info["format"]["duration"])
+    expected_seconds = float(selected.get("duration") or 0)
+    if staged_seconds <= 0:
+        raise RuntimeError("staged original has no measurable duration")
+    if expected_seconds <= 3600 and staged_seconds + 30 < expected_seconds:
+        raise RuntimeError("staged original ended before the verified full YouTube video")
     if not any(
         stream.get("codec_type") == "video" and int(stream.get("height") or 0) >= 720
         for stream in streams
@@ -363,7 +372,9 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
         "source_sha256": digest,
         "size_bytes": original.stat().st_size,
         "title": str(selected.get("title") or ""),
-        "duration": float(selected.get("duration") or 0),
+        "duration": expected_seconds,
+        "staged_duration_seconds": staged_seconds,
+        "source_scan_complete": staged_seconds + 30 >= expected_seconds,
     }
 
 

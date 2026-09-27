@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -23,7 +24,7 @@ from typing import Any
 import defusedxml.ElementTree as ET
 
 from clipper.brief import load_brief
-from clipper.models import ClipCandidate
+from clipper.models import ClipCandidate, TranscriptSegment, WordTiming
 from clipper.render import FFmpegRenderer
 from clipper.scoring import score_transcript
 from clipper.source_fidelity import probe_source_profile
@@ -309,6 +310,15 @@ def verified_youtube_metadata(video: OfficialVideo) -> dict[str, Any]:
     raise RuntimeError("source metadata unavailable: " + " | ".join(errors))
 
 
+def youtube_scan_section_args(duration_seconds: float) -> list[str]:
+    """Scan the full original up to one hour; report any longer-video coverage gap."""
+    if duration_seconds <= 0:
+        raise ValueError("verified YouTube duration must be positive")
+    if duration_seconds <= 3600:
+        return []
+    return ["--download-sections", "*00:00:00-01:00:00"]
+
+
 def download_original_excerpt(
     video: OfficialVideo, work: Path, *, metadata: dict[str, Any] | None = None
 ) -> Path:
@@ -320,8 +330,7 @@ def download_original_excerpt(
         "--no-warnings",
         "--merge-output-format",
         "mp4",
-        "--download-sections",
-        "*00:00:00-00:14:00",
+        *youtube_scan_section_args(float((metadata or {}).get("duration") or 0)),
         "-f",
         "bv*[height>=720][height<=1080]+ba/b[height>=720]/bv*+ba/b",
         "-o",
@@ -463,6 +472,78 @@ class NoEditorialMoments(RuntimeError):
     """An approved source had no qualifying draft moments; try another official original."""
 
 
+def transcribe_source_chunks(
+    source: Path,
+    run_dir: Path,
+    *,
+    chunk_seconds: int = 840,
+) -> tuple[list[list[TranscriptSegment]], float]:
+    """Transcribe bounded 14-minute audio chunks with original-video timestamps.
+
+    The original HD source stays intact so selected clips can be rendered from
+    their exact absolute offsets, including moments late in a livestream.
+    """
+    if not 60 <= chunk_seconds <= 900:
+        raise ValueError("audio chunk duration must be between 60 and 900 seconds")
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(source),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    duration = float(probe.stdout.strip())
+    if not math.isfinite(duration) or duration < 1:
+        raise RuntimeError("original has no usable audio duration")
+    work = run_dir / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    chunks: list[list[TranscriptSegment]] = []
+    for index, start in enumerate(range(0, math.ceil(duration), chunk_seconds)):
+        length = min(float(chunk_seconds), duration - start)
+        if length < 1:
+            break
+        audio = work / f"audio-chunk-{index:03d}.wav"
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-nostdin", "-v", "error", "-y",
+                    "-ss", str(start), "-i", str(source),
+                    "-t", str(length), "-vn", "-ac", "1", "-ar", "16000",
+                    "-c:a", "pcm_s16le", str(audio),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=420,
+            )
+            local = transcribe_with_faster_whisper(
+                audio,
+                model_name="small.en",
+                device="cpu",
+                compute_type="int8",
+                language="en",
+                word_timestamps=True,
+            )
+            shifted = [
+                TranscriptSegment(
+                    item.start + start,
+                    item.end + start,
+                    item.text,
+                    tuple(
+                        WordTiming(word.start + start, word.end + start, word.text)
+                        for word in item.words
+                    ),
+                )
+                for item in local
+            ]
+            chunks.append(shifted)
+        finally:
+            audio.unlink(missing_ok=True)
+    return chunks, duration
+
+
 def render_youtube_previews(root: Path, brief_path: Path) -> Path:
     brief = load_brief(brief_path)
     if (
@@ -551,13 +632,30 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             raise RuntimeError("no recent approved-channel YouTube original could be downloaded")
         source_profile = probe_source_profile(source)
         step = "transcription"
-        segments = transcribe_with_faster_whisper(
-            source,
-            model_name="small.en",
-            device="cpu",
-            compute_type="int8",
-            language="en",
-            word_timestamps=True,
+        source_chunks, analyzed_seconds = transcribe_source_chunks(source, run_dir)
+        segments = [item for chunk in source_chunks for item in chunk]
+        (run_dir / "source-analysis-coverage.json").write_text(
+            json.dumps(
+                {
+                    "reported_original_seconds": float(metadata.get("duration") or 0),
+                    "analyzed_source_seconds": round(analyzed_seconds, 2),
+                    "full_source_analyzed": (
+                        analyzed_seconds + 30 >= float(metadata.get("duration") or 0)
+                    ),
+                    "chunks": [
+                        {
+                            "index": index,
+                            "start": index * 840,
+                            "end": round(min((index + 1) * 840, analyzed_seconds), 2),
+                            "transcript_segments": len(chunk),
+                        }
+                        for index, chunk in enumerate(source_chunks)
+                    ],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
         )
         if not segments:
             raise RuntimeError("the original footage contains no usable English speech")
@@ -567,9 +665,19 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             encoding="utf-8",
         )
         batch_limit = int(os.getenv("TJR_EDITORIAL_BATCH_LIMIT", str(brief.clip_count)))
-        strict = score_transcript(
-            brief, chosen_video.video_id, segments, limit=900, sentence_boundaries=True
-        )
+        strict = [
+            candidate
+            for chunk in source_chunks
+            for candidate in score_transcript(
+                brief,
+                chosen_video.video_id,
+                chunk,
+                limit=900,
+                sentence_boundaries=True,
+                diversify=False,
+            )
+        ]
+        strict.sort(key=lambda item: (-item.score, item.start))
         ranked = strict
         picks, rejected = select_editorial_moments(
             ranked, batch_limit=batch_limit, segments=segments
@@ -579,14 +687,20 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         if not picks:
             # Retry at genuine, shorter ASR-aligned pauses rather than cutting
             # arbitrary mid-sentence transcript windows or lowering the rubric.
-            relaxed = score_transcript(
-                brief,
-                chosen_video.video_id,
-                segments,
-                limit=900,
-                sentence_boundaries=True,
-                pause_threshold=0.35,
-            )
+            relaxed = [
+                candidate
+                for chunk in source_chunks
+                for candidate in score_transcript(
+                    brief,
+                    chosen_video.video_id,
+                    chunk,
+                    limit=900,
+                    sentence_boundaries=True,
+                    pause_threshold=0.35,
+                    diversify=False,
+                )
+            ]
+            relaxed.sort(key=lambda item: (-item.score, item.start))
             relaxed_count = len(relaxed)
             relaxed_picks, relaxed_rejected = select_editorial_moments(
                 relaxed, batch_limit=batch_limit, segments=segments

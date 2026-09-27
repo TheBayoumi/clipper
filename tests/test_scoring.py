@@ -133,3 +133,17 @@ def test_relaxed_pause_uses_real_aligned_boundaries_not_arbitrary_mid_sentence()
     assert any(reason.startswith("end_boundary=") for reason in relaxed[0].reasons)
     with pytest.raises(ValueError, match="pause_threshold"):
         score_transcript(brief, "v", segments, pause_threshold=0.1)
+
+
+
+def test_editorial_mode_keeps_overlapping_windows_until_after_gate() -> None:
+    segments = [
+        TranscriptSegment(i * 5, i * 5 + 4.6, "why this trade reversed the market")
+        for i in range(12)
+    ]
+    regular = score_transcript(brief(), "v1", segments, limit=100)
+    editorial = score_transcript(
+        brief(), "v1", segments, limit=100, diversify=False
+    )
+    assert len(editorial) > len(regular)
+    assert editorial[0].score >= editorial[-1].score

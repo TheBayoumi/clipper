@@ -83,6 +83,7 @@ def score_transcript(
     limit: int = 20,
     sentence_boundaries: bool = False,
     pause_threshold: float = 0.7,
+    diversify: bool = True,
 ) -> list[ClipCandidate]:
     if not 0.3 <= pause_threshold <= 1.5:
         raise ValueError("pause_threshold must be between 0.3 and 1.5 seconds")
@@ -158,8 +159,11 @@ def score_transcript(
             if sentence_end:
                 break
 
+    ranked = sorted(candidates, key=lambda item: (-item.score, item.start))
+    if not diversify:
+        return ranked[:limit]
     selected: list[ClipCandidate] = []
-    for candidate in sorted(candidates, key=lambda item: (-item.score, item.start)):
+    for candidate in ranked:
         if any(_overlap_ratio(candidate, existing) >= 0.55 for existing in selected):
             continue
         selected.append(candidate)

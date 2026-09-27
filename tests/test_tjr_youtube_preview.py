@@ -279,7 +279,7 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
                     {"title": official.title, "duration": 100},
                 ),
                 "probe_source_profile": lambda *_: object(),
-                "transcribe_with_faster_whisper": lambda *_args, **_kwargs: segments,
+                "transcribe_source_chunks": lambda *_args, **_kwargs: ([segments], 100.0),
             },
         ),
         pytest.raises(NoEditorialMoments, match="consult editorial-candidate-audit"),
@@ -368,3 +368,57 @@ def test_playlist_duration_prevents_known_short_from_blocking_long_source() -> N
     short = OfficialVideo("8PYgFVB0GHE", channel, "Great trading", "2026-09-27", 31)
     older = OfficialVideo("ABCD1234xyz", channel, "Market update", "2026-09-25", 1800)
     assert prioritize_campaign_moments([short, older])[0] == older
+
+
+
+def test_full_livestream_scan_is_not_cut_to_fourteen_minutes() -> None:
+    from scripts.tjr_youtube_preview import youtube_scan_section_args
+
+    assert youtube_scan_section_args(2642) == []
+    assert youtube_scan_section_args(3600) == []
+    assert youtube_scan_section_args(7200) == [
+        "--download-sections", "*00:00:00-01:00:00"
+    ]
+
+
+def test_chunked_asr_preserves_absolute_video_and_word_offsets(
+    tmp_path: Path,
+) -> None:
+    from clipper.models import TranscriptSegment, WordTiming
+    from scripts.tjr_youtube_preview import transcribe_source_chunks
+
+    source = tmp_path / "source.mp4"
+    source.touch()
+    received: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> Mock:
+        received.append(command)
+        if command[0] == "ffprobe":
+            return Mock(stdout="2642.0\\n")
+        if command[0] == "ffmpeg":
+            Path(command[-1]).touch()
+            return Mock(returncode=0)
+        raise AssertionError(command)
+
+    def fake_asr(*_args: object, **_kwargs: object) -> list[TranscriptSegment]:
+        return [
+            TranscriptSegment(
+                1.0, 2.0, "Trade now.",
+                words=(WordTiming(1.0, 1.4, "Trade"), WordTiming(1.4, 2.0, "now.")),
+            )
+        ]
+
+    with patch.dict(
+        transcribe_source_chunks.__globals__,
+        {
+            "subprocess": Mock(run=fake_run),
+            "transcribe_with_faster_whisper": fake_asr,
+        },
+    ):
+        chunks, duration = transcribe_source_chunks(source, tmp_path)
+    assert duration == 2642
+    assert len(chunks) == 4
+    assert [chunk[0].start for chunk in chunks] == [1, 841, 1681, 2521]
+    assert [chunk[0].words[0].start for chunk in chunks] == [1, 841, 1681, 2521]
+    assert len([call for call in received if call[0] == "ffmpeg"]) == 4
+    assert not list((tmp_path / "work").glob("audio-chunk-*.wav"))
