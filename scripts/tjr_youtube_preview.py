@@ -21,16 +21,16 @@ from pathlib import Path
 from typing import Any
 
 import defusedxml.ElementTree as ET
+
 from clipper.brief import load_brief
+from clipper.models import ClipCandidate
 from clipper.render import FFmpegRenderer
 from clipper.scoring import score_transcript
 from clipper.source_fidelity import probe_source_profile
-from scripts.tjr_quality import check_full_decode, probe_original, probe_video
-
-from clipper.models import ClipCandidate
 from clipper.tiktok import audit_tiktok_ass
 from clipper.transcript import transcribe_with_faster_whisper
 from scripts.tjr_editorial import select_editorial_moments
+from scripts.tjr_quality import check_full_decode, probe_original, probe_video
 
 LOGGER = logging.getLogger("tjr-youtube")
 CHANNELS = {
