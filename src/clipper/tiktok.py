@@ -98,7 +98,7 @@ def _fit_lines(
         font = ImageFont.truetype(_FONT, size)
         choices: list[tuple[float, tuple[str, ...]]] = []
         for split in range(1, len(words) + 1):
-            lines = (" ".join(words[:split]),)
+            lines: tuple[str, ...] = (" ".join(words[:split]),)
             if split < len(words):
                 lines += (" ".join(words[split:]),)
             width = max(float(font.getlength(line)) for line in lines)
