@@ -8,6 +8,7 @@ on:
       - "campaigns/reach-tjr-weekly.yaml"
       - "scripts/tjr_quality.py"
       - "scripts/tjr_youtube_preview.py"
+      - "src/clipper/scoring.py"
       - "scripts/tjr_modal_probe.py"
       - "scripts/tjr_editorial.py"
       - "scripts/tjr_browser_probe.py"
@@ -118,6 +119,9 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
+      - name: Show precise formatting diff on failure
+        if: failure()
+        run: ruff format --diff .
       - run: mypy
       - run: pytest
       - name: Validate campaign rules

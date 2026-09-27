@@ -16,13 +16,13 @@ from typing import Literal
 from clipper.models import ClipCandidate, TranscriptSegment
 from clipper.tiktok import creative_hook_from_text, distinct_hook_from_text
 
-RUBRIC_VERSION = "tjr-editorial-v1"
+RUBRIC_VERSION = "tjr-editorial-v2"
 WEIGHTS = {"opening": 25, "story": 25, "emotion": 10, "visuals": 15, "retention": 25}
 _WORDS = re.compile(r"[A-Za-z0-9$']+")
 _NUMBERS = re.compile(r"(?<!\w)\$?\d[\d,.]*(?:%|k|m)?\b", re.IGNORECASE)
 _REACTION = re.compile(
     r"\b(damn|wow|no way|what the hell|insane|unbelievable|wait|"
-    r"look at that|are you serious)\b",
+    r"look at that|are you serious|holy shit|no shot|what the fuck)\b",
     re.IGNORECASE,
 )
 _QUESTION = re.compile(r"^(why|how|what|who|when|where|did|does|can|should)\b", re.I)
@@ -34,7 +34,8 @@ _ACTION = re.compile(
 _TOPIC = re.compile(
     r"\b(trad(?:e|ing|ers?)|market|price|risk|coin|futures|nasdaq|"
     r"order blocks?|bullish|bearish|position|equilibrium|chart|candle|"
-    r"stop loss|profit|loss)\b",
+    r"stop loss|profit|loss|retrace|liquidity|pullback|breakout|"
+    r"daily bias|nasdaq|\bNQ\b|\bES\b|vwap|scalp|entry|exits?)\b",
     re.IGNORECASE,
 )
 _OFF_TOPIC = re.compile(r"\b(cocaine|ketamine|weed|stoner|snort|smoking)\b", re.I)
@@ -311,30 +312,67 @@ def _grounded_numbers(hook: str, source: str) -> bool:
     return normalize(hook).issubset(normalize(source))
 
 
+def candidate_gate_failures(
+    candidate: ClipCandidate,
+    *,
+    segments: Sequence[TranscriptSegment] | None = None,
+    hook_override: str | None = None,
+    allow_review_only_opening: bool = False,
+) -> list[str]:
+    """Explain each failed gate instead of hiding distinct causes in one label."""
+    text = candidate.text.strip()
+    words = _WORDS.findall(text)
+    failed: list[str] = []
+    if _OFF_TOPIC.search(text):
+        failed.append("POLICY_SENSITIVE_OFF_TOPIC")
+    story = _story_rating(text)
+    authentic_reaction = _REACTION.search(text) and (story.score or 0) >= 4
+    if not _TOPIC.search(text) and not authentic_reaction:
+        failed.append("NO_TRADING_CONTEXT_OR_COMPLETE_REACTION")
+    if not 28 <= len(words) <= 155:
+        failed.append("WORD_COUNT_OUT_OF_RANGE")
+    if not 0.9 <= len(words) / max(candidate.duration, 1.0) <= 5.0:
+        failed.append("SPEECH_DENSITY_OUT_OF_RANGE")
+    hook = creative_hook_from_text(text) if hook_override is None else hook_override.strip()
+    if not hook:
+        failed.append("NO_GROUNDED_HOOK")
+    elif not _grounded_numbers(hook, text):
+        failed.append("UNSUPPORTED_NUMERICAL_HOOK")
+    opening = _opening_rating(candidate, segments)
+    if opening.score is None or opening.score < 2:
+        if not allow_review_only_opening:
+            failed.append("WEAK_FIRST_TWO_SECONDS")
+        elif (
+            opening.score is None
+            or not _TOPIC.search(text)
+            or (story.score or 0) < 3
+            or not text.rstrip().endswith((".", "!", "?"))
+        ):
+            # A persistent on-screen hook can be tried only on a complete,
+            # substantive trading story. It cannot repair a cut-off ending.
+            failed.append("WEAK_OPENING_WITHOUT_COMPLETE_TRADING_STORY")
+    return failed
+
+
 def evaluate_candidate(
     candidate: ClipCandidate,
     *,
     segments: Sequence[TranscriptSegment] | None = None,
     review: EditorialReview | None = None,
     hook_override: str | None = None,
+    allow_review_only_opening: bool = False,
 ) -> EditorialPick | None:
+    failed = candidate_gate_failures(
+        candidate,
+        segments=segments,
+        hook_override=hook_override,
+        allow_review_only_opening=allow_review_only_opening,
+    )
+    if failed:
+        return None
     text = candidate.text.strip()
-    words = _WORDS.findall(text)
-    if _OFF_TOPIC.search(text) or not _TOPIC.search(text):
-        return None
-    if not 28 <= len(words) <= 155:
-        return None
-    density = len(words) / max(candidate.duration, 1.0)
-    if not 0.9 <= density <= 5.0:
-        return None
-
     hook = creative_hook_from_text(text) if hook_override is None else hook_override.strip()
-    if not hook or not _grounded_numbers(hook, text):
-        return None
-
     opening = _opening_rating(candidate, segments)
-    if opening.score is None or opening.score < 2:
-        return None
     ratings = {
         "opening": opening,
         "story": _story_rating(text),
@@ -387,6 +425,11 @@ def evaluate_candidate(
             f"story={ratings['story'].score:.1f}/5 (lexical proxy)",
             f"retention={ratings['retention'].score:.1f}/5 (lexical proxy)",
             "portrait visuals and editorial integrity require source review",
+            *(
+                ("review_only_weak_opening_needs_manual_first_two_seconds_approval",)
+                if opening.score is not None and opening.score < 2
+                else ()
+            ),
         ),
     )
 
@@ -402,6 +445,7 @@ def select_editorial_moments(
     *,
     batch_limit: int = 12,
     segments: Sequence[TranscriptSegment] | None = None,
+    allow_review_only_opening: bool = False,
 ) -> tuple[list[EditorialPick], list[dict[str, object]]]:
     """Rank provisional draft candidates; never imply visual or integrity approval."""
     if not 1 <= batch_limit <= 20:
@@ -409,13 +453,24 @@ def select_editorial_moments(
     qualified: list[EditorialPick] = []
     rejected: list[dict[str, object]] = []
     for candidate in candidates:
-        pick = evaluate_candidate(candidate, segments=segments)
+        pick = evaluate_candidate(
+            candidate,
+            segments=segments,
+            allow_review_only_opening=allow_review_only_opening,
+        )
         if pick is None:
+            failed = candidate_gate_failures(
+                candidate,
+                segments=segments,
+                allow_review_only_opening=allow_review_only_opening,
+            )
             rejected.append(
                 {
                     "start": candidate.start,
                     "end": candidate.end,
-                    "reason": "TOPIC_LENGTH_DENSITY_OPENING_OR_INTEGRITY_GATE",
+                    "reason": failed[0] if failed else "MANUAL_INTEGRITY_GATE",
+                    "failed_gates": failed,
+                    "opening_score": _opening_rating(candidate, segments).score,
                 }
             )
         else:

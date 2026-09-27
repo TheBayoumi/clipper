@@ -138,7 +138,7 @@ STRONG_SEGMENT = (
 def test_weighted_provisional_score_tracks_unverified_visuals() -> None:
     result = evaluate_candidate(clip(0, STRONG_SEGMENT))
     assert result is not None
-    assert RUBRIC_VERSION == "tjr-editorial-v1"
+    assert RUBRIC_VERSION == "tjr-editorial-v2"
     assert sum(WEIGHTS.values()) == 100
     assert result.score_coverage == 85
     assert result.criteria["visuals"].score is None
@@ -206,7 +206,8 @@ def test_actual_first_two_seconds_override_misleading_transcript_opening() -> No
     assert evaluate_candidate(source, segments=aligned) is None
     selected, rejected = select_editorial_moments([source], segments=aligned, batch_limit=1)
     assert selected == []
-    assert rejected[0]["reason"] == "TOPIC_LENGTH_DENSITY_OPENING_OR_INTEGRITY_GATE"
+    assert rejected[0]["reason"] == "WEAK_FIRST_TWO_SECONDS"
+    assert "WEAK_FIRST_TWO_SECONDS" in rejected[0]["failed_gates"]
 
 
 @pytest.mark.parametrize(
@@ -269,3 +270,40 @@ def test_generic_topic_requires_source_specific_headline() -> None:
     assert len(picks) == 1
     assert picks[0].hook
     assert picks[0].hook != "WHAT'S THE REAL TAKEAWAY HERE?"
+
+
+
+def test_rejection_audit_identifies_each_individual_gate() -> None:
+    from scripts.tjr_editorial import candidate_gate_failures
+
+    item = clip(0, "the chat is typing all day but nothing new happened")
+    reasons = candidate_gate_failures(item)
+    assert "NO_TRADING_CONTEXT_OR_COMPLETE_REACTION" in reasons
+    assert "WORD_COUNT_OUT_OF_RANGE" in reasons
+    assert "WEAK_FIRST_TWO_SECONDS" in reasons
+
+
+def test_complete_trade_story_can_be_rendered_for_hook_led_manual_review() -> None:
+    item = clip(
+        0,
+        "i wanted a retrace on the nasdaq before taking another trade but the "
+        "market already moved too far up and i knew chasing the position would "
+        "increase the risk for no reason so i decided to wait for the next "
+        "entry instead of risking another loss.",
+    )
+    assert evaluate_candidate(item) is None
+    reviewed = evaluate_candidate(item, allow_review_only_opening=True)
+    assert reviewed is not None
+    assert reviewed.to_dict()["publish_approved"] is False
+    assert any("review_only_weak_opening" in r for r in reviewed.reasons)
+
+
+def test_hook_led_fallback_never_accepts_unfinished_trade_story() -> None:
+    item = clip(
+        0,
+        "i wanted a retrace on the nasdaq before taking another trade but the "
+        "market already moved too far up and i knew chasing the position would "
+        "increase the risk for no reason so i decided to wait for the next "
+        "entry instead of risking another loss and then",
+    )
+    assert evaluate_candidate(item, allow_review_only_opening=True) is None

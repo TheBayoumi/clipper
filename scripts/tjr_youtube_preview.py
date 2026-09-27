@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import urllib.request
+from collections import Counter
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from fractions import Fraction
@@ -710,6 +711,27 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 screening_mode = "aligned_350ms_pause_manual_boundary_review"
             else:
                 rejected.extend(relaxed_rejected)
+                # The brief permits memorable trading stories whose opening
+                # can be rescued by a grounded persistent on-screen hook.
+                # Keep them review-only and require a complete spoken ending.
+                unique = {
+                    (candidate.start, candidate.end): candidate
+                    for candidate in [*strict, *relaxed]
+                }
+                review_pool = sorted(
+                    unique.values(), key=lambda item: (-item.score, item.start)
+                )
+                draft_picks, draft_rejected = select_editorial_moments(
+                    review_pool,
+                    batch_limit=batch_limit,
+                    segments=segments,
+                    allow_review_only_opening=True,
+                )
+                if draft_picks:
+                    ranked, picks, rejected = review_pool, draft_picks, draft_rejected
+                    screening_mode = "full_source_hook_led_review_only_complete_trading_stories"
+                else:
+                    rejected.extend(draft_rejected)
         (run_dir / "ranked-candidates.json").write_text(
             json.dumps([c.to_dict() for c in ranked[:150]], indent=2) + "\n",
             encoding="utf-8",
@@ -727,6 +749,10 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                     "relaxed_candidate_count": relaxed_count,
                     "selected": [pick.to_dict() for pick in picks],
                     "rejected": rejected[:250],
+                    "rejection_breakdown": dict(
+                        Counter(str(item["reason"]) for item in rejected)
+                    ),
+                    "source_chunks_analyzed": len(source_chunks),
                 },
                 indent=2,
             )
