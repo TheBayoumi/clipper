@@ -126,3 +126,51 @@ def test_region_aborts_after_two_distinct_videos_are_ip_blocked(
     assert result["status"] == "YOUTUBE_EGRESS_BOT_CHALLENGE"
     assert len(calls) == 4
     assert all("Xa-4kOvpGok" not in url for url in calls)
+
+
+def test_plain_client_succeeds_after_provider_bot_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inspect = _load_modal_probe(monkeypatch)
+    video_id = "X7msxvyQd_U"
+    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    client_attempts: list[str] = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        if "--dump-single-json" in command:
+            extractor = command[command.index("--extractor-args") + 1]
+            client_attempts.append(extractor)
+            if extractor == "youtube:player_client=default,mweb":
+                return subprocess.CompletedProcess(
+                    command, 1, stdout="", stderr="Sign in to confirm you're not a bot"
+                )
+            assert extractor == "youtube:player_client=tv,web_safari"
+            metadata = {
+                "id": video_id,
+                "channel_id": channel,
+                "duration": 3600,
+                "live_status": "was_live",
+                "title": "LIVE TRADING",
+                "formats": [{"height": 1080, "vcodec": "avc1"}],
+            }
+            return subprocess.CompletedProcess(
+                command, 0, stdout=json.dumps(metadata), stderr=""
+            )
+        if "--test" in command:
+            template = Path(command[command.index("-o") + 1])
+            output = Path(str(template).replace("%(ext)s", "mp4"))
+            output.write_bytes(b"verified independent source data" * 90)
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        raise AssertionError(f"unexpected transport: {command}")
+
+    with patch("subprocess.run", side_effect=run):
+        result = inspect([{"video_id": video_id, "channel_id": channel}])
+    assert result["status"] == "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED"
+    assert result["transport_strategy"] == "plain_tv_web_safari"
+    assert client_attempts == [
+        "youtube:player_client=default,mweb",
+        "youtube:player_client=tv,web_safari",
+    ]
+    assert len(result["attempts"]) == 1
+    assert result["attempts"][0]["reason"] == "YOUTUBE_IP_OR_LOGIN_CHALLENGE"

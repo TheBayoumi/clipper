@@ -35,8 +35,8 @@ image = (
 
 PROVIDER_HOME = "/root/bgutil-ytdlp-pot-provider/server"
 PROVIDER_ARG = f"youtubepot-bgutilscript:server_home={PROVIDER_HOME}"
-# The same extractor options and format strategy used by the preexisting
-# Modal-native acquire_source(), with an optional final plain fallback.
+# Independent provider-backed and plain-client transports. A bad/expired
+# PO token must not suppress a working default client on the same route.
 ACQUISITION_STRATEGIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "bgutil_default_mweb",
@@ -47,7 +47,15 @@ ACQUISITION_STRATEGIES: tuple[tuple[str, tuple[str, ...]], ...] = (
             PROVIDER_ARG,
         ),
     ),
+    # This is deliberately the second strategy: if the provider-backed mweb
+    # attempt hits LOGIN_REQUIRED, test an independent, non-provider client
+    # before concluding the video's regional/IP access is blocked.
+    (
+        "plain_tv_web_safari",
+        ("--extractor-args", "youtube:player_client=tv,web_safari"),
+    ),
     ("bgutil_default_clients", ("--extractor-args", PROVIDER_ARG)),
+    ("plain_default", ()),
     (
         "bgutil_embedded_android_vr",
         (
@@ -148,8 +156,10 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
                         ip_challenges += 1
                         total_ip_challenges += 1
                     if ip_challenges >= 2:
-                        # A challenge on two distinct approved videos is
-                        # regional/IP-wide, not a particular video's failure.
+                        # Both a provider-backed mweb request and an independent
+                        # plain YouTube client were challenged for this video.
+                        # Confirm on another approved video before declaring
+                        # this regional/IP route blocked.
                         blocked_video_count += 1
                         if blocked_video_count >= 2:
                             return {
