@@ -280,9 +280,9 @@ def test_mirror_staging_uses_exact_hash_and_a_shared_source_manifest(
         destination.write_bytes(original)
         return destination
 
-    probe = Mock(stdout=json.dumps({
-        "streams": [{"codec_type": "video", "width": 1920, "height": 1080}]
-    }))
+    probe = Mock(
+        stdout=json.dumps({"streams": [{"codec_type": "video", "width": 1920, "height": 1080}]})
+    )
     duration = Mock(stdout="125.5\n")
     with (
         patch("clipper.pipeline._download_asset", side_effect=download),

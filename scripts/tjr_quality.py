@@ -126,8 +126,6 @@ def prepare_staged_brief(template: Path, output: Path) -> Path:
         raise
     return output
 
-
-
 def stage_verified_mirror(brief_path: Path, output: Path, manifest: Path) -> Path:
     """Verify a SHA-pinned official mirror before using the shared editorial renderer."""
     from clipper.pipeline import _download_asset
@@ -154,10 +152,19 @@ def stage_verified_mirror(brief_path: Path, output: Path, manifest: Path) -> Pat
         try:
             duration_probe = subprocess.run(
                 [
-                    "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                    "-of", "default=noprint_wrappers=1:nokey=1", str(output),
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(output),
                 ],
-                capture_output=True, text=True, check=True, timeout=45,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=45,
             )
             duration = float(duration_probe.stdout.strip())
         except (

@@ -480,9 +480,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                     raise RuntimeError(
                         "required approved staged original failed verification"
                     ) from exc
-                errors.append(
-                    {"source": "verified source capture", "error": str(exc)[:650]}
-                )
+                errors.append({"source": "verified source capture", "error": str(exc)[:650]})
         if os.getenv("TJR_REQUIRE_STAGED_ORIGINAL") == "1" and source is None:
             raise RuntimeError("required approved staged original was not available")
         for video in official_candidates[:8] if source is None else []:
