@@ -37,7 +37,7 @@ on:
     inputs:
       budget_confirmed:
         description: "I checked Whop and the TJR campaign is accepting submissions with budget."
-        required: true
+        required: false
         type: boolean
         default: false
       source_mode:
@@ -53,12 +53,12 @@ on:
         default: 12
       source_verified:
         description: "I verified the staged video is authentic authorized TJR footage."
-        required: true
+        required: false
         type: boolean
         default: false
       source_video_id:
-        description: "Exact 11-character video ID from the two campaign-listed YouTube channels."
-        required: true
+        description: "Optional for channel discovery; required for a verified mirror."
+        required: false
         type: string
         default: ""
 
