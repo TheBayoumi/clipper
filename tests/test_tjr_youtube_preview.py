@@ -249,7 +249,6 @@ def test_required_staged_original_never_falls_back_to_another_source(
 def test_failed_editorial_writes_transcript_and_screening_audit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import json
     from clipper.models import TranscriptSegment
     from scripts.tjr_youtube_preview import NoEditorialMoments, render_youtube_previews
 
