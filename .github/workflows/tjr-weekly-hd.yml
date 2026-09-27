@@ -248,6 +248,7 @@ jobs:
             tjr-youtube-artifacts/**/browser-source.json
             tjr-youtube-artifacts/**/transcript.json
             tjr-youtube-artifacts/**/ranked-candidates.json
+            tjr-youtube-artifacts/**/editorial-candidate-audit.json
           retention-days: 14
           compression-level: 0
           if-no-files-found: warn
@@ -363,6 +364,7 @@ jobs:
             tjr-alt-egress/**/source-acquisition-errors.json
             tjr-alt-egress/**/official-source-candidates.json
             tjr-alt-egress/**/transcript.json
+            tjr-alt-egress/**/editorial-candidate-audit.json
           retention-days: 7
           compression-level: 0
           if-no-files-found: warn
