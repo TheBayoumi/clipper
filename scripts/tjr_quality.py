@@ -126,6 +126,7 @@ def prepare_staged_brief(template: Path, output: Path) -> Path:
         raise
     return output
 
+
 def stage_verified_mirror(brief_path: Path, output: Path, manifest: Path) -> Path:
     """Verify a SHA-pinned official mirror before using the shared editorial renderer."""
     from clipper.pipeline import _download_asset
