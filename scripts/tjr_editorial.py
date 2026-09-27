@@ -9,8 +9,9 @@ is permitted while publication approval remains false.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from typing import Literal, Sequence
+from typing import Literal
 
 from clipper.models import ClipCandidate, TranscriptSegment
 from clipper.tiktok import creative_hook_from_text
@@ -96,9 +97,10 @@ class EditorialReview:
     integrity_notes: str = ""
 
     def __post_init__(self) -> None:
-        if self.visual_score is not None:
-            if not 0 <= self.visual_score <= 5 or not self.visual_notes.strip():
-                raise ValueError("visual rating needs a 0-5 score and reviewer evidence")
+        if self.visual_score is not None and (
+            not 0 <= self.visual_score <= 5 or not self.visual_notes.strip()
+        ):
+            raise ValueError("visual rating needs a 0-5 score and reviewer evidence")
         if self.integrity_passed is not None and not self.integrity_notes.strip():
             raise ValueError("integrity decision requires reviewer evidence")
 
