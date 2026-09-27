@@ -303,8 +303,7 @@ def verify_staged_media_probe(
     ):
         raise RuntimeError("MISSING_HD_VIDEO_STREAM")
     if not any(
-        isinstance(stream, dict) and stream.get("codec_type") == "audio"
-        for stream in streams
+        isinstance(stream, dict) and stream.get("codec_type") == "audio" for stream in streams
     ):
         raise RuntimeError("MISSING_AUDIO_STREAM")
     return staged_seconds
@@ -330,6 +329,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
     url = f"https://www.youtube.com/watch?v={video_id}"
     if url != selected.get("source_url"):
         raise RuntimeError("original source URL mismatch")
+    expected_seconds = float(selected.get("duration") or 0)
     folder = Path("/tjr-media") / "runs" / run_key / video_id
     folder.mkdir(parents=True, exist_ok=True)
     verified_strategy = str(selected.get("transport_strategy") or "")
@@ -357,7 +357,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
             "--no-warnings",
             "--merge-output-format",
             "mp4",
-            *source_download_sections(float(selected.get("duration") or 0)),
+            *source_download_sections(expected_seconds),
             "-f",
             "bv*[height>=720][height<=1080]+ba/b[height>=720]/bv*+ba/b",
             "--no-part",
@@ -400,7 +400,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
             returncode=inspect.returncode,
             stdout=inspect.stdout,
             stderr=inspect.stderr,
-            expected_seconds=float(selected.get("duration") or 0),
+            expected_seconds=expected_seconds,
         )
         with downloaded.open("rb") as media:
             digest = hashlib.file_digest(media, "sha256").hexdigest()

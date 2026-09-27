@@ -221,27 +221,21 @@ def test_staging_probe_rejects_corrupt_partial_and_missing_streams(
     with pytest.raises(RuntimeError, match="SOURCE_DURATION_INCOMPLETE"):
         verify(
             returncode=0,
-            stdout=json.dumps(
-                {"streams": good_streams, "format": {"duration": "840"}}
-            ),
+            stdout=json.dumps({"streams": good_streams, "format": {"duration": "840"}}),
             stderr="",
             expected_seconds=2642,
         )
     with pytest.raises(RuntimeError, match="MISSING_AUDIO_STREAM"):
         verify(
             returncode=0,
-            stdout=json.dumps(
-                {"streams": good_streams[:1], "format": {"duration": "2642"}}
-            ),
+            stdout=json.dumps({"streams": good_streams[:1], "format": {"duration": "2642"}}),
             stderr="",
             expected_seconds=2642,
         )
     assert (
         verify(
             returncode=0,
-            stdout=json.dumps(
-                {"streams": good_streams, "format": {"duration": "2642"}}
-            ),
+            stdout=json.dumps({"streams": good_streams, "format": {"duration": "2642"}}),
             stderr="",
             expected_seconds=2642,
         )
@@ -251,9 +245,7 @@ def test_staging_probe_rejects_corrupt_partial_and_missing_streams(
     assert (
         verify(
             returncode=0,
-            stdout=json.dumps(
-                {"streams": good_streams, "format": {"duration": "3600"}}
-            ),
+            stdout=json.dumps({"streams": good_streams, "format": {"duration": "3600"}}),
             stderr="",
             expected_seconds=7200,
         )
