@@ -81,7 +81,8 @@
       "wipe",
       "cuts",
       "cascade",
-      "spotlight"
+      "spotlight",
+      "snapback"
     ],
     "title_start_frame": 20,
     "title_end_frame": 112,
@@ -133,6 +134,22 @@
           "start_frame": 20,
           "frames": 90
         }
+      },
+      "snapback": {
+        "preferred_output_seconds": 5.5,
+        "maximum_output_seconds": 6,
+        "comparison_seconds": 1.5,
+        "hook_frames": 10,
+        "source_window": {
+          "start_frame": 20,
+          "frames": 90
+        },
+        "ending_shot_frames": [
+          5,
+          5,
+          5,
+          5
+        ]
       }
     }
   },
@@ -238,6 +255,15 @@
           0.5,
           0.18
         ]
+      },
+      "snapback": {
+        "after_preview_frames": 7,
+        "before_hold_frames": 13,
+        "transition_frames": 5,
+        "margin": 82,
+        "gap": 22,
+        "panel_top": 60,
+        "panel_height": 460
       }
     },
     "mode_encoding": {

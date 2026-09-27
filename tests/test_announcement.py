@@ -911,3 +911,137 @@ def test_official_warzone_workflow_qualifies_spotlight_and_publishes_video() -> 
     assert "delivery_spotlight/*.mp4" in workflow
     assert "delivery_spotlight/*.jpg" in workflow
     assert "warzone-spotlight-" + chr(36) + "{{ github.sha }}" in workflow
+
+
+def test_snapback_is_an_independent_source_verified_edit(
+    source: Path, profile: CampaignProfile
+) -> None:
+    p = _cascade_test_profile(profile)
+    plan = montage.build_plan(source, p, comparison_mode="snapback")
+    edit = plan["montage"]
+    assert edit["comparison_mode"] == "snapback"
+    assert edit["output_seconds"] == 5.5
+    assert edit["output_frames"] == 165
+    assert edit["full_source_frames"] == 178
+    assert edit["source_window"] == {"start_frame": 20, "frames": 90}
+    assert edit["hook"] == {"start_frame": 55, "frames": 10}
+    assert edit["comparison_frames"] == 45
+    assert edit["ending_frames"] == 20
+    assert edit["approved_on_screen_text"] == (
+        "Operator Toggle Introduced for Call of Duty: Warzone"
+    )
+    states = {0: 1.0, 6: 1.0, 7: 0.0, 19: 0.0, 20: 0.0, 24: 1.0, 25: 1.0, 44: 1.0}
+    for local, expected in states.items():
+        assert panel_compositor.snapback_progress(local, plan, p) == expected
+        assert portrait_matte.toggle_progress(100 + local, plan, p) == expected
+    assert portrait_matte.toggle_progress(145, plan, p) == 0
+    assert portrait_matte.toggle_progress(164, plan, p) == 1
+    montage.validate_plan(plan, source, p)
+    with pytest.raises(montage.MontageRejection, match="snapback_timeline"):
+        panel_compositor.snapback_progress(45, plan, p)
+
+
+@pytest.mark.parametrize(
+    ("key", "bad_value"),
+    [
+        ("after_preview_frames", 0),
+        ("before_hold_frames", 0),
+        ("transition_frames", 1),
+        ("after_preview_frames", 42),
+        ("panel_height", 0),
+        ("extra_field", "unapproved"),
+    ],
+)
+def test_snapback_rejects_invalid_profile_calibration(
+    source: Path, profile: CampaignProfile, key: str, bad_value: object
+) -> None:
+    p = _cascade_test_profile(profile)
+    p.config["output"]["portrait_matte"]["snapback"][key] = bad_value
+    with pytest.raises(montage.MontageRejection, match="snapback_calibration"):
+        montage.build_plan(source, p, comparison_mode="snapback")
+
+
+def test_snapback_uses_certified_source_and_exact_encoded_rewind(
+    source: Path,
+    profile: CampaignProfile,
+    certificate: tuple[Path, dict[str, Any]],
+    tmp_path: Path,
+) -> None:
+    p = _cascade_test_profile(profile)
+    planned = tmp_path / "plan_snapback.json"
+    plan = plan_campaign(
+        p,
+        source,
+        certificate[0],
+        planned,
+        comparison_mode="snapback",
+        approved_text_index=1,
+    )
+    assert plan["status"] == "PLANNED"
+    output = tmp_path / "snapback"
+    manifest = render_campaign(p, source, certificate[0], planned, output)
+    portrait = manifest["portrait"]
+    panels = portrait["snapback"]
+    assert manifest["staging"]["source_excerpt"]["windows"] == [{"start_frame": 20, "frames": 90}]
+    assert manifest["staging"]["source_excerpt"]["source_to_piece_hashes_exact"]
+    assert manifest["staging"]["comparison"]["source_only"]
+    assert manifest["staging"]["comparison"]["comparison_mode"] == "snapback"
+    assert manifest["staging"]["comparison"]["frame_count_exact"]
+    assert manifest["staging"]["comparison"]["full_frame"]
+    assert manifest["qa"]["checks"]["source_excerpt_hashes_exact"]
+    assert all(manifest["qa"]["checks"].values())
+    assert panels["panel_count"] == 2
+    assert panels["frame_count"] == 165
+    assert panels["comparison_start_frame"] == 100
+    assert panels["switch_frames"] == [107, 120, 124]
+    assert panels["sampled_states"]["106"] == 1.0
+    assert panels["sampled_states"]["107"] == 0.0
+    assert panels["sampled_states"]["119"] == 0.0
+    assert panels["sampled_states"]["124"] == 1.0
+    assert (
+        panels["source_still_sha256"] == (manifest["staging"]["comparison"]["source_still_sha256"])
+    )
+    qa = portrait["qa"]
+    assert qa["frame_count"] == 165
+    assert qa["encoded_duration"] == pytest.approx(5.5, abs=0.055)
+    assert all(qa["checks"].values())
+    assert len(qa["snapback_pixel_differences"]) == 2
+    assert all(value > 2.5 for value in qa["snapback_pixel_differences"])
+    assert portrait["title"]["text_visible_frames"] == 165
+    assert portrait["title"]["progress_samples"]["106"] == 1
+    assert portrait["title"]["progress_samples"]["107"] == 0
+    assert portrait["title"]["progress_samples"]["119"] == 0
+    assert portrait["title"]["progress_samples"]["124"] == 1
+    storyboard = portrait["storyboard"]
+    assert storyboard["frames"] == [0, 106, 107, 119, 124, 164]
+    assert Path(storyboard["file"]).is_file()
+    assert storyboard["source"] == "actual_encoded_delivery"
+    accepted = qualify_campaign(p, output / "render_manifest.json", tmp_path / "accepted.json")
+    assert accepted["status"] == "PASS"
+    assert accepted["primary_delivery"] == portrait["file"]
+    assert accepted["encoded_frames"] == 165
+    altered = json.loads((output / "render_manifest.json").read_text())
+    altered["portrait"]["snapback"]["switch_frames"] = [0, 1, 2]
+    tampered = tmp_path / "tampered.json"
+    tampered.write_text(json.dumps(altered))
+    with pytest.raises(montage.MontageRejection, match="snapback_schedule"):
+        qualify_campaign(p, tampered, tmp_path / "rejected.json")
+    altered["portrait"]["snapback"] = copy.deepcopy(portrait["snapback"])
+    altered["portrait"]["snapback"]["source_still_sha256"]["after"] = "altered"
+    tampered.write_text(json.dumps(altered))
+    with pytest.raises(montage.MontageRejection, match="snapback_stills"):
+        qualify_campaign(p, tampered, tmp_path / "rejected_stills.json")
+    altered["portrait"]["snapback"] = copy.deepcopy(portrait["snapback"])
+    altered["portrait"]["storyboard"]["sha256"] = "altered"
+    tampered.write_text(json.dumps(altered))
+    with pytest.raises(montage.MontageRejection, match="snapback_storyboard"):
+        qualify_campaign(p, tampered, tmp_path / "rejected_storyboard.json")
+
+
+def test_snapback_qualified_in_original_validation_only_workflow() -> None:
+    workflow = Path(".github/workflows/warzone-qualification.yml").read_text()
+    assert "--comparison-mode snapback" in workflow
+    assert "delivery_snapback/render_manifest.json" in workflow
+    assert "delivery_snapback/*.mp4" in workflow
+    assert "delivery_snapback/*.jpg" in workflow
+    assert "warzone-snapback-" + chr(36) + "{{ github.sha }}" in workflow

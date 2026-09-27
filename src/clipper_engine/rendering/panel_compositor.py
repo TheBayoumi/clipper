@@ -111,6 +111,51 @@ def spotlight_stage(
     )
 
 
+def snapback_config(profile: CampaignProfile, comparison_frames: int) -> dict[str, Any]:
+    """Validate a source-still after->before->after comparison on the exact frame grid."""
+    cfg: dict[str, Any] = profile.config["output"]["portrait_matte"]["snapback"]
+    if set(cfg) != {
+        "after_preview_frames",
+        "before_hold_frames",
+        "transition_frames",
+        "margin",
+        "gap",
+        "panel_top",
+        "panel_height",
+    }:
+        raise MontageRejection("snapback_calibration", "unsupported snapback calibration fields")
+    preview = int(cfg["after_preview_frames"])
+    before = int(cfg["before_hold_frames"])
+    transition = int(cfg["transition_frames"])
+    if (
+        preview < 3
+        or before < 3
+        or transition < 2
+        or preview + before + transition + 3 > comparison_frames
+        or any(int(cfg[key]) <= 0 for key in ("margin", "gap", "panel_top", "panel_height"))
+    ):
+        raise MontageRejection("snapback_calibration", "preview/rewind/reveal must fit comparison")
+    return cfg
+
+
+def snapback_progress(local_frame: int, plan: dict[str, Any], profile: CampaignProfile) -> float:
+    """One shared source-grounded visual state for picture, title and panel highlights."""
+    frames = int(plan["montage"]["comparison_frames"])
+    if not 0 <= local_frame < frames:
+        raise MontageRejection("snapback_timeline", "comparison frame outside calibrated grid")
+    cfg = snapback_config(profile, frames)
+    preview = int(cfg["after_preview_frames"])
+    before = int(cfg["before_hold_frames"])
+    transition = int(cfg["transition_frames"])
+    if local_frame < preview:
+        return 1.0
+    if local_frame < preview + before:
+        return 0.0
+    if local_frame < preview + before + transition:
+        return _ease((local_frame - (preview + before)) / (transition - 1))
+    return 1.0
+
+
 def stage_progress(local_frame: int, plan: dict[str, Any], profile: CampaignProfile) -> list[float]:
     """Operator states for one frame within the exact legal comparison window."""
     cfg = config(profile, int(plan["montage"]["comparison_frames"]))
@@ -155,9 +200,15 @@ def render_comparison(
     """Build the canonical full-frame staggered comparison from verified source stills."""
     frames = int(plan["montage"]["comparison_frames"])
     mode = str(plan["montage"]["comparison_mode"])
-    if mode not in {"cascade", "spotlight"}:
+    if mode not in {"cascade", "spotlight", "snapback"}:
         raise MontageRejection("invalid_comparison_mode", mode)
-    cfg = config(profile, frames) if mode == "cascade" else spotlight_config(profile, frames)
+    cfg = (
+        config(profile, frames)
+        if mode == "cascade"
+        else spotlight_config(profile, frames)
+        if mode == "spotlight"
+        else snapback_config(profile, frames)
+    )
     before = Image.open(before_path).convert("RGB")
     after = Image.open(after_path).convert("RGB")
     if before.size != after.size or before.size != (
@@ -174,7 +225,7 @@ def render_comparison(
         x_boundaries = [round(float(v) * w) for v in cfg["main_band_boundaries"]]
         for start in cfg["switch_start_frames"]:
             sample_set.update({int(start), int(start) + int(cfg["transition_frames"])})
-    else:
+    elif mode == "spotlight":
         for i in range(len(cfg["operator_order"])):
             focus_start = i * int(cfg["focus_frames"])
             sample_set.update(
@@ -185,6 +236,12 @@ def render_comparison(
                 }
             )
         sample_set.add(int(cfg["focus_frames"]) * len(cfg["operator_order"]))
+    else:
+        preview = int(cfg["after_preview_frames"])
+        reveal = preview + int(cfg["before_hold_frames"])
+        sample_set.update(
+            {preview - 1, preview, reveal - 1, reveal, reveal + int(cfg["transition_frames"]) - 1}
+        )
     for n in range(frames):
         if mode == "cascade":
             states = stage_progress(n, plan, profile)
@@ -197,15 +254,26 @@ def render_comparison(
                     Image.blend(before.crop((x0, 0, x1, h)), after.crop((x0, 0, x1, h)), progress),
                     (x0, 0),
                 )
-        else:
+        elif mode == "spotlight":
             focus, progress = spotlight_stage(n, plan, profile)
             frame = before if progress <= 0 else after
+        else:
+            progress = snapback_progress(n, plan, profile)
+            frame = (
+                before
+                if progress == 0
+                else after
+                if progress == 1
+                else Image.blend(before, after, progress)
+            )
         frame.save(folder / f"{n:04d}.png", compress_level=3)
         if n in sample_set:
             sampled[str(n)] = (
                 [round(v, 6) for v in states]
                 if mode == "cascade"
                 else {"focus": focus, "after": progress}
+                if mode == "spotlight"
+                else {"after": progress}
             )
     target = workspace / "comparison.nut"
     fps = rate(profile)
@@ -256,7 +324,7 @@ def render_comparison(
             "after": hashlib.sha256(after_path.read_bytes()).hexdigest(),
         },
         "panel_comparison_states": sampled,
-        "verified_source_regions": cfg["operator_rois"],
+        **({"verified_source_regions": cfg["operator_rois"]} if mode != "snapback" else {}),
     }
 
 
@@ -271,6 +339,17 @@ def render_panels(
     source_progress: list[float],
 ) -> dict[str, Any]:
     """Generate bottom-matte panel sequence, matched to the same output frame grid."""
+    if plan["montage"]["comparison_mode"] == "snapback":
+        return render_snapback_panels(
+            before_path,
+            after_path,
+            workspace,
+            plan,
+            profile,
+            canvas_width,
+            bottom_height,
+            source_progress,
+        )
     if plan["montage"]["comparison_mode"] == "spotlight":
         return render_spotlight_panels(
             before_path,
@@ -579,4 +658,118 @@ def render_spotlight_panels(
             "before": hashlib.sha256(before_path.read_bytes()).hexdigest(),
             "after": hashlib.sha256(after_path.read_bytes()).hexdigest(),
         },
+    }
+
+
+def render_snapback_panels(
+    before_path: Path,
+    after_path: Path,
+    workspace: Path,
+    plan: dict[str, Any],
+    profile: CampaignProfile,
+    canvas_width: int,
+    bottom_height: int,
+    source_progress: list[float],
+) -> dict[str, Any]:
+    """Two persistent certified full-group frames, highlighting the active visual state.
+
+    Uses no unapproved panel labels or third-party material. Source-to-piece
+    equality is enforced by the shared Clipper FFV1 source/canonical stages.
+    """
+    edit = plan["montage"]
+    frames = int(edit["output_frames"])
+    cfg = snapback_config(profile, int(edit["comparison_frames"]))
+    if len(source_progress) != frames:
+        raise MontageRejection("snapback_timeline", "portrait text and panel frames diverged")
+    scale = canvas_width / 1080
+    margin = max(2, round(int(cfg["margin"]) * scale))
+    gap = max(2, round(int(cfg["gap"]) * scale))
+    y = max(3, round(int(cfg["panel_top"]) * scale))
+    height = max(12, round(int(cfg["panel_height"]) * scale))
+    width = (canvas_width - 2 * margin - gap) // 2
+    if width < 28 or y + height >= bottom_height - 4:
+        raise MontageRejection("snapback_layout", "two comparison panels exceed bottom matte")
+    matte = profile.config["output"]["portrait_matte"]
+    bg = ImageColor.getrgb(str(matte["background_hex"]))[:3]
+    gold = ImageColor.getrgb(str(matte["accent_hex"]))[:3]
+    before = Image.open(before_path).convert("RGB")
+    after = Image.open(after_path).convert("RGB")
+    if before.size != after.size:
+        raise MontageRejection("snapback_stills", "certified before/after geometries differ")
+
+    # Contain each entire 16:9 team shot, never crop an Operator out of the comparison.
+    def card_image(source: Image.Image) -> Image.Image:
+        card = Image.new("RGB", (width, height), bg)
+        thumb = ImageOps.contain(source, (width - 8, height - 10), method=Image.Resampling.LANCZOS)
+        card.paste(thumb, ((width - thumb.width) // 2, (height - thumb.height) // 2))
+        return card
+
+    cards = (card_image(before), card_image(after))
+    mask = Image.new("L", (width, height), 0)
+    radius = max(2, round(12 * scale))
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, width - 1, height - 1), radius, fill=255)
+    folder = workspace / "panel_frames"
+    folder.mkdir(exist_ok=True)
+    compare_start = int(edit["hook"]["frames"]) + int(edit["source_window"]["frames"])
+    compare_end = compare_start + int(edit["comparison_frames"])
+    preview = int(cfg["after_preview_frames"])
+    rewind = compare_start + preview
+    reveal = rewind + int(cfg["before_hold_frames"])
+    switched = reveal + int(cfg["transition_frames"]) - 1
+    sample_frames = {
+        0,
+        compare_start,
+        rewind - 1,
+        rewind,
+        reveal - 1,
+        reveal,
+        switched,
+        compare_end - 1,
+        frames - 1,
+    }
+    samples: dict[str, float] = {}
+    boxes = []
+    for i in range(2):
+        x = margin + i * (width + gap)
+        boxes.append([x, y, x + width, y + height])
+    for n in range(frames):
+        active = source_progress[n]
+        if compare_start <= n < compare_end:
+            expected = snapback_progress(n - compare_start, plan, profile)
+            if active != expected:
+                raise MontageRejection("snapback_text_sync", "title fill contradicts shown state")
+        image = Image.new("RGB", (canvas_width, bottom_height), bg)
+        draw = ImageDraw.Draw(image)
+        for i, card in enumerate(cards):
+            x0, y0, x1, y1 = boxes[i]
+            image.paste(card, (x0, y0), mask)
+            intensity = 1.0 - active if i == 0 else active
+            outline = tuple(
+                round(a * (1 - intensity) + b * intensity)
+                for a, b in zip((83, 87, 91), gold, strict=True)
+            )
+            draw.rounded_rectangle(
+                (x0, y0, x1 - 1, y1 - 1),
+                radius=radius,
+                outline=outline,
+                width=max(1, round(4 * scale)),
+            )
+        image.save(folder / f"{n:04d}.png", compress_level=3)
+        if n in sample_frames:
+            samples[str(n)] = round(active, 6)
+    return {
+        "folder": str(folder),
+        "mode": "snapback",
+        "frame_count": frames,
+        "panel_count": 2,
+        "panel_boxes": boxes,
+        "source_only": True,
+        "text_synced": True,
+        "source_still_sha256": {
+            "before": hashlib.sha256(before_path.read_bytes()).hexdigest(),
+            "after": hashlib.sha256(after_path.read_bytes()).hexdigest(),
+        },
+        "comparison_start_frame": compare_start,
+        "switch_frames": [rewind, reveal, switched],
+        "sampled_states": samples,
     }

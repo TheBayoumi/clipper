@@ -220,6 +220,82 @@ jobs:
             delivery_spotlight/*.json
             delivery_spotlight/*.mp4
             delivery_spotlight/*.jpg
+            delivery_snapback/*.json
+            delivery_snapback/*.mp4
+            delivery_snapback/*.jpg
+
+      - name: Plan source-verified 5.5-second Toggle Snapback
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle plan \
+            --source "$SOURCE_FILE" \
+            --source-qa "source/$SOURCE_KEY.source_qa.json" \
+            --comparison-mode snapback \
+            --approved-text-index 1 \
+            --output plan_snapback.json
+
+      - name: Render Toggle Snapback through canonical Clipper staging
+        timeout-minutes: 35
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle render \
+            --source "$SOURCE_FILE" \
+            --source-qa "source/$SOURCE_KEY.source_qa.json" \
+            --plan plan_snapback.json \
+            --output-dir delivery_snapback
+
+      - name: Qualify encoded Snapback rewind and source fidelity
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle qualify \
+            --render-manifest delivery_snapback/render_manifest.json \
+            --output delivery_snapback/acceptance.json
+          python - <<'CHECK'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("delivery_snapback/render_manifest.json").read_text())
+          acceptance = json.loads(Path("delivery_snapback/acceptance.json").read_text())
+          edit = manifest["plan"]["montage"]
+          portrait = manifest["portrait"]
+          assert acceptance["status"] == "PASS"
+          assert edit["comparison_mode"] == "snapback"
+          assert edit["full_source_frames"] == 178
+          assert edit["source_window"] == {"start_frame": 20, "frames": 90}
+          assert edit["output_frames"] == 165
+          assert portrait["qa"]["frame_count"] == 165
+          assert portrait["title"]["text_visible_frames"] == 165
+          assert portrait["snapback"]["panel_count"] == 2
+          assert portrait["snapback"]["switch_frames"] == [107, 120, 124]
+          assert len(portrait["qa"]["snapback_pixel_differences"]) == 2
+          assert all(d > 2.5 for d in portrait["qa"]["snapback_pixel_differences"])
+          assert manifest["staging"]["source_excerpt"]["source_to_piece_hashes_exact"]
+          assert all(manifest["qa"]["checks"].values()), manifest["qa"]["checks"]
+          assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
+          assert 5 <= portrait["qa"]["encoded_duration"] <= 6
+          assert portrait["storyboard"]["frames"] == [0, 106, 107, 119, 124, 164]
+          assert Path(portrait["storyboard"]["file"]).is_file()
+          print("SOURCE-VERIFIED 5.5s SNAPBACK QUALIFIED:", portrait["file"])
+          CHECK
+
+      - name: Publish Snapback MP4, encoded storyboard and qualification
+        uses: actions/upload-artifact@v4
+        with:
+          name: warzone-snapback-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            plan_snapback.json
+            source/*.source_qa.json
+            delivery_snapback/*.json
+            delivery_snapback/*.mp4
+            delivery_snapback/*.jpg
 
       - name: Plan source-grounded legal visual-state comparison
         env:

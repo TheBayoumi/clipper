@@ -170,6 +170,7 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
         from .rendering.portrait_matte import (
             CASCADE_REQUIRED_CHECKS,
             PORTRAIT_REQUIRED_CHECKS,
+            SNAPBACK_REQUIRED_CHECKS,
             SPOTLIGHT_REQUIRED_CHECKS,
         )
 
@@ -250,6 +251,67 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
             ):
                 raise montage.MontageRejection(
                     "spotlight_storyboard", "actual-render storyboard is missing or changed"
+                )
+
+        if edit["comparison_mode"] == "snapback":
+            from .rendering import panel_compositor
+
+            required_checks = required_checks | SNAPBACK_REQUIRED_CHECKS
+            cmp_qa = manifest["staging"]["comparison"]
+            panel_qa = portrait.get("snapback")
+            if (
+                not isinstance(panel_qa, dict)
+                or panel_qa.get("source_still_sha256") != cmp_qa.get("source_still_sha256")
+                or panel_qa.get("frame_count") != edit["output_frames"]
+                or panel_qa.get("source_only") is not True
+            ):
+                raise montage.MontageRejection(
+                    "snapback_stills", "snapback panels lack exact certified stills"
+                )
+            cfg = panel_compositor.snapback_config(profile, int(edit["comparison_frames"]))
+            start = int(edit["hook"]["frames"]) + int(edit["source_window"]["frames"])
+            rewind = start + int(cfg["after_preview_frames"])
+            reveal = rewind + int(cfg["before_hold_frames"])
+            switched = reveal + int(cfg["transition_frames"]) - 1
+            switch_frames = [rewind, reveal, switched]
+            samples = panel_qa.get("sampled_states", {})
+            if (
+                panel_qa.get("panel_count") != 2
+                or panel_qa.get("comparison_start_frame") != start
+                or panel_qa.get("switch_frames") != switch_frames
+                or panel_qa.get("text_synced") is not True
+                or not isinstance(samples, dict)
+                or any(
+                    samples.get(str(n)) != value
+                    for n, value in (
+                        (rewind - 1, 1.0),
+                        (rewind, 0.0),
+                        (reveal - 1, 0.0),
+                        (switched, 1.0),
+                    )
+                )
+            ):
+                raise montage.MontageRejection(
+                    "snapback_schedule", "rewind/reveal differs from calibrated timeline"
+                )
+            storyboard = portrait.get("storyboard")
+            expected_indices = [
+                0,
+                rewind - 1,
+                rewind,
+                reveal - 1,
+                switched,
+                int(edit["output_frames"]) - 1,
+            ]
+            if (
+                not isinstance(storyboard, dict)
+                or storyboard.get("frames") != expected_indices
+                or storyboard.get("source") != "actual_encoded_delivery"
+                or not Path(str(storyboard.get("file") or "")).is_file()
+                or montage.sha256(Path(str(storyboard["file"]))) != storyboard.get("sha256")
+            ):
+                raise montage.MontageRejection(
+                    "snapback_storyboard", "actual encoded storyboard missing or changed"
                 )
 
         portrait_checks = portrait.get("qa", {}).get("checks", {})

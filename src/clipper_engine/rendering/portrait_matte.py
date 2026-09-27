@@ -46,6 +46,16 @@ PORTRAIT_REQUIRED_CHECKS = frozenset(
 )
 
 
+SNAPBACK_REQUIRED_CHECKS = frozenset(
+    {
+        "portrait_snapback_schedule",
+        "portrait_snapback_verified_stills",
+        "portrait_snapback_text_sync",
+        "portrait_snapback_encoded_rewind",
+    }
+)
+
+
 SPOTLIGHT_REQUIRED_CHECKS = frozenset(
     {
         "portrait_spotlight_schedule",
@@ -109,6 +119,10 @@ def toggle_progress(frame: int, plan: dict[str, Any], profile: CampaignProfile) 
             from . import panel_compositor
 
             return panel_compositor.spotlight_stage(local, plan, profile)[1]
+        if edit["comparison_mode"] == "snapback":
+            from . import panel_compositor
+
+            return panel_compositor.snapback_progress(local, plan, profile)
         if edit["comparison_mode"] == "cuts":
             elapsed = Fraction(local, 1) / rate(profile)
             return float(
@@ -291,6 +305,17 @@ def render_title_frames(
             change = start + i * int(cfg["focus_frames"]) + int(cfg["switch_after_frames"])
             sample_indices.update({change - 1, change})
         sample_indices.add(start + 3 * int(cfg["focus_frames"]))
+    if plan["montage"]["comparison_mode"] == "snapback":
+        from . import panel_compositor
+
+        cfg = panel_compositor.snapback_config(profile, int(plan["montage"]["comparison_frames"]))
+        start = int(plan["montage"]["hook"]["frames"]) + int(
+            plan["montage"]["source_window"]["frames"]
+        )
+        rewind = start + int(cfg["after_preview_frames"])
+        reveal = rewind + int(cfg["before_hold_frames"])
+        switched = reveal + int(cfg["transition_frames"]) - 1
+        sample_indices.update({start, rewind - 1, rewind, reveal - 1, reveal, switched})
     samples: dict[str, float] = {}
     word_box = (0, 0, 0, 0)
     for n in range(frames):
@@ -321,18 +346,17 @@ def render_title_frames(
     }
 
 
-def _encoded_spotlight_storyboard(
-    file: Path, output_dir: Path, plan: dict[str, Any], panel_qa: dict[str, Any]
+def _encoded_montage_storyboard(
+    file: Path,
+    output_dir: Path,
+    indices: list[int],
+    captions: tuple[str, ...],
+    filename: str,
+    fps: float,
 ) -> dict[str, Any]:
-    """A QA storyboard built only from actual encoded delivery frames."""
-    indices = [
-        0,
-        *[int(v) for v in panel_qa["switch_frames"]],
-        int(panel_qa["group_start_frame"]) + 2,
-        int(plan["montage"]["output_frames"]) - 1,
-    ]
-    if indices != sorted(set(indices)) or len(indices) != 6:
-        raise RuntimeError("invalid spotlight storyboard frame selection")
+    """Qualifying contact sheet from the finished encoded portrait, not a mockup."""
+    if indices != sorted(set(indices)) or len(indices) != 6 or len(captions) != 6:
+        raise RuntimeError("actual-render storyboard requires six ordered frames")
     video = media.video_profile(file, count_frames=True)
     width, height = int(video["width"]), int(video["height"])
     filter_select = "+".join(f"eq(n\\,{n})" for n in indices)
@@ -359,19 +383,11 @@ def _encoded_spotlight_storyboard(
     ).stdout
     bytes_per = width * height * 3
     if len(data) != bytes_per * len(indices):
-        raise RuntimeError("encoded spotlight QA storyboard has missing frames")
+        raise RuntimeError("encoded portrait storyboard has missing actual frames")
     tile_w = 320
     tile_h = round(tile_w * height / width)
     label_h = 37
     canvas = Image.new("RGB", (3 * tile_w, 2 * (tile_h + label_h)), (15, 17, 21))
-    captions = (
-        "REAL SOURCE HOOK",
-        "OPERATOR 1",
-        "OPERATOR 2",
-        "OPERATOR 3",
-        "GROUP PAYOFF",
-        "FINAL FRAME",
-    )
     font = _font(17)
     drawer = ImageDraw.Draw(canvas)
     for i, (n, name) in enumerate(zip(indices, captions, strict=True)):
@@ -381,9 +397,12 @@ def _encoded_spotlight_storyboard(
         y = (i // 3) * (tile_h + label_h)
         canvas.paste(thumb, (x, y))
         drawer.text(
-            (x + 10, y + tile_h + 5), f"{name} - {n / 30:.2f}s", font=font, fill=(248, 218, 92)
+            (x + 10, y + tile_h + 5),
+            f"{name} - {n / fps:.2f}s",
+            font=font,
+            fill=(248, 218, 92),
         )
-    path = output_dir / "operator_spotlight_storyboard.jpg"
+    path = output_dir / filename
     canvas.save(path, quality=88, optimize=True)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     return {
@@ -392,6 +411,53 @@ def _encoded_spotlight_storyboard(
         "frames": indices,
         "source": "actual_encoded_delivery",
     }
+
+
+def _encoded_spotlight_storyboard(
+    file: Path, output_dir: Path, plan: dict[str, Any], panel_qa: dict[str, Any]
+) -> dict[str, Any]:
+    indices = [
+        0,
+        *[int(v) for v in panel_qa["switch_frames"]],
+        int(panel_qa["group_start_frame"]) + 2,
+        int(plan["montage"]["output_frames"]) - 1,
+    ]
+    return _encoded_montage_storyboard(
+        file,
+        output_dir,
+        indices,
+        (
+            "REAL SOURCE HOOK",
+            "OPERATOR 1",
+            "OPERATOR 2",
+            "OPERATOR 3",
+            "GROUP PAYOFF",
+            "FINAL FRAME",
+        ),
+        "operator_spotlight_storyboard.jpg",
+        float(Fraction(str(plan["source"]["fps"]))),
+    )
+
+
+def _encoded_snapback_storyboard(
+    file: Path, output_dir: Path, plan: dict[str, Any], panel_qa: dict[str, Any]
+) -> dict[str, Any]:
+    rewind, reveal, switched = (int(v) for v in panel_qa["switch_frames"])
+    return _encoded_montage_storyboard(
+        file,
+        output_dir,
+        [0, rewind - 1, rewind, reveal - 1, switched, int(plan["montage"]["output_frames"]) - 1],
+        (
+            "SOURCE HOOK",
+            "RESULT FIRST",
+            "SNAP BACK",
+            "ORIGINAL LOOK",
+            "TOGGLE REVEAL",
+            "FINAL LOOK",
+        ),
+        "operator_snapback_storyboard.jpg",
+        float(Fraction(str(plan["source"]["fps"]))),
+    )
 
 
 def render_portrait(
@@ -410,7 +476,8 @@ def render_portrait(
     mode = str(plan["montage"]["comparison_mode"])
     cascade = mode == "cascade"
     spotlight = mode == "spotlight"
-    panel_mode = cascade or spotlight
+    snapback = mode == "snapback"
+    panel_mode = cascade or spotlight or snapback
     width, height = (int(z) for z in title_qa["canvas"])
     top = int(title_qa["top_height"])
     center = int(title_qa["center_height"])
@@ -788,6 +855,59 @@ def render_portrait(
             )
             spotlight_differences.append(round(sum(ImageStat.Stat(pixel_change).mean) / 3, 4))
 
+    snapback_differences: list[float] = []
+    if snapback:
+        if panel_qa is None:
+            raise RuntimeError("missing snapback panel QA")
+        rewind, reveal, switched = (int(v) for v in panel_qa["switch_frames"])
+        sample_indices = sorted({rewind - 1, rewind, reveal - 1, switched})
+        selected = "+".join(f"eq(n\\,{n})" for n in sample_indices)
+        raw = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                str(file),
+                "-vf",
+                f"select={selected},format=rgb24",
+                "-fps_mode",
+                "passthrough",
+                "-frames:v",
+                str(len(sample_indices)),
+                "-f",
+                "rawvideo",
+                "-",
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
+        bytes_per_frame = width * height * 3
+        if len(raw) != len(sample_indices) * bytes_per_frame:
+            raise RuntimeError("encoded snapback rewind/reveal sample frames are missing")
+        sampled_video = {
+            n: Image.frombytes(
+                "RGB",
+                (width, height),
+                raw[i * bytes_per_frame : (i + 1) * bytes_per_frame],
+            )
+            for i, n in enumerate(sample_indices)
+        }
+        roi = profile.config["editorial"]["visual_state_roi"]
+        box = (
+            round(float(roi[0]) * width),
+            top + round(float(roi[1]) * center),
+            round(float(roi[2]) * width),
+            top + round(float(roi[3]) * center),
+        )
+        for left, right in ((rewind - 1, rewind), (reveal - 1, switched)):
+            snapback_image_delta = ImageChops.difference(
+                sampled_video[left].crop(box), sampled_video[right].crop(box)
+            )
+            snapback_differences.append(
+                round(sum(ImageStat.Stat(snapback_image_delta).mean) / 3, 4)
+            )
+
     if cascade:
         if panel_qa is None or expected_still_hashes is None:
             raise RuntimeError("missing cascade QA")
@@ -829,11 +949,43 @@ def render_portrait(
         checks["portrait_spotlight_encoded_state_changes"] = len(
             spotlight_differences
         ) == 3 and all(change > 2.5 for change in spotlight_differences)
+    if snapback:
+        if panel_qa is None or expected_still_hashes is None:
+            raise RuntimeError("missing snapback source QA")
+        from . import panel_compositor
+
+        cfg = panel_compositor.snapback_config(profile, int(plan["montage"]["comparison_frames"]))
+        start = int(plan["montage"]["hook"]["frames"]) + int(
+            plan["montage"]["source_window"]["frames"]
+        )
+        rewind = start + int(cfg["after_preview_frames"])
+        reveal = rewind + int(cfg["before_hold_frames"])
+        switched = reveal + int(cfg["transition_frames"]) - 1
+        checks["portrait_snapback_schedule"] = (
+            panel_qa["panel_count"] == 2
+            and panel_qa["frame_count"] == frames
+            and panel_qa["comparison_start_frame"] == start
+            and panel_qa["switch_frames"] == [rewind, reveal, switched]
+            and panel_qa["sampled_states"][str(rewind - 1)] == 1.0
+            and panel_qa["sampled_states"][str(rewind)] == 0.0
+            and panel_qa["sampled_states"][str(reveal - 1)] == 0.0
+            and panel_qa["sampled_states"][str(switched)] == 1.0
+        )
+        checks["portrait_snapback_verified_stills"] = (
+            panel_qa["source_still_sha256"] == expected_still_hashes
+            and panel_qa["source_only"] is True
+        )
+        checks["portrait_snapback_text_sync"] = panel_qa["text_synced"] is True
+        checks["portrait_snapback_encoded_rewind"] = len(snapback_differences) == 2 and all(
+            change > 2.5 for change in snapback_differences
+        )
     required = PORTRAIT_REQUIRED_CHECKS | (
         CASCADE_REQUIRED_CHECKS
         if cascade
         else SPOTLIGHT_REQUIRED_CHECKS
         if spotlight
+        else SNAPBACK_REQUIRED_CHECKS
+        if snapback
         else frozenset()
     )
     if set(checks) != required or not all(checks.values()):
@@ -841,6 +993,8 @@ def render_portrait(
     storyboard = (
         _encoded_spotlight_storyboard(file, output_dir, plan, panel_qa)
         if spotlight and panel_qa is not None
+        else _encoded_snapback_storyboard(file, output_dir, plan, panel_qa)
+        if snapback and panel_qa is not None
         else None
     )
     hasher = hashlib.sha256()
@@ -864,6 +1018,7 @@ def render_portrait(
             "matte_sampled_frames": sampled_mattes,
             "cascade_panel_pixel_differences": panel_differences,
             "spotlight_pixel_differences": spotlight_differences,
+            "snapback_pixel_differences": snapback_differences,
             "video_profile": actual,
             "audio_profile": audio,
             "ssim": ssim,
@@ -872,6 +1027,7 @@ def render_portrait(
         "title": title_qa,
         "cascade": panel_qa if cascade else None,
         "spotlight": panel_qa if spotlight else None,
+        "snapback": panel_qa if snapback else None,
         "storyboard": storyboard,
         "canonical_ffv1_nut": True,
     }
