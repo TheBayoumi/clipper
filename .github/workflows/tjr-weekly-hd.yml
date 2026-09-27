@@ -393,7 +393,6 @@ jobs:
       contents: read
     env:
       TJR_MODAL_CHANNEL_ID: ${{ matrix.channel_id }}
-      TJR_EDITORIAL_BATCH_LIMIT: '12'
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       CLIPPER_RENDER_PRESET: slow
@@ -551,32 +550,39 @@ jobs:
           python -m scripts.tjr_quality --prepare \
             --brief campaigns/reach-tjr-weekly.yaml \
             --output-brief tjr-runtime/brief.yaml
-      - name: Execute rights-gated TJR source pipeline
+      - name: Download original, verify SHA-256, and stage for editorial renderer
         run: |
           set -euo pipefail
-          clipper validate --brief tjr-runtime/brief.yaml > /dev/null
-          clipper run --brief tjr-runtime/brief.yaml --artifact-root tjr-artifacts
-      - name: Technical acceptance and full decode
-        run: |
-          set -euo pipefail
-          python -m scripts.tjr_quality \
+          python -m scripts.tjr_quality --stage \
             --brief tjr-runtime/brief.yaml \
-            --artifact-root tjr-artifacts
-          while IFS= read -r -d '' clip; do
-            ffmpeg -nostdin -v error -ss 3 -i "$clip" -frames:v 1 \
-              -y "${clip%.mp4}-preview.png"
-          done < <(find tjr-artifacts -path '*/clips/*.mp4' -print0)
-      - name: Upload clips, source manifest and QA evidence
+            --media-output tjr-mirror-stage/original.mp4 \
+            --output-manifest tjr-mirror-stage/staged-original.json
+          echo "TJR_BROWSER_CAPTURE_FILE=$PWD/tjr-mirror-stage/staged-original.json" >> "$GITHUB_ENV"
+          echo "TJR_REQUIRE_STAGED_ORIGINAL=1" >> "$GITHUB_ENV"
+      - name: Execute shared TJR editorial selection and Style B2 rendering
+        run: |
+          set -euo pipefail
+          python -m scripts.tjr_youtube_preview \
+            --brief campaigns/reach-tjr-weekly.yaml \
+            --artifact-root tjr-mirror-artifacts
+      - name: Upload clips, source provenance and editorial QA evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tjr-weekly-hd-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            tjr-artifacts/**/manifest.json
-            tjr-artifacts/**/tjr-qa-report.json
-            tjr-artifacts/**/clips/*.mp4
-            tjr-artifacts/**/clips/*.srt
-            tjr-artifacts/**/clips/*-preview.png
+            tjr-mirror-artifacts/**/tjr-youtube-qa-report.json
+            tjr-mirror-artifacts/**/editorial-candidate-audit.json
+            tjr-mirror-artifacts/**/ranked-candidates.json
+            tjr-mirror-artifacts/**/source-acquisition-errors.json
+            tjr-mirror-artifacts/**/official-source-candidates.json
+            tjr-mirror-artifacts/**/clips/*.mp4
+            tjr-mirror-artifacts/**/clips/*.srt
+            tjr-mirror-artifacts/**/clips/*.ass
+            tjr-mirror-artifacts/**/clips/*.quality.json
+            tjr-mirror-artifacts/**/clips/*.ssim.txt
+            tjr-mirror-artifacts/**/clips/*-preview.png
+            tjr-mirror-artifacts/**/clips/*-contact.png
           retention-days: 14
           compression-level: 0
           if-no-files-found: warn
