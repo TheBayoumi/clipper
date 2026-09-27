@@ -35,18 +35,57 @@ sorts candidates by published time, and independently verifies each video's
 YouTube metadata owner ID and video ID before attempting a real HD download.
 It NEVER falls back to generic search, third-party reposts or Kick.
 
-For the newest playable long-form video, it takes up to fourteen minutes of
-real footage, verifies HD original dimensions, transcribes real English
-speech, selects two non-overlapping 20–42-second moments, and renders true
-1080×1920 H.264/AAC captioned review drafts. Both files undergo ffprobe
-technical QA and a full media decode. The published source URL, owner,
-publication date, clip timestamps, original hash, SRTs and preview frames
-are included in the GitHub Actions artifact.
+For a playable eligible long-form video, the workflow processes up to fourteen
+minutes of original footage, checks source dimensions, transcribes English
+speech, and ranks distinct 20–42-second moments using the evidence-labeled
+editorial rubric below. The configured editorial batch limit, not a
+two-clip cap, determines the maximum number of draft renders. Draft MP4s
+receive 1080×1920 H.264/AAC encoding, ffprobe QA and full decode checks.
+The source URL, owner, upload date, timestamps, SHA-256, captions, frame
+previews and editorial audit accompany successful runs.
 
 Human review MUST still verify that TJR is visible, the lines and captions
 are accurate, no forbidden source logos are present, the original context
 is intact, and the creative hook is compelling. The workflow does NOT
 publish anything to TikTok or submit any clips to Whop.
+
+
+
+## Editorial screening and scoring — `tjr-editorial-v1`
+
+The transcript-first screen ranks **review drafts**, not clips approved for
+publication. Its versioned, auditable weights sum to 100:
+
+| Criterion | Weight | Candidate-time evidence |
+| --- | ---: | --- |
+| Opening | 25% | Reaction/question/action/specific stake in first 2 seconds, using word timestamps where available |
+| Story | 25% | Lexical setup, tension and closing-payoff cues; penalize unfinished boundaries |
+| Emotion | 10% | Reaction and emphasis *word* cues; tone and authenticity remain unverified |
+| Visuals | 15% | No automated score: a reviewer must inspect footage and portrait framing |
+| Retention | 25% | Distinct new terms in later thirds and repeated-trigram penalty as transcript proxies |
+
+Each criterion records a 0–5 score **or null** when unassessed, its evidence
+and whether it is a transcript proxy or manually verified. Without a visual
+review, score coverage is **85/100 weight points**. The provisional
+editorial score is `100 × observed_weighted_points / score_coverage`;
+it is **not** an assumed 15-point visual score or a virality forecast.
+With reviewer-supplied visual evidence, coverage becomes 100.
+
+The **integrity gate** is separate from the numerical score. Unsupported
+numeric claims in a headline cause candidate rejection. Other semantic and
+contextual claims cannot be proven from keyword matching: their status stays
+`unverified` until a reviewer explicitly approves or rejects them with
+evidence. An explicit integrity failure rejects the candidate regardless
+of its score. Even a passed rubric does not authorize campaign publication;
+source rights, on-screen logos, campaign eligibility and final-render review
+remain independent requirements.
+
+For every successful real-source run,
+`editorial-candidate-audit.json` contains rubric version, weights,
+selected candidate timestamps, all criterion scores, evidence and basis,
+score coverage, integrity status and rejection reasons. Per-clip QA reports
+repeat the selected candidate's rubric evidence. The artifact is retained
+by each real-source runner path alongside its MP4/SRT and technical QA.
 
 ## YouTube access failure and exact-source fallback
 
