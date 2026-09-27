@@ -107,10 +107,24 @@ def distinct_hook_from_text(text: str, used_hooks: Collection[str] = ()) -> str:
         if len(snippet) > 37:
             continue
         relevance = sum(
-            token.casefold() in {
-                "risk", "trade", "trading", "market", "price", "loss",
-                "stop", "enter", "entry", "exit", "profit", "position",
-                "reversal", "mistake", "plan", "money",
+            token.casefold()
+            in {
+                "risk",
+                "trade",
+                "trading",
+                "market",
+                "price",
+                "loss",
+                "stop",
+                "enter",
+                "entry",
+                "exit",
+                "profit",
+                "position",
+                "reversal",
+                "mistake",
+                "plan",
+                "money",
             }
             for token in phrase
         )

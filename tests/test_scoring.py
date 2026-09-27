@@ -81,9 +81,7 @@ def test_story_boundaries_keep_complete_openings_and_endings() -> None:
         TranscriptSegment(23, 34, "We need to plan before the next trade"),
         TranscriptSegment(34, 46, "because every decision carries market risk."),
     ]
-    result = score_transcript(
-        tjr_brief(), "v1", segments, limit=100, sentence_boundaries=True
-    )
+    result = score_transcript(tjr_brief(), "v1", segments, limit=100, sentence_boundaries=True)
     assert result
     assert all(clip.start in (0, 23) for clip in result)
     assert all(clip.text.endswith((".", "!", "?")) for clip in result)
@@ -100,9 +98,7 @@ def test_story_mode_rejects_mid_sentence_end_and_disconnected_speech() -> None:
         TranscriptSegment(11, 23, "and why do we need to manage the trade"),
         TranscriptSegment(23, 34, "because our stop loss can be hit."),
     ]
-    candidates = score_transcript(
-        tjr_brief(), "v1", continuous, sentence_boundaries=True
-    )
+    candidates = score_transcript(tjr_brief(), "v1", continuous, sentence_boundaries=True)
     assert candidates
     assert all(c.end >= 34 for c in candidates)
 
@@ -110,9 +106,7 @@ def test_story_mode_rejects_mid_sentence_end_and_disconnected_speech() -> None:
         TranscriptSegment(0, 12, "Why is the market risk so high?"),
         TranscriptSegment(17, 35, "We explain the trade plan before entry."),
     ]
-    assert score_transcript(
-        tjr_brief(), "v1", disconnected, sentence_boundaries=True
-    ) == []
+    assert score_transcript(tjr_brief(), "v1", disconnected, sentence_boundaries=True) == []
 
 
 def test_story_mode_respects_duration_after_timestamp_rounding() -> None:

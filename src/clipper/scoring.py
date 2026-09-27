@@ -110,9 +110,7 @@ def score_transcript(
             if duration < brief.min_clip_seconds:
                 continue
             next_segment = (
-                segments[segment_index + 1]
-                if segment_index + 1 < len(segments)
-                else None
+                segments[segment_index + 1] if segment_index + 1 < len(segments) else None
             )
             sentence_end = segment.text.rstrip().endswith((".", "!", "?"))
             next_pause = next_segment.start - segment.end if next_segment is not None else 0.0
