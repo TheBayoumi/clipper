@@ -174,7 +174,6 @@ def test_plain_client_succeeds_after_provider_bot_challenge(
     assert result["attempts"][0]["reason"] == "YOUTUBE_IP_OR_LOGIN_CHALLENGE"
 
 
-
 def test_modal_source_windowing_matches_runner_without_remote_editor_import(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

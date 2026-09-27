@@ -481,6 +481,7 @@ jobs:
             tjr-modal-artifacts/**/clips/*-preview.png
             tjr-modal-artifacts/**/clips/*-contact.png
             tjr-modal-artifacts/**/editorial-candidate-audit.json
+            tjr-modal-artifacts/**/source-analysis-coverage.json
             tjr-modal-artifacts/**/ranked-candidates.json
             tjr-modal-artifacts/**/tjr-youtube-qa-report.json
             tjr-modal-artifacts/**/source-acquisition-errors.json
