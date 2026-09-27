@@ -68,6 +68,19 @@ ACQUISITION_STRATEGIES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+def source_download_sections(duration_seconds: float) -> list[str]:
+    """Isolated Modal worker uses the same full-source limit as the runner.
+
+    This must remain dependency-free: the remote image does not install the
+    editor's Python package or its XML dependencies.
+    """
+    if duration_seconds <= 0:
+        raise ValueError("verified YouTube duration must be positive")
+    if duration_seconds <= 3600:
+        return []
+    return ["--download-sections", "*00:00:00-01:00:00"]
+
+
 def _yt_command(args: tuple[str, ...], url: str) -> list[str]:
     return [
         "yt-dlp",
@@ -269,8 +282,6 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
     import subprocess
     from pathlib import Path
 
-    from scripts.tjr_youtube_preview import youtube_scan_section_args
-
     video_id = str(selected["source_video_id"])
     channel_id = str(selected["source_channel_id"])
     if (
@@ -305,7 +316,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
         "--no-warnings",
         "--merge-output-format",
         "mp4",
-        *youtube_scan_section_args(float(selected.get("duration") or 0)),
+        *source_download_sections(float(selected.get("duration") or 0)),
         "-f",
         "bv*[height>=720][height<=1080]+ba/b[height>=720]/bv*+ba/b",
         "--no-part",

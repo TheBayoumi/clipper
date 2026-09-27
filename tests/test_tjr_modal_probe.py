@@ -172,3 +172,23 @@ def test_plain_client_succeeds_after_provider_bot_challenge(
     ]
     assert len(result["attempts"]) == 1
     assert result["attempts"][0]["reason"] == "YOUTUBE_IP_OR_LOGIN_CHALLENGE"
+
+
+
+def test_modal_source_windowing_matches_runner_without_remote_editor_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts.tjr_youtube_preview import youtube_scan_section_args
+
+    fake = SimpleNamespace(
+        App=lambda *_args, **_kwargs: _FakeApp(),
+        Image=MagicMock(),
+        Volume=MagicMock(),
+    )
+    monkeypatch.setitem(sys.modules, "modal", fake)
+    script = runpy.run_path(
+        str(Path(__file__).resolve().parents[1] / "scripts" / "tjr_modal_probe.py")
+    )
+    source_sections = script["source_download_sections"]
+    for seconds in (120, 2642, 3600, 3601, 7200):
+        assert source_sections(seconds) == youtube_scan_section_args(seconds)
