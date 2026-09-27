@@ -101,3 +101,28 @@ def test_all_blocked_videos_still_report_challenge(
     assert result["status"] == "YOUTUBE_EGRESS_BOT_CHALLENGE"
     assert calls == 4
     assert len({attempt["url"] for attempt in result["attempts"]}) == 2
+
+
+def test_region_aborts_after_two_distinct_videos_are_ip_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inspect = _load_modal_probe(monkeypatch)
+    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    videos = [
+        {"video_id": vid, "channel_id": channel}
+        for vid in ("lxu_J1Ec1XI", "X7msxvyQd_U", "Xa-4kOvpGok")
+    ]
+    calls: list[str] = []
+
+    def blocked(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        calls.append(command[-1])
+        return subprocess.CompletedProcess(
+            command, 1, stdout="", stderr="Sign in to confirm you're not a bot"
+        )
+
+    with patch("subprocess.run", side_effect=blocked):
+        result = inspect(videos)
+    assert result["status"] == "YOUTUBE_EGRESS_BOT_CHALLENGE"
+    assert len(calls) == 4
+    assert all("Xa-4kOvpGok" not in url for url in calls)

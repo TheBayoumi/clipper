@@ -111,6 +111,7 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
     }
     attempts: list[dict[str, str]] = []
     total_ip_challenges = 0
+    blocked_video_count = 0
     for candidate in candidates[:6]:
         ip_challenges = 0
         video_id = candidate["video_id"]
@@ -147,8 +148,14 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
                         ip_challenges += 1
                         total_ip_challenges += 1
                     if ip_challenges >= 2:
-                        # One blocked short must not prevent us from checking
-                        # the next approved video on the same regional egress.
+                        # A challenge on two distinct approved videos is
+                        # regional/IP-wide, not a particular video's failure.
+                        blocked_video_count += 1
+                        if blocked_video_count >= 2:
+                            return {
+                                "status": "YOUTUBE_EGRESS_BOT_CHALLENGE",
+                                "attempts": attempts,
+                            }
                         break
                     continue
                 metadata = json.loads(metadata_run.stdout)

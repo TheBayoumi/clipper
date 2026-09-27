@@ -14,7 +14,7 @@ import os
 import re
 import subprocess
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from fractions import Fraction
 from pathlib import Path
@@ -48,6 +48,7 @@ class OfficialVideo:
     channel_id: str
     title: str
     published: str
+    duration_seconds: float | None = None
 
     @property
     def url(self) -> str:
@@ -89,11 +90,20 @@ def parse_official_feed(xml: bytes, expected_channel: str) -> list[OfficialVideo
     return items
 
 
-def _flat_channel_playlist(channel_id: str) -> list[OfficialVideo]:
-    """Backup discovery from the SAME allowlisted YouTube channel, never ytsearch."""
-    if channel_id not in CHANNELS:
-        raise ValueError("not a Reach-listed channel")
-    url = f"https://www.youtube.com/channel/{channel_id}/videos"
+def _flat_channel_playlist(
+    channel_id: str, *, section: str = "videos", limit: int = 36
+) -> list[OfficialVideo]:
+    """Discover older videos/stream replays on the exact allowlisted channel.
+
+    RSS exposes only recent uploads, which can all be sub-90-second Shorts.
+    Every discovered playlist entry is still independently owner-verified
+    before download. Neither search results nor third-party reposts qualify.
+    """
+    if channel_id not in CHANNELS or section not in {"videos", "streams"}:
+        raise ValueError("not a Reach-listed channel or approved playlist section")
+    if not 1 <= limit <= 50:
+        raise ValueError("playlist limit must be 1-50")
+    url = f"https://www.youtube.com/channel/{channel_id}/{section}"
     result = invoke(
         [
             "yt-dlp",
@@ -101,7 +111,7 @@ def _flat_channel_playlist(channel_id: str) -> list[OfficialVideo]:
             "--dump-json",
             "--no-warnings",
             "--playlist-end",
-            "10",
+            str(limit),
             url,
         ],
         timeout=180,
@@ -125,20 +135,28 @@ def _flat_channel_playlist(channel_id: str) -> list[OfficialVideo]:
             if timestamp is not None
             else ""
         )
+        raw_duration = entry.get("duration")
+        duration = (
+            float(raw_duration)
+            if isinstance(raw_duration, (int, float)) and float(raw_duration) > 0
+            else None
+        )
         items.append(
             OfficialVideo(
                 video_id=video_id,
                 channel_id=channel_id,
                 title=str(entry.get("title") or ""),
                 published=published,
+                duration_seconds=duration,
             )
         )
     if not items:
         raise RuntimeError("official channel playlist did not expose any candidate videos")
     LOGGER.info(
-        "Found %d candidates in official %s channel playlist; metadata still unverified",
+        "Found %d candidates in official %s/%s playlist; metadata still unverified",
         len(items),
         CHANNELS[channel_id],
+        section,
     )
     return items
 
@@ -148,6 +166,7 @@ def discover_official_uploads() -> tuple[list[OfficialVideo], list[dict[str, str
     failures: list[dict[str, str]] = []
     for channel_id in CHANNELS:
         url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        feed_items: list[OfficialVideo] = []
         try:
             request = urllib.request.Request(
                 url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/atom+xml"}
@@ -161,27 +180,40 @@ def discover_official_uploads() -> tuple[list[OfficialVideo], list[dict[str, str
                 response = requests.get(url, impersonate="chrome", timeout=25)
                 response.raise_for_status()
                 content = response.content
-            items = parse_official_feed(content, channel_id)
-            if not items:
+            feed_items = parse_official_feed(content, channel_id)
+            if not feed_items:
                 raise RuntimeError("verified channel feed contains no recent upload entries")
-            LOGGER.info("Official %s feed supplied %d videos", CHANNELS[channel_id], len(items))
-            candidates.extend(items)
+            LOGGER.info("Official %s feed supplied %d videos", CHANNELS[channel_id], len(feed_items))
+            candidates.extend(feed_items)
         except Exception as exc:
             failures.append({"source": url, "error": f"{type(exc).__name__}: {exc}"[:500]})
+        # An RSS feed populated by recent Shorts must not hide the official
+        # channel's longer /videos uploads or completed /streams broadcasts.
+        short_only = not feed_items or all(
+            item.duration_seconds is not None and item.duration_seconds < 90
+            or item.title.lower().strip() in {"", "unknown", "#tjr"}
+            or ("#" in item.title and len(item.title) < 45)
+            for item in feed_items
+        )
+        sections = ("videos", "streams") if short_only else ("videos",)
+        for section in sections:
+            playlist_url = f"https://www.youtube.com/channel/{channel_id}/{section}"
             try:
-                candidates.extend(_flat_channel_playlist(channel_id))
-            except Exception as fallback_exc:
+                candidates.extend(_flat_channel_playlist(channel_id, section=section))
+            except Exception as exc:
                 failures.append(
-                    {
-                        "source": f"https://www.youtube.com/channel/{channel_id}/videos",
-                        "error": f"{type(fallback_exc).__name__}: {fallback_exc}"[-1000:],
-                    }
+                    {"source": playlist_url, "error": f"{type(exc).__name__}: {exc}"[-1000:]}
                 )
-    # Prefer actual RSS publish times; flat-playlist entries without dates rank last.
+    # Feed timestamps are authoritative; supplement duplicates with duration
+    # metadata from the official channel's own playlist when available.
     candidates.sort(key=lambda item: item.published, reverse=True)
     unique: dict[str, OfficialVideo] = {}
     for item in candidates:
-        unique.setdefault(item.video_id, item)
+        existing = unique.get(item.video_id)
+        if existing is None:
+            unique[item.video_id] = item
+        elif existing.duration_seconds is None and item.duration_seconds is not None:
+            unique[item.video_id] = replace(existing, duration_seconds=item.duration_seconds)
     return list(unique.values()), failures
 
 
@@ -333,10 +365,14 @@ def prioritize_campaign_moments(videos: list[OfficialVideo]) -> list[OfficialVid
 
     def priority(video: OfficialVideo) -> tuple[int, str]:
         title = video.title.lower().strip()
+        if video.duration_seconds is not None and video.duration_seconds < 90:
+            return (-1, video.published)
+        if any(term in title for term in ("trading", "livestream", "react", "tjr and", "stream")):
+            return (4 if video.duration_seconds and video.duration_seconds >= 90 else 2, video.published)
+        if video.duration_seconds is not None and video.duration_seconds >= 90:
+            return (3, video.published)
         if title in {"", "unknown", "#tjr"} or ("#" in title and len(title) < 45):
             return (0, video.published)
-        if any(term in title for term in ("trading", "livestream", "react", "tjr and", "stream")):
-            return (2, video.published)
         return (1, video.published)
 
     return sorted(videos, key=priority, reverse=True)

@@ -20,6 +20,8 @@ _auth_args = SCRIPT["_auth_args"]
 prioritize_campaign_moments = SCRIPT["prioritize_campaign_moments"]
 dynamic_browser_variants = SCRIPT["dynamic_browser_variants"]
 constrain_official_sources = SCRIPT["constrain_official_sources"]
+_flat_channel_playlist = SCRIPT["_flat_channel_playlist"]
+discover_official_uploads = SCRIPT["discover_official_uploads"]
 
 
 def atom_feed(channel_id: str, entry_channel: str | None = None) -> bytes:
@@ -292,3 +294,69 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
     assert audit["strict_candidate_count"] >= 0
     assert "relaxed_candidate_count" in audit
     assert "ranked-candidates.json" in {p.name for p in run.iterdir()}
+
+
+def test_official_playlist_finds_older_full_video_without_third_party_reposts() -> None:
+    import json
+
+    channel = "UCGHBUXjDCeiIXNdKR0HUZnA"
+    official_long = {
+        "id": "ABCD1234xyz", "channel_id": channel, "title": "TJR LIVE TRADING",
+        "duration": 2400, "timestamp": 1790451200,
+    }
+    repost = {
+        "id": "badR3post_X", "channel_id": "UC-foreign-channel",
+        "title": "Reposted TJR compilation", "duration": 1200,
+    }
+    result = Mock(stdout="\n".join(json.dumps(x) for x in (official_long, repost)))
+    with patch.dict(_flat_channel_playlist.__globals__, {"invoke": Mock(return_value=result)}):
+        found = _flat_channel_playlist(channel, section="streams", limit=36)
+    assert [video.video_id for video in found] == ["ABCD1234xyz"]
+    assert found[0].duration_seconds == 2400
+    with pytest.raises(ValueError, match="approved playlist"):
+        _flat_channel_playlist("UC-foreign-channel", section="videos")
+
+
+def test_short_filled_rss_is_enriched_with_older_official_long_form() -> None:
+    import io
+
+    short_feed = {
+        channel: atom_feed(channel).replace(b"Official TJR content", b"#TJR")
+        for channel in CHANNELS
+    }
+    long_channel = "UCGHBUXjDCeiIXNdKR0HUZnA"
+    older = OfficialVideo(
+        "ABCD1234xyz", long_channel, "TJR LIVE TRADING", "",
+        duration_seconds=3600,
+    )
+    calls: list[tuple[str, str]] = []
+
+    def response(request: object, timeout: int) -> io.BytesIO:
+        del timeout
+        address = request.full_url
+        channel = address.split("channel_id=", 1)[1]
+        return io.BytesIO(short_feed[channel])
+
+    def playlist(channel: str, *, section: str = "videos", limit: int = 36) -> list[OfficialVideo]:
+        del limit
+        calls.append((channel, section))
+        return [older] if channel == long_channel and section == "streams" else []
+
+    with (
+        patch("urllib.request.urlopen", side_effect=response),
+        patch.dict(
+            discover_official_uploads.__globals__,
+            {"_flat_channel_playlist": playlist},
+        ),
+    ):
+        videos, _ = discover_official_uploads()
+    assert (long_channel, "streams") in calls
+    assert {video.video_id for video in videos} >= {"8PYgFVB0GHE", older.video_id}
+    assert prioritize_campaign_moments(videos)[0].video_id == older.video_id
+
+
+def test_playlist_duration_prevents_known_short_from_blocking_long_source() -> None:
+    channel = "UCGHBUXjDCeiIXNdKR0HUZnA"
+    short = OfficialVideo("8PYgFVB0GHE", channel, "Great trading", "2026-09-27", 31)
+    older = OfficialVideo("ABCD1234xyz", channel, "Market update", "2026-09-25", 1800)
+    assert prioritize_campaign_moments([short, older])[0] == older
