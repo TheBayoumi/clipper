@@ -272,7 +272,6 @@ def test_generic_topic_requires_source_specific_headline() -> None:
     assert picks[0].hook != "WHAT'S THE REAL TAKEAWAY HERE?"
 
 
-
 def test_rejection_audit_identifies_each_individual_gate() -> None:
     from scripts.tjr_editorial import candidate_gate_failures
 

@@ -370,15 +370,12 @@ def test_playlist_duration_prevents_known_short_from_blocking_long_source() -> N
     assert prioritize_campaign_moments([short, older])[0] == older
 
 
-
 def test_full_livestream_scan_is_not_cut_to_fourteen_minutes() -> None:
     from scripts.tjr_youtube_preview import youtube_scan_section_args
 
     assert youtube_scan_section_args(2642) == []
     assert youtube_scan_section_args(3600) == []
-    assert youtube_scan_section_args(7200) == [
-        "--download-sections", "*00:00:00-01:00:00"
-    ]
+    assert youtube_scan_section_args(7200) == ["--download-sections", "*00:00:00-01:00:00"]
 
 
 def test_chunked_asr_preserves_absolute_video_and_word_offsets(
@@ -403,7 +400,9 @@ def test_chunked_asr_preserves_absolute_video_and_word_offsets(
     def fake_asr(*_args: object, **_kwargs: object) -> list[TranscriptSegment]:
         return [
             TranscriptSegment(
-                1.0, 2.0, "Trade now.",
+                1.0,
+                2.0,
+                "Trade now.",
                 words=(WordTiming(1.0, 1.4, "Trade"), WordTiming(1.4, 2.0, "now.")),
             )
         ]

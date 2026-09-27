@@ -488,8 +488,14 @@ def transcribe_source_chunks(
         raise ValueError("audio chunk duration must be between 60 and 900 seconds")
     probe = subprocess.run(
         [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", str(source),
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(source),
         ],
         check=True,
         capture_output=True,
@@ -510,10 +516,25 @@ def transcribe_source_chunks(
         try:
             subprocess.run(
                 [
-                    "ffmpeg", "-nostdin", "-v", "error", "-y",
-                    "-ss", str(start), "-i", str(source),
-                    "-t", str(length), "-vn", "-ac", "1", "-ar", "16000",
-                    "-c:a", "pcm_s16le", str(audio),
+                    "ffmpeg",
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-y",
+                    "-ss",
+                    str(start),
+                    "-i",
+                    str(source),
+                    "-t",
+                    str(length),
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    "-c:a",
+                    "pcm_s16le",
+                    str(audio),
                 ],
                 check=True,
                 capture_output=True,
@@ -715,12 +736,9 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 # can be rescued by a grounded persistent on-screen hook.
                 # Keep them review-only and require a complete spoken ending.
                 unique = {
-                    (candidate.start, candidate.end): candidate
-                    for candidate in [*strict, *relaxed]
+                    (candidate.start, candidate.end): candidate for candidate in [*strict, *relaxed]
                 }
-                review_pool = sorted(
-                    unique.values(), key=lambda item: (-item.score, item.start)
-                )
+                review_pool = sorted(unique.values(), key=lambda item: (-item.score, item.start))
                 draft_picks, draft_rejected = select_editorial_moments(
                     review_pool,
                     batch_limit=batch_limit,
@@ -749,9 +767,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                     "relaxed_candidate_count": relaxed_count,
                     "selected": [pick.to_dict() for pick in picks],
                     "rejected": rejected[:250],
-                    "rejection_breakdown": dict(
-                        Counter(str(item["reason"]) for item in rejected)
-                    ),
+                    "rejection_breakdown": dict(Counter(str(item["reason"]) for item in rejected)),
                     "source_chunks_analyzed": len(source_chunks),
                 },
                 indent=2,
