@@ -31,7 +31,11 @@ Kick clips are NOT substitutes for this user's requested YouTube sources.
 On a matching branch push or PR, GitHub Actions runs code, policy and synthetic
 encoding checks only. Real media acquisition is explicitly manual: choose
 `modal_direct` or `youtube_direct`, confirm the campaign budget, and select
-`clip_limit` between 1 and 20. No real-generation job starts on ordinary pushes.
+`clip_limit` between 1 and 20. No real-generation job starts on ordinary pushes. The verified_mirror path
+first downloads its independently approved Drive original and verifies its SHA-256,
+video ID, approved channel, HD resolution and duration, then passes the unchanged
+original to the same TJR editorial selector and Style B2 renderer. If verification
+fails, it does not fall back to a different YouTube video.
 When manually enabled, youtube_preview reads the
 real official YouTube RSS upload feeds for BOTH allowlisted channel IDs,
 sorts candidates by published time, and independently verifies each video's
