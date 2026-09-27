@@ -160,7 +160,12 @@ def stage_verified_mirror(brief_path: Path, output: Path, manifest: Path) -> Pat
                 capture_output=True, text=True, check=True, timeout=45,
             )
             duration = float(duration_probe.stdout.strip())
-        except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        except (
+            OSError,
+            ValueError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ) as exc:
             raise QualityError("unable to verify staged mirror duration") from exc
         if not 90 <= duration <= 86400:
             raise QualityError("staged original duration is outside supported source range")

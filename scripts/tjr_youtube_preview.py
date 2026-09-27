@@ -477,7 +477,9 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                     )
             except (ValueError, OSError, RuntimeError) as exc:
                 if os.getenv("TJR_REQUIRE_STAGED_ORIGINAL") == "1":
-                    raise RuntimeError("required approved staged original failed verification") from exc
+                    raise RuntimeError(
+                        "required approved staged original failed verification"
+                    ) from exc
                 errors.append(
                     {"source": "verified source capture", "error": str(exc)[:650]}
                 )
