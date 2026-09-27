@@ -1,5 +1,7 @@
 from itertools import pairwise
 
+import pytest
+
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
 from clipper.scoring import score_transcript, select_diverse_clips
 
@@ -112,3 +114,24 @@ def test_story_mode_rejects_mid_sentence_end_and_disconnected_speech() -> None:
 def test_story_mode_respects_duration_after_timestamp_rounding() -> None:
     segments = [TranscriptSegment(0.09, 42.08, "Why is market risk high?")]
     assert score_transcript(tjr_brief(), "v1", segments, sentence_boundaries=True) == []
+
+
+def test_relaxed_pause_uses_real_aligned_boundaries_not_arbitrary_mid_sentence() -> None:
+    brief = tjr_brief()
+    segments = [
+        TranscriptSegment(0, 15, "We will explain why this market move matters"),
+        TranscriptSegment(15.4, 30, "because the trade setup was unexpected"),
+        TranscriptSegment(30.4, 44, "and we must manage the risk before entry"),
+        TranscriptSegment(44.4, 66, "so we exit the position and protect the profit."),
+    ]
+    strict = score_transcript(brief, "v", segments, sentence_boundaries=True)
+    relaxed = score_transcript(
+        brief, "v", segments, sentence_boundaries=True, pause_threshold=0.35
+    )
+    assert strict == []
+    assert relaxed
+    assert relaxed[0].duration <= 42
+    assert "pause_threshold=0.35" in relaxed[0].reasons
+    assert any(reason.startswith("end_boundary=") for reason in relaxed[0].reasons)
+    with pytest.raises(ValueError, match="pause_threshold"):
+        score_transcript(brief, "v", segments, pause_threshold=0.1)

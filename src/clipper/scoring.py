@@ -82,7 +82,10 @@ def score_transcript(
     *,
     limit: int = 20,
     sentence_boundaries: bool = False,
+    pause_threshold: float = 0.7,
 ) -> list[ClipCandidate]:
+    if not 0.3 <= pause_threshold <= 1.5:
+        raise ValueError("pause_threshold must be between 0.3 and 1.5 seconds")
     if not segments:
         return []
     candidates: list[ClipCandidate] = []
@@ -93,7 +96,7 @@ def score_transcript(
             sentence_boundaries
             and previous is not None
             and not previous.text.rstrip().endswith((".", "!", "?"))
-            and preceding_pause < 0.7
+            and preceding_pause < pause_threshold
         ):
             continue
         text_parts: list[str] = []
@@ -115,7 +118,7 @@ def score_transcript(
             sentence_end = segment.text.rstrip().endswith((".", "!", "?"))
             next_pause = next_segment.start - segment.end if next_segment is not None else 0.0
             if sentence_boundaries and not (
-                sentence_end or next_segment is None or next_pause >= 0.7
+                sentence_end or next_segment is None or next_pause >= pause_threshold
             ):
                 continue
             text = " ".join(text_parts).strip()
@@ -137,7 +140,11 @@ def score_transcript(
                     end_basis = "source_end"
                 else:
                     end_basis = "following_pause"
-                reasons += (f"start_boundary={start_basis}", f"end_boundary={end_basis}")
+                reasons += (
+                    f"start_boundary={start_basis}",
+                    f"end_boundary={end_basis}",
+                    f"pause_threshold={pause_threshold:.2f}",
+                )
             candidates.append(
                 ClipCandidate(
                     video_id=video_id,

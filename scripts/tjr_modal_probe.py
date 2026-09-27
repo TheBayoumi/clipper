@@ -110,8 +110,9 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
         "UCZen39LQJPx04GjPj7FOMcw",
     }
     attempts: list[dict[str, str]] = []
-    ip_challenges = 0
+    total_ip_challenges = 0
     for candidate in candidates[:6]:
+        ip_challenges = 0
         video_id = candidate["video_id"]
         channel_id = candidate["channel_id"]
         url = f"https://www.youtube.com/watch?v={video_id}"
@@ -144,8 +145,11 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
                     )
                     if reason == "YOUTUBE_IP_OR_LOGIN_CHALLENGE":
                         ip_challenges += 1
+                        total_ip_challenges += 1
                     if ip_challenges >= 2:
-                        return {"status": "YOUTUBE_EGRESS_BOT_CHALLENGE", "attempts": attempts}
+                        # One blocked short must not prevent us from checking
+                        # the next approved video on the same regional egress.
+                        break
                     continue
                 metadata = json.loads(metadata_run.stdout)
                 if not isinstance(metadata, dict):
@@ -232,7 +236,12 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
                         "reason": type(exc).__name__,
                     }
                 )
-    return {"status": "NO_ACCESSIBLE_ORIGINAL_YOUTUBE", "attempts": attempts}
+    status = (
+        "YOUTUBE_EGRESS_BOT_CHALLENGE"
+        if total_ip_challenges and total_ip_challenges >= len(attempts) - 1
+        else "NO_ACCESSIBLE_ORIGINAL_YOUTUBE"
+    )
+    return {"status": status, "attempts": attempts}
 
 
 @app.function(image=image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=2048)
@@ -363,6 +372,14 @@ def main() -> None:
             )
         requested_video = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip() or None
         official = constrain_official_sources(candidates, requested_id=requested_video)
+        excluded = {
+            item.strip()
+            for item in os.getenv("TJR_MODAL_EXCLUDE_VIDEO_IDS", "").split(",")
+            if item.strip()
+        }
+        if requested_video and requested_video in excluded:
+            raise RuntimeError("explicit requested video cannot also be excluded")
+        official = [item for item in official if item.video_id not in excluded]
         if channel_id:
             official = [item for item in official if item.channel_id == channel_id]
         # One pipeline job per channel. Each selects its own latest verified

@@ -418,6 +418,10 @@ def select_separate_clips(candidates: list[ClipCandidate], count: int = 2) -> li
     return chosen
 
 
+class NoEditorialMoments(RuntimeError):
+    """An approved source had no qualifying draft moments; try another official original."""
+
+
 def render_youtube_previews(root: Path, brief_path: Path) -> Path:
     brief = load_brief(brief_path)
     if (
@@ -517,20 +521,40 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         if not segments:
             raise RuntimeError("the original footage contains no usable English speech")
         step = "clip_selection"
-        ranked = score_transcript(
-            brief, chosen_video.video_id, segments, limit=900, sentence_boundaries=True
-        )
-        batch_limit = int(os.getenv("TJR_EDITORIAL_BATCH_LIMIT", str(brief.clip_count)))
-        picks, rejected = select_editorial_moments(
-            ranked, batch_limit=batch_limit, segments=segments
-        )
-        if not picks:
-            raise RuntimeError("no distinct moments passed the provisional editorial rubric")
-        LOGGER.info("EDITORIAL_PROVISIONAL_SCREEN_PASSED=%d rubric=%s", len(picks), RUBRIC_VERSION)
         (run_dir / "transcript.json").write_text(
             json.dumps([s.to_dict() for s in segments], indent=2) + "\n",
             encoding="utf-8",
         )
+        batch_limit = int(os.getenv("TJR_EDITORIAL_BATCH_LIMIT", str(brief.clip_count)))
+        strict = score_transcript(
+            brief, chosen_video.video_id, segments, limit=900, sentence_boundaries=True
+        )
+        ranked = strict
+        picks, rejected = select_editorial_moments(
+            ranked, batch_limit=batch_limit, segments=segments
+        )
+        screening_mode = "strict_sentence_or_700ms_pause"
+        relaxed_count = 0
+        if not picks:
+            # Retry at genuine, shorter ASR-aligned pauses rather than cutting
+            # arbitrary mid-sentence transcript windows or lowering the rubric.
+            relaxed = score_transcript(
+                brief,
+                chosen_video.video_id,
+                segments,
+                limit=900,
+                sentence_boundaries=True,
+                pause_threshold=0.35,
+            )
+            relaxed_count = len(relaxed)
+            relaxed_picks, relaxed_rejected = select_editorial_moments(
+                relaxed, batch_limit=batch_limit, segments=segments
+            )
+            if relaxed_picks:
+                ranked, picks, rejected = relaxed, relaxed_picks, relaxed_rejected
+                screening_mode = "aligned_350ms_pause_manual_boundary_review"
+            else:
+                rejected.extend(relaxed_rejected)
         (run_dir / "ranked-candidates.json").write_text(
             json.dumps([c.to_dict() for c in ranked[:150]], indent=2) + "\n",
             encoding="utf-8",
@@ -542,6 +566,10 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                     "weights": WEIGHTS,
                     "provisional": True,
                     "requires_manual_visual_and_integrity_review": True,
+                    "screening_mode": screening_mode,
+                    "transcript_segment_count": len(segments),
+                    "strict_candidate_count": len(strict),
+                    "relaxed_candidate_count": relaxed_count,
                     "selected": [pick.to_dict() for pick in picks],
                     "rejected": rejected[:250],
                 },
@@ -549,6 +577,18 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             )
             + "\n",
             encoding="utf-8",
+        )
+        if not picks:
+            raise NoEditorialMoments(
+                "no distinct moments passed the provisional editorial rubric; "
+                f"strict={len(strict)} relaxed={relaxed_count} "
+                f"transcript_segments={len(segments)}; consult editorial-candidate-audit.json"
+            )
+        LOGGER.info(
+            "EDITORIAL_PROVISIONAL_SCREEN_PASSED=%d rubric=%s screening=%s",
+            len(picks),
+            RUBRIC_VERSION,
+            screening_mode,
         )
         step = "render_and_decode"
         renderer = FFmpegRenderer()

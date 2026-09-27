@@ -244,3 +244,50 @@ def test_required_staged_original_never_falls_back_to_another_source(
         pytest.raises(RuntimeError, match="required approved staged original"),
     ):
         render_youtube_previews(tmp_path / "artifacts", Path("campaigns/reach-tjr-weekly.yaml"))
+
+
+def test_failed_editorial_writes_transcript_and_screening_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    from clipper.models import TranscriptSegment
+    from scripts.tjr_youtube_preview import NoEditorialMoments, render_youtube_previews
+
+    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    official = OfficialVideo("X7msxvyQd_U", channel, "LIVE TRADING", "2026-09-27T15:45:16Z")
+    media = tmp_path / "source.mp4"
+    media.write_bytes(b"verified source fixture")
+    manifest = tmp_path / "stage.json"
+    manifest.write_text("verified fixture", encoding="utf-8")
+    monkeypatch.setenv("TJR_BROWSER_CAPTURE_FILE", str(manifest))
+    monkeypatch.setenv("TJR_REQUIRE_STAGED_ORIGINAL", "1")
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", official.video_id)
+    segments = [
+        TranscriptSegment(0, 8, "Welcome back everybody for this stream today"),
+        TranscriptSegment(8, 17, "We are waiting for the chart to load"),
+        TranscriptSegment(17, 27, "The chart is still loading please stand by."),
+    ]
+    with (
+        patch.dict(
+            render_youtube_previews.__globals__,
+            {
+                "discover_official_uploads": lambda: ([official], []),
+                "load_verified_browser_original": lambda *_: (
+                    official, media, {"title": official.title, "duration": 100}
+                ),
+                "probe_source_profile": lambda *_: object(),
+                "transcribe_with_faster_whisper": lambda *_args, **_kwargs: segments,
+            },
+        ),
+        pytest.raises(NoEditorialMoments, match="consult editorial-candidate-audit"),
+    ):
+        render_youtube_previews(tmp_path / "renders", Path("campaigns/reach-tjr-weekly.yaml"))
+    runs = list((tmp_path / "renders").glob("reach-tjr-youtube-*"))
+    assert len(runs) == 1
+    run = runs[0]
+    assert len(json.loads((run / "transcript.json").read_text())) == 3
+    audit = json.loads((run / "editorial-candidate-audit.json").read_text())
+    assert audit["selected"] == []
+    assert audit["strict_candidate_count"] >= 0
+    assert "relaxed_candidate_count" in audit
+    assert "ranked-candidates.json" in {p.name for p in run.iterdir()}

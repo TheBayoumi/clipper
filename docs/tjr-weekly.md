@@ -237,3 +237,21 @@ for the cookie-based YouTube-only path, or `verified_mirror` for the
 independently obtained approved-channel original with hash-pinned Google Drive
 staging and explicit budget/source verification. The former is review-only;
 no manual publication or Whop submission takes place.
+
+
+### Production failure recovery and diagnostics
+
+A Modal regional bot challenge on one upload now advances to the next
+allowlisted upload rather than aborting the region after two challenges.
+The editor first selects windows at normal sentence/0.7 s silence
+boundaries; if nothing passes its unchanged editorial gates, it retries
+using real word-aligned 0.35 s pauses (flagged for manual boundary review).
+If a verified source still has no qualifying story, the production runner
+may verify and transcribe one different official upload from the same
+approved channel. An explicitly pinned video never switches sources.
+
+Every editorial failure uploads its real transcript, strict/relaxed
+candidate counts and rejection audit before source cleanup. Neither an
+inaccessible channel nor a source with no qualifying moments counts as
+a completed clip. No direct YouTube or unauthorized mirror is silently
+substituted for the selected Modal transport.

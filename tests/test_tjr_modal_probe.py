@@ -1,0 +1,92 @@
+"""Offline regression: one challenged upload cannot hide another approved original."""
+from __future__ import annotations
+
+import json
+import runpy
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+class _FakeApp:
+    def function(self, **kwargs: object) -> object:
+        return lambda fn: fn
+
+    def local_entrypoint(self) -> object:
+        return lambda fn: fn
+
+
+def _load_modal_probe(monkeypatch: pytest.MonkeyPatch) -> object:
+    mock_modal = SimpleNamespace(
+        App=lambda *_args, **_kwargs: _FakeApp(),
+        Image=MagicMock(),
+        Volume=MagicMock(),
+    )
+    monkeypatch.setitem(sys.modules, "modal", mock_modal)
+    path = Path(__file__).resolve().parents[1] / "scripts" / "tjr_modal_probe.py"
+    return runpy.run_path(str(path))["inspect_original_youtube"]
+
+
+def test_ip_challenge_skips_only_one_video_not_entire_region(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inspect = _load_modal_probe(monkeypatch)
+    first, second = "lxu_J1Ec1XI", "X7msxvyQd_U"
+    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    urls_seen: list[str] = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        url = command[-1]
+        if "--dump-single-json" in command:
+            urls_seen.append(url)
+            if first in url:
+                return subprocess.CompletedProcess(
+                    command, 1, stdout="", stderr="Sign in to confirm you're not a bot"
+                )
+            metadata = {
+                "id": second, "channel_id": channel, "duration": 3994,
+                "live_status": "not_live", "title": "LIVE TRADING",
+                "formats": [{"height": 1080, "vcodec": "avc1"}],
+            }
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(metadata), stderr="")
+        if "--test" in command:
+            template = Path(command[command.index("-o") + 1])
+            output = Path(str(template).replace("%(ext)s", "mp4"))
+            output.write_bytes(b"verified HD test source bytes" * 80)
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        raise AssertionError(f"unexpected subprocess call: {command}")
+
+    inputs = [{"video_id": first, "channel_id": channel}, {"video_id": second, "channel_id": channel}]
+    with patch("subprocess.run", side_effect=run):
+        result = inspect(inputs)
+    assert result["status"] == "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED"
+    assert result["source_video_id"] == second
+    assert urls_seen.count(f"https://www.youtube.com/watch?v={first}") == 2
+    assert urls_seen[-1].endswith(second)
+    assert any(attempt["reason"] == "YOUTUBE_IP_OR_LOGIN_CHALLENGE" for attempt in result["attempts"])
+
+
+def test_all_blocked_videos_still_report_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inspect = _load_modal_probe(monkeypatch)
+    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    videos = [{"video_id": video, "channel_id": channel} for video in ("lxu_J1Ec1XI", "X7msxvyQd_U")]
+    calls = 0
+
+    def blocked(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(
+            command, 1, stdout="", stderr="Sign in to confirm you're not a bot"
+        )
+
+    with patch("subprocess.run", side_effect=blocked):
+        result = inspect(videos)
+    assert result["status"] == "YOUTUBE_EGRESS_BOT_CHALLENGE"
+    assert calls == 4
+    assert len({attempt["url"] for attempt in result["attempts"]}) == 2
