@@ -275,7 +275,7 @@ def test_distinct_hook_excludes_generic_and_repeated_templates() -> None:
     assert first == "WHAT HAPPENS WHEN THE STOP GETS HIT?"
     assert second and second != first
     assert second.startswith('THE MOMENT: "')
-    assert "WHAT'S THE REAL TAKEAWAY HERE?" != distinct_hook_from_text(
+    assert distinct_hook_from_text(
         "What if our market entry was late and the trading plan changed?"
-    )
+    ) != "WHAT'S THE REAL TAKEAWAY HERE?"
     assert distinct_hook_from_text("") == ""

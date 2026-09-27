@@ -89,9 +89,13 @@ def score_transcript(
     for start_index, first in enumerate(segments):
         previous = segments[start_index - 1] if start_index else None
         preceding_pause = first.start - previous.end if previous is not None else 0.0
-        if sentence_boundaries and previous is not None:
-            if not previous.text.rstrip().endswith((".", "!", "?")) and preceding_pause < 0.7:
-                continue
+        if (
+            sentence_boundaries
+            and previous is not None
+            and not previous.text.rstrip().endswith((".", "!", "?"))
+            and preceding_pause < 0.7
+        ):
+            continue
         text_parts: list[str] = []
         for segment_index in range(start_index, len(segments)):
             segment = segments[segment_index]
@@ -105,7 +109,11 @@ def score_transcript(
             text_parts.append(segment.text)
             if duration < brief.min_clip_seconds:
                 continue
-            next_segment = segments[segment_index + 1] if segment_index + 1 < len(segments) else None
+            next_segment = (
+                segments[segment_index + 1]
+                if segment_index + 1 < len(segments)
+                else None
+            )
             sentence_end = segment.text.rstrip().endswith((".", "!", "?"))
             next_pause = next_segment.start - segment.end if next_segment is not None else 0.0
             if sentence_boundaries and not (
@@ -119,15 +127,18 @@ def score_transcript(
             if end - start > brief.max_clip_seconds:
                 continue
             if sentence_boundaries:
-                start_basis = (
-                    "source_start" if previous is None
-                    else "previous_sentence" if previous.text.rstrip().endswith((".", "!", "?"))
-                    else "preceding_pause"
-                )
-                end_basis = (
-                    "sentence_end" if sentence_end
-                    else "source_end" if next_segment is None else "following_pause"
-                )
+                if previous is None:
+                    start_basis = "source_start"
+                elif previous.text.rstrip().endswith((".", "!", "?")):
+                    start_basis = "previous_sentence"
+                else:
+                    start_basis = "preceding_pause"
+                if sentence_end:
+                    end_basis = "sentence_end"
+                elif next_segment is None:
+                    end_basis = "source_end"
+                else:
+                    end_basis = "following_pause"
                 reasons += (f"start_boundary={start_basis}", f"end_boundary={end_basis}")
             candidates.append(
                 ClipCandidate(

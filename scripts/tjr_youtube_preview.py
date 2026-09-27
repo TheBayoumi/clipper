@@ -546,7 +546,9 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         renderer = FFmpegRenderer()
         caption_style = os.getenv("TJR_CAPTION_STYLE", "").strip().upper()
         if caption_style != "B2":
-            raise RuntimeError("TJR real-source drafts require Style B2 captions and persistent hooks")
+            raise RuntimeError(
+                "TJR real-source drafts require Style B2 captions and persistent hooks"
+            )
         completed: list[dict[str, Any]] = []
         for number, pick in enumerate(picks, start=1):
             clip = pick.clip
