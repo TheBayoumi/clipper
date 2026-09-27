@@ -183,14 +183,16 @@ def discover_official_uploads() -> tuple[list[OfficialVideo], list[dict[str, str
             feed_items = parse_official_feed(content, channel_id)
             if not feed_items:
                 raise RuntimeError("verified channel feed contains no recent upload entries")
-            LOGGER.info("Official %s feed supplied %d videos", CHANNELS[channel_id], len(feed_items))
+            LOGGER.info(
+                "Official %s feed supplied %d videos", CHANNELS[channel_id], len(feed_items)
+            )
             candidates.extend(feed_items)
         except Exception as exc:
             failures.append({"source": url, "error": f"{type(exc).__name__}: {exc}"[:500]})
         # An RSS feed populated by recent Shorts must not hide the official
         # channel's longer /videos uploads or completed /streams broadcasts.
         short_only = not feed_items or all(
-            item.duration_seconds is not None and item.duration_seconds < 90
+            (item.duration_seconds is not None and item.duration_seconds < 90)
             or item.title.lower().strip() in {"", "unknown", "#tjr"}
             or ("#" in item.title and len(item.title) < 45)
             for item in feed_items
@@ -368,7 +370,10 @@ def prioritize_campaign_moments(videos: list[OfficialVideo]) -> list[OfficialVid
         if video.duration_seconds is not None and video.duration_seconds < 90:
             return (-1, video.published)
         if any(term in title for term in ("trading", "livestream", "react", "tjr and", "stream")):
-            return (4 if video.duration_seconds and video.duration_seconds >= 90 else 2, video.published)
+            return (
+                4 if video.duration_seconds and video.duration_seconds >= 90 else 2,
+                video.published,
+            )
         if video.duration_seconds is not None and video.duration_seconds >= 90:
             return (3, video.published)
         if title in {"", "unknown", "#tjr"} or ("#" in title and len(title) < 45):
