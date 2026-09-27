@@ -64,9 +64,37 @@ _WEAK_OPENINGS = (
 _UNFINISHED = re.compile(r"\b(and then|but|because|and|when|which|that|i'm)\W*$", re.I)
 _STOP = frozenset(
     {
-        "i", "you", "he", "she", "we", "the", "a", "an", "and", "for", "is", "it",
-        "bro", "like", "that", "this", "to", "in", "on", "of", "my", "your",
-        "are", "was", "with", "have", "be", "do", "not", "just", "so",
+        "i",
+        "you",
+        "he",
+        "she",
+        "we",
+        "the",
+        "a",
+        "an",
+        "and",
+        "for",
+        "is",
+        "it",
+        "bro",
+        "like",
+        "that",
+        "this",
+        "to",
+        "in",
+        "on",
+        "of",
+        "my",
+        "your",
+        "are",
+        "was",
+        "with",
+        "have",
+        "be",
+        "do",
+        "not",
+        "just",
+        "so",
     }
 )
 CriterionBasis = Literal["transcript_proxy", "manual_verified", "manual_required"]
@@ -193,9 +221,7 @@ def _opening_rating(
     specific = bool(_NUMBERS.search(opening))
     action = bool(_ACTION.search(opening))
     weak = any(lowered.startswith(prefix) for prefix in _WEAK_OPENINGS)
-    score = (
-        1.0 + 2.0 * (reaction or question) + float(specific) + float(action) - 2.0 * weak
-    )
+    score = 1.0 + 2.0 * (reaction or question) + float(specific) + float(action) - 2.0 * weak
     return CriterionRating(
         _clamp(score),
         "transcript_proxy",
@@ -254,8 +280,7 @@ def _retention_rating(text: str) -> CriterionRating:
     third = max(1, len(tokens) // 3)
     chunks = [tokens[:third], tokens[third : 2 * third], tokens[2 * third :]]
     content = [
-        [token for token in chunk if token not in _STOP and len(token) > 2]
-        for chunk in chunks
+        [token for token in chunk if token not in _STOP and len(token) > 2] for chunk in chunks
     ]
     earlier = set(content[0])
     novelty: list[float] = []
@@ -263,9 +288,7 @@ def _retention_rating(text: str) -> CriterionRating:
         novel = sum(word not in earlier for word in chunk)
         novelty.append(novel / len(chunk) if chunk else 0.0)
         earlier.update(chunk)
-    unique_triples = {
-        tuple(tokens[index : index + 3]) for index in range(max(0, len(tokens) - 2))
-    }
+    unique_triples = {tuple(tokens[index : index + 3]) for index in range(max(0, len(tokens) - 2))}
     total_triples = max(0, len(tokens) - 2)
     repetition = (1.0 - len(unique_triples) / total_triples) if total_triples else 0.0
     score = 1.0 + 4.0 * sum(novelty) / 2.0 - 2.0 * repetition
@@ -403,8 +426,7 @@ def select_editorial_moments(
     chosen: list[EditorialPick] = []
     for pick in ordered:
         overlap = any(
-            pick.clip.start < other.clip.end + 1.5
-            and other.clip.start < pick.clip.end + 1.5
+            pick.clip.start < other.clip.end + 1.5 and other.clip.start < pick.clip.end + 1.5
             for other in chosen
         )
         if overlap or any(_similar(pick, other) for other in chosen):
