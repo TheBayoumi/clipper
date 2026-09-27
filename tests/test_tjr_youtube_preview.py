@@ -219,3 +219,28 @@ def test_dynamic_browser_is_optional_but_bad_config_is_rejected(
     monkeypatch.setenv("YT_DLP_WPC_BROWSER_PATH", str(tmp_path / "missing-chrome"))
     with pytest.raises(RuntimeError, match="browser executable is missing"):
         dynamic_browser_variants()
+
+
+def test_required_staged_original_never_falls_back_to_another_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from scripts.tjr_youtube_preview import render_youtube_previews
+
+    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    official = OfficialVideo("p2LU37eat70", channel, "Official", "2026-09-25T16:00:00Z")
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", official.video_id)
+    monkeypatch.setenv("TJR_BROWSER_CAPTURE_FILE", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("TJR_REQUIRE_STAGED_ORIGINAL", "1")
+    with (
+        patch.dict(
+            render_youtube_previews.__globals__,
+            {
+                "discover_official_uploads": lambda: ([official], []),
+                "verified_youtube_metadata": Mock(
+                    side_effect=AssertionError("Unverified fallback must not run")
+                ),
+            },
+        ),
+        pytest.raises(RuntimeError, match="required approved staged original"),
+    ):
+        render_youtube_previews(tmp_path / "artifacts", Path("campaigns/reach-tjr-weekly.yaml"))
