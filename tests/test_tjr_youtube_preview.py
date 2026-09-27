@@ -391,7 +391,7 @@ def test_chunked_asr_preserves_absolute_video_and_word_offsets(
     def fake_run(command: list[str], **_kwargs: object) -> Mock:
         received.append(command)
         if command[0] == "ffprobe":
-            return Mock(stdout="2642.0\\n")
+            return Mock(stdout="2642.0\n")
         if command[0] == "ffmpeg":
             Path(command[-1]).touch()
             return Mock(returncode=0)
