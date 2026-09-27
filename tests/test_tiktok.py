@@ -201,3 +201,60 @@ def test_v2_ass_auditor_rejects_missing_hook_and_missing_timing(tmp_path: Path) 
     corrupted.write_text(path.read_text().replace("Dialogue: 5,", "Dialogue: 3,"))
     with pytest.raises(ValueError, match="full-duration"):
         audit_tiktok_ass(corrupted, clip_duration=clip.duration)
+
+
+def test_editorial_hook_variants_are_supported_by_their_transcripts() -> None:
+    """Exercise every truthful headline branch, including neutral fallbacks."""
+    pairs = (
+        ("Never copy trade blindly when the price is moving.", "WHY HE WARNS ABOUT COPY TRADING"),
+        ("The stop loss got hit before the reversal.", "WHAT HAPPENS WHEN THE STOP GETS HIT?"),
+        ("I will wait before I enter the market.", "WHY HE'S WAITING TO ENTER THIS TRADE"),
+        ("There was a massive sell-off but I would not short.", "WHY HE'S NOT SHORTING THE SELLOFF"),
+        ("We reviewed this meme coin chart yesterday.", "WHAT MATTERS IN A MEMECOIN TRADE?"),
+        ("The order block is still a useful concept.", "DO ORDER BLOCKS REALLY MATTER HERE?"),
+        ("We looked at the screenshot together.", "WHAT'S THE REAL TAKEAWAY HERE?"),
+    )
+    for transcript, expected_hook in pairs:
+        assert creative_hook_from_text(transcript) == expected_hook
+
+
+def test_empty_headline_and_corrupted_ass_fail_closed(tmp_path: Path) -> None:
+    import pytest
+
+    from clipper.tiktok import audit_tiktok_ass
+
+    with pytest.raises(ValueError, match="empty headline"):
+        _fit_lines("  ", max_width=800, max_size=70)
+
+    clip = ClipCandidate("x", 0, 3, "How to plan a trade", 5)
+    word = WordTiming(0.25, 0.70, "risk")
+    original = create_tiktok_ass(
+        clip,
+        [TranscriptSegment(0.25, 0.70, "risk", (word,))],
+        tmp_path / "original.ass",
+        hook_text="HOW TO PLAN THIS TRADE",
+    ).read_text(encoding="utf-8")
+
+    mutations = (
+        (
+            original.replace("0:00:03.00,Hook", "0:00:02.00,Hook"),
+            "entire clip",
+        ),
+        (
+            original.replace(r"\an8\pos(540,185)", r"\an8\pos(999,185)"),
+            "safe-area",
+        ),
+        (
+            original.replace("Style: Caption,", "Style: Removed,"),
+            "missing opaque",
+        ),
+        (
+            original.replace("Dialogue: 2,", "Dialogue: 1,"),
+            "no genuinely",
+        ),
+    )
+    for index, (body, expected_error) in enumerate(mutations):
+        path = tmp_path / f"mutated-{index}.ass"
+        path.write_text(body, encoding="utf-8")
+        with pytest.raises(ValueError, match=expected_error):
+            audit_tiktok_ass(path, clip_duration=clip.duration)
