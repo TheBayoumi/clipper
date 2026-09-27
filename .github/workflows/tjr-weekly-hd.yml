@@ -422,7 +422,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'modal_direct' && inputs.budget_confirmed
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 2
       matrix:
         channel_id:
           - UCZen39LQJPx04GjPj7FOMcw
