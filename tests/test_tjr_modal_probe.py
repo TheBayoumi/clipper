@@ -60,14 +60,20 @@ def test_ip_challenge_skips_only_one_video_not_entire_region(
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
         raise AssertionError(f"unexpected subprocess call: {command}")
 
-    inputs = [{"video_id": first, "channel_id": channel}, {"video_id": second, "channel_id": channel}]
+    inputs = [
+        {"video_id": first, "channel_id": channel},
+        {"video_id": second, "channel_id": channel},
+    ]
     with patch("subprocess.run", side_effect=run):
         result = inspect(inputs)
     assert result["status"] == "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED"
     assert result["source_video_id"] == second
     assert urls_seen.count(f"https://www.youtube.com/watch?v={first}") == 2
     assert urls_seen[-1].endswith(second)
-    assert any(attempt["reason"] == "YOUTUBE_IP_OR_LOGIN_CHALLENGE" for attempt in result["attempts"])
+    assert any(
+        attempt["reason"] == "YOUTUBE_IP_OR_LOGIN_CHALLENGE"
+        for attempt in result["attempts"]
+    )
 
 
 def test_all_blocked_videos_still_report_challenge(
@@ -75,7 +81,10 @@ def test_all_blocked_videos_still_report_challenge(
 ) -> None:
     inspect = _load_modal_probe(monkeypatch)
     channel = "UCZen39LQJPx04GjPj7FOMcw"
-    videos = [{"video_id": video, "channel_id": channel} for video in ("lxu_J1Ec1XI", "X7msxvyQd_U")]
+    videos = [
+        {"video_id": video, "channel_id": channel}
+        for video in ("lxu_J1Ec1XI", "X7msxvyQd_U")
+    ]
     calls = 0
 
     def blocked(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
