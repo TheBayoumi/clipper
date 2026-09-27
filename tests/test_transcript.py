@@ -188,3 +188,54 @@ def test_word_aligned_whisper_splits_long_sentences_on_actual_word_times() -> No
     assert actual[0].start == 0.0
     assert actual[0].end < actual[-1].end
     assert actual[-1].end == 7.3
+
+
+def test_word_aligned_whisper_preserves_exact_word_boundaries_and_groups() -> None:
+    raw = [
+        SimpleNamespace(start=i * 0.4, end=i * 0.4 + 0.25, word=word)
+        for i, word in enumerate(
+            (
+                "Wait",
+                " what",
+                " happened?",
+                " I",
+                " just",
+                " watched",
+                " that",
+                " candle",
+                " reverse",
+            )
+        )
+    ]
+    raw.extend(
+        [
+            SimpleNamespace(start=None, end=4, word="INVALID"),
+            SimpleNamespace(start=5, end=4, word="INVALID"),
+        ]
+    )
+
+    class FakeModel:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def transcribe(self, *_args: object, **_kwargs: object):
+            return (
+                [
+                    SimpleNamespace(start=0, end=4, text="Wait what happened?", words=raw),
+                    SimpleNamespace(start=4, end=5, text="unaligned fallback", words=[]),
+                ],
+                object(),
+            )
+
+    with patch.dict(sys.modules, {"faster_whisper": SimpleNamespace(WhisperModel=FakeModel)}):
+        actual = transcribe_with_faster_whisper("original.mp4", word_timestamps=True)
+    assert [segment.text for segment in actual][:2] == [
+        "Wait what happened?",
+        "I just watched that candle reverse",
+    ]
+    assert len(actual[0].words) == 3
+    assert actual[0].words[1].start == 0.4
+    assert actual[0].words[1].end == 0.65
+    assert actual[-1].text == "unaligned fallback"
+    assert actual[-1].words == ()
+    assert actual[0].to_dict()["words"][0]["text"] == "Wait"

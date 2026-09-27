@@ -10,6 +10,7 @@ import re
 from dataclasses import asdict, dataclass
 
 from clipper.models import ClipCandidate
+from clipper.tiktok import creative_hook_from_text
 
 _WORDS = re.compile(r"[a-zA-Z0-9$']+")
 _REACTION = re.compile(
@@ -63,6 +64,16 @@ class EditorialPick:
 def evaluate_candidate(candidate: ClipCandidate) -> EditorialPick | None:
     text = candidate.text.strip()
     words = _WORDS.findall(text)
+    # Reject unrelated stream banter instead of inventing a trading hook.
+    if re.search(r"\b(cocaine|ketamine|weed|stoner|snort|smoking)\b", text, re.I):
+        return None
+    if not re.search(
+        r"\b(trad(?:e|ing|ers?)|market|price|risk|coin|futures|nasdaq|"
+        r"order block|bullish|bearish|position|equilibrium|chart|candle)\b",
+        text,
+        re.I,
+    ):
+        return None
     if not 28 <= len(words) <= 155:
         return None
     first = " ".join(words[:12])
@@ -74,12 +85,9 @@ def evaluate_candidate(candidate: ClipCandidate) -> EditorialPick | None:
     hook_score = int(reaction) * 2 + int(opening_question) * 2 + int(specific) * 2
     if weak:
         hook_score -= 2
-    # Avoid videos that don't quickly establish a question, reaction or stakes.
     if hook_score <= 0:
         return None
     density = len(words) / max(candidate.duration, 1.0)
-    # Genuine reaction hooks can be delivered deliberately; do not reject
-    # authentic moments solely for moderately paced speech.
     if density < 0.90 or density > 5.0:
         return None
     unfinished = any(text.lower().rstrip(" .!?").endswith(x) for x in _UNFINISHED_ENDINGS)
@@ -89,7 +97,9 @@ def evaluate_candidate(candidate: ClipCandidate) -> EditorialPick | None:
         "specific stakes" if specific else "contextual reaction",
         "cut boundary requires editorial check" if unfinished else "independent moment",
     )
-    return EditorialPick(candidate, first, hook_score, round(editorial_score, 2), reasons)
+    return EditorialPick(
+        candidate, creative_hook_from_text(text), hook_score, round(editorial_score, 2), reasons
+    )
 
 
 def _similar(left: EditorialPick, right: EditorialPick) -> bool:

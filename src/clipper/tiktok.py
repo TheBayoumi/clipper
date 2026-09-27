@@ -1,7 +1,7 @@
-"""TikTok editorial overlays using the original speaker's actual words.
+"""Safe, full-duration editorial headlines and real word-aligned TikTok captions.
 
-Write a separate editable ASS sidecar; publication remains subject to visual
-review for logos, context and caption accuracy. No fabricated hook claims.
+Style B v2 creates a burn-in-ready ASS sidecar without inventing spoken-word
+boundaries, adding source logos, or making unverifiable financial claims.
 """
 
 from __future__ import annotations
@@ -10,60 +10,22 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 
-from .models import ClipCandidate, TranscriptSegment
+from PIL import ImageFont
 
-_ACCENT = frozenset(
-    {
-        "WAIT",
-        "WHAT",
-        "WHY",
-        "HOW",
-        "NEVER",
-        "NO",
-        "STOP",
-        "RISK",
-        "LOSS",
-        "PROFIT",
-        "MONEY",
-        "DAMN",
-        "CRAZY",
-        "MISTAKE",
-        "WIN",
-        "LOST",
-        "TRUTH",
-    }
-)
+from .models import ClipCandidate, TranscriptSegment, WordTiming
+
+# Explicit bounding boxes in an exact 1080x1920 composition. All positions are
+# fixed in the libass design resolution; font measurements include headroom for
+# the active-word pop and the opaque background plate.
+_HOOK_SAFE_WIDTH = 800
+_CAPTION_SAFE_WIDTH = 780
+_FONT = "DejaVuSans-Bold.ttf"
 _WORD = re.compile(r"\S+")
-_HOOK_ANCHOR = re.compile(
-    r"\b(?:why|how|what|wait|damn|never|no way|stop|secret)\b|\$[0-9]",
-    re.IGNORECASE,
-)
 
 
 def _safe(text: str) -> str:
-    """Remove ASS controls and line breaks from untrusted ASR text."""
+    """Strip ASS override delimiters and line breaks from untrusted speech."""
     return re.sub(r"\s+", " ", re.sub(r"[{}\\\r\n]", " ", text)).strip()
-
-
-def hook_from_quote(quote: str) -> str:
-    """Find a short contiguous real quote, never invent a financial claim."""
-    cleaned = _safe(quote)
-    if not cleaned:
-        return ""
-    anchor = _HOOK_ANCHOR.search(cleaned[:125])
-    if anchor is not None:
-        cleaned = cleaned[anchor.start() :]
-    words = _WORD.findall(cleaned)
-    if not words:
-        return ""
-    take: list[str] = []
-    for word in words[:9]:
-        if take and len(" ".join([*take, word])) > 42:
-            break
-        take.append(word)
-        if word.endswith(("?", "!")) and len(take) >= 3:
-            break
-    return " ".join(take).rstrip(",. ").upper()
 
 
 def _ass_time(seconds: float) -> str:
@@ -74,28 +36,159 @@ def _ass_time(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{whole:02d}.{centiseconds:02d}"
 
 
-def _two_lines(text: str, *, max_chars: int = 20) -> str:
-    words = text.split()
-    if not words:
+def creative_hook_from_text(text: str) -> str:
+    """Create a compact, evidence-grounded headline from the *entire* clip.
+
+    These are question/topic headlines, not invented returns or claims about
+    footage. A real financial claim is explicitly attributed to the speaker.
+    """
+    original = _safe(text)
+    lowered = original.lower()
+    if not original:
         return ""
-    first: list[str] = []
-    second: list[str] = []
-    for word in words:
-        if not second and (not first or len(" ".join([*first, word])) <= max_chars):
-            first.append(word)
+    if "order block" in lowered and any(
+        x in lowered for x in ("stop using", "stopped using", "no reason to use")
+    ):
+        return "WHY HE STOPPED USING ORDER BLOCKS"
+    if "copy trad" in lowered and any(x in lowered for x in ("blind", "never", "don't")):
+        return "WHY HE WARNS ABOUT COPY TRADING"
+    if "meme coin" in lowered and any(
+        x in lowered for x in ("beginner", "first", "get started", "start trading")
+    ):
+        return "MEMECOIN TRADING: WHERE DO YOU START?"
+    if "million" in lowered and any(x in lowered for x in ("made", "profit", "earned", "up over")):
+        return "A TRADER CLAIMS MILLIONS: HOW?"
+    if "stop loss" in lowered and any(
+        x in lowered for x in ("got hit", "hit", "stopped out", "loss")
+    ):
+        return "WHAT HAPPENS WHEN THE STOP GETS HIT?"
+    if "enter" in lowered and "wait" in lowered:
+        return "WHY HE'S WAITING TO ENTER THIS TRADE"
+    if (
+        any(x in lowered for x in ("massive sell off", "massive sell-off", "massive selloff"))
+        and "short" in lowered
+    ):
+        return "WHY HE'S NOT SHORTING THE SELLOFF"
+    if "risk" in lowered and any(x in lowered for x in ("position", "trading", "trade")):
+        return "THE RISK QUESTION BEFORE THE TRADE"
+    if any(x in lowered for x in ("reversal", "reverse", "retracement")):
+        return "WHAT CHANGED IN THIS MARKET SETUP?"
+    if "meme coin" in lowered:
+        return "WHAT MATTERS IN A MEMECOIN TRADE?"
+    if "order block" in lowered:
+        return "DO ORDER BLOCKS REALLY MATTER HERE?"
+    # Fallback is a truthful invitation, not an invented reaction, outcome or
+    # market opinion. The 2-second spoken hook remains in the audio itself.
+    return "WHAT'S THE REAL TAKEAWAY HERE?"
+
+
+def _fit_lines(
+    text: str, *, max_width: int, max_size: int, min_size: int = 42
+) -> tuple[int, tuple[str, ...], float]:
+    """Measure true DejaVu Bold glyph widths and fit at most two safe lines.
+
+    libass is configured for the same font in the ASS style. A 12% pop/plate
+    allowance prevents transient animation from crossing the safe-area edge.
+    Fail closed on an unrenderable headline rather than clipping it.
+    """
+    words = _safe(text).upper().split()
+    if not words:
+        raise ValueError("empty headline cannot be laid out")
+    for size in range(max_size, min_size - 1, -2):
+        font = ImageFont.truetype(_FONT, size)
+        choices: list[tuple[float, tuple[str, ...]]] = []
+        for split in range(1, len(words) + 1):
+            lines = (" ".join(words[:split]),)
+            if split < len(words):
+                lines += (" ".join(words[split:]),)
+            width = max(float(font.getlength(line)) for line in lines)
+            if width * 1.12 + 40 <= max_width:
+                choices.append((width, lines))
+        if choices:
+            width, lines = min(
+                choices, key=lambda x: (max(len(y) for y in x[1]) - min(len(y) for y in x[1]), x[0])
+            )
+            return size, lines, width
+    raise ValueError("headline exceeds two-line portrait safe area; shorten editorial headline")
+
+
+def _ass_header() -> str:
+    return (
+        "[Script Info]\nTitle: TJR Style B v2 review overlay\n"
+        "ScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n"
+        "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Hook,DejaVu Sans,70,&H00FFFFFF,&H00FFFFFF,&H00131620,&H54131620,"
+        "-1,0,0,0,100,100,0,0,3,18,0,8,120,120,185,1\n"
+        "Style: Caption,DejaVu Sans,64,&H00FFFFFF,&H00FFFFFF,&H00131620,&H58131620,"
+        "-1,0,0,0,100,100,0,0,3,18,0,2,120,120,375,1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, "
+        "MarginV, Effect, Text\n"
+    )
+
+
+def _timed_words(
+    segments: Sequence[TranscriptSegment], clip: ClipCandidate
+) -> tuple[list[WordTiming], list[TranscriptSegment]]:
+    aligned: list[WordTiming] = []
+    fallback: list[TranscriptSegment] = []
+    for segment in segments:
+        if segment.end <= clip.start or segment.start >= clip.end:
+            continue
+        if segment.words:
+            aligned.extend(
+                word
+                for word in segment.words
+                if word.end > clip.start and word.start < clip.end and _safe(word.text)
+            )
         else:
-            second.append(word)
-    return " ".join(first) + (r"\N" + " ".join(second) if second else "")
+            fallback.append(segment)
+    return sorted(aligned, key=lambda word: (word.start, word.end)), fallback
 
 
-def _highlight(text: str) -> str:
-    """A single authentic reaction or number gets a contrasting yellow accent."""
-    parts = text.split()
-    for i, word in enumerate(parts):
-        if word.strip(".,!?$").upper() in _ACCENT or any(x.isdigit() for x in word):
-            parts[i] = r"{\c&H0059DEFF&}" + word + r"{\c&H00FFFFFF&}"
-            break
-    return " ".join(parts)
+def _phrases(words: Sequence[WordTiming]) -> list[list[WordTiming]]:
+    phrases: list[list[WordTiming]] = []
+    phrase: list[WordTiming] = []
+    for word in words:
+        proposed = [*phrase, word]
+        # A phrase remains visible while each authentic word gets its own
+        # active frame interval. Preserve the original word timing untouched.
+        if phrase and (
+            len(proposed) > 5
+            or len(" ".join(_safe(w.text) for w in proposed)) > 28
+            or word.end - phrase[0].start > 2.1
+            or word.start - phrase[-1].end > 0.65
+            or phrase[-1].text.rstrip().endswith((".", "!", "?"))
+        ):
+            phrases.append(phrase)
+            phrase = [word]
+        else:
+            phrase = proposed
+    if phrase:
+        phrases.append(phrase)
+    return phrases
+
+
+def _caption_text(phrase: Sequence[WordTiming], active: int, size: int) -> str:
+    tokens: list[str] = []
+    for i, word in enumerate(phrase):
+        token = _safe(word.text).upper()
+        if i == active:
+            # Emphasis is determined exclusively by the original audio's
+            # measured timestamp, never by lexical/keyword scoring.
+            tokens.append(
+                f"{{\\c&H0059DEFF&\\b1\\fs{size}\\t(0,85,\\fscx106\\fscy106)}}"
+                + token
+                + f"{{\\rCaption\\fs{size}}}"
+            )
+        else:
+            tokens.append(token)
+    return " ".join(tokens)
 
 
 def create_tiktok_ass(
@@ -105,65 +198,96 @@ def create_tiktok_ass(
     *,
     hook_text: str,
 ) -> Path:
-    """Burn-in-ready 9:16 ASS: genuine on-screen hook + punchy pop captions.
+    """Create persistent, safe creative hook and measured word-synced captions.
 
-    ASR segments must already use measured word timestamps. We never guess a
-    word's timing to manufacture a karaoke effect.
+    Unaligned Whisper fallback segments appear as *static* captions; guessing
+    intra-sentence times to simulate word synchronization is prohibited.
     """
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    header = (
-        "[Script Info]\n"
-        "Title: TJR TikTok word-aligned review overlay\n"
-        "ScriptType: v4.00+\n"
-        "PlayResX: 1080\nPlayResY: 1920\n"
-        "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
-        "[V4+ Styles]\n"
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
-        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
-        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
-        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        "Style: Hook,DejaVu Sans,86,&H00FFFFFF,&H00FFFFFF,&H00000000,"
-        "&H50000000,-1,0,0,0,100,100,1,0,1,6,3,8,85,85,185,1\n"
-        "Style: Caption,DejaVu Sans,79,&H00FFFFFF,&H00FFFFFF,&H00000000,"
-        "&H50000000,-1,0,0,0,100,100,1,0,1,7,3,5,95,95,390,1\n\n"
-        "[Events]\n"
-        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, "
-        "MarginV, Effect, Text\n"
-    )
     events: list[str] = []
-    hook = hook_from_quote(hook_text)
-    if hook and clip.duration > 1:
-        hook_lines = _two_lines(hook, max_chars=19)
-        animated = (
-            r"{\an8\pos(540,190)\fscx86\fscy86"
-            r"\t(0,170,\fscx100\fscy100)\fad(70,220)}"
-        )
+    hook = _safe(hook_text)
+    if hook and clip.duration >= 1:
+        size, lines, _ = _fit_lines(hook, max_width=_HOOK_SAFE_WIDTH, max_size=70)
+        # No fade-out: the hook remains visible on the first and last frames.
         events.append(
             "Dialogue: 5,"
-            f"{_ass_time(0.05)},{_ass_time(min(2.8, clip.duration - 0.1))},"
-            f"Hook,,0,0,0,,{animated}{hook_lines}"
+            f"{_ass_time(0)},{_ass_time(clip.duration)},"
+            f"Hook,,0,0,0,,{{\\an8\\pos(540,185)\\fs{size}\\q2}}" + r"\N".join(lines)
         )
-    for segment in segments:
+    words, unaligned = _timed_words(segments, clip)
+    for phrase in _phrases(words):
+        full_text = " ".join(_safe(word.text).upper() for word in phrase)
+        size, lines, _ = _fit_lines(
+            full_text, max_width=_CAPTION_SAFE_WIDTH, max_size=64, min_size=42
+        )
+        # Preserve measured word boundaries when wrapping a phrase.
+        split = len(lines[0].split()) if len(lines) > 1 else len(phrase)
+        for index, word in enumerate(phrase):
+            start = max(word.start, clip.start) - clip.start
+            next_start = phrase[index + 1].start if index + 1 < len(phrase) else word.end
+            end = min(next_start if index + 1 < len(phrase) else word.end, clip.end) - clip.start
+            if end - start < 0.04:
+                continue
+            first = (
+                _caption_text(phrase[:split], index, size)
+                if index < split
+                else _caption_text(phrase[:split], -1, size)
+            )
+            second = (
+                _caption_text(phrase[split:], index - split, size)
+                if index >= split
+                else _caption_text(phrase[split:], -1, size)
+            )
+            rendered = first + (r"\N" + second if second else "")
+            events.append(
+                "Dialogue: 2,"
+                f"{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,"
+                f"{{\\an2\\pos(540,1540)\\fs{size}\\q2}}{rendered}"
+            )
+    for segment in unaligned:
         start = max(segment.start, clip.start) - clip.start
         end = min(segment.end, clip.end) - clip.start
-        if end - start < 0.12:
+        if end - start <= 0.1:
             continue
-        original = _safe(segment.text)
-        if not original:
-            continue
-        # Measured Whisper word groups are normally 2-4 words. For a rare
-        # unaligned fallback, show two lines at its actual sentence time.
-        # Show no more than six measured words per pop caption; fallback
-        # sentence transcripts remain in the complete editable SRT sidecar.
-        caption = _two_lines(" ".join(original.upper().split()[:6]), max_chars=19)
-        caption = _highlight(caption.replace(r"\N", " __LINE__ ")).replace("__LINE__", r"\N")
-        animation = (
-            r"{\an5\pos(540,1510)\fscx86\fscy86"
-            r"\t(0,140,\fscx100\fscy100)\fad(45,65)}"
-        )
-        events.append(
-            f"Dialogue: 2,{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,{animation}{caption}"
-        )
-    output.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
+        # No invented active word for a segment without real word alignment.
+        fallback = " ".join(_WORD.findall(_safe(segment.text).upper())[:5])
+        if fallback:
+            size, lines, _ = _fit_lines(fallback, max_width=_CAPTION_SAFE_WIDTH, max_size=64)
+            events.append(
+                "Dialogue: 1,"
+                f"{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,"
+                f"{{\\an2\\pos(540,1540)\\fs{size}}}" + r"\N".join(lines)
+            )
+    output.write_text(_ass_header() + "\n".join(events) + "\n", encoding="utf-8")
     return output
+
+
+def audit_tiktok_ass(path: str | Path, *, clip_duration: float) -> dict[str, object]:
+    """Fail closed unless the actual ASS sidecar meets Style B v2 invariants."""
+    content = Path(path).read_text(encoding="utf-8")
+    hook_events = [line for line in content.splitlines() if line.startswith("Dialogue: 5,")]
+    spoken = [
+        line
+        for line in content.splitlines()
+        if line.startswith("Dialogue: 2,") and r"\c&H0059DEFF&" in line
+    ]
+    fallback = [line for line in content.splitlines() if line.startswith("Dialogue: 1,")]
+    if len(hook_events) != 1:
+        raise ValueError("Style B v2 requires one full-duration creative headline")
+    fields = hook_events[0].split(",", 9)
+    if fields[1:4] != [_ass_time(0), _ass_time(clip_duration), "Hook"]:
+        raise ValueError("creative headline must cover the entire clip")
+    if r"\an8\pos(540,185)" not in hook_events[0]:
+        raise ValueError("creative headline escaped the locked safe-area anchor")
+    if "Style: Hook," not in content or "Style: Caption," not in content:
+        raise ValueError("missing opaque hook or caption style")
+    if not spoken:
+        raise ValueError("no genuinely word-timed captions were rendered")
+    return {
+        "style": "B2",
+        "persistent_hook_seconds": clip_duration,
+        "spoken_word_highlight_events": len(spoken),
+        "unaligned_static_fallback_events": len(fallback),
+        "editorial_visual_approval": False,
+    }

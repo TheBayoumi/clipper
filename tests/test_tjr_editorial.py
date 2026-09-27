@@ -68,3 +68,54 @@ def test_real_distinct_hooks_can_yield_more_than_two_clips() -> None:
 def test_batch_size_bounds_are_explicit() -> None:
     with pytest.raises(ValueError):
         select_editorial_moments([], batch_limit=0)
+
+
+def test_headline_from_full_context_and_campaign_topic() -> None:
+    clip = ClipCandidate(
+        "video",
+        0,
+        31,
+        "what is happening in this market here so i wonder why he stopped using order blocks "
+        "because there's no reason to use them anymore since equilibrium gets hit "
+        "and that is the trade",
+        12,
+    )
+    p = evaluate_candidate(clip)
+    assert p is not None
+    assert p.hook == "WHY HE STOPPED USING ORDER BLOCKS"
+
+
+def test_no_creative_trading_claim_for_unrelated_stream_banter() -> None:
+    clip = ClipCandidate(
+        "video",
+        0,
+        31,
+        "bro that is the truth done never done cocaine and never done ketamine "
+        "never done any of those things people ask all the time what about weed",
+        12,
+    )
+    assert evaluate_candidate(clip) is None
+
+
+def test_distinct_trade_moments_still_scored() -> None:
+    a = ClipCandidate(
+        "video",
+        0,
+        31,
+        "why do traders keep risking too much money on positions because they do "
+        "not have a trading plan "
+        "and chase the price every time the market moves and i never want that mistake again",
+        10,
+    )
+    b = ClipCandidate(
+        "video",
+        45,
+        76,
+        "what is the biggest mistake in a losing trade people move their stop loss "
+        "and turn a small loss "
+        "into a huge financial problem in this market and that changes the setup "
+        "for the next position",
+        10,
+    )
+    selected, _ = select_editorial_moments([a, b], batch_limit=12)
+    assert len(selected) == 2

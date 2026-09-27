@@ -390,7 +390,7 @@ jobs:
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       CLIPPER_RENDER_PRESET: slow
       CLIPPER_RENDER_THREADS: "4"
-      TJR_CAPTION_STYLE: B
+      TJR_CAPTION_STYLE: B2
     steps:
       - uses: actions/checkout@v5
         with:
@@ -414,7 +414,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
           python - <<'PY'
           import hashlib
           import json

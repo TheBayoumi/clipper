@@ -21,15 +21,16 @@ from pathlib import Path
 from typing import Any
 
 import defusedxml.ElementTree as ET
-
 from clipper.brief import load_brief
-from clipper.models import ClipCandidate
 from clipper.render import FFmpegRenderer
 from clipper.scoring import score_transcript
 from clipper.source_fidelity import probe_source_profile
+from scripts.tjr_quality import check_full_decode, probe_original, probe_video
+
+from clipper.models import ClipCandidate
+from clipper.tiktok import audit_tiktok_ass
 from clipper.transcript import transcribe_with_faster_whisper
 from scripts.tjr_editorial import select_editorial_moments
-from scripts.tjr_quality import check_full_decode, probe_original, probe_video
 
 LOGGER = logging.getLogger("tjr-youtube")
 CHANNELS = {
@@ -533,7 +534,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         step = "render_and_decode"
         renderer = FFmpegRenderer()
         caption_style = os.getenv("TJR_CAPTION_STYLE", "").strip().upper()
-        if caption_style not in {"", "B"}:
+        if caption_style not in {"", "B", "B2"}:
             raise RuntimeError("unknown TJR caption style")
         completed: list[dict[str, Any]] = []
         for number, pick in enumerate(picks, start=1):
@@ -553,12 +554,17 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 clip,
                 segments,
                 editorial_layout=layout,
-                tiktok_hook=pick.hook if caption_style == "B" else None,
-                source_profile=source_profile if caption_style == "B" else None,
+                tiktok_hook=pick.hook if caption_style in {"B", "B2"} else None,
+                source_profile=source_profile if caption_style in {"B", "B2"} else None,
+            )
+            overlay_acceptance = (
+                audit_tiktok_ass(out.with_suffix(".ass"), clip_duration=clip.duration)
+                if caption_style == "B2"
+                else None
             )
             details = probe_video(out)
             if (
-                caption_style == "B"
+                caption_style in {"B", "B2"}
                 and abs(details["fps"] - float(Fraction(source_profile.fps))) > 0.04
             ):
                 raise RuntimeError("finished TikTok output changed native source frame rate")
@@ -603,18 +609,20 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 {
                     **details,
                     "hook_candidate": pick.hook,
-                    "caption_style": "B" if caption_style == "B" else "legacy_srt",
-                    "burned_in_hook": caption_style == "B",
+                    "caption_style": caption_style if caption_style else "legacy_srt",
+                    "creative_headline": pick.hook if caption_style == "B2" else None,
+                    "overlay_acceptance": overlay_acceptance,
+                    "burned_in_hook": caption_style in {"B", "B2"},
                     "ass_sidecar": (
                         str(out.with_suffix(".ass").relative_to(run_dir))
-                        if caption_style == "B"
+                        if caption_style in {"B", "B2"}
                         else None
                     ),
                     "file_megabytes": round(out.stat().st_size / 1_000_000, 2),
                     "source_fidelity": renderer.quality_results.get(str(out.resolve())),
                     "source_matched_quality": (
                         str(out.with_suffix(".quality.json").relative_to(run_dir))
-                        if caption_style == "B"
+                        if caption_style in {"B", "B2"}
                         else None
                     ),
                     "hook_score": pick.hook_score,

@@ -5,7 +5,7 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
-from .models import TranscriptSegment
+from .models import TranscriptSegment, WordTiming
 
 _TIMESTAMP_RE = re.compile(
     r"(?P<h1>\d{2}):(?P<m1>\d{2}):(?P<s1>\d{2}[.,]\d{3})\s+-->\s+"
@@ -94,6 +94,10 @@ def load_vtt(path: str | Path) -> list[TranscriptSegment]:
     return parse_vtt(Path(path).read_text(encoding="utf-8-sig"))
 
 
+def _word_text(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
 def transcribe_with_faster_whisper(
     media_path: str | Path,
     *,
@@ -120,44 +124,71 @@ def transcribe_with_faster_whisper(
         word_timestamps=word_timestamps,
     )
     if word_timestamps:
-        # Actual Whisper word times keep short captions aligned with speech;
-        # never distribute a long ASR sentence over invented timestamps.
+        # Keep the established short groups for ranking and natural line breaks,
+        # but retain every authentic Whisper word boundary inside each group.
         aligned: list[TranscriptSegment] = []
         for sentence in raw_segments:
-            words = [
-                word
-                for word in (getattr(sentence, "words", None) or [])
-                if word.start is not None
-                and word.end is not None
-                and float(word.end) > float(word.start)
-                and word.word.strip()
-            ]
-            if not words:
-                if sentence.text.strip() and sentence.end > sentence.start:
+            group: list[WordTiming] = []
+            for raw_word in getattr(sentence, "words", None) or []:
+                raw_start = getattr(raw_word, "start", None)
+                raw_end = getattr(raw_word, "end", None)
+                raw_text = _word_text(getattr(raw_word, "word", ""))
+                if (
+                    raw_start is None
+                    or raw_end is None
+                    or float(raw_end) <= float(raw_start)
+                    or not raw_text
+                ):
+                    continue
+                start = float(raw_start)
+                end = float(raw_end)
+                # Ignore dubious overlapping alignments instead of fabricating
+                # corrected times for a word that Whisper did not place reliably.
+                if group and start < group[-1].end - 0.005:
+                    continue
+                word = WordTiming(start, end, raw_text)
+                if group and (len(group) >= 6 or end - group[0].start > 2.6):
                     aligned.append(
                         TranscriptSegment(
-                            float(sentence.start), float(sentence.end), sentence.text.strip()
+                            group[0].start,
+                            group[-1].end,
+                            " ".join(item.text for item in group),
+                            tuple(group),
                         )
                     )
-                continue
-            group: list[str] = []
-            group_start = float(words[0].start)
-            previous_end = group_start
-            for word in words:
-                start, end = float(word.start), float(word.end)
-                if group and (len(group) >= 6 or end - group_start > 2.6):
+                    group = []
+                group.append(word)
+                if raw_text.rstrip().endswith((".", "!", "?")) and len(group) >= 3:
                     aligned.append(
-                        TranscriptSegment(group_start, previous_end, "".join(group).strip())
+                        TranscriptSegment(
+                            group[0].start,
+                            group[-1].end,
+                            " ".join(item.text for item in group),
+                            tuple(group),
+                        )
                     )
                     group = []
-                    group_start = start
-                group.append(word.word)
-                previous_end = end
-                if word.word.rstrip().endswith((".", "!", "?")) and len(group) >= 3:
-                    aligned.append(TranscriptSegment(group_start, end, "".join(group).strip()))
-                    group = []
             if group:
-                aligned.append(TranscriptSegment(group_start, previous_end, "".join(group).strip()))
+                aligned.append(
+                    TranscriptSegment(
+                        group[0].start,
+                        group[-1].end,
+                        " ".join(item.text for item in group),
+                        tuple(group),
+                    )
+                )
+            elif (
+                not getattr(sentence, "words", None)
+                and sentence.text.strip()
+                and sentence.end > sentence.start
+            ):
+                # Missing alignment is explicitly marked by an empty .words;
+                # Style B v2 renders a static fallback, never fake word pops.
+                aligned.append(
+                    TranscriptSegment(
+                        float(sentence.start), float(sentence.end), sentence.text.strip()
+                    )
+                )
         return aligned
     return [
         TranscriptSegment(float(segment.start), float(segment.end), segment.text.strip())
