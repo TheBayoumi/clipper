@@ -241,3 +241,31 @@ def test_provisional_score_is_deterministic_and_serializable() -> None:
     assert first == second
     assert first is not None
     json.dumps(first.to_dict())
+
+
+def test_repeated_topic_gets_distinct_grounded_source_headlines() -> None:
+    first = clip(0, STRONG_SEGMENT, 11)
+    second = clip(
+        55,
+        "why did the stop loss hit my trade when the market started moving so "
+        "fast my position went against the plan and the reversal was far bigger "
+        "than expected so i decided to exit the position and manage risk first",
+        10,
+    )
+    selected, _ = select_editorial_moments([first, second])
+    assert len(selected) == 2
+    assert len({pick.hook.casefold() for pick in selected}) == 2
+    assert all(pick.hook != "WHAT'S THE REAL TAKEAWAY HERE?" for pick in selected)
+
+
+def test_generic_topic_requires_source_specific_headline() -> None:
+    source = clip(
+        0,
+        "why did the trading plan fail on this market we talked about several "
+        "important facts but the risk grew because we did not anticipate the "
+        "move and we decided to exit before the loss became an even bigger problem",
+    )
+    picks, _ = select_editorial_moments([source])
+    assert len(picks) == 1
+    assert picks[0].hook
+    assert picks[0].hook != "WHAT'S THE REAL TAKEAWAY HERE?"

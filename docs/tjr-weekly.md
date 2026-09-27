@@ -28,8 +28,11 @@ Kick clips are NOT substitutes for this user's requested YouTube sources.
 
 ## Strictly verified direct YouTube workflow
 
-On an approved branch push, GitHub Actions first runs format, mypy, tests
-and synthetic encoding checks. When those pass, youtube_preview reads the
+On a matching branch push or PR, GitHub Actions runs code, policy and synthetic
+encoding checks only. Real media acquisition is explicitly manual: choose
+`modal_direct` or `youtube_direct`, confirm the campaign budget, and select
+`clip_limit` between 1 and 20. No real-generation job starts on ordinary pushes.
+When manually enabled, youtube_preview reads the
 real official YouTube RSS upload feeds for BOTH allowlisted channel IDs,
 sorts candidates by published time, and independently verifies each video's
 YouTube metadata owner ID and video ID before attempting a real HD download.
@@ -37,9 +40,15 @@ It NEVER falls back to generic search, third-party reposts or Kick.
 
 For a playable eligible long-form video, the workflow processes up to fourteen
 minutes of original footage, checks source dimensions, transcribes English
-speech, and ranks distinct 20–42-second moments using the evidence-labeled
-editorial rubric below. The configured editorial batch limit, not a
-two-clip cap, determines the maximum number of draft renders. Draft MP4s
+speech, and ranks distinct 20–42-second moments using transcript sentence/pause
+boundaries and the evidence-labeled
+editorial rubric below. The configured editorial batch limit (12 per source by default), not a
+two-clip cap, determines the maximum number of draft renders. Each selected
+moment gets a distinct source-grounded headline. If its topic template repeats,
+a short verbatim source excerpt is used; clips without a unique safe hook are
+rejected. Style B2 displays each hook for the whole clip, with word-aligned
+captions and a measured portrait-safe text box. Speech-boundary detection
+is heuristic, so the first/last frames and narrative payoff still need review. Draft MP4s
 receive 1080×1920 H.264/AAC encoding, ffprobe QA and full decode checks.
 The source URL, owner, upload date, timestamps, SHA-256, captions, frame
 previews and editorial audit accompany successful runs.

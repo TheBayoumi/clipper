@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Literal
 
 from clipper.models import ClipCandidate, TranscriptSegment
-from clipper.tiktok import creative_hook_from_text
+from clipper.tiktok import creative_hook_from_text, distinct_hook_from_text
 
 RUBRIC_VERSION = "tjr-editorial-v1"
 WEIGHTS = {"opening": 25, "story": 25, "emotion": 10, "visuals": 15, "retention": 25}
@@ -424,6 +424,7 @@ def select_editorial_moments(
         qualified, key=lambda pick: (-pick.editorial_score, -pick.clip.score, pick.clip.start)
     )
     chosen: list[EditorialPick] = []
+    used_hooks: set[str] = set()
     for pick in ordered:
         overlap = any(
             pick.clip.start < other.clip.end + 1.5 and other.clip.start < pick.clip.end + 1.5
@@ -439,7 +440,18 @@ def select_editorial_moments(
                 }
             )
             continue
-        chosen.append(pick)
+        headline = distinct_hook_from_text(pick.clip.text, used_hooks)
+        if not headline or not _grounded_numbers(headline, pick.clip.text):
+            rejected.append(
+                {
+                    "start": pick.clip.start,
+                    "end": pick.clip.end,
+                    "reason": "NO_UNIQUE_GROUNDED_HOOK",
+                }
+            )
+            continue
+        chosen.append(replace(pick, hook=headline))
+        used_hooks.add(headline.casefold())
         if len(chosen) >= batch_limit:
             break
     return chosen, rejected

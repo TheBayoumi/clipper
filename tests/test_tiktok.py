@@ -261,3 +261,21 @@ def test_empty_headline_and_corrupted_ass_fail_closed(tmp_path: Path) -> None:
         path.write_text(body, encoding="utf-8")
         with pytest.raises(ValueError, match=expected_error):
             audit_tiktok_ass(path, clip_duration=clip.duration)
+
+
+def test_distinct_hook_excludes_generic_and_repeated_templates() -> None:
+    from clipper.tiktok import distinct_hook_from_text
+
+    text = (
+        "why did the stop loss hit when the market started reversing our position "
+        "we decided to exit the trade because the risk was growing every minute"
+    )
+    first = distinct_hook_from_text(text)
+    second = distinct_hook_from_text(text, {first})
+    assert first == "WHAT HAPPENS WHEN THE STOP GETS HIT?"
+    assert second and second != first
+    assert second.startswith('THE MOMENT: "')
+    assert "WHAT'S THE REAL TAKEAWAY HERE?" != distinct_hook_from_text(
+        "What if our market entry was late and the trading plan changed?"
+    )
+    assert distinct_hook_from_text("") == ""

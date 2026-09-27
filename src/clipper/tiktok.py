@@ -7,7 +7,7 @@ boundaries, adding source logos, or making unverifiable financial claims.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 
 from PIL import ImageFont
@@ -80,6 +80,50 @@ def creative_hook_from_text(text: str) -> str:
     # Fallback is a truthful invitation, not an invented reaction, outcome or
     # market opinion. The 2-second spoken hook remains in the audio itself.
     return "WHAT'S THE REAL TAKEAWAY HERE?"
+
+
+def distinct_hook_from_text(text: str, used_hooks: Collection[str] = ()) -> str:
+    """Choose a distinct source-grounded headline without reusing generic hooks.
+
+    Prefer a topic template, otherwise use a brief exact quotation from the
+    selected transcript. Do not invent a reaction, price, or trade outcome.
+    """
+    original = _safe(text)
+    if not original:
+        return ""
+    used = {hook.casefold() for hook in used_hooks}
+    template = creative_hook_from_text(original)
+    if template != "WHAT'S THE REAL TAKEAWAY HERE?" and template.casefold() not in used:
+        return template
+
+    tokens = re.findall(r"[A-Za-z0-9$']+", original)
+    noise = {"and", "then", "this", "that", "like", "really", "just", "because", "the"}
+    choices: list[tuple[int, int, str]] = []
+    for start in range(max(0, len(tokens) - 3)):
+        phrase = tokens[start : start + 5]
+        if len(phrase) < 4 or phrase[0].casefold() in noise:
+            continue
+        snippet = " ".join(phrase)
+        if len(snippet) > 37:
+            continue
+        relevance = sum(
+            token.casefold() in {
+                "risk", "trade", "trading", "market", "price", "loss",
+                "stop", "enter", "entry", "exit", "profit", "position",
+                "reversal", "mistake", "plan", "money",
+            }
+            for token in phrase
+        )
+        choices.append((-relevance, start, f'THE MOMENT: "{snippet.upper()}"'))
+    for _, _, headline in sorted(choices):
+        if headline.casefold() in used:
+            continue
+        try:
+            _fit_lines(headline, max_width=_HOOK_SAFE_WIDTH, max_size=70)
+        except ValueError:
+            continue
+        return headline
+    return ""
 
 
 def _fit_lines(

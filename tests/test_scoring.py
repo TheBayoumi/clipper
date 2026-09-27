@@ -57,3 +57,64 @@ def test_overlapping_windows_are_deduplicated() -> None:
         intersection = max(0.0, min(left.end, right.end) - max(left.start, right.start))
         union = max(left.end, right.end) - min(left.start, right.start)
         assert intersection / union < 0.55
+
+
+def tjr_brief() -> CampaignBrief:
+    return CampaignBrief.from_dict(
+        {
+            "campaign_id": "tjr-test",
+            "title": "TJR",
+            "objective": "trading",
+            "keywords": ["risk", "trade"],
+            "source_channel_ids": ["UC1"],
+            "rights_confirmed": True,
+            "min_clip_seconds": 20,
+            "max_clip_seconds": 42,
+        }
+    )
+
+
+def test_story_boundaries_keep_complete_openings_and_endings() -> None:
+    segments = [
+        TranscriptSegment(0, 10, "Why would the trade fail when the price changed"),
+        TranscriptSegment(10, 23, "because we did not manage the stop loss."),
+        TranscriptSegment(23, 34, "We need to plan before the next trade"),
+        TranscriptSegment(34, 46, "because every decision carries market risk."),
+    ]
+    result = score_transcript(
+        tjr_brief(), "v1", segments, limit=100, sentence_boundaries=True
+    )
+    assert result
+    assert all(clip.start in (0, 23) for clip in result)
+    assert all(clip.text.endswith((".", "!", "?")) for clip in result)
+    assert all(
+        any(reason.startswith("start_boundary=") for reason in clip.reasons)
+        and any(reason.startswith("end_boundary=") for reason in clip.reasons)
+        for clip in result
+    )
+
+
+def test_story_mode_rejects_mid_sentence_end_and_disconnected_speech() -> None:
+    continuous = [
+        TranscriptSegment(0, 11, "Why is the market risk so high"),
+        TranscriptSegment(11, 23, "and why do we need to manage the trade"),
+        TranscriptSegment(23, 34, "because our stop loss can be hit."),
+    ]
+    candidates = score_transcript(
+        tjr_brief(), "v1", continuous, sentence_boundaries=True
+    )
+    assert candidates
+    assert all(c.end >= 34 for c in candidates)
+
+    disconnected = [
+        TranscriptSegment(0, 12, "Why is the market risk so high?"),
+        TranscriptSegment(17, 35, "We explain the trade plan before entry."),
+    ]
+    assert score_transcript(
+        tjr_brief(), "v1", disconnected, sentence_boundaries=True
+    ) == []
+
+
+def test_story_mode_respects_duration_after_timestamp_rounding() -> None:
+    segments = [TranscriptSegment(0.09, 42.08, "Why is market risk high?")]
+    assert score_transcript(tjr_brief(), "v1", segments, sentence_boundaries=True) == []

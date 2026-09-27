@@ -509,7 +509,9 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         if not segments:
             raise RuntimeError("the original footage contains no usable English speech")
         step = "clip_selection"
-        ranked = score_transcript(brief, chosen_video.video_id, segments, limit=900)
+        ranked = score_transcript(
+            brief, chosen_video.video_id, segments, limit=900, sentence_boundaries=True
+        )
         batch_limit = int(os.getenv("TJR_EDITORIAL_BATCH_LIMIT", str(brief.clip_count)))
         picks, rejected = select_editorial_moments(
             ranked, batch_limit=batch_limit, segments=segments
@@ -543,8 +545,8 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         step = "render_and_decode"
         renderer = FFmpegRenderer()
         caption_style = os.getenv("TJR_CAPTION_STYLE", "").strip().upper()
-        if caption_style not in {"", "B", "B2"}:
-            raise RuntimeError("unknown TJR caption style")
+        if caption_style != "B2":
+            raise RuntimeError("TJR real-source drafts require Style B2 captions and persistent hooks")
         completed: list[dict[str, Any]] = []
         for number, pick in enumerate(picks, start=1):
             clip = pick.clip
@@ -647,6 +649,11 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                         "evidence": list(pick.integrity_evidence),
                     },
                     "editorial_reasons": list(pick.reasons),
+                    "boundary_evidence": [
+                        reason
+                        for reason in clip.reasons
+                        if reason.startswith(("start_boundary=", "end_boundary="))
+                    ],
                     "publication_status": "AI_SCREEN_PASSED__VISUAL_REVIEW_REQUIRED",
                     "logo_safe_layout": layout,
                     "logo_compliance_verified": False,
