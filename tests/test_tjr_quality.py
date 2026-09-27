@@ -355,6 +355,9 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     events = config.get("on", config.get(True))
     inputs = events["workflow_dispatch"]["inputs"]
     assert inputs["source_mode"]["default"] == "validate_only"
+    assert inputs["source_video_id"]["required"] == "false"
+    assert inputs["source_verified"]["required"] == "false"
+    assert inputs["budget_confirmed"]["required"] == "false"
     assert set(inputs["source_mode"]["options"]) == {
         "validate_only",
         "modal_direct",
