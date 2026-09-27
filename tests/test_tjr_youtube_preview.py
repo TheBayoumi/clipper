@@ -301,12 +301,17 @@ def test_official_playlist_finds_older_full_video_without_third_party_reposts() 
 
     channel = "UCGHBUXjDCeiIXNdKR0HUZnA"
     official_long = {
-        "id": "ABCD1234xyz", "channel_id": channel, "title": "TJR LIVE TRADING",
-        "duration": 2400, "timestamp": 1790451200,
+        "id": "ABCD1234xyz",
+        "channel_id": channel,
+        "title": "TJR LIVE TRADING",
+        "duration": 2400,
+        "timestamp": 1790451200,
     }
     repost = {
-        "id": "badR3post_X", "channel_id": "UC-foreign-channel",
-        "title": "Reposted TJR compilation", "duration": 1200,
+        "id": "badR3post_X",
+        "channel_id": "UC-foreign-channel",
+        "title": "Reposted TJR compilation",
+        "duration": 1200,
     }
     result = Mock(stdout="\n".join(json.dumps(x) for x in (official_long, repost)))
     with patch.dict(_flat_channel_playlist.__globals__, {"invoke": Mock(return_value=result)}):
@@ -326,7 +331,10 @@ def test_short_filled_rss_is_enriched_with_older_official_long_form() -> None:
     }
     long_channel = "UCGHBUXjDCeiIXNdKR0HUZnA"
     older = OfficialVideo(
-        "ABCD1234xyz", long_channel, "TJR LIVE TRADING", "",
+        "ABCD1234xyz",
+        long_channel,
+        "TJR LIVE TRADING",
+        "",
         duration_seconds=3600,
     )
     calls: list[tuple[str, str]] = []
