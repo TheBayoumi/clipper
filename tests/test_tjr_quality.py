@@ -351,8 +351,9 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
                 check_unique_keys(child)
 
     check_unique_keys(root)
-    config = yaml.load(source, Loader=yaml.BaseLoader)
-    inputs = config["on"]["workflow_dispatch"]["inputs"]
+    config = yaml.safe_load(source)
+    events = config.get("on", config.get(True))
+    inputs = events["workflow_dispatch"]["inputs"]
     assert inputs["source_mode"]["default"] == "validate_only"
     assert set(inputs["source_mode"]["options"]) == {
         "validate_only",
