@@ -29,7 +29,7 @@ from clipper.scoring import score_transcript
 from clipper.source_fidelity import probe_source_profile
 from clipper.tiktok import audit_tiktok_ass
 from clipper.transcript import transcribe_with_faster_whisper
-from scripts.tjr_editorial import select_editorial_moments
+from scripts.tjr_editorial import RUBRIC_VERSION, WEIGHTS, select_editorial_moments
 from scripts.tjr_quality import check_full_decode, probe_original, probe_video
 
 LOGGER = logging.getLogger("tjr-youtube")
@@ -511,10 +511,12 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         step = "clip_selection"
         ranked = score_transcript(brief, chosen_video.video_id, segments, limit=900)
         batch_limit = int(os.getenv("TJR_EDITORIAL_BATCH_LIMIT", str(brief.clip_count)))
-        picks, rejected = select_editorial_moments(ranked, batch_limit=batch_limit)
+        picks, rejected = select_editorial_moments(
+            ranked, batch_limit=batch_limit, segments=segments
+        )
         if not picks:
-            raise RuntimeError("no distinct moments passed the spoken-hook screen")
-        LOGGER.info("EDITORIAL_HOOK_SCREEN_PASSED=%d", len(picks))
+            raise RuntimeError("no distinct moments passed the provisional editorial rubric")
+        LOGGER.info("EDITORIAL_PROVISIONAL_SCREEN_PASSED=%d rubric=%s", len(picks), RUBRIC_VERSION)
         (run_dir / "transcript.json").write_text(
             json.dumps([s.to_dict() for s in segments], indent=2) + "\n",
             encoding="utf-8",
@@ -525,7 +527,14 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         )
         (run_dir / "editorial-candidate-audit.json").write_text(
             json.dumps(
-                {"selected": [pick.to_dict() for pick in picks], "rejected": rejected[:250]},
+                {
+                    "rubric_version": RUBRIC_VERSION,
+                    "weights": WEIGHTS,
+                    "provisional": True,
+                    "requires_manual_visual_and_integrity_review": True,
+                    "selected": [pick.to_dict() for pick in picks],
+                    "rejected": rejected[:250],
+                },
                 indent=2,
             )
             + "\n",
@@ -626,6 +635,17 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                         else None
                     ),
                     "hook_score": pick.hook_score,
+                    "editorial_rubric_version": RUBRIC_VERSION,
+                    "editorial_score": pick.editorial_score,
+                    "editorial_weighted_points": pick.weighted_points,
+                    "editorial_score_coverage": pick.score_coverage,
+                    "editorial_criteria": {
+                        name: rating.to_dict() for name, rating in pick.criteria.items()
+                    },
+                    "editorial_integrity_gate": {
+                        "status": pick.integrity_status,
+                        "evidence": list(pick.integrity_evidence),
+                    },
                     "editorial_reasons": list(pick.reasons),
                     "publication_status": "AI_SCREEN_PASSED__VISUAL_REVIEW_REQUIRED",
                     "logo_safe_layout": layout,
@@ -654,11 +674,15 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             "source_sha256": digest,
             "source_dimensions": probe_original(source),
             "source_profile": source_profile.as_dict(),
+            "editorial_rubric_version": RUBRIC_VERSION,
+            "editorial_weights": WEIGHTS,
             "clips": completed,
             "source_attempts": errors,
             "manual_checks": [
                 "Watch each draft to verify TJR is actually on screen and portrayed appropriately.",
-                "Check spoken words against subtitles, context, framing and hooks.",
+                "Check spoken words against subtitles, story, retention, framing and hooks.",
+                "Assign a verified portrait-visual score and explicitly approve or reject "
+                "editorial integrity after watching the full source context.",
                 "Reject any source logos, watermarks, synthetic visuals or AI voices.",
                 "Verify Reach/Whop account eligibility, remaining budget and audience.",
                 "Only publish after human approval; add #TJR and submit within 30 minutes.",
