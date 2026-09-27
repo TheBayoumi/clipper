@@ -204,9 +204,7 @@ def test_actual_first_two_seconds_override_misleading_transcript_opening() -> No
     aligned = [TranscriptSegment(0, 31, STRONG_SEGMENT, words=first_words)]
     # Candidate text contains "damn", but the actual first 2 seconds are filler.
     assert evaluate_candidate(source, segments=aligned) is None
-    selected, rejected = select_editorial_moments(
-        [source], segments=aligned, batch_limit=1
-    )
+    selected, rejected = select_editorial_moments([source], segments=aligned, batch_limit=1)
     assert selected == []
     assert rejected[0]["reason"] == "TOPIC_LENGTH_DENSITY_OPENING_OR_INTEGRITY_GATE"
 
