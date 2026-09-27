@@ -257,6 +257,7 @@
         ]
       },
       "snapback": {
+        "focus_operator_index": 1,
         "after_preview_frames": 7,
         "before_hold_frames": 13,
         "transition_frames": 5,
