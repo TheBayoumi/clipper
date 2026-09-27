@@ -963,6 +963,11 @@ def render_portrait(
         switched = reveal + int(cfg["transition_frames"]) - 1
         checks["portrait_snapback_schedule"] = (
             panel_qa["panel_count"] == 2
+            and panel_qa["focus_operator_index"] == cfg["focus_operator_index"]
+            and panel_qa["focus_roi"]
+            == profile.config["output"]["portrait_matte"]["operator_rois"][
+                cfg["focus_operator_index"]
+            ]
             and panel_qa["frame_count"] == frames
             and panel_qa["comparison_start_frame"] == start
             and panel_qa["switch_frames"] == [rewind, reveal, switched]
