@@ -127,6 +127,62 @@ def prepare_staged_brief(template: Path, output: Path) -> Path:
     return output
 
 
+
+def stage_verified_mirror(brief_path: Path, output: Path, manifest: Path) -> Path:
+    """Verify a SHA-pinned official mirror before using the shared editorial renderer."""
+    from clipper.pipeline import _download_asset
+
+    config = check_campaign_brief(brief_path)
+    mirrors = config.get("source_media_urls") or {}
+    if len(mirrors) != 1 or len(config["source_channel_ids"]) != 1:
+        raise QualityError("staging requires one independently approved official mirror")
+    if os.getenv("TJR_BUDGET_CONFIRMED") != "true" or os.getenv("TJR_SOURCE_VERIFIED") != "true":
+        raise QualityError("source staging requires explicit budget and source verification")
+    video_id, media_url = next(iter(mirrors.items()))
+    if video_id != os.getenv("TJR_SOURCE_VIDEO_ID", ""):
+        raise QualityError("staged mirror video ID differs from the requested official video")
+    expected = os.getenv("TJR_SOURCE_MEDIA_SHA256", "").lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", expected):
+        raise QualityError("verified mirror SHA-256 is missing or invalid")
+    try:
+        _download_asset(media_url, output, max_bytes=4_000_000_000, expected_kind="media")
+        with output.open("rb") as source:
+            actual = hashlib.file_digest(source, "sha256").hexdigest()
+        if actual != expected:
+            raise QualityError("staged mirror SHA-256 differs from the approved original")
+        probe_original(output)
+        try:
+            duration_probe = subprocess.run(
+                [
+                    "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1", str(output),
+                ],
+                capture_output=True, text=True, check=True, timeout=45,
+            )
+            duration = float(duration_probe.stdout.strip())
+        except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise QualityError("unable to verify staged mirror duration") from exc
+        if not 90 <= duration <= 86400:
+            raise QualityError("staged original duration is outside supported source range")
+        record = {
+            "video_id": video_id,
+            "channel_id": config["source_channel_ids"][0],
+            "public_video_url": f"https://www.youtube.com/watch?v={video_id}",
+            "source_path": str(output.resolve()),
+            "source_sha256": actual,
+            "duration": duration,
+            "title": "",
+            "source_transport": "approved_sha256_mirror",
+        }
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        return manifest
+    except Exception:
+        output.unlink(missing_ok=True)
+        manifest.unlink(missing_ok=True)
+        raise
+
+
 def probe_original(path: Path) -> dict[str, int]:
     """Reject source files below 720p before delivering 1080p output."""
     if not path.is_file() or path.stat().st_size == 0:
@@ -331,7 +387,10 @@ def main() -> int:
     parser.add_argument("--brief", type=Path, required=True)
     parser.add_argument("--artifact-root", type=Path)
     parser.add_argument("--prepare", action="store_true")
+    parser.add_argument("--stage", action="store_true")
     parser.add_argument("--output-brief", type=Path)
+    parser.add_argument("--media-output", type=Path)
+    parser.add_argument("--output-manifest", type=Path)
     args = parser.parse_args()
     try:
         if args.prepare:
@@ -339,6 +398,12 @@ def main() -> int:
                 raise QualityError("--output-brief is required for --prepare")
             prepare_staged_brief(args.brief, args.output_brief)
             print("Verified staged-source brief ready (media URL not logged).")
+            return 0
+        if args.stage:
+            if args.media_output is None or args.output_manifest is None:
+                raise QualityError("--stage requires --media-output and --output-manifest")
+            stage_verified_mirror(args.brief, args.media_output, args.output_manifest)
+            print("SHA-256-pinned approved original staged for the shared editorial renderer.")
             return 0
         if args.artifact_root is None:
             raise QualityError("--artifact-root is required for QA")
