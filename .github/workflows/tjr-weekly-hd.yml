@@ -44,8 +44,8 @@ on:
         description: "Choose verified Modal originals, direct YouTube, or an authorized mirror."
         required: true
         type: choice
-        options: [modal_direct, youtube_direct, verified_mirror]
-        default: modal_direct
+        options: [validate_only, modal_direct, youtube_direct, verified_mirror]
+        default: validate_only
       clip_limit:
         description: "Maximum review drafts per source (1-20); fewer if insufficient distinct moments."
         required: true
@@ -82,6 +82,39 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: Validate production inputs before any real source acquisition
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TJR_SOURCE_MODE: ${{ inputs.source_mode }}
+          TJR_BUDGET_CONFIRMED: ${{ inputs.budget_confirmed }}
+          TJR_SOURCE_VERIFIED: ${{ inputs.source_verified }}
+          TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
+          TJR_EDITORIAL_BATCH_LIMIT: ${{ inputs.clip_limit }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+
+          mode = os.environ['TJR_SOURCE_MODE']
+          if mode == 'validate_only':
+              print('Validation only: no real-source rendering requested')
+          else:
+              if mode not in {'modal_direct', 'youtube_direct', 'verified_mirror'}:
+                  raise SystemExit('Unknown TJR source mode')
+              if os.getenv('TJR_BUDGET_CONFIRMED', '').lower() != 'true':
+                  raise SystemExit('Production requires explicit confirmation of the live Whop budget')
+              limit = os.getenv('TJR_EDITORIAL_BATCH_LIMIT', '')
+              if not re.fullmatch(r'(?:[1-9]|1[0-9]|20)', limit):
+                  raise SystemExit('clip_limit must be an integer between 1 and 20')
+              video_id = os.getenv('TJR_SOURCE_VIDEO_ID', '')
+              if video_id and not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id):
+                  raise SystemExit('source_video_id must be an exact 11-character YouTube ID')
+              if mode == 'verified_mirror' and (
+                  not video_id or os.getenv('TJR_SOURCE_VERIFIED', '').lower() != 'true'
+              ):
+                  raise SystemExit('Verified mirror requires an exact video ID and source approval')
+              print(f'Production inputs valid: {mode}, per-source limit {limit}')
+          PY
       - run: python -m pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
@@ -263,9 +296,12 @@ jobs:
 
 
   youtube_alternate_egress:
-    name: Verify and render original YouTube on ${{ matrix.os }}
-    needs: tests
-    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'youtube_direct' && inputs.budget_confirmed
+    name: Fallback YouTube original on ${{ matrix.os }}
+    needs: [tests, youtube_preview]
+    if: >-
+      always() && github.event_name == 'workflow_dispatch' &&
+      inputs.source_mode == 'youtube_direct' && inputs.budget_confirmed &&
+      needs.tests.result == 'success' && needs.youtube_preview.result == 'failure'
     strategy:
       fail-fast: false
       matrix:

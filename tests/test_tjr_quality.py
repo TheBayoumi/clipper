@@ -330,3 +330,53 @@ def test_staging_rejects_wrong_hash_and_deletes_untrusted_media(
         stage_verified_mirror(brief, output, manifest)
     assert not output.exists()
     assert not manifest.exists()
+
+
+def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> None:
+    from yaml.nodes import MappingNode, SequenceNode
+
+    workflow_path = Path(".github/workflows/tjr-weekly-hd.yml")
+    source = workflow_path.read_text(encoding="utf-8")
+    root = yaml.compose(source, Loader=yaml.BaseLoader)
+    assert root is not None
+
+    def check_unique_keys(node: yaml.Node) -> None:
+        if isinstance(node, MappingNode):
+            keys = [str(key.value) for key, _ in node.value]
+            assert len(keys) == len(set(keys)), f"duplicate YAML key: {keys}"
+            for _, value in node.value:
+                check_unique_keys(value)
+        elif isinstance(node, SequenceNode):
+            for child in node.value:
+                check_unique_keys(child)
+
+    check_unique_keys(root)
+    config = yaml.load(source, Loader=yaml.BaseLoader)
+    inputs = config["on"]["workflow_dispatch"]["inputs"]
+    assert inputs["source_mode"]["default"] == "validate_only"
+    assert set(inputs["source_mode"]["options"]) == {
+        "validate_only",
+        "modal_direct",
+        "youtube_direct",
+        "verified_mirror",
+    }
+    jobs = config["jobs"]
+    preflight = next(
+        item
+        for item in jobs["tests"]["steps"]
+        if item.get("name") == "Validate production inputs before any real source acquisition"
+    )
+    assert "TJR_BUDGET_CONFIRMED" in preflight["run"]
+    assert "clip_limit must be an integer between 1 and 20" in preflight["run"]
+    fallback = jobs["youtube_alternate_egress"]
+    assert fallback["needs"] == ["tests", "youtube_preview"]
+    assert "needs.youtube_preview.result == 'failure'" in fallback["if"]
+    for name in ("youtube_preview", "youtube_modal_egress", "render"):
+        assert jobs[name]["env"]["TJR_CAPTION_STYLE"] == "B2"
+    assert jobs["youtube_modal_egress"]["env"]["TJR_EDITORIAL_BATCH_LIMIT"] == (
+        "${{ inputs.clip_limit }}"
+    )
+    mirror_script = " ".join(item.get("run", "") for item in jobs["render"]["steps"])
+    assert "scripts.tjr_quality --stage" in mirror_script
+    assert "scripts.tjr_youtube_preview" in mirror_script
+    assert "clipper run" not in mirror_script

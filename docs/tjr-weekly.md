@@ -31,7 +31,12 @@ Kick clips are NOT substitutes for this user's requested YouTube sources.
 On a matching branch push or PR, GitHub Actions runs code, policy and synthetic
 encoding checks only. Real media acquisition is explicitly manual: choose
 `modal_direct` or `youtube_direct`, confirm the campaign budget, and select
-`clip_limit` between 1 and 20. No real-generation job starts on ordinary pushes. The verified_mirror path
+`clip_limit` between 1 and 20. Manual runs default to `validate_only`, which
+runs tests without sourcing media. An invalid production dispatch fails input
+validation rather than returning a misleading green run with skipped jobs.
+The Windows/macOS alternate YouTube workers start only if the primary Linux
+YouTube worker fails, avoiding three duplicate rendering batches. No
+real-generation job starts on ordinary pushes. The verified_mirror path
 first downloads its independently approved Drive original and verifies its SHA-256,
 video ID, approved channel, HD resolution and duration, then passes the unchanged
 original to the same TJR editorial selector and Style B2 renderer. If verification
