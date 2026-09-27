@@ -395,7 +395,11 @@ def load_verified_browser_original(
         "channel_id": selected.channel_id,
         "title": str(data.get("title") or selected.title),
         "duration": int(data["duration"]),
-        "_transport": "chrome_original_googlevideo_https",
+        "_transport": (
+            data.get("source_transport")
+            if data.get("source_transport") == "approved_sha256_mirror"
+            else "verified_official_youtube_capture"
+        ),
     }
     return selected, original, metadata
 
@@ -472,9 +476,13 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                         chosen_video.video_id,
                     )
             except (ValueError, OSError, RuntimeError) as exc:
+                if os.getenv("TJR_REQUIRE_STAGED_ORIGINAL") == "1":
+                    raise RuntimeError("required approved staged original failed verification") from exc
                 errors.append(
-                    {"source": "verified Chrome browser capture", "error": str(exc)[:650]}
+                    {"source": "verified source capture", "error": str(exc)[:650]}
                 )
+        if os.getenv("TJR_REQUIRE_STAGED_ORIGINAL") == "1" and source is None:
+            raise RuntimeError("required approved staged original was not available")
         for video in official_candidates[:8] if source is None else []:
             step = "official_metadata"
             try:
@@ -681,6 +689,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             "source_title": metadata.get("title"),
             "source_published_at": chosen_video.published,
             "source_sha256": digest,
+            "source_transport": metadata.get("_transport", "verified_official_youtube"),
             "source_dimensions": probe_original(source),
             "source_profile": source_profile.as_dict(),
             "editorial_rubric_version": RUBRIC_VERSION,
