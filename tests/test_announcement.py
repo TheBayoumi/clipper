@@ -920,6 +920,7 @@ def test_snapback_is_an_independent_source_verified_edit(
     plan = montage.build_plan(source, p, comparison_mode="snapback")
     edit = plan["montage"]
     assert edit["comparison_mode"] == "snapback"
+    assert panel_compositor.snapback_config(p, 45)["focus_operator_index"] == 1
     assert edit["output_seconds"] == 5.5
     assert edit["output_frames"] == 165
     assert edit["full_source_frames"] == 178
@@ -945,6 +946,8 @@ def test_snapback_is_an_independent_source_verified_edit(
     ("key", "bad_value"),
     [
         ("after_preview_frames", 0),
+        ("focus_operator_index", 3),
+        ("focus_operator_index", True),
         ("before_hold_frames", 0),
         ("transition_frames", 1),
         ("after_preview_frames", 42),
@@ -991,6 +994,8 @@ def test_snapback_uses_certified_source_and_exact_encoded_rewind(
     assert manifest["qa"]["checks"]["source_excerpt_hashes_exact"]
     assert all(manifest["qa"]["checks"].values())
     assert panels["panel_count"] == 2
+    assert panels["focus_operator_index"] == 1
+    assert panels["focus_roi"] == p.config["output"]["portrait_matte"]["operator_rois"][1]
     assert panels["frame_count"] == 165
     assert panels["comparison_start_frame"] == 100
     assert panels["switch_frames"] == [107, 120, 124]
@@ -1036,6 +1041,12 @@ def test_snapback_uses_certified_source_and_exact_encoded_rewind(
     tampered.write_text(json.dumps(altered))
     with pytest.raises(montage.MontageRejection, match="snapback_storyboard"):
         qualify_campaign(p, tampered, tmp_path / "rejected_storyboard.json")
+    altered["portrait"]["snapback"] = copy.deepcopy(portrait["snapback"])
+    altered["portrait"]["storyboard"] = copy.deepcopy(portrait["storyboard"])
+    altered["portrait"]["snapback"]["focus_operator_index"] = 2
+    tampered.write_text(json.dumps(altered))
+    with pytest.raises(montage.MontageRejection, match="snapback_schedule"):
+        qualify_campaign(p, tampered, tmp_path / "rejected_focus.json")
 
 
 def test_snapback_qualified_in_original_validation_only_workflow() -> None:
