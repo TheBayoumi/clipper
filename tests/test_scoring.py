@@ -125,9 +125,7 @@ def test_relaxed_pause_uses_real_aligned_boundaries_not_arbitrary_mid_sentence()
         TranscriptSegment(44.4, 66, "so we exit the position and protect the profit."),
     ]
     strict = score_transcript(brief, "v", segments, sentence_boundaries=True)
-    relaxed = score_transcript(
-        brief, "v", segments, sentence_boundaries=True, pause_threshold=0.35
-    )
+    relaxed = score_transcript(brief, "v", segments, sentence_boundaries=True, pause_threshold=0.35)
     assert strict == []
     assert relaxed
     assert relaxed[0].duration <= 42

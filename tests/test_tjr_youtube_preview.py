@@ -272,7 +272,9 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
             {
                 "discover_official_uploads": lambda: ([official], []),
                 "load_verified_browser_original": lambda *_: (
-                    official, media, {"title": official.title, "duration": 100}
+                    official,
+                    media,
+                    {"title": official.title, "duration": 100},
                 ),
                 "probe_source_profile": lambda *_: object(),
                 "transcribe_with_faster_whisper": lambda *_args, **_kwargs: segments,

@@ -1,4 +1,5 @@
 """Offline regression: one challenged upload cannot hide another approved original."""
+
 from __future__ import annotations
 
 import json
@@ -48,8 +49,11 @@ def test_ip_challenge_skips_only_one_video_not_entire_region(
                     command, 1, stdout="", stderr="Sign in to confirm you're not a bot"
                 )
             metadata = {
-                "id": second, "channel_id": channel, "duration": 3994,
-                "live_status": "not_live", "title": "LIVE TRADING",
+                "id": second,
+                "channel_id": channel,
+                "duration": 3994,
+                "live_status": "not_live",
+                "title": "LIVE TRADING",
                 "formats": [{"height": 1080, "vcodec": "avc1"}],
             }
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps(metadata), stderr="")
@@ -71,8 +75,7 @@ def test_ip_challenge_skips_only_one_video_not_entire_region(
     assert urls_seen.count(f"https://www.youtube.com/watch?v={first}") == 2
     assert urls_seen[-1].endswith(second)
     assert any(
-        attempt["reason"] == "YOUTUBE_IP_OR_LOGIN_CHALLENGE"
-        for attempt in result["attempts"]
+        attempt["reason"] == "YOUTUBE_IP_OR_LOGIN_CHALLENGE" for attempt in result["attempts"]
     )
 
 
@@ -82,8 +85,7 @@ def test_all_blocked_videos_still_report_challenge(
     inspect = _load_modal_probe(monkeypatch)
     channel = "UCZen39LQJPx04GjPj7FOMcw"
     videos = [
-        {"video_id": video, "channel_id": channel}
-        for video in ("lxu_J1Ec1XI", "X7msxvyQd_U")
+        {"video_id": video, "channel_id": channel} for video in ("lxu_J1Ec1XI", "X7msxvyQd_U")
     ]
     calls = 0
 

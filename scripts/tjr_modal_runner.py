@@ -4,6 +4,7 @@ Retries a different *approved* upload only when the previous video's own
 transcript failed the editorial gate. Never substitutes outside creators, an
 unverified mirror, or a synthetic clip. Each failed source retains diagnostics.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -18,9 +19,7 @@ from scripts.tjr_quality import probe_original
 from scripts.tjr_youtube_preview import NoEditorialMoments, render_youtube_previews
 
 VOLUME = "clipper-tjr-source-transport"
-_REMOTE_SOURCE = re.compile(
-    r"runs/\d{4,20}-\d{1,4}/[A-Za-z0-9_-]{11}/original\.(?:mp4|mkv|webm)"
-)
+_REMOTE_SOURCE = re.compile(r"runs/\d{4,20}-\d{1,4}/[A-Za-z0-9_-]{11}/original\.(?:mp4|mkv|webm)")
 
 
 def _acquire_original(excluded: set[str], root: Path) -> dict[str, Any]:
