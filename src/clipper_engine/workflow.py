@@ -277,6 +277,11 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
             samples = panel_qa.get("sampled_states", {})
             if (
                 panel_qa.get("panel_count") != 2
+                or panel_qa.get("focus_operator_index") != cfg["focus_operator_index"]
+                or panel_qa.get("focus_roi")
+                != profile.config["output"]["portrait_matte"]["operator_rois"][
+                    cfg["focus_operator_index"]
+                ]
                 or panel_qa.get("comparison_start_frame") != start
                 or panel_qa.get("switch_frames") != switch_frames
                 or panel_qa.get("text_synced") is not True
