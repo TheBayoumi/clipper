@@ -68,14 +68,14 @@ REBOUND_REQUIRED_CHECKS = frozenset(
 )
 
 
-IMPACT_CUT_REQUIRED_CHECKS = frozenset(
+CONTINUOUS_REVEAL_REQUIRED_CHECKS = frozenset(
     {
-        "portrait_impact_cut_schedule",
-        "portrait_impact_cut_source_sync",
-        "portrait_impact_cut_legibility",
-        "portrait_impact_cut_no_ai",
-        "portrait_impact_cut_effects_declared",
-        "portrait_impact_cut_encoded_motion",
+        "portrait_continuous_reveal_schedule",
+        "portrait_continuous_reveal_source_sync",
+        "portrait_continuous_reveal_legibility",
+        "portrait_continuous_reveal_no_ai",
+        "portrait_continuous_reveal_effects_declared",
+        "portrait_continuous_reveal_toggle_visible",
     }
 )
 
@@ -124,6 +124,11 @@ def toggle_progress(frame: int, plan: dict[str, Any], profile: CampaignProfile) 
     edit = plan["montage"]
     source_event_start = int(plan["evidence"]["toggle_motion_start_frame"])
     source_event_end = int(plan["evidence"]["toggle_motion_end_frame"])
+    if edit.get("type") == "continuous_source_reveal":
+        if not 0 <= frame < int(edit["output_frames"]):
+            raise MontageRejection("source_timeline", "continuous reveal frame is outside output")
+        source_frame = int(edit["source_window"]["start_frame"]) + frame
+        return _ease((source_frame - source_event_start) / (source_event_end - source_event_start))
     if not source_event_start < source_event_end:
         raise MontageRejection("toggle_event_invalid", "source visual-event interval is invalid")
     hook_frames = int(edit["hook"]["frames"])
@@ -168,8 +173,6 @@ def toggle_progress(frame: int, plan: dict[str, Any], profile: CampaignProfile) 
             from . import panel_compositor
 
             return panel_compositor.rebound_progress(local, plan, profile)
-        if edit["comparison_mode"] == "impact_cut":
-            return 1.0
         if edit["comparison_mode"] == "snapback":
             from . import panel_compositor
 
@@ -226,8 +229,10 @@ def _frame_image(
     profile: CampaignProfile,
     width: int,
     top_height: int,
-    font: ImageFont.FreeTypeFont,
-    small_font: ImageFont.FreeTypeFont,
+    fonts: list[ImageFont.FreeTypeFont],
+    y_positions: list[int],
+    pill_heights: list[int],
+    bar_y: int,
     progress: float,
 ) -> tuple[Image.Image, tuple[int, int, int, int]]:
     cfg = profile.config["output"]["portrait_matte"]
@@ -241,30 +246,29 @@ def _frame_image(
     gold: RGB = (gold_raw[0], gold_raw[1], gold_raw[2])
     im = Image.new("RGB", (width, top_height), black)
     draw = ImageDraw.Draw(im)
-    y_positions = [round(y * scale) for y in (236, 352, 438)]
     word_box = (0, 0, 0, 0)
     for index, line in enumerate(lines):
-        line_font = font if index == 0 else small_font
-        if index == 2:
-            line_font = _font(max(8, round(54 * scale)))
+        line_font = fonts[index]
         if "{Toggle}" not in line:
             line_width = draw.textlength(line, font=line_font)
             if line_width > width * 0.90:
                 raise MontageRejection("portrait_copy_overflow", "approved line exceeds matte")
             draw.text(
-                ((width - line_width) / 2, y_positions[index]), line, font=line_font, fill=white
+                ((width - line_width) / 2, y_positions[index]),
+                line,
+                font=line_font,
+                fill=white,
             )
             continue
-
         prefix, suffix = line.split("{Toggle}")
         word = "Toggle"
         left_width = draw.textlength(prefix, font=line_font)
         right_width = draw.textlength(suffix, font=line_font)
         word_width = draw.textlength(word, font=line_font)
-        gap = max(2, round(19 * scale))
-        padding = max(3, round(20 * scale))
+        gap = max(2, round(14 * scale))
+        padding = max(3, round(16 * scale))
         pill_w = math.ceil(word_width + padding * 2)
-        pill_h = round(83 * scale) if index == 0 else round(70 * scale)
+        pill_h = int(pill_heights[index])
         full_width = (
             left_width + (gap if prefix else 0) + pill_w + (gap if suffix else 0) + right_width
         )
@@ -280,21 +284,21 @@ def _frame_image(
         off_draw = ImageDraw.Draw(off)
         off_draw.rounded_rectangle(
             (0, 0, pill_w - 1, pill_h - 1),
-            radius=max(3, round(19 * scale)),
+            radius=max(3, round(15 * scale)),
             fill=(40, 43, 47),
             outline=(94, 90, 64),
             width=max(1, round(2 * scale)),
         )
         word_x = (pill_w - word_width) / 2
-        off_draw.text((word_x, max(0, round(2 * scale))), word, font=line_font, fill=white)
+        off_draw.text((word_x, max(0, round(1 * scale))), word, font=line_font, fill=white)
         on = Image.new("RGB", (pill_w, pill_h), black)
         on_draw = ImageDraw.Draw(on)
         on_draw.rounded_rectangle(
             (0, 0, pill_w - 1, pill_h - 1),
-            radius=max(3, round(19 * scale)),
+            radius=max(3, round(15 * scale)),
             fill=gold,
         )
-        on_draw.text((word_x, max(0, round(2 * scale))), word, font=line_font, fill=(24, 23, 20))
+        on_draw.text((word_x, max(0, round(1 * scale))), word, font=line_font, fill=(24, 23, 20))
         if progress > 0:
             mask = Image.new("L", (pill_w, pill_h), 0)
             ImageDraw.Draw(mask).rectangle(
@@ -308,17 +312,16 @@ def _frame_image(
 
     bar_width = max(12, round(172 * scale))
     bx = (width - bar_width) // 2
-    by = round(548 * scale)
-    if by + max(1, round(4 * scale)) >= top_height:
+    if bar_y + max(1, round(4 * scale)) >= top_height:
         raise MontageRejection("portrait_matte", "title bar intrudes into source footage")
     draw.rounded_rectangle(
-        (bx, by, bx + bar_width, by + max(1, round(4 * scale))),
+        (bx, bar_y, bx + bar_width, bar_y + max(1, round(4 * scale))),
         radius=1,
         fill=(60, 56, 42),
     )
     if progress:
         draw.rounded_rectangle(
-            (bx, by, bx + round(bar_width * progress), by + max(1, round(4 * scale))),
+            (bx, bar_y, bx + round(bar_width * progress), bar_y + max(1, round(4 * scale))),
             radius=1,
             fill=gold,
         )
@@ -333,80 +336,117 @@ def render_title_frames(
         raise MontageRejection("portrait_copy", "approved title must remain for every frame")
     width = int(cfg["width"])
     height = int(cfg["height"])
-    source_width = int(profile.config["output"]["width"])
-    source_height = int(profile.config["output"]["height"])
-    source_display_height = round(width * source_height / source_width)
-    top_height = (height - source_display_height) // 2
-    if width <= 0 or height <= 0 or top_height <= round(568 * width / 1080):
-        raise MontageRejection("portrait_geometry", "no legal title-safe top matte")
-    font = _font(max(8, round(64 * width / 1080)))
-    small_font = _font(max(8, round(59 * width / 1080)))
     frames = int(plan["montage"]["output_frames"])
+    continuous = plan["montage"].get("type") == "continuous_source_reveal"
+    if continuous:
+        from . import kinetic_reframe
+
+        style = kinetic_reframe.config(profile, frames)
+        top_height = int(style["title_top_height"])
+        source_display_height = int(style["visual_height"])
+        fonts = [_font(max(8, round(int(n) * width / 1080))) for n in style["title_font_sizes"]]
+        y_positions = [round(int(n) * width / 1080) for n in style["title_y_positions"]]
+        pill_heights = [round(int(n) * width / 1080) for n in style["title_pill_heights"]]
+        bar_y = round(int(style["title_bar_y"]) * width / 1080)
+        if top_height + source_display_height >= height:
+            raise MontageRejection("portrait_geometry", "continuous portrait geometry overflows")
+    else:
+        source_width = int(profile.config["output"]["width"])
+        source_height = int(profile.config["output"]["height"])
+        source_display_height = round(width * source_height / source_width)
+        top_height = (height - source_display_height) // 2
+        if width <= 0 or height <= 0 or top_height <= round(568 * width / 1080):
+            raise MontageRejection("portrait_geometry", "no legal title-safe top matte")
+        fonts = [
+            _font(max(8, round(64 * width / 1080))),
+            _font(max(8, round(59 * width / 1080))),
+            _font(max(8, round(54 * width / 1080))),
+        ]
+        y_positions = [round(y * width / 1080) for y in (236, 352, 438)]
+        pill_heights = [
+            round(83 * width / 1080),
+            round(70 * width / 1080),
+            round(70 * width / 1080),
+        ]
+        bar_y = round(548 * width / 1080)
+
     folder = workspace / "approved_title_frames"
     folder.mkdir(parents=True, exist_ok=True)
     sample_indices = {0, 3, 9, 15, 73, 79, 193, 203, 223, 243, 253, 264, 274, 281, frames - 1}
-    if plan["montage"]["comparison_mode"] == "spotlight":
+    mode = plan["montage"]["comparison_mode"]
+    if mode == "spotlight":
         from . import panel_compositor
 
-        cfg = panel_compositor.spotlight_config(profile, int(plan["montage"]["comparison_frames"]))
-        start = int(plan["montage"]["hook"]["frames"]) + int(
-            plan["montage"]["source_window"]["frames"]
-        )
+        mode_cfg = panel_compositor.spotlight_config(profile, int(plan["montage"]["comparison_frames"]))
+        start = int(plan["montage"]["hook"]["frames"]) + int(plan["montage"]["source_window"]["frames"])
         for i in range(3):
-            change = start + i * int(cfg["focus_frames"]) + int(cfg["switch_after_frames"])
+            change = start + i * int(mode_cfg["focus_frames"]) + int(mode_cfg["switch_after_frames"])
             sample_indices.update({change - 1, change})
-        sample_indices.add(start + 3 * int(cfg["focus_frames"]))
-    if plan["montage"]["comparison_mode"] == "snapback":
+        sample_indices.add(start + 3 * int(mode_cfg["focus_frames"]))
+    if mode == "snapback":
         from . import panel_compositor
 
-        cfg = panel_compositor.snapback_config(profile, int(plan["montage"]["comparison_frames"]))
-        start = int(plan["montage"]["hook"]["frames"]) + int(
-            plan["montage"]["source_window"]["frames"]
-        )
-        rewind = start + int(cfg["after_preview_frames"])
-        reveal = rewind + int(cfg["before_hold_frames"])
-        switched = reveal + int(cfg["transition_frames"]) - 1
+        mode_cfg = panel_compositor.snapback_config(profile, int(plan["montage"]["comparison_frames"]))
+        start = int(plan["montage"]["hook"]["frames"]) + int(plan["montage"]["source_window"]["frames"])
+        rewind = start + int(mode_cfg["after_preview_frames"])
+        reveal = rewind + int(mode_cfg["before_hold_frames"])
+        switched = reveal + int(mode_cfg["transition_frames"]) - 1
         sample_indices.update({start, rewind - 1, rewind, reveal - 1, reveal, switched})
-    if plan["montage"]["comparison_mode"] == "hero_focus":
+    if mode == "hero_focus":
         from . import panel_compositor
 
-        cfg = panel_compositor.hero_focus_config(profile, int(plan["montage"]["comparison_frames"]))
-        start = int(plan["montage"]["hook"]["frames"]) + int(
-            plan["montage"]["source_window"]["frames"]
-        )
-        original = start + int(cfg["after_preview_frames"])
-        split = original + int(cfg["before_hold_frames"])
-        group = split + int(cfg["split_frames"])
+        mode_cfg = panel_compositor.hero_focus_config(profile, int(plan["montage"]["comparison_frames"]))
+        start = int(plan["montage"]["hook"]["frames"]) + int(plan["montage"]["source_window"]["frames"])
+        original = start + int(mode_cfg["after_preview_frames"])
+        split = original + int(mode_cfg["before_hold_frames"])
+        group = split + int(mode_cfg["split_frames"])
         for edge in (start, original, split, group):
             sample_indices.update({edge - 1, edge})
-    if plan["montage"]["comparison_mode"] == "rebound":
+    if mode == "rebound":
         from . import panel_compositor
 
-        cfg = panel_compositor.rebound_config(profile, int(plan["montage"]["comparison_frames"]))
+        mode_cfg = panel_compositor.rebound_config(profile, int(plan["montage"]["comparison_frames"]))
         start = int(plan["montage"]["hook"]["frames"]) + source_frame_count(plan["montage"])
-        original = start + int(cfg["before_hold_frames"])
-        flash = original + int(cfg["after_flash_frames"])
-        group = flash + int(cfg["split_frames"])
+        original = start + int(mode_cfg["before_hold_frames"])
+        flash = original + int(mode_cfg["after_flash_frames"])
+        group = flash + int(mode_cfg["split_frames"])
         sample_indices.update({0, int(plan["montage"]["hook"]["frames"]), 35, 54, 145})
         for edge in (start, original, flash, group):
             sample_indices.update({edge - 1, edge})
-    if plan["montage"]["comparison_mode"] == "impact_cut":
+    if continuous:
         from . import kinetic_reframe
 
-        cfg = kinetic_reframe.config(profile, frames)
-        sample_indices.update(int(n) for n in cfg["storyboard_frames"])
-        sample_indices.update(int(n) for n in cfg["flash_frames"])
+        mode_cfg = kinetic_reframe.config(profile, frames)
+        sample_indices.update(int(n) for n in mode_cfg["storyboard_frames"])
+        local_start = int(plan["evidence"]["toggle_motion_start_frame"]) - int(
+            plan["montage"]["source_window"]["start_frame"]
+        )
+        local_end = int(plan["evidence"]["toggle_motion_end_frame"]) - int(
+            plan["montage"]["source_window"]["start_frame"]
+        )
+        sample_indices.update({local_start, local_end})
+
+    sample_indices = {n for n in sample_indices if 0 <= n < frames}
     samples: dict[str, float] = {}
     word_box = (0, 0, 0, 0)
     for n in range(frames):
         progress = toggle_progress(n, plan, profile)
         frame_image, word_box = _frame_image(
-            n, plan, profile, width, top_height, font, small_font, progress
+            n,
+            plan,
+            profile,
+            width,
+            top_height,
+            fonts,
+            y_positions,
+            pill_heights,
+            bar_y,
+            progress,
         )
         frame_image.save(folder / f"{n:04d}.png", compress_level=3)
         if n in sample_indices:
             samples[str(n)] = round(progress, 6)
-    opening = 1 if plan["montage"]["comparison_mode"] in {"rebound", "impact_cut"} else 0
+    opening = 1 if mode == "rebound" else 0
     if samples.get("0") != opening or samples.get(str(frames - 1)) != 1:
         raise MontageRejection("toggle_sync", "opening/final toggle state is incorrect")
     return {
@@ -423,10 +463,15 @@ def render_title_frames(
         "center_height": source_display_height,
         "canvas": [width, height],
         "approved_copy": plan["montage"]["approved_on_screen_text"],
-        "compositing": "approved text only in upper portrait matte",
+        "compositing": (
+            "compact approved text above enlarged continuous source footage"
+            if continuous
+            else "approved text only in upper portrait matte"
+        ),
     }
 
 
+def _encoded_montage_storyboard(
 def _encoded_montage_storyboard(
     file: Path,
     output_dir: Path,
@@ -585,7 +630,7 @@ def _encoded_rebound_storyboard(
     )
 
 
-def _encoded_impact_cut_storyboard(
+def _encoded_continuous_reveal_storyboard(
     file: Path, output_dir: Path, plan: dict[str, Any], profile: CampaignProfile
 ) -> dict[str, Any]:
     from . import kinetic_reframe
@@ -596,18 +641,19 @@ def _encoded_impact_cut_storyboard(
         output_dir,
         [int(n) for n in cfg["storyboard_frames"]],
         (
-            "RESULT FIRST",
-            "FLASHBACK",
-            "REAL TOGGLE",
-            "LEFT OPERATOR SWEEP",
-            "RIGHT OPERATOR SWEEP",
-            "FINAL TRANSFORMED HOLD",
+            "ORIGINAL TRIO",
+            "GENTLE PUSH",
+            "REAL TOGGLE START",
+            "REAL TOGGLE COMPLETE",
+            "TRANSFORMED INSPECTION",
+            "CLEAN TRANSFORMED FINISH",
         ),
-        "operator_impact_cut_storyboard.jpg",
+        "operator_continuous_reveal_storyboard.jpg",
         float(Fraction(str(plan["source"]["fps"]))),
     )
 
 
+def render_portrait(
 def render_portrait(
     clean_canonical: Path,
     output_dir: Path,
@@ -627,7 +673,7 @@ def render_portrait(
     snapback = mode == "snapback"
     hero_focus = mode == "hero_focus"
     rebound = mode == "rebound"
-    impact_cut = mode == "impact_cut"
+    continuous_reveal = mode == "continuous_reveal"
     panel_mode = cascade or spotlight or snapback or hero_focus or rebound
     width, height = (int(z) for z in title_qa["canvas"])
     top = int(title_qa["top_height"])
@@ -639,13 +685,17 @@ def render_portrait(
     file = output_dir / f"{profile.name}_{plan['montage']['comparison_mode']}_portrait.mp4"
     background = str(profile.config["output"]["portrait_matte"]["background_hex"])
     panel_qa: dict[str, Any] | None = None
-    impact_qa: dict[str, Any] | None = None
-    if impact_cut:
+    reframe_qa: dict[str, Any] | None = None
+    if continuous_reveal:
         from . import kinetic_reframe
 
-        impact_cfg = kinetic_reframe.config(profile, frames)
-        visual_height = height - top - int(impact_cfg["bottom_matte_height"])
-        impact_qa = kinetic_reframe.render_frames(
+        reveal_cfg = kinetic_reframe.config(profile, frames)
+        visual_height = int(reveal_cfg["visual_height"])
+        if visual_height != center:
+            raise MontageRejection(
+                "continuous_reveal_layout", "title and portrait reframe geometry disagree"
+            )
+        reframe_qa = kinetic_reframe.render_frames(
             clean_canonical,
             workspace,
             plan,
@@ -658,6 +708,7 @@ def render_portrait(
             "[base][1:v]overlay=0:0:shortest=1:format=auto,"
             "format=yuv420p[outv]"
         )
+    elif panel_mode:
     elif panel_mode:
         from . import panel_compositor
 
@@ -718,9 +769,9 @@ def render_portrait(
                     "-framerate",
                     f"{fps.numerator}/{fps.denominator}",
                     "-i",
-                    str(workspace / "kinetic_frames" / "%04d.png"),
+                    str(workspace / "reframe_frames" / "%04d.png"),
                 ]
-                if impact_cut
+                if continuous_reveal
                 else []
             ),
             "-filter_complex_threads",
@@ -932,7 +983,7 @@ def render_portrait(
         "approved_text_full_duration": title_qa["text_visible_frames"] == frames,
         **(
             {"toggle_opening_after": title_qa["progress_samples"]["0"] == 1}
-            if rebound or impact_cut
+            if rebound
             else {"toggle_opening_off": title_qa["progress_samples"]["0"] == 0}
         ),
         "toggle_final_on": title_qa["progress_samples"][str(frames - 1)] == 1,
@@ -1349,45 +1400,48 @@ def render_portrait(
             and rebound_live_difference > 2.5
         )
 
-    impact_cut_differences: list[float] = []
-    if impact_cut:
-        if impact_qa is None:
-            raise RuntimeError("missing Impact Cut kinetic-reframe metadata")
+    continuous_reveal_differences: list[float] = []
+    if continuous_reveal:
+        if reframe_qa is None:
+            raise RuntimeError("missing continuous-reveal reframe metadata")
         from . import kinetic_reframe
 
-        cfg = kinetic_reframe.config(profile, frames)
-        visual_height = height - top - int(cfg["bottom_matte_height"])
-        checks["portrait_impact_cut_schedule"] = (
-            impact_qa["frame_count"] == frames
-            and impact_qa["keyframes"] == cfg["keyframes"]
-            and impact_qa["flash_frames"] == cfg["flash_frames"]
-            and impact_qa["storyboard_frames"] == cfg["storyboard_frames"]
-            and impact_qa["visual_size"] == [width, visual_height]
+        reveal_cfg = kinetic_reframe.config(profile, frames)
+        visual_height = int(reveal_cfg["visual_height"])
+        checks["portrait_continuous_reveal_schedule"] = (
+            reframe_qa["frame_count"] == frames
+            and reframe_qa["keyframes"] == reveal_cfg["keyframes"]
+            and reframe_qa["storyboard_frames"] == reveal_cfg["storyboard_frames"]
+            and reframe_qa["visual_size"] == [width, visual_height]
         )
-        checks["portrait_impact_cut_source_sync"] = (
-            impact_qa["source_only"] is True
-            and impact_qa["source_frame_grid_exact"] is True
-            and impact_qa["input_frame_count"] == frames
+        checks["portrait_continuous_reveal_source_sync"] = (
+            reframe_qa["source_only"] is True
+            and reframe_qa["source_frame_grid_exact"] is True
+            and reframe_qa["input_frame_count"] == frames
         )
-        checks["portrait_impact_cut_legibility"] = impact_qa["minimum_source_crop_width_px"] >= int(
-            cfg["minimum_source_crop_width"]
-        ) and visual_height >= round(center * 1.7)
-        checks["portrait_impact_cut_no_ai"] = impact_qa["ai_enhancement"] is False
-        checks["portrait_impact_cut_effects_declared"] = impact_qa["effects"] == {
-            "kinetic_crop": True,
-            "luminance_flash": {
-                "frames": cfg["flash_frames"],
-                "strength": cfg["flash_strength"],
-            },
+        checks["portrait_continuous_reveal_legibility"] = (
+            reframe_qa["minimum_effective_source_width_px"]
+            >= int(reveal_cfg["minimum_effective_source_width"])
+            and visual_height > round(
+                width * int(profile.config["output"]["height"])
+                / int(profile.config["output"]["width"])
+            )
+        )
+        checks["portrait_continuous_reveal_no_ai"] = reframe_qa["ai_enhancement"] is False
+        checks["portrait_continuous_reveal_effects_declared"] = reframe_qa["effects"] == {
+            "smooth_source_push_in": True,
+            "luminance_flash": False,
             "unsharp_mask": {
-                "radius": cfg["sharpen_radius"],
-                "percent": cfg["sharpen_percent"],
-                "threshold": cfg["sharpen_threshold"],
+                "radius": reveal_cfg["sharpen_radius"],
+                "percent": reveal_cfg["sharpen_percent"],
+                "threshold": reveal_cfg["sharpen_threshold"],
             },
         }
-        indices = [int(n) for n in cfg["storyboard_frames"]]
-        selected = "+".join(f"eq(n\\,{n})" for n in indices)
-        raw_impact = subprocess.run(
+        source_start = int(plan["montage"]["source_window"]["start_frame"])
+        trigger_start = int(plan["evidence"]["toggle_motion_start_frame"]) - source_start
+        trigger_end = int(plan["evidence"]["toggle_motion_end_frame"]) - source_start
+        selected = f"eq(n\\,{trigger_start})+eq(n\\,{trigger_end})"
+        raw_reveal = subprocess.run(
             [
                 "ffmpeg",
                 "-v",
@@ -1399,7 +1453,7 @@ def render_portrait(
                 "-fps_mode",
                 "passthrough",
                 "-frames:v",
-                str(len(indices)),
+                "2",
                 "-f",
                 "rawvideo",
                 "-",
@@ -1407,27 +1461,24 @@ def render_portrait(
             check=True,
             capture_output=True,
         ).stdout
-        impact_frame_bytes = width * height * 3
-        if len(raw_impact) != len(indices) * impact_frame_bytes:
-            raise RuntimeError("encoded Impact Cut review frames are incomplete")
-        decoded_impact: dict[int, Image.Image] = {
-            n: Image.frombytes(
-                "RGB",
-                (width, height),
-                raw_impact[i * impact_frame_bytes : (i + 1) * impact_frame_bytes],
-            )
-            for i, n in enumerate(indices)
-        }
+        reveal_frame_bytes = width * height * 3
+        if len(raw_reveal) != 2 * reveal_frame_bytes:
+            raise RuntimeError("encoded continuous-reveal toggle frames are incomplete")
+        before_toggle = Image.frombytes("RGB", (width, height), raw_reveal[:reveal_frame_bytes])
+        after_toggle = Image.frombytes("RGB", (width, height), raw_reveal[reveal_frame_bytes:])
         visual_box = (0, top, width, top + visual_height)
-        for left, right in pairwise(indices):
-            impact_delta = ImageChops.difference(
-                decoded_impact[left].crop(visual_box), decoded_impact[right].crop(visual_box)
-            )
-            impact_cut_differences.append(round(sum(ImageStat.Stat(impact_delta).mean) / 3, 4))
-        checks["portrait_impact_cut_encoded_motion"] = len(impact_cut_differences) == len(
-            indices
-        ) - 1 and all(value > 2.5 for value in impact_cut_differences)
+        toggle_delta = ImageChops.difference(
+            before_toggle.crop(visual_box), after_toggle.crop(visual_box)
+        )
+        continuous_reveal_differences.append(
+            round(sum(ImageStat.Stat(toggle_delta).mean) / 3, 4)
+        )
+        checks["portrait_continuous_reveal_toggle_visible"] = (
+            len(continuous_reveal_differences) == 1
+            and continuous_reveal_differences[0] > 2.5
+        )
 
+    required = PORTRAIT_REQUIRED_CHECKS | (
     required = PORTRAIT_REQUIRED_CHECKS | (
         CASCADE_REQUIRED_CHECKS
         if cascade
@@ -1439,11 +1490,11 @@ def render_portrait(
         if hero_focus
         else REBOUND_REQUIRED_CHECKS
         if rebound
-        else IMPACT_CUT_REQUIRED_CHECKS
-        if impact_cut
+        else CONTINUOUS_REVEAL_REQUIRED_CHECKS
+        if continuous_reveal
         else frozenset()
     )
-    if rebound or impact_cut:
+    if rebound:
         required = (required - {"toggle_opening_off"}) | {"toggle_opening_after"}
     if set(checks) != required or not all(checks.values()):
         raise RuntimeError(f"portrait QA failed: {checks}")
@@ -1456,8 +1507,8 @@ def render_portrait(
         if hero_focus and panel_qa is not None
         else _encoded_rebound_storyboard(file, output_dir, plan, panel_qa)
         if rebound and panel_qa is not None
-        else _encoded_impact_cut_storyboard(file, output_dir, plan, profile)
-        if impact_cut
+        else _encoded_continuous_reveal_storyboard(file, output_dir, plan, profile)
+        if continuous_reveal
         else None
     )
     hasher = hashlib.sha256()
@@ -1485,7 +1536,7 @@ def render_portrait(
             "hero_focus_pixel_differences": hero_focus_differences,
             "rebound_pixel_differences": rebound_differences,
             "rebound_live_detail_difference": rebound_live_difference,
-            "impact_cut_pixel_differences": impact_cut_differences,
+            "continuous_reveal_pixel_differences": continuous_reveal_differences,
             "video_profile": actual,
             "audio_profile": audio,
             "ssim": ssim,
@@ -1497,7 +1548,7 @@ def render_portrait(
         "snapback": panel_qa if snapback else None,
         "hero_focus": panel_qa if hero_focus else None,
         "rebound": panel_qa if rebound else None,
-        "impact_cut": impact_qa if impact_cut else None,
+        "continuous_reveal": reframe_qa if continuous_reveal else None,
         "storyboard": storyboard,
         "canonical_ffv1_nut": True,
     }

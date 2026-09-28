@@ -173,7 +173,7 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
         from .rendering.portrait_matte import (
             CASCADE_REQUIRED_CHECKS,
             HERO_FOCUS_REQUIRED_CHECKS,
-            IMPACT_CUT_REQUIRED_CHECKS,
+            CONTINUOUS_REVEAL_REQUIRED_CHECKS,
             PORTRAIT_REQUIRED_CHECKS,
             REBOUND_REQUIRED_CHECKS,
             SNAPBACK_REQUIRED_CHECKS,
@@ -461,33 +461,34 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
                     "rebound_storyboard", "encoded result-first storyboard missing or changed"
                 )
 
-        if edit["comparison_mode"] == "impact_cut":
+        if edit["comparison_mode"] == "continuous_reveal":
             from .rendering import kinetic_reframe
 
-            required_checks = (
-                (required_checks - {"toggle_opening_off"})
-                | {"toggle_opening_after"}
-                | IMPACT_CUT_REQUIRED_CHECKS
-            )
+            required_checks = required_checks | CONTINUOUS_REVEAL_REQUIRED_CHECKS
             cfg = kinetic_reframe.config(profile, int(edit["output_frames"]))
-            impact = portrait.get("impact_cut")
+            reveal = portrait.get("continuous_reveal")
+            expected_window = profile.config["editorial"]["mode_timing"]["continuous_reveal"][
+                "source_window"
+            ]
             if (
-                not isinstance(impact, dict)
-                or impact.get("mode") != "impact_cut"
-                or impact.get("frame_count") != int(edit["output_frames"])
-                or impact.get("source_only") is not True
-                or impact.get("source_frame_grid_exact") is not True
-                or impact.get("ai_enhancement") is not False
-                or impact.get("keyframes") != cfg["keyframes"]
-                or impact.get("flash_frames") != cfg["flash_frames"]
-                or impact.get("storyboard_frames") != cfg["storyboard_frames"]
-                or impact.get("bottom_matte_height") != cfg["bottom_matte_height"]
-                or impact.get("minimum_source_crop_width_px", 0)
-                < int(cfg["minimum_source_crop_width"])
+                edit.get("type") != "continuous_source_reveal"
+                or edit.get("source_window") != expected_window
+                or montage.source_frame_count(edit) != int(edit["output_frames"])
+                or not isinstance(reveal, dict)
+                or reveal.get("mode") != "continuous_reveal"
+                or reveal.get("frame_count") != int(edit["output_frames"])
+                or reveal.get("source_only") is not True
+                or reveal.get("source_frame_grid_exact") is not True
+                or reveal.get("ai_enhancement") is not False
+                or reveal.get("keyframes") != cfg["keyframes"]
+                or reveal.get("storyboard_frames") != cfg["storyboard_frames"]
+                or reveal.get("bottom_matte_height") != cfg["bottom_matte_height"]
+                or reveal.get("minimum_effective_source_width_px", 0)
+                < int(cfg["minimum_effective_source_width"])
             ):
                 raise montage.MontageRejection(
-                    "impact_cut_schedule",
-                    "kinetic reframe no longer matches the configured certified-source edit",
+                    "continuous_reveal_schedule",
+                    "continuous source reveal no longer matches its calibrated Clipper story",
                 )
             storyboard = portrait.get("storyboard")
             if (
@@ -498,9 +499,11 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
                 or montage.sha256(Path(str(storyboard["file"]))) != storyboard.get("sha256")
             ):
                 raise montage.MontageRejection(
-                    "impact_cut_storyboard", "encoded Impact Cut storyboard missing or altered"
+                    "continuous_reveal_storyboard",
+                    "encoded continuous-reveal storyboard missing or altered",
                 )
 
+        portrait_checks = portrait.get("qa", {}).get("checks", {})
         portrait_checks = portrait.get("qa", {}).get("checks", {})
         if (
             not isinstance(portrait_checks, dict)
