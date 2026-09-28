@@ -455,9 +455,7 @@ def test_failed_direct_attempt_does_not_poison_a_successful_fallback(tmp_path: P
 
 def test_replay_auto_channel_count_uses_original_modal_shape(tmp_path: Path) -> None:
     first = _fixture(tmp_path)
-    first.rename(
-        tmp_path / f"tjr-real-original-youtube-hd-{CHANNEL}-123"
-    )
+    first.rename(tmp_path / f"tjr-real-original-youtube-hd-{CHANNEL}-123")
     blocked = tmp_path / "tjr-real-original-youtube-hd-UCZen39LQJPx04GjPj7FOMcw-123"
     blocked.mkdir()
     (blocked / "verified-original-egress.json").write_text(

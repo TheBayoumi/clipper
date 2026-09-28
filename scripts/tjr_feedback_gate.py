@@ -77,8 +77,7 @@ def hook_grounded_in_transcript(hook: str, transcript: str) -> bool:
             and any(cue in lowered for cue in ("stop using", "stopped using", "no reason to use"))
         ),
         "WHY HE WARNS ABOUT COPY TRADING": (
-            "copy trad" in lowered
-            and any(cue in lowered for cue in ("blind", "never", "don't"))
+            "copy trad" in lowered and any(cue in lowered for cue in ("blind", "never", "don't"))
         ),
         "WHAT MAKES THIS MARKET-CAP SETUP SUSPICIOUS?": (
             "market cap" in lowered
@@ -135,7 +134,10 @@ def hook_grounded_in_transcript(hook: str, transcript: str) -> bool:
             and any(cue in lowered for cue in ("got hit", "hit", "stopped out", "loss"))
         ),
         "WHAT'S THE SHORT SETUP IN THIS SELLOFF?": (
-            any(cue in lowered for cue in ("massive sell off", "massive sell-off", "massive selloff"))
+            any(
+                cue in lowered
+                for cue in ("massive sell off", "massive sell-off", "massive selloff")
+            )
             and bool(re.search(r"\bshort(?:ed|ing)?\b", lowered))
         ),
         "THE STOP-LOSS MISTAKE THAT MAKES LOSSES WORSE": (
@@ -432,16 +434,14 @@ def inspect_artifact(
             try:
                 window_start = float(clip["source_start_seconds"])
                 window_end = float(clip["source_end_seconds"])
-                source_text = clip_transcript_text(
-                    base, start=window_start, end=window_end
-                )
+                source_text = clip_transcript_text(base, start=window_start, end=window_end)
                 if not hook_grounded_in_transcript(hook, source_text):
                     issues.append("HOOK_SOURCE_MISMATCH")
                 integrity = clip.get("editorial_integrity_gate")
-                if (
-                    not isinstance(integrity, dict)
-                    or integrity.get("status") not in {"unverified", "pass"}
-                ):
+                if not isinstance(integrity, dict) or integrity.get("status") not in {
+                    "unverified",
+                    "pass",
+                }:
                     issues.append("INVALID_EDITORIAL_INTEGRITY_STATUS")
                 mp4 = checked_path(base, clip.get("file"))
                 ass = checked_path(base, clip.get("ass_sidecar"))
@@ -548,9 +548,7 @@ def infer_expected_channels(folders: list[Path]) -> int:
     if modal_ids:
         return len(modal_ids)
     if any(
-        folder.name.startswith(
-            ("tjr-real-youtube-hd-", "tjr-youtube-alt-", "tjr-weekly-hd-")
-        )
+        folder.name.startswith(("tjr-real-youtube-hd-", "tjr-youtube-alt-", "tjr-weekly-hd-"))
         for folder in folders
     ):
         return 1
