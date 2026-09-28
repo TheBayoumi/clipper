@@ -363,6 +363,7 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
         "modal_direct",
         "youtube_direct",
         "verified_mirror",
+        "feedback_replay",
     }
     jobs = config["jobs"]
     preflight = next(
