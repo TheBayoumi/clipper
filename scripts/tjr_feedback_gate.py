@@ -24,6 +24,14 @@ OFFICIAL_CHANNELS = {
 }
 MIN_SSIM = 0.99
 MAX_GENERIC_FRACTION = 0.0
+BANNED_GENERIC_HOOKS = {
+    "WHAT'S THE REAL TAKEAWAY HERE?",
+    "THE RISK QUESTION BEFORE THE TRADE",
+}
+KNOWN_CREATOR_LAYOUTS = {
+    "LvnemCfJpQU": "tjr-memecoin-logo-safe",
+    "p2LU37eat70": "tjr-trading-logo-safe",
+}
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -153,6 +161,10 @@ def verify_edit_plan(quality: dict[str, Any], *, duration_seconds: float) -> Non
             raise ValueError("micro-punch edit is missing or too aggressive")
     elif beats or scale != 1.0:
         raise ValueError("non-punch edit must not invent visual punch-ins")
+    if style == "split_screen_montage" and plan.get("editorial_layout") not in set(
+        KNOWN_CREATOR_LAYOUTS.values()
+    ):
+        raise ValueError("split-screen montage requires an audited source layout")
     previous_start = -99.0
     for beat in beats:
         if not isinstance(beat, dict):
@@ -235,15 +247,28 @@ def inspect_artifact(
             issues.append("NO_RENDERED_CLIPS")
             return entry
         seen: set[tuple[str, float, float]] = set()
+        seen_hooks: set[str] = set()
         windows_by_source: dict[str, list[tuple[float, float]]] = {}
+        source_url = str(report.get("source_url") or "")
+        source_match = re.search(
+            r"(?:[?&]v=|youtu\.be/)([A-Za-z0-9_-]{11})", source_url
+        )
+        source_video_id = source_match.group(1) if source_match else ""
+        expected_layout = KNOWN_CREATOR_LAYOUTS.get(source_video_id)
         min_ssim: float | None = None
         for clip in clips:
             if not isinstance(clip, dict):
                 issues.append("INVALID_CLIP_REPORT")
                 continue
             entry["rendered_mp4_count"] += 1
-            if str(clip.get("hook_candidate") or "").startswith("THE MOMENT:"):
+            hook = str(clip.get("hook_candidate") or "").strip()
+            if hook.startswith("THE MOMENT:") or hook in BANNED_GENERIC_HOOKS:
                 entry["generic_hooks"] += 1
+            hook_key = hook.casefold()
+            if not hook or hook_key in seen_hooks:
+                issues.append("WEAK_OR_DUPLICATE_HOOK")
+            if hook:
+                seen_hooks.add(hook_key)
             clip_issue_count = len(issues)
             try:
                 mp4 = checked_path(base, clip.get("file"))
@@ -280,6 +305,10 @@ def inspect_artifact(
                     verify_edit_plan(quality, duration_seconds=float(clip["duration_seconds"]))
                 except (TypeError, ValueError):
                     issues.append("EDITORIAL_EDIT_PLAN_FAILED")
+                plan = quality.get("edit_plan")
+                actual_layout = plan.get("editorial_layout") if isinstance(plan, dict) else None
+                if expected_layout and actual_layout != expected_layout:
+                    issues.append("KNOWN_SOURCE_LAYOUT_REGRESSION")
                 ssim = float(quality.get("source_to_delivery_mean_ssim") or 0)
                 if not math.isfinite(ssim) or not 0 <= ssim <= 1:
                     issues.append("SOURCE_FIDELITY_FAILED")
@@ -356,9 +385,9 @@ def review_run(
     actions: list[str] = []
     if any("EGRESS" in issue for issue in issues):
         actions.append("REPAIR_YOUTUBE_SOURCE_TRANSPORT")
-    if "GENERIC_HOOK_OVERUSE" in issues:
+    if "GENERIC_HOOK_OVERUSE" in issues or "WEAK_OR_DUPLICATE_HOOK" in issues:
         actions.append("IMPROVE_GROUNDED_CREATIVE_HOOKS")
-    if "EDITORIAL_EDIT_PLAN_FAILED" in issues:
+    if "EDITORIAL_EDIT_PLAN_FAILED" in issues or "KNOWN_SOURCE_LAYOUT_REGRESSION" in issues:
         actions.append("IMPROVE_EDITORIAL_EDITING")
     if any("SOURCE" in issue for issue in issues):
         actions.append("REPAIR_SOURCE_OR_PROVENANCE_VALIDATION")
