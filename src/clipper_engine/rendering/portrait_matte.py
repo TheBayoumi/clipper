@@ -377,17 +377,29 @@ def render_title_frames(
     if mode == "spotlight":
         from . import panel_compositor
 
-        mode_cfg = panel_compositor.spotlight_config(profile, int(plan["montage"]["comparison_frames"]))
-        start = int(plan["montage"]["hook"]["frames"]) + int(plan["montage"]["source_window"]["frames"])
+        mode_cfg = panel_compositor.spotlight_config(
+            profile, int(plan["montage"]["comparison_frames"])
+        )
+        start = int(plan["montage"]["hook"]["frames"]) + int(
+            plan["montage"]["source_window"]["frames"]
+        )
         for i in range(3):
-            change = start + i * int(mode_cfg["focus_frames"]) + int(mode_cfg["switch_after_frames"])
+            change = (
+                start
+                + i * int(mode_cfg["focus_frames"])
+                + int(mode_cfg["switch_after_frames"])
+            )
             sample_indices.update({change - 1, change})
         sample_indices.add(start + 3 * int(mode_cfg["focus_frames"]))
     if mode == "snapback":
         from . import panel_compositor
 
-        mode_cfg = panel_compositor.snapback_config(profile, int(plan["montage"]["comparison_frames"]))
-        start = int(plan["montage"]["hook"]["frames"]) + int(plan["montage"]["source_window"]["frames"])
+        mode_cfg = panel_compositor.snapback_config(
+            profile, int(plan["montage"]["comparison_frames"])
+        )
+        start = int(plan["montage"]["hook"]["frames"]) + int(
+            plan["montage"]["source_window"]["frames"]
+        )
         rewind = start + int(mode_cfg["after_preview_frames"])
         reveal = rewind + int(mode_cfg["before_hold_frames"])
         switched = reveal + int(mode_cfg["transition_frames"]) - 1
@@ -395,8 +407,12 @@ def render_title_frames(
     if mode == "hero_focus":
         from . import panel_compositor
 
-        mode_cfg = panel_compositor.hero_focus_config(profile, int(plan["montage"]["comparison_frames"]))
-        start = int(plan["montage"]["hook"]["frames"]) + int(plan["montage"]["source_window"]["frames"])
+        mode_cfg = panel_compositor.hero_focus_config(
+            profile, int(plan["montage"]["comparison_frames"])
+        )
+        start = int(plan["montage"]["hook"]["frames"]) + int(
+            plan["montage"]["source_window"]["frames"]
+        )
         original = start + int(mode_cfg["after_preview_frames"])
         split = original + int(mode_cfg["before_hold_frames"])
         group = split + int(mode_cfg["split_frames"])
@@ -405,7 +421,9 @@ def render_title_frames(
     if mode == "rebound":
         from . import panel_compositor
 
-        mode_cfg = panel_compositor.rebound_config(profile, int(plan["montage"]["comparison_frames"]))
+        mode_cfg = panel_compositor.rebound_config(
+            profile, int(plan["montage"]["comparison_frames"])
+        )
         start = int(plan["montage"]["hook"]["frames"]) + source_frame_count(plan["montage"])
         original = start + int(mode_cfg["before_hold_frames"])
         flash = original + int(mode_cfg["after_flash_frames"])
@@ -471,7 +489,6 @@ def render_title_frames(
     }
 
 
-def _encoded_montage_storyboard(
 def _encoded_montage_storyboard(
     file: Path,
     output_dir: Path,
@@ -654,7 +671,6 @@ def _encoded_continuous_reveal_storyboard(
 
 
 def render_portrait(
-def render_portrait(
     clean_canonical: Path,
     output_dir: Path,
     workspace: Path,
@@ -708,7 +724,6 @@ def render_portrait(
             "[base][1:v]overlay=0:0:shortest=1:format=auto,"
             "format=yuv420p[outv]"
         )
-    elif panel_mode:
     elif panel_mode:
         from . import panel_compositor
 
@@ -1478,7 +1493,6 @@ def render_portrait(
             and continuous_reveal_differences[0] > 2.5
         )
 
-    required = PORTRAIT_REQUIRED_CHECKS | (
     required = PORTRAIT_REQUIRED_CHECKS | (
         CASCADE_REQUIRED_CHECKS
         if cascade
