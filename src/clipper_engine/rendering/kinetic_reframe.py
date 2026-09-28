@@ -44,8 +44,12 @@ def config(profile: CampaignProfile, output_frames: int) -> dict[str, Any]:
         "sharpen_percent",
         "sharpen_threshold",
         "minimum_effective_source_width",
+        "visual_top",
         "visual_height",
         "title_top_height",
+        "backdrop_blur_sigma",
+        "backdrop_brightness",
+        "backdrop_saturation",
         "title_y_positions",
         "title_bar_y",
         "title_font_sizes",
@@ -67,15 +71,18 @@ def config(profile: CampaignProfile, output_frames: int) -> dict[str, Any]:
     portrait = profile.config["output"]["portrait_matte"]
     target_width = int(portrait["width"])
     target_height = int(portrait["height"])
+    visual_top = cfg["visual_top"]
     visual_height = cfg["visual_height"]
     title_top_height = cfg["title_top_height"]
     minimum_width = cfg["minimum_effective_source_width"]
     if (
-        type(visual_height) is not int
+        type(visual_top) is not int
+        or type(visual_height) is not int
         or visual_height < 1
         or type(title_top_height) is not int
         or title_top_height < 1
-        or title_top_height + visual_height >= target_height
+        or visual_top < title_top_height
+        or visual_top + visual_height >= target_height
         or type(minimum_width) is not int
         or minimum_width < 1
     ):
@@ -155,6 +162,12 @@ def config(profile: CampaignProfile, output_frames: int) -> dict[str, Any]:
         or any(type(n) is not int or n < 8 for n in pill_heights)
         or type(cfg["title_bar_y"]) is not int
         or not 0 <= cfg["title_bar_y"] < title_top_height - 3
+        or type(cfg["backdrop_blur_sigma"]) not in (int, float)
+        or not 4 <= float(cfg["backdrop_blur_sigma"]) <= 40
+        or type(cfg["backdrop_brightness"]) not in (int, float)
+        or not -0.5 <= float(cfg["backdrop_brightness"]) <= 0
+        or type(cfg["backdrop_saturation"]) not in (int, float)
+        or not 0 <= float(cfg["backdrop_saturation"]) <= 1
         or type(cfg["sharpen_radius"]) not in (int, float)
         or not 0 <= float(cfg["sharpen_radius"]) <= 1
         or type(cfg["sharpen_percent"]) is not int
@@ -169,7 +182,7 @@ def config(profile: CampaignProfile, output_frames: int) -> dict[str, Any]:
         **cfg,
         "keyframes": parsed,
         "storyboard_frames": list(storyboard),
-        "bottom_matte_height": target_height - title_top_height - visual_height,
+        "backdrop_bottom_height": target_height - visual_top - visual_height,
     }
 
 
@@ -310,7 +323,8 @@ def render_frames(
         "ai_enhancement": False,
         "input_canonical_sha256": digest.hexdigest(),
         "visual_size": [canvas_width, visual_height],
-        "bottom_matte_height": int(cfg["bottom_matte_height"]),
+        "visual_top": int(cfg["visual_top"]),
+        "backdrop_bottom_height": int(cfg["backdrop_bottom_height"]),
         "minimum_effective_source_width_px": minimum_effective,
         "keyframes": cfg["keyframes"],
         "storyboard_frames": cfg["storyboard_frames"],
@@ -318,6 +332,12 @@ def render_frames(
         "effects": {
             "smooth_source_push_in": True,
             "luminance_flash": False,
+            "source_backdrop": {
+                "source": "same_canonical_frame",
+                "blur_sigma": cfg["backdrop_blur_sigma"],
+                "brightness": cfg["backdrop_brightness"],
+                "saturation": cfg["backdrop_saturation"],
+            },
             "unsharp_mask": {
                 "radius": cfg["sharpen_radius"],
                 "percent": cfg["sharpen_percent"],
