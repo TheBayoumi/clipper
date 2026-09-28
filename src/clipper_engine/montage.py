@@ -373,10 +373,7 @@ def build_plan(
         raise MontageRejection("hook_window_invalid", "transformation hook overruns source")
     ending_frames = sum(int(shot["frames"]) for shot in shots)
     if (
-        hook["frames"]
-        + sum(w["frames"] for w in windows)
-        + comparison_frames
-        + ending_frames
+        hook["frames"] + sum(w["frames"] for w in windows) + comparison_frames + ending_frames
         != target
     ):
         raise MontageRejection(
@@ -477,9 +474,7 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
         expected_windows,
         expected_hook,
         expected_shots,
-    ) = resolve_mode_timing(
-        editorial, states, str(montage.get("comparison_mode")), rate(profile)
-    )
+    ) = resolve_mode_timing(editorial, states, str(montage.get("comparison_mode")), rate(profile))
     multi = "source_windows" in editorial.get("mode_timing", {}).get(
         str(montage.get("comparison_mode")), {}
     )

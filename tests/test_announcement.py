@@ -1224,8 +1224,14 @@ def test_rebound_has_distinct_verified_result_first_source_windows(
     }.items():
         assert portrait_matte.toggle_progress(n, plan, p) == state
     for local, phase in {
-        0: "before", 19: "before", 20: "after", 35: "after",
-        36: "split", 65: "split", 66: "group", 89: "group"
+        0: "before",
+        19: "before",
+        20: "after",
+        35: "after",
+        36: "split",
+        65: "split",
+        66: "group",
+        89: "group",
     }.items():
         assert panel_compositor.rebound_stage(local, plan, p) == phase
     montage.validate_plan(plan, source, p)
@@ -1284,9 +1290,7 @@ def test_rebound_requires_disjoint_verified_anchor_windows(
         montage.build_plan(source, p, comparison_mode="rebound")
 
 
-def test_rebound_rejects_unverified_after_hook(
-    source: Path, profile: CampaignProfile
-) -> None:
+def test_rebound_rejects_unverified_after_hook(source: Path, profile: CampaignProfile) -> None:
     p = _cascade_test_profile(profile)
     p.config["editorial"]["mode_timing"]["rebound"]["hook_start_frame"] = 100
     with pytest.raises(montage.MontageRejection, match="hook_window_invalid"):
@@ -1302,7 +1306,11 @@ def test_rebound_source_native_live_detail_render_and_fail_closed_qualification(
     p = _cascade_test_profile(profile)
     planned = tmp_path / "plan_rebound.json"
     plan = plan_campaign(
-        p, source, certificate[0], planned, comparison_mode="rebound",
+        p,
+        source,
+        certificate[0],
+        planned,
+        comparison_mode="rebound",
         approved_text_index=1,
     )
     assert plan["status"] == "PLANNED"
@@ -1322,9 +1330,7 @@ def test_rebound_source_native_live_detail_render_and_fail_closed_qualification(
     assert panels["live_detail_frames"] == 75
     assert panels["live_detail_source"] == "clean_canonical_ffv1_nut"
     assert panels["focus_roi"] == p.config["output"]["portrait_matte"]["rebound"]["detail_roi"]
-    assert panels["source_still_sha256"] == result["staging"]["comparison"][
-        "source_still_sha256"
-    ]
+    assert panels["source_still_sha256"] == result["staging"]["comparison"]["source_still_sha256"]
     assert portrait["qa"]["frame_count"] == 165
     assert portrait["qa"]["encoded_duration"] == pytest.approx(5.5, abs=0.055)
     assert portrait["title"]["progress_samples"]["0"] == 1

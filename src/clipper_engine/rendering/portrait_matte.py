@@ -1208,9 +1208,8 @@ def render_portrait(
             and panel_qa["live_detail_frames"] == start + frames - end
             and panel_qa["live_detail_source"] == "clean_canonical_ffv1_nut"
             and samples["0"] == {"phase": "live", "after": 1.0}
-            and samples[str(int(plan["montage"]["hook"]["frames"]))] == {
-                "phase": "live", "after": 0.0
-            }
+            and samples[str(int(plan["montage"]["hook"]["frames"]))]
+            == {"phase": "live", "after": 0.0}
             and samples[str(start)] == {"phase": "before", "after": 0.0}
             and samples[str(original)] == {"phase": "after", "after": 1.0}
             and samples[str(flash)] == {"phase": "split", "after": 0.5}
@@ -1227,20 +1226,29 @@ def render_portrait(
         selected = "+".join(f"eq(n\\,{frame})" for frame in indices)
         raw = subprocess.run(
             [
-                "ffmpeg", "-v", "error", "-i", str(file),
-                "-vf", f"select={selected},format=rgb24",
-                "-fps_mode", "passthrough", "-frames:v", str(len(indices)),
-                "-f", "rawvideo", "-",
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                str(file),
+                "-vf",
+                f"select={selected},format=rgb24",
+                "-fps_mode",
+                "passthrough",
+                "-frames:v",
+                str(len(indices)),
+                "-f",
+                "rawvideo",
+                "-",
             ],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         ).stdout
         frame_bytes = width * height * 3
         if len(raw) != len(indices) * frame_bytes:
             raise RuntimeError("encoded rebound detail/phase frames missing")
         decoded = {
-            n: Image.frombytes(
-                "RGB", (width, height), raw[i * frame_bytes : (i + 1) * frame_bytes]
-            )
+            n: Image.frombytes("RGB", (width, height), raw[i * frame_bytes : (i + 1) * frame_bytes])
             for i, n in enumerate(indices)
         }
         roi = profile.config["editorial"]["visual_state_roi"]

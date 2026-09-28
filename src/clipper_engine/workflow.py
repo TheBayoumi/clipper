@@ -142,9 +142,11 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
     edit = manifest["plan"]["montage"]
     selected_windows = montage.source_windows(edit)
     selected_frames = montage.source_frame_count(edit)
-    is_excerpt = len(selected_windows) > 1 or int(
-        selected_windows[0]["start_frame"]
-    ) != 0 or selected_frames != int(edit["full_source_frames"])
+    is_excerpt = (
+        len(selected_windows) > 1
+        or int(selected_windows[0]["start_frame"]) != 0
+        or selected_frames != int(edit["full_source_frames"])
+    )
     if is_excerpt:
         excerpt = manifest["staging"].get("source_excerpt")
         if (
@@ -386,13 +388,14 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
                     "hero_focus_storyboard", "encoded hero storyboard is missing or altered"
                 )
 
-
         if edit["comparison_mode"] == "rebound":
             from .rendering import panel_compositor
 
-            required_checks = (required_checks - {"toggle_opening_off"}) | {
-                "toggle_opening_after"
-            } | REBOUND_REQUIRED_CHECKS
+            required_checks = (
+                (required_checks - {"toggle_opening_off"})
+                | {"toggle_opening_after"}
+                | REBOUND_REQUIRED_CHECKS
+            )
             cmp_qa = manifest["staging"]["comparison"]
             panel_qa = portrait.get("rebound")
             if (

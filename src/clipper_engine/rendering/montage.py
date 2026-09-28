@@ -57,8 +57,8 @@ def filter_graph(
     windows = source_windows(edit)
     source_start = int(windows[0]["start_frame"])
     source_frames = source_frame_count(edit)
-    excerpt = len(windows) > 1 or source_start != 0 or source_frames != int(
-        edit["full_source_frames"]
+    excerpt = (
+        len(windows) > 1 or source_start != 0 or source_frames != int(edit["full_source_frames"])
     )
     hook = edit["hook"]
     comparison_frames = int(edit["comparison_frames"])
@@ -103,14 +103,11 @@ def filter_graph(
         ]
     else:
         source_audio_graph = [
-            f"[afull]asplit={len(windows)}"
-            + "".join(f"[as{i}]" for i in range(len(windows)))
+            f"[afull]asplit={len(windows)}" + "".join(f"[as{i}]" for i in range(len(windows)))
         ]
         for i, window in enumerate(windows):
             start = float(Fraction(int(window["start_frame"]), 1) / fps)
-            end = float(
-                Fraction(int(window["start_frame"]) + int(window["frames"]), 1) / fps
-            )
+            end = float(Fraction(int(window["start_frame"]) + int(window["frames"]), 1) / fps)
             length = float(Fraction(int(window["frames"]), 1) / fps)
             source_audio_graph.append(
                 f"[as{i}]atrim=start={start:.9f}:end={end:.9f},"
@@ -452,8 +449,7 @@ def _qa(
                 "source_excerpt_hashes_exact": stage["source_excerpt"][
                     "source_to_piece_hashes_exact"
                 ]
-                and stage["source_excerpt"]["frame_count"]
-                == source_frame_count(plan["montage"])
+                and stage["source_excerpt"]["frame_count"] == source_frame_count(plan["montage"])
             }
             if "source_excerpt" in stage
             else {}
@@ -624,8 +620,10 @@ def render(
         staging["hook"] = hook_qa
         staging["reveal"] = ending_qa
         windows = source_windows(plan["montage"])
-        selected_excerpt = len(windows) > 1 or int(windows[0]["start_frame"]) != 0 or (
-            source_frame_count(plan["montage"]) != int(plan["montage"]["full_source_frames"])
+        selected_excerpt = (
+            len(windows) > 1
+            or int(windows[0]["start_frame"]) != 0
+            or (source_frame_count(plan["montage"]) != int(plan["montage"]["full_source_frames"]))
         )
         source_excerpt: Path | None = None
         if selected_excerpt:

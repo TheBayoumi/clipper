@@ -268,14 +268,29 @@ def rebound_config(profile: CampaignProfile, comparison_frames: int) -> dict[str
     matte = profile.config["output"]["portrait_matte"]
     cfg: dict[str, Any] = matte["rebound"]
     expected = {
-        "focus_operator_index", "detail_roi", "focus_crop_center",
-        "before_hold_frames", "after_flash_frames", "split_frames", "group_frames",
-        "margin", "gap", "panel_top", "focus_card_width", "focus_card_height",
+        "focus_operator_index",
+        "detail_roi",
+        "focus_crop_center",
+        "before_hold_frames",
+        "after_flash_frames",
+        "split_frames",
+        "group_frames",
+        "margin",
+        "gap",
+        "panel_top",
+        "focus_card_width",
+        "focus_card_height",
         "group_card_height",
     }
     durations = ("before_hold_frames", "after_flash_frames", "split_frames", "group_frames")
-    sizes = ("margin", "gap", "panel_top", "focus_card_width", "focus_card_height",
-             "group_card_height")
+    sizes = (
+        "margin",
+        "gap",
+        "panel_top",
+        "focus_card_width",
+        "focus_card_height",
+        "group_card_height",
+    )
     if (
         not isinstance(cfg, dict)
         or set(cfg) != expected
@@ -1269,22 +1284,27 @@ def render_rebound_panels(
     center = (float(cfg["focus_crop_center"][0]), float(cfg["focus_crop_center"][1]))
     focus_stills = [
         ImageOps.fit(
-            _crop(im, detail), (width, height),
-            method=Image.Resampling.LANCZOS, centering=center,
+            _crop(im, detail),
+            (width, height),
+            method=Image.Resampling.LANCZOS,
+            centering=center,
         )
         for im in (before, after)
     ]
     dual_stills = [
         ImageOps.fit(
-            _crop(im, detail), (half_width, height),
-            method=Image.Resampling.LANCZOS, centering=center,
+            _crop(im, detail),
+            (half_width, height),
+            method=Image.Resampling.LANCZOS,
+            centering=center,
         )
         for im in (before, after)
     ]
     group_stills = [
         [
             ImageOps.fit(
-                _crop(im, roi), (group_width, group_height),
+                _crop(im, roi),
+                (group_width, group_height),
                 method=Image.Resampling.LANCZOS,
             )
             for roi in cfg["operator_rois"]
@@ -1305,12 +1325,28 @@ def render_rebound_panels(
     selected = f"select=lt(n\\,{compare_start})+gte(n\\,{compare_end}),format=rgb24"
     process = subprocess.Popen(
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-threads:v", "1", "-i", str(live_source), "-vf", selected,
-            "-fps_mode", "passthrough", "-frames:v", str(live_count),
-            "-pix_fmt", "rgb24", "-f", "rawvideo", "-",
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-threads:v",
+            "1",
+            "-i",
+            str(live_source),
+            "-vf",
+            selected,
+            "-fps_mode",
+            "passthrough",
+            "-frames:v",
+            str(live_count),
+            "-pix_fmt",
+            "rgb24",
+            "-f",
+            "rawvideo",
+            "-",
         ],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     if process.stdout is None:
         raise RuntimeError("no readable canonical live frames")
@@ -1318,15 +1354,25 @@ def render_rebound_panels(
     folder.mkdir(exist_ok=True)
     focus_left = (canvas_width - width) // 2
     half_boxes = [
-        [margin + i * (half_width + gap), y,
-         margin + i * (half_width + gap) + half_width, y + height]
+        [
+            margin + i * (half_width + gap),
+            y,
+            margin + i * (half_width + gap) + half_width,
+            y + height,
+        ]
         for i in range(2)
     ]
     radius = max(2, round(12 * scale))
     samples: dict[str, dict[str, Any]] = {}
     sample_indices = {
-        0, int(edit["hook"]["frames"]), compare_start - 1, *edges,
-        original - 1, flash - 1, group - 1, frames - 1,
+        0,
+        int(edit["hook"]["frames"]),
+        compare_start - 1,
+        *edges,
+        original - 1,
+        flash - 1,
+        group - 1,
+        frames - 1,
     }
     for n in range(frames):
         active = source_progress[n]
@@ -1363,7 +1409,9 @@ def render_rebound_panels(
                     image.paste(item, (x0, y))
                     draw.rounded_rectangle(
                         (x0, y, x0 + group_width - 1, y + group_height - 1),
-                        radius=radius, outline=gold, width=max(1, round(3 * scale)),
+                        radius=radius,
+                        outline=gold,
+                        width=max(1, round(3 * scale)),
                     )
         else:
             raw = process.stdout.read(frame_bytes)
@@ -1372,13 +1420,16 @@ def render_rebound_panels(
                 raise RuntimeError("rebound live detail lost a lossless canonical frame")
             live = Image.frombytes("RGB", before.size, raw)
             detail_card = ImageOps.fit(
-                _crop(live, detail), (width, height),
-                method=Image.Resampling.LANCZOS, centering=center,
+                _crop(live, detail),
+                (width, height),
+                method=Image.Resampling.LANCZOS,
+                centering=center,
             )
             image.paste(detail_card, (focus_left, y))
             draw.rounded_rectangle(
                 (focus_left, y, focus_left + width - 1, y + height - 1),
-                radius=radius, outline=gold if active >= 0.5 else (83, 87, 91),
+                radius=radius,
+                outline=gold if active >= 0.5 else (83, 87, 91),
                 width=max(1, round(3 * scale)),
             )
             phase = "live"
