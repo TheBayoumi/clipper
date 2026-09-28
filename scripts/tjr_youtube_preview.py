@@ -394,12 +394,32 @@ def prioritize_campaign_moments(videos: list[OfficialVideo]) -> list[OfficialVid
 
 
 def constrain_official_sources(
-    candidates: list[OfficialVideo], requested_id: str | None
+    candidates: list[OfficialVideo],
+    requested_id: str | None,
+    *,
+    published_after: str | None = None,
 ) -> list[OfficialVideo]:
-    """Honor an explicit exact YouTube source instead of trying other videos.
+    """Require source provenance and the campaign publication window.
 
-    No unverified URL and no fallback to other creators or Kick are accepted.
+    Missing or malformed publication dates never bypass the brief's cutoff.
     """
+    if published_after:
+        cutoff = datetime.fromisoformat(published_after.replace("Z", "+00:00"))
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=UTC)
+        eligible: list[OfficialVideo] = []
+        for video in candidates:
+            if not video.published:
+                continue
+            try:
+                published = datetime.fromisoformat(video.published.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=UTC)
+            if published.astimezone(UTC) >= cutoff.astimezone(UTC):
+                eligible.append(video)
+        candidates = eligible
     if not requested_id:
         return prioritize_campaign_moments(candidates)
     if not VIDEO_ID.fullmatch(requested_id):
@@ -630,7 +650,9 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         # Put full videos before Shorts: a new 15-second hashtag Short is not
         # a suitable 20-42s clip source and must not consume the bot budget.
         requested_id = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip()
-        official_candidates = constrain_official_sources(candidates, requested_id)
+        official_candidates = constrain_official_sources(
+            candidates, requested_id, published_after=brief.published_after
+        )
         if requested_id:
             LOGGER.info("Using explicitly requested official YouTube video ID: %s", requested_id)
         browser_capture_file = os.getenv("TJR_BROWSER_CAPTURE_FILE", "").strip()

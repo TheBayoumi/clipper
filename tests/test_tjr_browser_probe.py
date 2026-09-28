@@ -146,3 +146,9 @@ def test_pinned_source_and_parallel_routing_are_explicit_in_workflow() -> None:
     )
     assert "fromJSON(inputs.source_video_id != ''" in workflow
     assert "max-parallel: 2" in workflow
+
+
+def test_every_tjr_production_script_triggers_pr_validation() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "tjr-weekly-hd.yml").read_text()
+    assert workflow.count('      - "scripts/tjr_*.py"') == 2
+    assert "scripts/tjr_modal_runner.py" in workflow

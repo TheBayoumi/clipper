@@ -18,6 +18,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
+from clipper.brief import load_brief
 from scripts.tjr_quality import probe_original
 from scripts.tjr_youtube_preview import (
     CHANNELS,
@@ -200,7 +201,10 @@ def run_probe(root: Path) -> Path:
         return report
     candidates, failures = discover_official_uploads()
     requested = os.environ.get("TJR_SOURCE_VIDEO_ID", "").strip()
-    selected = constrain_official_sources(candidates, requested)[:2]
+    published_after = load_brief(Path("campaigns/reach-tjr-weekly.yaml")).published_after
+    selected = constrain_official_sources(
+        candidates, requested, published_after=published_after
+    )[:2]
     for index, video in enumerate(selected):
         record = {
             "source_url": video.url,

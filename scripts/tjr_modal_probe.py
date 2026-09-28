@@ -15,6 +15,7 @@ from typing import Any
 import modal
 
 app = modal.App("clipper-tjr-official-youtube-probe")
+MAX_MODAL_EGRESS_ATTEMPTS = 3
 # Reuse the original Clipper Modal media image/provider that successfully
 # acquired YouTube masters in August, not bare yt-dlp in Debian/Deno.
 image = (
@@ -438,6 +439,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
 
 @app.local_entrypoint()
 def main() -> None:
+    from clipper.brief import load_brief
     from scripts.tjr_youtube_preview import (
         constrain_official_sources,
         discover_official_uploads,
@@ -457,7 +459,12 @@ def main() -> None:
                 "requested channel is not one of the Reach-approved YouTube channels"
             )
         requested_video = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip() or None
-        official = constrain_official_sources(candidates, requested_id=requested_video)
+        published_after = load_brief(
+            Path("campaigns/reach-tjr-weekly.yaml")
+        ).published_after
+        official = constrain_official_sources(
+            candidates, requested_id=requested_video, published_after=published_after
+        )
         excluded = {
             item.strip()
             for item in os.getenv("TJR_MODAL_EXCLUDE_VIDEO_IDS", "").split(",")
@@ -486,7 +493,7 @@ def main() -> None:
             "status": "NO_ACCESSIBLE_ORIGINAL_YOUTUBE",
             "attempts": [],
         }
-        # Regional egress is tested at most three times; stop immediately on
+        # Bound each job to three distinct egress providers; stop immediately on
         # a real HD transfer. Never treat a metadata-only hit as successful.
         # Reuse the old working pipeline's independent cloud/region
         # selection rather than testing three regions of one network.
@@ -500,7 +507,7 @@ def main() -> None:
             ("region:af", "region", "af"),
             ("default", "default", "auto"),
         )
-        for label, kind, value in routes:
+        for label, kind, value in routes[:MAX_MODAL_EGRESS_ATTEMPTS]:
             provider = (
                 inspect_original_youtube.with_options(cloud=value)
                 if kind == "cloud"
@@ -522,6 +529,7 @@ def main() -> None:
             except Exception as exc:
                 region_attempts.append({"egress": label, "error": type(exc).__name__})
         result["region_attempts"] = region_attempts
+        result["egress_attempt_limit"] = MAX_MODAL_EGRESS_ATTEMPTS
         result["discovery_failures"] = discovery_failures
         output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         if result["status"] != "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED":

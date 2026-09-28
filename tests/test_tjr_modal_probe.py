@@ -256,3 +256,12 @@ def test_staging_probe_rejects_corrupt_partial_and_missing_streams(
             stderr="",
             expected_seconds=7200,
         )
+
+
+def test_modal_route_count_is_bounded() -> None:
+    import inspect
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "tjr_modal_probe.py"
+    script = path.read_text(encoding="utf-8")
+    assert "MAX_MODAL_EGRESS_ATTEMPTS = 3" in script
+    assert "routes[:MAX_MODAL_EGRESS_ATTEMPTS]" in script

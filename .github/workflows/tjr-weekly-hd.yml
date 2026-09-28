@@ -12,6 +12,8 @@ on:
       - "scripts/tjr_modal_probe.py"
       - "scripts/tjr_editorial.py"
       - "scripts/tjr_browser_probe.py"
+      - "scripts/tjr_modal_runner.py"
+      - "scripts/tjr_*.py"
       - "tests/test_tjr_editorial.py"
       - "tests/test_transcript.py"
       - "src/clipper/transcript.py"
@@ -30,8 +32,7 @@ on:
     paths:
       - ".github/workflows/tjr-weekly-hd.yml"
       - "campaigns/reach-tjr-weekly.yaml"
-      - "scripts/tjr_quality.py"
-      - "scripts/tjr_youtube_preview.py"
+      - "scripts/tjr_*.py"
       - "src/clipper/**"
       - "tests/**"
   workflow_dispatch:
@@ -339,6 +340,7 @@ jobs:
           import json
           import os
           from pathlib import Path
+          from clipper.brief import load_brief
           from scripts.tjr_youtube_preview import (
               constrain_official_sources, discover_official_uploads, verified_youtube_metadata,
           )
@@ -348,7 +350,12 @@ jobs:
               candidates, failures = discover_official_uploads()
               report["discovery_failures"] = failures
               requested = os.environ.get("TJR_SOURCE_VIDEO_ID", "").strip()
-              for video in constrain_official_sources(candidates, requested)[:3]:
+              published_after = load_brief(
+                  Path("campaigns/reach-tjr-weekly.yaml")
+              ).published_after
+              for video in constrain_official_sources(
+                  candidates, requested, published_after=published_after
+              )[:3]:
                   try:
                       info = verified_youtube_metadata(video)
                       formats = info.get("formats") or []

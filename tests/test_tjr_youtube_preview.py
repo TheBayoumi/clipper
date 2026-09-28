@@ -468,3 +468,16 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
     ):
         render_youtube_previews(tmp_path / "renders", Path("campaigns/reach-tjr-weekly.yaml"))
     assert scored and all(items == [first, second] for items in scored)
+
+
+def test_campaign_source_cutoff_rejects_old_and_unknown_uploads() -> None:
+    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    old = OfficialVideo("ABCD1234xyz", channel, "Old show", "2026-08-29T18:00:00Z", 2200)
+    unknown = OfficialVideo("ABCD1234xyy", channel, "Unverified date", "", 1800)
+    fresh = OfficialVideo("X7msxvyQd_U", channel, "Current trading", "2026-09-27", 2200)
+    cutoff = "2026-09-01T00:00:00Z"
+    assert constrain_official_sources(
+        [old, unknown, fresh], None, published_after=cutoff
+    ) == [fresh]
+    with pytest.raises(RuntimeError, match="not in either Reach-listed channel"):
+        constrain_official_sources([old, fresh], old.video_id, published_after=cutoff)
