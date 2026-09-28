@@ -61,6 +61,71 @@ def _escape_filter_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
 
 
+_ATTENTION_WORDS = {
+    "damn",
+    "wow",
+    "wait",
+    "look",
+    "risk",
+    "sell",
+    "buy",
+    "entry",
+    "stop",
+    "profit",
+    "loss",
+    "fomo",
+    "scam",
+    "bullshit",
+}
+
+
+def _attention_beats(
+    clip: ClipCandidate,
+    segments: Sequence[TranscriptSegment],
+    *,
+    limit: int = 4,
+) -> tuple[tuple[float, float], ...]:
+    """Find sparse edit beats from authentic word timing, never random keywords alone."""
+    words = sorted(
+        (
+            word
+            for segment in segments
+            if segment.end > clip.start and segment.start < clip.end
+            for word in segment.words
+            if word.end > clip.start and word.start < clip.end
+        ),
+        key=lambda word: (word.start, word.end),
+    )
+    if not words:
+        return ()
+    beats: list[tuple[float, float]] = []
+    for index, word in enumerate(words):
+        relative = max(word.start, clip.start) - clip.start
+        if relative > clip.duration - 0.55:
+            continue
+        previous = words[index - 1] if index else None
+        gap = word.start - previous.end if previous is not None else 99.0
+        sentence_reset = bool(
+            previous is None or previous.text.rstrip().endswith((".", "!", "?"))
+        )
+        token = re.sub(r"[^a-z']", "", word.text.lower())
+        reaction = token in _ATTENTION_WORDS
+        # A beat must be justified by a real pause/sentence transition or a
+        # compact reaction/action word. Spacing prevents machine-gun zooms.
+        if not (gap >= 0.32 or sentence_reset or reaction):
+            continue
+        start = max(0.0, relative - (0.04 if reaction else 0.0))
+        if beats and start - beats[-1][0] < 3.2:
+            continue
+        end = min(clip.duration, start + (0.68 if reaction else 0.52))
+        if end - start < 0.35:
+            continue
+        beats.append((round(start, 3), round(end, 3)))
+        if len(beats) >= limit:
+            break
+    return tuple(beats)
+
+
 def build_ffmpeg_command(
     source_path: str | Path,
     output_path: str | Path,
@@ -74,6 +139,7 @@ def build_ffmpeg_command(
     source_fps: str | None = None,
     crf_override: int | None = None,
     source_profile: SourceProfile | None = None,
+    attention_beats: Sequence[tuple[float, float]] = (),
 ) -> list[str]:
     preset = os.getenv("CLIPPER_RENDER_PRESET", "ultrafast").strip().lower()
     if preset not in {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"}:
@@ -116,14 +182,33 @@ def build_ffmpeg_command(
         fps = "30"
     blur_width = max(180, width // 3)
     blur_height = max(320, height // 3)
-    base_filter = (
-        f"[0:v]split=2[bg][fg];"
-        f"[bg]scale={blur_width}:{blur_height}:force_original_aspect_ratio=increase,"
-        f"crop={blur_width}:{blur_height},gblur=sigma=18,scale={width}:{height}[bg2];"
-        f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
-        f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,"
-        f"{caption_filter},fps={fps}[captioned]"
+    for start, end in attention_beats:
+        if not (0 <= start < end <= clip.duration):
+            raise RenderError("attention beat is outside the selected clip")
+    effect_enable = "+".join(
+        f"between(t,{start:.3f},{end:.3f})" for start, end in attention_beats
     )
+    if is_tiktok and attention_beats and editorial_layout == "default":
+        base_filter = (
+            f"[0:v]split=2[bg][fg];"
+            f"[bg]scale={blur_width}:{blur_height}:force_original_aspect_ratio=increase,"
+            f"crop={blur_width}:{blur_height},gblur=sigma=18,scale={width}:{height}[bg2];"
+            f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fgscaled];"
+            "[fgscaled]split=2[fgbase][fgzoomsrc];"
+            "[fgzoomsrc]scale='ceil(iw*1.025/2)*2':'ceil(ih*1.025/2)*2'[fgzoom];"
+            "[bg2][fgbase]overlay=(W-w)/2:(H-h)/2[scene];"
+            f"[scene][fgzoom]overlay=(W-w)/2:(H-h)/2:enable='{effect_enable}',"
+            f"{caption_filter},fps={fps}[captioned]"
+        )
+    else:
+        base_filter = (
+            f"[0:v]split=2[bg][fg];"
+            f"[bg]scale={blur_width}:{blur_height}:force_original_aspect_ratio=increase,"
+            f"crop={blur_width}:{blur_height},gblur=sigma=18,scale={width}:{height}[bg2];"
+            f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
+            f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,"
+            f"{caption_filter},fps={fps}[captioned]"
+        )
     if editorial_layout not in {"default", "tjr-trading-logo-safe"}:
         raise RenderError("unknown editorial layout; never silently bypass logo guard")
     if editorial_layout == "tjr-trading-logo-safe":
@@ -288,6 +373,11 @@ class FFmpegRenderer:
             if tiktok_hook is not None
             else None
         )
+        attention_beats = (
+            _attention_beats(clip, segments)
+            if tiktok_hook is not None and editorial_layout == "default"
+            else ()
+        )
         rates = crf_attempts(native) if native else (None,)
         evidence: list[dict[str, float | int]] = []
         stats_path = output_path.with_suffix(".ssim.txt")
@@ -303,6 +393,7 @@ class FFmpegRenderer:
                 source_fps=native.fps if native else None,
                 crf_override=crf,
                 source_profile=native,
+                attention_beats=attention_beats,
             )
             try:
                 subprocess.run(command, check=True, capture_output=True, text=True, timeout=900)
@@ -349,6 +440,18 @@ class FFmpegRenderer:
                     "before the final H.264 encode"
                 ),
                 "editorial_visual_approval": False,
+                "edit_plan": {
+                    "style": (
+                        "semantic_micro_punch"
+                        if attention_beats
+                        else "caption_led_no_forced_effect"
+                    ),
+                    "punch_scale": 1.025 if attention_beats else 1.0,
+                    "attention_beats": [
+                        {"start": start, "end": end} for start, end in attention_beats
+                    ],
+                    "random_effects": False,
+                },
             }
             report_path = output_path.with_suffix(".quality.json")
             report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
