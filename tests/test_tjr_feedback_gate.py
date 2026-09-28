@@ -78,7 +78,7 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
                 "hook_candidate": (
                     'THE MOMENT: "PARTIAL QUOTE"'
                     if generic
-                    else "WHEN IS THIS MARKET-CAP ENTRY TOO LATE?"
+                    else "WHEN IS THE MARKET-CAP ENTRY TOO LATE?"
                 ),
                 "source_start_seconds": 2861.2,
                 "source_end_seconds": 2890.4,
@@ -162,7 +162,7 @@ def test_failed_egress_is_distinct_from_missing_channel(tmp_path: Path) -> None:
         json.dumps({"status": "YOUTUBE_EGRESS_BOT_CHALLENGE"})
     )
     result = review_run(tmp_path, expected_channels=2, probe=_probe)
-    assert "MISSING_CHANNEL_ARTIFACT" not in result["issues"]
+    assert "MISSING_CHANNEL_ARTIFACT" in result["issues"]
     assert "YOUTUBE_EGRESS_BLOCKED" in result["issues"]
     assert result["technically_verified_mp4_count"] == 1
 
@@ -185,7 +185,7 @@ def test_replay_mode_never_requests_source_budget_or_new_media() -> None:
     assert "feedback_replay" in workflow
     assert "feedback_source_run_id:" in workflow
     assert "run-id: ${{ inputs.feedback_source_run_id }}" in workflow
-    assert "Replay existing production artifacts at no Modal cost" in workflow
+    assert "Replay existing Modal production artifacts at no new media cost" in workflow
     assert "source_run_id = os.getenv('TJR_FEEDBACK_SOURCE_RUN_ID', '')" in workflow
 
 
