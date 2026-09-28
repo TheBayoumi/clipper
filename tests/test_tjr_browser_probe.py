@@ -142,8 +142,7 @@ def test_pinned_source_and_parallel_routing_are_explicit_in_workflow() -> None:
     workflow = (ROOT / ".github" / "workflows" / "tjr-weekly-hd.yml").read_text()
     assert (
         "ALT_EGRESS_PLATFORM: ${{ matrix.os }}\n"
-        "          TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}"
-        in workflow
+        "          TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}" in workflow
     )
     assert "fromJSON(inputs.source_video_id != ''" in workflow
     assert "max-parallel: 2" in workflow
