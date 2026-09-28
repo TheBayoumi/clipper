@@ -135,6 +135,7 @@ def test_modal_rejects_partial_source_before_transferring(tmp_path: Path) -> Non
 
 def test_failed_remote_cleanup_is_reported_and_fails(tmp_path: Path) -> None:
     import json
+
     import scripts.tjr_modal_runner as runner
 
     report = tmp_path / "cleanup-error.json"

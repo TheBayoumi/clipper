@@ -444,8 +444,14 @@ def load_verified_browser_original(
     probe_original(original)
     duration_probe = subprocess.run(
         [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", str(original),
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(original),
         ],
         capture_output=True,
         text=True,

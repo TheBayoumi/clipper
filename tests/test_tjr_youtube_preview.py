@@ -440,7 +440,9 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
     second = TranscriptSegment(840, 844, "enter until the price returns.")
     scored: list[list[TranscriptSegment]] = []
 
-    def inspect_candidates(_brief: object, _video_id: str, words: list[TranscriptSegment], **_kwargs: object) -> list[object]:
+    def inspect_candidates(
+        _brief: object, _video_id: str, words: list[TranscriptSegment], **_kwargs: object
+    ) -> list[object]:
         scored.append(list(words))
         return []
 
@@ -453,7 +455,9 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
             {
                 "discover_official_uploads": lambda: ([original], []),
                 "load_verified_browser_original": lambda *_: (
-                    original, source, {"title": original.title, "duration": 900}
+                    original,
+                    source,
+                    {"title": original.title, "duration": 900},
                 ),
                 "probe_source_profile": lambda *_: object(),
                 "transcribe_source_chunks": lambda *_a, **_kw: ([[first], [second]], 900.0),

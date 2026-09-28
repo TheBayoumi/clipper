@@ -47,8 +47,7 @@ def _transfer_verified_original(staging: dict[str, Any], destination: Path) -> P
     expected = str(staging.get("source_sha256") or "")
     if (
         staging.get("source_scan_complete") is not True
-        or float(staging.get("staged_duration_seconds") or 0)
-        + 30
+        or float(staging.get("staged_duration_seconds") or 0) + 30
         < float(staging.get("duration") or 0)
         or float(staging.get("duration") or 0) > 3600
         or not _REMOTE_SOURCE.fullmatch(remote)
