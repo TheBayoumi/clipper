@@ -140,8 +140,7 @@ def test_workflow_stores_independent_two_channel_evidence() -> None:
 
 def test_replay_mode_never_requests_source_budget_or_new_media() -> None:
     workflow = (
-        Path(__file__).resolve().parents[1] / ".github" / "workflows"
-        / "tjr-weekly-hd.yml"
+        Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
     ).read_text(encoding="utf-8")
     assert "feedback_replay" in workflow
     assert "feedback_source_run_id:" in workflow
