@@ -44,6 +44,15 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
         "status": "MEASURED_SOURCE_MATCHED_ENCODING",
         "source_to_delivery_mean_ssim": 0.997,
         "compared_frames": 1750,
+        "edit_plan": {
+            "style": "semantic_micro_punch",
+            "punch_scale": 1.025,
+            "attention_beats": [
+                {"start": 0.0, "end": 0.68},
+                {"start": 8.0, "end": 8.52},
+            ],
+            "random_effects": False,
+        },
     }
     (clips / (stem + ".quality.json")).write_text(json.dumps(quality))
     report = {
@@ -225,3 +234,30 @@ def test_independent_ass_audit_rejects_missing_word_highlight(
     report = review_run(tmp_path, expected_channels=1, probe=_probe)
     assert "CAPTION_OR_HOOK_TIMING_FAILED" in report["issues"]
     assert report["technically_verified_mp4_count"] == 0
+
+def test_caption_event_outside_clip_is_rejected(tmp_path: Path) -> None:
+    artifact = _fixture(tmp_path)
+    ass = next(artifact.rglob("01-tjr-test.ass"))
+    ass.write_text(
+        ass.read_text(encoding="utf-8").replace(
+            "0:00:00.10,0:00:00.55,Caption",
+            "0:00:40.00,0:00:41.00,Caption",
+        ),
+        encoding="utf-8",
+    )
+    report = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "CAPTION_OR_HOOK_TIMING_FAILED" in report["issues"]
+    assert report["technically_verified_mp4_count"] == 0
+
+
+def test_random_or_aggressive_edit_plan_is_rejected(tmp_path: Path) -> None:
+    artifact = _fixture(tmp_path)
+    quality = next(artifact.rglob("01-tjr-test.quality.json"))
+    evidence = json.loads(quality.read_text(encoding="utf-8"))
+    evidence["edit_plan"]["punch_scale"] = 1.08
+    quality.write_text(json.dumps(evidence), encoding="utf-8")
+    report = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "EDITORIAL_EDIT_PLAN_FAILED" in report["issues"]
+    assert "IMPROVE_EDITORIAL_EDITING" in report["next_actions"]
+    assert report["technically_verified_mp4_count"] == 0
+

@@ -23,7 +23,7 @@ OFFICIAL_CHANNELS = {
     "UCGHBUXjDCeiIXNdKR0HUZnA",
 }
 MIN_SSIM = 0.99
-MAX_GENERIC_FRACTION = 0.25
+MAX_GENERIC_FRACTION = 0.0
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -120,14 +120,45 @@ def verify_ass_sidecar(path: Path, *, duration_seconds: float, reported_word_eve
         raise ValueError("ASS hook is not visible for the full safe-area duration")
     for line in captions:
         parts = line.split(",", 9)
+        start = seconds(parts[1]) if len(parts) == 10 else -1.0
+        end = seconds(parts[2]) if len(parts) == 10 else -1.0
         if (
             len(parts) != 10
             or parts[3] != "Caption"
             or r"\c&H" not in parts[9]
             or r"\rCaption" not in parts[9]
-            or seconds(parts[2]) <= seconds(parts[1])
+            or not (0 <= start < end <= duration_seconds + 0.05)
         ):
             raise ValueError("ASS word highlight event is not independently verified")
+
+
+
+def verify_edit_plan(quality: dict[str, Any], *, duration_seconds: float) -> None:
+    """Require intentional, bounded edits; never accept random or aggressive effects."""
+    plan = quality.get("edit_plan")
+    if not isinstance(plan, dict) or plan.get("random_effects") is not False:
+        raise ValueError("missing deterministic edit plan")
+    style = plan.get("style")
+    beats = plan.get("attention_beats")
+    if style not in {"semantic_micro_punch", "caption_led_no_forced_effect"}:
+        raise ValueError("unsupported editorial edit style")
+    if not isinstance(beats, list) or len(beats) > 4:
+        raise ValueError("invalid edit beat count")
+    scale = float(plan.get("punch_scale") or 0)
+    if style == "semantic_micro_punch":
+        if not beats or not 1.015 <= scale <= 1.03:
+            raise ValueError("micro-punch edit is missing or too aggressive")
+    elif beats or scale != 1.0:
+        raise ValueError("caption-led edit must not invent visual punch-ins")
+    previous_start = -99.0
+    for beat in beats:
+        if not isinstance(beat, dict):
+            raise ValueError("invalid edit beat")
+        start = float(beat.get("start"))
+        end = float(beat.get("end"))
+        if not (0 <= start < end <= duration_seconds) or start - previous_start < 3.2:
+            raise ValueError("edit beats are out of bounds or too frequent")
+        previous_start = start
 
 
 def valid_publication_date(value: object) -> bool:
@@ -241,6 +272,12 @@ def inspect_artifact(
                 except ValueError:
                     issues.append("CAPTION_OR_HOOK_TIMING_FAILED")
                 quality = read_json(checked_path(base, clip["source_matched_quality"]))
+                try:
+                    verify_edit_plan(
+                        quality, duration_seconds=float(clip["duration_seconds"])
+                    )
+                except (TypeError, ValueError):
+                    issues.append("EDITORIAL_EDIT_PLAN_FAILED")
                 ssim = float(quality.get("source_to_delivery_mean_ssim") or 0)
                 if not math.isfinite(ssim) or not 0 <= ssim <= 1:
                     issues.append("SOURCE_FIDELITY_FAILED")
@@ -313,6 +350,8 @@ def review_run(
         actions.append("REPAIR_YOUTUBE_SOURCE_TRANSPORT")
     if "GENERIC_HOOK_OVERUSE" in issues:
         actions.append("IMPROVE_GROUNDED_CREATIVE_HOOKS")
+    if "EDITORIAL_EDIT_PLAN_FAILED" in issues:
+        actions.append("IMPROVE_EDITORIAL_EDITING")
     if any("SOURCE" in issue for issue in issues):
         actions.append("REPAIR_SOURCE_OR_PROVENANCE_VALIDATION")
     if any("CLIP" in issue or "QA" in issue or "CAPTION" in issue for issue in issues):
