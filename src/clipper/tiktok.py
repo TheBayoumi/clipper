@@ -52,9 +52,8 @@ def creative_hook_from_text(text: str) -> str:
         return "WHY HE STOPPED USING ORDER BLOCKS"
     if "copy trad" in lowered and any(x in lowered for x in ("blind", "never", "don't")):
         return "WHY HE WARNS ABOUT COPY TRADING"
-    if (
-        "market cap" in lowered
-        and any(term in lowered for term in ("late", "early", "entry", "enter", "buying"))
+    if "market cap" in lowered and any(
+        term in lowered for term in ("late", "early", "entry", "enter", "buying")
     ):
         return "WHEN IS THE MARKET-CAP ENTRY TOO LATE?"
     if "meme coin" in lowered and any(
@@ -81,9 +80,7 @@ def creative_hook_from_text(text: str) -> str:
     )
     if waiting_to_enter and not negated_wait:
         return "WHY HE'S WAITING TO ENTER THIS TRADE"
-    selloff = any(
-        x in lowered for x in ("massive sell off", "massive sell-off", "massive selloff")
-    )
+    selloff = any(x in lowered for x in ("massive sell off", "massive sell-off", "massive selloff"))
     declining_short = re.search(
         r"\b(?:not|never|no|won't|wont|can't|cant|cannot|don't|didn't|"
         r"wouldn't|wouldnt|refuse(?:d)? to|avoid(?:ed)?|stayed away from)\b"
