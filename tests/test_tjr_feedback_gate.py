@@ -1,0 +1,125 @@
+"""Deterministic offline checks of post-render source and editorial feedback."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from scripts.tjr_feedback_gate import review_run
+
+CHANNEL = "UCGHBUXjDCeiIXNdKR0HUZnA"
+
+
+def _probe(_path: Path) -> dict[str, object]:
+    return {
+        "width": 1080,
+        "height": 1920,
+        "fps": 60.0,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+    }
+
+
+def _fixture(root: Path, *, generic: bool = False) -> Path:
+    artifact = root / "tjr-real-original-youtube-hd-test"
+    base = artifact / "tjr-modal-artifacts" / "attempt-1" / "render"
+    clips = base / "clips"
+    clips.mkdir(parents=True)
+    stem = "01-tjr-test"
+    for suffix in (".mp4", ".srt", ".ass", ".ssim.txt", "-contact.png", "-preview.png"):
+        (clips / (stem + suffix)).write_bytes(b"fixture")
+    quality = {
+        "status": "MEASURED_SOURCE_MATCHED_ENCODING",
+        "source_to_delivery_mean_ssim": 0.997,
+        "compared_frames": 1750,
+    }
+    (clips / (stem + ".quality.json")).write_text(json.dumps(quality))
+    report = {
+        "source_channel_id": CHANNEL,
+        "source_sha256": "a" * 64,
+        "source_published_at": "2026-09-27T15:00:00Z",
+        "source_url": "https://www.youtube.com/watch?v=LvnemCfJpQU",
+        "source_profile": {"fps": "60/1"},
+        "clips": [
+            {
+                "file": f"clips/{stem}.mp4",
+                "srt": f"clips/{stem}.srt",
+                "ass_sidecar": f"clips/{stem}.ass",
+                "source_matched_quality": f"clips/{stem}.quality.json",
+                "contact_sheet": f"clips/{stem}-contact.png",
+                "preview": f"clips/{stem}-preview.png",
+                "duration_seconds": 29.2,
+                "overlay_acceptance": {
+                    "style": "B2",
+                    "persistent_hook_seconds": 29.2,
+                    "spoken_word_highlight_events": 85,
+                },
+                "hook_candidate": (
+                    'THE MOMENT: "PARTIAL QUOTE"' if generic
+                    else "WHEN IS THIS MARKET-CAP ENTRY TOO LATE?"
+                ),
+                "source_start_seconds": 2861.2,
+                "source_end_seconds": 2890.4,
+                "review_required": True,
+            }
+        ],
+    }
+    (base / "tjr-youtube-qa-report.json").write_text(json.dumps(report))
+    (base / "source-analysis-coverage.json").write_text(
+        json.dumps(
+            {
+                "reported_original_seconds": 3218,
+                "analyzed_source_seconds": 3217.6,
+                "full_source_analyzed": True,
+            }
+        )
+    )
+    return artifact
+
+
+def test_success_is_review_only_and_checks_sidecars(tmp_path: Path) -> None:
+    _fixture(tmp_path)
+    result = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert result["status"] == "TECHNICAL_QA_PASSED__HUMAN_REVIEW_REQUIRED"
+    assert result["technically_verified_mp4_count"] == 1
+    assert result["automatic_publication_allowed"] is False
+    assert result["channels"][0]["minimum_ssim"] == 0.997
+
+
+def test_generic_hooks_cannot_be_mislabeled_as_good_production(tmp_path: Path) -> None:
+    _fixture(tmp_path, generic=True)
+    result = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "GENERIC_HOOK_OVERUSE" in result["issues"]
+    assert "IMPROVE_GROUNDED_CREATIVE_HOOKS" in result["next_actions"]
+
+
+def test_missing_sidecar_and_partial_source_are_reported(tmp_path: Path) -> None:
+    artifact = _fixture(tmp_path)
+    next(artifact.rglob("01-tjr-test.ass")).unlink()
+    coverage = next(artifact.rglob("source-analysis-coverage.json"))
+    coverage.write_text(
+        json.dumps(
+            {
+                "reported_original_seconds": 3218,
+                "analyzed_source_seconds": 840,
+                "full_source_analyzed": False,
+            }
+        )
+    )
+    result = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "MISSING_OR_INVALID_CLIP_EVIDENCE" in result["issues"]
+    assert "INCOMPLETE_SOURCE_COVERAGE" in result["issues"]
+
+
+def test_failed_egress_is_distinct_from_missing_channel(tmp_path: Path) -> None:
+    _fixture(tmp_path)
+    first = review_run(tmp_path, expected_channels=2, probe=_probe)
+    assert "MISSING_CHANNEL_ARTIFACT" in first["issues"]
+    failed = tmp_path / "tjr-real-original-youtube-hd-blocked"
+    failed.mkdir()
+    (failed / "verified-original-egress.json").write_text(
+        json.dumps({"status": "YOUTUBE_EGRESS_BOT_CHALLENGE"})
+    )
+    result = review_run(tmp_path, expected_channels=2, probe=_probe)
+    assert "MISSING_CHANNEL_ARTIFACT" not in result["issues"]
+    assert "YOUTUBE_EGRESS_BLOCKED" in result["issues"]
+    assert result["technically_verified_mp4_count"] == 1
