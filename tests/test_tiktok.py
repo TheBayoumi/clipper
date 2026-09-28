@@ -273,8 +273,10 @@ def test_distinct_hook_excludes_generic_and_repeated_templates() -> None:
     first = distinct_hook_from_text(text)
     second = distinct_hook_from_text(text, {first})
     assert first == "WHAT HAPPENS WHEN THE STOP GETS HIT?"
-    assert second and second != first
-    assert second.startswith('THE MOMENT: "')
+    assert second == ""
+    quoted = distinct_hook_from_text(text, {first}, allow_quote_fallback=True)
+    assert quoted and quoted != first
+    assert quoted.startswith('THE MOMENT: "')
     assert (
         distinct_hook_from_text("What if our market entry was late and the trading plan changed?")
         != "WHAT'S THE REAL TAKEAWAY HERE?"
@@ -378,3 +380,21 @@ def test_contextual_questions_reject_negated_wallet_buying() -> None:
 
     text = "No socials linked, but no wallets buying either."
     assert creative_hook_from_text(text) != "WHY ARE WALLETS BUYING WITHOUT SOCIALS?"
+
+def test_sell_half_hook_requires_the_amount_to_modify_the_sale() -> None:
+    assert creative_hook_from_text("Should we just sell 50% of this position?") == (
+        "WOULD YOU SELL HALF HERE?"
+    )
+    assert creative_hook_from_text("Could we sell now? Half the viewers said no.") != (
+        "WOULD YOU SELL HALF HERE?"
+    )
+
+
+def test_short_decline_must_negate_the_shorting_action_itself() -> None:
+    assert creative_hook_from_text("I won't short this massive selloff.") == (
+        "WHY HE'S NOT SHORTING THE SELLOFF"
+    )
+    assert creative_hook_from_text(
+        "I am not worried about shorting this massive selloff."
+    ) != "WHY HE'S NOT SHORTING THE SELLOFF"
+

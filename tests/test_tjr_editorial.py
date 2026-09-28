@@ -306,3 +306,28 @@ def test_hook_led_fallback_never_accepts_unfinished_trade_story() -> None:
         "entry instead of risking another loss and then",
     )
     assert evaluate_candidate(item, allow_review_only_opening=True) is None
+
+def test_batch_limit_is_a_ceiling_not_a_content_quota() -> None:
+    strong = (
+        "Late at $200K? the coin migrates at $50K market caps and people are buying "
+        "before the price runs, but this entry is already much later than the plan. "
+        "The market setup has risk, a clear entry, and a reason to wait for price."
+    )
+    weak = (
+        "we are talking about a trade and the market and the price and the position "
+        "for a while because there are some things happening in the market today "
+        "and this is just another trading discussion about the position."
+    )
+    picks, rejected = select_editorial_moments(
+        [clip(0, strong, 30), clip(60, weak, 29)], batch_limit=12
+    )
+    assert len(picks) <= 1
+    assert any(
+        item["reason"] in {
+            "NO_CREATOR_GRADE_GROUNDED_HOOK",
+            "BELOW_CREATOR_QUALITY_FLOOR",
+            "WEAK_FIRST_TWO_SECONDS",
+        }
+        for item in rejected
+    )
+

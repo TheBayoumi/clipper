@@ -16,8 +16,10 @@ from typing import Literal
 from clipper.models import ClipCandidate, TranscriptSegment
 from clipper.tiktok import creative_hook_from_text, distinct_hook_from_text
 
-RUBRIC_VERSION = "tjr-editorial-v2"
+RUBRIC_VERSION = "tjr-editorial-v3-creator-quality"
 WEIGHTS = {"opening": 25, "story": 25, "emotion": 10, "visuals": 15, "retention": 25}
+MIN_CREATOR_EDITORIAL_SCORE = 74.0
+MAX_SCORE_DROP_FROM_BEST = 8.0
 _WORDS = re.compile(r"[A-Za-z0-9$']+")
 _NUMBERS = re.compile(r"(?<!\w)\$?\d[\d,.]*(?:%|k|m)?\b", re.IGNORECASE)
 _REACTION = re.compile(
@@ -478,9 +480,22 @@ def select_editorial_moments(
     ordered = sorted(
         qualified, key=lambda pick: (-pick.editorial_score, -pick.clip.score, pick.clip.start)
     )
+    best_score = ordered[0].editorial_score if ordered else 0.0
+    dynamic_floor = max(MIN_CREATOR_EDITORIAL_SCORE, best_score - MAX_SCORE_DROP_FROM_BEST)
     chosen: list[EditorialPick] = []
     used_hooks: set[str] = set()
     for pick in ordered:
+        if pick.editorial_score < dynamic_floor:
+            rejected.append(
+                {
+                    "start": pick.clip.start,
+                    "end": pick.clip.end,
+                    "reason": "BELOW_CREATOR_QUALITY_FLOOR",
+                    "editorial_score": pick.editorial_score,
+                    "dynamic_floor": round(dynamic_floor, 2),
+                }
+            )
+            continue
         overlap = any(
             pick.clip.start < other.clip.end + 1.5 and other.clip.start < pick.clip.end + 1.5
             for other in chosen
@@ -496,12 +511,17 @@ def select_editorial_moments(
             )
             continue
         headline = distinct_hook_from_text(pick.clip.text, used_hooks)
-        if not headline or not _grounded_numbers(headline, pick.clip.text):
+        if (
+            not headline
+            or headline.startswith('THE MOMENT: "')
+            or not _grounded_numbers(headline, pick.clip.text)
+        ):
             rejected.append(
                 {
                     "start": pick.clip.start,
                     "end": pick.clip.end,
-                    "reason": "NO_UNIQUE_GROUNDED_HOOK",
+                    "reason": "NO_CREATOR_GRADE_GROUNDED_HOOK",
+                    "editorial_score": pick.editorial_score,
                 }
             )
             continue
