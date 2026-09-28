@@ -51,15 +51,27 @@ def creative_hook_from_text(text: str) -> str:
         r"stopped\s+using\s+(?:the\s+)?order\s+blocks?\b",
         lowered,
     )
-    no_reason_order_blocks = (
-        "order block" in lowered and "no reason to use" in lowered and "anymore" in lowered
+    no_reason_order_blocks = re.search(
+        r"\b(?:there(?:'s| is)|i\s+(?:see|have)|we\s+(?:see|have)|"
+        r"he\s+(?:sees|has))\s+no\s+reason\s+to\s+use\s+"
+        r"(?:the\s+)?order\s+blocks?\s+anymore\b",
+        lowered,
     )
     negated_order_block_stop = re.search(
         r"\b(?:not|never|didn't|didnt|haven't|hasn't|hadn't|can't|cannot)\b"
         r"(?:\s+\w+){0,4}\s+stopped?\s+using\s+(?:the\s+)?order\s+blocks?\b",
         lowered,
     )
-    if (stopped_order_blocks or no_reason_order_blocks) and not negated_order_block_stop:
+    negated_no_reason = re.search(
+        r"\b(?:wouldn't|wouldnt|don't|dont|didn't|didnt|can't|cant|cannot|not|never)\b"
+        r"(?:\s+\w+){0,6}\s+no\s+reason\s+to\s+use\s+"
+        r"(?:the\s+)?order\s+blocks?\s+anymore\b",
+        lowered,
+    )
+    if (
+        (stopped_order_blocks and not negated_order_block_stop)
+        or (no_reason_order_blocks and not negated_no_reason)
+    ):
         return "WHY HE STOPPED USING ORDER BLOCKS"
     if "copy trad" in lowered and any(x in lowered for x in ("blind", "never", "don't")):
         return "WHY HE WARNS ABOUT COPY TRADING"
@@ -394,8 +406,7 @@ def create_tiktok_ass(
         split = len(lines[0].split()) if len(lines) > 1 else len(phrase)
         for index, word in enumerate(phrase):
             start = max(word.start, clip.start) - clip.start
-            next_start = phrase[index + 1].start if index + 1 < len(phrase) else word.end
-            end = min(next_start if index + 1 < len(phrase) else word.end, clip.end) - clip.start
+            end = min(word.end, clip.end) - clip.start
             if end - start < 0.04:
                 continue
             first = (

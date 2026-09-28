@@ -18,6 +18,8 @@ def _probe(_path: Path) -> dict[str, object]:
         "video_codec": "h264",
         "audio_codec": "aac",
         "duration": 29.2,
+        "video_duration": 29.2,
+        "audio_duration": 29.2,
     }
 
 
@@ -483,8 +485,24 @@ def test_decoded_mp4_duration_must_match_report_and_source_window(tmp_path: Path
     def short_probe(_path: Path) -> dict[str, object]:
         result = _probe(_path)
         result["duration"] = 10.0
+        result["video_duration"] = 10.0
+        result["audio_duration"] = 29.2
         return result
 
     report = review_run(tmp_path, expected_channels=1, probe=short_probe)
     assert "INVALID_REAL_MEDIA_DURATION" in report["issues"]
     assert report["technically_verified_mp4_count"] == 0
+
+
+def test_multiple_successful_fallbacks_are_all_audited_and_blocked_until_canonicalized(
+    tmp_path: Path,
+) -> None:
+    first = _fixture(tmp_path)
+    second = tmp_path / "tjr-youtube-alt-macos-success"
+    import shutil
+
+    shutil.copytree(first, second)
+    result = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "MULTIPLE_PRODUCTION_ARTIFACTS" in result["issues"]
+    assert "DUPLICATE_CHANNEL_ARTIFACT" in result["issues"]
+    assert len(result["channels"]) == 2

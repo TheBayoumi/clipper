@@ -82,9 +82,24 @@ def hook_grounded_in_transcript(hook: str, transcript: str) -> bool:
                     )
                 )
                 or (
-                    "order block" in lowered
-                    and "no reason to use" in lowered
-                    and "anymore" in lowered
+                    bool(
+                        re.search(
+                            r"\b(?:there(?:'s| is)|i\s+(?:see|have)|"
+                            r"we\s+(?:see|have)|he\s+(?:sees|has))\s+"
+                            r"no\s+reason\s+to\s+use\s+(?:the\s+)?"
+                            r"order\s+blocks?\s+anymore\b",
+                            lowered,
+                        )
+                    )
+                    and not bool(
+                        re.search(
+                            r"\b(?:wouldn't|wouldnt|don't|dont|didn't|didnt|"
+                            r"can't|cant|cannot|not|never)\b(?:\s+\w+){0,6}\s+"
+                            r"no\s+reason\s+to\s+use\s+(?:the\s+)?"
+                            r"order\s+blocks?\s+anymore\b",
+                            lowered,
+                        )
+                    )
                 )
             )
             and not bool(
@@ -276,16 +291,29 @@ def probe_media(path: Path, *, full_decode: bool = False) -> dict[str, Any]:
             capture_output=True,
             timeout=180,
         )
-    duration = float((payload.get("format") or {}).get("duration") or 0)
-    if not math.isfinite(duration) or duration <= 0:
-        raise ValueError("decoded media duration is unavailable")
+    def stream_duration(stream: dict[str, Any]) -> float:
+        raw = stream.get("duration")
+        if raw not in (None, "", "N/A"):
+            value = float(raw)
+        elif stream.get("duration_ts") not in (None, "", "N/A") and stream.get("time_base"):
+            value = float(stream["duration_ts"] * Fraction(str(stream["time_base"])))
+        else:
+            raise ValueError("decoded stream duration is unavailable")
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("decoded stream duration is unavailable")
+        return value
+
+    video_duration = stream_duration(video[0])
+    audio_duration = stream_duration(audio[0])
     return {
         "width": video[0]["width"],
         "height": video[0]["height"],
         "fps": float(Fraction(video[0]["avg_frame_rate"])),
         "video_codec": video[0]["codec_name"],
         "audio_codec": audio[0]["codec_name"],
-        "duration": duration,
+        "duration": video_duration,
+        "video_duration": video_duration,
+        "audio_duration": audio_duration,
     }
 
 
@@ -536,11 +564,13 @@ def inspect_artifact(
                 ):
                     issues.append("INVALID_REAL_MEDIA_PROFILE")
                 reported_duration = float(clip["duration_seconds"])
-                decoded_duration = float(actual["duration"])
+                video_duration = float(actual["video_duration"])
+                audio_duration = float(actual["audio_duration"])
                 source_window_duration = window_end - window_start
-                if (
-                    abs(decoded_duration - reported_duration) > 0.15
-                    or abs(decoded_duration - source_window_duration) > 0.15
+                if any(
+                    abs(duration - reported_duration) > 0.15
+                    or abs(duration - source_window_duration) > 0.15
+                    for duration in (video_duration, audio_duration)
                 ):
                     issues.append("INVALID_REAL_MEDIA_DURATION")
                 identity = (
@@ -612,36 +642,13 @@ def review_run(
     successes = [item for item in inspected if item.get("channel_id")]
     attempts = [item for item in inspected if not item.get("channel_id")]
 
-    if expected_channels == 1 and successes:
-        channels = [
-            min(
-                successes,
-                key=lambda item: (
-                    len(item["issues"]),
-                    -int(item["technically_verified_mp4_count"]),
-                    str(item["artifact"]),
-                ),
-            )
-        ]
-    else:
-        by_channel: dict[str, dict[str, Any]] = {}
-        for item in successes:
-            key = str(item.get("channel_id"))
-            current = by_channel.get(key)
-            if current is None or (
-                len(item["issues"]),
-                -int(item["technically_verified_mp4_count"]),
-            ) < (
-                len(current["issues"]),
-                -int(current["technically_verified_mp4_count"]),
-            ):
-                by_channel[key] = item
-        channels = list(by_channel.values())
-
+    channels = successes
     issues = {issue for channel in channels for issue in channel["issues"]}
-    if len(channels) != expected_channels:
+    if len(channels) < expected_channels:
         issues.add("MISSING_CHANNEL_ARTIFACT")
         issues.update(issue for attempt in attempts for issue in attempt["issues"])
+    elif len(channels) > expected_channels:
+        issues.add("MULTIPLE_PRODUCTION_ARTIFACTS")
     ids = [channel.get("channel_id") for channel in channels if channel.get("channel_id")]
     if len(ids) != len(set(ids)):
         issues.add("DUPLICATE_CHANNEL_ARTIFACT")
