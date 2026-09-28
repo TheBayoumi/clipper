@@ -313,9 +313,7 @@ def inspect_artifact(
                 if identity in seen or window_start >= window_end or overlaps_existing:
                     issues.append("DUPLICATE_OR_INVALID_CLIP_WINDOW")
                 seen.add(identity)
-                windows_by_source.setdefault(source_url, []).append(
-                    (window_start, window_end)
-                )
+                windows_by_source.setdefault(source_url, []).append((window_start, window_end))
                 if clip.get("review_required") is not True:
                     issues.append("MISSING_HUMAN_REVIEW_GATE")
                 if len(issues) == clip_issue_count:
