@@ -216,10 +216,6 @@ def _comparison_piece(
         )
     elif mode == "cuts":
         transition = "[left][right]blend=all_expr='if(lt(T,0.45)+between(T,1.05,1.35),A,B)'"
-    elif mode == "impact_cut":
-        # Impact Cut's landscape authority is a verified AFTER hold. The distinct
-        # camera language belongs to Clipper's portrait kinetic-reframe renderer.
-        transition = "[left][right]blend=all_expr='B'"
     else:
         raise MontageRejection("invalid_comparison_mode", str(mode))
     graph = ";".join(
@@ -411,6 +407,92 @@ def _metric(canonical: Path, delivery: Path, filter_name: str, pattern: str) -> 
     return float(matches[-1])
 
 
+def _continuous_source_piece(
+    staged: Path,
+    workspace: Path,
+    plan: dict[str, Any],
+    profile: CampaignProfile,
+    source_profile: dict[str, Any],
+) -> tuple[Path, dict[str, Any]]:
+    window = plan["montage"]["source_window"]
+    start = int(window["start_frame"])
+    frames = int(window["frames"])
+    fps = rate(profile)
+    start_seconds = float(Fraction(start, 1) / fps)
+    duration = float(Fraction(frames, 1) / fps)
+    target = workspace / "continuous_source.nut"
+    media.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-filter_complex_threads",
+            "1",
+            "-i",
+            str(staged),
+            "-filter_complex",
+            (
+                f"[0:v]trim=start_frame={start}:end_frame={start + frames},"
+                "setpts=PTS-STARTPTS[outv];"
+                f"[0:a]atrim=start={start_seconds:.9f}:duration={duration:.9f},"
+                "asetpts=PTS-STARTPTS[outa]"
+            ),
+            "-map",
+            "[outv]",
+            "-map",
+            "[outa]",
+            "-frames:v",
+            str(frames),
+            "-c:v",
+            "ffv1",
+            "-level",
+            "3",
+            "-threads:v",
+            "1",
+            "-pix_fmt",
+            str(source_profile["pix_fmt"]),
+            "-c:a",
+            "pcm_s16le",
+            "-ar",
+            str(profile.config["output"]["audio_sample_rate"]),
+            "-ac",
+            str(profile.config["output"]["audio_channels"]),
+            *media.color_metadata_tag_args(source_profile),
+            "-t",
+            f"{duration:.9f}",
+            "-f",
+            "nut",
+            str(target),
+        ]
+    )
+    original = media.frame_hashes(staged, pix_fmt=str(source_profile["pix_fmt"]))
+    actual = media.frame_hashes(target, pix_fmt=str(source_profile["pix_fmt"]))
+    expected = original[start : start + frames]
+    video = media.video_profile(target, count_frames=True)
+    audio = media.audio_profile(target)
+    exact = bool(actual) and actual == expected and len(actual) == frames
+    checks = {
+        "source_to_piece_hashes_exact": exact,
+        "frame_count_exact": video["frame_count"] == frames,
+        "video_ffv1": video["codec_name"] == "ffv1",
+        "audio_pcm": audio["codec_name"] == "pcm_s16le",
+        "audio_rate_exact": audio["sample_rate"]
+        == int(profile.config["output"]["audio_sample_rate"]),
+        "audio_channels_exact": audio["channels"]
+        == int(profile.config["output"]["audio_channels"]),
+    }
+    if not all(checks.values()):
+        raise RuntimeError(f"continuous source staging failed: {checks}")
+    return target, {
+        "windows": [window],
+        "frame_count": frames,
+        "source_to_piece_hashes_exact": exact,
+        "checks": checks,
+    }
+
+
 def _qa(
     canonical: Path,
     target: Path,
@@ -443,24 +525,37 @@ def _qa(
     source_colors = stage["source_color_metadata"]
     canonical_colors = media.stream_color_tags(canonical)
     delivery_colors = media.source_color_metadata(delivery_video)
+    continuous_reveal = plan["montage"].get("type") == "continuous_source_reveal"
+    if continuous_reveal:
+        excerpt = stage["source_excerpt"]
+        stage_specific = {
+            "continuous_source_window_hashes_exact": excerpt["source_to_piece_hashes_exact"]
+            and excerpt["frame_count"] == source_frame_count(plan["montage"]),
+            "continuous_source_audio_exact": all(excerpt["checks"].values()),
+        }
+    else:
+        stage_specific = {
+            "comparison_from_verified_source_frames": stage["comparison"]["source_only"]
+            and stage["comparison"]["frame_count_exact"],
+            "hook_source_hashes_exact": stage["hook"]["source_to_piece_hashes_exact"],
+            **(
+                {
+                    "source_excerpt_hashes_exact": stage["source_excerpt"][
+                        "source_to_piece_hashes_exact"
+                    ]
+                    and stage["source_excerpt"]["frame_count"]
+                    == source_frame_count(plan["montage"])
+                }
+                if "source_excerpt" in stage
+                else {}
+            ),
+            "reveal_source_hashes_exact": stage["reveal"]["source_to_piece_hashes_exact"],
+            "full_frame_comparison": stage["comparison"]["full_frame"]
+            and stage["comparison"]["no_black_bar_layout"],
+        }
     checks = {
         "source_stage_lossless": all(stage["checks"].values()),
-        "comparison_from_verified_source_frames": stage["comparison"]["source_only"]
-        and stage["comparison"]["frame_count_exact"],
-        "hook_source_hashes_exact": stage["hook"]["source_to_piece_hashes_exact"],
-        **(
-            {
-                "source_excerpt_hashes_exact": stage["source_excerpt"][
-                    "source_to_piece_hashes_exact"
-                ]
-                and stage["source_excerpt"]["frame_count"] == source_frame_count(plan["montage"])
-            }
-            if "source_excerpt" in stage
-            else {}
-        ),
-        "reveal_source_hashes_exact": stage["reveal"]["source_to_piece_hashes_exact"],
-        "full_frame_comparison": stage["comparison"]["full_frame"]
-        and stage["comparison"]["no_black_bar_layout"],
+        **stage_specific,
         "canonical_ffv1_nut": canonical_video["codec_name"] == "ffv1" and ffv1._is_nut(canonical),
         "canonical_color_metadata_tags_exact": all(
             canonical_colors.get(field) == value for field, value in source_colors.items()
@@ -614,45 +709,57 @@ def render(
         title.write_text("\n".join(plan["montage"]["title"]["lines"]), encoding="utf-8")
         staging = ffv1.stage_native_source(source, staged)
         source_profile = staging["source_profile"]
-        comparison, comparison_qa = _comparison_piece(
-            staged, workspace, plan, profile, source_profile
-        )
-        hook, hook_qa = _source_windows_piece(
-            staged, workspace, "hook.nut", [plan["montage"]["hook"]], source_profile
-        )
-        ending, ending_qa = _source_windows_piece(
-            staged, workspace, "ending.nut", plan["montage"]["ending_shots"], source_profile
-        )
-        staging["comparison"] = comparison_qa
-        staging["hook"] = hook_qa
-        staging["reveal"] = ending_qa
-        windows = source_windows(plan["montage"])
-        selected_excerpt = (
-            len(windows) > 1
-            or int(windows[0]["start_frame"]) != 0
-            or (source_frame_count(plan["montage"]) != int(plan["montage"]["full_source_frames"]))
-        )
-        source_excerpt: Path | None = None
-        if selected_excerpt:
-            source_excerpt, source_excerpt_qa = _source_windows_piece(
-                staged, workspace, "source_excerpt.nut", windows, source_profile
+        total = float(plan["montage"]["output_seconds"])
+        continuous_reveal = plan["montage"].get("type") == "continuous_source_reveal"
+        comparison_stills: tuple[Path, Path] | None = None
+        expected_still_hashes: dict[str, str] | None = None
+        if continuous_reveal:
+            canonical, source_excerpt_qa = _continuous_source_piece(
+                staged, workspace, plan, profile, source_profile
             )
             staging["source_excerpt"] = source_excerpt_qa
-        graph = filter_graph(plan, profile, title, _fontfile())
-        total = float(plan["montage"]["output_seconds"])
-        _render_canonical(
-            staged,
-            comparison,
-            ending,
-            hook,
-            graph,
-            canonical,
-            output,
-            source_profile,
-            plan,
-            total,
-            source_excerpt=source_excerpt,
-        )
+        else:
+            comparison, comparison_qa = _comparison_piece(
+                staged, workspace, plan, profile, source_profile
+            )
+            hook, hook_qa = _source_windows_piece(
+                staged, workspace, "hook.nut", [plan["montage"]["hook"]], source_profile
+            )
+            ending, ending_qa = _source_windows_piece(
+                staged, workspace, "ending.nut", plan["montage"]["ending_shots"], source_profile
+            )
+            staging["comparison"] = comparison_qa
+            staging["hook"] = hook_qa
+            staging["reveal"] = ending_qa
+            windows = source_windows(plan["montage"])
+            selected_excerpt = (
+                len(windows) > 1
+                or int(windows[0]["start_frame"]) != 0
+                or source_frame_count(plan["montage"])
+                != int(plan["montage"]["full_source_frames"])
+            )
+            source_excerpt: Path | None = None
+            if selected_excerpt:
+                source_excerpt, source_excerpt_qa = _source_windows_piece(
+                    staged, workspace, "source_excerpt.nut", windows, source_profile
+                )
+                staging["source_excerpt"] = source_excerpt_qa
+            graph = filter_graph(plan, profile, title, _fontfile())
+            _render_canonical(
+                staged,
+                comparison,
+                ending,
+                hook,
+                graph,
+                canonical,
+                output,
+                source_profile,
+                plan,
+                total,
+                source_excerpt=source_excerpt,
+            )
+            comparison_stills = (workspace / "before.png", workspace / "after.png")
+            expected_still_hashes = staging["comparison"].get("source_still_sha256")
         media.run(
             [
                 "ffmpeg",
@@ -701,24 +808,26 @@ def render(
         if output.get("portrait_matte", {}).get("enabled", False):
             from . import portrait_matte
 
-            # Source-fidelity landscape QA retains its embedded approved copy.
-            # The portrait derivative starts from an independently encoded CLEAN
-            # canonical edit to prevent duplicate typography over the Operators.
-            clean = workspace / "clean_canonical.nut"
-            clean_graph = filter_graph(plan, profile, title, _fontfile(), show_embedded_title=False)
-            _render_canonical(
-                staged,
-                comparison,
-                ending,
-                hook,
-                clean_graph,
-                clean,
-                output,
-                source_profile,
-                plan,
-                total,
-                source_excerpt=source_excerpt,
-            )
+            if continuous_reveal:
+                clean = canonical
+            else:
+                clean = workspace / "clean_canonical.nut"
+                clean_graph = filter_graph(
+                    plan, profile, title, _fontfile(), show_embedded_title=False
+                )
+                _render_canonical(
+                    staged,
+                    comparison,
+                    ending,
+                    hook,
+                    clean_graph,
+                    clean,
+                    output,
+                    source_profile,
+                    plan,
+                    total,
+                    source_excerpt=source_excerpt,
+                )
             portrait = portrait_matte.render_portrait(
                 clean,
                 output_dir,
@@ -727,8 +836,8 @@ def render(
                 profile,
                 source_profile,
                 _metric,
-                comparison_stills=(workspace / "before.png", workspace / "after.png"),
-                expected_still_hashes=staging["comparison"].get("source_still_sha256"),
+                comparison_stills=comparison_stills,
+                expected_still_hashes=expected_still_hashes,
             )
 
     manifest = {
