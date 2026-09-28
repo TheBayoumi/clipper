@@ -251,3 +251,23 @@ def test_style_b_command_uses_sparse_micro_punch_not_aggressive_zoom(tmp_path: P
     assert "between(t,0.000,0.680)" in joined
     assert "between(t,8.000,8.520)" in joined
     assert "zoompan" not in joined
+
+def test_memecoin_layout_is_chart_reaction_montage_without_visible_ui_edges(
+    tmp_path: Path,
+) -> None:
+    clip = ClipCandidate("LvnemCfJpQU", 0, 30, "story", 4)
+    command = build_ffmpeg_command(
+        "source.mp4",
+        "out.mp4",
+        clip,
+        tmp_path / "style.ass",
+        source_fps="60/1",
+        editorial_layout="tjr-memecoin-logo-safe",
+    )
+    joined = " ".join(command)
+    assert "crop=1140:465:340:155" in joined
+    assert "crop=575:325:1345:755" in joined
+    assert "overlay=0:310" in joined
+    assert "overlay=0:850" in joined
+    assert "gblur=sigma=18" not in joined
+

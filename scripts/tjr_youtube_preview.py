@@ -876,12 +876,16 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             out = run_dir / "clips" / f"{number:02d}-tjr-youtube-{chosen_video.video_id}.mp4"
             # Explicit approved crop for the visually audited 2026-09-25
             # TRiches livestream. New layouts remain review-only until audited.
-            layout = (
-                "tjr-trading-logo-safe"
-                if chosen_video.video_id == "p2LU37eat70"
-                and probe_original(source) == {"width": 1920, "height": 1080}
-                else "default"
-            )
+            dimensions = probe_original(source)
+            if dimensions == {"width": 1920, "height": 1080}:
+                if chosen_video.video_id == "p2LU37eat70":
+                    layout = "tjr-trading-logo-safe"
+                elif chosen_video.video_id == "LvnemCfJpQU":
+                    layout = "tjr-memecoin-logo-safe"
+                else:
+                    layout = "default"
+            else:
+                layout = "default"
             renderer.render(
                 source,
                 out,

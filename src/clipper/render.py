@@ -205,7 +205,11 @@ def build_ffmpeg_command(
             f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,"
             f"{caption_filter},fps={fps}[captioned]"
         )
-    if editorial_layout not in {"default", "tjr-trading-logo-safe"}:
+    if editorial_layout not in {
+        "default",
+        "tjr-trading-logo-safe",
+        "tjr-memecoin-logo-safe",
+    }:
         raise RenderError("unknown editorial layout; never silently bypass logo guard")
     if editorial_layout == "tjr-trading-logo-safe":
         if watermark_path is not None or (width, height) != (1080, 1920):
@@ -220,6 +224,21 @@ def build_ffmpeg_command(
             f"color=c=0x10131a:s=1080x1920:r={fps}[canvas];"
             "[canvas][top]overlay=0:180[layout];"
             "[layout][face]overlay=0:830,"
+            f"{caption_filter},fps={fps}[captioned]"
+        )
+    if editorial_layout == "tjr-memecoin-logo-safe":
+        if watermark_path is not None or (width, height) != (1080, 1920):
+            raise RenderError("TJR memecoin crop rejects logos or nonvertical outputs")
+        # Audited 1920x1080 TJRTrades memecoin layout: isolate the central
+        # chart and the bottom-right reaction camera. The Fomo header/sidebar,
+        # order-entry panel and chart-provider badge remain outside the crop.
+        base_filter = (
+            "[0:v]split=2[chart][webcam];"
+            "[chart]crop=1140:465:340:155,scale=1080:440:flags=lanczos[top];"
+            "[webcam]crop=575:325:1345:755,scale=1080:610:flags=lanczos[face];"
+            f"color=c=0x10131a:s=1080x1920:r={fps}[canvas];"
+            "[canvas][top]overlay=0:310[layout];"
+            "[layout][face]overlay=0:850,"
             f"{caption_filter},fps={fps}[captioned]"
         )
     inputs = [
@@ -374,6 +393,10 @@ class FFmpegRenderer:
             if tiktok_hook is not None and editorial_layout == "default"
             else ()
         )
+        split_montage = editorial_layout in {
+            "tjr-trading-logo-safe",
+            "tjr-memecoin-logo-safe",
+        }
         rates = crf_attempts(native) if native else (None,)
         evidence: list[dict[str, float | int]] = []
         stats_path = output_path.with_suffix(".ssim.txt")
@@ -438,15 +461,20 @@ class FFmpegRenderer:
                 "editorial_visual_approval": False,
                 "edit_plan": {
                     "style": (
-                        "semantic_micro_punch"
-                        if attention_beats
-                        else "caption_led_no_forced_effect"
+                        "split_screen_montage"
+                        if split_montage
+                        else (
+                            "semantic_micro_punch"
+                            if attention_beats
+                            else "caption_led_no_forced_effect"
+                        )
                     ),
                     "punch_scale": 1.025 if attention_beats else 1.0,
                     "attention_beats": [
                         {"start": start, "end": end} for start, end in attention_beats
                     ],
                     "random_effects": False,
+                    "editorial_layout": editorial_layout,
                 },
             }
             report_path = output_path.with_suffix(".quality.json")

@@ -547,3 +547,11 @@ def test_direct_mode_artifacts_include_all_referenced_qa_evidence() -> None:
             "**/source-analysis-coverage.json",
         ):
             assert f"{root}/{suffix}" in workflow
+
+def test_known_memecoin_source_uses_audited_logo_safe_split_layout() -> None:
+    source = (
+        ROOT / "scripts" / "tjr_youtube_preview.py"
+    ).read_text(encoding="utf-8")
+    assert 'chosen_video.video_id == "LvnemCfJpQU"' in source
+    assert 'layout = "tjr-memecoin-logo-safe"' in source
+

@@ -261,3 +261,19 @@ def test_random_or_aggressive_edit_plan_is_rejected(tmp_path: Path) -> None:
     assert "EDITORIAL_EDIT_PLAN_FAILED" in report["issues"]
     assert "IMPROVE_EDITORIAL_EDITING" in report["next_actions"]
     assert report["technically_verified_mp4_count"] == 0
+
+def test_split_screen_montage_is_an_intentional_edit_plan(tmp_path: Path) -> None:
+    artifact = _fixture(tmp_path)
+    quality = next(artifact.rglob("01-tjr-test.quality.json"))
+    evidence = json.loads(quality.read_text(encoding="utf-8"))
+    evidence["edit_plan"] = {
+        "style": "split_screen_montage",
+        "punch_scale": 1.0,
+        "attention_beats": [],
+        "random_effects": False,
+        "editorial_layout": "tjr-memecoin-logo-safe",
+    }
+    quality.write_text(json.dumps(evidence), encoding="utf-8")
+    report = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "EDITORIAL_EDIT_PLAN_FAILED" not in report["issues"]
+

@@ -139,7 +139,11 @@ def verify_edit_plan(quality: dict[str, Any], *, duration_seconds: float) -> Non
         raise ValueError("missing deterministic edit plan")
     style = plan.get("style")
     beats = plan.get("attention_beats")
-    if style not in {"semantic_micro_punch", "caption_led_no_forced_effect"}:
+    if style not in {
+        "semantic_micro_punch",
+        "caption_led_no_forced_effect",
+        "split_screen_montage",
+    }:
         raise ValueError("unsupported editorial edit style")
     if not isinstance(beats, list) or len(beats) > 4:
         raise ValueError("invalid edit beat count")
@@ -148,7 +152,7 @@ def verify_edit_plan(quality: dict[str, Any], *, duration_seconds: float) -> Non
         if not beats or not 1.015 <= scale <= 1.03:
             raise ValueError("micro-punch edit is missing or too aggressive")
     elif beats or scale != 1.0:
-        raise ValueError("caption-led edit must not invent visual punch-ins")
+        raise ValueError("non-punch edit must not invent visual punch-ins")
     previous_start = -99.0
     for beat in beats:
         if not isinstance(beat, dict):
