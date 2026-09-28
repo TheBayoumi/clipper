@@ -278,6 +278,7 @@ def test_split_screen_montage_is_an_intentional_edit_plan(tmp_path: Path) -> Non
     report = review_run(tmp_path, expected_channels=1, probe=_probe)
     assert "EDITORIAL_EDIT_PLAN_FAILED" not in report["issues"]
 
+
 def test_independent_audit_rejects_overlapping_source_windows(tmp_path: Path) -> None:
     artifact = _fixture(tmp_path)
     report_path = next(artifact.rglob("tjr-youtube-qa-report.json"))

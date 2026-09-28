@@ -400,6 +400,7 @@ def test_short_decline_must_negate_the_shorting_action_itself() -> None:
         != "WHY HE'S NOT SHORTING THE SELLOFF"
     )
 
+
 def test_excess_risk_hook_requires_affirmative_risk_taking() -> None:
     assert (
         creative_hook_from_text("Why do traders keep risking too much money on positions?")
