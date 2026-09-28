@@ -46,7 +46,7 @@ on:
         description: "Choose verified Modal originals, direct YouTube, or an authorized mirror."
         required: true
         type: choice
-        options: [validate_only, modal_direct, youtube_direct, verified_mirror]
+        options: [validate_only, modal_direct, youtube_direct, verified_mirror, feedback_replay]
         default: validate_only
       clip_limit:
         description: "Maximum review drafts per source (1-20); fewer if insufficient distinct moments."
@@ -60,6 +60,11 @@ on:
         default: false
       source_video_id:
         description: "Optional for channel discovery; required for a verified mirror."
+        required: false
+        type: string
+        default: ""
+      feedback_source_run_id:
+        description: "Existing production run to replay and audit without downloading video anew."
         required: false
         type: string
         default: ""
@@ -92,6 +97,7 @@ jobs:
           TJR_SOURCE_VERIFIED: ${{ inputs.source_verified }}
           TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
           TJR_EDITORIAL_BATCH_LIMIT: ${{ inputs.clip_limit }}
+          TJR_FEEDBACK_SOURCE_RUN_ID: ${{ inputs.feedback_source_run_id }}
         run: |
           python - <<'PY'
           import os
@@ -100,6 +106,11 @@ jobs:
           mode = os.environ['TJR_SOURCE_MODE']
           if mode == 'validate_only':
               print('Validation only: no real-source rendering requested')
+          elif mode == 'feedback_replay':
+              source_run_id = os.getenv('TJR_FEEDBACK_SOURCE_RUN_ID', '')
+              if not re.fullmatch(r'[1-9][0-9]{7,14}', source_run_id):
+                  raise SystemExit('feedback_replay requires a valid prior GitHub run ID')
+              print(f'Replaying existing artifacts from run {source_run_id}; no paid source')
           else:
               if mode not in {'modal_direct', 'youtube_direct', 'verified_mirror'}:
                   raise SystemExit('Unknown TJR source mode')
@@ -516,12 +527,14 @@ jobs:
     needs: [tests, youtube_modal_egress]
     if: >-
       always() && github.event_name == 'workflow_dispatch' &&
-      inputs.source_mode == 'modal_direct' && inputs.budget_confirmed &&
+      ((inputs.source_mode == 'modal_direct' && inputs.budget_confirmed) ||
+      inputs.source_mode == 'feedback_replay') &&
       needs.tests.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 65
     permissions:
       contents: read
+      actions: read
       issues: write
     steps:
       - uses: actions/checkout@v5
@@ -530,10 +543,19 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Download both channel artifacts, including partial-failure diagnostics
+      - name: Download both current channel artifacts, including partial failures
+        if: inputs.source_mode == 'modal_direct'
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
+          pattern: tjr-real-original-youtube-hd-*
+          path: tjr-feedback-input
+      - name: Replay existing production artifacts at no Modal cost
+        if: inputs.source_mode == 'feedback_replay'
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.feedback_source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: tjr-real-original-youtube-hd-*
           path: tjr-feedback-input
       - name: Install independent media verifier
@@ -542,7 +564,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Inspect every MP4, sidecar, full decode and editorial gate
         env:
-          TJR_EXPECTED_CHANNELS: ${{ inputs.source_video_id == '' && '2' || '1' }}
+          TJR_EXPECTED_CHANNELS: ${{ inputs.source_mode == 'feedback_replay' || inputs.source_video_id == '' && '2' || '1' }}
+          TJR_FEEDBACK_SOURCE_RUN_ID: ${{ inputs.feedback_source_run_id }}
         run: |
           python -m scripts.tjr_feedback_gate \
             --artifact-root tjr-feedback-input \

@@ -264,6 +264,7 @@ def review_run(
     return {
         "head_sha": head_sha,
         "run_id": run_id,
+        "audited_production_run_id": os.getenv("TJR_FEEDBACK_SOURCE_RUN_ID") or run_id,
         "status": ("BLOCKED" if issues else "TECHNICAL_QA_PASSED__HUMAN_REVIEW_REQUIRED"),
         "expected_channels": expected_channels,
         "technically_verified_mp4_count": sum(
@@ -301,7 +302,8 @@ def main() -> int:
     summary = [
         "## TJR real-media evidence gate",
         "Status: **" + result["status"] + "**",
-        "Commit: " + result["head_sha"] + " · Run: " + result["run_id"],
+        "Audit commit: " + result["head_sha"] + " · Audit run: " + result["run_id"],
+        "Original production run: " + result["audited_production_run_id"],
         "Technically verified MP4s: " + str(result["technically_verified_mp4_count"]),
         "Issues: " + (", ".join(result["issues"]) if result["issues"] else "none"),
         "Next: " + ", ".join(result["next_actions"]),

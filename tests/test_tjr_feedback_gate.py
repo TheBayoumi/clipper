@@ -136,3 +136,15 @@ def test_workflow_stores_independent_two_channel_evidence() -> None:
     assert "python -m scripts.tjr_feedback_gate" in workflow
     assert "actions/download-artifact@v4" in workflow
     assert "gh issue comment 7" in workflow
+
+
+def test_replay_mode_never_requests_source_budget_or_new_media() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[1] / ".github" / "workflows"
+        / "tjr-weekly-hd.yml"
+    ).read_text(encoding="utf-8")
+    assert "feedback_replay" in workflow
+    assert "feedback_source_run_id:" in workflow
+    assert "run-id: ${{ inputs.feedback_source_run_id }}" in workflow
+    assert "Replay existing production artifacts at no Modal cost" in workflow
+    assert "source_run_id = os.getenv('TJR_FEEDBACK_SOURCE_RUN_ID', '')" in workflow
