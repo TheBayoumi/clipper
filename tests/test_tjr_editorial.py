@@ -323,11 +323,11 @@ def test_batch_limit_is_a_ceiling_not_a_content_quota() -> None:
     )
     assert len(picks) <= 1
     assert any(
-        item["reason"] in {
+        item["reason"]
+        in {
             "NO_CREATOR_GRADE_GROUNDED_HOOK",
             "BELOW_CREATOR_QUALITY_FLOOR",
             "WEAK_FIRST_TWO_SECONDS",
         }
         for item in rejected
     )
-

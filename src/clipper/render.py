@@ -105,9 +105,7 @@ def _attention_beats(
             continue
         previous = words[index - 1] if index else None
         gap = word.start - previous.end if previous is not None else 99.0
-        sentence_reset = bool(
-            previous is None or previous.text.rstrip().endswith((".", "!", "?"))
-        )
+        sentence_reset = bool(previous is None or previous.text.rstrip().endswith((".", "!", "?")))
         token = re.sub(r"[^a-z']", "", word.text.lower())
         reaction = token in _ATTENTION_WORDS
         # A beat must be justified by a real pause/sentence transition or a
@@ -185,9 +183,7 @@ def build_ffmpeg_command(
     for start, end in attention_beats:
         if not (0 <= start < end <= clip.duration):
             raise RenderError("attention beat is outside the selected clip")
-    effect_enable = "+".join(
-        f"between(t,{start:.3f},{end:.3f})" for start, end in attention_beats
-    )
+    effect_enable = "+".join(f"between(t,{start:.3f},{end:.3f})" for start, end in attention_beats)
     if is_tiktok and attention_beats and editorial_layout == "default":
         base_filter = (
             f"[0:v]split=2[bg][fg];"

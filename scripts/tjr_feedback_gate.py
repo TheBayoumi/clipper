@@ -132,7 +132,6 @@ def verify_ass_sidecar(path: Path, *, duration_seconds: float, reported_word_eve
             raise ValueError("ASS word highlight event is not independently verified")
 
 
-
 def verify_edit_plan(quality: dict[str, Any], *, duration_seconds: float) -> None:
     """Require intentional, bounded edits; never accept random or aggressive effects."""
     plan = quality.get("edit_plan")
@@ -273,9 +272,7 @@ def inspect_artifact(
                     issues.append("CAPTION_OR_HOOK_TIMING_FAILED")
                 quality = read_json(checked_path(base, clip["source_matched_quality"]))
                 try:
-                    verify_edit_plan(
-                        quality, duration_seconds=float(clip["duration_seconds"])
-                    )
+                    verify_edit_plan(quality, duration_seconds=float(clip["duration_seconds"]))
                 except (TypeError, ValueError):
                     issues.append("EDITORIAL_EDIT_PLAN_FAILED")
                 ssim = float(quality.get("source_to_delivery_mean_ssim") or 0)

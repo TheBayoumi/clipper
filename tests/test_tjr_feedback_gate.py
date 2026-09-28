@@ -260,4 +260,3 @@ def test_random_or_aggressive_edit_plan_is_rejected(tmp_path: Path) -> None:
     assert "EDITORIAL_EDIT_PLAN_FAILED" in report["issues"]
     assert "IMPROVE_EDITORIAL_EDITING" in report["next_actions"]
     assert report["technically_verified_mp4_count"] == 0
-

@@ -394,7 +394,7 @@ def test_short_decline_must_negate_the_shorting_action_itself() -> None:
     assert creative_hook_from_text("I won't short this massive selloff.") == (
         "WHY HE'S NOT SHORTING THE SELLOFF"
     )
-    assert creative_hook_from_text(
-        "I am not worried about shorting this massive selloff."
-    ) != "WHY HE'S NOT SHORTING THE SELLOFF"
-
+    assert (
+        creative_hook_from_text("I am not worried about shorting this massive selloff.")
+        != "WHY HE'S NOT SHORTING THE SELLOFF"
+    )

@@ -232,10 +232,7 @@ def test_attention_beats_are_sparse_and_source_timed() -> None:
     assert 2 <= len(beats) <= 4
     assert beats[0][0] == 0
     assert all(0 <= start < end <= clip.duration for start, end in beats)
-    assert all(
-        beats[index][0] - beats[index - 1][0] >= 3.2
-        for index in range(1, len(beats))
-    )
+    assert all(beats[index][0] - beats[index - 1][0] >= 3.2 for index in range(1, len(beats)))
 
 
 def test_style_b_command_uses_sparse_micro_punch_not_aggressive_zoom(tmp_path: Path) -> None:
@@ -253,4 +250,3 @@ def test_style_b_command_uses_sparse_micro_punch_not_aggressive_zoom(tmp_path: P
     assert "between(t,0.000,0.680)" in joined
     assert "between(t,8.000,8.520)" in joined
     assert "zoompan" not in joined
-
