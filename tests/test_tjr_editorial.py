@@ -258,8 +258,7 @@ def test_repeated_topic_gets_distinct_grounded_source_headlines() -> None:
     assert 1 <= len(selected) <= 2
     assert len({pick.hook.casefold() for pick in selected}) == len(selected)
     assert all(
-        pick.hook != "WHAT'S THE REAL TAKEAWAY HERE?"
-        and not pick.hook.startswith('THE MOMENT: "')
+        pick.hook != "WHAT'S THE REAL TAKEAWAY HERE?" and not pick.hook.startswith('THE MOMENT: "')
         for pick in selected
     )
     if len(selected) == 1:

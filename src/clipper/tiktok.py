@@ -142,8 +142,10 @@ def creative_hook_from_text(text: str) -> str:
         cue in lowered for cue in ("trader", "position", "trading plan", "trade")
     ):
         return "WHY TRADERS RISK TOO MUCH"
-    if "stop loss" in lowered and re.search(r"\bmov(?:e|ed|ing)\b", lowered) and any(
-        cue in lowered for cue in ("mistake", "losing", "loss", "bigger")
+    if (
+        "stop loss" in lowered
+        and re.search(r"\bmov(?:e|ed|ing)\b", lowered)
+        and any(cue in lowered for cue in ("mistake", "losing", "loss", "bigger"))
     ):
         return "THE STOP-LOSS MISTAKE THAT MAKES LOSSES WORSE"
     if "risk" in lowered and any(x in lowered for x in ("position", "trading", "trade")):
