@@ -1363,10 +1363,9 @@ def render_portrait(
             and impact_qa["source_frame_grid_exact"] is True
             and impact_qa["input_frame_count"] == frames
         )
-        checks["portrait_impact_cut_legibility"] = (
-            impact_qa["minimum_source_crop_width_px"] >= int(cfg["minimum_source_crop_width"])
-            and visual_height >= round(center * 1.7)
-        )
+        checks["portrait_impact_cut_legibility"] = impact_qa["minimum_source_crop_width_px"] >= int(
+            cfg["minimum_source_crop_width"]
+        ) and visual_height >= round(center * 1.7)
         checks["portrait_impact_cut_no_ai"] = impact_qa["ai_enhancement"] is False
         checks["portrait_impact_cut_effects_declared"] = impact_qa["effects"] == {
             "kinetic_crop": True,
@@ -1419,10 +1418,9 @@ def render_portrait(
                 decoded_impact[left].crop(visual_box), decoded_impact[right].crop(visual_box)
             )
             impact_cut_differences.append(round(sum(ImageStat.Stat(delta).mean) / 3, 4))
-        checks["portrait_impact_cut_encoded_motion"] = (
-            len(impact_cut_differences) == len(indices) - 1
-            and all(value > 2.5 for value in impact_cut_differences)
-        )
+        checks["portrait_impact_cut_encoded_motion"] = len(impact_cut_differences) == len(
+            indices
+        ) - 1 and all(value > 2.5 for value in impact_cut_differences)
 
     required = PORTRAIT_REQUIRED_CHECKS | (
         CASCADE_REQUIRED_CHECKS
