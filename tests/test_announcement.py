@@ -1384,6 +1384,7 @@ def _continuous_reveal_test_profile(profile: CampaignProfile) -> CampaignProfile
     p = _cascade_test_profile(profile)
     cfg = p.config["output"]["portrait_matte"]["continuous_reveal"]
     cfg["minimum_effective_source_width"] = 150
+    cfg["visual_top"] = 60
     cfg["visual_height"] = 170
     cfg["title_top_height"] = 55
     cfg["title_y_positions"] = [5, 20, 35]
@@ -1434,6 +1435,8 @@ def test_continuous_reveal_is_one_uninterrupted_certified_source_window(
     cfg = kinetic_reframe.config(p, 156)
     assert cfg["storyboard_frames"] == [0, 30, 37, 44, 110, 155]
     assert cfg["minimum_effective_source_width"] == 150
+    assert cfg["visual_top"] == 60
+    assert cfg["backdrop_bottom_height"] == 90
     expected = {0: 0.0, 36: 0.0, 37: 0.0, 44: 1.0, 110: 1.0, 155: 1.0}
     for frame, state in expected.items():
         assert portrait_matte.toggle_progress(frame, plan, p) == state
@@ -1447,6 +1450,8 @@ def test_continuous_reveal_is_one_uninterrupted_certified_source_window(
         ("minimum_effective_source_width", 500),
         ("sharpen_percent", 80),
         ("visual_height", 300),
+        ("visual_top", 40),
+        ("backdrop_brightness", 0.2),
     ],
 )
 def test_continuous_reveal_rejects_bad_profile_calibration(
@@ -1507,14 +1512,23 @@ def test_continuous_reveal_certified_render_and_fail_closed_qualification(
     assert reveal["ai_enhancement"] is False
     assert reveal["minimum_effective_source_width_px"] >= 150
     assert reveal["visual_size"] == [180, 170]
+    assert reveal["visual_top"] == 60
+    assert reveal["backdrop_bottom_height"] == 90
     assert reveal["storyboard_frames"] == [0, 30, 37, 44, 110, 155]
     assert reveal["effects"]["luminance_flash"] is False
+    assert reveal["effects"]["source_backdrop"] == {
+        "source": "same_canonical_frame",
+        "blur_sigma": 24,
+        "brightness": -0.28,
+        "saturation": 0.6,
+    }
     assert portrait["qa"]["frame_count"] == 156
     assert portrait["qa"]["encoded_duration"] == pytest.approx(5.2, abs=0.055)
     assert portrait["title"]["progress_samples"]["0"] == 0
     assert portrait["title"]["progress_samples"]["155"] == 1
     assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
     assert portrait["qa"]["continuous_reveal_pixel_differences"][0] > 2.5
+    assert all(value > 4 for value in portrait["qa"]["continuous_reveal_backdrop_differences"])
     assert portrait["storyboard"]["frames"] == [0, 30, 37, 44, 110, 155]
     assert portrait["storyboard"]["source"] == "actual_encoded_delivery"
     assert Path(portrait["storyboard"]["file"]).is_file()

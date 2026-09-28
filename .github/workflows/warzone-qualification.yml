@@ -131,12 +131,21 @@ jobs:
           assert reveal["source_frame_grid_exact"] is True
           assert reveal["ai_enhancement"] is False
           assert reveal["visual_size"] == [1080, 1000]
+          assert reveal["visual_top"] == 280
+          assert reveal["backdrop_bottom_height"] == 640
           assert reveal["minimum_effective_source_width_px"] >= 1000
           assert reveal["storyboard_frames"] == [0, 30, 37, 44, 110, 155]
           assert reveal["effects"]["luminance_flash"] is False
+          assert reveal["effects"]["source_backdrop"] == {
+              "source": "same_canonical_frame",
+              "blur_sigma": 24,
+              "brightness": -0.28,
+              "saturation": 0.6,
+          }
           assert all(manifest["qa"]["checks"].values()), manifest["qa"]["checks"]
           assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
           assert portrait["qa"]["continuous_reveal_pixel_differences"][0] > 2.5
+          assert all(v > 4 for v in portrait["qa"]["continuous_reveal_backdrop_differences"])
           assert portrait["storyboard"]["frames"] == [0, 30, 37, 44, 110, 155]
           assert Path(portrait["storyboard"]["file"]).is_file()
           assert abs(portrait["qa"]["encoded_duration"] - 5.2) < 0.055
