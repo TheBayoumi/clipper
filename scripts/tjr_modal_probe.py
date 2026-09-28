@@ -76,9 +76,9 @@ def source_download_sections(duration_seconds: float) -> list[str]:
     """
     if duration_seconds <= 0:
         raise ValueError("verified YouTube duration must be positive")
-    if duration_seconds <= 3600:
-        return []
-    return ["--download-sections", "*00:00:00-01:00:00"]
+    if duration_seconds > 3600:
+        raise ValueError("SOURCE_EXCEEDS_FULL_ANALYSIS_LIMIT: source exceeds one hour")
+    return []
 
 
 def _yt_command(args: tuple[str, ...], url: str) -> list[str]:
@@ -194,9 +194,16 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
                         {"url": url, "strategy": strategy_name, "reason": "ONGOING_LIVESTREAM"}
                     )
                     break
-                if float(metadata.get("duration") or 0) < 90:
+                duration = float(metadata.get("duration") or 0)
+                if duration < 90 or duration > 3600:
                     attempts.append(
-                        {"url": url, "strategy": strategy_name, "reason": "SHORT_VIDEO"}
+                        {
+                            "url": url,
+                            "strategy": strategy_name,
+                            "reason": "SHORT_VIDEO"
+                            if duration < 90
+                            else "SOURCE_EXCEEDS_FULL_ANALYSIS_LIMIT",
+                        }
                     )
                     break
                 formats = metadata.get("formats") or []
@@ -295,8 +302,9 @@ def verify_staged_media_probe(
         raise RuntimeError("CORRUPT_OR_INCOMPLETE_HD_TRANSFER: invalid ffprobe metadata") from exc
     if not isinstance(streams, list) or not 0 < staged_seconds < float("inf"):
         raise RuntimeError("CORRUPT_OR_INCOMPLETE_HD_TRANSFER: invalid stream or duration")
-    minimum = min(expected_seconds, 3600.0)
-    if staged_seconds + 30 < minimum:
+    if expected_seconds <= 0 or expected_seconds > 3600:
+        raise RuntimeError("SOURCE_EXCEEDS_FULL_ANALYSIS_LIMIT")
+    if staged_seconds + 30 < expected_seconds:
         raise RuntimeError(
             "SOURCE_DURATION_INCOMPLETE: staged media ends before the verified scan window"
         )

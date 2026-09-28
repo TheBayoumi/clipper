@@ -46,7 +46,12 @@ def _transfer_verified_original(staging: dict[str, Any], destination: Path) -> P
     source_url = str(staging.get("public_video_url") or "")
     expected = str(staging.get("source_sha256") or "")
     if (
-        not _REMOTE_SOURCE.fullmatch(remote)
+        staging.get("source_scan_complete") is not True
+        or float(staging.get("staged_duration_seconds") or 0)
+        + 30
+        < float(staging.get("duration") or 0)
+        or float(staging.get("duration") or 0) > 3600
+        or not _REMOTE_SOURCE.fullmatch(remote)
         or video_id != Path(remote).parent.name
         or source_url != f"https://www.youtube.com/watch?v={video_id}"
         or channel_id not in {"UCGHBUXjDCeiIXNdKR0HUZnA", "UCZen39LQJPx04GjPj7FOMcw"}
@@ -84,14 +89,35 @@ def _transfer_verified_original(staging: dict[str, Any], destination: Path) -> P
         raise
 
 
-def _purge_remote(staging: dict[str, Any]) -> None:
+def _purge_remote(staging: dict[str, Any], diagnostic: Path | None = None) -> None:
     remote = str(staging.get("source_remote_path") or "")
-    if _REMOTE_SOURCE.fullmatch(remote):
-        subprocess.run(
+    if not _REMOTE_SOURCE.fullmatch(remote):
+        raise RuntimeError("invalid remote path for mandatory Modal cleanup")
+    try:
+        result = subprocess.run(
             ["modal", "volume", "rm", VOLUME, remote],
             check=False,
-            stdout=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
+        if result.returncode == 0:
+            return
+        detail = {
+            "source_remote_path": remote,
+            "exit_code": result.returncode,
+            "stderr": result.stderr[-1200:],
+        }
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        detail = {
+            "source_remote_path": remote,
+            "exception": type(exc).__name__,
+            "error": str(exc)[-500:],
+        }
+    if diagnostic is not None:
+        diagnostic.parent.mkdir(parents=True, exist_ok=True)
+        diagnostic.write_text(json.dumps(detail, indent=2) + "\n", encoding="utf-8")
+    raise RuntimeError("MODAL_VOLUME_CLEANUP_FAILED: " + remote)
 
 
 def run_modal_production(
@@ -155,13 +181,15 @@ def run_modal_production(
             print("REAL_VERIFIED_TJR_RENDER_ARTIFACTS:", result, flush=True)
             return result
         finally:
-            if staging is not None:
-                _purge_remote(staging)
-            if original is not None:
-                original.unlink(missing_ok=True)
-            (attempt_root / "source.json").unlink(missing_ok=True)
-            os.environ.pop("TJR_BROWSER_CAPTURE_FILE", None)
-            os.environ.pop("TJR_REQUIRE_STAGED_ORIGINAL", None)
+            try:
+                if staging is not None:
+                    _purge_remote(staging, attempt_root / "remote-cleanup-error.json")
+            finally:
+                if original is not None:
+                    original.unlink(missing_ok=True)
+                (attempt_root / "source.json").unlink(missing_ok=True)
+                os.environ.pop("TJR_BROWSER_CAPTURE_FILE", None)
+                os.environ.pop("TJR_REQUIRE_STAGED_ORIGINAL", None)
     raise NoEditorialMoments(
         "all tested approved originals failed editorial screening: "
         + json.dumps(failures, ensure_ascii=False)

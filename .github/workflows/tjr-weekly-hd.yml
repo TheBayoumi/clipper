@@ -332,6 +332,7 @@ jobs:
         shell: bash
         env:
           ALT_EGRESS_PLATFORM: ${{ matrix.os }}
+          TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -424,9 +425,8 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        channel_id:
-          - UCZen39LQJPx04GjPj7FOMcw
-          - UCGHBUXjDCeiIXNdKR0HUZnA
+        # Pinned source has one verified owner; otherwise use two channel runners.
+        channel_id: ${{ fromJSON(inputs.source_video_id != '' && '[""]' || '["UCZen39LQJPx04GjPj7FOMcw","UCGHBUXjDCeiIXNdKR0HUZnA"]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     permissions:
@@ -473,6 +473,7 @@ jobs:
             tjr-modal-artifacts/**/source-roundtrip.json
             tjr-modal-artifacts/**/verified-original-egress.json
             tjr-modal-artifacts/**/editorial-failure.json
+            tjr-modal-artifacts/**/remote-cleanup-error.json
             tjr-modal-artifacts/**/clips/*.mp4
             tjr-modal-artifacts/**/clips/*.srt
             tjr-modal-artifacts/**/clips/*.ass

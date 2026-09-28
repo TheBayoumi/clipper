@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -121,8 +122,12 @@ def browser_html(video: OfficialVideo, browser: Path, profile: Path) -> str:
     return result.stdout.decode("utf-8", errors="replace")
 
 
-def fetch_browser_original(video_url: str, audio_url: str, output: Path) -> str:
-    """Fetch only the limited 14-minute excerpt; never print signed media URLs."""
+def fetch_browser_original(
+    video_url: str, audio_url: str, output: Path, *, expected_seconds: float
+) -> str:
+    """Copy the complete verified source streams without truncation or transcoding."""
+    if not 90 <= expected_seconds <= 3600:
+        return "BROWSER_SOURCE_OUTSIDE_SUPPORTED_DURATION"
     output.parent.mkdir(parents=True, exist_ok=True)
     command = [
         "ffmpeg",
@@ -139,8 +144,6 @@ def fetch_browser_original(video_url: str, audio_url: str, output: Path) -> str:
         "Referer: https://www.youtube.com/\r\n",
         "-i",
         audio_url,
-        "-t",
-        "840",
         "-map",
         "0:v:0",
         "-map",
@@ -154,6 +157,24 @@ def fetch_browser_original(video_url: str, audio_url: str, output: Path) -> str:
         if result.returncode != 0:
             return f"googlevideo_fetch_failed_exit_{result.returncode}"
         probe_original(output)
+        measured = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", str(output),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+        if measured.returncode:
+            return "CAPTURE_UNDECODABLE_DURATION"
+        try:
+            actual_seconds = float(measured.stdout.strip())
+        except ValueError:
+            return "CAPTURE_INVALID_DURATION"
+        if not math.isfinite(actual_seconds) or actual_seconds + 30 < expected_seconds:
+            return "CAPTURE_INCOMPLETE_SOURCE"
         return "CAPTURED_HD_ORIGINAL"
     except subprocess.TimeoutExpired:
         return "googlevideo_download_timeout"
@@ -209,13 +230,20 @@ def run_probe(root: Path) -> Path:
             if status != "OK":
                 results.append(record)
                 continue
+            declared_seconds = float(details.get("lengthSeconds") or 0)
+            if not 90 <= declared_seconds <= 3600:
+                record["browser_playability"] = "SOURCE_OUTSIDE_SUPPORTED_DURATION"
+                results.append(record)
+                continue
             formats = select_browser_formats(player)
             if formats is None:
                 record["browser_playability"] = "PLAYABLE_BUT_NO_DIRECT_HD_FORMATS"
                 results.append(record)
                 continue
             destination = root / "work" / f"{video.video_id}.mkv"
-            transfer_status = fetch_browser_original(*formats, destination)
+            transfer_status = fetch_browser_original(
+                *formats, destination, expected_seconds=declared_seconds
+            )
             record["browser_transfer"] = transfer_status
             results.append(record)
             if transfer_status != "CAPTURED_HD_ORIGINAL":
@@ -231,7 +259,7 @@ def run_probe(root: Path) -> Path:
                         "public_video_url": video.url,
                         "published": video.published,
                         "title": str(details.get("title") or video.title),
-                        "duration": int(details.get("lengthSeconds") or 0),
+                        "duration": int(declared_seconds),
                         "source_path": str(destination.resolve()),
                         "source_sha256": digest,
                     },

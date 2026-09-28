@@ -312,12 +312,12 @@ def verified_youtube_metadata(video: OfficialVideo) -> dict[str, Any]:
 
 
 def youtube_scan_section_args(duration_seconds: float) -> list[str]:
-    """Scan the full original up to one hour; report any longer-video coverage gap."""
+    """Require full originals within the supported one-hour analysis window."""
     if duration_seconds <= 0:
         raise ValueError("verified YouTube duration must be positive")
-    if duration_seconds <= 3600:
-        return []
-    return ["--download-sections", "*00:00:00-01:00:00"]
+    if duration_seconds > 3600:
+        raise ValueError("SOURCE_EXCEEDS_FULL_ANALYSIS_LIMIT: source exceeds one hour")
+    return []
 
 
 def download_original_excerpt(
@@ -431,8 +431,9 @@ def load_verified_browser_original(
     )
     if selected is None:
         raise RuntimeError("browser original is not in the verified official channel feed")
-    if int(data.get("duration") or 0) < 90:
-        raise RuntimeError("browser original is too short for the campaign")
+    reported_seconds = int(data.get("duration") or 0)
+    if not 90 <= reported_seconds <= 3600:
+        raise RuntimeError("SOURCE_EXCEEDS_FULL_ANALYSIS_LIMIT: invalid capture duration")
     original = Path(str(data.get("source_path") or ""))
     if not original.is_file() or not re.fullmatch(r"[0-9a-f]{64}", str(data.get("source_sha256"))):
         raise RuntimeError("browser original is missing or has no valid SHA-256")
@@ -441,6 +442,22 @@ def load_verified_browser_original(
     if actual_digest != data["source_sha256"]:
         raise RuntimeError("browser original SHA-256 does not match Chrome capture manifest")
     probe_original(original)
+    duration_probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(original),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=45,
+    )
+    try:
+        actual_seconds = float(duration_probe.stdout.strip())
+    except ValueError as exc:
+        raise RuntimeError("captured original has no valid duration") from exc
+    if not math.isfinite(actual_seconds) or actual_seconds + 30 < reported_seconds:
+        raise RuntimeError("SOURCE_DURATION_INCOMPLETE: captured media is partial")
     metadata: dict[str, Any] = {
         "id": selected.video_id,
         "channel_id": selected.channel_id,
@@ -687,18 +704,15 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             encoding="utf-8",
         )
         batch_limit = int(os.getenv("TJR_EDITORIAL_BATCH_LIMIT", str(brief.clip_count)))
-        strict = [
-            candidate
-            for chunk in source_chunks
-            for candidate in score_transcript(
-                brief,
-                chosen_video.video_id,
-                chunk,
-                limit=900,
-                sentence_boundaries=True,
-                diversify=False,
-            )
-        ]
+        # Chunk boundaries are not sentence boundaries; score all aligned words together.
+        strict = score_transcript(
+            brief,
+            chosen_video.video_id,
+            segments,
+            limit=900 * len(source_chunks),
+            sentence_boundaries=True,
+            diversify=False,
+        )
         strict.sort(key=lambda item: (-item.score, item.start))
         ranked = strict
         picks, rejected = select_editorial_moments(
@@ -709,19 +723,15 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         if not picks:
             # Retry at genuine, shorter ASR-aligned pauses rather than cutting
             # arbitrary mid-sentence transcript windows or lowering the rubric.
-            relaxed = [
-                candidate
-                for chunk in source_chunks
-                for candidate in score_transcript(
-                    brief,
-                    chosen_video.video_id,
-                    chunk,
-                    limit=900,
-                    sentence_boundaries=True,
-                    pause_threshold=0.35,
-                    diversify=False,
-                )
-            ]
+            relaxed = score_transcript(
+                brief,
+                chosen_video.video_id,
+                segments,
+                limit=900 * len(source_chunks),
+                sentence_boundaries=True,
+                pause_threshold=0.35,
+                diversify=False,
+            )
             relaxed.sort(key=lambda item: (-item.score, item.start))
             relaxed_count = len(relaxed)
             relaxed_picks, relaxed_rejected = select_editorial_moments(
