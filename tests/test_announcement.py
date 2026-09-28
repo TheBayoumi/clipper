@@ -1443,9 +1443,12 @@ def test_impact_cut_is_distinct_source_native_kinetic_mode(
         55: 1.0,
         144: 1.0,
         145: 0.0,
-        146: 1.0,
         147: 0.0,
         148: 1.0,
+        150: 1.0,
+        151: 0.0,
+        153: 0.0,
+        154: 1.0,
         164: 1.0,
     }.items():
         assert portrait_matte.toggle_progress(frame, plan, p) == state
