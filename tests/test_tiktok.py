@@ -412,3 +412,53 @@ def test_excess_risk_hook_requires_affirmative_risk_taking() -> None:
         "They never risk too much money because the plan caps the position.",
     ):
         assert creative_hook_from_text(source) != "WHY TRADERS RISK TOO MUCH"
+
+def test_generic_risk_talk_is_rejected_instead_of_rendered_with_a_weak_hook() -> None:
+    source = (
+        "Risk matters in every trade and position, so you need a plan before trading. "
+        "The market can move either way and the position has to be managed."
+    )
+    assert creative_hook_from_text(source) == "WHAT'S THE REAL TAKEAWAY HERE?"
+    assert distinct_hook_from_text(source) == ""
+
+
+def test_real_failed_batch_patterns_now_get_specific_semantic_hooks() -> None:
+    examples = (
+        (
+            "Late at $200K? the coin migrates at $50K market caps and people are buying.",
+            "WHEN IS THE MARKET-CAP ENTRY TOO LATE?",
+        ),
+        (
+            "I don't see any socials linked. We have some wallets buying this token.",
+            "WHY ARE WALLETS BUYING WITHOUT SOCIALS?",
+        ),
+        ("So should we just sell like 50%?", "WOULD YOU SELL HALF HERE?"),
+        (
+            "This has been sitting at $80,000 market cap and it is clearly some bullshit.",
+            "WHAT MAKES THIS MARKET-CAP SETUP SUSPICIOUS?",
+        ),
+        (
+            "We don't want to copy trade this person blindly after one winning trade.",
+            "WHY HE WARNS ABOUT COPY TRADING",
+        ),
+        (
+            "On chain, buys are starting to come through as volume starts pushing up.",
+            "CAN ON-CHAIN BUYS CONFIRM THE MOVE?",
+        ),
+        ("Why are people buying this? This is the beauty of FOMO.", "IS FOMO DRIVING THESE BUYS?"),
+        (
+            "There was a coin today that ran because Trump tweeted about it.",
+            "CAN A SINGLE TWEET MOVE A COIN?",
+        ),
+        (
+            "I can see why people like this coin, but it is getting sold off crazy.",
+            "WHY IS THIS COIN GETTING SOLD OFF?",
+        ),
+        (
+            "You are kind of risk-free in the trade now after covering the initial.",
+            "IS THIS 'RISK-FREE' TRADE REALLY SAFE?",
+        ),
+    )
+    for source, expected in examples:
+        assert distinct_hook_from_text(source) == expected
+

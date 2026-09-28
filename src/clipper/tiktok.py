@@ -152,8 +152,6 @@ def creative_hook_from_text(text: str) -> str:
         and any(cue in lowered for cue in ("mistake", "losing", "loss", "bigger"))
     ):
         return "THE STOP-LOSS MISTAKE THAT MAKES LOSSES WORSE"
-    if "risk" in lowered and any(x in lowered for x in ("position", "trading", "trade")):
-        return "THE RISK QUESTION BEFORE THE TRADE"
     if any(x in lowered for x in ("reversal", "reverse", "retracement")):
         return "WHAT CHANGED IN THIS MARKET SETUP?"
     if "meme coin" in lowered:
