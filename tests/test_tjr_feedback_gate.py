@@ -326,6 +326,7 @@ def test_every_real_production_mode_routes_through_independent_feedback_audit() 
     assert "pattern: tjr-youtube-alt-*" in workflow
     assert "pattern: tjr-weekly-hd-*" in workflow
 
+
 def test_known_source_cannot_regress_to_centered_desktop_layout(tmp_path: Path) -> None:
     artifact = _fixture(tmp_path)
     report_path = next(artifact.rglob("tjr-youtube-qa-report.json"))
@@ -386,4 +387,3 @@ def test_duplicate_semantic_headlines_are_rejected_even_for_distinct_windows(
     result = review_run(tmp_path, expected_channels=1, probe=_probe)
     assert "WEAK_OR_DUPLICATE_HOOK" in result["issues"]
     assert "IMPROVE_GROUNDED_CREATIVE_HOOKS" in result["next_actions"]
-

@@ -250,9 +250,7 @@ def inspect_artifact(
         seen_hooks: set[str] = set()
         windows_by_source: dict[str, list[tuple[float, float]]] = {}
         source_url = str(report.get("source_url") or "")
-        source_match = re.search(
-            r"(?:[?&]v=|youtu\.be/)([A-Za-z0-9_-]{11})", source_url
-        )
+        source_match = re.search(r"(?:[?&]v=|youtu\.be/)([A-Za-z0-9_-]{11})", source_url)
         source_video_id = source_match.group(1) if source_match else ""
         expected_layout = KNOWN_CREATOR_LAYOUTS.get(source_video_id)
         min_ssim: float | None = None
