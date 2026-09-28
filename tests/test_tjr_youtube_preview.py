@@ -476,8 +476,8 @@ def test_campaign_source_cutoff_rejects_old_and_unknown_uploads() -> None:
     unknown = OfficialVideo("ABCD1234xyy", channel, "Unverified date", "", 1800)
     fresh = OfficialVideo("X7msxvyQd_U", channel, "Current trading", "2026-09-27", 2200)
     cutoff = "2026-09-01T00:00:00Z"
-    assert constrain_official_sources(
-        [old, unknown, fresh], None, published_after=cutoff
-    ) == [fresh]
+    assert constrain_official_sources([old, unknown, fresh], None, published_after=cutoff) == [
+        fresh
+    ]
     with pytest.raises(RuntimeError, match="not in either Reach-listed channel"):
         constrain_official_sources([old, fresh], old.video_id, published_after=cutoff)

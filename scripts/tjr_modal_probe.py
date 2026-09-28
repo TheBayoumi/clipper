@@ -459,9 +459,7 @@ def main() -> None:
                 "requested channel is not one of the Reach-approved YouTube channels"
             )
         requested_video = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip() or None
-        published_after = load_brief(
-            Path("campaigns/reach-tjr-weekly.yaml")
-        ).published_after
+        published_after = load_brief(Path("campaigns/reach-tjr-weekly.yaml")).published_after
         official = constrain_official_sources(
             candidates, requested_id=requested_video, published_after=published_after
         )
