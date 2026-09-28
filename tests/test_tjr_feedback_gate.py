@@ -147,3 +147,14 @@ def test_replay_mode_never_requests_source_budget_or_new_media() -> None:
     assert "run-id: ${{ inputs.feedback_source_run_id }}" in workflow
     assert "Replay existing production artifacts at no Modal cost" in workflow
     assert "source_run_id = os.getenv('TJR_FEEDBACK_SOURCE_RUN_ID', '')" in workflow
+
+
+def test_replay_channel_count_is_a_deterministic_shell_decision() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
+    ).read_text(encoding="utf-8")
+    assert "EXPECTED_CHANNELS=2" in workflow
+    assert '"$TJR_SOURCE_MODE" != "feedback_replay"' in workflow
+    assert "EXPECTED_CHANNELS=1" in workflow
+    assert "AUDITOR_CRASH" in workflow
+    assert "TJR_EXPECTED_CHANNELS: true" not in workflow

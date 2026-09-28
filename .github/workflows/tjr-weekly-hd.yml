@@ -564,14 +564,30 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Inspect every MP4, sidecar, full decode and editorial gate
         env:
-          TJR_EXPECTED_CHANNELS: ${{ inputs.source_mode == 'feedback_replay' || inputs.source_video_id == '' && '2' || '1' }}
+          TJR_SOURCE_MODE: ${{ inputs.source_mode }}
+          TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
           TJR_FEEDBACK_SOURCE_RUN_ID: ${{ inputs.feedback_source_run_id }}
         run: |
-          python -m scripts.tjr_feedback_gate \
+          set -euo pipefail
+          EXPECTED_CHANNELS=2
+          if [[ "$TJR_SOURCE_MODE" != "feedback_replay" &&
+                -n "$TJR_SOURCE_VIDEO_ID" ]]; then
+            EXPECTED_CHANNELS=1
+          fi
+          mkdir -p tjr-feedback
+          if ! python -m scripts.tjr_feedback_gate \
             --artifact-root tjr-feedback-input \
             --output tjr-feedback \
-            --expected-channels "$TJR_EXPECTED_CHANNELS" \
-            --full-decode
+            --expected-channels "$EXPECTED_CHANNELS" \
+            --full-decode; then
+            if [[ ! -f tjr-feedback/feedback-report.json ]]; then
+              printf '%s\n' '{"status":"AUDITOR_CRASH","automatic_publication_allowed":false}' \
+                > tjr-feedback/feedback-report.json
+              printf '%s\n' 'Independent evidence audit crashed; inspect this job log.' \
+                > tjr-feedback/feedback-summary.md
+            fi
+            exit 1
+          fi
       - name: Preserve immutable feedback JSON and summary
         if: always()
         uses: actions/upload-artifact@v4
