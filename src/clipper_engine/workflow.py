@@ -149,12 +149,17 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
     )
     if is_excerpt:
         excerpt = manifest["staging"].get("source_excerpt")
+        excerpt_check = (
+            "continuous_source_window_hashes_exact"
+            if edit.get("type") == "continuous_source_reveal"
+            else "source_excerpt_hashes_exact"
+        )
         if (
             not isinstance(excerpt, dict)
             or excerpt.get("windows") != selected_windows
             or excerpt.get("frame_count") != selected_frames
             or excerpt.get("source_to_piece_hashes_exact") is not True
-            or manifest["qa"]["checks"].get("source_excerpt_hashes_exact") is not True
+            or manifest["qa"]["checks"].get(excerpt_check) is not True
         ):
             raise montage.MontageRejection(
                 "source_excerpt", "selected source window lacks exact source->FFV1 frame proof"
