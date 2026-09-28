@@ -157,7 +157,6 @@ jobs:
             delivery_continuous_reveal/*.jpg
 
       - name: Plan certified-source result-first Rebound
-      - name: Plan certified-source result-first Rebound
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
           SOURCE_KEY: ${{ steps.source.outputs.source_key }}
