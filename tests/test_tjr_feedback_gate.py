@@ -123,3 +123,15 @@ def test_failed_egress_is_distinct_from_missing_channel(tmp_path: Path) -> None:
     assert "MISSING_CHANNEL_ARTIFACT" not in result["issues"]
     assert "YOUTUBE_EGRESS_BLOCKED" in result["issues"]
     assert result["technically_verified_mp4_count"] == 1
+
+
+def test_workflow_stores_independent_two_channel_evidence() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[1]
+        / ".github" / "workflows" / "tjr-weekly-hd.yml"
+    ).read_text(encoding="utf-8")
+    assert "feedback_audit:" in workflow
+    assert "needs: [tests, youtube_modal_egress]" in workflow
+    assert "python -m scripts.tjr_feedback_gate" in workflow
+    assert "actions/download-artifact@v4" in workflow
+    assert "gh issue comment 7" in workflow

@@ -511,6 +511,70 @@ jobs:
           if-no-files-found: warn
 
 
+  feedback_audit:
+    name: Independent review of real MP4s and production evidence
+    needs: [tests, youtube_modal_egress]
+    if: >-
+      always() && github.event_name == 'workflow_dispatch' &&
+      inputs.source_mode == 'modal_direct' && inputs.budget_confirmed &&
+      needs.tests.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Download both channel artifacts, including partial-failure diagnostics
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: tjr-real-original-youtube-hd-*
+          path: tjr-feedback-input
+      - name: Install independent media verifier
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Inspect every MP4, sidecar, full decode and editorial gate
+        env:
+          TJR_EXPECTED_CHANNELS: ${{ inputs.source_video_id == '' && '2' || '1' }}
+        run: |
+          python -m scripts.tjr_feedback_gate \
+            --artifact-root tjr-feedback-input \
+            --output tjr-feedback \
+            --expected-channels "$TJR_EXPECTED_CHANNELS" \
+            --full-decode
+      - name: Preserve immutable feedback JSON and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-feedback-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: tjr-feedback/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Publish concise audit to GitHub workflow
+        if: always()
+        run: |
+          if [[ -f tjr-feedback/feedback-summary.md ]]; then
+            cat tjr-feedback/feedback-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Record verified feedback for the autonomous controller
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ -f tjr-feedback/feedback-summary.md ]]; then
+            gh issue comment 7 --repo "$GITHUB_REPOSITORY" \
+              --body-file tjr-feedback/feedback-summary.md
+          fi
+
+
   render:
     name: Render and QA real TJR HD clips
     needs: tests
