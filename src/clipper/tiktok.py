@@ -171,7 +171,7 @@ def distinct_hook_from_text(
     if not allow_quote_fallback:
         return ""
 
-    tokens = re.findall(r"[A-Za-z0-9
+    tokens = re.findall(r"[A-Za-z0-9$']+", original)
     noise = {"and", "then", "this", "that", "like", "really", "just", "because", "the"}
     choices: list[tuple[int, int, str]] = []
     for start in range(max(0, len(tokens) - 3)):
@@ -213,7 +213,6 @@ def distinct_hook_from_text(
             continue
         return headline
     return ""
-
 
 def _fit_lines(
     text: str, *, max_width: int, max_size: int, min_size: int = 42
