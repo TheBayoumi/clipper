@@ -158,3 +158,30 @@ def test_replay_channel_count_is_a_deterministic_shell_decision() -> None:
     assert "EXPECTED_CHANNELS=1" in workflow
     assert "AUDITOR_CRASH" in workflow
     assert "TJR_EXPECTED_CHANNELS: true" not in workflow
+
+
+def test_failing_fidelity_is_not_counted_as_technically_verified(tmp_path: Path) -> None:
+    artifact = _fixture(tmp_path)
+    quality = next(artifact.rglob("01-tjr-test.quality.json"))
+    evidence = json.loads(quality.read_text(encoding="utf-8"))
+    evidence["source_to_delivery_mean_ssim"] = 0.91
+    quality.write_text(json.dumps(evidence), encoding="utf-8")
+    report = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert report["status"] == "BLOCKED"
+    assert report["technically_verified_mp4_count"] == 0
+    assert report["channels"][0]["minimum_ssim"] == 0.91
+    assert "SOURCE_FIDELITY_FAILED" in report["issues"]
+
+
+def test_nonfinite_fidelity_is_never_accepted_or_reported_as_perfect(
+    tmp_path: Path,
+) -> None:
+    artifact = _fixture(tmp_path)
+    quality = next(artifact.rglob("01-tjr-test.quality.json"))
+    evidence = json.loads(quality.read_text(encoding="utf-8"))
+    evidence["source_to_delivery_mean_ssim"] = float("nan")
+    quality.write_text(json.dumps(evidence), encoding="utf-8")
+    report = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert report["technically_verified_mp4_count"] == 0
+    assert report["channels"][0]["minimum_ssim"] is None
+    assert "SOURCE_FIDELITY_FAILED" in report["issues"]

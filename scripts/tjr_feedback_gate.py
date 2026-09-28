@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -154,7 +155,7 @@ def inspect_artifact(
             issues.append("NO_RENDERED_CLIPS")
             return entry
         seen: set[tuple[str, float, float]] = set()
-        min_ssim = 1.0
+        min_ssim: float | None = None
         for clip in clips:
             if not isinstance(clip, dict):
                 issues.append("INVALID_CLIP_REPORT")
@@ -162,6 +163,7 @@ def inspect_artifact(
             entry["rendered_mp4_count"] += 1
             if str(clip.get("hook_candidate") or "").startswith("THE MOMENT:"):
                 entry["generic_hooks"] += 1
+            clip_issue_count = len(issues)
             try:
                 mp4 = checked_path(base, clip.get("file"))
                 for field in (
@@ -186,13 +188,16 @@ def inspect_artifact(
                     issues.append("CAPTION_OR_HOOK_TIMING_FAILED")
                 quality = read_json(checked_path(base, clip["source_matched_quality"]))
                 ssim = float(quality.get("source_to_delivery_mean_ssim") or 0)
-                min_ssim = min(min_ssim, ssim)
-                if (
-                    quality.get("status") != "MEASURED_SOURCE_MATCHED_ENCODING"
-                    or ssim < MIN_SSIM
-                    or int(quality.get("compared_frames") or 0) < 1
-                ):
+                if not math.isfinite(ssim) or not 0 <= ssim <= 1:
                     issues.append("SOURCE_FIDELITY_FAILED")
+                else:
+                    min_ssim = ssim if min_ssim is None else min(min_ssim, ssim)
+                    if (
+                        quality.get("status") != "MEASURED_SOURCE_MATCHED_ENCODING"
+                        or ssim < MIN_SSIM
+                        or int(quality.get("compared_frames") or 0) < 1
+                    ):
+                        issues.append("SOURCE_FIDELITY_FAILED")
                 actual = probe(mp4)
                 native_fps = float(Fraction(report["source_profile"]["fps"]))
                 if (
@@ -212,7 +217,8 @@ def inspect_artifact(
                 seen.add(identity)
                 if clip.get("review_required") is not True:
                     issues.append("MISSING_HUMAN_REVIEW_GATE")
-                entry["technically_verified_mp4_count"] += 1
+                if len(issues) == clip_issue_count:
+                    entry["technically_verified_mp4_count"] += 1
             except (
                 KeyError,
                 ValueError,
@@ -223,7 +229,7 @@ def inspect_artifact(
                 subprocess.TimeoutExpired,
             ):
                 issues.append("MISSING_OR_INVALID_CLIP_EVIDENCE")
-        entry["minimum_ssim"] = round(min_ssim, 6)
+        entry["minimum_ssim"] = round(min_ssim, 6) if min_ssim is not None else None
         if entry["generic_hooks"] / len(clips) > MAX_GENERIC_FRACTION:
             issues.append("GENERIC_HOOK_OVERUSE")
     except (ValueError, TypeError, json.JSONDecodeError):
