@@ -390,6 +390,12 @@ def render_title_frames(
         sample_indices.update({0, int(plan["montage"]["hook"]["frames"]), 35, 54, 145})
         for edge in (start, original, flash, group):
             sample_indices.update({edge - 1, edge})
+    if plan["montage"]["comparison_mode"] == "impact_cut":
+        from . import kinetic_reframe
+
+        cfg = kinetic_reframe.config(profile, frames)
+        sample_indices.update(int(n) for n in cfg["storyboard_frames"])
+        sample_indices.update(int(n) for n in cfg["flash_frames"])
     samples: dict[str, float] = {}
     word_box = (0, 0, 0, 0)
     for n in range(frames):
@@ -400,7 +406,7 @@ def render_title_frames(
         frame_image.save(folder / f"{n:04d}.png", compress_level=3)
         if n in sample_indices:
             samples[str(n)] = round(progress, 6)
-    opening = 1 if plan["montage"]["comparison_mode"] == "rebound" else 0
+    opening = 1 if plan["montage"]["comparison_mode"] in {"rebound", "impact_cut"} else 0
     if samples.get("0") != opening or samples.get(str(frames - 1)) != 1:
         raise MontageRejection("toggle_sync", "opening/final toggle state is incorrect")
     return {
