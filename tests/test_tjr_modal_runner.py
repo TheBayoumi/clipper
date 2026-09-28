@@ -7,7 +7,11 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from scripts.tjr_modal_runner import _transfer_verified_original, run_modal_production
+from scripts.tjr_modal_runner import (
+    _purge_remote,
+    _transfer_verified_original,
+    run_modal_production,
+)
 from scripts.tjr_youtube_preview import NoEditorialMoments
 
 CHANNEL = "UCZen39LQJPx04GjPj7FOMcw"
@@ -21,7 +25,9 @@ def _staged(video_id: str) -> dict[str, object]:
         "public_video_url": f"https://www.youtube.com/watch?v={video_id}",
         "source_remote_path": f"runs/36340591348-1/{video_id}/original.mp4",
         "source_sha256": "a" * 64,
-        "duration": 4000,
+        "duration": 3400,
+        "staged_duration_seconds": 3400,
+        "source_scan_complete": True,
         "title": "Original video",
     }
 
@@ -117,3 +123,27 @@ def test_remote_source_identity_is_mandatory(tmp_path: Path) -> None:
 def test_retry_count_is_bounded(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="max_sources"):
         run_modal_production(root=tmp_path / "artifacts", max_sources=5)
+
+
+def test_modal_rejects_partial_source_before_transferring(tmp_path: Path) -> None:
+    staging = _staged("X7msxvyQd_U")
+    staging["staged_duration_seconds"] = 840
+    staging["source_scan_complete"] = False
+    with pytest.raises(RuntimeError, match="source or hash validation"):
+        _transfer_verified_original(staging, tmp_path / "source")
+
+
+def test_failed_remote_cleanup_is_reported_and_fails(tmp_path: Path) -> None:
+    import json
+    import scripts.tjr_modal_runner as runner
+
+    report = tmp_path / "cleanup-error.json"
+    with (
+        patch.object(runner.subprocess, "run", return_value=Mock(returncode=1, stderr="denied")),
+        pytest.raises(RuntimeError, match="MODAL_VOLUME_CLEANUP_FAILED"),
+    ):
+        _purge_remote(_staged("X7msxvyQd_U"), report)
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["exit_code"] == 1
+    assert data["source_remote_path"].endswith("/X7msxvyQd_U/original.mp4")
+    assert data["stderr"] == "denied"

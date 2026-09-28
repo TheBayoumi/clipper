@@ -52,7 +52,7 @@ def test_ip_challenge_skips_only_one_video_not_entire_region(
             metadata = {
                 "id": second,
                 "channel_id": channel,
-                "duration": 3994,
+                "duration": 3400,
                 "live_status": "not_live",
                 "title": "LIVE TRADING",
                 "formats": [{"height": 1080, "vcodec": "avc1"}],
@@ -190,8 +190,13 @@ def test_modal_source_windowing_matches_runner_without_remote_editor_import(
         str(Path(__file__).resolve().parents[1] / "scripts" / "tjr_modal_probe.py")
     )
     source_sections = script["source_download_sections"]
-    for seconds in (120, 2642, 3600, 3601, 7200):
+    for seconds in (120, 2642, 3600):
         assert source_sections(seconds) == youtube_scan_section_args(seconds)
+    for seconds in (3601, 7200):
+        with pytest.raises(ValueError, match="SOURCE_EXCEEDS_FULL_ANALYSIS_LIMIT"):
+            source_sections(seconds)
+        with pytest.raises(ValueError, match="SOURCE_EXCEEDS_FULL_ANALYSIS_LIMIT"):
+            youtube_scan_section_args(seconds)
     assert "tjr_youtube_preview" not in inspect.getsource(script["stage_official_original"])
 
 
@@ -243,13 +248,11 @@ def test_staging_probe_rejects_corrupt_partial_and_missing_streams(
         )
         == 2642
     )
-    # An approved two-hour original may stage only its declared first hour.
-    assert (
+    # A two-hour original is unsupported, never mislabeled as fully staged.
+    with pytest.raises(RuntimeError, match="SOURCE_EXCEEDS_FULL_ANALYSIS_LIMIT"):
         verify(
             returncode=0,
             stdout=json.dumps({"streams": good_streams, "format": {"duration": "3600"}}),
             stderr="",
             expected_seconds=7200,
         )
-        == 3600
-    )

@@ -280,3 +280,18 @@ def test_distinct_hook_excludes_generic_and_repeated_templates() -> None:
         != "WHAT'S THE REAL TAKEAWAY HERE?"
     )
     assert distinct_hook_from_text("") == ""
+
+
+def test_waiting_hook_requires_affirmative_trading_plan() -> None:
+    assert (
+        creative_hook_from_text("I am waiting to enter this trade after the market pulls back")
+        == "WHY HE'S WAITING TO ENTER THIS TRADE"
+    )
+    assert (
+        creative_hook_from_text("I entered early because I did not wait for the trade")
+        != "WHY HE'S WAITING TO ENTER THIS TRADE"
+    )
+    assert (
+        creative_hook_from_text("I am not waiting to enter this trade")
+        != "WHY HE'S WAITING TO ENTER THIS TRADE"
+    )

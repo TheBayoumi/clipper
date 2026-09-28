@@ -62,7 +62,18 @@ def creative_hook_from_text(text: str) -> str:
         x in lowered for x in ("got hit", "hit", "stopped out", "loss")
     ):
         return "WHAT HAPPENS WHEN THE STOP GETS HIT?"
-    if "enter" in lowered and "wait" in lowered:
+    # Require an affirmative waiting-to-enter construction, not mere keyword
+    # co-occurrence; a persistent hook must never reverse the spoken meaning.
+    waiting_to_enter = re.search(
+        r"\bwait(?:ing)?\b(?:\s+\w+){0,7}\s+(?:enter|entry)\b",
+        lowered,
+    )
+    negated_wait = re.search(
+        r"\b(?:not|never|without|didn't|don't|doesn't)\b"
+        r"(?:\s+\w+){0,2}\s+wait(?:ing)?\b",
+        lowered,
+    )
+    if waiting_to_enter and not negated_wait:
         return "WHY HE'S WAITING TO ENTER THIS TRADE"
     if (
         any(x in lowered for x in ("massive sell off", "massive sell-off", "massive selloff"))

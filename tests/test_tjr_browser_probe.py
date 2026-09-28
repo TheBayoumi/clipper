@@ -4,6 +4,7 @@ import json
 import runpy
 import sys
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -85,3 +86,48 @@ def test_browser_transport_rejects_non_hd_and_missing_player() -> None:
         )
         is None
     )
+
+
+def test_browser_capture_is_full_length_and_rejects_partial_source(tmp_path: Path) -> None:
+    fetch = PROBE["fetch_browser_original"]
+    output = tmp_path / "source.mkv"
+    commands: list[list[str]] = []
+    duration = 2642.0
+
+    def fake_run(command: list[str], **_kwargs: object) -> Mock:
+        commands.append(command)
+        if command[0] == "ffmpeg":
+            output.write_bytes(b"verified original source")
+            return Mock(returncode=0)
+        if command[0] == "ffprobe":
+            return Mock(returncode=0, stdout=str(duration))
+        raise AssertionError(command)
+
+    with patch.dict(
+        fetch.__globals__,
+        {"subprocess": Mock(run=fake_run), "probe_original": lambda _: {"width": 1920}},
+    ):
+        assert (
+            fetch("https://r1.googlevideo.com/videoplayback", "https://r1.googlevideo.com/videoplayback",
+                  output, expected_seconds=2642)
+            == "CAPTURED_HD_ORIGINAL"
+        )
+        assert "-t" not in commands[0]
+        assert (
+            fetch("https://r1.googlevideo.com/videoplayback", "https://r1.googlevideo.com/videoplayback",
+                  output, expected_seconds=7200)
+            == "BROWSER_SOURCE_OUTSIDE_SUPPORTED_DURATION"
+        )
+        duration = 840.0
+        assert (
+            fetch("https://r1.googlevideo.com/videoplayback", "https://r1.googlevideo.com/videoplayback",
+                  output, expected_seconds=2642)
+            == "CAPTURE_INCOMPLETE_SOURCE"
+        )
+
+
+def test_pinned_source_and_parallel_routing_are_explicit_in_workflow() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "tjr-weekly-hd.yml").read_text()
+    assert "ALT_EGRESS_PLATFORM: ${{ matrix.os }}\n          TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}" in workflow
+    assert "fromJSON(inputs.source_video_id != ''" in workflow
+    assert "max-parallel: 2" in workflow

@@ -375,7 +375,8 @@ def test_full_livestream_scan_is_not_cut_to_fourteen_minutes() -> None:
 
     assert youtube_scan_section_args(2642) == []
     assert youtube_scan_section_args(3600) == []
-    assert youtube_scan_section_args(7200) == ["--download-sections", "*00:00:00-01:00:00"]
+    with pytest.raises(ValueError, match="SOURCE_EXCEEDS_FULL_ANALYSIS_LIMIT"):
+        youtube_scan_section_args(7200)
 
 
 def test_chunked_asr_preserves_absolute_video_and_word_offsets(
@@ -421,3 +422,45 @@ def test_chunked_asr_preserves_absolute_video_and_word_offsets(
     assert [chunk[0].words[0].start for chunk in chunks] == [1, 841, 1681, 2521]
     assert len([call for call in received if call[0] == "ffmpeg"]) == 4
     assert not list((tmp_path / "work").glob("audio-chunk-*.wav"))
+
+
+def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clipper.models import TranscriptSegment
+    from scripts.tjr_youtube_preview import NoEditorialMoments, render_youtube_previews
+
+    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    original = OfficialVideo("X7msxvyQd_U", channel, "Trade setup", "2026-09-27T15:00:00Z")
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"test source")
+    manifest = tmp_path / "stage.json"
+    manifest.write_text("fixture", encoding="utf-8")
+    first = TranscriptSegment(835, 839.5, "we are not quite ready to")
+    second = TranscriptSegment(840, 844, "enter until the price returns.")
+    scored: list[list[TranscriptSegment]] = []
+
+    def inspect_candidates(_brief: object, _video_id: str, words: list[TranscriptSegment], **_kwargs: object) -> list[object]:
+        scored.append(list(words))
+        return []
+
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", original.video_id)
+    monkeypatch.setenv("TJR_REQUIRE_STAGED_ORIGINAL", "1")
+    monkeypatch.setenv("TJR_BROWSER_CAPTURE_FILE", str(manifest))
+    with (
+        patch.dict(
+            render_youtube_previews.__globals__,
+            {
+                "discover_official_uploads": lambda: ([original], []),
+                "load_verified_browser_original": lambda *_: (
+                    original, source, {"title": original.title, "duration": 900}
+                ),
+                "probe_source_profile": lambda *_: object(),
+                "transcribe_source_chunks": lambda *_a, **_kw: ([[first], [second]], 900.0),
+                "score_transcript": inspect_candidates,
+            },
+        ),
+        pytest.raises(NoEditorialMoments, match="consult editorial-candidate-audit"),
+    ):
+        render_youtube_previews(tmp_path / "renders", Path("campaigns/reach-tjr-weekly.yaml"))
+    assert scored and all(items == [first, second] for items in scored)
