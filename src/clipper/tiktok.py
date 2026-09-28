@@ -52,6 +52,44 @@ def creative_hook_from_text(text: str) -> str:
         return "WHY HE STOPPED USING ORDER BLOCKS"
     if "copy trad" in lowered and any(x in lowered for x in ("blind", "never", "don't")):
         return "WHY HE WARNS ABOUT COPY TRADING"
+    # Editorially meaningful questions require affirmative source-language cues.
+    # Questions invite viewing without inventing outcomes or financial guarantees.
+    if "market cap" in lowered and any(
+        cue in lowered for cue in ("bullshit", "scam", "looks wrong", "suspicious")
+    ):
+        return "WHAT MAKES THIS MARKET-CAP SETUP SUSPICIOUS?"
+    wallet_buying = re.search(r"\bwallets?\s+(?:are\s+)?buying\b", lowered)
+    denied_buying = re.search(
+        r"\b(?:no|not|never|without)\s+(?:\w+\s+){0,2}"
+        r"wallets?\s+(?:are\s+)?buying\b",
+        lowered,
+    )
+    if (
+        ("no socials" in lowered or "don't see any socials" in lowered)
+        and wallet_buying
+        and not denied_buying
+    ):
+        return "WHY ARE WALLETS BUYING WITHOUT SOCIALS?"
+    if re.search(r"\b(?:should|would|could)\s+we\s+(?:\w+\s+){0,3}sell\b", lowered):
+        if "50 %" in lowered or "50%" in lowered or "half" in lowered:
+            return "WOULD YOU SELL HALF HERE?"
+    if ("on chain" in lowered or "on-chain" in lowered) and "volume" in lowered:
+        if re.search(r"\bbuys?\b|\bbuying\b", lowered):
+            return "CAN ON-CHAIN BUYS CONFIRM THE MOVE?"
+    if "fomo" in lowered and re.search(r"\bbuy(?:ing|s)?\b", lowered):
+        return "IS FOMO DRIVING THESE BUYS?"
+    if "tweet" in lowered and "coin" in lowered:
+        return "CAN A SINGLE TWEET MOVE A COIN?"
+    if "coin" in lowered and any(
+        cue in lowered for cue in ("sold off", "selling off", "getting sold off")
+    ):
+        return "WHY IS THIS COIN GETTING SOLD OFF?"
+    if "community" in lowered and "good" in lowered and "bad" in lowered:
+        return "GOOD COIN OR BAD COIN: HOW DO YOU TELL?"
+    if "fee" in lowered and "rug" in lowered:
+        return "CAN FEES FILTER OUT RUG COINS?"
+    if "trade" in lowered and re.search(r"\brisk\s*-\s*free\b", lowered):
+        return "IS THIS 'RISK-FREE' TRADE REALLY SAFE?"
     if "market cap" in lowered and any(
         term in lowered for term in ("late", "early", "entry", "enter", "buying")
     ):

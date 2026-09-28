@@ -331,3 +331,50 @@ def test_short_selloff_hooks_never_reverse_the_spoken_trade() -> None:
 def test_market_cap_hook_is_source_specific_not_a_fragment_quote() -> None:
     transcript = "Late at $200K? The coin migrates at $50K market caps, then people buy."
     assert creative_hook_from_text(transcript) == "WHEN IS THE MARKET-CAP ENTRY TOO LATE?"
+
+
+def test_contextual_questions_avoid_baseline_fragment_hooks() -> None:
+    from clipper.tiktok import distinct_hook_from_text
+
+    examples = (
+        (
+            "Late at $200K? The coin migrates at $50K market caps.",
+            "WHEN IS THE MARKET-CAP ENTRY TOO LATE?",
+        ),
+        (
+            "I don't see any socials. We have some wallets buying right now.",
+            "WHY ARE WALLETS BUYING WITHOUT SOCIALS?",
+        ),
+        ("Should we just sell 50% of this position?", "WOULD YOU SELL HALF HERE?"),
+        (
+            "This coin has been at $80K market cap; I think it is bullshit.",
+            "WHAT MAKES THIS MARKET-CAP SETUP SUSPICIOUS?",
+        ),
+        (
+            "I can see on chain buys starting as volume pushes higher.",
+            "CAN ON-CHAIN BUYS CONFIRM THE MOVE?",
+        ),
+        ("Why are people buying? This is FOMO.", "IS FOMO DRIVING THESE BUYS?"),
+        ("Elon could tweet about a coin any day.", "CAN A SINGLE TWEET MOVE A COIN?"),
+        (
+            "The coin looks interesting but is getting sold off crazy.",
+            "WHY IS THIS COIN GETTING SOLD OFF?",
+        ),
+        (
+            "These community coins: how do you tell good coins from bad?",
+            "GOOD COIN OR BAD COIN: HOW DO YOU TELL?",
+        ),
+        ("The fees should filter the rug coins.", "CAN FEES FILTER OUT RUG COINS?"),
+        ("He says the trade is risk-free now.", "IS THIS 'RISK-FREE' TRADE REALLY SAFE?"),
+    )
+    for source, expected in examples:
+        headline = distinct_hook_from_text(source)
+        assert headline == expected
+        assert not headline.startswith("THE MOMENT:")
+
+
+def test_contextual_questions_reject_negated_wallet_buying() -> None:
+    from clipper.tiktok import creative_hook_from_text
+
+    text = "No socials linked, but no wallets buying either."
+    assert creative_hook_from_text(text) != "WHY ARE WALLETS BUYING WITHOUT SOCIALS?"
