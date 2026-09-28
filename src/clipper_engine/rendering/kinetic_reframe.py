@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -105,7 +106,7 @@ def config(profile: CampaignProfile, output_frames: int) -> dict[str, Any]:
 
 
 def _roi_for_frame(frame: int, keyframes: list[dict[str, Any]]) -> list[float]:
-    for left, right in zip(keyframes, keyframes[1:], strict=True):
+    for left, right in pairwise(keyframes):
         if frame <= int(right["frame"]):
             start = int(left["frame"])
             finish = int(right["frame"])

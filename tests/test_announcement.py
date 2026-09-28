@@ -16,7 +16,7 @@ from clipper.cli import main
 from clipper_engine import montage
 from clipper_engine.profiles import CampaignProfile, load_profile
 from clipper_engine.rendering import montage as renderer
-from clipper_engine.rendering import panel_compositor, portrait_matte
+from clipper_engine.rendering import kinetic_reframe, panel_compositor, portrait_matte
 from clipper_engine.sources import qa
 from clipper_engine.workflow import plan as plan_campaign
 from clipper_engine.workflow import qualify as qualify_campaign
@@ -1378,3 +1378,189 @@ def test_official_workflow_qualifies_and_publishes_distinct_rebound() -> None:
     assert "delivery_rebound/*.mp4" in workflow
     assert "delivery_rebound/*.jpg" in workflow
     assert "warzone-rebound-" + chr(36) + "{{ github.sha }}" in workflow
+
+def _impact_cut_test_profile(profile: CampaignProfile) -> CampaignProfile:
+    p = _cascade_test_profile(profile)
+    cfg = p.config["output"]["portrait_matte"]["impact_cut"]
+    cfg["minimum_source_crop_width"] = 150
+    cfg["bottom_matte_height"] = 32
+    return p
+
+
+def test_campaign_cli_accepts_profile_configured_impact_cut() -> None:
+    with patch("clipper.cli.run_campaign", return_value=0) as mocked:
+        assert (
+            main(
+                [
+                    "campaign",
+                    CAMPAIGN,
+                    "plan",
+                    "--source",
+                    "source.mp4",
+                    "--output",
+                    "impact.json",
+                    "--comparison-mode",
+                    "impact_cut",
+                ]
+            )
+            == 0
+        )
+    args = mocked.call_args.args[0]
+    assert args.profile == CAMPAIGN
+    assert args.campaign_command == "plan"
+    assert args.comparison_mode == "impact_cut"
+
+
+def test_impact_cut_is_distinct_source_native_kinetic_mode(
+    source: Path, profile: CampaignProfile
+) -> None:
+    p = _impact_cut_test_profile(profile)
+    plan = montage.build_plan(source, p, comparison_mode="impact_cut")
+    edit = plan["montage"]
+    assert edit["comparison_mode"] == "impact_cut"
+    assert edit["hook"] == {"start_frame": 144, "frames": 15, "state": "after"}
+    assert edit["source_windows"] == [
+        {"start_frame": 20, "frames": 16},
+        {"start_frame": 55, "frames": 10},
+        {"start_frame": 108, "frames": 14},
+    ]
+    assert edit["comparison_frames"] == 90
+    assert [shot["frames"] for shot in edit["ending_shots"]] == [1, 1, 1, 17]
+    assert edit["output_frames"] == 165
+    assert edit["output_seconds"] == 5.5
+    cfg = kinetic_reframe.config(p, 165)
+    assert cfg["storyboard_frames"] == [0, 15, 31, 79, 111, 164]
+    assert cfg["flash_frames"] == [30, 54, 145]
+    assert cfg["minimum_source_crop_width"] == 150
+    for frame, state in {
+        0: 1.0,
+        14: 1.0,
+        15: 0.0,
+        31: 0.0,
+        40: 1.0,
+        41: 1.0,
+        55: 1.0,
+        144: 1.0,
+        145: 0.0,
+        146: 1.0,
+        147: 0.0,
+        148: 1.0,
+        164: 1.0,
+    }.items():
+        assert portrait_matte.toggle_progress(frame, plan, p) == state
+    montage.validate_plan(plan, source, p)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("flash_strength", 0.5),
+        ("bottom_matte_height", 12),
+        ("storyboard_frames", [0, 15, 31]),
+        ("minimum_source_crop_width", 500),
+    ],
+)
+def test_impact_cut_rejects_bad_profile_calibration(
+    source: Path, profile: CampaignProfile, field: str, value: object
+) -> None:
+    p = _impact_cut_test_profile(profile)
+    p.config["output"]["portrait_matte"]["impact_cut"][field] = value
+    with pytest.raises(montage.MontageRejection, match="impact_cut_calibration"):
+        montage.build_plan(source, p, comparison_mode="impact_cut")
+
+
+def test_impact_cut_rejects_crop_path_below_clarity_floor(
+    source: Path, profile: CampaignProfile
+) -> None:
+    p = _impact_cut_test_profile(profile)
+    p.config["output"]["portrait_matte"]["impact_cut"]["keyframes"][8]["roi"] = [
+        0.3,
+        0.0,
+        0.6,
+        1.0,
+    ]
+    with pytest.raises(montage.MontageRejection, match="impact_cut_calibration"):
+        montage.build_plan(source, p, comparison_mode="impact_cut")
+
+
+def test_impact_cut_certified_render_and_fail_closed_qualification(
+    source: Path,
+    profile: CampaignProfile,
+    certificate: tuple[Path, dict[str, Any]],
+    tmp_path: Path,
+) -> None:
+    p = _impact_cut_test_profile(profile)
+    planned = tmp_path / "plan_impact_cut.json"
+    plan = plan_campaign(
+        p,
+        source,
+        certificate[0],
+        planned,
+        comparison_mode="impact_cut",
+        approved_text_index=1,
+    )
+    assert plan["status"] == "PLANNED"
+    output = tmp_path / "impact_cut"
+    result = render_campaign(p, source, certificate[0], planned, output)
+    portrait = result["portrait"]
+    impact = portrait["impact_cut"]
+    assert result["staging"]["hook"]["source_to_piece_hashes_exact"]
+    assert result["staging"]["source_excerpt"]["source_to_piece_hashes_exact"]
+    assert result["staging"]["source_excerpt"]["frame_count"] == 40
+    assert result["staging"]["reveal"]["source_to_piece_hashes_exact"]
+    assert result["staging"]["comparison"]["comparison_mode"] == "impact_cut"
+    assert result["staging"]["comparison"]["source_only"] is True
+    assert all(result["qa"]["checks"].values()), result["qa"]["checks"]
+    assert impact["mode"] == "impact_cut"
+    assert impact["frame_count"] == 165
+    assert impact["input_frame_count"] == 165
+    assert impact["source_frame_grid_exact"] is True
+    assert impact["source_only"] is True
+    assert impact["ai_enhancement"] is False
+    assert impact["minimum_source_crop_width_px"] >= 150
+    assert impact["visual_size"][0] == 180
+    assert impact["bottom_matte_height"] == 32
+    assert impact["storyboard_frames"] == [0, 15, 31, 79, 111, 164]
+    assert portrait["qa"]["frame_count"] == 165
+    assert portrait["qa"]["encoded_duration"] == pytest.approx(5.5, abs=0.055)
+    assert portrait["title"]["progress_samples"]["0"] == 1
+    assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
+    assert len(portrait["qa"]["impact_cut_pixel_differences"]) == 5
+    assert all(value > 2.5 for value in portrait["qa"]["impact_cut_pixel_differences"])
+    assert portrait["storyboard"]["frames"] == [0, 15, 31, 79, 111, 164]
+    assert portrait["storyboard"]["source"] == "actual_encoded_delivery"
+    assert Path(portrait["storyboard"]["file"]).is_file()
+
+    accepted = qualify_campaign(
+        p, output / "render_manifest.json", tmp_path / "impact_accepted.json"
+    )
+    assert accepted["status"] == "PASS"
+    assert accepted["primary_delivery"] == portrait["file"]
+
+    baseline = json.loads((output / "render_manifest.json").read_text())
+    broken = copy.deepcopy(baseline)
+    broken["portrait"]["impact_cut"]["ai_enhancement"] = True
+    tampered = tmp_path / "impact_ai_tampered.json"
+    tampered.write_text(json.dumps(broken))
+    with pytest.raises(montage.MontageRejection, match="impact_cut_schedule"):
+        qualify_campaign(p, tampered, tmp_path / "impact_rejected.json")
+
+    broken = copy.deepcopy(baseline)
+    broken["portrait"]["storyboard"]["sha256"] = "wrong"
+    tampered = tmp_path / "impact_storyboard_tampered.json"
+    tampered.write_text(json.dumps(broken))
+    with pytest.raises(montage.MontageRejection, match="impact_cut_storyboard"):
+        qualify_campaign(p, tampered, tmp_path / "impact_storyboard_rejected.json")
+
+
+def test_official_workflow_qualifies_and_publishes_impact_cut() -> None:
+    workflow = Path(".github/workflows/warzone-qualification.yml").read_text()
+    assert "--comparison-mode impact_cut" in workflow
+    assert "delivery_impact_cut/render_manifest.json" in workflow
+    assert "delivery_impact_cut/*.mp4" in workflow
+    assert "delivery_impact_cut/*.jpg" in workflow
+    assert "warzone-impact-cut-" + chr(36) + "{{ github.sha }}" in workflow
+    assert workflow.index("Plan certified-source kinetic Impact Cut") < workflow.index(
+        "Plan certified-source result-first Rebound"
+    )
+

@@ -14,6 +14,7 @@ import subprocess
 from collections.abc import Callable
 from fractions import Fraction
 from functools import lru_cache
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -1413,7 +1414,7 @@ def render_portrait(
             for i, n in enumerate(indices)
         }
         visual_box = (0, top, width, top + visual_height)
-        for left, right in zip(indices, indices[1:], strict=True):
+        for left, right in pairwise(indices):
             delta = ImageChops.difference(
                 decoded_impact[left].crop(visual_box), decoded_impact[right].crop(visual_box)
             )
