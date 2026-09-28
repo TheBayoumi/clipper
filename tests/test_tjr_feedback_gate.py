@@ -153,7 +153,7 @@ def test_workflow_stores_independent_two_channel_evidence() -> None:
         Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
     ).read_text(encoding="utf-8")
     assert "feedback_audit:" in workflow
-    assert "needs: [tests, youtube_modal_egress]" in workflow
+    assert "youtube_preview, youtube_alternate_egress, youtube_modal_egress, render" in workflow
     assert "python -m scripts.tjr_feedback_gate" in workflow
     assert "actions/download-artifact@v4" in workflow
     assert "gh issue comment 7" in workflow
@@ -174,9 +174,10 @@ def test_replay_channel_count_is_a_deterministic_shell_decision() -> None:
     workflow = (
         Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
     ).read_text(encoding="utf-8")
-    assert "EXPECTED_CHANNELS=2" in workflow
-    assert '"$TJR_SOURCE_MODE" != "feedback_replay"' in workflow
     assert "EXPECTED_CHANNELS=1" in workflow
+    assert '"$TJR_SOURCE_MODE" == "modal_direct"' in workflow
+    assert '"$TJR_SOURCE_MODE" == "feedback_replay"' in workflow
+    assert "EXPECTED_CHANNELS=2" in workflow
     assert "AUDITOR_CRASH" in workflow
     assert "TJR_EXPECTED_CHANNELS: true" not in workflow
 
