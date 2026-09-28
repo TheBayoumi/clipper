@@ -381,6 +381,7 @@ def test_contextual_questions_reject_negated_wallet_buying() -> None:
     text = "No socials linked, but no wallets buying either."
     assert creative_hook_from_text(text) != "WHY ARE WALLETS BUYING WITHOUT SOCIALS?"
 
+
 def test_sell_half_hook_requires_the_amount_to_modify_the_sale() -> None:
     assert creative_hook_from_text("Should we just sell 50% of this position?") == (
         "WOULD YOU SELL HALF HERE?"

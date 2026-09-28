@@ -214,6 +214,7 @@ def test_style_b_native_frame_rate_validation(tmp_path: Path) -> None:
     ):
         _source_frame_rate(tmp_path / "source.mp4")
 
+
 def test_attention_beats_are_sparse_and_source_timed() -> None:
     from clipper.models import WordTiming
     from clipper.render import _attention_beats

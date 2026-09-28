@@ -214,6 +214,7 @@ def distinct_hook_from_text(
         return headline
     return ""
 
+
 def _fit_lines(
     text: str, *, max_width: int, max_size: int, min_size: int = 42
 ) -> tuple[int, tuple[str, ...], float]:

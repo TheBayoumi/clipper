@@ -307,6 +307,7 @@ def test_hook_led_fallback_never_accepts_unfinished_trade_story() -> None:
     )
     assert evaluate_candidate(item, allow_review_only_opening=True) is None
 
+
 def test_batch_limit_is_a_ceiling_not_a_content_quota() -> None:
     strong = (
         "Late at $200K? the coin migrates at $50K market caps and people are buying "

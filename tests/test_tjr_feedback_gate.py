@@ -235,6 +235,7 @@ def test_independent_ass_audit_rejects_missing_word_highlight(
     assert "CAPTION_OR_HOOK_TIMING_FAILED" in report["issues"]
     assert report["technically_verified_mp4_count"] == 0
 
+
 def test_caption_event_outside_clip_is_rejected(tmp_path: Path) -> None:
     artifact = _fixture(tmp_path)
     ass = next(artifact.rglob("01-tjr-test.ass"))
