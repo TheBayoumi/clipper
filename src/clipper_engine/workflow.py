@@ -173,6 +173,7 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
         from .rendering.portrait_matte import (
             CASCADE_REQUIRED_CHECKS,
             HERO_FOCUS_REQUIRED_CHECKS,
+            IMPACT_CUT_REQUIRED_CHECKS,
             PORTRAIT_REQUIRED_CHECKS,
             REBOUND_REQUIRED_CHECKS,
             SNAPBACK_REQUIRED_CHECKS,
@@ -458,6 +459,46 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
             ):
                 raise montage.MontageRejection(
                     "rebound_storyboard", "encoded result-first storyboard missing or changed"
+                )
+
+        if edit["comparison_mode"] == "impact_cut":
+            from .rendering import kinetic_reframe
+
+            required_checks = (
+                (required_checks - {"toggle_opening_off"})
+                | {"toggle_opening_after"}
+                | IMPACT_CUT_REQUIRED_CHECKS
+            )
+            cfg = kinetic_reframe.config(profile, int(edit["output_frames"]))
+            impact = portrait.get("impact_cut")
+            if (
+                not isinstance(impact, dict)
+                or impact.get("mode") != "impact_cut"
+                or impact.get("frame_count") != int(edit["output_frames"])
+                or impact.get("source_only") is not True
+                or impact.get("source_frame_grid_exact") is not True
+                or impact.get("ai_enhancement") is not False
+                or impact.get("keyframes") != cfg["keyframes"]
+                or impact.get("flash_frames") != cfg["flash_frames"]
+                or impact.get("storyboard_frames") != cfg["storyboard_frames"]
+                or impact.get("bottom_matte_height") != cfg["bottom_matte_height"]
+                or impact.get("minimum_source_crop_width_px", 0)
+                < int(cfg["minimum_source_crop_width"])
+            ):
+                raise montage.MontageRejection(
+                    "impact_cut_schedule",
+                    "kinetic reframe no longer matches the configured certified-source edit",
+                )
+            storyboard = portrait.get("storyboard")
+            if (
+                not isinstance(storyboard, dict)
+                or storyboard.get("frames") != cfg["storyboard_frames"]
+                or storyboard.get("source") != "actual_encoded_delivery"
+                or not Path(str(storyboard.get("file") or "")).is_file()
+                or montage.sha256(Path(str(storyboard["file"]))) != storyboard.get("sha256")
+            ):
+                raise montage.MontageRejection(
+                    "impact_cut_storyboard", "encoded Impact Cut storyboard missing or altered"
                 )
 
         portrait_checks = portrait.get("qa", {}).get("checks", {})

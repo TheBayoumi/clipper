@@ -350,6 +350,14 @@ def build_plan(
                 panel_compositor.hero_focus_config(profile, comparison_frames)
             else:
                 panel_compositor.rebound_config(profile, comparison_frames)
+    if comparison_mode == "impact_cut":
+        from .rendering import kinetic_reframe
+
+        if not output.get("portrait_matte", {}).get("enabled", False):
+            raise MontageRejection(
+                "kinetic_reframe", "Impact Cut requires Clipper portrait reframing"
+            )
+        kinetic_reframe.config(profile, target)
     if not shots or [shot["state"] for shot in shots] != ["before", "after", "before", "after"]:
         raise MontageRejection(
             "invalid_switch_pattern", "ending requires calibrated A/B/A/B payoff"
@@ -508,6 +516,14 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
                 panel_compositor.hero_focus_config(profile, int(montage["comparison_frames"]))
             else:
                 panel_compositor.rebound_config(profile, int(montage["comparison_frames"]))
+    if montage["comparison_mode"] == "impact_cut":
+        from .rendering import kinetic_reframe
+
+        if not profile.config["output"].get("portrait_matte", {}).get("enabled", False):
+            raise MontageRejection(
+                "kinetic_reframe", "Impact Cut requires Clipper portrait reframing"
+            )
+        kinetic_reframe.config(profile, int(montage["output_frames"]))
     if int(montage["full_source_frames"]) != int(states["source_frames"]):
         raise MontageRejection("source_frames_changed", "full source is not retained")
     if int(plan["source"]["frames"]) != int(states["source_frames"]):

@@ -67,6 +67,18 @@ REBOUND_REQUIRED_CHECKS = frozenset(
 )
 
 
+IMPACT_CUT_REQUIRED_CHECKS = frozenset(
+    {
+        "portrait_impact_cut_schedule",
+        "portrait_impact_cut_source_sync",
+        "portrait_impact_cut_legibility",
+        "portrait_impact_cut_no_ai",
+        "portrait_impact_cut_effects_declared",
+        "portrait_impact_cut_encoded_motion",
+    }
+)
+
+
 HERO_FOCUS_REQUIRED_CHECKS = frozenset(
     {
         "portrait_hero_focus_schedule",
@@ -155,6 +167,8 @@ def toggle_progress(frame: int, plan: dict[str, Any], profile: CampaignProfile) 
             from . import panel_compositor
 
             return panel_compositor.rebound_progress(local, plan, profile)
+        if edit["comparison_mode"] == "impact_cut":
+            return 1.0
         if edit["comparison_mode"] == "snapback":
             from . import panel_compositor
 
@@ -564,6 +578,29 @@ def _encoded_rebound_storyboard(
     )
 
 
+def _encoded_impact_cut_storyboard(
+    file: Path, output_dir: Path, plan: dict[str, Any], profile: CampaignProfile
+) -> dict[str, Any]:
+    from . import kinetic_reframe
+
+    cfg = kinetic_reframe.config(profile, int(plan["montage"]["output_frames"]))
+    return _encoded_montage_storyboard(
+        file,
+        output_dir,
+        [int(n) for n in cfg["storyboard_frames"]],
+        (
+            "RESULT FIRST",
+            "FLASHBACK",
+            "REAL TOGGLE",
+            "LEFT OPERATOR SWEEP",
+            "RIGHT OPERATOR SWEEP",
+            "FINAL TRANSFORMED HOLD",
+        ),
+        "operator_impact_cut_storyboard.jpg",
+        float(Fraction(str(plan["source"]["fps"]))),
+    )
+
+
 def render_portrait(
     clean_canonical: Path,
     output_dir: Path,
@@ -583,6 +620,7 @@ def render_portrait(
     snapback = mode == "snapback"
     hero_focus = mode == "hero_focus"
     rebound = mode == "rebound"
+    impact_cut = mode == "impact_cut"
     panel_mode = cascade or spotlight or snapback or hero_focus or rebound
     width, height = (int(z) for z in title_qa["canvas"])
     top = int(title_qa["top_height"])
@@ -594,7 +632,26 @@ def render_portrait(
     file = output_dir / f"{profile.name}_{plan['montage']['comparison_mode']}_portrait.mp4"
     background = str(profile.config["output"]["portrait_matte"]["background_hex"])
     panel_qa: dict[str, Any] | None = None
-    if panel_mode:
+    impact_qa: dict[str, Any] | None = None
+    if impact_cut:
+        from . import kinetic_reframe
+
+        impact_cfg = kinetic_reframe.config(profile, frames)
+        visual_height = height - top - int(impact_cfg["bottom_matte_height"])
+        impact_qa = kinetic_reframe.render_frames(
+            clean_canonical,
+            workspace,
+            plan,
+            profile,
+            width,
+            visual_height,
+        )
+        graph = (
+            f"[2:v]pad={width}:{height}:0:{top}:color=0x{background.lstrip('#')}[base];"
+            "[base][1:v]overlay=0:0:shortest=1:format=auto,"
+            "format=yuv420p[outv]"
+        )
+    elif panel_mode:
         from . import panel_compositor
 
         if comparison_stills is None or expected_still_hashes is None:
@@ -650,6 +707,13 @@ def render_portrait(
                     str(workspace / "panel_frames" / "%04d.png"),
                 ]
                 if panel_mode
+                else [
+                    "-framerate",
+                    f"{fps.numerator}/{fps.denominator}",
+                    "-i",
+                    str(workspace / "kinetic_frames" / "%04d.png"),
+                ]
+                if impact_cut
                 else []
             ),
             "-filter_complex_threads",
@@ -861,7 +925,7 @@ def render_portrait(
         "approved_text_full_duration": title_qa["text_visible_frames"] == frames,
         **(
             {"toggle_opening_after": title_qa["progress_samples"]["0"] == 1}
-            if rebound
+            if rebound or impact_cut
             else {"toggle_opening_off": title_qa["progress_samples"]["0"] == 0}
         ),
         "toggle_final_on": title_qa["progress_samples"][str(frames - 1)] == 1,
@@ -1278,6 +1342,87 @@ def render_portrait(
             and rebound_live_difference > 2.5
         )
 
+    impact_cut_differences: list[float] = []
+    if impact_cut:
+        if impact_qa is None:
+            raise RuntimeError("missing Impact Cut kinetic-reframe metadata")
+        from . import kinetic_reframe
+
+        cfg = kinetic_reframe.config(profile, frames)
+        visual_height = height - top - int(cfg["bottom_matte_height"])
+        checks["portrait_impact_cut_schedule"] = (
+            impact_qa["frame_count"] == frames
+            and impact_qa["keyframes"] == cfg["keyframes"]
+            and impact_qa["flash_frames"] == cfg["flash_frames"]
+            and impact_qa["storyboard_frames"] == cfg["storyboard_frames"]
+            and impact_qa["visual_size"] == [width, visual_height]
+        )
+        checks["portrait_impact_cut_source_sync"] = (
+            impact_qa["source_only"] is True
+            and impact_qa["source_frame_grid_exact"] is True
+            and impact_qa["input_frame_count"] == frames
+        )
+        checks["portrait_impact_cut_legibility"] = (
+            impact_qa["minimum_source_crop_width_px"] >= int(cfg["minimum_source_crop_width"])
+            and visual_height >= round(center * 1.7)
+        )
+        checks["portrait_impact_cut_no_ai"] = impact_qa["ai_enhancement"] is False
+        checks["portrait_impact_cut_effects_declared"] = impact_qa["effects"] == {
+            "kinetic_crop": True,
+            "luminance_flash": {
+                "frames": cfg["flash_frames"],
+                "strength": cfg["flash_strength"],
+            },
+            "unsharp_mask": {
+                "radius": cfg["sharpen_radius"],
+                "percent": cfg["sharpen_percent"],
+                "threshold": cfg["sharpen_threshold"],
+            },
+        }
+        indices = [int(n) for n in cfg["storyboard_frames"]]
+        selected = "+".join(f"eq(n\\,{n})" for n in indices)
+        raw_impact = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                str(file),
+                "-vf",
+                f"select={selected},format=rgb24",
+                "-fps_mode",
+                "passthrough",
+                "-frames:v",
+                str(len(indices)),
+                "-f",
+                "rawvideo",
+                "-",
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
+        impact_frame_bytes = width * height * 3
+        if len(raw_impact) != len(indices) * impact_frame_bytes:
+            raise RuntimeError("encoded Impact Cut review frames are incomplete")
+        decoded_impact: dict[int, Image.Image] = {
+            n: Image.frombytes(
+                "RGB",
+                (width, height),
+                raw_impact[i * impact_frame_bytes : (i + 1) * impact_frame_bytes],
+            )
+            for i, n in enumerate(indices)
+        }
+        visual_box = (0, top, width, top + visual_height)
+        for left, right in zip(indices, indices[1:], strict=True):
+            delta = ImageChops.difference(
+                decoded_impact[left].crop(visual_box), decoded_impact[right].crop(visual_box)
+            )
+            impact_cut_differences.append(round(sum(ImageStat.Stat(delta).mean) / 3, 4))
+        checks["portrait_impact_cut_encoded_motion"] = (
+            len(impact_cut_differences) == len(indices) - 1
+            and all(value > 2.5 for value in impact_cut_differences)
+        )
+
     required = PORTRAIT_REQUIRED_CHECKS | (
         CASCADE_REQUIRED_CHECKS
         if cascade
@@ -1289,9 +1434,11 @@ def render_portrait(
         if hero_focus
         else REBOUND_REQUIRED_CHECKS
         if rebound
+        else IMPACT_CUT_REQUIRED_CHECKS
+        if impact_cut
         else frozenset()
     )
-    if rebound:
+    if rebound or impact_cut:
         required = (required - {"toggle_opening_off"}) | {"toggle_opening_after"}
     if set(checks) != required or not all(checks.values()):
         raise RuntimeError(f"portrait QA failed: {checks}")
@@ -1304,6 +1451,8 @@ def render_portrait(
         if hero_focus and panel_qa is not None
         else _encoded_rebound_storyboard(file, output_dir, plan, panel_qa)
         if rebound and panel_qa is not None
+        else _encoded_impact_cut_storyboard(file, output_dir, plan, profile)
+        if impact_cut
         else None
     )
     hasher = hashlib.sha256()
@@ -1331,6 +1480,7 @@ def render_portrait(
             "hero_focus_pixel_differences": hero_focus_differences,
             "rebound_pixel_differences": rebound_differences,
             "rebound_live_detail_difference": rebound_live_difference,
+            "impact_cut_pixel_differences": impact_cut_differences,
             "video_profile": actual,
             "audio_profile": audio,
             "ssim": ssim,
@@ -1342,6 +1492,7 @@ def render_portrait(
         "snapback": panel_qa if snapback else None,
         "hero_focus": panel_qa if hero_focus else None,
         "rebound": panel_qa if rebound else None,
+        "impact_cut": impact_qa if impact_cut else None,
         "storyboard": storyboard,
         "canonical_ffv1_nut": True,
     }

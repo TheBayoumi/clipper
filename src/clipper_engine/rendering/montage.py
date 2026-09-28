@@ -216,6 +216,10 @@ def _comparison_piece(
         )
     elif mode == "cuts":
         transition = "[left][right]blend=all_expr='if(lt(T,0.45)+between(T,1.05,1.35),A,B)'"
+    elif mode == "impact_cut":
+        # Impact Cut's landscape authority is a verified AFTER hold. The distinct
+        # camera language belongs to Clipper's portrait kinetic-reframe renderer.
+        transition = "[left][right]blend=all_expr='B'"
     else:
         raise MontageRejection("invalid_comparison_mode", str(mode))
     graph = ";".join(
