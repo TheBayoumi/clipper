@@ -73,8 +73,28 @@ def hook_grounded_in_transcript(hook: str, transcript: str) -> bool:
         return False
     rules: dict[str, bool] = {
         "WHY HE STOPPED USING ORDER BLOCKS": (
-            "order block" in lowered
-            and any(cue in lowered for cue in ("stop using", "stopped using", "no reason to use"))
+            (
+                bool(
+                    re.search(
+                        r"\b(?:i|he|we|they)\s+(?:have\s+|has\s+|had\s+)?"
+                        r"stopped\s+using\s+(?:the\s+)?order\s+blocks?\b",
+                        lowered,
+                    )
+                )
+                or (
+                    "order block" in lowered
+                    and "no reason to use" in lowered
+                    and "anymore" in lowered
+                )
+            )
+            and not bool(
+                re.search(
+                    r"\b(?:not|never|didn't|didnt|haven't|hasn't|hadn't|can't|cannot)\b"
+                    r"(?:\s+\w+){0,4}\s+stopped?\s+using\s+"
+                    r"(?:the\s+)?order\s+blocks?\b",
+                    lowered,
+                )
+            )
         ),
         "WHY HE WARNS ABOUT COPY TRADING": (
             "copy trad" in lowered and any(cue in lowered for cue in ("blind", "never", "don't"))
@@ -217,13 +237,23 @@ def checked_path(base: Path, value: object) -> Path:
 
 def probe_media(path: Path, *, full_decode: bool = False) -> dict[str, Any]:
     result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(path)],
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_streams",
+            "-show_format",
+            "-of",
+            "json",
+            str(path),
+        ],
         check=True,
         capture_output=True,
         text=True,
         timeout=50,
     )
-    streams = json.loads(result.stdout)["streams"]
+    payload = json.loads(result.stdout)
+    streams = payload["streams"]
     video = [item for item in streams if item.get("codec_type") == "video"]
     audio = [item for item in streams if item.get("codec_type") == "audio"]
     if len(video) != 1 or len(audio) != 1:
@@ -246,12 +276,16 @@ def probe_media(path: Path, *, full_decode: bool = False) -> dict[str, Any]:
             capture_output=True,
             timeout=180,
         )
+    duration = float((payload.get("format") or {}).get("duration") or 0)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("decoded media duration is unavailable")
     return {
         "width": video[0]["width"],
         "height": video[0]["height"],
         "fps": float(Fraction(video[0]["avg_frame_rate"])),
         "video_codec": video[0]["codec_name"],
         "audio_codec": audio[0]["codec_name"],
+        "duration": duration,
     }
 
 
@@ -501,6 +535,14 @@ def inspect_artifact(
                     or abs(float(actual["fps"]) - native_fps) > 0.04
                 ):
                     issues.append("INVALID_REAL_MEDIA_PROFILE")
+                reported_duration = float(clip["duration_seconds"])
+                decoded_duration = float(actual["duration"])
+                source_window_duration = window_end - window_start
+                if (
+                    abs(decoded_duration - reported_duration) > 0.15
+                    or abs(decoded_duration - source_window_duration) > 0.15
+                ):
+                    issues.append("INVALID_REAL_MEDIA_DURATION")
                 identity = (
                     str(report.get("source_url") or ""),
                     window_start,

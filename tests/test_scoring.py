@@ -144,3 +144,27 @@ def test_editorial_mode_keeps_overlapping_windows_until_after_gate() -> None:
     editorial = score_transcript(brief(), "v1", segments, limit=100, diversify=False)
     assert len(editorial) > len(regular)
     assert editorial[0].score >= editorial[-1].score
+
+
+def test_multiword_negative_keywords_are_scored_as_phrases() -> None:
+    campaign = CampaignBrief.from_dict(
+        {
+            "campaign_id": "negative-phrases",
+            "title": "TJR",
+            "objective": "trading",
+            "keywords": ["trade"],
+            "negative_keywords": ["guaranteed returns", "risk free"],
+            "source_channel_ids": ["UC1"],
+            "rights_confirmed": True,
+            "min_clip_seconds": 8,
+            "max_clip_seconds": 20,
+        }
+    )
+    from clipper.scoring import _window_score
+
+    _score, reasons = _window_score(
+        campaign,
+        "This trade promises guaranteed returns and says it is risk free.",
+        12,
+    )
+    assert "negative_hits=2" in reasons

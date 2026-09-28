@@ -33,6 +33,15 @@ def _phrase_present(text: str, phrase: str) -> bool:
     return phrase.lower() in text.lower()
 
 
+def _term_count(text: str, term: str) -> int:
+    haystack = _tokens(text)
+    needle = _tokens(term)
+    if not needle or len(needle) > len(haystack):
+        return 0
+    size = len(needle)
+    return sum(haystack[index : index + size] == needle for index in range(len(haystack) - size + 1))
+
+
 def _window_score(
     brief: CampaignBrief,
     text: str,
@@ -41,8 +50,11 @@ def _window_score(
     tokens = _tokens(text)
     counts = Counter(tokens)
     reasons: list[str] = []
-    keyword_hits = sum(min(counts[word.lower()], 2) for word in brief.keywords)
-    negative_hits = sum(counts[word.lower()] for word in brief.negative_keywords)
+    keyword_hits = sum(
+        min(counts[word.lower()], 2) if len(_tokens(word)) == 1 else min(_term_count(text, word), 2)
+        for word in brief.keywords
+    )
+    negative_hits = sum(_term_count(text, phrase) for phrase in brief.negative_keywords)
     required_hits = sum(_phrase_present(text, phrase) for phrase in brief.required_phrases)
     hook_hits = sum(counts[word] for word in _HOOK_WORDS)
 

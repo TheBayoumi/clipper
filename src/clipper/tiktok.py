@@ -46,8 +46,24 @@ def creative_hook_from_text(text: str) -> str:
     lowered = original.lower()
     if not original:
         return ""
-    if "order block" in lowered and any(
-        x in lowered for x in ("stop using", "stopped using", "no reason to use")
+    stopped_order_blocks = re.search(
+        r"\b(?:i|he|we|they)\s+(?:have\s+|has\s+|had\s+)?"
+        r"stopped\s+using\s+(?:the\s+)?order\s+blocks?\b",
+        lowered,
+    )
+    no_reason_order_blocks = (
+        "order block" in lowered
+        and "no reason to use" in lowered
+        and "anymore" in lowered
+    )
+    negated_order_block_stop = re.search(
+        r"\b(?:not|never|didn't|didnt|haven't|hasn't|hadn't|can't|cannot)\b"
+        r"(?:\s+\w+){0,4}\s+stopped?\s+using\s+(?:the\s+)?order\s+blocks?\b",
+        lowered,
+    )
+    if (
+        (stopped_order_blocks or no_reason_order_blocks)
+        and not negated_order_block_stop
     ):
         return "WHY HE STOPPED USING ORDER BLOCKS"
     if "copy trad" in lowered and any(x in lowered for x in ("blind", "never", "don't")):

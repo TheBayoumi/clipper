@@ -475,3 +475,12 @@ def test_millions_hook_requires_an_affirmative_earnings_claim() -> None:
         "I haven't made millions from this.",
     ):
         assert creative_hook_from_text(source) != "A TRADER CLAIMS MILLIONS: HOW?"
+
+
+def test_order_block_stop_hook_requires_affirmative_cessation() -> None:
+    assert creative_hook_from_text("He stopped using order blocks last month.") == (
+        "WHY HE STOPPED USING ORDER BLOCKS"
+    )
+    assert creative_hook_from_text(
+        "I never stopped using order blocks because they still matter."
+    ) != "WHY HE STOPPED USING ORDER BLOCKS"

@@ -17,6 +17,7 @@ def _probe(_path: Path) -> dict[str, object]:
         "fps": 60.0,
         "video_codec": "h264",
         "audio_codec": "aac",
+        "duration": 29.2,
     }
 
 
@@ -474,3 +475,16 @@ def test_verified_mirror_upload_keeps_transcript_and_source_coverage() -> None:
     ).read_text(encoding="utf-8")
     assert "tjr-mirror-artifacts/**/transcript.json" in workflow
     assert "tjr-mirror-artifacts/**/source-analysis-coverage.json" in workflow
+
+
+def test_decoded_mp4_duration_must_match_report_and_source_window(tmp_path: Path) -> None:
+    _fixture(tmp_path)
+
+    def short_probe(_path: Path) -> dict[str, object]:
+        result = _probe(_path)
+        result["duration"] = 10.0
+        return result
+
+    report = review_run(tmp_path, expected_channels=1, probe=short_probe)
+    assert "INVALID_REAL_MEDIA_DURATION" in report["issues"]
+    assert report["technically_verified_mp4_count"] == 0
