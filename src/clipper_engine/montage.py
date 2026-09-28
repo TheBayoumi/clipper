@@ -137,11 +137,12 @@ def resolve_continuous_timing(
     if (
         start < 0
         or end > int(states["source_frames"])
-        or not start <= before < trigger_start < trigger_end < after < end
+        or not before <= start < trigger_start < trigger_end < after < end
     ):
         raise MontageRejection(
             "continuous_reveal_timing",
-            "single source window must retain before, real toggle, after and final hold",
+            "single source window must begin in the verified stable-before interval "
+            "and retain the real toggle, after state and final hold",
         )
     return target, {"start_frame": start, "frames": int(window["frames"])}
 
