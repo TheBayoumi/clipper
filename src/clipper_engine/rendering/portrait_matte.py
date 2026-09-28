@@ -74,6 +74,7 @@ CONTINUOUS_REVEAL_REQUIRED_CHECKS = frozenset(
         "portrait_continuous_reveal_legibility",
         "portrait_continuous_reveal_no_ai",
         "portrait_continuous_reveal_effects_declared",
+        "portrait_continuous_reveal_backdrop_visible",
         "portrait_continuous_reveal_toggle_visible",
     }
 )
@@ -703,6 +704,7 @@ def render_portrait(
         from . import kinetic_reframe
 
         reveal_cfg = kinetic_reframe.config(profile, frames)
+        visual_top = int(reveal_cfg["visual_top"])
         visual_height = int(reveal_cfg["visual_height"])
         if visual_height != center:
             raise MontageRejection(
@@ -716,9 +718,15 @@ def render_portrait(
             width,
             visual_height,
         )
+        blur_sigma = float(reveal_cfg["backdrop_blur_sigma"])
+        backdrop_brightness = float(reveal_cfg["backdrop_brightness"])
+        backdrop_saturation = float(reveal_cfg["backdrop_saturation"])
         graph = (
-            f"[2:v]pad={width}:{height}:0:{top}:color=0x{background.lstrip('#')}[base];"
-            "[base][1:v]overlay=0:0:shortest=1:format=auto,"
+            f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
+            f"crop={width}:{height},gblur=sigma={blur_sigma}:steps=2,"
+            f"eq=brightness={backdrop_brightness}:saturation={backdrop_saturation}[backdrop];"
+            f"[backdrop][2:v]overlay=0:{visual_top}:shortest=1:format=auto[with_video];"
+            "[with_video][1:v]overlay=0:0:shortest=1:format=auto,"
             "format=yuv420p[outv]"
         )
     elif panel_mode:
@@ -948,7 +956,10 @@ def render_portrait(
     if len(still.stdout) != frame_bytes * len(sampled_frames):
         raise RuntimeError("decoded portrait sample count differs from qualified delivery")
     sampled_mattes: list[dict[str, Any]] = []
+    backdrop_differences: list[float] = []
     matte_rgb_error = 0
+    header_rgb_error = 0
+    expected_matte = ImageColor.getrgb(background)
     for index, n in enumerate(sampled_frames):
         rgb = Image.frombytes(
             "RGB",
@@ -961,6 +972,24 @@ def render_portrait(
             raise RuntimeError("decoded RGB matte verification failed")
         delta = max(abs(int(a) - int(b)) for a, b in zip(top_rgb, bottom_rgb, strict=True))
         matte_rgb_error = max(matte_rgb_error, delta)
+        top_delta = max(
+            abs(int(a) - int(b)) for a, b in zip(top_rgb, expected_matte, strict=True)
+        )
+        header_rgb_error = max(header_rgb_error, top_delta)
+        if continuous_reveal:
+            visual_bottom = int(reveal_cfg["visual_top"]) + int(reveal_cfg["visual_height"])
+            backdrop_region = rgb.crop((0, visual_bottom, width, height))
+            backdrop_mean = ImageStat.Stat(backdrop_region).mean
+            backdrop_differences.append(
+                round(
+                    sum(
+                        abs(float(value) - float(expected))
+                        for value, expected in zip(backdrop_mean, expected_matte, strict=True)
+                    )
+                    / 3,
+                    4,
+                )
+            )
         sampled_mattes.append(
             {
                 "frame": n,
@@ -1004,7 +1033,9 @@ def render_portrait(
         and audio["channels"] == int(profile.config["output"]["audio_channels"]),
         "portrait_ssim": ssim >= 0.96,
         "portrait_psnr_db": psnr >= 35.0,
-        "portrait_mattes_match": matte_rgb_error <= 2,
+        "portrait_mattes_match": (
+            header_rgb_error <= 2 if continuous_reveal else matte_rgb_error <= 2
+        ),
         "portrait_target_size": abs(filesize_mb - size_target_mb) <= size_tolerance_mb,
         "portrait_color_metadata": all(
             actual_colors.get(k) == v for k, v in expected_colors.items()
@@ -1420,11 +1451,16 @@ def render_portrait(
 
         reveal_cfg = kinetic_reframe.config(profile, frames)
         visual_height = int(reveal_cfg["visual_height"])
+        visual_top = int(reveal_cfg["visual_top"])
         checks["portrait_continuous_reveal_schedule"] = (
             reframe_qa["frame_count"] == frames
             and reframe_qa["keyframes"] == reveal_cfg["keyframes"]
             and reframe_qa["storyboard_frames"] == reveal_cfg["storyboard_frames"]
             and reframe_qa["visual_size"] == [width, visual_height]
+            and reframe_qa["visual_top"] == visual_top
+            and reframe_qa["backdrop_bottom_height"] == int(
+                reveal_cfg["backdrop_bottom_height"]
+            )
         )
         checks["portrait_continuous_reveal_source_sync"] = (
             reframe_qa["source_only"] is True
@@ -1440,12 +1476,23 @@ def render_portrait(
         checks["portrait_continuous_reveal_effects_declared"] = reframe_qa["effects"] == {
             "smooth_source_push_in": True,
             "luminance_flash": False,
+            "source_backdrop": {
+                "source": "same_canonical_frame",
+                "blur_sigma": reveal_cfg["backdrop_blur_sigma"],
+                "brightness": reveal_cfg["backdrop_brightness"],
+                "saturation": reveal_cfg["backdrop_saturation"],
+            },
             "unsharp_mask": {
                 "radius": reveal_cfg["sharpen_radius"],
                 "percent": reveal_cfg["sharpen_percent"],
                 "threshold": reveal_cfg["sharpen_threshold"],
             },
         }
+        checks["portrait_continuous_reveal_backdrop_visible"] = (
+            len(backdrop_differences) == len(sampled_frames)
+            and all(value > 4.0 for value in backdrop_differences)
+            and reframe_qa["effects"]["source_backdrop"]["source"] == "same_canonical_frame"
+        )
         source_start = int(plan["montage"]["source_window"]["start_frame"])
         trigger_start = int(plan["evidence"]["toggle_motion_start_frame"]) - source_start
         trigger_end = int(plan["evidence"]["toggle_motion_end_frame"]) - source_start
@@ -1475,7 +1522,7 @@ def render_portrait(
             raise RuntimeError("encoded continuous-reveal toggle frames are incomplete")
         before_toggle = Image.frombytes("RGB", (width, height), raw_reveal[:reveal_frame_bytes])
         after_toggle = Image.frombytes("RGB", (width, height), raw_reveal[reveal_frame_bytes:])
-        visual_box = (0, top, width, top + visual_height)
+        visual_box = (0, visual_top, width, visual_top + visual_height)
         toggle_delta = ImageChops.difference(
             before_toggle.crop(visual_box), after_toggle.crop(visual_box)
         )
@@ -1533,8 +1580,11 @@ def render_portrait(
             "video_bitrate_kbps": video_kbps,
             "matte_top_rgb": list(top_rgb),
             "matte_bottom_rgb": list(bottom_rgb),
-            "matte_rgb_max_error": matte_rgb_error,
+            "matte_rgb_max_error": (
+                header_rgb_error if continuous_reveal else matte_rgb_error
+            ),
             "matte_sampled_frames": sampled_mattes,
+            "continuous_reveal_backdrop_differences": backdrop_differences,
             "cascade_panel_pixel_differences": panel_differences,
             "spotlight_pixel_differences": spotlight_differences,
             "snapback_pixel_differences": snapback_differences,

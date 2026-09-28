@@ -487,7 +487,8 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
                 or reveal_qa.get("ai_enhancement") is not False
                 or reveal_qa.get("keyframes") != cfg["keyframes"]
                 or reveal_qa.get("storyboard_frames") != cfg["storyboard_frames"]
-                or reveal_qa.get("bottom_matte_height") != cfg["bottom_matte_height"]
+                or reveal_qa.get("visual_top") != cfg["visual_top"]
+                or reveal_qa.get("backdrop_bottom_height") != cfg["backdrop_bottom_height"]
                 or reveal_qa.get("minimum_effective_source_width_px", 0)
                 < int(cfg["minimum_effective_source_width"])
             ):
@@ -508,7 +509,6 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
                     "encoded continuous-reveal storyboard missing or altered",
                 )
 
-        portrait_checks = portrait.get("qa", {}).get("checks", {})
         portrait_checks = portrait.get("qa", {}).get("checks", {})
         if (
             not isinstance(portrait_checks, dict)
