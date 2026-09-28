@@ -1426,18 +1426,18 @@ def test_continuous_reveal_is_one_uninterrupted_certified_source_window(
     edit = plan["montage"]
     assert edit["type"] == "continuous_source_reveal"
     assert edit["comparison_mode"] == "continuous_reveal"
-    assert edit["source_window"] == {"start_frame": 20, "frames": 156}
-    assert edit["output_frames"] == 156
-    assert edit["output_seconds"] == pytest.approx(5.2)
+    assert edit["source_window"] == {"start_frame": 28, "frames": 150}
+    assert edit["output_frames"] == 150
+    assert edit["output_seconds"] == pytest.approx(5.0)
     assert "hook" not in edit
     assert "comparison_frames" not in edit
     assert "ending_shots" not in edit
-    cfg = kinetic_reframe.config(p, 156)
-    assert cfg["storyboard_frames"] == [0, 30, 37, 44, 110, 155]
+    cfg = kinetic_reframe.config(p, 150)
+    assert cfg["storyboard_frames"] == [0, 15, 29, 36, 100, 149]
     assert cfg["minimum_effective_source_width"] == 150
     assert cfg["visual_top"] == 60
     assert cfg["backdrop_bottom_height"] == 90
-    expected = {0: 0.0, 36: 0.0, 37: 0.0, 44: 1.0, 110: 1.0, 155: 1.0}
+    expected = {0: 0.0, 28: 0.0, 29: 0.0, 36: 1.0, 100: 1.0, 149: 1.0}
     for frame, state in expected.items():
         assert portrait_matte.toggle_progress(frame, plan, p) == state
     montage.validate_plan(plan, source, p)
@@ -1446,7 +1446,7 @@ def test_continuous_reveal_is_one_uninterrupted_certified_source_window(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("storyboard_frames", [0, 30, 37]),
+        ("storyboard_frames", [0, 15, 29]),
         ("minimum_effective_source_width", 500),
         ("sharpen_percent", 80),
         ("visual_height", 300),
@@ -1499,14 +1499,14 @@ def test_continuous_reveal_certified_render_and_fail_closed_qualification(
     portrait = result["portrait"]
     reveal = portrait["continuous_reveal"]
     assert result["staging"]["source_excerpt"]["source_to_piece_hashes_exact"]
-    assert result["staging"]["source_excerpt"]["frame_count"] == 156
+    assert result["staging"]["source_excerpt"]["frame_count"] == 150
     assert "comparison" not in result["staging"]
     assert "hook" not in result["staging"]
     assert "reveal" not in result["staging"]
     assert all(result["qa"]["checks"].values()), result["qa"]["checks"]
     assert reveal["mode"] == "continuous_reveal"
-    assert reveal["frame_count"] == 156
-    assert reveal["input_frame_count"] == 156
+    assert reveal["frame_count"] == 150
+    assert reveal["input_frame_count"] == 150
     assert reveal["source_frame_grid_exact"] is True
     assert reveal["source_only"] is True
     assert reveal["ai_enhancement"] is False
@@ -1514,7 +1514,7 @@ def test_continuous_reveal_certified_render_and_fail_closed_qualification(
     assert reveal["visual_size"] == [180, 170]
     assert reveal["visual_top"] == 60
     assert reveal["backdrop_bottom_height"] == 90
-    assert reveal["storyboard_frames"] == [0, 30, 37, 44, 110, 155]
+    assert reveal["storyboard_frames"] == [0, 15, 29, 36, 100, 149]
     assert reveal["effects"]["luminance_flash"] is False
     assert reveal["effects"]["source_backdrop"] == {
         "source": "same_canonical_frame",
@@ -1522,14 +1522,14 @@ def test_continuous_reveal_certified_render_and_fail_closed_qualification(
         "brightness": -0.28,
         "saturation": 0.6,
     }
-    assert portrait["qa"]["frame_count"] == 156
-    assert portrait["qa"]["encoded_duration"] == pytest.approx(5.2, abs=0.055)
+    assert portrait["qa"]["frame_count"] == 150
+    assert portrait["qa"]["encoded_duration"] == pytest.approx(5.0, abs=0.055)
     assert portrait["title"]["progress_samples"]["0"] == 0
-    assert portrait["title"]["progress_samples"]["155"] == 1
+    assert portrait["title"]["progress_samples"]["149"] == 1
     assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
     assert portrait["qa"]["continuous_reveal_pixel_differences"][0] > 2.5
     assert all(value > 4 for value in portrait["qa"]["continuous_reveal_backdrop_differences"])
-    assert portrait["storyboard"]["frames"] == [0, 30, 37, 44, 110, 155]
+    assert portrait["storyboard"]["frames"] == [0, 15, 29, 36, 100, 149]
     assert portrait["storyboard"]["source"] == "actual_encoded_delivery"
     assert Path(portrait["storyboard"]["file"]).is_file()
 

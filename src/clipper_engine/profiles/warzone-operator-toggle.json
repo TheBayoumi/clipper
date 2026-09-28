@@ -199,11 +199,11 @@
         ]
       },
       "continuous_reveal": {
-        "preferred_output_seconds": 5.2,
-        "maximum_output_seconds": 5.2,
+        "preferred_output_seconds": 5,
+        "maximum_output_seconds": 5,
         "source_window": {
-          "start_frame": 20,
-          "frames": 156
+          "start_frame": 28,
+          "frames": 150
         }
       }
     }
@@ -374,7 +374,7 @@
             ]
           },
           {
-            "frame": 36,
+            "frame": 28,
             "roi": [
               0.185,
               0.035,
@@ -383,7 +383,7 @@
             ]
           },
           {
-            "frame": 44,
+            "frame": 36,
             "roi": [
               0.19,
               0.04,
@@ -392,7 +392,7 @@
             ]
           },
           {
-            "frame": 155,
+            "frame": 149,
             "roi": [
               0.2,
               0.05,
@@ -425,11 +425,11 @@
         ],
         "storyboard_frames": [
           0,
-          30,
-          37,
-          44,
-          110,
-          155
+          15,
+          29,
+          36,
+          100,
+          149
         ],
         "visual_top": 280,
         "backdrop_blur_sigma": 24,

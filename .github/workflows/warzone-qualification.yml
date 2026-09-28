@@ -114,19 +114,19 @@ jobs:
           edit = manifest["plan"]["montage"]
           portrait = manifest["portrait"]
           reveal = portrait["continuous_reveal"]
-          expected_window = {"start_frame": 20, "frames": 156}
+          expected_window = {"start_frame": 28, "frames": 150}
           assert accepted["status"] == "PASS", accepted
           assert edit["type"] == "continuous_source_reveal"
           assert edit["comparison_mode"] == "continuous_reveal"
           assert edit["source_window"] == expected_window
-          assert edit["output_frames"] == 156
-          assert abs(edit["output_seconds"] - 5.2) < 1e-9
+          assert edit["output_frames"] == 150
+          assert abs(edit["output_seconds"] - 5.0) < 1e-9
           assert "hook" not in edit and "comparison_frames" not in edit and "ending_shots" not in edit
           stage = manifest["staging"]["source_excerpt"]
           assert stage["windows"] == [expected_window]
-          assert stage["frame_count"] == 156 and stage["source_to_piece_hashes_exact"]
+          assert stage["frame_count"] == 150 and stage["source_to_piece_hashes_exact"]
           assert reveal["mode"] == "continuous_reveal"
-          assert reveal["frame_count"] == 156
+          assert reveal["frame_count"] == 150
           assert reveal["source_only"] is True
           assert reveal["source_frame_grid_exact"] is True
           assert reveal["ai_enhancement"] is False
@@ -134,7 +134,9 @@ jobs:
           assert reveal["visual_top"] == 280
           assert reveal["backdrop_bottom_height"] == 640
           assert reveal["minimum_effective_source_width_px"] >= 1000
-          assert reveal["storyboard_frames"] == [0, 30, 37, 44, 110, 155]
+          assert reveal["storyboard_frames"] == [0, 15, 29, 36, 100, 149]
+          assert (57 - expected_window["start_frame"]) / 30 < 1.0
+          assert (64 - expected_window["start_frame"]) / 30 <= 1.2
           assert reveal["effects"]["luminance_flash"] is False
           assert reveal["effects"]["source_backdrop"] == {
               "source": "same_canonical_frame",
@@ -146,9 +148,9 @@ jobs:
           assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
           assert portrait["qa"]["continuous_reveal_pixel_differences"][0] > 2.5
           assert all(v > 4 for v in portrait["qa"]["continuous_reveal_backdrop_differences"])
-          assert portrait["storyboard"]["frames"] == [0, 30, 37, 44, 110, 155]
+          assert portrait["storyboard"]["frames"] == [0, 15, 29, 36, 100, 149]
           assert Path(portrait["storyboard"]["file"]).is_file()
-          assert abs(portrait["qa"]["encoded_duration"] - 5.2) < 0.055
+          assert abs(portrait["qa"]["encoded_duration"] - 5.0) < 0.055
           print("CERTIFIED CONTINUOUS REVEAL:", portrait["file"])
           CHECK
 
