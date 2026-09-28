@@ -140,16 +140,17 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
     if not all(manifest["qa"]["checks"].values()):
         raise montage.MontageRejection("technical_qa", "render manifest reports failed checks")
     edit = manifest["plan"]["montage"]
-    selected_window = edit["source_window"]
-    is_excerpt = int(selected_window["start_frame"]) != 0 or int(selected_window["frames"]) != int(
-        edit["full_source_frames"]
-    )
+    selected_windows = montage.source_windows(edit)
+    selected_frames = montage.source_frame_count(edit)
+    is_excerpt = len(selected_windows) > 1 or int(
+        selected_windows[0]["start_frame"]
+    ) != 0 or selected_frames != int(edit["full_source_frames"])
     if is_excerpt:
         excerpt = manifest["staging"].get("source_excerpt")
         if (
             not isinstance(excerpt, dict)
-            or excerpt.get("windows") != [selected_window]
-            or excerpt.get("frame_count") != int(selected_window["frames"])
+            or excerpt.get("windows") != selected_windows
+            or excerpt.get("frame_count") != selected_frames
             or excerpt.get("source_to_piece_hashes_exact") is not True
             or manifest["qa"]["checks"].get("source_excerpt_hashes_exact") is not True
         ):
@@ -171,6 +172,7 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
             CASCADE_REQUIRED_CHECKS,
             HERO_FOCUS_REQUIRED_CHECKS,
             PORTRAIT_REQUIRED_CHECKS,
+            REBOUND_REQUIRED_CHECKS,
             SNAPBACK_REQUIRED_CHECKS,
             SPOTLIGHT_REQUIRED_CHECKS,
         )
@@ -382,6 +384,77 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
             ):
                 raise montage.MontageRejection(
                     "hero_focus_storyboard", "encoded hero storyboard is missing or altered"
+                )
+
+
+        if edit["comparison_mode"] == "rebound":
+            from .rendering import panel_compositor
+
+            required_checks = (required_checks - {"toggle_opening_off"}) | {
+                "toggle_opening_after"
+            } | REBOUND_REQUIRED_CHECKS
+            cmp_qa = manifest["staging"]["comparison"]
+            panel_qa = portrait.get("rebound")
+            if (
+                not isinstance(panel_qa, dict)
+                or panel_qa.get("source_still_sha256") != cmp_qa.get("source_still_sha256")
+                or panel_qa.get("source_only") is not True
+                or panel_qa.get("frame_count") != edit["output_frames"]
+            ):
+                raise montage.MontageRejection(
+                    "rebound_stills", "large detail cards are not from the certified master"
+                )
+            cfg = panel_compositor.rebound_config(profile, int(edit["comparison_frames"]))
+            start = int(edit["hook"]["frames"]) + montage.source_frame_count(edit)
+            original = start + int(cfg["before_hold_frames"])
+            flash = original + int(cfg["after_flash_frames"])
+            group = flash + int(cfg["split_frames"])
+            end = group + int(cfg["group_frames"])
+            samples = panel_qa.get("sampled_states", {})
+            expected = [start, original, flash, group, end]
+            if (
+                panel_qa.get("mode") != "rebound"
+                or panel_qa.get("panel_count") != 3
+                or panel_qa.get("focus_operator_index") != cfg["focus_operator_index"]
+                or panel_qa.get("focus_roi") != cfg["detail_roi"]
+                or panel_qa.get("phase_frames") != expected
+                or panel_qa.get("live_detail_frames") != start + int(edit["output_frames"]) - end
+                or panel_qa.get("live_detail_source") != "clean_canonical_ffv1_nut"
+                or panel_qa.get("text_synced") is not True
+                or not isinstance(samples, dict)
+                or any(
+                    samples.get(str(frame)) != {"phase": phase, "after": progress}
+                    for frame, phase, progress in (
+                        (0, "live", 1.0),
+                        (int(edit["hook"]["frames"]), "live", 0.0),
+                        (start, "before", 0.0),
+                        (original, "after", 1.0),
+                        (flash, "split", 0.5),
+                        (group, "group", 1.0),
+                    )
+                )
+            ):
+                raise montage.MontageRejection(
+                    "rebound_schedule", "result-first source/native detail schedule drifted"
+                )
+            storyboard = portrait.get("storyboard")
+            expected_story = [
+                0,
+                int(edit["hook"]["frames"]),
+                int(edit["hook"]["frames"]) + int(edit["source_windows"][0]["frames"]) + 4,
+                original,
+                flash,
+                int(edit["output_frames"]) - 1,
+            ]
+            if (
+                not isinstance(storyboard, dict)
+                or storyboard.get("frames") != expected_story
+                or storyboard.get("source") != "actual_encoded_delivery"
+                or not Path(str(storyboard.get("file") or "")).is_file()
+                or montage.sha256(Path(str(storyboard["file"]))) != storyboard.get("sha256")
+            ):
+                raise montage.MontageRejection(
+                    "rebound_storyboard", "encoded result-first storyboard missing or changed"
                 )
 
         portrait_checks = portrait.get("qa", {}).get("checks", {})

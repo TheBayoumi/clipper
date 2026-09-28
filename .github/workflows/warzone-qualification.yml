@@ -73,6 +73,87 @@ jobs:
           clipper campaign warzone-operator-toggle acquire \
             --source-key "$SOURCE_KEY" --output-dir source
 
+      - name: Plan certified-source result-first Rebound
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle plan \
+            --source "$SOURCE_FILE" \
+            --source-qa "source/$SOURCE_KEY.source_qa.json" \
+            --comparison-mode rebound \
+            --approved-text-index 1 \
+            --output plan_rebound.json
+
+      - name: Render source-native live-detail Rebound through Clipper
+        timeout-minutes: 35
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle render \
+            --source "$SOURCE_FILE" \
+            --source-qa "source/$SOURCE_KEY.source_qa.json" \
+            --plan plan_rebound.json \
+            --output-dir delivery_rebound
+
+      - name: Qualify Rebound source windows large moving crop and encoded transitions
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle qualify \
+            --render-manifest delivery_rebound/render_manifest.json \
+            --output delivery_rebound/acceptance.json
+          python - <<'CHECK'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("delivery_rebound/render_manifest.json").read_text())
+          accepted = json.loads(Path("delivery_rebound/acceptance.json").read_text())
+          edit = manifest["plan"]["montage"]
+          stage = manifest["staging"]["source_excerpt"]
+          portrait = manifest["portrait"]
+          panels = portrait["rebound"]
+          expected_windows = [
+              {"start_frame": 20, "frames": 16},
+              {"start_frame": 55, "frames": 10},
+              {"start_frame": 108, "frames": 14},
+          ]
+          assert accepted["status"] == "PASS", accepted
+          assert edit["comparison_mode"] == "rebound"
+          assert edit["hook"] == {"start_frame": 144, "frames": 15, "state": "after"}
+          assert edit["source_windows"] == expected_windows
+          assert edit["full_source_frames"] == 178
+          assert edit["output_frames"] == 165
+          assert stage["windows"] == expected_windows
+          assert stage["frame_count"] == 40 and stage["source_to_piece_hashes_exact"]
+          assert panels["phase_frames"] == [55, 75, 91, 121, 145]
+          assert panels["live_detail_frames"] == 75
+          assert panels["source_only"] and panels["text_synced"]
+          assert all(manifest["qa"]["checks"].values()), manifest["qa"]["checks"]
+          assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
+          assert all(v > 2.5 for v in portrait["qa"]["rebound_pixel_differences"])
+          assert portrait["qa"]["rebound_live_detail_difference"] > 2.5
+          assert portrait["storyboard"]["frames"] == [0, 15, 35, 75, 91, 164]
+          assert Path(portrait["storyboard"]["file"]).is_file()
+          assert 5 <= portrait["qa"]["encoded_duration"] <= 6
+          print("CERTIFIED MOBILE REBOUND:", portrait["file"])
+          CHECK
+
+      - name: Publish distinct high-clarity Rebound video storyboard and QA
+        uses: actions/upload-artifact@v4
+        with:
+          name: warzone-rebound-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            plan_rebound.json
+            source/*.source_qa.json
+            delivery_rebound/*.json
+            delivery_rebound/*.mp4
+            delivery_rebound/*.jpg
+
       - name: Plan certified-source Hero Focus
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
@@ -435,3 +516,6 @@ jobs:
             delivery_hero_focus/*.json
             delivery_hero_focus/*.mp4
             delivery_hero_focus/*.jpg
+            delivery_rebound/*.json
+            delivery_rebound/*.mp4
+            delivery_rebound/*.jpg

@@ -7,6 +7,7 @@ construction, lossless comparison staging, compositing and QA remain in Clipper.
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -262,6 +263,88 @@ def hero_focus_progress(local_frame: int, plan: dict[str, Any], profile: Campaig
     return {"after": 1.0, "before": 0.0, "split": 0.5, "group": 1.0}[phase]
 
 
+def rebound_config(profile: CampaignProfile, comparison_frames: int) -> dict[str, Any]:
+    """Validate source-native fast reveal and oversized portrait detail geometry."""
+    matte = profile.config["output"]["portrait_matte"]
+    cfg: dict[str, Any] = matte["rebound"]
+    expected = {
+        "focus_operator_index", "detail_roi", "focus_crop_center",
+        "before_hold_frames", "after_flash_frames", "split_frames", "group_frames",
+        "margin", "gap", "panel_top", "focus_card_width", "focus_card_height",
+        "group_card_height",
+    }
+    durations = ("before_hold_frames", "after_flash_frames", "split_frames", "group_frames")
+    sizes = ("margin", "gap", "panel_top", "focus_card_width", "focus_card_height",
+             "group_card_height")
+    if (
+        not isinstance(cfg, dict)
+        or set(cfg) != expected
+        or any(type(cfg[key]) is not int or cfg[key] < 3 for key in durations)
+        or sum(cfg[key] for key in durations) != comparison_frames
+        or any(type(cfg[key]) is not int or cfg[key] <= 0 for key in sizes)
+    ):
+        raise MontageRejection("rebound_calibration", "invalid rebound timing or geometry")
+    rois = matte.get("operator_rois")
+    index = cfg["focus_operator_index"]
+    detail = cfg["detail_roi"]
+    center = cfg["focus_crop_center"]
+    valid_rect = (
+        isinstance(detail, list)
+        and len(detail) == 4
+        and all(type(v) in (int, float) for v in detail)
+        and 0 <= detail[0] < detail[2] <= 1
+        and 0 <= detail[1] < detail[3] <= 1
+    )
+    if (
+        type(index) is not int
+        or not isinstance(rois, list)
+        or len(rois) != 3
+        or not 0 <= index < len(rois)
+        or not valid_rect
+        or not isinstance(center, list)
+        or len(center) != 2
+        or any(type(v) not in (int, float) or not 0 <= v <= 1 for v in center)
+        or any(
+            not isinstance(roi, list)
+            or len(roi) != 4
+            or any(type(v) not in (int, float) for v in roi)
+            or not (0 <= roi[0] < roi[2] <= 1 and 0 <= roi[1] < roi[3] <= 1)
+            for roi in rois
+        )
+    ):
+        raise MontageRejection("rebound_calibration", "detail must contain a verified Operator")
+    focused = rois[index]
+    if not (
+        detail[0] <= focused[0] < focused[2] <= detail[2]
+        and detail[1] <= focused[1] < focused[3] <= detail[3]
+    ):
+        raise MontageRejection("rebound_calibration", "detail crops outside verified Operator")
+    return {**cfg, "operator_rois": rois}
+
+
+def rebound_stage(local_frame: int, plan: dict[str, Any], profile: CampaignProfile) -> str:
+    total = int(plan["montage"]["comparison_frames"])
+    if not 0 <= local_frame < total:
+        raise MontageRejection("rebound_timeline", "comparison frame outside legal grid")
+    cfg = rebound_config(profile, total)
+    original = int(cfg["before_hold_frames"])
+    flash = original + int(cfg["after_flash_frames"])
+    split = flash + int(cfg["split_frames"])
+    if local_frame < original:
+        return "before"
+    if local_frame < flash:
+        return "after"
+    if local_frame < split:
+        return "split"
+    return "group"
+
+
+def rebound_progress(local_frame: int, plan: dict[str, Any], profile: CampaignProfile) -> float:
+    return {"before": 0.0, "after": 1.0, "split": 0.5, "group": 1.0}[
+        rebound_stage(local_frame, plan, profile)
+    ]
+
+
 def stage_progress(local_frame: int, plan: dict[str, Any], profile: CampaignProfile) -> list[float]:
     """Operator states for one frame within the exact legal comparison window."""
     cfg = config(profile, int(plan["montage"]["comparison_frames"]))
@@ -306,7 +389,7 @@ def render_comparison(
     """Build the canonical full-frame staggered comparison from verified source stills."""
     frames = int(plan["montage"]["comparison_frames"])
     mode = str(plan["montage"]["comparison_mode"])
-    if mode not in {"cascade", "spotlight", "snapback", "hero_focus"}:
+    if mode not in {"cascade", "spotlight", "snapback", "hero_focus", "rebound"}:
         raise MontageRejection("invalid_comparison_mode", mode)
     if mode == "cascade":
         cfg = config(profile, frames)
@@ -314,8 +397,10 @@ def render_comparison(
         cfg = spotlight_config(profile, frames)
     elif mode == "snapback":
         cfg = snapback_config(profile, frames)
-    else:
+    elif mode == "hero_focus":
         cfg = hero_focus_config(profile, frames)
+    else:
+        cfg = rebound_config(profile, frames)
     before = Image.open(before_path).convert("RGB")
     after = Image.open(after_path).convert("RGB")
     if before.size != after.size or before.size != (
@@ -349,12 +434,18 @@ def render_comparison(
         sample_set.update(
             {preview - 1, preview, reveal - 1, reveal, reveal + int(cfg["transition_frames"]) - 1}
         )
-    else:
+    elif mode == "hero_focus":
         preview = int(cfg["after_preview_frames"])
         original = preview + int(cfg["before_hold_frames"])
         group = original + int(cfg["split_frames"])
         sample_set.update({preview - 1, preview, original - 1, original, group - 1, group})
         split_x = round(float(cfg["split_fraction"]) * w)
+    else:
+        original = int(cfg["before_hold_frames"])
+        flash = original + int(cfg["after_flash_frames"])
+        group = flash + int(cfg["split_frames"])
+        sample_set.update({original - 1, original, flash - 1, flash, group - 1, group})
+        split_x = w // 2
     for n in range(frames):
         if mode == "cascade":
             states = stage_progress(n, plan, profile)
@@ -380,7 +471,11 @@ def render_comparison(
                 else Image.blend(before, after, progress)
             )
         else:
-            phase = hero_focus_stage(n, plan, profile)
+            phase = (
+                hero_focus_stage(n, plan, profile)
+                if mode == "hero_focus"
+                else rebound_stage(n, plan, profile)
+            )
             if phase == "before":
                 frame = before
             elif phase == "split":
@@ -397,7 +492,14 @@ def render_comparison(
                 if mode == "spotlight"
                 else {"after": progress}
                 if mode == "snapback"
-                else {"phase": phase, "after": hero_focus_progress(n, plan, profile)}
+                else {
+                    "phase": phase,
+                    "after": (
+                        hero_focus_progress(n, plan, profile)
+                        if mode == "hero_focus"
+                        else rebound_progress(n, plan, profile)
+                    ),
+                }
             )
     target = workspace / "comparison.nut"
     fps = rate(profile)
@@ -461,8 +563,23 @@ def render_panels(
     canvas_width: int,
     bottom_height: int,
     source_progress: list[float],
+    live_source: Path | None = None,
 ) -> dict[str, Any]:
     """Generate bottom-matte panel sequence, matched to the same output frame grid."""
+    if plan["montage"]["comparison_mode"] == "rebound":
+        if live_source is None:
+            raise MontageRejection("rebound_source", "certified clean canonical video required")
+        return render_rebound_panels(
+            before_path,
+            after_path,
+            live_source,
+            workspace,
+            plan,
+            profile,
+            canvas_width,
+            bottom_height,
+            source_progress,
+        )
     if plan["montage"]["comparison_mode"] == "hero_focus":
         return render_hero_focus_panels(
             before_path,
@@ -1098,6 +1215,197 @@ def render_hero_focus_panels(
         "sampled_states": samples,
         "source_only": True,
         "text_synced": True,
+        "source_still_sha256": {
+            "before": hashlib.sha256(before_path.read_bytes()).hexdigest(),
+            "after": hashlib.sha256(after_path.read_bytes()).hexdigest(),
+        },
+    }
+
+
+def render_rebound_panels(
+    before_path: Path,
+    after_path: Path,
+    live_source: Path,
+    workspace: Path,
+    plan: dict[str, Any],
+    profile: CampaignProfile,
+    canvas_width: int,
+    bottom_height: int,
+    source_progress: list[float],
+) -> dict[str, Any]:
+    """Source-native live hero crop, large certified A/B, then three-Operator payoff.
+
+    The landscape picture retains its complete 1920x1080 frame; only the auxiliary
+    portrait detail crops the SAME lossless canonical frame for mobile legibility.
+    """
+    edit = plan["montage"]
+    frames = int(edit["output_frames"])
+    cfg = rebound_config(profile, int(edit["comparison_frames"]))
+    if len(source_progress) != frames:
+        raise MontageRejection("rebound_timeline", "title and panel grids diverged")
+    scale = canvas_width / 1080
+    margin = max(2, round(int(cfg["margin"]) * scale))
+    gap = max(2, round(int(cfg["gap"]) * scale))
+    y = max(3, round(int(cfg["panel_top"]) * scale))
+    width = min(canvas_width - 2 * margin, round(int(cfg["focus_card_width"]) * scale))
+    height = round(int(cfg["focus_card_height"]) * scale)
+    group_height = round(int(cfg["group_card_height"]) * scale)
+    half_width = (canvas_width - 2 * margin - gap) // 2
+    group_width = (canvas_width - 2 * margin - 2 * gap) // 3
+    if (
+        min(width, height, group_height, half_width, group_width) < 18
+        or width < canvas_width * 0.8
+        or y + max(height, group_height) >= bottom_height - 4
+    ):
+        raise MontageRejection("rebound_layout", "legible portrait crops exceed matte bounds")
+    matte = profile.config["output"]["portrait_matte"]
+    bg = ImageColor.getrgb(str(matte["background_hex"]))[:3]
+    gold = ImageColor.getrgb(str(matte["accent_hex"]))[:3]
+    before = Image.open(before_path).convert("RGB")
+    after = Image.open(after_path).convert("RGB")
+    if before.size != after.size:
+        raise MontageRejection("rebound_stills", "source-verified still geometry changed")
+    detail = cfg["detail_roi"]
+    center = (float(cfg["focus_crop_center"][0]), float(cfg["focus_crop_center"][1]))
+    focus_stills = [
+        ImageOps.fit(
+            _crop(im, detail), (width, height),
+            method=Image.Resampling.LANCZOS, centering=center,
+        )
+        for im in (before, after)
+    ]
+    dual_stills = [
+        ImageOps.fit(
+            _crop(im, detail), (half_width, height),
+            method=Image.Resampling.LANCZOS, centering=center,
+        )
+        for im in (before, after)
+    ]
+    group_stills = [
+        [
+            ImageOps.fit(
+                _crop(im, roi), (group_width, group_height),
+                method=Image.Resampling.LANCZOS,
+            )
+            for roi in cfg["operator_rois"]
+        ]
+        for im in (before, after)
+    ]
+    compare_start = int(edit["hook"]["frames"]) + sum(
+        int(w["frames"]) for w in edit["source_windows"]
+    )
+    compare_end = compare_start + int(edit["comparison_frames"])
+    original = compare_start + int(cfg["before_hold_frames"])
+    flash = original + int(cfg["after_flash_frames"])
+    group = flash + int(cfg["split_frames"])
+    edges = [compare_start, original, flash, group, compare_end]
+    live_count = compare_start + frames - compare_end
+    source_width, source_height = before.size
+    frame_bytes = source_width * source_height * 3
+    selected = f"select=lt(n\\,{compare_start})+gte(n\\,{compare_end}),format=rgb24"
+    process = subprocess.Popen(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-threads:v", "1", "-i", str(live_source), "-vf", selected,
+            "-fps_mode", "passthrough", "-frames:v", str(live_count),
+            "-pix_fmt", "rgb24", "-f", "rawvideo", "-",
+        ],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if process.stdout is None:
+        raise RuntimeError("no readable canonical live frames")
+    folder = workspace / "panel_frames"
+    folder.mkdir(exist_ok=True)
+    focus_left = (canvas_width - width) // 2
+    half_boxes = [
+        [margin + i * (half_width + gap), y,
+         margin + i * (half_width + gap) + half_width, y + height]
+        for i in range(2)
+    ]
+    radius = max(2, round(12 * scale))
+    samples: dict[str, dict[str, Any]] = {}
+    sample_indices = {
+        0, int(edit["hook"]["frames"]), compare_start - 1, *edges,
+        original - 1, flash - 1, group - 1, frames - 1,
+    }
+    for n in range(frames):
+        active = source_progress[n]
+        image = Image.new("RGB", (canvas_width, bottom_height), bg)
+        draw = ImageDraw.Draw(image)
+        if compare_start <= n < compare_end:
+            local = n - compare_start
+            phase = rebound_stage(local, plan, profile)
+            expected = rebound_progress(local, plan, profile)
+            if active != expected:
+                raise MontageRejection("rebound_text_sync", "video and approved title disagree")
+            if phase in ("before", "after"):
+                item = focus_stills[int(phase == "after")]
+                image.paste(item, (focus_left, y))
+                draw.rounded_rectangle(
+                    (focus_left, y, focus_left + width - 1, y + height - 1),
+                    radius=radius,
+                    outline=gold if phase == "after" else (83, 87, 91),
+                    width=max(1, round(3 * scale)),
+                )
+            elif phase == "split":
+                for i, item in enumerate(dual_stills):
+                    x0, y0, x1, y1 = half_boxes[i]
+                    image.paste(item, (x0, y0))
+                    draw.rounded_rectangle(
+                        (x0, y0, x1 - 1, y1 - 1),
+                        radius=radius,
+                        outline=gold if i else (83, 87, 91),
+                        width=max(1, round(3 * scale)),
+                    )
+            else:
+                for i, item in enumerate(group_stills[1]):
+                    x0 = margin + i * (group_width + gap)
+                    image.paste(item, (x0, y))
+                    draw.rounded_rectangle(
+                        (x0, y, x0 + group_width - 1, y + group_height - 1),
+                        radius=radius, outline=gold, width=max(1, round(3 * scale)),
+                    )
+        else:
+            raw = process.stdout.read(frame_bytes)
+            if len(raw) != frame_bytes:
+                process.kill()
+                raise RuntimeError("rebound live detail lost a lossless canonical frame")
+            live = Image.frombytes("RGB", before.size, raw)
+            detail_card = ImageOps.fit(
+                _crop(live, detail), (width, height),
+                method=Image.Resampling.LANCZOS, centering=center,
+            )
+            image.paste(detail_card, (focus_left, y))
+            draw.rounded_rectangle(
+                (focus_left, y, focus_left + width - 1, y + height - 1),
+                radius=radius, outline=gold if active >= 0.5 else (83, 87, 91),
+                width=max(1, round(3 * scale)),
+            )
+            phase = "live"
+        image.save(folder / f"{n:04d}.png", compress_level=3)
+        if n in sample_indices:
+            samples[str(n)] = {"phase": phase, "after": round(active, 6)}
+    process.stdout.close()
+    if process.wait() != 0:
+        message = process.stderr.read().decode(errors="replace")[-400:] if process.stderr else ""
+        raise RuntimeError(f"source-native live detail decode failed: {message}")
+    if process.stderr is not None:
+        process.stderr.close()
+    return {
+        "folder": str(folder),
+        "mode": "rebound",
+        "frame_count": frames,
+        "source_only": True,
+        "text_synced": True,
+        "panel_count": 3,
+        "focus_operator_index": cfg["focus_operator_index"],
+        "focus_roi": detail,
+        "focus_box": [focus_left, y, focus_left + width, y + height],
+        "split_boxes": half_boxes,
+        "phase_frames": edges,
+        "live_detail_frames": live_count,
+        "live_detail_source": "clean_canonical_ffv1_nut",
+        "sampled_states": samples,
         "source_still_sha256": {
             "before": hashlib.sha256(before_path.read_bytes()).hexdigest(),
             "after": hashlib.sha256(after_path.read_bytes()).hexdigest(),

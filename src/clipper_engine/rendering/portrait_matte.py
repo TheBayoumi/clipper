@@ -20,7 +20,7 @@ from typing import Any
 from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont, ImageStat
 
 from .. import media_contract as media
-from ..montage import MontageRejection, rate
+from ..montage import MontageRejection, rate, source_frame_count, source_windows
 from ..profiles import CampaignProfile
 from . import ffv1
 
@@ -52,6 +52,17 @@ SNAPBACK_REQUIRED_CHECKS = frozenset(
         "portrait_snapback_verified_stills",
         "portrait_snapback_text_sync",
         "portrait_snapback_encoded_rewind",
+    }
+)
+
+
+REBOUND_REQUIRED_CHECKS = frozenset(
+    {
+        "portrait_rebound_schedule",
+        "portrait_rebound_verified_stills",
+        "portrait_rebound_text_sync",
+        "portrait_rebound_encoded_phases",
+        "portrait_rebound_live_detail_visible",
     }
 )
 
@@ -103,8 +114,7 @@ def toggle_progress(frame: int, plan: dict[str, Any], profile: CampaignProfile) 
     if not source_event_start < source_event_end:
         raise MontageRejection("toggle_event_invalid", "source visual-event interval is invalid")
     hook_frames = int(edit["hook"]["frames"])
-    source_frames = int(edit["source_window"]["frames"])
-    source_window_start = int(edit["source_window"]["start_frame"])
+    source_frames = source_frame_count(edit)
     comparison_frames = int(edit["comparison_frames"])
     comparison_start = hook_frames + source_frames
     ending_start = comparison_start + comparison_frames
@@ -113,8 +123,16 @@ def toggle_progress(frame: int, plan: dict[str, Any], profile: CampaignProfile) 
         source_frame = int(edit["hook"]["start_frame"]) + frame
         return _ease((source_frame - source_event_start) / (source_event_end - source_event_start))
     if frame < comparison_start:
-        source_frame = source_window_start + frame - hook_frames
-        return _ease((source_frame - source_event_start) / (source_event_end - source_event_start))
+        offset = frame - hook_frames
+        for window in source_windows(edit):
+            length = int(window["frames"])
+            if offset < length:
+                source_frame = int(window["start_frame"]) + offset
+                return _ease(
+                    (source_frame - source_event_start) / (source_event_end - source_event_start)
+                )
+            offset -= length
+        raise MontageRejection("source_timeline", "source excerpt overflow")
     if frame < ending_start:
         local = frame - comparison_start
         if edit["comparison_mode"] == "wipe":
@@ -133,6 +151,10 @@ def toggle_progress(frame: int, plan: dict[str, Any], profile: CampaignProfile) 
             from . import panel_compositor
 
             return panel_compositor.hero_focus_progress(local, plan, profile)
+        if edit["comparison_mode"] == "rebound":
+            from . import panel_compositor
+
+            return panel_compositor.rebound_progress(local, plan, profile)
         if edit["comparison_mode"] == "snapback":
             from . import panel_compositor
 
@@ -342,6 +364,17 @@ def render_title_frames(
         group = split + int(cfg["split_frames"])
         for edge in (start, original, split, group):
             sample_indices.update({edge - 1, edge})
+    if plan["montage"]["comparison_mode"] == "rebound":
+        from . import panel_compositor
+
+        cfg = panel_compositor.rebound_config(profile, int(plan["montage"]["comparison_frames"]))
+        start = int(plan["montage"]["hook"]["frames"]) + source_frame_count(plan["montage"])
+        original = start + int(cfg["before_hold_frames"])
+        flash = original + int(cfg["after_flash_frames"])
+        group = flash + int(cfg["split_frames"])
+        sample_indices.update({0, int(plan["montage"]["hook"]["frames"]), 35, 54, 145})
+        for edge in (start, original, flash, group):
+            sample_indices.update({edge - 1, edge})
     samples: dict[str, float] = {}
     word_box = (0, 0, 0, 0)
     for n in range(frames):
@@ -352,7 +385,8 @@ def render_title_frames(
         frame_image.save(folder / f"{n:04d}.png", compress_level=3)
         if n in sample_indices:
             samples[str(n)] = round(progress, 6)
-    if samples.get("0") != 0 or samples.get(str(frames - 1)) != 1:
+    opening = 1 if plan["montage"]["comparison_mode"] == "rebound" else 0
+    if samples.get("0") != opening or samples.get(str(frames - 1)) != 1:
         raise MontageRejection("toggle_sync", "opening/final toggle state is incorrect")
     return {
         "folder": str(folder),
@@ -507,6 +541,29 @@ def _encoded_hero_focus_storyboard(
     )
 
 
+def _encoded_rebound_storyboard(
+    file: Path, output_dir: Path, plan: dict[str, Any], panel_qa: dict[str, Any]
+) -> dict[str, Any]:
+    _, after, split, _, _ = (int(n) for n in panel_qa["phase_frames"])
+    hook_end = int(plan["montage"]["hook"]["frames"])
+    toggle_mid = hook_end + int(plan["montage"]["source_windows"][0]["frames"]) + 4
+    return _encoded_montage_storyboard(
+        file,
+        output_dir,
+        [0, hook_end, toggle_mid, after, split, int(plan["montage"]["output_frames"]) - 1],
+        (
+            "RESULT FIRST",
+            "ORIGINAL LOOK",
+            "REAL SOURCE TOGGLE",
+            "ENLARGED TRANSFORMED LOOK",
+            "LARGE BEFORE / AFTER",
+            "FINAL THREE-OPERATOR PAYOFF",
+        ),
+        "operator_rebound_storyboard.jpg",
+        float(Fraction(str(plan["source"]["fps"]))),
+    )
+
+
 def render_portrait(
     clean_canonical: Path,
     output_dir: Path,
@@ -525,7 +582,8 @@ def render_portrait(
     spotlight = mode == "spotlight"
     snapback = mode == "snapback"
     hero_focus = mode == "hero_focus"
-    panel_mode = cascade or spotlight or snapback or hero_focus
+    rebound = mode == "rebound"
+    panel_mode = cascade or spotlight or snapback or hero_focus or rebound
     width, height = (int(z) for z in title_qa["canvas"])
     top = int(title_qa["top_height"])
     center = int(title_qa["center_height"])
@@ -551,6 +609,7 @@ def render_portrait(
             width,
             height - top - center,
             full_progress,
+            live_source=clean_canonical if rebound else None,
         )
         if panel_qa["source_still_sha256"] != expected_still_hashes:
             raise MontageRejection("panel_stills", "panels do not match certified comparison")
@@ -800,7 +859,11 @@ def render_portrait(
         "portrait_dimensions": (actual["width"], actual["height"]) == (width, height),
         "portrait_frame_rate": actual["avg_frame_rate"] == f"{fps.numerator}/{fps.denominator}",
         "approved_text_full_duration": title_qa["text_visible_frames"] == frames,
-        "toggle_opening_off": title_qa["progress_samples"]["0"] == 0,
+        **(
+            {"toggle_opening_after": title_qa["progress_samples"]["0"] == 1}
+            if rebound
+            else {"toggle_opening_off": title_qa["progress_samples"]["0"] == 0}
+        ),
         "toggle_final_on": title_qa["progress_samples"][str(frames - 1)] == 1,
         "portrait_source_audio_only": audio["sample_rate"]
         == int(profile.config["output"]["audio_sample_rate"])
@@ -1120,6 +1183,93 @@ def render_portrait(
             change > 2.5 for change in hero_focus_differences
         )
 
+    rebound_differences: list[float] = []
+    rebound_live_difference = 0.0
+    if rebound:
+        if panel_qa is None or expected_still_hashes is None:
+            raise RuntimeError("missing rebound source QA")
+        from . import panel_compositor
+
+        cfg = panel_compositor.rebound_config(profile, int(plan["montage"]["comparison_frames"]))
+        start = int(plan["montage"]["hook"]["frames"]) + source_frame_count(plan["montage"])
+        original = start + int(cfg["before_hold_frames"])
+        flash = original + int(cfg["after_flash_frames"])
+        group = flash + int(cfg["split_frames"])
+        end = group + int(cfg["group_frames"])
+        expected = [start, original, flash, group, end]
+        samples = panel_qa["sampled_states"]
+        checks["portrait_rebound_schedule"] = (
+            panel_qa["mode"] == "rebound"
+            and panel_qa["panel_count"] == 3
+            and panel_qa["frame_count"] == frames
+            and panel_qa["focus_operator_index"] == cfg["focus_operator_index"]
+            and panel_qa["focus_roi"] == cfg["detail_roi"]
+            and panel_qa["phase_frames"] == expected
+            and panel_qa["live_detail_frames"] == start + frames - end
+            and panel_qa["live_detail_source"] == "clean_canonical_ffv1_nut"
+            and samples["0"] == {"phase": "live", "after": 1.0}
+            and samples[str(int(plan["montage"]["hook"]["frames"]))] == {
+                "phase": "live", "after": 0.0
+            }
+            and samples[str(start)] == {"phase": "before", "after": 0.0}
+            and samples[str(original)] == {"phase": "after", "after": 1.0}
+            and samples[str(flash)] == {"phase": "split", "after": 0.5}
+            and samples[str(group)] == {"phase": "group", "after": 1.0}
+        )
+        checks["portrait_rebound_verified_stills"] = (
+            panel_qa["source_still_sha256"] == expected_still_hashes
+            and panel_qa["source_only"] is True
+        )
+        checks["portrait_rebound_text_sync"] = panel_qa["text_synced"] is True
+        pairs = ((original - 1, original), (flash - 1, flash), (group - 1, group))
+        original_start = int(plan["montage"]["hook"]["frames"])
+        indices = sorted({0, original_start, *(n for pair in pairs for n in pair)})
+        selected = "+".join(f"eq(n\\,{frame})" for frame in indices)
+        raw = subprocess.run(
+            [
+                "ffmpeg", "-v", "error", "-i", str(file),
+                "-vf", f"select={selected},format=rgb24",
+                "-fps_mode", "passthrough", "-frames:v", str(len(indices)),
+                "-f", "rawvideo", "-",
+            ],
+            check=True, capture_output=True,
+        ).stdout
+        frame_bytes = width * height * 3
+        if len(raw) != len(indices) * frame_bytes:
+            raise RuntimeError("encoded rebound detail/phase frames missing")
+        decoded = {
+            n: Image.frombytes(
+                "RGB", (width, height), raw[i * frame_bytes : (i + 1) * frame_bytes]
+            )
+            for i, n in enumerate(indices)
+        }
+        roi = profile.config["editorial"]["visual_state_roi"]
+        visual_box = (
+            round(float(roi[0]) * width),
+            top + round(float(roi[1]) * center),
+            round(float(roi[2]) * width),
+            top + round(float(roi[3]) * center),
+        )
+        for left, right in pairs:
+            change = ImageChops.difference(
+                decoded[left].crop(visual_box), decoded[right].crop(visual_box)
+            )
+            rebound_differences.append(round(sum(ImageStat.Stat(change).mean) / 3, 4))
+        x0, y0, x1, y1 = (int(v) for v in panel_qa["focus_box"])
+        detail_box = (x0 + 6, top + center + y0 + 6, x1 - 6, top + center + y1 - 6)
+        live_delta = ImageChops.difference(
+            decoded[0].crop(detail_box), decoded[original_start].crop(detail_box)
+        )
+        rebound_live_difference = round(sum(ImageStat.Stat(live_delta).mean) / 3, 4)
+        checks["portrait_rebound_encoded_phases"] = len(rebound_differences) == 3 and all(
+            v > 2.5 for v in rebound_differences
+        )
+        checks["portrait_rebound_live_detail_visible"] = (
+            x1 - x0 >= width * 0.8
+            and y1 - y0 >= 0.7 * (height - top - center)
+            and rebound_live_difference > 2.5
+        )
+
     required = PORTRAIT_REQUIRED_CHECKS | (
         CASCADE_REQUIRED_CHECKS
         if cascade
@@ -1129,8 +1279,12 @@ def render_portrait(
         if snapback
         else HERO_FOCUS_REQUIRED_CHECKS
         if hero_focus
+        else REBOUND_REQUIRED_CHECKS
+        if rebound
         else frozenset()
     )
+    if rebound:
+        required = (required - {"toggle_opening_off"}) | {"toggle_opening_after"}
     if set(checks) != required or not all(checks.values()):
         raise RuntimeError(f"portrait QA failed: {checks}")
     storyboard = (
@@ -1140,6 +1294,8 @@ def render_portrait(
         if snapback and panel_qa is not None
         else _encoded_hero_focus_storyboard(file, output_dir, plan, panel_qa)
         if hero_focus and panel_qa is not None
+        else _encoded_rebound_storyboard(file, output_dir, plan, panel_qa)
+        if rebound and panel_qa is not None
         else None
     )
     hasher = hashlib.sha256()
@@ -1165,6 +1321,8 @@ def render_portrait(
             "spotlight_pixel_differences": spotlight_differences,
             "snapback_pixel_differences": snapback_differences,
             "hero_focus_pixel_differences": hero_focus_differences,
+            "rebound_pixel_differences": rebound_differences,
+            "rebound_live_detail_difference": rebound_live_difference,
             "video_profile": actual,
             "audio_profile": audio,
             "ssim": ssim,
@@ -1175,6 +1333,7 @@ def render_portrait(
         "spotlight": panel_qa if spotlight else None,
         "snapback": panel_qa if snapback else None,
         "hero_focus": panel_qa if hero_focus else None,
+        "rebound": panel_qa if rebound else None,
         "storyboard": storyboard,
         "canonical_ffv1_nut": True,
     }

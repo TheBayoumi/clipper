@@ -88,28 +88,37 @@ def _thumbnail(source: Path, frame: int, fps: Fraction) -> npt.NDArray[np.uint8]
     return np.frombuffer(completed.stdout, dtype=np.uint8).reshape(54, 96)
 
 
+def source_windows(edit: dict[str, Any]) -> list[dict[str, int]]:
+    """One canonical source-segment representation for contiguous and rebound edits."""
+    if "source_windows" in edit:
+        return list(edit["source_windows"])
+    return [edit["source_window"]]
+
+
+def source_frame_count(edit: dict[str, Any]) -> int:
+    return sum(int(window["frames"]) for window in source_windows(edit))
+
+
 def resolve_mode_timing(
     editorial: dict[str, Any],
     states: dict[str, Any],
     comparison_mode: str,
     fps: Fraction,
-) -> tuple[int, int, dict[str, int], dict[str, int], list[dict[str, Any]]]:
-    """Resolve a Clipper montage's legal frame-grid schedule from profile calibration.
-
-    The verified source anchors and window STARTS remain authoritative. A mode
-    can choose a shorter subset of calibrated hook/reveal windows; it may not
-    invent source moments or increase a window beyond its verified interval.
-    """
-    styles = editorial.get("mode_timing", {})
-    style = styles.get(comparison_mode, {})
-    if not isinstance(style, dict) or set(style) - {
+) -> tuple[int, int, list[dict[str, int]], dict[str, Any], list[dict[str, Any]]]:
+    """Resolve source-certified multi-window montages without alternate pipelines."""
+    style = editorial.get("mode_timing", {}).get(comparison_mode, {})
+    allowed = {
         "preferred_output_seconds",
         "comparison_seconds",
         "hook_frames",
+        "hook_start_frame",
+        "hook_state",
         "ending_shot_frames",
         "source_window",
+        "source_windows",
         "maximum_output_seconds",
-    }:
+    }
+    if not isinstance(style, dict) or set(style) - allowed:
         raise MontageRejection("mode_timing_invalid", "unknown montage timing calibration")
     target = _frames(
         style.get("preferred_output_seconds", editorial["preferred_output_seconds"]), fps
@@ -123,41 +132,72 @@ def resolve_mode_timing(
     )
     if comparison_frames < 1:
         raise MontageRejection("mode_timing_invalid", "comparison must contain positive frames")
-    source_window = style.get(
-        "source_window", {"start_frame": 0, "frames": int(states["source_frames"])}
-    )
-    if not isinstance(source_window, dict) or set(source_window) != {"start_frame", "frames"}:
-        raise MontageRejection(
-            "source_window_invalid", "source window must contain only start/frames"
-        )
-    source_window = {
-        "start_frame": int(source_window["start_frame"]),
-        "frames": int(source_window["frames"]),
-    }
-    start = source_window["start_frame"]
-    end = start + source_window["frames"]
+    if "source_window" in style and "source_windows" in style:
+        raise MontageRejection("source_window_invalid", "one source-window authority required")
+    raw = style.get("source_windows")
+    if raw is None:
+        raw = [style.get("source_window", {"start_frame": 0, "frames": states["source_frames"]})]
+    if not isinstance(raw, list) or not raw:
+        raise MontageRejection("source_window_invalid", "source windows must be nonempty")
+    windows: list[dict[str, int]] = []
+    previous_end = -1
+    for entry in raw:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"start_frame", "frames"}
+            or type(entry["start_frame"]) is not int
+            or type(entry["frames"]) is not int
+        ):
+            raise MontageRejection("source_window_invalid", "source windows require integer bounds")
+        window = {"start_frame": entry["start_frame"], "frames": entry["frames"]}
+        begin, finish = window["start_frame"], window["start_frame"] + window["frames"]
+        if begin < 0 or begin < previous_end or window["frames"] < 1 or finish > int(states["source_frames"]):
+            raise MontageRejection("source_window_invalid", "source windows overlap or leave master")
+        previous_end = finish
+        windows.append(window)
+    before = int(states["before_frame"])
+    after = int(states["after_frame"])
+    trigger_start = int(states["toggle_motion_start_frame"])
+    trigger_end = int(states["toggle_motion_end_frame"])
     if (
-        start < 0
-        or source_window["frames"] < 1
-        or end > int(states["source_frames"])
-        or not start <= int(states["before_frame"]) < int(states["after_frame"]) < end
-        or not start <= int(states["toggle_motion_start_frame"])
-        or not int(states["toggle_motion_end_frame"]) < end
+        not before < trigger_start < trigger_end < after
+        or not any(w["start_frame"] <= before < w["start_frame"] + w["frames"] for w in windows)
+        or not any(w["start_frame"] <= after < w["start_frame"] + w["frames"] for w in windows)
+        or not any(
+            w["start_frame"] <= trigger_start < trigger_end < w["start_frame"] + w["frames"]
+            for w in windows
+        )
     ):
         raise MontageRejection(
-            "source_window_invalid",
-            "legal source excerpt must retain the verified before/after and toggle event",
+            "source_window_invalid", "every verified before/after/trigger anchor needs its own window"
         )
-    hook = {
-        "start_frame": int(states["hook_start_frame"]),
-        "frames": int(style.get("hook_frames", states["hook_frames"])),
-    }
-    if not 0 < hook["frames"] <= int(states["hook_frames"]):
-        raise MontageRejection("mode_timing_invalid", "hook exceeds verified source window")
-    event_start = int(states["toggle_motion_start_frame"])
-    event_end = int(states["toggle_motion_end_frame"])
-    if not hook["start_frame"] <= event_start < event_end <= hook["start_frame"] + hook["frames"]:
-        raise MontageRejection("mode_timing_invalid", "hook must retain the verified toggle event")
+    state = style.get("hook_state", "toggle")
+    hook_start = style.get("hook_start_frame", states["hook_start_frame"])
+    count = style.get("hook_frames", states["hook_frames"])
+    if type(hook_start) is not int or type(count) is not int or count < 1:
+        raise MontageRejection("mode_timing_invalid", "hook needs legal integer source frames")
+    hook: dict[str, Any] = {"start_frame": hook_start, "frames": count}
+    if state == "toggle":
+        if (
+            hook_start != int(states["hook_start_frame"])
+            or count > int(states["hook_frames"])
+            or not hook_start <= trigger_start < trigger_end < hook_start + count
+        ):
+            raise MontageRejection("mode_timing_invalid", "hook must retain verified toggle")
+    elif state == "after":
+        verified = states["ending_shots"]
+        if not any(
+            shot["state"] == "after"
+            and int(shot["start_frame"]) <= hook_start
+            and hook_start + count <= int(shot["start_frame"]) + int(shot["frames"])
+            for shot in verified
+        ):
+            raise MontageRejection(
+                "hook_window_invalid", "opening result must lie inside a verified after window"
+            )
+        hook["state"] = "after"
+    else:
+        raise MontageRejection("mode_timing_invalid", "unsupported opening visual state")
     shots: list[dict[str, Any]] = [dict(shot) for shot in states["ending_shots"]]
     sizes = style.get("ending_shot_frames")
     if sizes is not None:
@@ -166,13 +206,12 @@ def resolve_mode_timing(
                 "mode_timing_invalid", "one reveal duration per verified shot required"
             )
         for shot, size in zip(shots, sizes, strict=True):
-            size = int(size)
-            if not 0 < size <= int(shot["frames"]):
+            if type(size) is not int or not 0 < size <= int(shot["frames"]):
                 raise MontageRejection(
                     "mode_timing_invalid", "reveal exceeds its verified source window"
                 )
             shot["frames"] = size
-    return target, comparison_frames, source_window, hook, shots
+    return target, comparison_frames, windows, hook, shots
 
 
 def build_plan(
@@ -282,10 +321,10 @@ def build_plan(
         raise MontageRejection(
             "invalid_comparison_mode", f"{comparison_mode} not in {allowed_modes}"
         )
-    target, comparison_frames, source_window, hook, shots = resolve_mode_timing(
+    target, comparison_frames, windows, hook, shots = resolve_mode_timing(
         editorial, states, comparison_mode, fps
     )
-    if comparison_mode in {"cascade", "spotlight", "snapback", "hero_focus"}:
+    if comparison_mode in {"cascade", "spotlight", "snapback", "hero_focus", "rebound"}:
         from .rendering import panel_compositor
 
         if not output.get("portrait_matte", {}).get("enabled", False):
@@ -299,8 +338,10 @@ def build_plan(
                 panel_compositor.spotlight_config(profile, comparison_frames)
             elif comparison_mode == "snapback":
                 panel_compositor.snapback_config(profile, comparison_frames)
-            else:
+            elif comparison_mode == "hero_focus":
                 panel_compositor.hero_focus_config(profile, comparison_frames)
+            else:
+                panel_compositor.rebound_config(profile, comparison_frames)
     if not shots or [shot["state"] for shot in shots] != ["before", "after", "before", "after"]:
         raise MontageRejection(
             "invalid_switch_pattern", "ending requires calibrated A/B/A/B payoff"
@@ -323,7 +364,7 @@ def build_plan(
     if hook["start_frame"] + hook["frames"] > frame_count:
         raise MontageRejection("hook_window_invalid", "transformation hook overruns source")
     ending_frames = sum(int(shot["frames"]) for shot in shots)
-    if hook["frames"] + source_window["frames"] + comparison_frames + ending_frames != target:
+    if hook["frames"] + sum(w["frames"] for w in windows) + comparison_frames + ending_frames != target:
         raise MontageRejection(
             "no_admissible_montage",
             "calibrated hook, original, comparison and switch must land on exact target",
@@ -382,7 +423,11 @@ def build_plan(
             "comparison_mode": comparison_mode,
             "hook": hook,
             "full_source_frames": frame_count,
-            "source_window": source_window,
+            **(
+                {"source_windows": windows}
+                if "source_windows" in editorial.get("mode_timing", {}).get(comparison_mode, {})
+                else {"source_window": windows[0]}
+            ),
             "comparison_frames": comparison_frames,
             "ending_shots": shots,
             "ending_frames": ending_frames,
@@ -412,11 +457,16 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
     states = editorial["verified_visual_states"].get(plan["source"]["filename"])
     if states is None:
         raise MontageRejection("uncalibrated_source", "plan source has no verified states")
-    target, comparison_frames, expected_window, expected_hook, expected_shots = resolve_mode_timing(
+    target, comparison_frames, expected_windows, expected_hook, expected_shots = resolve_mode_timing(
         editorial, states, str(montage.get("comparison_mode")), rate(profile)
     )
+    multi = "source_windows" in editorial.get("mode_timing", {}).get(
+        str(montage.get("comparison_mode")), {}
+    )
     if (
-        montage.get("source_window") != expected_window
+        ("source_windows" in montage) != multi
+        or ("source_window" in montage) == multi
+        or source_windows(montage) != expected_windows
         or montage["hook"] != expected_hook
         or montage["ending_shots"] != expected_shots
     ):
@@ -425,7 +475,7 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
         raise MontageRejection("montage_type", "plan must use the legal full-frame edit")
     if montage.get("comparison_mode") not in editorial["comparison_modes"]:
         raise MontageRejection("invalid_comparison_mode", "unknown comparison layout")
-    if montage["comparison_mode"] in {"cascade", "spotlight", "snapback", "hero_focus"}:
+    if montage["comparison_mode"] in {"cascade", "spotlight", "snapback", "hero_focus", "rebound"}:
         from .rendering import panel_compositor
 
         if not profile.config["output"].get("portrait_matte", {}).get("enabled", False):
@@ -439,8 +489,10 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
                 panel_compositor.spotlight_config(profile, int(montage["comparison_frames"]))
             elif montage["comparison_mode"] == "snapback":
                 panel_compositor.snapback_config(profile, int(montage["comparison_frames"]))
-            else:
+            elif montage["comparison_mode"] == "hero_focus":
                 panel_compositor.hero_focus_config(profile, int(montage["comparison_frames"]))
+            else:
+                panel_compositor.rebound_config(profile, int(montage["comparison_frames"]))
     if int(montage["full_source_frames"]) != int(states["source_frames"]):
         raise MontageRejection("source_frames_changed", "full source is not retained")
     if int(plan["source"]["frames"]) != int(states["source_frames"]):
@@ -460,7 +512,7 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
     expected_ending = sum(int(s["frames"]) for s in expected_shots)
     expected_frames = (
         expected_hook["frames"]
-        + expected_window["frames"]
+        + sum(w["frames"] for w in expected_windows)
         + int(montage["comparison_frames"])
         + expected_ending
     )

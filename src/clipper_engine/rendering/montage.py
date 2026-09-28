@@ -12,7 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from .. import media_contract as media
-from ..montage import MontageRejection, rate, sha256, validate_plan
+from ..montage import (
+    MontageRejection,
+    rate,
+    sha256,
+    source_frame_count,
+    source_windows,
+    validate_plan,
+)
 from ..profiles import CampaignProfile
 from . import ffv1
 
@@ -47,10 +54,12 @@ def filter_graph(
     fps = rate(profile)
     edit = plan["montage"]
     title = edit["title"]
-    source_window = edit["source_window"]
-    source_start = int(source_window["start_frame"])
-    source_frames = int(source_window["frames"])
-    excerpt = source_start != 0 or source_frames != int(edit["full_source_frames"])
+    windows = source_windows(edit)
+    source_start = int(windows[0]["start_frame"])
+    source_frames = source_frame_count(edit)
+    excerpt = len(windows) > 1 or source_start != 0 or source_frames != int(
+        edit["full_source_frames"]
+    )
     hook = edit["hook"]
     comparison_frames = int(edit["comparison_frames"])
     ending_frames = int(edit["ending_frames"])
@@ -82,6 +91,39 @@ def filter_graph(
     fade = float(profile.config["editorial"].get("audio_declick_ms", 12)) / 1000.0
     if not 0.002 <= fade <= min(hlen, comparison_seconds, ending_seconds) / 4:
         raise MontageRejection("audio_declick_invalid", "source-only edit-edge fade out of range")
+    # Every excerpt segment receives audio from the same certified source track.
+    # Discontinuous source-native windows are joined with short edge fades.
+    if len(windows) == 1:
+        source_audio_graph = [
+            f"[afull]atrim=start={source_start_seconds:.9f}:end={source_end_seconds:.9f},"
+            "asetpts=PTS-STARTPTS,apad=pad_dur=0.1,"
+            f"atrim=duration={source_seconds:.9f},"
+            f"afade=t=in:st=0:d={fade:.4f},"
+            f"afade=t=out:st={source_seconds - fade:.9f}:d={fade:.4f}[au1]"
+        ]
+    else:
+        source_audio_graph = [
+            f"[afull]asplit={len(windows)}"
+            + "".join(f"[as{i}]" for i in range(len(windows)))
+        ]
+        for i, window in enumerate(windows):
+            start = float(Fraction(int(window["start_frame"]), 1) / fps)
+            end = float(
+                Fraction(int(window["start_frame"]) + int(window["frames"]), 1) / fps
+            )
+            length = float(Fraction(int(window["frames"]), 1) / fps)
+            source_audio_graph.append(
+                f"[as{i}]atrim=start={start:.9f}:end={end:.9f},"
+                "asetpts=PTS-STARTPTS,apad=pad_dur=0.1,"
+                f"atrim=duration={length:.9f},"
+                f"afade=t=in:st=0:d={fade:.4f},"
+                f"afade=t=out:st={length - fade:.9f}:d={fade:.4f}[apiece{i}]"
+            )
+        source_audio_graph.append(
+            "".join(f"[apiece{i}]" for i in range(len(windows)))
+            + f"concat=n={len(windows)}:v=0:a=1,apad=pad_dur=0.1,"
+            + f"atrim=duration={source_seconds:.9f}[au1]"
+        )
     title_chain = f",{title_filter}" if show_embedded_title else ""
     # Only audio from the one certified source track, retained at normal playback rate.
     # Visual switches are under a continuous source-native audio passage to avoid pops.
@@ -99,11 +141,7 @@ def filter_graph(
             f"asetpts=PTS-STARTPTS,apad=pad_dur=0.1,atrim=duration={hlen:.9f},"
             f"afade=t=in:st=0:d={fade:.4f},"
             f"afade=t=out:st={hlen - fade:.9f}:d={fade:.4f}[au0]",
-            f"[afull]atrim=start={source_start_seconds:.9f}:end={source_end_seconds:.9f},"
-            "asetpts=PTS-STARTPTS,apad=pad_dur=0.1,"
-            f"atrim=duration={source_seconds:.9f},"
-            f"afade=t=in:st=0:d={fade:.4f},"
-            f"afade=t=out:st={source_seconds - fade:.9f}:d={fade:.4f}[au1]",
+            *source_audio_graph,
             f"[acompare]atrim=start=0.8:end={0.8 + comparison_seconds:.9f},"
             "asetpts=PTS-STARTPTS,apad=pad_dur=0.1,"
             f"atrim=duration={comparison_seconds:.9f},"
@@ -164,7 +202,7 @@ def _comparison_piece(
     fps = rate(profile)
     frames = int(plan["montage"]["comparison_frames"])
     mode = plan["montage"]["comparison_mode"]
-    if mode in {"cascade", "spotlight", "snapback", "hero_focus"}:
+    if mode in {"cascade", "spotlight", "snapback", "hero_focus", "rebound"}:
         from . import panel_compositor
 
         return panel_compositor.render_comparison(
@@ -415,7 +453,7 @@ def _qa(
                     "source_to_piece_hashes_exact"
                 ]
                 and stage["source_excerpt"]["frame_count"]
-                == plan["montage"]["source_window"]["frames"]
+                == source_frame_count(plan["montage"])
             }
             if "source_excerpt" in stage
             else {}
@@ -585,14 +623,14 @@ def render(
         staging["comparison"] = comparison_qa
         staging["hook"] = hook_qa
         staging["reveal"] = ending_qa
-        source_window = plan["montage"]["source_window"]
-        selected_excerpt = int(source_window["start_frame"]) != 0 or int(
-            source_window["frames"]
-        ) != int(plan["montage"]["full_source_frames"])
+        windows = source_windows(plan["montage"])
+        selected_excerpt = len(windows) > 1 or int(windows[0]["start_frame"]) != 0 or (
+            source_frame_count(plan["montage"]) != int(plan["montage"]["full_source_frames"])
+        )
         source_excerpt: Path | None = None
         if selected_excerpt:
             source_excerpt, source_excerpt_qa = _source_windows_piece(
-                staged, workspace, "source_excerpt.nut", [source_window], source_profile
+                staged, workspace, "source_excerpt.nut", windows, source_profile
             )
             staging["source_excerpt"] = source_excerpt_qa
         graph = filter_graph(plan, profile, title, _fontfile())

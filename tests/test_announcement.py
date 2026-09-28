@@ -1184,3 +1184,191 @@ def test_hero_focus_is_published_in_existing_validation_only_workflow() -> None:
     assert workflow.index("Plan certified-source Hero Focus") < workflow.index(
         "Plan certified-source three-Operator cascade"
     )
+
+
+def test_rebound_has_distinct_verified_result_first_source_windows(
+    source: Path, profile: CampaignProfile
+) -> None:
+    p = _cascade_test_profile(profile)
+    plan = montage.build_plan(source, p, comparison_mode="rebound")
+    edit = plan["montage"]
+    assert edit["full_source_frames"] == 178
+    assert edit["comparison_mode"] == "rebound"
+    assert edit["hook"] == {"start_frame": 144, "frames": 15, "state": "after"}
+    assert edit["source_windows"] == [
+        {"start_frame": 20, "frames": 16},
+        {"start_frame": 55, "frames": 10},
+        {"start_frame": 108, "frames": 14},
+    ]
+    assert "source_window" not in edit
+    assert montage.source_frame_count(edit) == 40
+    assert edit["comparison_frames"] == 90
+    assert edit["output_frames"] == 165
+    assert edit["output_seconds"] == 5.5
+    assert [shot["frames"] for shot in edit["ending_shots"]] == [5, 5, 5, 5]
+    assert panel_compositor.rebound_config(p, 90)["focus_operator_index"] == 1
+    for n, state in {
+        0: 1.0,
+        14: 1.0,
+        15: 0.0,
+        31: 0.0,
+        41: 1.0,
+        55: 0.0,
+        74: 0.0,
+        75: 1.0,
+        90: 1.0,
+        91: 0.5,
+        121: 1.0,
+        145: 0.0,
+        164: 1.0,
+    }.items():
+        assert portrait_matte.toggle_progress(n, plan, p) == state
+    for local, phase in {
+        0: "before", 19: "before", 20: "after", 35: "after",
+        36: "split", 65: "split", 66: "group", 89: "group"
+    }.items():
+        assert panel_compositor.rebound_stage(local, plan, p) == phase
+    montage.validate_plan(plan, source, p)
+    with pytest.raises(montage.MontageRejection, match="rebound_timeline"):
+        panel_compositor.rebound_stage(90, plan, p)
+
+
+@pytest.mark.parametrize(
+    ("key", "bad_value"),
+    [
+        ("focus_operator_index", 3),
+        ("focus_operator_index", True),
+        ("detail_roi", [0.3, 0.1, 0.5, 0.8]),
+        ("focus_crop_center", [0.5, 2]),
+        ("before_hold_frames", 3),
+        ("focus_card_width", 0),
+        ("unapproved_field", 1),
+    ],
+)
+def test_rebound_rejects_bad_profile_calibration(
+    source: Path, profile: CampaignProfile, key: str, bad_value: object
+) -> None:
+    p = _cascade_test_profile(profile)
+    p.config["output"]["portrait_matte"]["rebound"][key] = bad_value
+    with pytest.raises(montage.MontageRejection, match="rebound_calibration"):
+        montage.build_plan(source, p, comparison_mode="rebound")
+
+
+@pytest.mark.parametrize(
+    "bad_windows",
+    [
+        [{"start_frame": 20, "frames": 16}, {"start_frame": 55, "frames": 10}],
+        [
+            {"start_frame": 20, "frames": 16},
+            {"start_frame": 55, "frames": 10},
+            {"start_frame": 100, "frames": 5},
+        ],
+        [
+            {"start_frame": 20, "frames": 16},
+            {"start_frame": 30, "frames": 10},
+            {"start_frame": 108, "frames": 14},
+        ],
+        [
+            {"start_frame": -1, "frames": 37},
+            {"start_frame": 55, "frames": 10},
+            {"start_frame": 108, "frames": 14},
+        ],
+    ],
+)
+def test_rebound_requires_disjoint_verified_anchor_windows(
+    source: Path, profile: CampaignProfile, bad_windows: list[dict[str, int]]
+) -> None:
+    p = _cascade_test_profile(profile)
+    p.config["editorial"]["mode_timing"]["rebound"]["source_windows"] = bad_windows
+    with pytest.raises(montage.MontageRejection, match="source_window_invalid"):
+        montage.build_plan(source, p, comparison_mode="rebound")
+
+
+def test_rebound_rejects_unverified_after_hook(
+    source: Path, profile: CampaignProfile
+) -> None:
+    p = _cascade_test_profile(profile)
+    p.config["editorial"]["mode_timing"]["rebound"]["hook_start_frame"] = 100
+    with pytest.raises(montage.MontageRejection, match="hook_window_invalid"):
+        montage.build_plan(source, p, comparison_mode="rebound")
+
+
+def test_rebound_source_native_live_detail_render_and_fail_closed_qualification(
+    source: Path,
+    profile: CampaignProfile,
+    certificate: tuple[Path, dict[str, Any]],
+    tmp_path: Path,
+) -> None:
+    p = _cascade_test_profile(profile)
+    planned = tmp_path / "plan_rebound.json"
+    plan = plan_campaign(
+        p, source, certificate[0], planned, comparison_mode="rebound",
+        approved_text_index=1,
+    )
+    assert plan["status"] == "PLANNED"
+    result = render_campaign(p, source, certificate[0], planned, tmp_path / "rebound")
+    portrait = result["portrait"]
+    panels = portrait["rebound"]
+    assert result["staging"]["hook"]["source_to_piece_hashes_exact"]
+    assert result["staging"]["source_excerpt"]["source_to_piece_hashes_exact"]
+    assert result["staging"]["source_excerpt"]["frame_count"] == 40
+    assert result["staging"]["source_excerpt"]["windows"] == plan["montage"]["source_windows"]
+    assert result["staging"]["reveal"]["source_to_piece_hashes_exact"]
+    assert result["staging"]["comparison"]["source_only"] is True
+    assert result["staging"]["comparison"]["comparison_mode"] == "rebound"
+    assert all(result["qa"]["checks"].values()), result["qa"]["checks"]
+    assert panels["mode"] == "rebound"
+    assert panels["phase_frames"] == [55, 75, 91, 121, 145]
+    assert panels["live_detail_frames"] == 75
+    assert panels["live_detail_source"] == "clean_canonical_ffv1_nut"
+    assert panels["focus_roi"] == p.config["output"]["portrait_matte"]["rebound"]["detail_roi"]
+    assert panels["source_still_sha256"] == result["staging"]["comparison"][
+        "source_still_sha256"
+    ]
+    assert portrait["qa"]["frame_count"] == 165
+    assert portrait["qa"]["encoded_duration"] == pytest.approx(5.5, abs=0.055)
+    assert portrait["title"]["progress_samples"]["0"] == 1
+    assert portrait["title"]["progress_samples"]["15"] == 0
+    assert portrait["title"]["progress_samples"]["55"] == 0
+    assert portrait["title"]["progress_samples"]["75"] == 1
+    assert portrait["title"]["progress_samples"]["91"] == 0.5
+    assert portrait["title"]["progress_samples"]["121"] == 1
+    assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
+    assert len(portrait["qa"]["rebound_pixel_differences"]) == 3
+    assert all(value > 2.5 for value in portrait["qa"]["rebound_pixel_differences"])
+    assert portrait["qa"]["rebound_live_detail_difference"] > 2.5
+    assert portrait["storyboard"]["frames"] == [0, 15, 35, 75, 91, 164]
+    assert portrait["storyboard"]["source"] == "actual_encoded_delivery"
+    assert Path(portrait["storyboard"]["file"]).is_file()
+    qualified = qualify_campaign(
+        p, tmp_path / "rebound" / "render_manifest.json", tmp_path / "accepted.json"
+    )
+    assert qualified["status"] == "PASS"
+    assert qualified["primary_delivery"] == portrait["file"]
+    baseline = json.loads((tmp_path / "rebound" / "render_manifest.json").read_text())
+    for field, altered, code in (
+        ("phase_frames", [55, 74, 91, 121, 145], "rebound_schedule"),
+        ("focus_roi", [0.1, 0.1, 0.3, 0.8], "rebound_schedule"),
+        ("source_still_sha256", {"before": "wrong", "after": "wrong"}, "rebound_stills"),
+    ):
+        broken = copy.deepcopy(baseline)
+        broken["portrait"]["rebound"][field] = altered
+        file = tmp_path / f"tampered_{field}.json"
+        file.write_text(json.dumps(broken))
+        with pytest.raises(montage.MontageRejection, match=code):
+            qualify_campaign(p, file, tmp_path / "rejected.json")
+    broken = copy.deepcopy(baseline)
+    broken["portrait"]["storyboard"]["sha256"] = "wrong"
+    tampered = tmp_path / "tampered_rebound_storyboard.json"
+    tampered.write_text(json.dumps(broken))
+    with pytest.raises(montage.MontageRejection, match="rebound_storyboard"):
+        qualify_campaign(p, tampered, tmp_path / "rejected.json")
+
+
+def test_official_workflow_qualifies_and_publishes_distinct_rebound() -> None:
+    workflow = Path(".github/workflows/warzone-qualification.yml").read_text()
+    assert "--comparison-mode rebound" in workflow
+    assert "delivery_rebound/render_manifest.json" in workflow
+    assert "delivery_rebound/*.mp4" in workflow
+    assert "delivery_rebound/*.jpg" in workflow
+    assert "warzone-rebound-" + chr(36) + "{{ github.sha }}" in workflow

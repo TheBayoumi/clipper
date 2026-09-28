@@ -83,7 +83,8 @@
       "cascade",
       "spotlight",
       "snapback",
-      "hero_focus"
+      "hero_focus",
+      "rebound"
     ],
     "title_start_frame": 20,
     "title_end_frame": 112,
@@ -161,6 +162,34 @@
           "start_frame": 20,
           "frames": 90
         },
+        "ending_shot_frames": [
+          5,
+          5,
+          5,
+          5
+        ]
+      },
+      "rebound": {
+        "preferred_output_seconds": 5.5,
+        "maximum_output_seconds": 6,
+        "comparison_seconds": 3,
+        "hook_start_frame": 144,
+        "hook_frames": 15,
+        "hook_state": "after",
+        "source_windows": [
+          {
+            "start_frame": 20,
+            "frames": 16
+          },
+          {
+            "start_frame": 55,
+            "frames": 10
+          },
+          {
+            "start_frame": 108,
+            "frames": 14
+          }
+        ],
         "ending_shot_frames": [
           5,
           5,
@@ -300,6 +329,29 @@
           0.5,
           0.18
         ]
+      },
+      "rebound": {
+        "focus_operator_index": 1,
+        "detail_roi": [
+          0.36,
+          0.12,
+          0.64,
+          0.82
+        ],
+        "focus_crop_center": [
+          0.5,
+          0.2
+        ],
+        "before_hold_frames": 20,
+        "after_flash_frames": 16,
+        "split_frames": 30,
+        "group_frames": 24,
+        "margin": 48,
+        "gap": 16,
+        "panel_top": 36,
+        "focus_card_width": 920,
+        "focus_card_height": 540,
+        "group_card_height": 515
       }
     },
     "mode_encoding": {
