@@ -70,12 +70,17 @@ def creative_hook_from_text(text: str) -> str:
         and not denied_buying
     ):
         return "WHY ARE WALLETS BUYING WITHOUT SOCIALS?"
-    if re.search(r"\b(?:should|would|could)\s+we\s+(?:\w+\s+){0,3}sell\b", lowered):
-        if "50 %" in lowered or "50%" in lowered or "half" in lowered:
-            return "WOULD YOU SELL HALF HERE?"
-    if ("on chain" in lowered or "on-chain" in lowered) and "volume" in lowered:
-        if re.search(r"\bbuys?\b|\bbuying\b", lowered):
-            return "CAN ON-CHAIN BUYS CONFIRM THE MOVE?"
+    if (
+        re.search(r"\b(?:should|would|could)\s+we\s+(?:\w+\s+){0,3}sell\b", lowered)
+        and any(term in lowered for term in ("50 %", "50%", "half"))
+    ):
+        return "WOULD YOU SELL HALF HERE?"
+    if (
+        ("on chain" in lowered or "on-chain" in lowered)
+        and "volume" in lowered
+        and re.search(r"\bbuys?\b|\bbuying\b", lowered)
+    ):
+        return "CAN ON-CHAIN BUYS CONFIRM THE MOVE?"
     if "fomo" in lowered and re.search(r"\bbuy(?:ing|s)?\b", lowered):
         return "IS FOMO DRIVING THESE BUYS?"
     if "tweet" in lowered and "coin" in lowered:
