@@ -123,9 +123,20 @@ def test_distinct_trade_moments_still_scored() -> None:
         "for the next position",
         10,
     )
-    selected, _ = select_editorial_moments([a, b], batch_limit=12)
-    assert 1 <= len(selected) <= 2
+    selected, rejected = select_editorial_moments([a, b], batch_limit=12)
+    assert len(selected) <= 2
     assert all(not pick.hook.startswith('THE MOMENT: "') for pick in selected)
+    if not selected:
+        assert len(rejected) == 2
+        assert all(
+            item["reason"]
+            in {
+                "BELOW_CREATOR_QUALITY_FLOOR",
+                "NO_CREATOR_GRADE_GROUNDED_HOOK",
+                "WEAK_FIRST_TWO_SECONDS",
+            }
+            for item in rejected
+        )
 
 
 STRONG_SEGMENT = (
