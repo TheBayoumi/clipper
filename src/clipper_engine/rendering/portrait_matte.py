@@ -333,9 +333,7 @@ def render_title_frames(
     if plan["montage"]["comparison_mode"] == "hero_focus":
         from . import panel_compositor
 
-        cfg = panel_compositor.hero_focus_config(
-            profile, int(plan["montage"]["comparison_frames"])
-        )
+        cfg = panel_compositor.hero_focus_config(profile, int(plan["montage"]["comparison_frames"]))
         start = int(plan["montage"]["hook"]["frames"]) + int(
             plan["montage"]["source_window"]["frames"]
         )
@@ -1044,10 +1042,20 @@ def render_portrait(
         selected = "+".join(f"eq(n\\,{frame})" for frame in sample_indices)
         raw = subprocess.run(
             [
-                "ffmpeg", "-v", "error", "-i", str(file),
-                "-vf", f"select={selected},format=rgb24",
-                "-fps_mode", "passthrough", "-frames:v", str(len(sample_indices)),
-                "-f", "rawvideo", "-",
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                str(file),
+                "-vf",
+                f"select={selected},format=rgb24",
+                "-fps_mode",
+                "passthrough",
+                "-frames:v",
+                str(len(sample_indices)),
+                "-f",
+                "rawvideo",
+                "-",
             ],
             check=True,
             capture_output=True,
@@ -1057,7 +1065,8 @@ def render_portrait(
             raise RuntimeError("encoded hero-focus phase proof is incomplete")
         decoded = {
             n: Image.frombytes(
-                "RGB", (width, height),
+                "RGB",
+                (width, height),
                 raw[i * bytes_per_frame : (i + 1) * bytes_per_frame],
             )
             for i, n in enumerate(sample_indices)
@@ -1080,9 +1089,7 @@ def render_portrait(
             raise RuntimeError("missing hero-focus source QA")
         from . import panel_compositor
 
-        cfg = panel_compositor.hero_focus_config(
-            profile, int(plan["montage"]["comparison_frames"])
-        )
+        cfg = panel_compositor.hero_focus_config(profile, int(plan["montage"]["comparison_frames"]))
         start = int(plan["montage"]["hook"]["frames"]) + int(
             plan["montage"]["source_window"]["frames"]
         )

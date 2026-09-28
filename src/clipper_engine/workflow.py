@@ -347,8 +347,7 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
                 panel_qa.get("mode") != "hero_focus"
                 or panel_qa.get("panel_count") != 3
                 or panel_qa.get("focus_operator_index") != cfg["focus_operator_index"]
-                or panel_qa.get("focus_roi")
-                != cfg["operator_rois"][cfg["focus_operator_index"]]
+                or panel_qa.get("focus_roi") != cfg["operator_rois"][cfg["focus_operator_index"]]
                 or panel_qa.get("phase_frames") != expected
                 or panel_qa.get("text_synced") is not True
                 or not isinstance(samples, dict)
@@ -367,7 +366,12 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
                 )
             storyboard = portrait.get("storyboard")
             expected_story = [
-                0, original - 1, original, split, group, int(edit["output_frames"]) - 1
+                0,
+                original - 1,
+                original,
+                split,
+                group,
+                int(edit["output_frames"]) - 1,
             ]
             if (
                 not isinstance(storyboard, dict)

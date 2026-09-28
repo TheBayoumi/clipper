@@ -175,7 +175,6 @@ def snapback_progress(local_frame: int, plan: dict[str, Any], profile: CampaignP
     return 1.0
 
 
-
 def hero_focus_config(profile: CampaignProfile, comparison_frames: int) -> dict[str, Any]:
     """Validate a certified four-phase hero reveal without new source content."""
     matte = profile.config["output"]["portrait_matte"]
@@ -199,7 +198,11 @@ def hero_focus_config(profile: CampaignProfile, comparison_frames: int) -> dict[
         raise MontageRejection("hero_focus_calibration", "unsupported hero-focus calibration")
     durations = ("after_preview_frames", "before_hold_frames", "split_frames", "group_frames")
     sizes = (
-        "margin", "gap", "panel_top", "focus_card_width", "focus_card_height",
+        "margin",
+        "gap",
+        "panel_top",
+        "focus_card_width",
+        "focus_card_height",
         "group_card_height",
     )
     if (
@@ -257,6 +260,7 @@ def hero_focus_progress(local_frame: int, plan: dict[str, Any], profile: Campaig
     """One authoritative progress value for the comparison picture, title and cards."""
     phase = hero_focus_stage(local_frame, plan, profile)
     return {"after": 1.0, "before": 0.0, "split": 0.5, "group": 1.0}[phase]
+
 
 def stage_progress(local_frame: int, plan: dict[str, Any], profile: CampaignProfile) -> list[float]:
     """Operator states for one frame within the exact legal comparison window."""
@@ -917,7 +921,6 @@ def render_snapback_panels(
     }
 
 
-
 def render_hero_focus_panels(
     before_path: Path,
     after_path: Path,
@@ -947,10 +950,9 @@ def render_hero_focus_panels(
     group_width = (canvas_width - 2 * margin - 2 * gap) // 3
     group_height = round(int(cfg["group_card_height"]) * scale)
     dual_width = (canvas_width - 2 * margin - gap) // 2
-    if (
-        min(focus_width, focus_height, group_width, group_height, dual_width) < 12
-        or y + max(focus_height, group_height) >= bottom_height - max(4, round(35 * scale))
-    ):
+    if min(focus_width, focus_height, group_width, group_height, dual_width) < 12 or y + max(
+        focus_height, group_height
+    ) >= bottom_height - max(4, round(35 * scale)):
         raise MontageRejection("hero_focus_layout", "certified cards exceed portrait bottom matte")
     matte = profile.config["output"]["portrait_matte"]
     rois = matte["operator_rois"]
@@ -1033,8 +1035,7 @@ def render_hero_focus_panels(
         )
         canvas.paste(card, (x0, y0), mask)
         outline = tuple(
-            round(a * (1 - active) + b * active)
-            for a, b in zip((83, 87, 91), gold, strict=True)
+            round(a * (1 - active) + b * active) for a, b in zip((83, 87, 91), gold, strict=True)
         )
         ImageDraw.Draw(canvas).rounded_rectangle(
             (x0, y0, x1 - 1, y1 - 1),
@@ -1072,7 +1073,8 @@ def render_hero_focus_panels(
             else:
                 card = Image.blend(focus_cards[0], focus_cards[1], progress)
             paste_card(
-                image, card,
+                image,
+                card,
                 [focus_x, y, focus_x + focus_width, y + focus_height],
                 progress,
             )

@@ -1058,7 +1058,6 @@ def test_snapback_qualified_in_original_validation_only_workflow() -> None:
     assert "warzone-snapback-" + chr(36) + "{{ github.sha }}" in workflow
 
 
-
 def test_hero_focus_is_new_source_verified_clipper_mode(
     source: Path, profile: CampaignProfile
 ) -> None:
