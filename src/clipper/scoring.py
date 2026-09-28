@@ -39,7 +39,9 @@ def _term_count(text: str, term: str) -> int:
     if not needle or len(needle) > len(haystack):
         return 0
     size = len(needle)
-    return sum(haystack[index : index + size] == needle for index in range(len(haystack) - size + 1))
+    return sum(
+        haystack[index : index + size] == needle for index in range(len(haystack) - size + 1)
+    )
 
 
 def _window_score(
