@@ -320,18 +320,51 @@ def youtube_scan_section_args(duration_seconds: float) -> list[str]:
     return []
 
 
+def verify_complete_download(path: Path, expected_seconds: float) -> float:
+    """Fail closed on valid-looking but incomplete DASH/HLS downloads."""
+    if not 90 <= expected_seconds <= 3600:
+        raise RuntimeError("SOURCE_EXCEEDS_FULL_ANALYSIS_LIMIT")
+    measured = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=45,
+    )
+    if measured.returncode:
+        raise RuntimeError("SOURCE_DURATION_UNVERIFIABLE")
+    try:
+        seconds = float(measured.stdout.strip())
+    except ValueError as exc:
+        raise RuntimeError("SOURCE_DURATION_UNVERIFIABLE") from exc
+    if not math.isfinite(seconds) or seconds + 30 < expected_seconds:
+        raise RuntimeError("SOURCE_DURATION_INCOMPLETE: original has missing DASH/HLS fragments")
+    return seconds
+
+
 def download_original_excerpt(
     video: OfficialVideo, work: Path, *, metadata: dict[str, Any] | None = None
 ) -> Path:
     work.mkdir(parents=True, exist_ok=True)
+    expected_seconds = float((metadata or {}).get("duration") or video.duration_seconds or 0)
     common = [
         "yt-dlp",
         *_auth_args(),
         "--no-playlist",
         "--no-warnings",
+        "--abort-on-unavailable-fragments",
         "--merge-output-format",
         "mp4",
-        *youtube_scan_section_args(float((metadata or {}).get("duration") or 0)),
+        *youtube_scan_section_args(expected_seconds),
         "-f",
         "bv*[height>=720][height<=1080]+ba/b[height>=720]/bv*+ba/b",
         "-o",
@@ -363,9 +396,14 @@ def download_original_excerpt(
             if not files:
                 raise RuntimeError("YouTube media download produced no source file")
             probe_original(files[0])
+            verify_complete_download(files[0], expected_seconds)
             return files[0]
         except RuntimeError as exc:
             errors.append(f"{' '.join(variant) or 'default'}: {str(exc)[-550:]}")
+            # Never accept stale bytes left by a previously failed transport.
+            for incomplete in work.glob("source.*"):
+                if incomplete.is_file():
+                    incomplete.unlink(missing_ok=True)
     raise RuntimeError("verified YouTube media inaccessible: " + " | ".join(errors))
 
 

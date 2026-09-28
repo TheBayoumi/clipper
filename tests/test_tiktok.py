@@ -295,3 +295,18 @@ def test_waiting_hook_requires_affirmative_trading_plan() -> None:
         creative_hook_from_text("I am not waiting to enter this trade")
         != "WHY HE'S WAITING TO ENTER THIS TRADE"
     )
+
+
+def test_waiting_hook_rejects_modal_negations() -> None:
+    for sentence in (
+        "I cannot wait to enter this trade",
+        "I can't wait to enter this trade",
+        "I won't wait to enter this trade",
+        "I couldn't wait to enter this trade",
+        "I have no reason to wait to enter this trade",
+    ):
+        assert creative_hook_from_text(sentence) != "WHY HE'S WAITING TO ENTER THIS TRADE"
+    assert (
+        creative_hook_from_text("I will wait to enter after the pullback")
+        == "WHY HE'S WAITING TO ENTER THIS TRADE"
+    )

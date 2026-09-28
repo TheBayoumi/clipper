@@ -69,7 +69,8 @@ def creative_hook_from_text(text: str) -> str:
         lowered,
     )
     negated_wait = re.search(
-        r"\b(?:not|never|without|didn't|don't|doesn't)\b"
+        r"\b(?:not|never|no|without|didn't|don't|doesn't|cannot|can't|" 
+        r"cant|won't|wont|wouldn't|couldn't|shouldn't)\b"
         r"(?:\s+\w+){0,2}\s+wait(?:ing)?\b",
         lowered,
     )
