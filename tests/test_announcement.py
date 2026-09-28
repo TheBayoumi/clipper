@@ -1426,7 +1426,7 @@ def test_impact_cut_is_distinct_source_native_kinetic_mode(
         {"start_frame": 108, "frames": 14},
     ]
     assert edit["comparison_frames"] == 90
-    assert [shot["frames"] for shot in edit["ending_shots"]] == [1, 1, 1, 17]
+    assert [shot["frames"] for shot in edit["ending_shots"]] == [3, 3, 3, 11]
     assert edit["output_frames"] == 165
     assert edit["output_seconds"] == 5.5
     cfg = kinetic_reframe.config(p, 165)

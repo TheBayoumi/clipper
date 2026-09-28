@@ -583,10 +583,13 @@ def _render_canonical(
             str(canonical),
         ]
     )
-    if media.video_profile(canonical, count_frames=True)["frame_count"] != int(
-        plan["montage"]["output_frames"]
-    ):
-        raise RuntimeError("canonical montage is not exact on its frame grid")
+    measured = media.video_profile(canonical, count_frames=True)
+    expected_frames = int(plan["montage"]["output_frames"])
+    if measured["frame_count"] != expected_frames:
+        raise RuntimeError(
+            "canonical montage is not exact on its frame grid: "
+            f"expected={expected_frames}, decoded={measured['frame_count']}"
+        )
 
 
 def render(

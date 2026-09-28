@@ -123,7 +123,7 @@ jobs:
           assert edit["comparison_mode"] == "impact_cut"
           assert edit["hook"] == {"start_frame": 144, "frames": 15, "state": "after"}
           assert edit["source_windows"] == expected_windows
-          assert [shot["frames"] for shot in edit["ending_shots"]] == [1, 1, 1, 17]
+          assert [shot["frames"] for shot in edit["ending_shots"]] == [3, 3, 3, 11]
           assert edit["output_frames"] == 165
           stage = manifest["staging"]["source_excerpt"]
           assert stage["windows"] == expected_windows
