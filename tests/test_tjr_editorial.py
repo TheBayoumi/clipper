@@ -46,9 +46,12 @@ def test_selects_distinct_moments_without_two_clip_cap() -> None:
     text += "and we avoid another risky mistake"
     inputs = [clip(i * 45, text + f" number {i}", 20 - i) for i in range(5)]
     chosen, rejected = select_editorial_moments(inputs, batch_limit=10)
-    # Repetitive scripts are deduplicated even at separate timestamps.
-    assert len(chosen) == 1
-    assert any(x["reason"] == "DUPLICATE_OR_OVERLAP" for x in rejected)
+    # Generic repeated risk talk must not be kept just to fill the batch.
+    assert chosen == []
+    assert all(
+        x["reason"] in {"NO_CREATOR_GRADE_GROUNDED_HOOK", "BELOW_CREATOR_QUALITY_FLOOR"}
+        for x in rejected
+    )
 
 
 def test_real_distinct_hooks_can_yield_more_than_two_clips() -> None:
