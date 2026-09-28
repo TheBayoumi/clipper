@@ -492,12 +492,14 @@ def test_direct_download_requires_full_verified_duration(tmp_path: Path) -> None
     source = tmp_path / "source.mp4"
     source.write_bytes(b"valid-looking partial media")
     verify = verify_complete_download
-    with patch.dict(
-        verify.__globals__,
-        {"subprocess": Mock(run=lambda *_a, **_kw: Mock(returncode=0, stdout="840\n"))},
+    with (
+        patch.dict(
+            verify.__globals__,
+            {"subprocess": Mock(run=lambda *_a, **_kw: Mock(returncode=0, stdout="840\n"))},
+        ),
+        pytest.raises(RuntimeError, match="SOURCE_DURATION_INCOMPLETE"),
     ):
-        with pytest.raises(RuntimeError, match="SOURCE_DURATION_INCOMPLETE"):
-            verify(source, 2642)
+        verify(source, 2642)
     attempts: list[list[str]] = []
 
     def download(command: list[str], *, timeout: int) -> Mock:
@@ -507,23 +509,28 @@ def test_direct_download_requires_full_verified_duration(tmp_path: Path) -> None
         return Mock(returncode=0)
 
     video = OfficialVideo(
-        "X7msxvyQd_U", "UCZen39LQJPx04GjPj7FOMcw",
-        "Verified video", "2026-09-27T15:00:00Z", 2642,
+        "X7msxvyQd_U",
+        "UCZen39LQJPx04GjPj7FOMcw",
+        "Verified video",
+        "2026-09-27T15:00:00Z",
+        2642,
     )
-    with patch.dict(
-        download_original_excerpt.__globals__,
-        {
-            "_auth_args": lambda: [],
-            "dynamic_browser_variants": lambda: (),
-            "invoke": download,
-            "probe_original": lambda _: {"width": 1920, "height": 1080},
-            "verify_complete_download": Mock(
-                side_effect=RuntimeError("SOURCE_DURATION_INCOMPLETE")
-            ),
-        },
+    with (
+        patch.dict(
+            download_original_excerpt.__globals__,
+            {
+                "_auth_args": lambda: [],
+                "dynamic_browser_variants": lambda: (),
+                "invoke": download,
+                "probe_original": lambda _: {"width": 1920, "height": 1080},
+                "verify_complete_download": Mock(
+                    side_effect=RuntimeError("SOURCE_DURATION_INCOMPLETE")
+                ),
+            },
+        ),
+        pytest.raises(RuntimeError, match="SOURCE_DURATION_INCOMPLETE"),
     ):
-        with pytest.raises(RuntimeError, match="SOURCE_DURATION_INCOMPLETE"):
-            download_original_excerpt(video, tmp_path, metadata={"duration": 2642})
+        download_original_excerpt(video, tmp_path, metadata={"duration": 2642})
     assert attempts
     assert all("--abort-on-unavailable-fragments" in args for args in attempts)
     assert not list(tmp_path.glob("source.*"))
