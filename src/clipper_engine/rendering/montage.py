@@ -164,7 +164,7 @@ def _comparison_piece(
     fps = rate(profile)
     frames = int(plan["montage"]["comparison_frames"])
     mode = plan["montage"]["comparison_mode"]
-    if mode in {"cascade", "spotlight", "snapback"}:
+    if mode in {"cascade", "spotlight", "snapback", "hero_focus"}:
         from . import panel_compositor
 
         return panel_compositor.render_comparison(

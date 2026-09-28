@@ -56,6 +56,16 @@ SNAPBACK_REQUIRED_CHECKS = frozenset(
 )
 
 
+HERO_FOCUS_REQUIRED_CHECKS = frozenset(
+    {
+        "portrait_hero_focus_schedule",
+        "portrait_hero_focus_verified_stills",
+        "portrait_hero_focus_text_sync",
+        "portrait_hero_focus_encoded_phases",
+    }
+)
+
+
 SPOTLIGHT_REQUIRED_CHECKS = frozenset(
     {
         "portrait_spotlight_schedule",
@@ -119,6 +129,10 @@ def toggle_progress(frame: int, plan: dict[str, Any], profile: CampaignProfile) 
             from . import panel_compositor
 
             return panel_compositor.spotlight_stage(local, plan, profile)[1]
+        if edit["comparison_mode"] == "hero_focus":
+            from . import panel_compositor
+
+            return panel_compositor.hero_focus_progress(local, plan, profile)
         if edit["comparison_mode"] == "snapback":
             from . import panel_compositor
 
@@ -316,6 +330,20 @@ def render_title_frames(
         reveal = rewind + int(cfg["before_hold_frames"])
         switched = reveal + int(cfg["transition_frames"]) - 1
         sample_indices.update({start, rewind - 1, rewind, reveal - 1, reveal, switched})
+    if plan["montage"]["comparison_mode"] == "hero_focus":
+        from . import panel_compositor
+
+        cfg = panel_compositor.hero_focus_config(
+            profile, int(plan["montage"]["comparison_frames"])
+        )
+        start = int(plan["montage"]["hook"]["frames"]) + int(
+            plan["montage"]["source_window"]["frames"]
+        )
+        original = start + int(cfg["after_preview_frames"])
+        split = original + int(cfg["before_hold_frames"])
+        group = split + int(cfg["split_frames"])
+        for edge in (start, original, split, group):
+            sample_indices.update({edge - 1, edge})
     samples: dict[str, float] = {}
     word_box = (0, 0, 0, 0)
     for n in range(frames):
@@ -460,6 +488,27 @@ def _encoded_snapback_storyboard(
     )
 
 
+def _encoded_hero_focus_storyboard(
+    file: Path, output_dir: Path, plan: dict[str, Any], panel_qa: dict[str, Any]
+) -> dict[str, Any]:
+    _, original, split, group, _ = (int(n) for n in panel_qa["phase_frames"])
+    return _encoded_montage_storyboard(
+        file,
+        output_dir,
+        [0, original - 1, original, split, group, int(plan["montage"]["output_frames"]) - 1],
+        (
+            "VERIFIED SOURCE HOOK",
+            "TRANSFORMED TEASE",
+            "ORIGINAL LOOK",
+            "CENTER A/B",
+            "THREE OPERATORS",
+            "FINAL PAYOFF",
+        ),
+        "operator_hero_focus_storyboard.jpg",
+        float(Fraction(str(plan["source"]["fps"]))),
+    )
+
+
 def render_portrait(
     clean_canonical: Path,
     output_dir: Path,
@@ -477,7 +526,8 @@ def render_portrait(
     cascade = mode == "cascade"
     spotlight = mode == "spotlight"
     snapback = mode == "snapback"
-    panel_mode = cascade or spotlight or snapback
+    hero_focus = mode == "hero_focus"
+    panel_mode = cascade or spotlight or snapback or hero_focus
     width, height = (int(z) for z in title_qa["canvas"])
     top = int(title_qa["top_height"])
     center = int(title_qa["center_height"])
@@ -984,6 +1034,85 @@ def render_portrait(
         checks["portrait_snapback_encoded_rewind"] = len(snapback_differences) == 2 and all(
             change > 2.5 for change in snapback_differences
         )
+    hero_focus_differences: list[float] = []
+    if hero_focus:
+        if panel_qa is None:
+            raise RuntimeError("missing hero-focus panel metadata")
+        _, original, split, group, _ = (int(n) for n in panel_qa["phase_frames"])
+        pairs = ((original - 1, original), (split - 1, split), (group - 1, group))
+        sample_indices = sorted({frame for pair in pairs for frame in pair})
+        selected = "+".join(f"eq(n\\,{frame})" for frame in sample_indices)
+        raw = subprocess.run(
+            [
+                "ffmpeg", "-v", "error", "-i", str(file),
+                "-vf", f"select={selected},format=rgb24",
+                "-fps_mode", "passthrough", "-frames:v", str(len(sample_indices)),
+                "-f", "rawvideo", "-",
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
+        bytes_per_frame = width * height * 3
+        if len(raw) != len(sample_indices) * bytes_per_frame:
+            raise RuntimeError("encoded hero-focus phase proof is incomplete")
+        decoded = {
+            n: Image.frombytes(
+                "RGB", (width, height),
+                raw[i * bytes_per_frame : (i + 1) * bytes_per_frame],
+            )
+            for i, n in enumerate(sample_indices)
+        }
+        roi = profile.config["editorial"]["visual_state_roi"]
+        visual_box = (
+            round(float(roi[0]) * width),
+            top + round(float(roi[1]) * center),
+            round(float(roi[2]) * width),
+            top + round(float(roi[3]) * center),
+        )
+        for left, right in pairs:
+            change = ImageChops.difference(
+                decoded[left].crop(visual_box), decoded[right].crop(visual_box)
+            )
+            hero_focus_differences.append(round(sum(ImageStat.Stat(change).mean) / 3, 4))
+
+    if hero_focus:
+        if panel_qa is None or expected_still_hashes is None:
+            raise RuntimeError("missing hero-focus source QA")
+        from . import panel_compositor
+
+        cfg = panel_compositor.hero_focus_config(
+            profile, int(plan["montage"]["comparison_frames"])
+        )
+        start = int(plan["montage"]["hook"]["frames"]) + int(
+            plan["montage"]["source_window"]["frames"]
+        )
+        original = start + int(cfg["after_preview_frames"])
+        split = original + int(cfg["before_hold_frames"])
+        group = split + int(cfg["split_frames"])
+        end = group + int(cfg["group_frames"])
+        expected = [start, original, split, group, end]
+        samples = panel_qa["sampled_states"]
+        checks["portrait_hero_focus_schedule"] = (
+            panel_qa["mode"] == "hero_focus"
+            and panel_qa["panel_count"] == 3
+            and panel_qa["frame_count"] == frames
+            and panel_qa["focus_operator_index"] == cfg["focus_operator_index"]
+            and panel_qa["focus_roi"] == cfg["operator_rois"][cfg["focus_operator_index"]]
+            and panel_qa["phase_frames"] == expected
+            and samples[str(original - 1)] == {"phase": "after", "after": 1.0}
+            and samples[str(original)] == {"phase": "before", "after": 0.0}
+            and samples[str(split)] == {"phase": "split", "after": 0.5}
+            and samples[str(group)] == {"phase": "group", "after": 1.0}
+        )
+        checks["portrait_hero_focus_verified_stills"] = (
+            panel_qa["source_still_sha256"] == expected_still_hashes
+            and panel_qa["source_only"] is True
+        )
+        checks["portrait_hero_focus_text_sync"] = panel_qa["text_synced"] is True
+        checks["portrait_hero_focus_encoded_phases"] = len(hero_focus_differences) == 3 and all(
+            change > 2.5 for change in hero_focus_differences
+        )
+
     required = PORTRAIT_REQUIRED_CHECKS | (
         CASCADE_REQUIRED_CHECKS
         if cascade
@@ -991,6 +1120,8 @@ def render_portrait(
         if spotlight
         else SNAPBACK_REQUIRED_CHECKS
         if snapback
+        else HERO_FOCUS_REQUIRED_CHECKS
+        if hero_focus
         else frozenset()
     )
     if set(checks) != required or not all(checks.values()):
@@ -1000,6 +1131,8 @@ def render_portrait(
         if spotlight and panel_qa is not None
         else _encoded_snapback_storyboard(file, output_dir, plan, panel_qa)
         if snapback and panel_qa is not None
+        else _encoded_hero_focus_storyboard(file, output_dir, plan, panel_qa)
+        if hero_focus and panel_qa is not None
         else None
     )
     hasher = hashlib.sha256()
@@ -1024,6 +1157,7 @@ def render_portrait(
             "cascade_panel_pixel_differences": panel_differences,
             "spotlight_pixel_differences": spotlight_differences,
             "snapback_pixel_differences": snapback_differences,
+            "hero_focus_pixel_differences": hero_focus_differences,
             "video_profile": actual,
             "audio_profile": audio,
             "ssim": ssim,
@@ -1033,6 +1167,7 @@ def render_portrait(
         "cascade": panel_qa if cascade else None,
         "spotlight": panel_qa if spotlight else None,
         "snapback": panel_qa if snapback else None,
+        "hero_focus": panel_qa if hero_focus else None,
         "storyboard": storyboard,
         "canonical_ffv1_nut": True,
     }

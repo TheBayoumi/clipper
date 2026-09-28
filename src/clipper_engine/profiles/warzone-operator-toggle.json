@@ -82,7 +82,8 @@
       "cuts",
       "cascade",
       "spotlight",
-      "snapback"
+      "snapback",
+      "hero_focus"
     ],
     "title_start_frame": 20,
     "title_end_frame": 112,
@@ -150,6 +151,22 @@
           5,
           5
         ]
+      },
+      "hero_focus": {
+        "preferred_output_seconds": 5.5,
+        "maximum_output_seconds": 6,
+        "comparison_seconds": 1.5,
+        "hook_frames": 10,
+        "source_window": {
+          "start_frame": 20,
+          "frames": 90
+        },
+        "ending_shot_frames": [
+          5,
+          5,
+          5,
+          5
+        ]
       }
     }
   },
@@ -190,15 +207,15 @@
           "Operator Skin {Toggle}"
         ]
       },
-      "target_size_mb": 32.0,
-      "size_tolerance_mb": 2.0,
+      "target_size_mb": 32,
+      "size_tolerance_mb": 2,
       "audio_kbps": 320,
       "cascade": {
         "main_band_boundaries": [
-          0.0,
+          0,
           0.42,
           0.58,
-          1.0
+          1
         ],
         "switch_order": [
           0,
@@ -265,6 +282,24 @@
         "gap": 22,
         "panel_top": 60,
         "panel_height": 460
+      },
+      "hero_focus": {
+        "focus_operator_index": 1,
+        "after_preview_frames": 7,
+        "before_hold_frames": 8,
+        "split_frames": 13,
+        "group_frames": 17,
+        "split_fraction": 0.5,
+        "margin": 56,
+        "gap": 18,
+        "panel_top": 55,
+        "focus_card_width": 720,
+        "focus_card_height": 500,
+        "group_card_height": 460,
+        "focus_crop_center": [
+          0.5,
+          0.18
+        ]
       }
     },
     "mode_encoding": {

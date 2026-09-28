@@ -172,6 +172,7 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
             PORTRAIT_REQUIRED_CHECKS,
             SNAPBACK_REQUIRED_CHECKS,
             SPOTLIGHT_REQUIRED_CHECKS,
+            HERO_FOCUS_REQUIRED_CHECKS,
         )
 
         required_checks = PORTRAIT_REQUIRED_CHECKS
@@ -317,6 +318,66 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
             ):
                 raise montage.MontageRejection(
                     "snapback_storyboard", "actual encoded storyboard missing or changed"
+                )
+
+        if edit["comparison_mode"] == "hero_focus":
+            from .rendering import panel_compositor
+
+            required_checks = required_checks | HERO_FOCUS_REQUIRED_CHECKS
+            cmp_qa = manifest["staging"]["comparison"]
+            panel_qa = portrait.get("hero_focus")
+            if (
+                not isinstance(panel_qa, dict)
+                or panel_qa.get("source_still_sha256") != cmp_qa.get("source_still_sha256")
+                or panel_qa.get("source_only") is not True
+                or panel_qa.get("frame_count") != edit["output_frames"]
+            ):
+                raise montage.MontageRejection(
+                    "hero_focus_stills", "hero cards differ from certified comparison"
+                )
+            cfg = panel_compositor.hero_focus_config(profile, int(edit["comparison_frames"]))
+            start = int(edit["hook"]["frames"]) + int(edit["source_window"]["frames"])
+            original = start + int(cfg["after_preview_frames"])
+            split = original + int(cfg["before_hold_frames"])
+            group = split + int(cfg["split_frames"])
+            end = group + int(cfg["group_frames"])
+            expected = [start, original, split, group, end]
+            samples = panel_qa.get("sampled_states", {})
+            if (
+                panel_qa.get("mode") != "hero_focus"
+                or panel_qa.get("panel_count") != 3
+                or panel_qa.get("focus_operator_index") != cfg["focus_operator_index"]
+                or panel_qa.get("focus_roi")
+                != cfg["operator_rois"][cfg["focus_operator_index"]]
+                or panel_qa.get("phase_frames") != expected
+                or panel_qa.get("text_synced") is not True
+                or not isinstance(samples, dict)
+                or any(
+                    samples.get(str(frame)) != {"phase": phase, "after": progress}
+                    for frame, phase, progress in (
+                        (original - 1, "after", 1.0),
+                        (original, "before", 0.0),
+                        (split, "split", 0.5),
+                        (group, "group", 1.0),
+                    )
+                )
+            ):
+                raise montage.MontageRejection(
+                    "hero_focus_schedule", "hero reveals differ from calibrated timeline"
+                )
+            storyboard = portrait.get("storyboard")
+            expected_story = [
+                0, original - 1, original, split, group, int(edit["output_frames"]) - 1
+            ]
+            if (
+                not isinstance(storyboard, dict)
+                or storyboard.get("frames") != expected_story
+                or storyboard.get("source") != "actual_encoded_delivery"
+                or not Path(str(storyboard.get("file") or "")).is_file()
+                or montage.sha256(Path(str(storyboard["file"]))) != storyboard.get("sha256")
+            ):
+                raise montage.MontageRejection(
+                    "hero_focus_storyboard", "encoded hero storyboard is missing or altered"
                 )
 
         portrait_checks = portrait.get("qa", {}).get("checks", {})

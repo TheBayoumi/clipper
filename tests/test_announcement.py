@@ -1056,3 +1056,132 @@ def test_snapback_qualified_in_original_validation_only_workflow() -> None:
     assert "delivery_snapback/*.mp4" in workflow
     assert "delivery_snapback/*.jpg" in workflow
     assert "warzone-snapback-" + chr(36) + "{{ github.sha }}" in workflow
+
+
+
+def test_hero_focus_is_new_source_verified_clipper_mode(
+    source: Path, profile: CampaignProfile
+) -> None:
+    p = _cascade_test_profile(profile)
+    plan = montage.build_plan(source, p, comparison_mode="hero_focus")
+    edit = plan["montage"]
+    assert edit["output_frames"] == 165
+    assert edit["comparison_frames"] == 45
+    assert edit["source_window"] == {"start_frame": 20, "frames": 90}
+    assert edit["hook"] == {"start_frame": 55, "frames": 10}
+    assert edit["ending_frames"] == 20
+    assert edit["approved_on_screen_text"] in p.config["editorial"]["approved_text"]
+    expected = {
+        0: ("after", 1.0),
+        6: ("after", 1.0),
+        7: ("before", 0.0),
+        14: ("before", 0.0),
+        15: ("split", 0.5),
+        27: ("split", 0.5),
+        28: ("group", 1.0),
+        44: ("group", 1.0),
+    }
+    for local, (phase, state) in expected.items():
+        assert panel_compositor.hero_focus_stage(local, plan, p) == phase
+        assert panel_compositor.hero_focus_progress(local, plan, p) == state
+        assert portrait_matte.toggle_progress(100 + local, plan, p) == state
+    assert portrait_matte.toggle_progress(145, plan, p) == 0.0
+    assert portrait_matte.toggle_progress(164, plan, p) == 1.0
+    with pytest.raises(montage.MontageRejection, match="hero_focus_timeline"):
+        panel_compositor.hero_focus_stage(45, plan, p)
+    montage.validate_plan(plan, source, p)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("focus_operator_index", 3),
+        ("focus_operator_index", True),
+        ("after_preview_frames", 0),
+        ("split_frames", 20),
+        ("split_fraction", 0.99),
+        ("group_card_height", 0),
+        ("focus_crop_center", [0.5, 1.2]),
+        ("extra_field", "not approved"),
+    ],
+)
+def test_hero_focus_rejects_bad_calibration(
+    source: Path, profile: CampaignProfile, key: str, value: object
+) -> None:
+    p = _cascade_test_profile(profile)
+    p.config["output"]["portrait_matte"]["hero_focus"][key] = value
+    with pytest.raises(montage.MontageRejection, match="hero_focus_calibration"):
+        montage.build_plan(source, p, comparison_mode="hero_focus")
+
+
+def test_hero_focus_certified_render_qa_and_fail_closed_qualification(
+    source: Path,
+    profile: CampaignProfile,
+    certificate: tuple[Path, dict[str, Any]],
+    tmp_path: Path,
+) -> None:
+    p = _cascade_test_profile(profile)
+    planned = tmp_path / "plan_hero_focus.json"
+    plan = plan_campaign(
+        p, source, certificate[0], planned, comparison_mode="hero_focus", approved_text_index=1
+    )
+    assert plan["status"] == "PLANNED"
+    output = tmp_path / "hero_focus"
+    manifest = render_campaign(p, source, certificate[0], planned, output)
+    portrait = manifest["portrait"]
+    panels = portrait["hero_focus"]
+    assert manifest["staging"]["source_excerpt"]["source_to_piece_hashes_exact"]
+    assert manifest["staging"]["comparison"]["comparison_mode"] == "hero_focus"
+    assert manifest["staging"]["comparison"]["frame_count_exact"]
+    assert manifest["staging"]["comparison"]["full_frame"]
+    assert manifest["staging"]["comparison"]["source_only"]
+    assert all(manifest["qa"]["checks"].values())
+    assert panels["source_still_sha256"] == manifest["staging"]["comparison"]["source_still_sha256"]
+    assert panels["focus_operator_index"] == 1
+    assert panels["focus_roi"] == p.config["output"]["portrait_matte"]["operator_rois"][1]
+    assert panels["phase_frames"] == [100, 107, 115, 128, 145]
+    assert panels["sampled_states"]["106"] == {"phase": "after", "after": 1.0}
+    assert panels["sampled_states"]["107"] == {"phase": "before", "after": 0.0}
+    assert panels["sampled_states"]["115"] == {"phase": "split", "after": 0.5}
+    assert panels["sampled_states"]["128"] == {"phase": "group", "after": 1.0}
+    assert portrait["qa"]["encoded_duration"] == pytest.approx(5.5, abs=0.055)
+    assert portrait["qa"]["frame_count"] == 165
+    assert portrait["title"]["text_visible_frames"] == 165
+    assert all(portrait["qa"]["checks"].values())
+    assert len(portrait["qa"]["hero_focus_pixel_differences"]) == 3
+    assert all(value > 2.5 for value in portrait["qa"]["hero_focus_pixel_differences"])
+    storyboard = portrait["storyboard"]
+    assert storyboard["frames"] == [0, 106, 107, 115, 128, 164]
+    assert storyboard["source"] == "actual_encoded_delivery"
+    assert Path(storyboard["file"]).is_file()
+    qualified = qualify_campaign(p, output / "render_manifest.json", tmp_path / "accepted.json")
+    assert qualified["status"] == "PASS"
+
+    modified = json.loads((output / "render_manifest.json").read_text())
+    modified["portrait"]["hero_focus"]["phase_frames"] = [100, 107, 114, 128, 145]
+    tampered = tmp_path / "altered.json"
+    tampered.write_text(json.dumps(modified))
+    with pytest.raises(montage.MontageRejection, match="hero_focus_schedule"):
+        qualify_campaign(p, tampered, tmp_path / "rejected_schedule.json")
+    modified["portrait"]["hero_focus"] = copy.deepcopy(portrait["hero_focus"])
+    modified["portrait"]["hero_focus"]["source_still_sha256"]["after"] = "invalid"
+    tampered.write_text(json.dumps(modified))
+    with pytest.raises(montage.MontageRejection, match="hero_focus_stills"):
+        qualify_campaign(p, tampered, tmp_path / "rejected_still.json")
+    modified["portrait"]["hero_focus"] = copy.deepcopy(portrait["hero_focus"])
+    modified["portrait"]["storyboard"]["sha256"] = "invalid"
+    tampered.write_text(json.dumps(modified))
+    with pytest.raises(montage.MontageRejection, match="hero_focus_storyboard"):
+        qualify_campaign(p, tampered, tmp_path / "rejected_storyboard.json")
+
+
+def test_hero_focus_is_published_in_existing_validation_only_workflow() -> None:
+    workflow = Path(".github/workflows/warzone-qualification.yml").read_text()
+    assert "--comparison-mode hero_focus" in workflow
+    assert "delivery_hero_focus/render_manifest.json" in workflow
+    assert "delivery_hero_focus/*.mp4" in workflow
+    assert "delivery_hero_focus/*.jpg" in workflow
+    assert "warzone-hero-focus-" + chr(36) + "{{ github.sha }}" in workflow
+    assert workflow.index("Plan certified-source Hero Focus") < workflow.index(
+        "Plan certified-source three-Operator cascade"
+    )

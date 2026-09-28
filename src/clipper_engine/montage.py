@@ -285,7 +285,7 @@ def build_plan(
     target, comparison_frames, source_window, hook, shots = resolve_mode_timing(
         editorial, states, comparison_mode, fps
     )
-    if comparison_mode in {"cascade", "spotlight", "snapback"}:
+    if comparison_mode in {"cascade", "spotlight", "snapback", "hero_focus"}:
         from .rendering import panel_compositor
 
         if not output.get("portrait_matte", {}).get("enabled", False):
@@ -297,8 +297,10 @@ def build_plan(
         else:
             if comparison_mode == "spotlight":
                 panel_compositor.spotlight_config(profile, comparison_frames)
-            else:
+            elif comparison_mode == "snapback":
                 panel_compositor.snapback_config(profile, comparison_frames)
+            else:
+                panel_compositor.hero_focus_config(profile, comparison_frames)
     if not shots or [shot["state"] for shot in shots] != ["before", "after", "before", "after"]:
         raise MontageRejection(
             "invalid_switch_pattern", "ending requires calibrated A/B/A/B payoff"
@@ -423,7 +425,7 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
         raise MontageRejection("montage_type", "plan must use the legal full-frame edit")
     if montage.get("comparison_mode") not in editorial["comparison_modes"]:
         raise MontageRejection("invalid_comparison_mode", "unknown comparison layout")
-    if montage["comparison_mode"] in {"cascade", "spotlight", "snapback"}:
+    if montage["comparison_mode"] in {"cascade", "spotlight", "snapback", "hero_focus"}:
         from .rendering import panel_compositor
 
         if not profile.config["output"].get("portrait_matte", {}).get("enabled", False):
@@ -435,8 +437,10 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
         else:
             if montage["comparison_mode"] == "spotlight":
                 panel_compositor.spotlight_config(profile, int(montage["comparison_frames"]))
-            else:
+            elif montage["comparison_mode"] == "snapback":
                 panel_compositor.snapback_config(profile, int(montage["comparison_frames"]))
+            else:
+                panel_compositor.hero_focus_config(profile, int(montage["comparison_frames"]))
     if int(montage["full_source_frames"]) != int(states["source_frames"]):
         raise MontageRejection("source_frames_changed", "full source is not retained")
     if int(plan["source"]["frames"]) != int(states["source_frames"]):

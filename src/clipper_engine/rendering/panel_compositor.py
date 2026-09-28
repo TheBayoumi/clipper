@@ -175,6 +175,89 @@ def snapback_progress(local_frame: int, plan: dict[str, Any], profile: CampaignP
     return 1.0
 
 
+
+def hero_focus_config(profile: CampaignProfile, comparison_frames: int) -> dict[str, Any]:
+    """Validate a certified four-phase hero reveal without new source content."""
+    matte = profile.config["output"]["portrait_matte"]
+    cfg: dict[str, Any] = matte["hero_focus"]
+    required = {
+        "focus_operator_index",
+        "after_preview_frames",
+        "before_hold_frames",
+        "split_frames",
+        "group_frames",
+        "split_fraction",
+        "margin",
+        "gap",
+        "panel_top",
+        "focus_card_width",
+        "focus_card_height",
+        "group_card_height",
+        "focus_crop_center",
+    }
+    if not isinstance(cfg, dict) or set(cfg) != required:
+        raise MontageRejection("hero_focus_calibration", "unsupported hero-focus calibration")
+    durations = ("after_preview_frames", "before_hold_frames", "split_frames", "group_frames")
+    sizes = (
+        "margin", "gap", "panel_top", "focus_card_width", "focus_card_height",
+        "group_card_height",
+    )
+    if (
+        any(type(cfg[k]) is not int or cfg[k] < 3 for k in durations)
+        or sum(cfg[k] for k in durations) != comparison_frames
+        or any(type(cfg[k]) is not int or cfg[k] <= 0 for k in sizes)
+        or type(cfg["split_fraction"]) not in (int, float)
+        or not 0.2 <= cfg["split_fraction"] <= 0.8
+    ):
+        raise MontageRejection("hero_focus_calibration", "invalid phases, split or geometry")
+    rois = matte.get("operator_rois")
+    index = cfg["focus_operator_index"]
+    center = cfg["focus_crop_center"]
+    if (
+        type(index) is not int
+        or not isinstance(rois, list)
+        or len(rois) != 3
+        or not 0 <= index < len(rois)
+        or not isinstance(center, list)
+        or len(center) != 2
+        or any(type(v) not in (int, float) or not 0 <= v <= 1 for v in center)
+        or any(
+            not isinstance(roi, list)
+            or len(roi) != 4
+            or any(type(v) not in (int, float) for v in roi)
+            or not (0 <= roi[0] < roi[2] <= 1 and 0 <= roi[1] < roi[3] <= 1)
+            for roi in rois
+        )
+    ):
+        raise MontageRejection(
+            "hero_focus_calibration", "hero index and all crops must use verified regions"
+        )
+    return {**cfg, "operator_rois": rois}
+
+
+def hero_focus_stage(local_frame: int, plan: dict[str, Any], profile: CampaignProfile) -> str:
+    """Four frame-exact visual phases: result, original, A/B split, group result."""
+    total = int(plan["montage"]["comparison_frames"])
+    if not 0 <= local_frame < total:
+        raise MontageRejection("hero_focus_timeline", "frame outside calibrated comparison")
+    cfg = hero_focus_config(profile, total)
+    preview = cfg["after_preview_frames"]
+    original = preview + cfg["before_hold_frames"]
+    split_end = original + cfg["split_frames"]
+    if local_frame < preview:
+        return "after"
+    if local_frame < original:
+        return "before"
+    if local_frame < split_end:
+        return "split"
+    return "group"
+
+
+def hero_focus_progress(local_frame: int, plan: dict[str, Any], profile: CampaignProfile) -> float:
+    """One authoritative progress value for the comparison picture, title and cards."""
+    phase = hero_focus_stage(local_frame, plan, profile)
+    return {"after": 1.0, "before": 0.0, "split": 0.5, "group": 1.0}[phase]
+
 def stage_progress(local_frame: int, plan: dict[str, Any], profile: CampaignProfile) -> list[float]:
     """Operator states for one frame within the exact legal comparison window."""
     cfg = config(profile, int(plan["montage"]["comparison_frames"]))
@@ -219,15 +302,16 @@ def render_comparison(
     """Build the canonical full-frame staggered comparison from verified source stills."""
     frames = int(plan["montage"]["comparison_frames"])
     mode = str(plan["montage"]["comparison_mode"])
-    if mode not in {"cascade", "spotlight", "snapback"}:
+    if mode not in {"cascade", "spotlight", "snapback", "hero_focus"}:
         raise MontageRejection("invalid_comparison_mode", mode)
-    cfg = (
-        config(profile, frames)
-        if mode == "cascade"
-        else spotlight_config(profile, frames)
-        if mode == "spotlight"
-        else snapback_config(profile, frames)
-    )
+    if mode == "cascade":
+        cfg = config(profile, frames)
+    elif mode == "spotlight":
+        cfg = spotlight_config(profile, frames)
+    elif mode == "snapback":
+        cfg = snapback_config(profile, frames)
+    else:
+        cfg = hero_focus_config(profile, frames)
     before = Image.open(before_path).convert("RGB")
     after = Image.open(after_path).convert("RGB")
     if before.size != after.size or before.size != (
@@ -255,12 +339,18 @@ def render_comparison(
                 }
             )
         sample_set.add(int(cfg["focus_frames"]) * len(cfg["operator_order"]))
-    else:
+    elif mode == "snapback":
         preview = int(cfg["after_preview_frames"])
         reveal = preview + int(cfg["before_hold_frames"])
         sample_set.update(
             {preview - 1, preview, reveal - 1, reveal, reveal + int(cfg["transition_frames"]) - 1}
         )
+    else:
+        preview = int(cfg["after_preview_frames"])
+        original = preview + int(cfg["before_hold_frames"])
+        group = original + int(cfg["split_frames"])
+        sample_set.update({preview - 1, preview, original - 1, original, group - 1, group})
+        split_x = round(float(cfg["split_fraction"]) * w)
     for n in range(frames):
         if mode == "cascade":
             states = stage_progress(n, plan, profile)
@@ -276,7 +366,7 @@ def render_comparison(
         elif mode == "spotlight":
             focus, progress = spotlight_stage(n, plan, profile)
             frame = before if progress <= 0 else after
-        else:
+        elif mode == "snapback":
             progress = snapback_progress(n, plan, profile)
             frame = (
                 before
@@ -285,6 +375,15 @@ def render_comparison(
                 if progress == 1
                 else Image.blend(before, after, progress)
             )
+        else:
+            phase = hero_focus_stage(n, plan, profile)
+            if phase == "before":
+                frame = before
+            elif phase == "split":
+                frame = before.copy()
+                frame.paste(after.crop((split_x, 0, w, h)), (split_x, 0))
+            else:
+                frame = after
         frame.save(folder / f"{n:04d}.png", compress_level=3)
         if n in sample_set:
             sampled[str(n)] = (
@@ -293,6 +392,8 @@ def render_comparison(
                 else {"focus": focus, "after": progress}
                 if mode == "spotlight"
                 else {"after": progress}
+                if mode == "snapback"
+                else {"phase": phase, "after": hero_focus_progress(n, plan, profile)}
             )
     target = workspace / "comparison.nut"
     fps = rate(profile)
@@ -358,6 +459,17 @@ def render_panels(
     source_progress: list[float],
 ) -> dict[str, Any]:
     """Generate bottom-matte panel sequence, matched to the same output frame grid."""
+    if plan["montage"]["comparison_mode"] == "hero_focus":
+        return render_hero_focus_panels(
+            before_path,
+            after_path,
+            workspace,
+            plan,
+            profile,
+            canvas_width,
+            bottom_height,
+            source_progress,
+        )
     if plan["montage"]["comparison_mode"] == "snapback":
         return render_snapback_panels(
             before_path,
@@ -802,4 +914,177 @@ def render_snapback_panels(
         "comparison_start_frame": compare_start,
         "switch_frames": [rewind, reveal, switched],
         "sampled_states": samples,
+    }
+
+
+
+def render_hero_focus_panels(
+    before_path: Path,
+    after_path: Path,
+    workspace: Path,
+    plan: dict[str, Any],
+    profile: CampaignProfile,
+    canvas_width: int,
+    bottom_height: int,
+    source_progress: list[float],
+) -> dict[str, Any]:
+    """One source-verified hero, a literal two-state comparison, then all three Operators.
+
+    All cards are crops of the canonical verified still pair, never generated skins
+    or identities. The central gameplay track retains Clipper's source-native edit.
+    """
+    edit = plan["montage"]
+    frames = int(edit["output_frames"])
+    cfg = hero_focus_config(profile, int(edit["comparison_frames"]))
+    if len(source_progress) != frames:
+        raise MontageRejection("hero_focus_timeline", "title and card frame grids differ")
+    scale = canvas_width / 1080
+    margin = max(2, round(int(cfg["margin"]) * scale))
+    gap = max(2, round(int(cfg["gap"]) * scale))
+    y = max(3, round(int(cfg["panel_top"]) * scale))
+    focus_width = min(canvas_width - 2 * margin, round(int(cfg["focus_card_width"]) * scale))
+    focus_height = round(int(cfg["focus_card_height"]) * scale)
+    group_width = (canvas_width - 2 * margin - 2 * gap) // 3
+    group_height = round(int(cfg["group_card_height"]) * scale)
+    dual_width = (canvas_width - 2 * margin - gap) // 2
+    if (
+        min(focus_width, focus_height, group_width, group_height, dual_width) < 12
+        or y + max(focus_height, group_height) >= bottom_height - max(4, round(35 * scale))
+    ):
+        raise MontageRejection("hero_focus_layout", "certified cards exceed portrait bottom matte")
+    matte = profile.config["output"]["portrait_matte"]
+    rois = matte["operator_rois"]
+    focus_roi = rois[int(cfg["focus_operator_index"])]
+    bg = ImageColor.getrgb(str(matte["background_hex"]))[:3]
+    gold = ImageColor.getrgb(str(matte["accent_hex"]))[:3]
+    before = Image.open(before_path).convert("RGB")
+    after = Image.open(after_path).convert("RGB")
+    if before.size != after.size:
+        raise MontageRejection("hero_focus_stills", "certified source still geometry differs")
+    center = tuple(float(v) for v in cfg["focus_crop_center"])
+    focus_cards = [
+        ImageOps.fit(
+            _crop(image, focus_roi),
+            (focus_width, focus_height),
+            method=Image.Resampling.LANCZOS,
+            centering=center,
+        )
+        for image in (before, after)
+    ]
+    dual_cards = [
+        ImageOps.fit(
+            _crop(image, focus_roi),
+            (dual_width, focus_height),
+            method=Image.Resampling.LANCZOS,
+            centering=center,
+        )
+        for image in (before, after)
+    ]
+    groups = [
+        [
+            ImageOps.fit(
+                _crop(image, roi),
+                (group_width, group_height),
+                method=Image.Resampling.LANCZOS,
+                centering=center,
+            )
+            for roi in rois
+        ]
+        for image in (before, after)
+    ]
+    folder = workspace / "panel_frames"
+    folder.mkdir(exist_ok=True)
+    compare_start = int(edit["hook"]["frames"]) + int(edit["source_window"]["frames"])
+    preview = compare_start + int(cfg["after_preview_frames"])
+    split = preview + int(cfg["before_hold_frames"])
+    group = split + int(cfg["split_frames"])
+    compare_end = group + int(cfg["group_frames"])
+    if compare_end != compare_start + int(edit["comparison_frames"]):
+        raise MontageRejection("hero_focus_timeline", "comparison phase boundary mismatch")
+    phase_frames = [compare_start, preview, split, group, compare_end]
+    sample_frames = {0, frames - 1, *(n for edge in phase_frames for n in (edge - 1, edge))}
+    focus_x = (canvas_width - focus_width) // 2
+    dual_boxes = [
+        [margin + i * (dual_width + gap), y, margin + i * (dual_width + gap) + dual_width, y + focus_height]
+        for i in range(2)
+    ]
+    group_boxes = [
+        [margin + i * (group_width + gap), y, margin + i * (group_width + gap) + group_width, y + group_height]
+        for i in range(3)
+    ]
+    samples: dict[str, dict[str, Any]] = {}
+    radius = max(2, round(12 * scale))
+
+    def paste_card(canvas: Image.Image, card: Image.Image, box: list[int], active: float) -> None:
+        x0, y0, x1, y1 = box
+        mask = Image.new("L", card.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle(
+            (0, 0, card.width - 1, card.height - 1), radius=radius, fill=255
+        )
+        canvas.paste(card, (x0, y0), mask)
+        outline = tuple(
+            round(a * (1 - active) + b * active)
+            for a, b in zip((83, 87, 91), gold, strict=True)
+        )
+        ImageDraw.Draw(canvas).rounded_rectangle(
+            (x0, y0, x1 - 1, y1 - 1),
+            radius=radius,
+            outline=outline,
+            width=max(1, round(3 * scale)),
+        )
+
+    for n in range(frames):
+        progress = source_progress[n]
+        in_comparison = compare_start <= n < compare_end
+        phase = hero_focus_stage(n - compare_start, plan, profile) if in_comparison else None
+        if in_comparison and progress != hero_focus_progress(n - compare_start, plan, profile):
+            raise MontageRejection(
+                "hero_focus_text_sync", "approved title disagrees with certified image stage"
+            )
+        image = Image.new("RGB", (canvas_width, bottom_height), bg)
+        if phase == "split":
+            for i, card in enumerate(dual_cards):
+                paste_card(image, card, dual_boxes[i], 1.0 if i else 0.0)
+        elif phase == "group" or n >= compare_end:
+            for i, box in enumerate(group_boxes):
+                if progress <= 0:
+                    card = groups[0][i]
+                elif progress >= 1:
+                    card = groups[1][i]
+                else:
+                    card = Image.blend(groups[0][i], groups[1][i], progress)
+                paste_card(image, card, box, progress)
+        else:
+            if progress <= 0:
+                card = focus_cards[0]
+            elif progress >= 1:
+                card = focus_cards[1]
+            else:
+                card = Image.blend(focus_cards[0], focus_cards[1], progress)
+            paste_card(
+                image, card,
+                [focus_x, y, focus_x + focus_width, y + focus_height],
+                progress,
+            )
+        image.save(folder / f"{n:04d}.png", compress_level=3)
+        if n in sample_frames and 0 <= n < frames:
+            samples[str(n)] = {"phase": phase, "after": round(progress, 6)}
+    return {
+        "folder": str(folder),
+        "mode": "hero_focus",
+        "frame_count": frames,
+        "panel_count": 3,
+        "focus_operator_index": int(cfg["focus_operator_index"]),
+        "focus_roi": focus_roi,
+        "focus_box": [focus_x, y, focus_x + focus_width, y + focus_height],
+        "dual_boxes": dual_boxes,
+        "group_boxes": group_boxes,
+        "phase_frames": phase_frames,
+        "sampled_states": samples,
+        "source_only": True,
+        "text_synced": True,
+        "source_still_sha256": {
+            "before": hashlib.sha256(before_path.read_bytes()).hexdigest(),
+            "after": hashlib.sha256(after_path.read_bytes()).hexdigest(),
+        },
     }

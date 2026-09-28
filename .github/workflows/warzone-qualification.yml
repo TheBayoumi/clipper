@@ -73,6 +73,78 @@ jobs:
           clipper campaign warzone-operator-toggle acquire \
             --source-key "$SOURCE_KEY" --output-dir source
 
+      - name: Plan certified-source Hero Focus
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle plan \
+            --source "$SOURCE_FILE" \
+            --source-qa "source/$SOURCE_KEY.source_qa.json" \
+            --comparison-mode hero_focus \
+            --approved-text-index 1 \
+            --output plan_hero_focus.json
+
+      - name: Render Hero Focus with canonical Clipper
+        timeout-minutes: 35
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle render \
+            --source "$SOURCE_FILE" \
+            --source-qa "source/$SOURCE_KEY.source_qa.json" \
+            --plan plan_hero_focus.json \
+            --output-dir delivery_hero_focus
+
+      - name: Qualify Hero Focus phases source fidelity and encoded storyboard
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle qualify \
+            --render-manifest delivery_hero_focus/render_manifest.json \
+            --output delivery_hero_focus/acceptance.json
+          python - <<'CHECK'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("delivery_hero_focus/render_manifest.json").read_text())
+          acceptance = json.loads(Path("delivery_hero_focus/acceptance.json").read_text())
+          edit = manifest["plan"]["montage"]
+          portrait = manifest["portrait"]
+          panels = portrait["hero_focus"]
+          assert acceptance["status"] == "PASS", acceptance
+          assert edit["comparison_mode"] == "hero_focus"
+          assert edit["full_source_frames"] == 178
+          assert edit["source_window"] == {"start_frame": 20, "frames": 90}
+          assert edit["output_frames"] == 165
+          assert panels["focus_operator_index"] == 1
+          assert panels["phase_frames"] == [100, 107, 115, 128, 145]
+          assert panels["source_only"] and panels["text_synced"]
+          assert manifest["staging"]["source_excerpt"]["source_to_piece_hashes_exact"]
+          assert all(manifest["qa"]["checks"].values()), manifest["qa"]["checks"]
+          assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
+          assert all(n > 2.5 for n in portrait["qa"]["hero_focus_pixel_differences"])
+          assert portrait["storyboard"]["frames"] == [0, 106, 107, 115, 128, 164]
+          assert Path(portrait["storyboard"]["file"]).is_file()
+          assert 5 <= portrait["qa"]["encoded_duration"] <= 6
+          print("CERTIFIED HERO FOCUS:", portrait["file"])
+          CHECK
+
+      - name: Publish new Hero Focus MP4 storyboard and QA
+        uses: actions/upload-artifact@v4
+        with:
+          name: warzone-hero-focus-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            plan_hero_focus.json
+            source/*.source_qa.json
+            delivery_hero_focus/*.json
+            delivery_hero_focus/*.mp4
+            delivery_hero_focus/*.jpg
+
       - name: Plan certified-source three-Operator cascade
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
@@ -148,9 +220,6 @@ jobs:
             source/*.source_qa.json
             delivery_cascade/*.json
             delivery_cascade/*.mp4
-            delivery_spotlight/*.json
-            delivery_spotlight/*.mp4
-            delivery_spotlight/*.jpg
 
       - name: Plan new source-verified Operator Spotlight
         env:
@@ -220,9 +289,6 @@ jobs:
             delivery_spotlight/*.json
             delivery_spotlight/*.mp4
             delivery_spotlight/*.jpg
-            delivery_snapback/*.json
-            delivery_snapback/*.mp4
-            delivery_snapback/*.jpg
 
       - name: Plan source-verified 5.5-second Toggle Snapback
         env:
@@ -366,3 +432,6 @@ jobs:
             delivery_cuts/*.mp4
             delivery_cascade/*.json
             delivery_cascade/*.mp4
+            delivery_hero_focus/*.json
+            delivery_hero_focus/*.mp4
+            delivery_hero_focus/*.jpg
