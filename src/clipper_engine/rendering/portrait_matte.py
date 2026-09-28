@@ -14,7 +14,6 @@ import subprocess
 from collections.abc import Callable
 from fractions import Fraction
 from functools import lru_cache
-from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
