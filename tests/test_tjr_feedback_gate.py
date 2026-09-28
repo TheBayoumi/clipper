@@ -1,4 +1,5 @@
 """Deterministic offline checks of post-render source and editorial feedback."""
+
 from __future__ import annotations
 
 import json
@@ -54,7 +55,8 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
                     "spoken_word_highlight_events": 85,
                 },
                 "hook_candidate": (
-                    'THE MOMENT: "PARTIAL QUOTE"' if generic
+                    'THE MOMENT: "PARTIAL QUOTE"'
+                    if generic
                     else "WHEN IS THIS MARKET-CAP ENTRY TOO LATE?"
                 ),
                 "source_start_seconds": 2861.2,
@@ -127,8 +129,7 @@ def test_failed_egress_is_distinct_from_missing_channel(tmp_path: Path) -> None:
 
 def test_workflow_stores_independent_two_channel_evidence() -> None:
     workflow = (
-        Path(__file__).resolve().parents[1]
-        / ".github" / "workflows" / "tjr-weekly-hd.yml"
+        Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
     ).read_text(encoding="utf-8")
     assert "feedback_audit:" in workflow
     assert "needs: [tests, youtube_modal_egress]" in workflow

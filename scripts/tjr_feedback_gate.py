@@ -3,6 +3,7 @@
 Never substitute a green workflow for validated MP4s or human editorial approval.
 This module reads only inert artifact files and produces actionable, durable JSON.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -10,10 +11,11 @@ import json
 import os
 import re
 import subprocess
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 OFFICIAL_CHANNELS = {
     "UCZen39LQJPx04GjPj7FOMcw",
@@ -57,8 +59,16 @@ def probe_media(path: Path, *, full_decode: bool = False) -> dict[str, Any]:
     if full_decode:
         subprocess.run(
             [
-                "ffmpeg", "-nostdin", "-v", "error", "-xerror",
-                "-i", str(path), "-f", "null", "-",
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-xerror",
+                "-i",
+                str(path),
+                "-f",
+                "null",
+                "-",
             ],
             check=True,
             capture_output=True,
@@ -79,8 +89,8 @@ def valid_publication_date(value: object) -> bool:
     try:
         date = datetime.fromisoformat(value.replace("Z", "+00:00"))
         if date.tzinfo is None:
-            date = date.replace(tzinfo=timezone.utc)
-        return date >= datetime(2026, 9, 1, tzinfo=timezone.utc)
+            date = date.replace(tzinfo=UTC)
+        return date >= datetime(2026, 9, 1, tzinfo=UTC)
     except ValueError:
         return False
 
@@ -155,8 +165,11 @@ def inspect_artifact(
             try:
                 mp4 = checked_path(base, clip.get("file"))
                 for field in (
-                    "srt", "ass_sidecar", "source_matched_quality",
-                    "contact_sheet", "preview",
+                    "srt",
+                    "ass_sidecar",
+                    "source_matched_quality",
+                    "contact_sheet",
+                    "preview",
                 ):
                     checked_path(base, clip.get(field))
                 checked_path(base, str(clip["file"]).removesuffix(".mp4") + ".ssim.txt")
@@ -166,7 +179,8 @@ def inspect_artifact(
                     or abs(
                         float(overlay.get("persistent_hook_seconds") or 0)
                         - float(clip["duration_seconds"])
-                    ) > 0.15
+                    )
+                    > 0.15
                     or int(overlay.get("spoken_word_highlight_events") or 0) < 1
                 ):
                     issues.append("CAPTION_OR_HOOK_TIMING_FAILED")
@@ -200,8 +214,13 @@ def inspect_artifact(
                     issues.append("MISSING_HUMAN_REVIEW_GATE")
                 entry["technically_verified_mp4_count"] += 1
             except (
-                KeyError, ValueError, TypeError, ZeroDivisionError, OSError,
-                subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                KeyError,
+                ValueError,
+                TypeError,
+                ZeroDivisionError,
+                OSError,
+                subprocess.CalledProcessError,
+                subprocess.TimeoutExpired,
             ):
                 issues.append("MISSING_OR_INVALID_CLIP_EVIDENCE")
         entry["minimum_ssim"] = round(min_ssim, 6)
@@ -245,9 +264,7 @@ def review_run(
     return {
         "head_sha": head_sha,
         "run_id": run_id,
-        "status": (
-            "BLOCKED" if issues else "TECHNICAL_QA_PASSED__HUMAN_REVIEW_REQUIRED"
-        ),
+        "status": ("BLOCKED" if issues else "TECHNICAL_QA_PASSED__HUMAN_REVIEW_REQUIRED"),
         "expected_channels": expected_channels,
         "technically_verified_mp4_count": sum(
             item["technically_verified_mp4_count"] for item in channels
@@ -290,9 +307,7 @@ def main() -> int:
         "Next: " + ", ".join(result["next_actions"]),
         "Publication is blocked pending human visual and editorial approval.",
     ]
-    (args.output / "feedback-summary.md").write_text(
-        "\n\n".join(summary) + "\n", encoding="utf-8"
-    )
+    (args.output / "feedback-summary.md").write_text("\n\n".join(summary) + "\n", encoding="utf-8")
     print("\n".join(summary), flush=True)
     return 1 if result["issues"] else 0
 
