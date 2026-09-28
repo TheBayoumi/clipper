@@ -1247,7 +1247,7 @@ def render_portrait(
         frame_bytes = width * height * 3
         if len(raw) != len(indices) * frame_bytes:
             raise RuntimeError("encoded rebound detail/phase frames missing")
-        decoded = {
+        decoded_rebound: dict[int, Image.Image] = {
             n: Image.frombytes("RGB", (width, height), raw[i * frame_bytes : (i + 1) * frame_bytes])
             for i, n in enumerate(indices)
         }
@@ -1260,13 +1260,13 @@ def render_portrait(
         )
         for left, right in pairs:
             change = ImageChops.difference(
-                decoded[left].crop(visual_box), decoded[right].crop(visual_box)
+                decoded_rebound[left].crop(visual_box), decoded_rebound[right].crop(visual_box)
             )
             rebound_differences.append(round(sum(ImageStat.Stat(change).mean) / 3, 4))
         x0, y0, x1, y1 = (int(v) for v in panel_qa["focus_box"])
         detail_box = (x0 + 6, top + center + y0 + 6, x1 - 6, top + center + y1 - 6)
         live_delta = ImageChops.difference(
-            decoded[0].crop(detail_box), decoded[original_start].crop(detail_box)
+            decoded_rebound[0].crop(detail_box), decoded_rebound[original_start].crop(detail_box)
         )
         rebound_live_difference = round(sum(ImageStat.Stat(live_delta).mean) / 3, 4)
         checks["portrait_rebound_encoded_phases"] = len(rebound_differences) == 3 and all(
