@@ -72,7 +72,7 @@ def creative_hook_from_text(text: str) -> str:
         return "WHY ARE WALLETS BUYING WITHOUT SOCIALS?"
     sell_half = re.search(
         r"\b(?:should|would|could)\s+we\s+(?:just\s+)?sell\s+"
-        r"(?:like\s+)?(?:50\s*%|half)\b",
+        r"(?:like\s+)?(?:50\s*%|half)(?=\s|[?.!,]|$)",
         lowered,
     )
     if sell_half:
@@ -127,15 +127,25 @@ def creative_hook_from_text(text: str) -> str:
         return "WHY HE'S WAITING TO ENTER THIS TRADE"
     selloff = any(x in lowered for x in ("massive sell off", "massive sell-off", "massive selloff"))
     declining_short = re.search(
-        r"\b(?:won't|wont|can't|cant|cannot|don't|didn't|wouldn't|wouldnt|"
-        r"refuse(?:d)? to|avoid(?:ed)?|stayed away from|not going to)\s+"
-        r"short(?:ing)?\b",
+        r"\b(?:(?:will|would|could|should|do|does|did|can|am|is|are|was|were)\s+"
+        r"not\s+short(?:ing)?|(?:won't|wont|can't|cant|cannot|don't|didn't|"
+        r"wouldn't|wouldnt)\s+short(?:ing)?|never\s+short(?:ing)?|"
+        r"refuse(?:d)?\s+to\s+short|avoid(?:ed)?\s+shorting|"
+        r"stayed\s+away\s+from\s+shorting|not\s+going\s+to\s+short)\b",
         lowered,
     )
     if selloff and declining_short:
         return "WHY HE'S NOT SHORTING THE SELLOFF"
     if selloff and re.search(r"\bshort(?:ed|ing)?\b", lowered):
         return "WHAT'S THE SHORT SETUP IN THIS SELLOFF?"
+    if re.search(r"\brisk(?:ing)?\s+too\s+much\b", lowered) and any(
+        cue in lowered for cue in ("trader", "position", "trading plan", "trade")
+    ):
+        return "WHY TRADERS RISK TOO MUCH"
+    if "stop loss" in lowered and re.search(r"\bmov(?:e|ed|ing)\b", lowered) and any(
+        cue in lowered for cue in ("mistake", "losing", "loss", "bigger")
+    ):
+        return "THE STOP-LOSS MISTAKE THAT MAKES LOSSES WORSE"
     if "risk" in lowered and any(x in lowered for x in ("position", "trading", "trade")):
         return "THE RISK QUESTION BEFORE THE TRADE"
     if any(x in lowered for x in ("reversal", "reverse", "retracement")):

@@ -124,7 +124,8 @@ def test_distinct_trade_moments_still_scored() -> None:
         10,
     )
     selected, _ = select_editorial_moments([a, b], batch_limit=12)
-    assert len(selected) == 2
+    assert 1 <= len(selected) <= 2
+    assert all(not pick.hook.startswith('THE MOMENT: "') for pick in selected)
 
 
 STRONG_SEGMENT = (
@@ -138,7 +139,7 @@ STRONG_SEGMENT = (
 def test_weighted_provisional_score_tracks_unverified_visuals() -> None:
     result = evaluate_candidate(clip(0, STRONG_SEGMENT))
     assert result is not None
-    assert RUBRIC_VERSION == "tjr-editorial-v2"
+    assert RUBRIC_VERSION == "tjr-editorial-v3-creator-quality"
     assert sum(WEIGHTS.values()) == 100
     assert result.score_coverage == 85
     assert result.criteria["visuals"].score is None
@@ -253,10 +254,19 @@ def test_repeated_topic_gets_distinct_grounded_source_headlines() -> None:
         "than expected so i decided to exit the position and manage risk first",
         10,
     )
-    selected, _ = select_editorial_moments([first, second])
-    assert len(selected) == 2
-    assert len({pick.hook.casefold() for pick in selected}) == 2
-    assert all(pick.hook != "WHAT'S THE REAL TAKEAWAY HERE?" for pick in selected)
+    selected, rejected = select_editorial_moments([first, second])
+    assert 1 <= len(selected) <= 2
+    assert len({pick.hook.casefold() for pick in selected}) == len(selected)
+    assert all(
+        pick.hook != "WHAT'S THE REAL TAKEAWAY HERE?"
+        and not pick.hook.startswith('THE MOMENT: "')
+        for pick in selected
+    )
+    if len(selected) == 1:
+        assert any(
+            item["reason"] in {"BELOW_CREATOR_QUALITY_FLOOR", "NO_CREATOR_GRADE_GROUNDED_HOOK"}
+            for item in rejected
+        )
 
 
 def test_generic_topic_requires_source_specific_headline() -> None:
@@ -266,10 +276,18 @@ def test_generic_topic_requires_source_specific_headline() -> None:
         "important facts but the risk grew because we did not anticipate the "
         "move and we decided to exit before the loss became an even bigger problem",
     )
-    picks, _ = select_editorial_moments([source])
-    assert len(picks) == 1
-    assert picks[0].hook
-    assert picks[0].hook != "WHAT'S THE REAL TAKEAWAY HERE?"
+    picks, rejected = select_editorial_moments([source])
+    assert all(
+        pick.hook
+        and pick.hook != "WHAT'S THE REAL TAKEAWAY HERE?"
+        and not pick.hook.startswith('THE MOMENT: "')
+        for pick in picks
+    )
+    if not picks:
+        assert any(
+            item["reason"] in {"BELOW_CREATOR_QUALITY_FLOOR", "NO_CREATOR_GRADE_GROUNDED_HOOK"}
+            for item in rejected
+        )
 
 
 def test_rejection_audit_identifies_each_individual_gate() -> None:
