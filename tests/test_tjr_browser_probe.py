@@ -141,7 +141,8 @@ def test_browser_capture_is_full_length_and_rejects_partial_source(tmp_path: Pat
 def test_pinned_source_and_parallel_routing_are_explicit_in_workflow() -> None:
     workflow = (ROOT / ".github" / "workflows" / "tjr-weekly-hd.yml").read_text()
     assert (
-        "ALT_EGRESS_PLATFORM: ${{ matrix.os }}\n          TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}"
+        "ALT_EGRESS_PLATFORM: ${{ matrix.os }}\n"
+        "          TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}"
         in workflow
     )
     assert "fromJSON(inputs.source_video_id != ''" in workflow
