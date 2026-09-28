@@ -84,6 +84,59 @@ def probe_media(path: Path, *, full_decode: bool = False) -> dict[str, Any]:
     }
 
 
+def verify_ass_sidecar(
+    path: Path, *, duration_seconds: float, reported_word_events: int
+) -> None:
+    """Independently inspect the persisted ASS events, not only the QA claim."""
+    if path.stat().st_size > 6_000_000:
+        raise ValueError("oversized ASS evidence")
+    script = path.read_text(encoding="utf-8")
+    if "PlayResX: 1080" not in script or "PlayResY: 1920" not in script:
+        raise ValueError("ASS overlay does not use true portrait coordinates")
+    caption_style = next(
+        (line for line in script.splitlines() if line.startswith("Style: Caption,")),
+        "",
+    )
+    style_fields = caption_style.removeprefix("Style: ").split(",")
+    if len(style_fields) < 23 or style_fields[15] != "3":
+        raise ValueError("ASS caption background plate is missing")
+    hooks = [line for line in script.splitlines() if line.startswith("Dialogue: 5,")]
+    captions = [line for line in script.splitlines() if line.startswith("Dialogue: 2,")]
+    if len(hooks) != 1 or not captions or len(captions) != reported_word_events:
+        raise ValueError("ASS hook or active-word events do not match QA report")
+    fields = hooks[0].split(",", 9)
+    if len(fields) != 10 or fields[3] != "Hook":
+        raise ValueError("ASS has no valid persistent hook")
+
+    def seconds(value: str) -> float:
+        match = re.fullmatch(r"(\d+):(\d{2}):(\d{2})\.(\d{2})", value)
+        if match is None:
+            raise ValueError("invalid ASS event timestamp")
+        return (
+            int(match[1]) * 3600
+            + int(match[2]) * 60
+            + int(match[3])
+            + int(match[4]) / 100
+        )
+
+    if (
+        abs(seconds(fields[1])) > 0.05
+        or abs(seconds(fields[2]) - duration_seconds) > 0.15
+        or r"\an8\pos(540,185)" not in fields[9]
+    ):
+        raise ValueError("ASS hook is not visible for the full safe-area duration")
+    for line in captions:
+        parts = line.split(",", 9)
+        if (
+            len(parts) != 10
+            or parts[3] != "Caption"
+            or r"\c&H" not in parts[9]
+            or r"\rCaption" not in parts[9]
+            or seconds(parts[2]) <= seconds(parts[1])
+        ):
+            raise ValueError("ASS word highlight event is not independently verified")
+
+
 def valid_publication_date(value: object) -> bool:
     if not isinstance(value, str) or not value:
         return False
@@ -166,9 +219,9 @@ def inspect_artifact(
             clip_issue_count = len(issues)
             try:
                 mp4 = checked_path(base, clip.get("file"))
+                ass = checked_path(base, clip.get("ass_sidecar"))
                 for field in (
                     "srt",
-                    "ass_sidecar",
                     "source_matched_quality",
                     "contact_sheet",
                     "preview",
@@ -185,6 +238,16 @@ def inspect_artifact(
                     > 0.15
                     or int(overlay.get("spoken_word_highlight_events") or 0) < 1
                 ):
+                    issues.append("CAPTION_OR_HOOK_TIMING_FAILED")
+                try:
+                    verify_ass_sidecar(
+                        ass,
+                        duration_seconds=float(clip["duration_seconds"]),
+                        reported_word_events=int(
+                            overlay.get("spoken_word_highlight_events") or 0
+                        ),
+                    )
+                except ValueError:
                     issues.append("CAPTION_OR_HOOK_TIMING_FAILED")
                 quality = read_json(checked_path(base, clip["source_matched_quality"]))
                 ssim = float(quality.get("source_to_delivery_mean_ssim") or 0)

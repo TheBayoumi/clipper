@@ -26,8 +26,20 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
     clips = base / "clips"
     clips.mkdir(parents=True)
     stem = "01-tjr-test"
-    for suffix in (".mp4", ".srt", ".ass", ".ssim.txt", "-contact.png", "-preview.png"):
+    for suffix in (".mp4", ".srt", ".ssim.txt", "-contact.png", "-preview.png"):
         (clips / (stem + suffix)).write_bytes(b"fixture")
+    (clips / (stem + ".ass")).write_text(
+        "[Script Info]\\nPlayResX: 1080\\nPlayResY: 1920\\n"
+        "Style: Caption,DejaVu Sans,64,white,white,black,black,-1,0,0,0,"
+        "100,100,0,0,3,18,0,2,120,120,375,1\\n"
+        "[Events]\\n"
+        r"Dialogue: 5,0:00:00.00,0:00:29.20,Hook,,0,0,0,,{\\an8\\pos(540,185)}"
+        "TRUTHFUL HOOK\\n"
+        r"Dialogue: 2,0:00:00.10,0:00:00.55,Caption,,0,0,0,,{\\c&H0059DEFF&}"
+        r"WORD{\\rCaption}"
+        "\\n",
+        encoding="utf-8",
+    )
     quality = {
         "status": "MEASURED_SOURCE_MATCHED_ENCODING",
         "source_to_delivery_mean_ssim": 0.997,
@@ -52,7 +64,7 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
                 "overlay_acceptance": {
                     "style": "B2",
                     "persistent_hook_seconds": 29.2,
-                    "spoken_word_highlight_events": 85,
+                    "spoken_word_highlight_events": 1,
                 },
                 "hook_candidate": (
                     'THE MOMENT: "PARTIAL QUOTE"'
@@ -185,3 +197,33 @@ def test_nonfinite_fidelity_is_never_accepted_or_reported_as_perfect(
     assert report["technically_verified_mp4_count"] == 0
     assert report["channels"][0]["minimum_ssim"] is None
     assert "SOURCE_FIDELITY_FAILED" in report["issues"]
+
+
+def test_independent_ass_audit_rejects_false_persistent_hook(
+    tmp_path: Path,
+) -> None:
+    artifact = _fixture(tmp_path)
+    ass = next(artifact.rglob("01-tjr-test.ass"))
+    ass.write_text(
+        ass.read_text(encoding="utf-8").replace(
+            "0:00:29.20,Hook", "0:00:04.00,Hook"
+        ),
+        encoding="utf-8",
+    )
+    report = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "CAPTION_OR_HOOK_TIMING_FAILED" in report["issues"]
+    assert report["technically_verified_mp4_count"] == 0
+
+
+def test_independent_ass_audit_rejects_missing_word_highlight(
+    tmp_path: Path,
+) -> None:
+    artifact = _fixture(tmp_path)
+    ass = next(artifact.rglob("01-tjr-test.ass"))
+    ass.write_text(
+        ass.read_text(encoding="utf-8").replace(r"\c&H0059DEFF&", ""),
+        encoding="utf-8",
+    )
+    report = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "CAPTION_OR_HOOK_TIMING_FAILED" in report["issues"]
+    assert report["technically_verified_mp4_count"] == 0
