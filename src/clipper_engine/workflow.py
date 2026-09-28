@@ -169,10 +169,10 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
             )
         from .rendering.portrait_matte import (
             CASCADE_REQUIRED_CHECKS,
+            HERO_FOCUS_REQUIRED_CHECKS,
             PORTRAIT_REQUIRED_CHECKS,
             SNAPBACK_REQUIRED_CHECKS,
             SPOTLIGHT_REQUIRED_CHECKS,
-            HERO_FOCUS_REQUIRED_CHECKS,
         )
 
         required_checks = PORTRAIT_REQUIRED_CHECKS

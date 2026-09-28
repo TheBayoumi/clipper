@@ -1005,11 +1005,21 @@ def render_hero_focus_panels(
     sample_frames = {0, frames - 1, *(n for edge in phase_frames for n in (edge - 1, edge))}
     focus_x = (canvas_width - focus_width) // 2
     dual_boxes = [
-        [margin + i * (dual_width + gap), y, margin + i * (dual_width + gap) + dual_width, y + focus_height]
+        [
+            margin + i * (dual_width + gap),
+            y,
+            margin + i * (dual_width + gap) + dual_width,
+            y + focus_height,
+        ]
         for i in range(2)
     ]
     group_boxes = [
-        [margin + i * (group_width + gap), y, margin + i * (group_width + gap) + group_width, y + group_height]
+        [
+            margin + i * (group_width + gap),
+            y,
+            margin + i * (group_width + gap) + group_width,
+            y + group_height,
+        ]
         for i in range(3)
     ]
     samples: dict[str, dict[str, Any]] = {}
