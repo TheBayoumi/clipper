@@ -277,3 +277,50 @@ def test_split_screen_montage_is_an_intentional_edit_plan(tmp_path: Path) -> Non
     quality.write_text(json.dumps(evidence), encoding="utf-8")
     report = review_run(tmp_path, expected_channels=1, probe=_probe)
     assert "EDITORIAL_EDIT_PLAN_FAILED" not in report["issues"]
+
+def test_independent_audit_rejects_overlapping_source_windows(tmp_path: Path) -> None:
+    artifact = _fixture(tmp_path)
+    report_path = next(artifact.rglob("tjr-youtube-qa-report.json"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    second = dict(report["clips"][0])
+    stem = "02-tjr-test"
+    clips_dir = report_path.parent / "clips"
+    for suffix in (".mp4", ".srt", ".ssim.txt", "-contact.png", "-preview.png"):
+        (clips_dir / (stem + suffix)).write_bytes(b"fixture")
+    (clips_dir / (stem + ".ass")).write_text(
+        (clips_dir / "01-tjr-test.ass").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (clips_dir / (stem + ".quality.json")).write_text(
+        (clips_dir / "01-tjr-test.quality.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    second.update(
+        {
+            "file": f"clips/{stem}.mp4",
+            "srt": f"clips/{stem}.srt",
+            "ass_sidecar": f"clips/{stem}.ass",
+            "source_matched_quality": f"clips/{stem}.quality.json",
+            "contact_sheet": f"clips/{stem}-contact.png",
+            "preview": f"clips/{stem}-preview.png",
+            "source_start_seconds": 2880.0,
+            "source_end_seconds": 2909.2,
+        }
+    )
+    report["clips"].append(second)
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    result = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "DUPLICATE_OR_INVALID_CLIP_WINDOW" in result["issues"]
+
+
+def test_every_real_production_mode_routes_through_independent_feedback_audit() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
+    ).read_text(encoding="utf-8")
+    assert "youtube_preview, youtube_alternate_egress, youtube_modal_egress, render" in workflow
+    assert '["modal_direct","youtube_direct","verified_mirror"]' in workflow
+    assert "pattern: tjr-real-original-youtube-hd-*" in workflow
+    assert "pattern: tjr-real-youtube-hd-*" in workflow
+    assert "pattern: tjr-youtube-alt-*" in workflow
+    assert "pattern: tjr-weekly-hd-*" in workflow
+

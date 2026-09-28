@@ -235,6 +235,7 @@ def inspect_artifact(
             issues.append("NO_RENDERED_CLIPS")
             return entry
         seen: set[tuple[str, float, float]] = set()
+        windows_by_source: dict[str, list[tuple[float, float]]] = {}
         min_ssim: float | None = None
         for clip in clips:
             if not isinstance(clip, dict):
@@ -304,9 +305,17 @@ def inspect_artifact(
                     float(clip["source_start_seconds"]),
                     float(clip["source_end_seconds"]),
                 )
-                if identity in seen or identity[1] >= identity[2]:
+                source_url, window_start, window_end = identity
+                overlaps_existing = any(
+                    min(window_end, existing_end) - max(window_start, existing_start) > 1.0
+                    for existing_start, existing_end in windows_by_source.get(source_url, [])
+                )
+                if identity in seen or window_start >= window_end or overlaps_existing:
                     issues.append("DUPLICATE_OR_INVALID_CLIP_WINDOW")
                 seen.add(identity)
+                windows_by_source.setdefault(source_url, []).append(
+                    (window_start, window_end)
+                )
                 if clip.get("review_required") is not True:
                     issues.append("MISSING_HUMAN_REVIEW_GATE")
                 if len(issues) == clip_issue_count:

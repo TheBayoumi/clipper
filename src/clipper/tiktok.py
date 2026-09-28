@@ -138,9 +138,13 @@ def creative_hook_from_text(text: str) -> str:
         return "WHY HE'S NOT SHORTING THE SELLOFF"
     if selloff and re.search(r"\bshort(?:ed|ing)?\b", lowered):
         return "WHAT'S THE SHORT SETUP IN THIS SELLOFF?"
-    if re.search(r"\brisk(?:ing)?\s+too\s+much\b", lowered) and any(
-        cue in lowered for cue in ("trader", "position", "trading plan", "trade")
-    ):
+    affirmative_excess_risk = re.search(
+        r"\b(?:why\s+do\s+)?traders?\s+(?:keep\s+)?risk(?:ing)?\s+too\s+much\b"
+        r"|\b(?:you|they|we)\s+(?:are\s+|keep\s+)?risk(?:ing)?\s+too\s+much\b"
+        r"|\brisk(?:ed|ing)\s+too\s+much\s+(?:money|capital)\b",
+        lowered,
+    )
+    if affirmative_excess_risk:
         return "WHY TRADERS RISK TOO MUCH"
     if (
         "stop loss" in lowered

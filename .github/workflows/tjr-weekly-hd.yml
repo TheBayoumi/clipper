@@ -524,11 +524,18 @@ jobs:
 
   feedback_audit:
     name: Independent review of real MP4s and production evidence
-    needs: [tests, youtube_modal_egress]
+    needs:
+      [tests, youtube_preview, youtube_alternate_egress, youtube_modal_egress, render]
     if: >-
       always() && github.event_name == 'workflow_dispatch' &&
-      ((inputs.source_mode == 'modal_direct' && inputs.budget_confirmed) ||
-      inputs.source_mode == 'feedback_replay') &&
+      (
+        (
+          contains(fromJSON('["modal_direct","youtube_direct","verified_mirror"]'),
+          inputs.source_mode) &&
+          inputs.budget_confirmed
+        ) ||
+        inputs.source_mode == 'feedback_replay'
+      ) &&
       needs.tests.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 65
@@ -543,12 +550,33 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Download both current channel artifacts, including partial failures
+      - name: Download both current Modal channel artifacts, including partial failures
         if: inputs.source_mode == 'modal_direct'
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           pattern: tjr-real-original-youtube-hd-*
+          path: tjr-feedback-input
+      - name: Download direct YouTube production artifact
+        if: inputs.source_mode == 'youtube_direct'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: tjr-real-youtube-hd-*
+          path: tjr-feedback-input
+      - name: Download alternate-egress YouTube artifacts
+        if: inputs.source_mode == 'youtube_direct'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: tjr-youtube-alt-*
+          path: tjr-feedback-input
+      - name: Download verified-mirror production artifact
+        if: inputs.source_mode == 'verified_mirror'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: tjr-weekly-hd-*
           path: tjr-feedback-input
       - name: Replay existing production artifacts at no Modal cost
         if: inputs.source_mode == 'feedback_replay'
@@ -569,10 +597,12 @@ jobs:
           TJR_FEEDBACK_SOURCE_RUN_ID: ${{ inputs.feedback_source_run_id }}
         run: |
           set -euo pipefail
-          EXPECTED_CHANNELS=2
-          if [[ "$TJR_SOURCE_MODE" != "feedback_replay" &&
-                -n "$TJR_SOURCE_VIDEO_ID" ]]; then
-            EXPECTED_CHANNELS=1
+          EXPECTED_CHANNELS=1
+          if [[ "$TJR_SOURCE_MODE" == "modal_direct" &&
+                -z "$TJR_SOURCE_VIDEO_ID" ]]; then
+            EXPECTED_CHANNELS=2
+          elif [[ "$TJR_SOURCE_MODE" == "feedback_replay" ]]; then
+            EXPECTED_CHANNELS=2
           fi
           mkdir -p tjr-feedback
           if ! python -m scripts.tjr_feedback_gate \
