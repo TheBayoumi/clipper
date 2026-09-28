@@ -1420,10 +1420,12 @@ def render_portrait(
         }
         visual_box = (0, top, width, top + visual_height)
         for left, right in pairwise(indices):
-            delta = ImageChops.difference(
+            impact_delta = ImageChops.difference(
                 decoded_impact[left].crop(visual_box), decoded_impact[right].crop(visual_box)
             )
-            impact_cut_differences.append(round(sum(ImageStat.Stat(delta).mean) / 3, 4))
+            impact_cut_differences.append(
+                round(sum(ImageStat.Stat(impact_delta).mean) / 3, 4)
+            )
         checks["portrait_impact_cut_encoded_motion"] = len(impact_cut_differences) == len(
             indices
         ) - 1 and all(value > 2.5 for value in impact_cut_differences)
