@@ -151,8 +151,15 @@ def resolve_mode_timing(
             raise MontageRejection("source_window_invalid", "source windows require integer bounds")
         window = {"start_frame": entry["start_frame"], "frames": entry["frames"]}
         begin, finish = window["start_frame"], window["start_frame"] + window["frames"]
-        if begin < 0 or begin < previous_end or window["frames"] < 1 or finish > int(states["source_frames"]):
-            raise MontageRejection("source_window_invalid", "source windows overlap or leave master")
+        if (
+            begin < 0
+            or begin < previous_end
+            or window["frames"] < 1
+            or finish > int(states["source_frames"])
+        ):
+            raise MontageRejection(
+                "source_window_invalid", "source windows overlap or leave master"
+            )
         previous_end = finish
         windows.append(window)
     before = int(states["before_frame"])
@@ -169,7 +176,8 @@ def resolve_mode_timing(
         )
     ):
         raise MontageRejection(
-            "source_window_invalid", "every verified before/after/trigger anchor needs its own window"
+            "source_window_invalid",
+            "every verified before/after/trigger anchor needs its own window",
         )
     state = style.get("hook_state", "toggle")
     hook_start = style.get("hook_start_frame", states["hook_start_frame"])
@@ -364,7 +372,13 @@ def build_plan(
     if hook["start_frame"] + hook["frames"] > frame_count:
         raise MontageRejection("hook_window_invalid", "transformation hook overruns source")
     ending_frames = sum(int(shot["frames"]) for shot in shots)
-    if hook["frames"] + sum(w["frames"] for w in windows) + comparison_frames + ending_frames != target:
+    if (
+        hook["frames"]
+        + sum(w["frames"] for w in windows)
+        + comparison_frames
+        + ending_frames
+        != target
+    ):
         raise MontageRejection(
             "no_admissible_montage",
             "calibrated hook, original, comparison and switch must land on exact target",
@@ -457,7 +471,13 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
     states = editorial["verified_visual_states"].get(plan["source"]["filename"])
     if states is None:
         raise MontageRejection("uncalibrated_source", "plan source has no verified states")
-    target, comparison_frames, expected_windows, expected_hook, expected_shots = resolve_mode_timing(
+    (
+        target,
+        comparison_frames,
+        expected_windows,
+        expected_hook,
+        expected_shots,
+    ) = resolve_mode_timing(
         editorial, states, str(montage.get("comparison_mode")), rate(profile)
     )
     multi = "source_windows" in editorial.get("mode_timing", {}).get(
