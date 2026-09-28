@@ -384,9 +384,7 @@ def render_title_frames(
         )
         for i in range(3):
             change = (
-                start
-                + i * int(mode_cfg["focus_frames"])
-                + int(mode_cfg["switch_after_frames"])
+                start + i * int(mode_cfg["focus_frames"]) + int(mode_cfg["switch_after_frames"])
             )
             sample_indices.update({change - 1, change})
         sample_indices.add(start + 3 * int(mode_cfg["focus_frames"]))
@@ -1433,13 +1431,10 @@ def render_portrait(
             and reframe_qa["source_frame_grid_exact"] is True
             and reframe_qa["input_frame_count"] == frames
         )
-        checks["portrait_continuous_reveal_legibility"] = (
-            reframe_qa["minimum_effective_source_width_px"]
-            >= int(reveal_cfg["minimum_effective_source_width"])
-            and visual_height > round(
-                width * int(profile.config["output"]["height"])
-                / int(profile.config["output"]["width"])
-            )
+        checks["portrait_continuous_reveal_legibility"] = reframe_qa[
+            "minimum_effective_source_width_px"
+        ] >= int(reveal_cfg["minimum_effective_source_width"]) and visual_height > round(
+            width * int(profile.config["output"]["height"]) / int(profile.config["output"]["width"])
         )
         checks["portrait_continuous_reveal_no_ai"] = reframe_qa["ai_enhancement"] is False
         checks["portrait_continuous_reveal_effects_declared"] = reframe_qa["effects"] == {
@@ -1484,12 +1479,9 @@ def render_portrait(
         toggle_delta = ImageChops.difference(
             before_toggle.crop(visual_box), after_toggle.crop(visual_box)
         )
-        continuous_reveal_differences.append(
-            round(sum(ImageStat.Stat(toggle_delta).mean) / 3, 4)
-        )
+        continuous_reveal_differences.append(round(sum(ImageStat.Stat(toggle_delta).mean) / 3, 4))
         checks["portrait_continuous_reveal_toggle_visible"] = (
-            len(continuous_reveal_differences) == 1
-            and continuous_reveal_differences[0] > 2.5
+            len(continuous_reveal_differences) == 1 and continuous_reveal_differences[0] > 2.5
         )
 
     required = PORTRAIT_REQUIRED_CHECKS | (

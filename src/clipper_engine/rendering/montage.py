@@ -735,8 +735,7 @@ def render(
             selected_excerpt = (
                 len(windows) > 1
                 or int(windows[0]["start_frame"]) != 0
-                or source_frame_count(plan["montage"])
-                != int(plan["montage"]["full_source_frames"])
+                or source_frame_count(plan["montage"]) != int(plan["montage"]["full_source_frames"])
             )
             source_excerpt: Path | None = None
             if selected_excerpt:

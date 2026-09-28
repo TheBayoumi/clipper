@@ -268,9 +268,7 @@ def render_frames(
         roi = _roi_for_frame(frame, cfg["keyframes"])
         minimum_effective = min(
             minimum_effective,
-            _effective_source_width(
-                roi, source_width, source_height, canvas_width, visual_height
-            ),
+            _effective_source_width(roi, source_width, source_height, canvas_width, visual_height),
         )
         reframed = ImageOps.fit(
             _crop(source, roi),
