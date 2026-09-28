@@ -73,7 +73,7 @@ jobs:
           clipper campaign warzone-operator-toggle acquire \
             --source-key "$SOURCE_KEY" --output-dir source
 
-      - name: Plan certified-source kinetic Impact Cut
+      - name: Plan certified-source Continuous Reveal
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
           SOURCE_KEY: ${{ steps.source.outputs.source_key }}
@@ -82,11 +82,11 @@ jobs:
           clipper campaign warzone-operator-toggle plan \
             --source "$SOURCE_FILE" \
             --source-qa "source/$SOURCE_KEY.source_qa.json" \
-            --comparison-mode impact_cut \
+            --comparison-mode continuous_reveal \
             --approved-text-index 1 \
-            --output plan_impact_cut.json
+            --output plan_continuous_reveal.json
 
-      - name: Render source-native kinetic Impact Cut through Clipper
+      - name: Render uninterrupted Continuous Reveal through canonical Clipper
         timeout-minutes: 35
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
@@ -96,69 +96,67 @@ jobs:
           clipper campaign warzone-operator-toggle render \
             --source "$SOURCE_FILE" \
             --source-qa "source/$SOURCE_KEY.source_qa.json" \
-            --plan plan_impact_cut.json \
-            --output-dir delivery_impact_cut
+            --plan plan_continuous_reveal.json \
+            --output-dir delivery_continuous_reveal
 
-      - name: Qualify Impact Cut frame grid clarity effects and encoded storyboard
+      - name: Qualify Continuous Reveal source continuity clarity and encoded storyboard
         run: |
           set -euo pipefail
           clipper campaign warzone-operator-toggle qualify \
-            --render-manifest delivery_impact_cut/render_manifest.json \
-            --output delivery_impact_cut/acceptance.json
+            --render-manifest delivery_continuous_reveal/render_manifest.json \
+            --output delivery_continuous_reveal/acceptance.json
           python - <<'CHECK'
           import json
           from pathlib import Path
 
-          manifest = json.loads(Path("delivery_impact_cut/render_manifest.json").read_text())
-          accepted = json.loads(Path("delivery_impact_cut/acceptance.json").read_text())
+          manifest = json.loads(Path("delivery_continuous_reveal/render_manifest.json").read_text())
+          accepted = json.loads(Path("delivery_continuous_reveal/acceptance.json").read_text())
           edit = manifest["plan"]["montage"]
           portrait = manifest["portrait"]
-          impact = portrait["impact_cut"]
-          expected_windows = [
-              {"start_frame": 20, "frames": 16},
-              {"start_frame": 55, "frames": 10},
-              {"start_frame": 108, "frames": 14},
-          ]
+          reveal = portrait["continuous_reveal"]
+          expected_window = {"start_frame": 20, "frames": 156}
           assert accepted["status"] == "PASS", accepted
-          assert edit["comparison_mode"] == "impact_cut"
-          assert edit["hook"] == {"start_frame": 144, "frames": 15, "state": "after"}
-          assert edit["source_windows"] == expected_windows
-          assert [shot["frames"] for shot in edit["ending_shots"]] == [3, 3, 3, 11]
-          assert edit["output_frames"] == 165
+          assert edit["type"] == "continuous_source_reveal"
+          assert edit["comparison_mode"] == "continuous_reveal"
+          assert edit["source_window"] == expected_window
+          assert edit["output_frames"] == 156
+          assert abs(edit["output_seconds"] - 5.2) < 1e-9
+          assert "hook" not in edit and "comparison_frames" not in edit and "ending_shots" not in edit
           stage = manifest["staging"]["source_excerpt"]
-          assert stage["windows"] == expected_windows
-          assert stage["frame_count"] == 40 and stage["source_to_piece_hashes_exact"]
-          assert impact["mode"] == "impact_cut"
-          assert impact["frame_count"] == 165
-          assert impact["source_only"] is True
-          assert impact["source_frame_grid_exact"] is True
-          assert impact["ai_enhancement"] is False
-          assert impact["visual_size"] == [1080, 1152]
-          assert impact["bottom_matte_height"] == 112
-          assert impact["minimum_source_crop_width_px"] >= 940
-          assert impact["storyboard_frames"] == [0, 15, 31, 79, 111, 164]
+          assert stage["windows"] == [expected_window]
+          assert stage["frame_count"] == 156 and stage["source_to_piece_hashes_exact"]
+          assert reveal["mode"] == "continuous_reveal"
+          assert reveal["frame_count"] == 156
+          assert reveal["source_only"] is True
+          assert reveal["source_frame_grid_exact"] is True
+          assert reveal["ai_enhancement"] is False
+          assert reveal["visual_size"] == [1080, 1000]
+          assert reveal["minimum_effective_source_width_px"] >= 1000
+          assert reveal["storyboard_frames"] == [0, 30, 37, 44, 110, 155]
+          assert reveal["effects"]["luminance_flash"] is False
           assert all(manifest["qa"]["checks"].values()), manifest["qa"]["checks"]
           assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
-          assert all(v > 2.5 for v in portrait["qa"]["impact_cut_pixel_differences"])
-          assert portrait["storyboard"]["frames"] == [0, 15, 31, 79, 111, 164]
+          assert portrait["qa"]["continuous_reveal_pixel_differences"][0] > 2.5
+          assert portrait["storyboard"]["frames"] == [0, 30, 37, 44, 110, 155]
           assert Path(portrait["storyboard"]["file"]).is_file()
-          assert 5 <= portrait["qa"]["encoded_duration"] <= 6
-          print("CERTIFIED IMPACT CUT:", portrait["file"])
+          assert abs(portrait["qa"]["encoded_duration"] - 5.2) < 0.055
+          print("CERTIFIED CONTINUOUS REVEAL:", portrait["file"])
           CHECK
 
-      - name: Publish distinct high-clarity Impact Cut video storyboard and QA
+      - name: Publish distinct Continuous Reveal video storyboard and QA
         uses: actions/upload-artifact@v4
         with:
-          name: warzone-impact-cut-${{ github.sha }}
+          name: warzone-continuous-reveal-${{ github.sha }}
           if-no-files-found: error
           retention-days: 30
           path: |
-            plan_impact_cut.json
+            plan_continuous_reveal.json
             source/*.source_qa.json
-            delivery_impact_cut/*.json
-            delivery_impact_cut/*.mp4
-            delivery_impact_cut/*.jpg
+            delivery_continuous_reveal/*.json
+            delivery_continuous_reveal/*.mp4
+            delivery_continuous_reveal/*.jpg
 
+      - name: Plan certified-source result-first Rebound
       - name: Plan certified-source result-first Rebound
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
@@ -239,9 +237,9 @@ jobs:
             delivery_rebound/*.json
             delivery_rebound/*.mp4
             delivery_rebound/*.jpg
-            delivery_impact_cut/*.json
-            delivery_impact_cut/*.mp4
-            delivery_impact_cut/*.jpg
+            delivery_continuous_reveal/*.json
+            delivery_continuous_reveal/*.mp4
+            delivery_continuous_reveal/*.jpg
 
       - name: Plan certified-source Hero Focus
         env:

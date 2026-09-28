@@ -1380,15 +1380,20 @@ def test_official_workflow_qualifies_and_publishes_distinct_rebound() -> None:
     assert "warzone-rebound-" + chr(36) + "{{ github.sha }}" in workflow
 
 
-def _impact_cut_test_profile(profile: CampaignProfile) -> CampaignProfile:
+def _continuous_reveal_test_profile(profile: CampaignProfile) -> CampaignProfile:
     p = _cascade_test_profile(profile)
-    cfg = p.config["output"]["portrait_matte"]["impact_cut"]
-    cfg["minimum_source_crop_width"] = 150
-    cfg["bottom_matte_height"] = 32
+    cfg = p.config["output"]["portrait_matte"]["continuous_reveal"]
+    cfg["minimum_effective_source_width"] = 150
+    cfg["visual_height"] = 170
+    cfg["title_top_height"] = 55
+    cfg["title_y_positions"] = [5, 20, 35]
+    cfg["title_bar_y"] = 50
+    cfg["title_font_sizes"] = [12, 11, 10]
+    cfg["title_pill_heights"] = [17, 16, 15]
     return p
 
 
-def test_campaign_cli_accepts_profile_configured_impact_cut() -> None:
+def test_campaign_cli_accepts_profile_configured_continuous_reveal() -> None:
     with patch("clipper.cli.run_campaign", return_value=0) as mocked:
         assert (
             main(
@@ -1399,9 +1404,9 @@ def test_campaign_cli_accepts_profile_configured_impact_cut() -> None:
                     "--source",
                     "source.mp4",
                     "--output",
-                    "impact.json",
+                    "continuous.json",
                     "--comparison-mode",
-                    "impact_cut",
+                    "continuous_reveal",
                 ]
             )
             == 0
@@ -1409,48 +1414,28 @@ def test_campaign_cli_accepts_profile_configured_impact_cut() -> None:
     args = mocked.call_args.args[0]
     assert args.profile == CAMPAIGN
     assert args.campaign_command == "plan"
-    assert args.comparison_mode == "impact_cut"
+    assert args.comparison_mode == "continuous_reveal"
 
 
-def test_impact_cut_is_distinct_source_native_kinetic_mode(
+def test_continuous_reveal_is_one_uninterrupted_certified_source_window(
     source: Path, profile: CampaignProfile
 ) -> None:
-    p = _impact_cut_test_profile(profile)
-    plan = montage.build_plan(source, p, comparison_mode="impact_cut")
+    p = _continuous_reveal_test_profile(profile)
+    plan = montage.build_plan(source, p, comparison_mode="continuous_reveal")
     edit = plan["montage"]
-    assert edit["comparison_mode"] == "impact_cut"
-    assert edit["hook"] == {"start_frame": 144, "frames": 15, "state": "after"}
-    assert edit["source_windows"] == [
-        {"start_frame": 20, "frames": 16},
-        {"start_frame": 55, "frames": 10},
-        {"start_frame": 108, "frames": 14},
-    ]
-    assert edit["comparison_frames"] == 90
-    assert [shot["frames"] for shot in edit["ending_shots"]] == [3, 3, 3, 11]
-    assert edit["output_frames"] == 165
-    assert edit["output_seconds"] == 5.5
-    cfg = kinetic_reframe.config(p, 165)
-    assert cfg["storyboard_frames"] == [0, 15, 31, 79, 111, 164]
-    assert cfg["flash_frames"] == [30, 54, 145]
-    assert cfg["minimum_source_crop_width"] == 150
-    for frame, state in {
-        0: 1.0,
-        14: 1.0,
-        15: 0.0,
-        31: 0.0,
-        40: 1.0,
-        41: 1.0,
-        55: 1.0,
-        144: 1.0,
-        145: 0.0,
-        147: 0.0,
-        148: 1.0,
-        150: 1.0,
-        151: 0.0,
-        153: 0.0,
-        154: 1.0,
-        164: 1.0,
-    }.items():
+    assert edit["type"] == "continuous_source_reveal"
+    assert edit["comparison_mode"] == "continuous_reveal"
+    assert edit["source_window"] == {"start_frame": 20, "frames": 156}
+    assert edit["output_frames"] == 156
+    assert edit["output_seconds"] == pytest.approx(5.2)
+    assert "hook" not in edit
+    assert "comparison_frames" not in edit
+    assert "ending_shots" not in edit
+    cfg = kinetic_reframe.config(p, 156)
+    assert cfg["storyboard_frames"] == [0, 30, 37, 44, 110, 155]
+    assert cfg["minimum_effective_source_width"] == 150
+    expected = {0: 0.0, 36: 0.0, 37: 0.0, 44: 1.0, 110: 1.0, 155: 1.0}
+    for frame, state in expected.items():
         assert portrait_matte.toggle_progress(frame, plan, p) == state
     montage.validate_plan(plan, source, p)
 
@@ -1458,112 +1443,111 @@ def test_impact_cut_is_distinct_source_native_kinetic_mode(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("flash_strength", 0.5),
-        ("bottom_matte_height", 12),
-        ("storyboard_frames", [0, 15, 31]),
-        ("minimum_source_crop_width", 500),
+        ("storyboard_frames", [0, 30, 37]),
+        ("minimum_effective_source_width", 500),
+        ("sharpen_percent", 80),
+        ("visual_height", 300),
     ],
 )
-def test_impact_cut_rejects_bad_profile_calibration(
+def test_continuous_reveal_rejects_bad_profile_calibration(
     source: Path, profile: CampaignProfile, field: str, value: object
 ) -> None:
-    p = _impact_cut_test_profile(profile)
-    p.config["output"]["portrait_matte"]["impact_cut"][field] = value
-    with pytest.raises(montage.MontageRejection, match="impact_cut_calibration"):
-        montage.build_plan(source, p, comparison_mode="impact_cut")
+    p = _continuous_reveal_test_profile(profile)
+    p.config["output"]["portrait_matte"]["continuous_reveal"][field] = value
+    with pytest.raises(montage.MontageRejection, match="continuous_reveal_calibration"):
+        montage.build_plan(source, p, comparison_mode="continuous_reveal")
 
 
-def test_impact_cut_rejects_crop_path_below_clarity_floor(
+def test_continuous_reveal_rejects_non_monotonic_camera_move(
     source: Path, profile: CampaignProfile
 ) -> None:
-    p = _impact_cut_test_profile(profile)
-    p.config["output"]["portrait_matte"]["impact_cut"]["keyframes"][8]["roi"] = [
-        0.3,
-        0.0,
-        0.6,
-        1.0,
+    p = _continuous_reveal_test_profile(profile)
+    p.config["output"]["portrait_matte"]["continuous_reveal"]["keyframes"][2]["roi"] = [
+        0.1,
+        0.04,
+        0.9,
+        0.96,
     ]
-    with pytest.raises(montage.MontageRejection, match="impact_cut_calibration"):
-        montage.build_plan(source, p, comparison_mode="impact_cut")
+    with pytest.raises(montage.MontageRejection, match="continuous_reveal_calibration"):
+        montage.build_plan(source, p, comparison_mode="continuous_reveal")
 
 
-def test_impact_cut_certified_render_and_fail_closed_qualification(
+def test_continuous_reveal_certified_render_and_fail_closed_qualification(
     source: Path,
     profile: CampaignProfile,
     certificate: tuple[Path, dict[str, Any]],
     tmp_path: Path,
 ) -> None:
-    p = _impact_cut_test_profile(profile)
-    planned = tmp_path / "plan_impact_cut.json"
+    p = _continuous_reveal_test_profile(profile)
+    planned = tmp_path / "plan_continuous_reveal.json"
     plan = plan_campaign(
         p,
         source,
         certificate[0],
         planned,
-        comparison_mode="impact_cut",
+        comparison_mode="continuous_reveal",
         approved_text_index=1,
     )
     assert plan["status"] == "PLANNED"
-    output = tmp_path / "impact_cut"
+    output = tmp_path / "continuous_reveal"
     result = render_campaign(p, source, certificate[0], planned, output)
     portrait = result["portrait"]
-    impact = portrait["impact_cut"]
-    assert result["staging"]["hook"]["source_to_piece_hashes_exact"]
+    reveal = portrait["continuous_reveal"]
     assert result["staging"]["source_excerpt"]["source_to_piece_hashes_exact"]
-    assert result["staging"]["source_excerpt"]["frame_count"] == 40
-    assert result["staging"]["reveal"]["source_to_piece_hashes_exact"]
-    assert result["staging"]["comparison"]["comparison_mode"] == "impact_cut"
-    assert result["staging"]["comparison"]["source_only"] is True
+    assert result["staging"]["source_excerpt"]["frame_count"] == 156
+    assert "comparison" not in result["staging"]
+    assert "hook" not in result["staging"]
+    assert "reveal" not in result["staging"]
     assert all(result["qa"]["checks"].values()), result["qa"]["checks"]
-    assert impact["mode"] == "impact_cut"
-    assert impact["frame_count"] == 165
-    assert impact["input_frame_count"] == 165
-    assert impact["source_frame_grid_exact"] is True
-    assert impact["source_only"] is True
-    assert impact["ai_enhancement"] is False
-    assert impact["minimum_source_crop_width_px"] >= 150
-    assert impact["visual_size"][0] == 180
-    assert impact["bottom_matte_height"] == 32
-    assert impact["storyboard_frames"] == [0, 15, 31, 79, 111, 164]
-    assert portrait["qa"]["frame_count"] == 165
-    assert portrait["qa"]["encoded_duration"] == pytest.approx(5.5, abs=0.055)
-    assert portrait["title"]["progress_samples"]["0"] == 1
+    assert reveal["mode"] == "continuous_reveal"
+    assert reveal["frame_count"] == 156
+    assert reveal["input_frame_count"] == 156
+    assert reveal["source_frame_grid_exact"] is True
+    assert reveal["source_only"] is True
+    assert reveal["ai_enhancement"] is False
+    assert reveal["minimum_effective_source_width_px"] >= 150
+    assert reveal["visual_size"] == [180, 170]
+    assert reveal["storyboard_frames"] == [0, 30, 37, 44, 110, 155]
+    assert reveal["effects"]["luminance_flash"] is False
+    assert portrait["qa"]["frame_count"] == 156
+    assert portrait["qa"]["encoded_duration"] == pytest.approx(5.2, abs=0.055)
+    assert portrait["title"]["progress_samples"]["0"] == 0
+    assert portrait["title"]["progress_samples"]["155"] == 1
     assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
-    assert len(portrait["qa"]["impact_cut_pixel_differences"]) == 5
-    assert all(value > 2.5 for value in portrait["qa"]["impact_cut_pixel_differences"])
-    assert portrait["storyboard"]["frames"] == [0, 15, 31, 79, 111, 164]
+    assert portrait["qa"]["continuous_reveal_pixel_differences"][0] > 2.5
+    assert portrait["storyboard"]["frames"] == [0, 30, 37, 44, 110, 155]
     assert portrait["storyboard"]["source"] == "actual_encoded_delivery"
     assert Path(portrait["storyboard"]["file"]).is_file()
 
     accepted = qualify_campaign(
-        p, output / "render_manifest.json", tmp_path / "impact_accepted.json"
+        p, output / "render_manifest.json", tmp_path / "continuous_accepted.json"
     )
     assert accepted["status"] == "PASS"
     assert accepted["primary_delivery"] == portrait["file"]
 
     baseline = json.loads((output / "render_manifest.json").read_text())
     broken = copy.deepcopy(baseline)
-    broken["portrait"]["impact_cut"]["ai_enhancement"] = True
-    tampered = tmp_path / "impact_ai_tampered.json"
+    broken["portrait"]["continuous_reveal"]["ai_enhancement"] = True
+    tampered = tmp_path / "continuous_ai_tampered.json"
     tampered.write_text(json.dumps(broken))
-    with pytest.raises(montage.MontageRejection, match="impact_cut_schedule"):
-        qualify_campaign(p, tampered, tmp_path / "impact_rejected.json")
+    with pytest.raises(montage.MontageRejection, match="continuous_reveal_schedule"):
+        qualify_campaign(p, tampered, tmp_path / "continuous_rejected.json")
 
     broken = copy.deepcopy(baseline)
     broken["portrait"]["storyboard"]["sha256"] = "wrong"
-    tampered = tmp_path / "impact_storyboard_tampered.json"
+    tampered = tmp_path / "continuous_storyboard_tampered.json"
     tampered.write_text(json.dumps(broken))
-    with pytest.raises(montage.MontageRejection, match="impact_cut_storyboard"):
-        qualify_campaign(p, tampered, tmp_path / "impact_storyboard_rejected.json")
+    with pytest.raises(montage.MontageRejection, match="continuous_reveal_storyboard"):
+        qualify_campaign(p, tampered, tmp_path / "continuous_storyboard_rejected.json")
 
 
-def test_official_workflow_qualifies_and_publishes_impact_cut() -> None:
+def test_official_workflow_qualifies_and_publishes_continuous_reveal() -> None:
     workflow = Path(".github/workflows/warzone-qualification.yml").read_text()
-    assert "--comparison-mode impact_cut" in workflow
-    assert "delivery_impact_cut/render_manifest.json" in workflow
-    assert "delivery_impact_cut/*.mp4" in workflow
-    assert "delivery_impact_cut/*.jpg" in workflow
-    assert "warzone-impact-cut-" + chr(36) + "{{ github.sha }}" in workflow
-    assert workflow.index("Plan certified-source kinetic Impact Cut") < workflow.index(
+    assert "--comparison-mode continuous_reveal" in workflow
+    assert "delivery_continuous_reveal/render_manifest.json" in workflow
+    assert "delivery_continuous_reveal/*.mp4" in workflow
+    assert "delivery_continuous_reveal/*.jpg" in workflow
+    assert "warzone-continuous-reveal-" + chr(36) + "{{ github.sha }}" in workflow
+    assert workflow.index("Plan certified-source Continuous Reveal") < workflow.index(
         "Plan certified-source result-first Rebound"
     )
