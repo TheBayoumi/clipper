@@ -252,6 +252,7 @@ def test_style_b_command_uses_sparse_micro_punch_not_aggressive_zoom(tmp_path: P
     assert "between(t,8.000,8.520)" in joined
     assert "zoompan" not in joined
 
+
 def test_memecoin_layout_is_chart_reaction_montage_without_visible_ui_edges(
     tmp_path: Path,
 ) -> None:
@@ -270,4 +271,3 @@ def test_memecoin_layout_is_chart_reaction_montage_without_visible_ui_edges(
     assert "overlay=0:310" in joined
     assert "overlay=0:850" in joined
     assert "gblur=sigma=18" not in joined
-
