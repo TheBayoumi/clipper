@@ -1063,7 +1063,7 @@ def render_portrait(
         bytes_per_frame = width * height * 3
         if len(raw) != len(sample_indices) * bytes_per_frame:
             raise RuntimeError("encoded hero-focus phase proof is incomplete")
-        decoded = {
+        decoded_hero: dict[int, Image.Image] = {
             n: Image.frombytes(
                 "RGB",
                 (width, height),
@@ -1080,7 +1080,7 @@ def render_portrait(
         )
         for left, right in pairs:
             change = ImageChops.difference(
-                decoded[left].crop(visual_box), decoded[right].crop(visual_box)
+                decoded_hero[left].crop(visual_box), decoded_hero[right].crop(visual_box)
             )
             hero_focus_differences.append(round(sum(ImageStat.Stat(change).mean) / 3, 4))
 

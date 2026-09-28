@@ -963,7 +963,10 @@ def render_hero_focus_panels(
     after = Image.open(after_path).convert("RGB")
     if before.size != after.size:
         raise MontageRejection("hero_focus_stills", "certified source still geometry differs")
-    center = tuple(float(v) for v in cfg["focus_crop_center"])
+    center = (
+        float(cfg["focus_crop_center"][0]),
+        float(cfg["focus_crop_center"][1]),
+    )
     focus_cards = [
         ImageOps.fit(
             _crop(image, focus_roi),
