@@ -972,9 +972,7 @@ def render_portrait(
             raise RuntimeError("decoded RGB matte verification failed")
         delta = max(abs(int(a) - int(b)) for a, b in zip(top_rgb, bottom_rgb, strict=True))
         matte_rgb_error = max(matte_rgb_error, delta)
-        top_delta = max(
-            abs(int(a) - int(b)) for a, b in zip(top_rgb, expected_matte, strict=True)
-        )
+        top_delta = max(abs(int(a) - int(b)) for a, b in zip(top_rgb, expected_matte, strict=True))
         header_rgb_error = max(header_rgb_error, top_delta)
         if continuous_reveal:
             visual_bottom = int(reveal_cfg["visual_top"]) + int(reveal_cfg["visual_height"])
@@ -1458,9 +1456,7 @@ def render_portrait(
             and reframe_qa["storyboard_frames"] == reveal_cfg["storyboard_frames"]
             and reframe_qa["visual_size"] == [width, visual_height]
             and reframe_qa["visual_top"] == visual_top
-            and reframe_qa["backdrop_bottom_height"] == int(
-                reveal_cfg["backdrop_bottom_height"]
-            )
+            and reframe_qa["backdrop_bottom_height"] == int(reveal_cfg["backdrop_bottom_height"])
         )
         checks["portrait_continuous_reveal_source_sync"] = (
             reframe_qa["source_only"] is True
@@ -1580,9 +1576,7 @@ def render_portrait(
             "video_bitrate_kbps": video_kbps,
             "matte_top_rgb": list(top_rgb),
             "matte_bottom_rgb": list(bottom_rgb),
-            "matte_rgb_max_error": (
-                header_rgb_error if continuous_reveal else matte_rgb_error
-            ),
+            "matte_rgb_max_error": (header_rgb_error if continuous_reveal else matte_rgb_error),
             "matte_sampled_frames": sampled_mattes,
             "continuous_reveal_backdrop_differences": backdrop_differences,
             "cascade_panel_pixel_differences": panel_differences,
