@@ -1379,6 +1379,7 @@ def test_official_workflow_qualifies_and_publishes_distinct_rebound() -> None:
     assert "delivery_rebound/*.jpg" in workflow
     assert "warzone-rebound-" + chr(36) + "{{ github.sha }}" in workflow
 
+
 def _impact_cut_test_profile(profile: CampaignProfile) -> CampaignProfile:
     p = _cascade_test_profile(profile)
     cfg = p.config["output"]["portrait_matte"]["impact_cut"]
@@ -1563,4 +1564,3 @@ def test_official_workflow_qualifies_and_publishes_impact_cut() -> None:
     assert workflow.index("Plan certified-source kinetic Impact Cut") < workflow.index(
         "Plan certified-source result-first Rebound"
     )
-
