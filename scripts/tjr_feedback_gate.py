@@ -84,9 +84,7 @@ def probe_media(path: Path, *, full_decode: bool = False) -> dict[str, Any]:
     }
 
 
-def verify_ass_sidecar(
-    path: Path, *, duration_seconds: float, reported_word_events: int
-) -> None:
+def verify_ass_sidecar(path: Path, *, duration_seconds: float, reported_word_events: int) -> None:
     """Independently inspect the persisted ASS events, not only the QA claim."""
     if path.stat().st_size > 6_000_000:
         raise ValueError("oversized ASS evidence")
@@ -112,12 +110,7 @@ def verify_ass_sidecar(
         match = re.fullmatch(r"(\d+):(\d{2}):(\d{2})\.(\d{2})", value)
         if match is None:
             raise ValueError("invalid ASS event timestamp")
-        return (
-            int(match[1]) * 3600
-            + int(match[2]) * 60
-            + int(match[3])
-            + int(match[4]) / 100
-        )
+        return int(match[1]) * 3600 + int(match[2]) * 60 + int(match[3]) + int(match[4]) / 100
 
     if (
         abs(seconds(fields[1])) > 0.05
@@ -243,9 +236,7 @@ def inspect_artifact(
                     verify_ass_sidecar(
                         ass,
                         duration_seconds=float(clip["duration_seconds"]),
-                        reported_word_events=int(
-                            overlay.get("spoken_word_highlight_events") or 0
-                        ),
+                        reported_word_events=int(overlay.get("spoken_word_highlight_events") or 0),
                     )
                 except ValueError:
                     issues.append("CAPTION_OR_HOOK_TIMING_FAILED")

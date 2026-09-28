@@ -29,15 +29,15 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
     for suffix in (".mp4", ".srt", ".ssim.txt", "-contact.png", "-preview.png"):
         (clips / (stem + suffix)).write_bytes(b"fixture")
     (clips / (stem + ".ass")).write_text(
-        "[Script Info]\\nPlayResX: 1080\\nPlayResY: 1920\\n"
+        "[Script Info]\nPlayResX: 1080\nPlayResY: 1920\n"
         "Style: Caption,DejaVu Sans,64,white,white,black,black,-1,0,0,0,"
-        "100,100,0,0,3,18,0,2,120,120,375,1\\n"
-        "[Events]\\n"
-        r"Dialogue: 5,0:00:00.00,0:00:29.20,Hook,,0,0,0,,{\\an8\\pos(540,185)}"
-        "TRUTHFUL HOOK\\n"
-        r"Dialogue: 2,0:00:00.10,0:00:00.55,Caption,,0,0,0,,{\\c&H0059DEFF&}"
-        r"WORD{\\rCaption}"
-        "\\n",
+        "100,100,0,0,3,18,0,2,120,120,375,1\n"
+        "[Events]\n"
+        r"Dialogue: 5,0:00:00.00,0:00:29.20,Hook,,0,0,0,,{\an8\pos(540,185)}"
+        "TRUTHFUL HOOK\n"
+        r"Dialogue: 2,0:00:00.10,0:00:00.55,Caption,,0,0,0,,{\c&H0059DEFF&}"
+        r"WORD{\rCaption}"
+        "\n",
         encoding="utf-8",
     )
     quality = {
@@ -205,9 +205,7 @@ def test_independent_ass_audit_rejects_false_persistent_hook(
     artifact = _fixture(tmp_path)
     ass = next(artifact.rglob("01-tjr-test.ass"))
     ass.write_text(
-        ass.read_text(encoding="utf-8").replace(
-            "0:00:29.20,Hook", "0:00:04.00,Hook"
-        ),
+        ass.read_text(encoding="utf-8").replace("0:00:29.20,Hook", "0:00:04.00,Hook"),
         encoding="utf-8",
     )
     report = review_run(tmp_path, expected_channels=1, probe=_probe)
