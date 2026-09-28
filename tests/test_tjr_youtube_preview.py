@@ -534,3 +534,18 @@ def test_direct_download_requires_full_verified_duration(tmp_path: Path) -> None
     assert attempts
     assert all("--abort-on-unavailable-fragments" in args for args in attempts)
     assert not list(tmp_path.glob("source.*"))
+
+
+def test_direct_mode_artifacts_include_all_referenced_qa_evidence() -> None:
+    workflow = (
+        ROOT / ".github" / "workflows" / "tjr-weekly-hd.yml"
+    ).read_text(encoding="utf-8")
+    for root in ("tjr-youtube-artifacts", "tjr-alt-egress"):
+        for suffix in (
+            "**/clips/*.ass",
+            "**/clips/*.quality.json",
+            "**/clips/*.ssim.txt",
+            "**/clips/*-contact.png",
+            "**/source-analysis-coverage.json",
+        ):
+            assert f"{root}/{suffix}" in workflow

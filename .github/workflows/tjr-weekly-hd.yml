@@ -284,7 +284,11 @@ jobs:
           path: |
             tjr-youtube-artifacts/**/clips/*.mp4
             tjr-youtube-artifacts/**/clips/*.srt
+            tjr-youtube-artifacts/**/clips/*.ass
+            tjr-youtube-artifacts/**/clips/*.quality.json
+            tjr-youtube-artifacts/**/clips/*.ssim.txt
             tjr-youtube-artifacts/**/clips/*-preview.png
+            tjr-youtube-artifacts/**/clips/*-contact.png
             tjr-youtube-artifacts/**/tjr-youtube-qa-report.json
             tjr-youtube-artifacts/**/source-acquisition-errors.json
             tjr-youtube-artifacts/**/official-source-candidates.json
@@ -293,6 +297,7 @@ jobs:
             tjr-youtube-artifacts/**/transcript.json
             tjr-youtube-artifacts/**/ranked-candidates.json
             tjr-youtube-artifacts/**/editorial-candidate-audit.json
+            tjr-youtube-artifacts/**/source-analysis-coverage.json
           retention-days: 14
           compression-level: 0
           if-no-files-found: warn
@@ -413,12 +418,18 @@ jobs:
             tjr-alt-egress/verified-transport.json
             tjr-alt-egress/**/clips/*.mp4
             tjr-alt-egress/**/clips/*.srt
+            tjr-alt-egress/**/clips/*.ass
+            tjr-alt-egress/**/clips/*.quality.json
+            tjr-alt-egress/**/clips/*.ssim.txt
             tjr-alt-egress/**/clips/*-preview.png
+            tjr-alt-egress/**/clips/*-contact.png
             tjr-alt-egress/**/tjr-youtube-qa-report.json
             tjr-alt-egress/**/source-acquisition-errors.json
             tjr-alt-egress/**/official-source-candidates.json
             tjr-alt-egress/**/transcript.json
             tjr-alt-egress/**/editorial-candidate-audit.json
+            tjr-alt-egress/**/source-analysis-coverage.json
+            tjr-alt-egress/**/ranked-candidates.json
           retention-days: 7
           compression-level: 0
           if-no-files-found: warn

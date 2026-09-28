@@ -310,3 +310,24 @@ def test_waiting_hook_rejects_modal_negations() -> None:
         creative_hook_from_text("I will wait to enter after the pullback")
         == "WHY HE'S WAITING TO ENTER THIS TRADE"
     )
+
+
+def test_short_selloff_hooks_never_reverse_the_spoken_trade() -> None:
+    positive = (
+        "There was a massive sell-off but I would not short.",
+        "I won't short this massive selloff because the bounce is too risky.",
+        "I avoided shorting the massive sell off and waited.",
+    )
+    for transcript in positive:
+        assert creative_hook_from_text(transcript) == "WHY HE'S NOT SHORTING THE SELLOFF"
+    for transcript in (
+        "I shorted the massive selloff and made a profit.",
+        "I am shorting this massive sell-off.",
+        "We discussed whether to short during this massive sell off.",
+    ):
+        assert creative_hook_from_text(transcript) != "WHY HE'S NOT SHORTING THE SELLOFF"
+
+
+def test_market_cap_hook_is_source_specific_not_a_fragment_quote() -> None:
+    transcript = "Late at $200K? The coin migrates at $50K market caps, then people buy."
+    assert creative_hook_from_text(transcript) == "WHEN IS THE MARKET-CAP ENTRY TOO LATE?"

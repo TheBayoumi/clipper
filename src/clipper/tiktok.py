@@ -52,6 +52,11 @@ def creative_hook_from_text(text: str) -> str:
         return "WHY HE STOPPED USING ORDER BLOCKS"
     if "copy trad" in lowered and any(x in lowered for x in ("blind", "never", "don't")):
         return "WHY HE WARNS ABOUT COPY TRADING"
+    if (
+        "market cap" in lowered
+        and any(term in lowered for term in ("late", "early", "entry", "enter", "buying"))
+    ):
+        return "WHEN IS THE MARKET-CAP ENTRY TOO LATE?"
     if "meme coin" in lowered and any(
         x in lowered for x in ("beginner", "first", "get started", "start trading")
     ):
@@ -76,11 +81,19 @@ def creative_hook_from_text(text: str) -> str:
     )
     if waiting_to_enter and not negated_wait:
         return "WHY HE'S WAITING TO ENTER THIS TRADE"
-    if (
-        any(x in lowered for x in ("massive sell off", "massive sell-off", "massive selloff"))
-        and "short" in lowered
-    ):
+    selloff = any(
+        x in lowered for x in ("massive sell off", "massive sell-off", "massive selloff")
+    )
+    declining_short = re.search(
+        r"\b(?:not|never|no|won't|wont|can't|cant|cannot|don't|didn't|"
+        r"wouldn't|wouldnt|refuse(?:d)? to|avoid(?:ed)?|stayed away from)\b"
+        r"(?:\s+\w+){0,5}\s+short(?:ing)?\b",
+        lowered,
+    )
+    if selloff and declining_short:
         return "WHY HE'S NOT SHORTING THE SELLOFF"
+    if selloff and re.search(r"\bshort(?:ed|ing)?\b", lowered):
+        return "WHAT'S THE SHORT SETUP IN THIS SELLOFF?"
     if "risk" in lowered and any(x in lowered for x in ("position", "trading", "trade")):
         return "THE RISK QUESTION BEFORE THE TRADE"
     if any(x in lowered for x in ("reversal", "reverse", "retracement")):
