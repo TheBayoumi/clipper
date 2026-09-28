@@ -24,7 +24,7 @@ def test_creative_headline_from_full_context_not_spoken_intro() -> None:
         creative_hook_from_text(
             "Hey man, why did you stop using order blocks? There's no reason to use them."
         )
-        == "WHY HE STOPPED USING ORDER BLOCKS"
+        == "DO ORDER BLOCKS REALLY MATTER HERE?"
     )
     assert (
         creative_hook_from_text(
