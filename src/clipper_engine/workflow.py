@@ -466,7 +466,7 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
 
             required_checks = required_checks | CONTINUOUS_REVEAL_REQUIRED_CHECKS
             cfg = kinetic_reframe.config(profile, int(edit["output_frames"]))
-            reveal = portrait.get("continuous_reveal")
+            reveal_qa = portrait.get("continuous_reveal")
             expected_window = profile.config["editorial"]["mode_timing"]["continuous_reveal"][
                 "source_window"
             ]
@@ -474,16 +474,16 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
                 edit.get("type") != "continuous_source_reveal"
                 or edit.get("source_window") != expected_window
                 or montage.source_frame_count(edit) != int(edit["output_frames"])
-                or not isinstance(reveal, dict)
-                or reveal.get("mode") != "continuous_reveal"
-                or reveal.get("frame_count") != int(edit["output_frames"])
-                or reveal.get("source_only") is not True
-                or reveal.get("source_frame_grid_exact") is not True
-                or reveal.get("ai_enhancement") is not False
-                or reveal.get("keyframes") != cfg["keyframes"]
-                or reveal.get("storyboard_frames") != cfg["storyboard_frames"]
-                or reveal.get("bottom_matte_height") != cfg["bottom_matte_height"]
-                or reveal.get("minimum_effective_source_width_px", 0)
+                or not isinstance(reveal_qa, dict)
+                or reveal_qa.get("mode") != "continuous_reveal"
+                or reveal_qa.get("frame_count") != int(edit["output_frames"])
+                or reveal_qa.get("source_only") is not True
+                or reveal_qa.get("source_frame_grid_exact") is not True
+                or reveal_qa.get("ai_enhancement") is not False
+                or reveal_qa.get("keyframes") != cfg["keyframes"]
+                or reveal_qa.get("storyboard_frames") != cfg["storyboard_frames"]
+                or reveal_qa.get("bottom_matte_height") != cfg["bottom_matte_height"]
+                or reveal_qa.get("minimum_effective_source_width_px", 0)
                 < int(cfg["minimum_effective_source_width"])
             ):
                 raise montage.MontageRejection(
