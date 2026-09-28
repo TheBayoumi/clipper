@@ -70,9 +70,8 @@ def creative_hook_from_text(text: str) -> str:
         and not denied_buying
     ):
         return "WHY ARE WALLETS BUYING WITHOUT SOCIALS?"
-    if (
-        re.search(r"\b(?:should|would|could)\s+we\s+(?:\w+\s+){0,3}sell\b", lowered)
-        and any(term in lowered for term in ("50 %", "50%", "half"))
+    if re.search(r"\b(?:should|would|could)\s+we\s+(?:\w+\s+){0,3}sell\b", lowered) and any(
+        term in lowered for term in ("50 %", "50%", "half")
     ):
         return "WOULD YOU SELL HALF HERE?"
     if (
