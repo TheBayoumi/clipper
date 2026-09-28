@@ -9,6 +9,7 @@ from clipper.tiktok import (
     _safe,
     create_tiktok_ass,
     creative_hook_from_text,
+    distinct_hook_from_text,
 )
 
 
@@ -413,6 +414,7 @@ def test_excess_risk_hook_requires_affirmative_risk_taking() -> None:
     ):
         assert creative_hook_from_text(source) != "WHY TRADERS RISK TOO MUCH"
 
+
 def test_generic_risk_talk_is_rejected_instead_of_rendered_with_a_weak_hook() -> None:
     source = (
         "Risk matters in every trade and position, so you need a plan before trading. "
@@ -461,4 +463,3 @@ def test_real_failed_batch_patterns_now_get_specific_semantic_hooks() -> None:
     )
     for source, expected in examples:
         assert distinct_hook_from_text(source) == expected
-
