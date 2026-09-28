@@ -105,7 +105,18 @@ def creative_hook_from_text(text: str) -> str:
         x in lowered for x in ("beginner", "first", "get started", "start trading")
     ):
         return "MEMECOIN TRADING: WHERE DO YOU START?"
-    if "million" in lowered and any(x in lowered for x in ("made", "profit", "earned", "up over")):
+    million_earnings = re.search(
+        r"\b(?:made|earned|profited?|up\s+over)\b(?:\s+\w+){0,5}\s+\bmillions?\b"
+        r"|\bmillions?\b(?:\s+\w+){0,5}\b(?:made|earned|profited?)\b",
+        lowered,
+    )
+    negated_million_earnings = re.search(
+        r"\b(?:not|never|no|didn't|didnt|haven't|hasn't|can't|cant|cannot)\b"
+        r"(?:\s+\w+){0,4}\s+\b(?:made|earned|profit(?:ed)?)\b"
+        r"(?:\s+\w+){0,5}\s+\bmillions?\b",
+        lowered,
+    )
+    if million_earnings and not negated_million_earnings:
         return "A TRADER CLAIMS MILLIONS: HOW?"
     if "stop loss" in lowered and any(
         x in lowered for x in ("got hit", "hit", "stopped out", "loss")

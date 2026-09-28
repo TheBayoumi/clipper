@@ -86,7 +86,26 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
             }
         ],
     }
+    report["clips"][0]["editorial_integrity_gate"] = {
+        "status": "unverified",
+        "evidence": ["manual semantic review still required"],
+    }
     (base / "tjr-youtube-qa-report.json").write_text(json.dumps(report))
+    (base / "transcript.json").write_text(
+        json.dumps(
+            [
+                {
+                    "start": 2860.0,
+                    "end": 2891.0,
+                    "text": (
+                        "Late at $200K? The coin is already at this market cap and "
+                        "this entry may be too late, so I wait before buying."
+                    ),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
     (base / "source-analysis-coverage.json").write_text(
         json.dumps(
             {
@@ -170,14 +189,21 @@ def test_replay_mode_never_requests_source_budget_or_new_media() -> None:
     assert "source_run_id = os.getenv('TJR_FEEDBACK_SOURCE_RUN_ID', '')" in workflow
 
 
-def test_replay_channel_count_is_a_deterministic_shell_decision() -> None:
+def test_replay_channel_count_and_artifact_family_are_derived() -> None:
     workflow = (
         Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
     ).read_text(encoding="utf-8")
     assert "EXPECTED_CHANNELS=1" in workflow
     assert '"$TJR_SOURCE_MODE" == "modal_direct"' in workflow
     assert '"$TJR_SOURCE_MODE" == "feedback_replay"' in workflow
-    assert "EXPECTED_CHANNELS=2" in workflow
+    assert "EXPECTED_CHANNELS=0" in workflow
+    for pattern in (
+        "tjr-real-original-youtube-hd-*",
+        "tjr-real-youtube-hd-*",
+        "tjr-youtube-alt-*",
+        "tjr-weekly-hd-*",
+    ):
+        assert pattern in workflow
     assert "AUDITOR_CRASH" in workflow
     assert "TJR_EXPECTED_CHANNELS: true" not in workflow
 
@@ -387,3 +413,66 @@ def test_duplicate_semantic_headlines_are_rejected_even_for_distinct_windows(
     result = review_run(tmp_path, expected_channels=1, probe=_probe)
     assert "WEAK_OR_DUPLICATE_HOOK" in result["issues"]
     assert "IMPROVE_GROUNDED_CREATIVE_HOOKS" in result["next_actions"]
+
+
+def test_independent_hook_audit_rejects_negated_millions_claim(tmp_path: Path) -> None:
+    artifact = _fixture(tmp_path)
+    report_path = next(artifact.rglob("tjr-youtube-qa-report.json"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["clips"][0]["hook_candidate"] = "A TRADER CLAIMS MILLIONS: HOW?"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    transcript = next(artifact.rglob("transcript.json"))
+    transcript.write_text(
+        json.dumps(
+            [
+                {
+                    "start": 2860.0,
+                    "end": 2891.0,
+                    "text": "I never made a million dollars trading.",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "HOOK_SOURCE_MISMATCH" in result["issues"]
+    assert result["technically_verified_mp4_count"] == 0
+
+
+def test_failed_direct_attempt_does_not_poison_a_successful_fallback(tmp_path: Path) -> None:
+    _fixture(tmp_path)
+    failed = tmp_path / "tjr-real-youtube-hd-failed"
+    failed.mkdir()
+    (failed / "source-acquisition-errors.json").write_text(
+        json.dumps({"error": "BOT_CHALLENGE"}),
+        encoding="utf-8",
+    )
+    result = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "YOUTUBE_EGRESS_BLOCKED" not in result["issues"]
+    assert result["technically_verified_mp4_count"] == 1
+    assert result["attempt_failures"]
+
+
+def test_replay_auto_channel_count_uses_original_modal_shape(tmp_path: Path) -> None:
+    first = _fixture(tmp_path)
+    first.rename(
+        tmp_path / f"tjr-real-original-youtube-hd-{CHANNEL}-123"
+    )
+    blocked = tmp_path / "tjr-real-original-youtube-hd-UCZen39LQJPx04GjPj7FOMcw-123"
+    blocked.mkdir()
+    (blocked / "verified-original-egress.json").write_text(
+        json.dumps({"status": "YOUTUBE_EGRESS_BOT_CHALLENGE"}),
+        encoding="utf-8",
+    )
+    result = review_run(tmp_path, expected_channels=0, probe=_probe)
+    assert result["expected_channels"] == 2
+    assert "MISSING_CHANNEL_ARTIFACT" in result["issues"]
+    assert "YOUTUBE_EGRESS_BLOCKED" in result["issues"]
+
+
+def test_verified_mirror_upload_keeps_transcript_and_source_coverage() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
+    ).read_text(encoding="utf-8")
+    assert "tjr-mirror-artifacts/**/transcript.json" in workflow
+    assert "tjr-mirror-artifacts/**/source-analysis-coverage.json" in workflow

@@ -463,3 +463,15 @@ def test_real_failed_batch_patterns_now_get_specific_semantic_hooks() -> None:
     )
     for source, expected in examples:
         assert distinct_hook_from_text(source) == expected
+
+
+def test_millions_hook_requires_an_affirmative_earnings_claim() -> None:
+    assert creative_hook_from_text("I made a million dollars trading last year.") == (
+        "A TRADER CLAIMS MILLIONS: HOW?"
+    )
+    for source in (
+        "I never made a million dollars trading.",
+        "I did not make a million dollars trading.",
+        "I haven't made millions from this.",
+    ):
+        assert creative_hook_from_text(source) != "A TRADER CLAIMS MILLIONS: HOW?"

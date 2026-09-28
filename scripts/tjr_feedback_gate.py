@@ -43,6 +43,167 @@ def read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def read_json_array(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file() or path.stat().st_size > 32_000_000:
+        raise ValueError("missing or oversized JSON evidence list")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ValueError("evidence must be a JSON array of objects")
+    return value
+
+
+def clip_transcript_text(base: Path, *, start: float, end: float) -> str:
+    segments = read_json_array(base / "transcript.json")
+    text = " ".join(
+        str(item.get("text") or "").strip()
+        for item in segments
+        if float(item.get("end") or 0) > start
+        and float(item.get("start") or 0) < end
+        and str(item.get("text") or "").strip()
+    ).strip()
+    if not text:
+        raise ValueError("no transcript evidence overlaps the reported clip")
+    return text
+
+
+def hook_grounded_in_transcript(hook: str, transcript: str) -> bool:
+    """Fail closed on known persistent-hook semantics using independent rules."""
+    lowered = transcript.lower()
+    if not hook or hook.startswith("THE MOMENT:") or hook in BANNED_GENERIC_HOOKS:
+        return False
+    rules: dict[str, bool] = {
+        "WHY HE STOPPED USING ORDER BLOCKS": (
+            "order block" in lowered
+            and any(cue in lowered for cue in ("stop using", "stopped using", "no reason to use"))
+        ),
+        "WHY HE WARNS ABOUT COPY TRADING": (
+            "copy trad" in lowered
+            and any(cue in lowered for cue in ("blind", "never", "don't"))
+        ),
+        "WHAT MAKES THIS MARKET-CAP SETUP SUSPICIOUS?": (
+            "market cap" in lowered
+            and any(cue in lowered for cue in ("bullshit", "scam", "looks wrong", "suspicious"))
+        ),
+        "WHY ARE WALLETS BUYING WITHOUT SOCIALS?": (
+            ("no socials" in lowered or "don't see any socials" in lowered)
+            and bool(re.search(r"\bwallets?\s+(?:are\s+)?buying\b", lowered))
+            and not bool(
+                re.search(
+                    r"\b(?:no|not|never|without)\s+(?:\w+\s+){0,2}"
+                    r"wallets?\s+(?:are\s+)?buying\b",
+                    lowered,
+                )
+            )
+        ),
+        "WOULD YOU SELL HALF HERE?": bool(
+            re.search(
+                r"\b(?:should|would|could)\s+we\s+(?:just\s+)?sell\s+"
+                r"(?:like\s+)?(?:50\s*%|half)(?=\s|[?.!,]|$)",
+                lowered,
+            )
+        ),
+        "CAN ON-CHAIN BUYS CONFIRM THE MOVE?": (
+            ("on chain" in lowered or "on-chain" in lowered)
+            and "volume" in lowered
+            and bool(re.search(r"\bbuys?\b|\bbuying\b", lowered))
+        ),
+        "IS FOMO DRIVING THESE BUYS?": (
+            "fomo" in lowered and bool(re.search(r"\bbuy(?:ing|s)?\b", lowered))
+        ),
+        "CAN A SINGLE TWEET MOVE A COIN?": "tweet" in lowered and "coin" in lowered,
+        "WHY IS THIS COIN GETTING SOLD OFF?": (
+            "coin" in lowered
+            and any(cue in lowered for cue in ("sold off", "selling off", "getting sold off"))
+        ),
+        "GOOD COIN OR BAD COIN: HOW DO YOU TELL?": all(
+            cue in lowered for cue in ("community", "good", "bad")
+        ),
+        "CAN FEES FILTER OUT RUG COINS?": "fee" in lowered and "rug" in lowered,
+        "IS THIS 'RISK-FREE' TRADE REALLY SAFE?": (
+            "trade" in lowered and bool(re.search(r"\brisk\s*-\s*free\b", lowered))
+        ),
+        "WHEN IS THE MARKET-CAP ENTRY TOO LATE?": (
+            "market cap" in lowered
+            and any(cue in lowered for cue in ("late", "early", "entry", "enter", "buying"))
+        ),
+        "MEMECOIN TRADING: WHERE DO YOU START?": (
+            "meme coin" in lowered
+            and any(cue in lowered for cue in ("beginner", "first", "get started", "start trading"))
+        ),
+        "WHAT HAPPENS WHEN THE STOP GETS HIT?": (
+            "stop loss" in lowered
+            and any(cue in lowered for cue in ("got hit", "hit", "stopped out", "loss"))
+        ),
+        "WHAT'S THE SHORT SETUP IN THIS SELLOFF?": (
+            any(cue in lowered for cue in ("massive sell off", "massive sell-off", "massive selloff"))
+            and bool(re.search(r"\bshort(?:ed|ing)?\b", lowered))
+        ),
+        "THE STOP-LOSS MISTAKE THAT MAKES LOSSES WORSE": (
+            "stop loss" in lowered
+            and bool(re.search(r"\bmov(?:e|ed|ing)\b", lowered))
+            and any(cue in lowered for cue in ("mistake", "losing", "loss", "bigger"))
+        ),
+        "WHAT CHANGED IN THIS MARKET SETUP?": any(
+            cue in lowered for cue in ("reversal", "reverse", "retracement")
+        ),
+        "WHAT MATTERS IN A MEMECOIN TRADE?": "meme coin" in lowered,
+        "DO ORDER BLOCKS REALLY MATTER HERE?": "order block" in lowered,
+    }
+    if hook == "A TRADER CLAIMS MILLIONS: HOW?":
+        positive = bool(
+            re.search(
+                r"\b(?:made|earned|profited?|up\s+over)\b(?:\s+\w+){0,5}\s+\bmillions?\b"
+                r"|\bmillions?\b(?:\s+\w+){0,5}\b(?:made|earned|profited?)\b",
+                lowered,
+            )
+        )
+        negated = bool(
+            re.search(
+                r"\b(?:not|never|no|didn't|didnt|haven't|hasn't|can't|cant|cannot)\b"
+                r"(?:\s+\w+){0,4}\s+\b(?:made|earned|profit(?:ed)?)\b"
+                r"(?:\s+\w+){0,5}\s+\bmillions?\b",
+                lowered,
+            )
+        )
+        return positive and not negated
+    if hook == "WHY HE'S WAITING TO ENTER THIS TRADE":
+        positive = bool(re.search(r"\bwait(?:ing)?\b(?:\s+\w+){0,7}\s+(?:enter|entry)\b", lowered))
+        negated = bool(
+            re.search(
+                r"\b(?:not|never|no|without|didn't|don't|doesn't|cannot|can't|"
+                r"cant|won't|wont|wouldn't|couldn't|shouldn't)\b"
+                r"(?:\s+\w+){0,2}\s+wait(?:ing)?\b",
+                lowered,
+            )
+        )
+        return positive and not negated
+    if hook == "WHY HE'S NOT SHORTING THE SELLOFF":
+        selloff = any(
+            cue in lowered for cue in ("massive sell off", "massive sell-off", "massive selloff")
+        )
+        declined = bool(
+            re.search(
+                r"\b(?:(?:will|would|could|should|do|does|did|can|am|is|are|was|were)\s+"
+                r"not\s+short(?:ing)?|(?:won't|wont|can't|cant|cannot|don't|didn't|"
+                r"wouldn't|wouldnt)\s+short(?:ing)?|never\s+short(?:ing)?|"
+                r"refuse(?:d)?\s+to\s+short|avoid(?:ed)?\s+shorting|"
+                r"stayed\s+away\s+from\s+shorting|not\s+going\s+to\s+short)\b",
+                lowered,
+            )
+        )
+        return selloff and declined
+    if hook == "WHY TRADERS RISK TOO MUCH":
+        return bool(
+            re.search(
+                r"\b(?:why\s+do\s+)?traders?\s+(?:keep\s+)?risk(?:ing)?\s+too\s+much\b"
+                r"|\b(?:you|they|we)\s+(?:are\s+|keep\s+)?risk(?:ing)?\s+too\s+much\b"
+                r"|\brisk(?:ed|ing)\s+too\s+much\s+(?:money|capital)\b",
+                lowered,
+            )
+        )
+    return rules.get(hook, False)
+
+
 def checked_path(base: Path, value: object) -> Path:
     if not isinstance(value, str) or not value:
         raise ValueError("missing evidence path")
@@ -269,6 +430,19 @@ def inspect_artifact(
                 seen_hooks.add(hook_key)
             clip_issue_count = len(issues)
             try:
+                window_start = float(clip["source_start_seconds"])
+                window_end = float(clip["source_end_seconds"])
+                source_text = clip_transcript_text(
+                    base, start=window_start, end=window_end
+                )
+                if not hook_grounded_in_transcript(hook, source_text):
+                    issues.append("HOOK_SOURCE_MISMATCH")
+                integrity = clip.get("editorial_integrity_gate")
+                if (
+                    not isinstance(integrity, dict)
+                    or integrity.get("status") not in {"unverified", "pass"}
+                ):
+                    issues.append("INVALID_EDITORIAL_INTEGRITY_STATUS")
                 mp4 = checked_path(base, clip.get("file"))
                 ass = checked_path(base, clip.get("ass_sidecar"))
                 for field in (
@@ -329,8 +503,8 @@ def inspect_artifact(
                     issues.append("INVALID_REAL_MEDIA_PROFILE")
                 identity = (
                     str(report.get("source_url") or ""),
-                    float(clip["source_start_seconds"]),
-                    float(clip["source_end_seconds"]),
+                    window_start,
+                    window_end,
                 )
                 source_url, window_start, window_end = identity
                 overlaps_existing = any(
@@ -364,6 +538,25 @@ def inspect_artifact(
     return entry
 
 
+def infer_expected_channels(folders: list[Path]) -> int:
+    modal_ids = {
+        channel
+        for folder in folders
+        for channel in OFFICIAL_CHANNELS
+        if folder.name.startswith(f"tjr-real-original-youtube-hd-{channel}-")
+    }
+    if modal_ids:
+        return len(modal_ids)
+    if any(
+        folder.name.startswith(
+            ("tjr-real-youtube-hd-", "tjr-youtube-alt-", "tjr-weekly-hd-")
+        )
+        for folder in folders
+    ):
+        return 1
+    return 1
+
+
 def review_run(
     root: Path,
     *,
@@ -373,10 +566,42 @@ def review_run(
     run_id: str = "",
 ) -> dict[str, Any]:
     folders = sorted(path for path in root.iterdir() if path.is_dir()) if root.exists() else []
-    channels = [inspect_artifact(folder, probe) for folder in folders]
+    if expected_channels == 0:
+        expected_channels = infer_expected_channels(folders)
+    inspected = [inspect_artifact(folder, probe) for folder in folders]
+    successes = [item for item in inspected if item.get("channel_id")]
+    attempts = [item for item in inspected if not item.get("channel_id")]
+
+    if expected_channels == 1 and successes:
+        channels = [
+            min(
+                successes,
+                key=lambda item: (
+                    len(item["issues"]),
+                    -int(item["technically_verified_mp4_count"]),
+                    str(item["artifact"]),
+                ),
+            )
+        ]
+    else:
+        by_channel: dict[str, dict[str, Any]] = {}
+        for item in successes:
+            key = str(item.get("channel_id"))
+            current = by_channel.get(key)
+            if current is None or (
+                len(item["issues"]),
+                -int(item["technically_verified_mp4_count"]),
+            ) < (
+                len(current["issues"]),
+                -int(current["technically_verified_mp4_count"]),
+            ):
+                by_channel[key] = item
+        channels = list(by_channel.values())
+
     issues = {issue for channel in channels for issue in channel["issues"]}
     if len(channels) != expected_channels:
         issues.add("MISSING_CHANNEL_ARTIFACT")
+        issues.update(issue for attempt in attempts for issue in attempt["issues"])
     ids = [channel.get("channel_id") for channel in channels if channel.get("channel_id")]
     if len(ids) != len(set(ids)):
         issues.add("DUPLICATE_CHANNEL_ARTIFACT")
@@ -405,6 +630,7 @@ def review_run(
             item["technically_verified_mp4_count"] for item in channels
         ),
         "channels": channels,
+        "attempt_failures": attempts,
         "issues": sorted(issues),
         "next_actions": actions,
         "automatic_publication_allowed": False,
@@ -415,7 +641,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--expected-channels", type=int, choices=(1, 2), required=True)
+    parser.add_argument("--expected-channels", type=int, choices=(0, 1, 2), required=True)
     parser.add_argument("--full-decode", action="store_true")
     args = parser.parse_args()
 

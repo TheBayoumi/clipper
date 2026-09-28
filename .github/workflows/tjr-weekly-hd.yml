@@ -578,13 +578,41 @@ jobs:
         with:
           pattern: tjr-weekly-hd-*
           path: tjr-feedback-input
-      - name: Replay existing production artifacts at no Modal cost
+      - name: Replay existing Modal production artifacts at no new media cost
         if: inputs.source_mode == 'feedback_replay'
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           run-id: ${{ inputs.feedback_source_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: tjr-real-original-youtube-hd-*
+          path: tjr-feedback-input
+      - name: Replay existing direct YouTube production artifacts
+        if: inputs.source_mode == 'feedback_replay'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          run-id: ${{ inputs.feedback_source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: tjr-real-youtube-hd-*
+          path: tjr-feedback-input
+      - name: Replay existing alternate-egress production artifacts
+        if: inputs.source_mode == 'feedback_replay'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          run-id: ${{ inputs.feedback_source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: tjr-youtube-alt-*
+          path: tjr-feedback-input
+      - name: Replay existing verified-mirror production artifacts
+        if: inputs.source_mode == 'feedback_replay'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          run-id: ${{ inputs.feedback_source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: tjr-weekly-hd-*
           path: tjr-feedback-input
       - name: Install independent media verifier
         run: |
@@ -602,7 +630,7 @@ jobs:
                 -z "$TJR_SOURCE_VIDEO_ID" ]]; then
             EXPECTED_CHANNELS=2
           elif [[ "$TJR_SOURCE_MODE" == "feedback_replay" ]]; then
-            EXPECTED_CHANNELS=2
+            EXPECTED_CHANNELS=0
           fi
           mkdir -p tjr-feedback
           if ! python -m scripts.tjr_feedback_gate \
@@ -710,6 +738,8 @@ jobs:
             tjr-mirror-artifacts/**/ranked-candidates.json
             tjr-mirror-artifacts/**/source-acquisition-errors.json
             tjr-mirror-artifacts/**/official-source-candidates.json
+            tjr-mirror-artifacts/**/transcript.json
+            tjr-mirror-artifacts/**/source-analysis-coverage.json
             tjr-mirror-artifacts/**/clips/*.mp4
             tjr-mirror-artifacts/**/clips/*.srt
             tjr-mirror-artifacts/**/clips/*.ass
