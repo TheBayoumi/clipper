@@ -15,8 +15,8 @@ import pytest
 from clipper.cli import main
 from clipper_engine import montage
 from clipper_engine.profiles import CampaignProfile, load_profile
-from clipper_engine.rendering import montage as renderer
 from clipper_engine.rendering import kinetic_reframe, panel_compositor, portrait_matte
+from clipper_engine.rendering import montage as renderer
 from clipper_engine.sources import qa
 from clipper_engine.workflow import plan as plan_campaign
 from clipper_engine.workflow import qualify as qualify_campaign
