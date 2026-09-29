@@ -438,45 +438,45 @@
       },
       "mode_layouts": {
         "cascade": {
-          "visual_top": 300,
+          "visual_top": 656,
           "visual_height": 608,
-          "title_top_height": 300,
+          "title_top_height": 656,
           "title_y_positions": [
-            40,
-            104,
-            166
+            236,
+            352,
+            438
           ],
-          "title_bar_y": 248,
+          "title_bar_y": 548,
           "title_font_sizes": [
-            48,
-            43,
-            40
+            64,
+            59,
+            54
           ],
           "title_pill_heights": [
-            60,
-            54,
-            50
+            83,
+            70,
+            70
           ]
         },
         "spotlight": {
-          "visual_top": 300,
+          "visual_top": 656,
           "visual_height": 608,
-          "title_top_height": 300,
+          "title_top_height": 656,
           "title_y_positions": [
-            40,
-            104,
-            166
+            236,
+            352,
+            438
           ],
-          "title_bar_y": 248,
+          "title_bar_y": 548,
           "title_font_sizes": [
-            48,
-            43,
-            40
+            64,
+            59,
+            54
           ],
           "title_pill_heights": [
-            60,
-            54,
-            50
+            83,
+            70,
+            70
           ]
         }
       }

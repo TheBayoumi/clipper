@@ -379,9 +379,9 @@ jobs:
           assert edit["output_frames"] == 165
           assert portrait["qa"]["frame_count"] == 165
           assert portrait["title"]["text_visible_frames"] == 165
-          assert portrait["title"]["top_height"] == 300
+          assert portrait["title"]["top_height"] == 656
           assert portrait["title"]["center_height"] == 608
-          assert portrait["cascade"]["bottom_height"] == 1012
+          assert portrait["cascade"]["bottom_height"] == 656
           assert portrait["cascade"]["panel_count"] == 3
           assert all(portrait["qa"]["checks"].values()), portrait["qa"]
           assert 5 <= portrait["qa"]["encoded_duration"] <= 6, portrait["qa"]
@@ -454,9 +454,9 @@ jobs:
           assert portrait["spotlight"]["switch_frames"] == [105, 117, 129]
           assert portrait["spotlight"]["text_synced"]
           assert portrait["title"]["text_visible_frames"] == 165
-          assert portrait["title"]["top_height"] == 300
+          assert portrait["title"]["top_height"] == 656
           assert portrait["title"]["center_height"] == 608
-          assert portrait["spotlight"]["bottom_height"] == 1012
+          assert portrait["spotlight"]["bottom_height"] == 656
           assert 5 <= portrait["qa"]["encoded_duration"] <= 6
           assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
           assert Path(portrait["storyboard"]["file"]).is_file()
