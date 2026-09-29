@@ -99,20 +99,22 @@ def source_frame_count(edit: dict[str, Any]) -> int:
     return sum(int(window["frames"]) for window in source_windows(edit))
 
 
-def resolve_continuous_timing(
+def resolve_source_reveal_timing(
     editorial: dict[str, Any],
     states: dict[str, Any],
     fps: Fraction,
+    mode: str,
 ) -> tuple[int, dict[str, int]]:
-    style = editorial.get("mode_timing", {}).get("continuous_reveal", {})
+    if mode not in {"continuous_reveal", "archive_reveal"}:
+        raise MontageRejection("source_reveal_mode", f"unsupported source reveal {mode!r}")
+    style = editorial.get("mode_timing", {}).get(mode, {})
+    code = f"{mode}_timing"
     if not isinstance(style, dict) or set(style) != {
         "preferred_output_seconds",
         "maximum_output_seconds",
         "source_window",
     }:
-        raise MontageRejection(
-            "continuous_reveal_timing", "continuous reveal needs one calibrated source window"
-        )
+        raise MontageRejection(code, "source reveal needs one calibrated source window")
     target = _frames(style["preferred_output_seconds"], fps)
     low = _frames(editorial["minimum_output_seconds"], fps)
     high = _frames(style["maximum_output_seconds"], fps)
@@ -125,9 +127,7 @@ def resolve_continuous_timing(
         or type(window["frames"]) is not int
         or window["frames"] != target
     ):
-        raise MontageRejection(
-            "continuous_reveal_timing", "duration and source window must be frame-exact"
-        )
+        raise MontageRejection(code, "duration and source window must be frame-exact")
     start = int(window["start_frame"])
     end = start + int(window["frames"])
     before = int(states["before_frame"])
@@ -140,13 +140,14 @@ def resolve_continuous_timing(
         or not before <= start < trigger_start < trigger_end < after < end
     ):
         raise MontageRejection(
-            "continuous_reveal_timing",
+            code,
             "single source window must begin in the verified stable-before interval "
             "and retain the real toggle, after state and final hold",
         )
     return target, {"start_frame": start, "frames": int(window["frames"])}
 
 
+def resolve_mode_timing(
 def resolve_mode_timing(
     editorial: dict[str, Any],
     states: dict[str, Any],
@@ -377,10 +378,12 @@ def build_plan(
         raise MontageRejection(
             "invalid_comparison_mode", f"{comparison_mode} not in {allowed_modes}"
         )
-    continuous_reveal = comparison_mode == "continuous_reveal"
-    if continuous_reveal:
-        target, continuous_window = resolve_continuous_timing(editorial, states, fps)
-        windows = [continuous_window]
+    source_reveal = comparison_mode in {"continuous_reveal", "archive_reveal"}
+    if source_reveal:
+        target, source_reveal_window = resolve_source_reveal_timing(
+            editorial, states, fps, comparison_mode
+        )
+        windows = [source_reveal_window]
         comparison_frames = 0
         hook: dict[str, Any] | None = None
         shots: list[dict[str, Any]] = []
@@ -389,9 +392,9 @@ def build_plan(
 
         if not output.get("portrait_matte", {}).get("enabled", False):
             raise MontageRejection(
-                "continuous_reveal_layout", "continuous reveal requires Clipper portrait reframing"
+                "source_reveal_layout", "source reveal requires Clipper portrait reframing"
             )
-        kinetic_reframe.config(profile, target)
+        kinetic_reframe.config(profile, target, comparison_mode)
     else:
         target, comparison_frames, windows, hook, shots = resolve_mode_timing(
             editorial, states, comparison_mode, fps
@@ -477,7 +480,7 @@ def build_plan(
         "review_url": profile.source_review_url if certified else None,
         "certified": certified,
     }
-    if continuous_reveal:
+    if source_reveal:
         montage_payload: dict[str, Any] = {
             "type": "continuous_source_reveal",
             "comparison_mode": comparison_mode,
@@ -549,9 +552,11 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
     mode = str(montage.get("comparison_mode"))
     if mode not in editorial["comparison_modes"]:
         raise MontageRejection("invalid_comparison_mode", "unknown comparison layout")
-    continuous_reveal = mode == "continuous_reveal"
-    if continuous_reveal:
-        target, expected_window = resolve_continuous_timing(editorial, states, rate(profile))
+    source_reveal = mode in {"continuous_reveal", "archive_reveal"}
+    if source_reveal:
+        target, expected_window = resolve_source_reveal_timing(
+            editorial, states, rate(profile), mode
+        )
         if (
             montage.get("type") != "continuous_source_reveal"
             or montage.get("source_window") != expected_window
@@ -564,16 +569,16 @@ def validate_plan(plan: dict[str, Any], source: Path, profile: CampaignProfile) 
             or source_frame_count(montage) != target
         ):
             raise MontageRejection(
-                "continuous_reveal_plan",
-                "continuous reveal must remain one uninterrupted certified source window",
+                "source_reveal_plan",
+                "source reveal must remain one uninterrupted certified source window",
             )
         from .rendering import kinetic_reframe
 
         if not profile.config["output"].get("portrait_matte", {}).get("enabled", False):
             raise MontageRejection(
-                "continuous_reveal_layout", "continuous reveal requires portrait reframing"
+                "source_reveal_layout", "source reveal requires portrait reframing"
             )
-        kinetic_reframe.config(profile, target)
+        kinetic_reframe.config(profile, target, mode)
     else:
         (
             target,
