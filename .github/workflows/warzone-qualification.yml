@@ -131,8 +131,10 @@ jobs:
           assert reveal["source_frame_grid_exact"] is True
           assert reveal["ai_enhancement"] is False
           assert reveal["visual_size"] == [1080, 1000]
-          assert reveal["visual_top"] == 280
-          assert reveal["backdrop_bottom_height"] == 640
+          # Preserve the original Continuous Reveal portrait placement while
+          # retaining the source-derived blurred backdrop below the sharp footage.
+          assert reveal["visual_top"] == 300
+          assert reveal["backdrop_bottom_height"] == 620
           assert reveal["minimum_effective_source_width_px"] >= 1000
           assert reveal["storyboard_frames"] == [0, 15, 29, 36, 100, 149]
           assert (57 - expected_window["start_frame"]) / 30 < 1.0
