@@ -752,9 +752,7 @@ def _encoded_archive_reveal_storyboard(
 ) -> dict[str, Any]:
     from . import kinetic_reframe
 
-    cfg = kinetic_reframe.config(
-        profile, int(plan["montage"]["output_frames"]), "archive_reveal"
-    )
+    cfg = kinetic_reframe.config(profile, int(plan["montage"]["output_frames"]), "archive_reveal")
     return _encoded_montage_storyboard(
         file,
         output_dir,
@@ -1142,9 +1140,7 @@ def render_portrait(
         and audio["channels"] == int(profile.config["output"]["audio_channels"]),
         "portrait_ssim": ssim >= 0.96,
         "portrait_psnr_db": psnr >= 35.0,
-        "portrait_mattes_match": (
-            header_rgb_error <= 2 if source_reveal else matte_rgb_error <= 2
-        ),
+        "portrait_mattes_match": (header_rgb_error <= 2 if source_reveal else matte_rgb_error <= 2),
         "portrait_target_size": abs(filesize_mb - size_target_mb) <= size_tolerance_mb,
         "portrait_color_metadata": all(
             actual_colors.get(k) == v for k, v in expected_colors.items()
@@ -1682,8 +1678,7 @@ def render_portrait(
             and reframe_qa["storyboard_frames"] == archive_cfg["storyboard_frames"]
             and reframe_qa["visual_size"] == [width, visual_height]
             and reframe_qa["visual_top"] == visual_top
-            and reframe_qa["backdrop_bottom_height"]
-            == int(archive_cfg["backdrop_bottom_height"])
+            and reframe_qa["backdrop_bottom_height"] == int(archive_cfg["backdrop_bottom_height"])
         )
         checks["portrait_archive_reveal_source_sync"] = (
             reframe_qa["source_only"] is True
@@ -1699,10 +1694,9 @@ def render_portrait(
         checks["portrait_archive_reveal_effects_declared"] = (
             reframe_qa["effects"] == expected_archive_effects
         )
-        checks["portrait_archive_reveal_backdrop_visible"] = (
-            len(backdrop_differences) == len(sampled_frames)
-            and all(value > 4.0 for value in backdrop_differences)
-        )
+        checks["portrait_archive_reveal_backdrop_visible"] = len(backdrop_differences) == len(
+            sampled_frames
+        ) and all(value > 4.0 for value in backdrop_differences)
 
         source_start = int(plan["montage"]["source_window"]["start_frame"])
         trigger_start = int(plan["evidence"]["toggle_motion_start_frame"]) - source_start
@@ -1710,9 +1704,7 @@ def render_portrait(
         pre_frame = max(0, trigger_start - 2)
         mid_frame = (trigger_start + trigger_end) // 2
         post_frame = min(frames - 1, trigger_end + 2)
-        selected = "+".join(
-            f"eq(n\\,{n})" for n in (pre_frame, mid_frame, post_frame)
-        )
+        selected = "+".join(f"eq(n\\,{n})" for n in (pre_frame, mid_frame, post_frame))
         raw_archive = subprocess.run(
             [
                 "ffmpeg",
@@ -1838,9 +1830,7 @@ def render_portrait(
             "continuous_reveal_backdrop_differences": (
                 backdrop_differences if continuous_reveal else []
             ),
-            "archive_reveal_backdrop_differences": (
-                backdrop_differences if archive_reveal else []
-            ),
+            "archive_reveal_backdrop_differences": (backdrop_differences if archive_reveal else []),
             "archive_reveal_metrics": archive_reveal_metrics,
             "cascade_panel_pixel_differences": panel_differences,
             "spotlight_pixel_differences": spotlight_differences,
