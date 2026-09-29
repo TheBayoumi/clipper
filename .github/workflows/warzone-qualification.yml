@@ -616,11 +616,20 @@ jobs:
             delivery/*.mp4
             delivery_cuts/*.json
             delivery_cuts/*.mp4
-            delivery_cascade/*.json
-            delivery_cascade/*.mp4
-            delivery_hero_focus/*.json
-            delivery_hero_focus/*.mp4
-            delivery_hero_focus/*.jpg
+            delivery_continuous_reveal/*.json
+            delivery_continuous_reveal/*.mp4
+            delivery_continuous_reveal/*.jpg
             delivery_rebound/*.json
             delivery_rebound/*.mp4
             delivery_rebound/*.jpg
+            delivery_hero_focus/*.json
+            delivery_hero_focus/*.mp4
+            delivery_hero_focus/*.jpg
+            delivery_cascade/*.json
+            delivery_cascade/*.mp4
+            delivery_spotlight/*.json
+            delivery_spotlight/*.mp4
+            delivery_spotlight/*.jpg
+            delivery_snapback/*.json
+            delivery_snapback/*.mp4
+            delivery_snapback/*.jpg
