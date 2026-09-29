@@ -373,9 +373,7 @@ def mode_portrait_layout(
         or len(values["title_font_sizes"]) != 3
         or len(values["title_pill_heights"]) != 3
         or values["title_bar_y"] >= values["title_top_height"]
-        or any(
-            n < 0 or n >= values["title_top_height"] for n in values["title_y_positions"]
-        )
+        or any(n < 0 or n >= values["title_top_height"] for n in values["title_y_positions"])
     ):
         raise MontageRejection(
             "portrait_geometry",
