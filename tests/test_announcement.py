@@ -1681,9 +1681,9 @@ def test_archive_reveal_certified_render_and_fail_closed_qualification(
     assert accepted["status"] == "PASS"
 
     broken = json.loads((output / "render_manifest.json").read_text())
-    broken["portrait"]["archive_reveal"]["effects"]["archive_style"][
-        "grayscale_before_toggle"
-    ] = False
+    broken["portrait"]["archive_reveal"]["effects"]["archive_style"]["grayscale_before_toggle"] = (
+        False
+    )
     tampered = tmp_path / "archive_tampered.json"
     tampered.write_text(json.dumps(broken))
     with pytest.raises(montage.MontageRejection, match="archive_reveal_schedule"):
