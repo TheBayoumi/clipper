@@ -230,9 +230,7 @@ def _archive_monochrome(image: Image.Image, frame: int, cfg: dict[str, Any]) -> 
     archived = ImageOps.grayscale(image).convert("RGB")
     archived = ImageEnhance.Contrast(archived).enhance(float(cfg["archive_contrast"]))
     flicker = 1 + float(cfg["archive_flicker_strength"]) * math.sin(frame * 1.7)
-    archived = ImageEnhance.Brightness(archived).enhance(
-        float(cfg["archive_brightness"]) * flicker
-    )
+    archived = ImageEnhance.Brightness(archived).enhance(float(cfg["archive_brightness"]) * flicker)
     return archived
 
 
