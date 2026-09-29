@@ -148,7 +148,6 @@ def resolve_source_reveal_timing(
 
 
 def resolve_mode_timing(
-def resolve_mode_timing(
     editorial: dict[str, Any],
     states: dict[str, Any],
     comparison_mode: str,
