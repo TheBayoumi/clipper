@@ -352,7 +352,7 @@ def mode_portrait_layout(
     if not isinstance(raw, dict) or set(raw) != expected:
         raise MontageRejection("portrait_geometry", "unsupported mode portrait calibration")
     scale = width / 1080
-    values = {
+    values: dict[str, Any] = {
         "visual_top": round(int(raw["visual_top"]) * scale),
         "visual_height": round(int(raw["visual_height"]) * scale),
         "title_top_height": round(int(raw["title_top_height"]) * scale),
