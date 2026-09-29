@@ -169,6 +169,90 @@ jobs:
             delivery_continuous_reveal/*.mp4
             delivery_continuous_reveal/*.jpg
 
+      - name: Plan certified-source Archive Reveal variant 6
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle plan \
+            --source "$SOURCE_FILE" \
+            --source-qa "source/$SOURCE_KEY.source_qa.json" \
+            --comparison-mode archive_reveal \
+            --approved-text-index 3 \
+            --output plan_archive_reveal.json
+
+      - name: Render black-and-white to real-color Archive Reveal
+        timeout-minutes: 35
+        env:
+          SOURCE_FILE: ${{ steps.source.outputs.source_file }}
+          SOURCE_KEY: ${{ steps.source.outputs.source_key }}
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle render \
+            --source "$SOURCE_FILE" \
+            --source-qa "source/$SOURCE_KEY.source_qa.json" \
+            --plan plan_archive_reveal.json \
+            --output-dir delivery_archive_reveal
+
+      - name: Qualify Archive Reveal monochrome color wipe and source fidelity
+        run: |
+          set -euo pipefail
+          clipper campaign warzone-operator-toggle qualify \
+            --render-manifest delivery_archive_reveal/render_manifest.json \
+            --output delivery_archive_reveal/acceptance.json
+          python - <<'CHECK'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("delivery_archive_reveal/render_manifest.json").read_text())
+          accepted = json.loads(Path("delivery_archive_reveal/acceptance.json").read_text())
+          edit = manifest["plan"]["montage"]
+          portrait = manifest["portrait"]
+          reveal = portrait["archive_reveal"]
+          metrics = portrait["qa"]["archive_reveal_metrics"]
+          assert accepted["status"] == "PASS", accepted
+          assert edit["type"] == "continuous_source_reveal"
+          assert edit["comparison_mode"] == "archive_reveal"
+          assert edit["source_window"] == {"start_frame": 28, "frames": 150}
+          assert edit["output_frames"] == 150
+          assert abs(edit["output_seconds"] - 5.0) < 1e-9
+          assert reveal["mode"] == "archive_reveal"
+          assert reveal["source_only"] is True
+          assert reveal["source_frame_grid_exact"] is True
+          assert reveal["ai_enhancement"] is False
+          assert reveal["visual_size"] == [1080, 1000]
+          assert reveal["visual_top"] == 300
+          assert reveal["minimum_effective_source_width_px"] >= 1000
+          assert reveal["storyboard_frames"] == [0, 15, 29, 33, 36, 149]
+          style = reveal["effects"]["archive_style"]
+          assert style["grayscale_before_toggle"] is True
+          assert style["transition_direction"] == "left_to_right"
+          assert style["transition_feather_px"] == 120
+          assert metrics["pre_toggle_chroma"] < 3.5, metrics
+          assert metrics["post_toggle_chroma"] > 6, metrics
+          assert metrics["transition_left_chroma"] > metrics["transition_right_chroma"] + 3, metrics
+          assert all(manifest["qa"]["checks"].values()), manifest["qa"]["checks"]
+          assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
+          assert portrait["storyboard"]["frames"] == [0, 15, 29, 33, 36, 149]
+          assert Path(portrait["storyboard"]["file"]).is_file()
+          assert abs(portrait["qa"]["encoded_duration"] - 5.0) < 0.055
+          print("QUALIFIED VARIANT 6 ARCHIVE REVEAL:", portrait["file"])
+          CHECK
+
+      - name: Publish Archive Reveal variant 6 video storyboard and QA
+        uses: actions/upload-artifact@v4
+        with:
+          name: warzone-archive-reveal-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            plan_archive_reveal.json
+            source/*.source_qa.json
+            delivery_archive_reveal/*.json
+            delivery_archive_reveal/*.mp4
+            delivery_archive_reveal/*.jpg
+
       - name: Plan certified-source result-first Rebound
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
@@ -619,6 +703,9 @@ jobs:
             delivery_continuous_reveal/*.json
             delivery_continuous_reveal/*.mp4
             delivery_continuous_reveal/*.jpg
+            delivery_archive_reveal/*.json
+            delivery_archive_reveal/*.mp4
+            delivery_archive_reveal/*.jpg
             delivery_rebound/*.json
             delivery_rebound/*.mp4
             delivery_rebound/*.jpg

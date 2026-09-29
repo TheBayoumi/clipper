@@ -80,6 +80,21 @@ CONTINUOUS_REVEAL_REQUIRED_CHECKS = frozenset(
 )
 
 
+ARCHIVE_REVEAL_REQUIRED_CHECKS = frozenset(
+    {
+        "portrait_archive_reveal_schedule",
+        "portrait_archive_reveal_source_sync",
+        "portrait_archive_reveal_legibility",
+        "portrait_archive_reveal_no_ai",
+        "portrait_archive_reveal_effects_declared",
+        "portrait_archive_reveal_backdrop_visible",
+        "portrait_archive_reveal_pre_toggle_monochrome",
+        "portrait_archive_reveal_transition_direction",
+        "portrait_archive_reveal_post_toggle_color",
+    }
+)
+
+
 HERO_FOCUS_REQUIRED_CHECKS = frozenset(
     {
         "portrait_hero_focus_schedule",
@@ -392,12 +407,12 @@ def render_title_frames(
     height = int(cfg["height"])
     frames = int(plan["montage"]["output_frames"])
     mode = str(plan["montage"]["comparison_mode"])
-    continuous = plan["montage"].get("type") == "continuous_source_reveal"
-    calibrated = None if continuous else mode_portrait_layout(profile, mode, width, height)
-    if continuous:
+    source_reveal = plan["montage"].get("type") == "continuous_source_reveal"
+    calibrated = None if source_reveal else mode_portrait_layout(profile, mode, width, height)
+    if source_reveal:
         from . import kinetic_reframe
 
-        style = kinetic_reframe.config(profile, frames)
+        style = kinetic_reframe.config(profile, frames, mode)
         top_height = int(style["title_top_height"])
         source_display_height = int(style["visual_height"])
         fonts = [_font(max(8, round(int(n) * width / 1080))) for n in style["title_font_sizes"]]
@@ -491,10 +506,10 @@ def render_title_frames(
         sample_indices.update({0, int(plan["montage"]["hook"]["frames"]), 35, 54, 145})
         for edge in (start, original, flash, group):
             sample_indices.update({edge - 1, edge})
-    if continuous:
+    if source_reveal:
         from . import kinetic_reframe
 
-        mode_cfg = kinetic_reframe.config(profile, frames)
+        mode_cfg = kinetic_reframe.config(profile, frames, mode)
         sample_indices.update(int(n) for n in mode_cfg["storyboard_frames"])
         local_start = int(plan["evidence"]["toggle_motion_start_frame"]) - int(
             plan["montage"]["source_window"]["start_frame"]
@@ -543,7 +558,7 @@ def render_title_frames(
         "approved_copy": plan["montage"]["approved_on_screen_text"],
         "compositing": (
             "compact approved text above enlarged continuous source footage"
-            if continuous
+            if source_reveal
             else "profile-calibrated title above source-safe panel band"
             if calibrated is not None
             else "approved text only in upper portrait matte"
@@ -732,6 +747,31 @@ def _encoded_continuous_reveal_storyboard(
     )
 
 
+def _encoded_archive_reveal_storyboard(
+    file: Path, output_dir: Path, plan: dict[str, Any], profile: CampaignProfile
+) -> dict[str, Any]:
+    from . import kinetic_reframe
+
+    cfg = kinetic_reframe.config(
+        profile, int(plan["montage"]["output_frames"]), "archive_reveal"
+    )
+    return _encoded_montage_storyboard(
+        file,
+        output_dir,
+        [int(n) for n in cfg["storyboard_frames"]],
+        (
+            "ARCHIVE ORIGINAL",
+            "MONOCHROME PUSH",
+            "COLOR WIPE START",
+            "COLOR WIPE MID",
+            "FULL COLOR",
+            "REAL-COLOR FINISH",
+        ),
+        "operator_archive_reveal_storyboard.jpg",
+        float(Fraction(str(plan["source"]["fps"]))),
+    )
+
+
 def render_portrait(
     clean_canonical: Path,
     output_dir: Path,
@@ -752,6 +792,8 @@ def render_portrait(
     hero_focus = mode == "hero_focus"
     rebound = mode == "rebound"
     continuous_reveal = mode == "continuous_reveal"
+    archive_reveal = mode == "archive_reveal"
+    source_reveal = continuous_reveal or archive_reveal
     panel_mode = cascade or spotlight or snapback or hero_focus or rebound
     width, height = (int(z) for z in title_qa["canvas"])
     top = int(title_qa["top_height"])
@@ -764,10 +806,10 @@ def render_portrait(
     background = str(profile.config["output"]["portrait_matte"]["background_hex"])
     panel_qa: dict[str, Any] | None = None
     reframe_qa: dict[str, Any] | None = None
-    if continuous_reveal:
+    if source_reveal:
         from . import kinetic_reframe
 
-        reveal_cfg = kinetic_reframe.config(profile, frames)
+        reveal_cfg = kinetic_reframe.config(profile, frames, mode)
         visual_top = int(reveal_cfg["visual_top"])
         visual_height = int(reveal_cfg["visual_height"])
         if visual_height != center:
@@ -785,9 +827,14 @@ def render_portrait(
         blur_sigma = float(reveal_cfg["backdrop_blur_sigma"])
         backdrop_brightness = float(reveal_cfg["backdrop_brightness"])
         backdrop_saturation = float(reveal_cfg["backdrop_saturation"])
+        archive_filter = ""
+        if archive_reveal:
+            source_start = int(plan["montage"]["source_window"]["start_frame"])
+            archive_until = int(plan["evidence"]["toggle_motion_end_frame"]) - source_start
+            archive_filter = f"hue=s=0:enable='lt(n,{archive_until})',"
         graph = (
             f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
-            f"crop={width}:{height},gblur=sigma={blur_sigma}:steps=2,"
+            f"crop={width}:{height},{archive_filter}gblur=sigma={blur_sigma}:steps=2,"
             f"eq=brightness={backdrop_brightness}:saturation={backdrop_saturation}[backdrop];"
             f"[backdrop][2:v]overlay=0:{visual_top}:shortest=1:format=auto[with_video];"
             "[with_video][1:v]overlay=0:0:shortest=1:format=auto,"
@@ -855,7 +902,7 @@ def render_portrait(
                     "-i",
                     str(workspace / "reframe_frames" / "%04d.png"),
                 ]
-                if continuous_reveal
+                if source_reveal
                 else []
             ),
             "-filter_complex_threads",
@@ -1038,7 +1085,7 @@ def render_portrait(
         matte_rgb_error = max(matte_rgb_error, delta)
         top_delta = max(abs(int(a) - int(b)) for a, b in zip(top_rgb, expected_matte, strict=True))
         header_rgb_error = max(header_rgb_error, top_delta)
-        if continuous_reveal:
+        if source_reveal:
             visual_bottom = int(reveal_cfg["visual_top"]) + int(reveal_cfg["visual_height"])
             backdrop_region = rgb.crop((0, visual_bottom, width, height))
             backdrop_mean = ImageStat.Stat(backdrop_region).mean
@@ -1096,7 +1143,7 @@ def render_portrait(
         "portrait_ssim": ssim >= 0.96,
         "portrait_psnr_db": psnr >= 35.0,
         "portrait_mattes_match": (
-            header_rgb_error <= 2 if continuous_reveal else matte_rgb_error <= 2
+            header_rgb_error <= 2 if source_reveal else matte_rgb_error <= 2
         ),
         "portrait_target_size": abs(filesize_mb - size_target_mb) <= size_tolerance_mb,
         "portrait_color_metadata": all(
@@ -1511,7 +1558,7 @@ def render_portrait(
             raise RuntimeError("missing continuous-reveal reframe metadata")
         from . import kinetic_reframe
 
-        reveal_cfg = kinetic_reframe.config(profile, frames)
+        reveal_cfg = kinetic_reframe.config(profile, frames, "continuous_reveal")
         visual_height = int(reveal_cfg["visual_height"])
         visual_top = int(reveal_cfg["visual_top"])
         checks["portrait_continuous_reveal_schedule"] = (
@@ -1591,6 +1638,148 @@ def render_portrait(
             len(continuous_reveal_differences) == 1 and continuous_reveal_differences[0] > 2.5
         )
 
+    archive_reveal_metrics: dict[str, float] = {}
+    if archive_reveal:
+        if reframe_qa is None:
+            raise RuntimeError("missing archive-reveal reframe metadata")
+        from . import kinetic_reframe
+
+        archive_cfg = kinetic_reframe.config(profile, frames, "archive_reveal")
+        visual_height = int(archive_cfg["visual_height"])
+        visual_top = int(archive_cfg["visual_top"])
+        expected_archive_effects = {
+            "smooth_source_push_in": True,
+            "luminance_flash": False,
+            "source_backdrop": {
+                "source": "same_canonical_frame",
+                "blur_sigma": archive_cfg["backdrop_blur_sigma"],
+                "brightness": archive_cfg["backdrop_brightness"],
+                "saturation": archive_cfg["backdrop_saturation"],
+            },
+            "unsharp_mask": {
+                "radius": archive_cfg["sharpen_radius"],
+                "percent": archive_cfg["sharpen_percent"],
+                "threshold": archive_cfg["sharpen_threshold"],
+            },
+            "archive_style": {
+                "grayscale_before_toggle": True,
+                "contrast": archive_cfg["archive_contrast"],
+                "brightness": archive_cfg["archive_brightness"],
+                "flicker_strength": archive_cfg["archive_flicker_strength"],
+                "transition_direction": archive_cfg["transition_direction"],
+                "transition_feather_px": archive_cfg["transition_feather_px"],
+                "trigger_frames": [
+                    int(plan["evidence"]["toggle_motion_start_frame"])
+                    - int(plan["montage"]["source_window"]["start_frame"]),
+                    int(plan["evidence"]["toggle_motion_end_frame"])
+                    - int(plan["montage"]["source_window"]["start_frame"]),
+                ],
+            },
+        }
+        checks["portrait_archive_reveal_schedule"] = (
+            reframe_qa["frame_count"] == frames
+            and reframe_qa["keyframes"] == archive_cfg["keyframes"]
+            and reframe_qa["storyboard_frames"] == archive_cfg["storyboard_frames"]
+            and reframe_qa["visual_size"] == [width, visual_height]
+            and reframe_qa["visual_top"] == visual_top
+            and reframe_qa["backdrop_bottom_height"]
+            == int(archive_cfg["backdrop_bottom_height"])
+        )
+        checks["portrait_archive_reveal_source_sync"] = (
+            reframe_qa["source_only"] is True
+            and reframe_qa["source_frame_grid_exact"] is True
+            and reframe_qa["input_frame_count"] == frames
+        )
+        checks["portrait_archive_reveal_legibility"] = reframe_qa[
+            "minimum_effective_source_width_px"
+        ] >= int(archive_cfg["minimum_effective_source_width"]) and visual_height > round(
+            width * int(profile.config["output"]["height"]) / int(profile.config["output"]["width"])
+        )
+        checks["portrait_archive_reveal_no_ai"] = reframe_qa["ai_enhancement"] is False
+        checks["portrait_archive_reveal_effects_declared"] = (
+            reframe_qa["effects"] == expected_archive_effects
+        )
+        checks["portrait_archive_reveal_backdrop_visible"] = (
+            len(backdrop_differences) == len(sampled_frames)
+            and all(value > 4.0 for value in backdrop_differences)
+        )
+
+        source_start = int(plan["montage"]["source_window"]["start_frame"])
+        trigger_start = int(plan["evidence"]["toggle_motion_start_frame"]) - source_start
+        trigger_end = int(plan["evidence"]["toggle_motion_end_frame"]) - source_start
+        pre_frame = max(0, trigger_start - 2)
+        mid_frame = (trigger_start + trigger_end) // 2
+        post_frame = min(frames - 1, trigger_end + 2)
+        selected = "+".join(
+            f"eq(n\\,{n})" for n in (pre_frame, mid_frame, post_frame)
+        )
+        raw_archive = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                str(file),
+                "-vf",
+                f"select={selected},format=rgb24",
+                "-fps_mode",
+                "passthrough",
+                "-frames:v",
+                "3",
+                "-f",
+                "rawvideo",
+                "-",
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
+        archive_frame_bytes = width * height * 3
+        if len(raw_archive) != 3 * archive_frame_bytes:
+            raise RuntimeError("encoded archive-reveal evidence frames are incomplete")
+        decoded_archive = [
+            Image.frombytes(
+                "RGB",
+                (width, height),
+                raw_archive[i * archive_frame_bytes : (i + 1) * archive_frame_bytes],
+            )
+            for i in range(3)
+        ]
+        visual_box = (0, visual_top, width, visual_top + visual_height)
+        archive_visuals = [image.crop(visual_box) for image in decoded_archive]
+
+        def chroma_score(image: Image.Image) -> float:
+            red, green, blue = image.split()
+            return round(
+                (
+                    ImageStat.Stat(ImageChops.difference(red, green)).mean[0]
+                    + ImageStat.Stat(ImageChops.difference(green, blue)).mean[0]
+                    + ImageStat.Stat(ImageChops.difference(red, blue)).mean[0]
+                )
+                / 3,
+                4,
+            )
+
+        pre_chroma = chroma_score(archive_visuals[0])
+        mid_chroma = chroma_score(archive_visuals[1])
+        post_chroma = chroma_score(archive_visuals[2])
+        mid_width = archive_visuals[1].width // 2
+        mid_left_chroma = chroma_score(archive_visuals[1].crop((0, 0, mid_width, visual_height)))
+        mid_right_chroma = chroma_score(
+            archive_visuals[1].crop((mid_width, 0, width, visual_height))
+        )
+        archive_reveal_metrics = {
+            "pre_toggle_chroma": pre_chroma,
+            "transition_chroma": mid_chroma,
+            "transition_left_chroma": mid_left_chroma,
+            "transition_right_chroma": mid_right_chroma,
+            "post_toggle_chroma": post_chroma,
+        }
+        checks["portrait_archive_reveal_pre_toggle_monochrome"] = pre_chroma < 3.5
+        checks["portrait_archive_reveal_transition_direction"] = (
+            mid_left_chroma > mid_right_chroma + 3.0 and mid_chroma > pre_chroma + 2.0
+        )
+        checks["portrait_archive_reveal_post_toggle_color"] = post_chroma > 6.0
+
     required = PORTRAIT_REQUIRED_CHECKS | (
         CASCADE_REQUIRED_CHECKS
         if cascade
@@ -1604,6 +1793,8 @@ def render_portrait(
         if rebound
         else CONTINUOUS_REVEAL_REQUIRED_CHECKS
         if continuous_reveal
+        else ARCHIVE_REVEAL_REQUIRED_CHECKS
+        if archive_reveal
         else frozenset()
     )
     if rebound:
@@ -1621,6 +1812,8 @@ def render_portrait(
         if rebound and panel_qa is not None
         else _encoded_continuous_reveal_storyboard(file, output_dir, plan, profile)
         if continuous_reveal
+        else _encoded_archive_reveal_storyboard(file, output_dir, plan, profile)
+        if archive_reveal
         else None
     )
     hasher = hashlib.sha256()
@@ -1640,9 +1833,15 @@ def render_portrait(
             "video_bitrate_kbps": video_kbps,
             "matte_top_rgb": list(top_rgb),
             "matte_bottom_rgb": list(bottom_rgb),
-            "matte_rgb_max_error": (header_rgb_error if continuous_reveal else matte_rgb_error),
+            "matte_rgb_max_error": (header_rgb_error if source_reveal else matte_rgb_error),
             "matte_sampled_frames": sampled_mattes,
-            "continuous_reveal_backdrop_differences": backdrop_differences,
+            "continuous_reveal_backdrop_differences": (
+                backdrop_differences if continuous_reveal else []
+            ),
+            "archive_reveal_backdrop_differences": (
+                backdrop_differences if archive_reveal else []
+            ),
+            "archive_reveal_metrics": archive_reveal_metrics,
             "cascade_panel_pixel_differences": panel_differences,
             "spotlight_pixel_differences": spotlight_differences,
             "snapback_pixel_differences": snapback_differences,
@@ -1662,6 +1861,7 @@ def render_portrait(
         "hero_focus": panel_qa if hero_focus else None,
         "rebound": panel_qa if rebound else None,
         "continuous_reveal": reframe_qa if continuous_reveal else None,
+        "archive_reveal": reframe_qa if archive_reveal else None,
         "storyboard": storyboard,
         "canonical_ffv1_nut": True,
     }

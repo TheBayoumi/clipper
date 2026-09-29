@@ -176,6 +176,7 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
                 "portrait_hash", "portrait delivery is missing or changed"
             )
         from .rendering.portrait_matte import (
+            ARCHIVE_REVEAL_REQUIRED_CHECKS,
             CASCADE_REQUIRED_CHECKS,
             CONTINUOUS_REVEAL_REQUIRED_CHECKS,
             HERO_FOCUS_REQUIRED_CHECKS,
@@ -559,6 +560,79 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
                 raise montage.MontageRejection(
                     "continuous_reveal_storyboard",
                     "encoded continuous-reveal storyboard missing or altered",
+                )
+
+        if edit["comparison_mode"] == "archive_reveal":
+            from .rendering import kinetic_reframe
+
+            required_checks = required_checks | ARCHIVE_REVEAL_REQUIRED_CHECKS
+            cfg = kinetic_reframe.config(profile, int(edit["output_frames"]), "archive_reveal")
+            reveal_qa = portrait.get("archive_reveal")
+            expected_window = profile.config["editorial"]["mode_timing"]["archive_reveal"][
+                "source_window"
+            ]
+            expected_effects = {
+                "smooth_source_push_in": True,
+                "luminance_flash": False,
+                "source_backdrop": {
+                    "source": "same_canonical_frame",
+                    "blur_sigma": cfg["backdrop_blur_sigma"],
+                    "brightness": cfg["backdrop_brightness"],
+                    "saturation": cfg["backdrop_saturation"],
+                },
+                "unsharp_mask": {
+                    "radius": cfg["sharpen_radius"],
+                    "percent": cfg["sharpen_percent"],
+                    "threshold": cfg["sharpen_threshold"],
+                },
+                "archive_style": {
+                    "grayscale_before_toggle": True,
+                    "contrast": cfg["archive_contrast"],
+                    "brightness": cfg["archive_brightness"],
+                    "flicker_strength": cfg["archive_flicker_strength"],
+                    "transition_direction": cfg["transition_direction"],
+                    "transition_feather_px": cfg["transition_feather_px"],
+                    "trigger_frames": [
+                        int(manifest["plan"]["evidence"]["toggle_motion_start_frame"])
+                        - int(edit["source_window"]["start_frame"]),
+                        int(manifest["plan"]["evidence"]["toggle_motion_end_frame"])
+                        - int(edit["source_window"]["start_frame"]),
+                    ],
+                },
+            }
+            if (
+                edit.get("type") != "continuous_source_reveal"
+                or edit.get("source_window") != expected_window
+                or montage.source_frame_count(edit) != int(edit["output_frames"])
+                or not isinstance(reveal_qa, dict)
+                or reveal_qa.get("mode") != "archive_reveal"
+                or reveal_qa.get("frame_count") != int(edit["output_frames"])
+                or reveal_qa.get("source_only") is not True
+                or reveal_qa.get("source_frame_grid_exact") is not True
+                or reveal_qa.get("ai_enhancement") is not False
+                or reveal_qa.get("keyframes") != cfg["keyframes"]
+                or reveal_qa.get("storyboard_frames") != cfg["storyboard_frames"]
+                or reveal_qa.get("visual_top") != cfg["visual_top"]
+                or reveal_qa.get("backdrop_bottom_height") != cfg["backdrop_bottom_height"]
+                or reveal_qa.get("minimum_effective_source_width_px", 0)
+                < int(cfg["minimum_effective_source_width"])
+                or reveal_qa.get("effects") != expected_effects
+            ):
+                raise montage.MontageRejection(
+                    "archive_reveal_schedule",
+                    "archive source reveal no longer matches its calibrated Clipper story",
+                )
+            storyboard = portrait.get("storyboard")
+            if (
+                not isinstance(storyboard, dict)
+                or storyboard.get("frames") != cfg["storyboard_frames"]
+                or storyboard.get("source") != "actual_encoded_delivery"
+                or not Path(str(storyboard.get("file") or "")).is_file()
+                or montage.sha256(Path(str(storyboard["file"]))) != storyboard.get("sha256")
+            ):
+                raise montage.MontageRejection(
+                    "archive_reveal_storyboard",
+                    "encoded archive-reveal storyboard missing or altered",
                 )
 
         portrait_checks = portrait.get("qa", {}).get("checks", {})

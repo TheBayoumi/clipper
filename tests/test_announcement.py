@@ -1581,3 +1581,119 @@ def test_official_workflow_qualifies_and_publishes_continuous_reveal() -> None:
     assert workflow.index("Plan certified-source Continuous Reveal") < workflow.index(
         "Plan certified-source result-first Rebound"
     )
+
+
+def _archive_reveal_test_profile(profile: CampaignProfile) -> CampaignProfile:
+    p = _cascade_test_profile(profile)
+    cfg = p.config["output"]["portrait_matte"]["archive_reveal"]
+    cfg["minimum_effective_source_width"] = 150
+    cfg["visual_top"] = 60
+    cfg["visual_height"] = 170
+    cfg["title_top_height"] = 55
+    cfg["title_y_positions"] = [5, 20, 35]
+    cfg["title_bar_y"] = 50
+    cfg["title_font_sizes"] = [12, 11, 10]
+    cfg["title_pill_heights"] = [17, 16, 15]
+    cfg["transition_feather_px"] = 20
+    return p
+
+
+def test_campaign_cli_accepts_profile_configured_archive_reveal() -> None:
+    with patch("clipper.cli.run_campaign", return_value=0) as mocked:
+        assert (
+            main(
+                [
+                    "campaign",
+                    CAMPAIGN,
+                    "plan",
+                    "--source",
+                    "source.mp4",
+                    "--output",
+                    "archive.json",
+                    "--comparison-mode",
+                    "archive_reveal",
+                ]
+            )
+            == 0
+        )
+    args = mocked.call_args.args[0]
+    assert args.profile == CAMPAIGN
+    assert args.campaign_command == "plan"
+    assert args.comparison_mode == "archive_reveal"
+
+
+def test_archive_reveal_is_one_certified_source_window_with_color_wipe(
+    source: Path, profile: CampaignProfile
+) -> None:
+    p = _archive_reveal_test_profile(profile)
+    plan = montage.build_plan(source, p, comparison_mode="archive_reveal")
+    edit = plan["montage"]
+    assert edit["type"] == "continuous_source_reveal"
+    assert edit["comparison_mode"] == "archive_reveal"
+    assert edit["source_window"] == {"start_frame": 28, "frames": 150}
+    assert edit["output_frames"] == 150
+    cfg = kinetic_reframe.config(p, 150, "archive_reveal")
+    assert cfg["storyboard_frames"] == [0, 15, 29, 33, 36, 149]
+    assert cfg["archive_grayscale"] is True
+    assert cfg["transition_direction"] == "left_to_right"
+    montage.validate_plan(plan, source, p)
+
+
+def test_archive_reveal_certified_render_and_fail_closed_qualification(
+    source: Path,
+    profile: CampaignProfile,
+    certificate: tuple[Path, dict[str, Any]],
+    tmp_path: Path,
+) -> None:
+    p = _archive_reveal_test_profile(profile)
+    planned = tmp_path / "plan_archive_reveal.json"
+    plan_campaign(
+        p,
+        source,
+        certificate[0],
+        planned,
+        comparison_mode="archive_reveal",
+        approved_text_index=3,
+    )
+    output = tmp_path / "archive_reveal"
+    result = render_campaign(p, source, certificate[0], planned, output)
+    portrait = result["portrait"]
+    reveal = portrait["archive_reveal"]
+    assert reveal["mode"] == "archive_reveal"
+    assert reveal["source_only"] is True
+    assert reveal["ai_enhancement"] is False
+    assert reveal["frame_count"] == 150
+    assert reveal["style_samples"]["29"]["phase"] == "color_wipe"
+    assert reveal["style_samples"]["36"]["phase"] == "source_color"
+    assert reveal["effects"]["archive_style"]["grayscale_before_toggle"] is True
+    assert reveal["effects"]["archive_style"]["transition_direction"] == "left_to_right"
+    metrics = portrait["qa"]["archive_reveal_metrics"]
+    assert metrics["pre_toggle_chroma"] < 3.5
+    assert metrics["post_toggle_chroma"] > 6
+    assert metrics["transition_left_chroma"] > metrics["transition_right_chroma"] + 3
+    assert all(portrait["qa"]["checks"].values()), portrait["qa"]["checks"]
+    assert portrait["storyboard"]["frames"] == [0, 15, 29, 33, 36, 149]
+    assert Path(portrait["storyboard"]["file"]).is_file()
+
+    accepted = qualify_campaign(
+        p, output / "render_manifest.json", tmp_path / "archive_accepted.json"
+    )
+    assert accepted["status"] == "PASS"
+
+    broken = json.loads((output / "render_manifest.json").read_text())
+    broken["portrait"]["archive_reveal"]["effects"]["archive_style"][
+        "grayscale_before_toggle"
+    ] = False
+    tampered = tmp_path / "archive_tampered.json"
+    tampered.write_text(json.dumps(broken))
+    with pytest.raises(montage.MontageRejection, match="archive_reveal_schedule"):
+        qualify_campaign(p, tampered, tmp_path / "archive_rejected.json")
+
+
+def test_official_workflow_qualifies_and_preserves_archive_reveal() -> None:
+    workflow = Path(".github/workflows/warzone-qualification.yml").read_text()
+    assert "--comparison-mode archive_reveal" in workflow
+    assert "delivery_archive_reveal/render_manifest.json" in workflow
+    assert "delivery_archive_reveal/*.mp4" in workflow
+    assert "delivery_archive_reveal/*.jpg" in workflow
+    assert "warzone-archive-reveal-" + chr(36) + "{{ github.sha }}" in workflow
