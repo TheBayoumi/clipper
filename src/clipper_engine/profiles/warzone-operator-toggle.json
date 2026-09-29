@@ -532,7 +532,7 @@
         "sharpen_percent": 18,
         "sharpen_threshold": 2,
         "minimum_effective_source_width": 1000,
-        "visual_height": 1000,
+        "visual_height": 608,
         "title_top_height": 250,
         "title_y_positions": [
           32,
@@ -558,7 +558,7 @@
           36,
           149
         ],
-        "visual_top": 300,
+        "visual_top": 656,
         "backdrop_blur_sigma": 24,
         "backdrop_brightness": -0.28,
         "backdrop_saturation": 0.6,

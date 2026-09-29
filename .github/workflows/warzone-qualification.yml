@@ -2,6 +2,15 @@ name: Warzone source and montage qualification
 
 on:
   workflow_dispatch:
+    inputs:
+      variant:
+        description: Delivery set to qualify
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - archive_reveal
   push:
     branches:
       - feat/warzone-operator-toggle
@@ -74,6 +83,7 @@ jobs:
             --source-key "$SOURCE_KEY" --output-dir source
 
       - name: Plan certified-source Continuous Reveal
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
           SOURCE_KEY: ${{ steps.source.outputs.source_key }}
@@ -87,6 +97,7 @@ jobs:
             --output plan_continuous_reveal.json
 
       - name: Render uninterrupted Continuous Reveal through canonical Clipper
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         timeout-minutes: 35
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
@@ -100,6 +111,7 @@ jobs:
             --output-dir delivery_continuous_reveal
 
       - name: Qualify Continuous Reveal source continuity clarity and encoded storyboard
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         run: |
           set -euo pipefail
           clipper campaign warzone-operator-toggle qualify \
@@ -157,6 +169,7 @@ jobs:
           CHECK
 
       - name: Publish distinct Continuous Reveal video storyboard and QA
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         uses: actions/upload-artifact@v4
         with:
           name: warzone-continuous-reveal-${{ github.sha }}
@@ -221,8 +234,9 @@ jobs:
           assert reveal["source_only"] is True
           assert reveal["source_frame_grid_exact"] is True
           assert reveal["ai_enhancement"] is False
-          assert reveal["visual_size"] == [1080, 1000]
-          assert reveal["visual_top"] == 300
+          assert reveal["visual_size"] == [1080, 608]
+          assert reveal["visual_top"] == 656
+          assert reveal["backdrop_bottom_height"] == 656
           assert reveal["minimum_effective_source_width_px"] >= 1000
           assert reveal["storyboard_frames"] == [0, 15, 29, 33, 36, 149]
           style = reveal["effects"]["archive_style"]
@@ -254,6 +268,7 @@ jobs:
             delivery_archive_reveal/*.jpg
 
       - name: Plan certified-source result-first Rebound
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
           SOURCE_KEY: ${{ steps.source.outputs.source_key }}
@@ -267,6 +282,7 @@ jobs:
             --output plan_rebound.json
 
       - name: Render source-native live-detail Rebound through Clipper
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         timeout-minutes: 35
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
@@ -280,6 +296,7 @@ jobs:
             --output-dir delivery_rebound
 
       - name: Qualify Rebound source windows large moving crop and encoded transitions
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         run: |
           set -euo pipefail
           clipper campaign warzone-operator-toggle qualify \
@@ -322,6 +339,7 @@ jobs:
           CHECK
 
       - name: Publish distinct high-clarity Rebound video storyboard and QA
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         uses: actions/upload-artifact@v4
         with:
           name: warzone-rebound-${{ github.sha }}
@@ -338,6 +356,7 @@ jobs:
             delivery_continuous_reveal/*.jpg
 
       - name: Plan certified-source Hero Focus
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
           SOURCE_KEY: ${{ steps.source.outputs.source_key }}
@@ -351,6 +370,7 @@ jobs:
             --output plan_hero_focus.json
 
       - name: Render Hero Focus with canonical Clipper
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         timeout-minutes: 35
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
@@ -364,6 +384,7 @@ jobs:
             --output-dir delivery_hero_focus
 
       - name: Qualify Hero Focus phases source fidelity and encoded storyboard
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         run: |
           set -euo pipefail
           clipper campaign warzone-operator-toggle qualify \
@@ -397,6 +418,7 @@ jobs:
           CHECK
 
       - name: Publish new Hero Focus MP4 storyboard and QA
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         uses: actions/upload-artifact@v4
         with:
           name: warzone-hero-focus-${{ github.sha }}
@@ -410,6 +432,7 @@ jobs:
             delivery_hero_focus/*.jpg
 
       - name: Plan certified-source three-Operator cascade
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
           SOURCE_KEY: ${{ steps.source.outputs.source_key }}
@@ -423,6 +446,7 @@ jobs:
             --output plan_cascade.json
 
       - name: Render Clipper three-panel cascade using original source
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         timeout-minutes: 35
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
@@ -436,6 +460,7 @@ jobs:
             --output-dir delivery_cascade
 
       - name: Qualify cascade source, panel synchronization and encoded delivery
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         run: |
           set -euo pipefail
           clipper campaign warzone-operator-toggle qualify \
@@ -443,6 +468,7 @@ jobs:
             --output delivery_cascade/acceptance.json
 
       - name: Verify shortened cascade still meets actual campaign minimum
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -477,6 +503,7 @@ jobs:
           PY
 
       - name: Publish qualified three-Operator cascade
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         uses: actions/upload-artifact@v4
         with:
           name: warzone-cascade-${{ github.sha }}
@@ -489,6 +516,7 @@ jobs:
             delivery_cascade/*.mp4
 
       - name: Plan new source-verified Operator Spotlight
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
           SOURCE_KEY: ${{ steps.source.outputs.source_key }}
@@ -502,6 +530,7 @@ jobs:
             --output plan_spotlight.json
 
       - name: Render Operator Spotlight using shared Clipper panel compositor
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         timeout-minutes: 35
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
@@ -515,6 +544,7 @@ jobs:
             --output-dir delivery_spotlight
 
       - name: Qualify Spotlight certified source visual states and 5-6 second delivery
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         run: |
           set -euo pipefail
           clipper campaign warzone-operator-toggle qualify \
@@ -548,6 +578,7 @@ jobs:
           CHECK
 
       - name: Publish Operator Spotlight video, actual-render storyboard and QA
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         uses: actions/upload-artifact@v4
         with:
           name: warzone-spotlight-${{ github.sha }}
@@ -561,6 +592,7 @@ jobs:
             delivery_spotlight/*.jpg
 
       - name: Plan source-verified 5.5-second Toggle Snapback
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
           SOURCE_KEY: ${{ steps.source.outputs.source_key }}
@@ -574,6 +606,7 @@ jobs:
             --output plan_snapback.json
 
       - name: Render Toggle Snapback through canonical Clipper staging
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         timeout-minutes: 35
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
@@ -587,6 +620,7 @@ jobs:
             --output-dir delivery_snapback
 
       - name: Qualify encoded Snapback rewind and source fidelity
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         run: |
           set -euo pipefail
           clipper campaign warzone-operator-toggle qualify \
@@ -621,6 +655,7 @@ jobs:
           CHECK
 
       - name: Publish Snapback MP4, encoded storyboard and qualification
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         uses: actions/upload-artifact@v4
         with:
           name: warzone-snapback-${{ github.sha }}
@@ -634,6 +669,7 @@ jobs:
             delivery_snapback/*.jpg
 
       - name: Plan source-grounded legal visual-state comparison
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
           SOURCE_KEY: ${{ steps.source.outputs.source_key }}
@@ -645,6 +681,7 @@ jobs:
             --output plan.json
 
       - name: Render full frame FFV1/PCM stage and delivery
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         timeout-minutes: 35
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
@@ -657,6 +694,7 @@ jobs:
             --plan plan.json --output-dir delivery
 
       - name: Qualify original-source and encoded-delivery contracts
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         run: |
           set -euo pipefail
           clipper campaign warzone-operator-toggle qualify \
@@ -664,6 +702,7 @@ jobs:
             --output delivery/acceptance.json
 
       - name: Build second approved copy with full-frame A/B cuts
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
           SOURCE_KEY: ${{ steps.source.outputs.source_key }}
@@ -672,6 +711,7 @@ jobs:
           clipper campaign warzone-operator-toggle plan             --source "$SOURCE_FILE"             --source-qa "source/$SOURCE_KEY.source_qa.json"             --comparison-mode cuts             --approved-text-index 1             --output plan_cuts.json
 
       - name: Render alternate full-frame A/B montage from certified source
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         timeout-minutes: 35
         env:
           SOURCE_FILE: ${{ steps.source.outputs.source_file }}
@@ -681,6 +721,7 @@ jobs:
           clipper campaign warzone-operator-toggle render             --source "$SOURCE_FILE"             --source-qa "source/$SOURCE_KEY.source_qa.json"             --plan plan_cuts.json             --output-dir delivery_cuts
 
       - name: Qualify alternate A/B original-source contract
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.variant != 'archive_reveal' }}
         run: |
           set -euo pipefail
           clipper campaign warzone-operator-toggle qualify             --render-manifest delivery_cuts/render_manifest.json             --output delivery_cuts/acceptance.json
