@@ -203,6 +203,32 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
             cfg = panel_compositor.config(
                 profile, int(manifest["plan"]["montage"]["comparison_frames"])
             )
+            from .rendering import portrait_matte
+
+            layout = portrait_matte.mode_portrait_layout(
+                profile,
+                "cascade",
+                int(profile.config["output"]["portrait_matte"]["width"]),
+                int(profile.config["output"]["portrait_matte"]["height"]),
+            )
+            title_qa = portrait.get("title", {})
+            expected_bottom = (
+                int(profile.config["output"]["portrait_matte"]["height"])
+                - int(layout["visual_top"])
+                - int(layout["visual_height"])
+                if layout is not None
+                else -1
+            )
+            if (
+                layout is None
+                or title_qa.get("top_height") != layout["title_top_height"]
+                or title_qa.get("center_height") != layout["visual_height"]
+                or panel_qa.get("bottom_height") != expected_bottom
+            ):
+                raise montage.MontageRejection(
+                    "cascade_portrait_geometry",
+                    "cascade portrait band moved outside its calibrated mobile-safe placement",
+                )
             starts = int(manifest["plan"]["montage"]["hook"]["frames"]) + int(
                 manifest["plan"]["montage"]["source_window"]["frames"]
             )
@@ -230,6 +256,32 @@ def qualify(profile: CampaignProfile, manifest_path: Path, output: Path) -> dict
                     "spotlight_stills", "spotlight does not use the certified comparison stills"
                 )
             cfg = panel_compositor.spotlight_config(profile, int(edit["comparison_frames"]))
+            from .rendering import portrait_matte
+
+            layout = portrait_matte.mode_portrait_layout(
+                profile,
+                "spotlight",
+                int(profile.config["output"]["portrait_matte"]["width"]),
+                int(profile.config["output"]["portrait_matte"]["height"]),
+            )
+            title_qa = portrait.get("title", {})
+            expected_bottom = (
+                int(profile.config["output"]["portrait_matte"]["height"])
+                - int(layout["visual_top"])
+                - int(layout["visual_height"])
+                if layout is not None
+                else -1
+            )
+            if (
+                layout is None
+                or title_qa.get("top_height") != layout["title_top_height"]
+                or title_qa.get("center_height") != layout["visual_height"]
+                or panel_qa.get("bottom_height") != expected_bottom
+            ):
+                raise montage.MontageRejection(
+                    "spotlight_portrait_geometry",
+                    "spotlight portrait band moved outside its calibrated mobile-safe placement",
+                )
             compare_start = int(edit["hook"]["frames"]) + int(edit["source_window"]["frames"])
             switch_frames = [
                 compare_start + i * int(cfg["focus_frames"]) + int(cfg["switch_after_frames"])

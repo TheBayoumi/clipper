@@ -735,6 +735,9 @@ def test_cascade_produces_full_duration_original_source_portrait(
     assert len(qa["matte_sampled_frames"]) == 3
     assert all(sample["max_error"] <= 2 for sample in qa["matte_sampled_frames"])
     assert rendered["portrait"]["title"]["text_visible_frames"] == 165
+    assert rendered["portrait"]["title"]["top_height"] == 50
+    assert rendered["portrait"]["title"]["center_height"] == 101
+    assert panel_qa["bottom_height"] == 169
     assert rendered["portrait"]["title"]["progress_samples"]["0"] == 0
     assert rendered["portrait"]["title"]["progress_samples"]["164"] == 1
     accepted = qualify_campaign(
@@ -753,6 +756,11 @@ def test_cascade_produces_full_duration_original_source_portrait(
     with pytest.raises(montage.MontageRejection, match="cascade_stills"):
         qualify_campaign(p, tampered, tmp_path / "rejected_stills.json")
     manifest["portrait"]["cascade"] = copy.deepcopy(rendered["portrait"]["cascade"])
+    manifest["portrait"]["title"]["center_height"] = 100
+    tampered.write_text(json.dumps(manifest))
+    with pytest.raises(montage.MontageRejection, match="cascade_portrait_geometry"):
+        qualify_campaign(p, tampered, tmp_path / "rejected_geometry.json")
+    manifest["portrait"]["title"] = copy.deepcopy(rendered["portrait"]["title"])
     manifest["staging"]["source_excerpt"]["source_to_piece_hashes_exact"] = False
     tampered.write_text(json.dumps(manifest))
     with pytest.raises(montage.MontageRejection, match="source_excerpt"):
@@ -882,6 +890,9 @@ def test_spotlight_certified_shared_pipeline_and_fail_closed_qualification(
     assert portrait["qa"]["frame_count"] == 165
     assert portrait["qa"]["encoded_duration"] == pytest.approx(5.5, abs=0.055)
     assert portrait["title"]["text_visible_frames"] == 165
+    assert portrait["title"]["top_height"] == 50
+    assert portrait["title"]["center_height"] == 101
+    assert portrait["spotlight"]["bottom_height"] == 169
     assert all(portrait["qa"]["checks"].values())
     assert len(portrait["qa"]["spotlight_pixel_differences"]) == 3
     assert all(v > 2.5 for v in portrait["qa"]["spotlight_pixel_differences"])
@@ -898,6 +909,11 @@ def test_spotlight_certified_shared_pipeline_and_fail_closed_qualification(
     with pytest.raises(montage.MontageRejection, match="spotlight_schedule"):
         qualify_campaign(p, tampered, tmp_path / "fail.json")
     manifest["portrait"]["spotlight"] = copy.deepcopy(rendered["portrait"]["spotlight"])
+    manifest["portrait"]["title"]["top_height"] = 49
+    tampered.write_text(json.dumps(manifest))
+    with pytest.raises(montage.MontageRejection, match="spotlight_portrait_geometry"):
+        qualify_campaign(p, tampered, tmp_path / "fail_geometry.json")
+    manifest["portrait"]["title"] = copy.deepcopy(rendered["portrait"]["title"])
     manifest["portrait"]["spotlight"]["source_still_sha256"]["before"] = "invalid"
     tampered.write_text(json.dumps(manifest))
     with pytest.raises(montage.MontageRejection, match="spotlight_stills"):

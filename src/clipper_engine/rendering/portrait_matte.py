@@ -328,6 +328,62 @@ def _frame_image(
     return im, word_box
 
 
+def mode_portrait_layout(
+    profile: CampaignProfile,
+    mode: str,
+    width: int,
+    height: int,
+) -> dict[str, Any] | None:
+    """Resolve a profile-calibrated portrait source band without mode-specific rendering."""
+    matte = profile.config["output"]["portrait_matte"]
+    layouts = matte.get("mode_layouts", {})
+    raw = layouts.get(mode) if isinstance(layouts, dict) else None
+    if raw is None:
+        return None
+    expected = {
+        "visual_top",
+        "visual_height",
+        "title_top_height",
+        "title_y_positions",
+        "title_bar_y",
+        "title_font_sizes",
+        "title_pill_heights",
+    }
+    if not isinstance(raw, dict) or set(raw) != expected:
+        raise MontageRejection("portrait_geometry", "unsupported mode portrait calibration")
+    scale = width / 1080
+    values = {
+        "visual_top": round(int(raw["visual_top"]) * scale),
+        "visual_height": round(int(raw["visual_height"]) * scale),
+        "title_top_height": round(int(raw["title_top_height"]) * scale),
+        "title_y_positions": [round(int(n) * scale) for n in raw["title_y_positions"]],
+        "title_bar_y": round(int(raw["title_bar_y"]) * scale),
+        "title_font_sizes": [max(8, round(int(n) * scale)) for n in raw["title_font_sizes"]],
+        "title_pill_heights": [round(int(n) * scale) for n in raw["title_pill_heights"]],
+    }
+    source_width = int(profile.config["output"]["width"])
+    source_height = int(profile.config["output"]["height"])
+    expected_source_height = round(width * source_height / source_width)
+    if (
+        values["visual_top"] != values["title_top_height"]
+        or values["visual_height"] != expected_source_height
+        or values["visual_top"] < 1
+        or values["visual_top"] + values["visual_height"] >= height
+        or len(values["title_y_positions"]) != 3
+        or len(values["title_font_sizes"]) != 3
+        or len(values["title_pill_heights"]) != 3
+        or values["title_bar_y"] >= values["title_top_height"]
+        or any(
+            n < 0 or n >= values["title_top_height"] for n in values["title_y_positions"]
+        )
+    ):
+        raise MontageRejection(
+            "portrait_geometry",
+            "profile-calibrated portrait band leaves the legal 9:16 source-safe layout",
+        )
+    return values
+
+
 def render_title_frames(
     workspace: Path, plan: dict[str, Any], profile: CampaignProfile
 ) -> dict[str, Any]:
@@ -337,7 +393,9 @@ def render_title_frames(
     width = int(cfg["width"])
     height = int(cfg["height"])
     frames = int(plan["montage"]["output_frames"])
+    mode = str(plan["montage"]["comparison_mode"])
     continuous = plan["montage"].get("type") == "continuous_source_reveal"
+    calibrated = None if continuous else mode_portrait_layout(profile, mode, width, height)
     if continuous:
         from . import kinetic_reframe
 
@@ -350,6 +408,13 @@ def render_title_frames(
         bar_y = round(int(style["title_bar_y"]) * width / 1080)
         if top_height + source_display_height >= height:
             raise MontageRejection("portrait_geometry", "continuous portrait geometry overflows")
+    elif calibrated is not None:
+        top_height = int(calibrated["title_top_height"])
+        source_display_height = int(calibrated["visual_height"])
+        fonts = [_font(int(n)) for n in calibrated["title_font_sizes"]]
+        y_positions = [int(n) for n in calibrated["title_y_positions"]]
+        pill_heights = [int(n) for n in calibrated["title_pill_heights"]]
+        bar_y = int(calibrated["title_bar_y"])
     else:
         source_width = int(profile.config["output"]["width"])
         source_height = int(profile.config["output"]["height"])
@@ -373,7 +438,6 @@ def render_title_frames(
     folder = workspace / "approved_title_frames"
     folder.mkdir(parents=True, exist_ok=True)
     sample_indices = {0, 3, 9, 15, 73, 79, 193, 203, 223, 243, 253, 264, 274, 281, frames - 1}
-    mode = plan["montage"]["comparison_mode"]
     if mode == "spotlight":
         from . import panel_compositor
 
@@ -482,6 +546,8 @@ def render_title_frames(
         "compositing": (
             "compact approved text above enlarged continuous source footage"
             if continuous
+            else "profile-calibrated title above source-safe panel band"
+            if calibrated is not None
             else "approved text only in upper portrait matte"
         ),
     }

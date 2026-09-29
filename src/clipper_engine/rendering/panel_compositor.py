@@ -919,6 +919,7 @@ def render_spotlight_panels(
         "group_frames": int(cfg["group_frames"]),
         "switch_frames": [compare_start + i * segment + switch for i in range(len(order))],
         "group_start_frame": group_start,
+        "bottom_height": bottom_height,
         "focus_box": [focus_x, y, focus_x + wide, y + high],
         "sampled_states": samples,
         "source_still_sha256": {
