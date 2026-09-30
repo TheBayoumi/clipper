@@ -484,8 +484,23 @@ def inspect_artifact(
         ):
             issues.append("INCOMPLETE_SOURCE_COVERAGE")
         clips = report.get("clips")
-        if not isinstance(clips, list) or not clips:
-            issues.append("NO_RENDERED_CLIPS")
+        if not isinstance(clips, list):
+            issues.append("INVALID_CLIP_REPORT")
+            return entry
+        if not clips:
+            if report.get("status") != "NO_CREATOR_GRADE_MOMENTS":
+                issues.append("NO_RENDERED_CLIPS")
+                return entry
+            audit = read_json(base / "editorial-candidate-audit.json")
+            if (
+                audit.get("selection_policy") != "quality_driven_zero_to_n"
+                or audit.get("selected") != []
+                or int(audit.get("selected_count") or 0) != 0
+            ):
+                issues.append("INVALID_EDITORIAL_NOOP")
+                return entry
+            entry["editorial_noop"] = True
+            entry["selection_policy"] = audit.get("selection_policy")
             return entry
         seen: set[tuple[str, float, float]] = set()
         seen_hooks: set[str] = set()
@@ -684,14 +699,29 @@ def review_run(
         actions.append("REPAIR_RENDER_OR_QA")
     if issues and not actions:
         actions.append("INSPECT_ATTACHED_DIAGNOSTICS")
+    editorial_noop = bool(channels) and all(item.get("editorial_noop") is True for item in channels)
     if not issues:
-        actions.append("REQUEST_HUMAN_VISUAL_AND_EDITORIAL_APPROVAL")
+        actions.append(
+            "SKIP_SOURCE_NO_CREATOR_GRADE_MOMENTS"
+            if editorial_noop
+            else "REQUEST_HUMAN_VISUAL_AND_EDITORIAL_APPROVAL"
+        )
+    status = (
+        "BLOCKED"
+        if issues
+        else (
+            "NO_CREATOR_GRADE_MOMENTS__NO_RENDER_REQUIRED"
+            if editorial_noop
+            else "TECHNICAL_QA_PASSED__HUMAN_REVIEW_REQUIRED"
+        )
+    )
     return {
         "head_sha": head_sha,
         "run_id": run_id,
         "audited_production_run_id": os.getenv("TJR_FEEDBACK_SOURCE_RUN_ID") or run_id,
-        "status": ("BLOCKED" if issues else "TECHNICAL_QA_PASSED__HUMAN_REVIEW_REQUIRED"),
+        "status": status,
         "expected_channels": expected_channels,
+        "editorial_noop_count": sum(item.get("editorial_noop") is True for item in channels),
         "technically_verified_mp4_count": sum(
             item["technically_verified_mp4_count"] for item in channels
         ),
