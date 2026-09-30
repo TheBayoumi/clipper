@@ -99,7 +99,9 @@ def _word_text(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def _segments_from_whisper(raw_segments: object, *, word_timestamps: bool) -> list[TranscriptSegment]:
+def _segments_from_whisper(
+    raw_segments: object, *, word_timestamps: bool
+) -> list[TranscriptSegment]:
     if word_timestamps:
         aligned: list[TranscriptSegment] = []
         for sentence in raw_segments:
