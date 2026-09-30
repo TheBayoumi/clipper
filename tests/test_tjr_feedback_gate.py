@@ -472,6 +472,9 @@ def test_production_has_no_automatic_transport_fallback() -> None:
     assert "bgutil-ytdlp-pot-provider:2.0.0" in workflow
     assert "-p 127.0.0.1:4416:4416" in workflow
     assert "TJR_BGUTIL_POT_PROVIDER_URL: http://127.0.0.1:4416" in workflow
+    assert 'TJR_REQUIRE_AUTHENTICATED_YOUTUBE: "1"' in workflow
+    assert "Load required persistent YouTube session" in workflow
+    assert "No authenticated YouTube session secret is configured" not in workflow
     assert "TJR_ASR_MODEL: distil-large-v3" in workflow
 
 
