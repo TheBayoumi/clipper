@@ -250,12 +250,22 @@ def invoke(command: list[str], *, timeout: int) -> subprocess.CompletedProcess[s
         raise RuntimeError(f"{command[0]}: {detail[-1200:]}") from exc
 
 
-def dynamic_browser_variants() -> tuple[tuple[str, ...], ...]:
-    """Mint per-video guest playback tokens using a fresh runner browser.
+def dynamic_bgutil_variants() -> tuple[tuple[str, ...], ...]:
+    """Use the independent BgUtils PO-token provider when the runner started it."""
+    base_url = os.getenv("TJR_BGUTIL_POT_PROVIDER_URL", "").strip()
+    if not base_url:
+        return ()
+    if not base_url.startswith("http://127.0.0.1:"):
+        raise RuntimeError("BgUtils PO-token provider must be bound to runner loopback")
+    plugin = ("--extractor-args", f"youtubepot-bgutilhttp:base_url={base_url}")
+    return (
+        ("--extractor-args", "youtube:player_client=mweb", *plugin),
+        ("--extractor-args", "youtube:player_client=web_safari", *plugin),
+    )
 
-    Browser-token generation is an automatic public-video transport attempt,
-    not a substitute for authenticated access if YouTube blocks runner IPs.
-    """
+
+def dynamic_browser_variants() -> tuple[tuple[str, ...], ...]:
+    """Mint per-video guest playback tokens using a fresh runner browser."""
     browser = os.getenv("YT_DLP_WPC_BROWSER_PATH", "").strip()
     if not browser:
         return ()
@@ -269,13 +279,18 @@ def dynamic_browser_variants() -> tuple[tuple[str, ...], ...]:
     )
 
 
+def dynamic_token_variants() -> tuple[tuple[str, ...], ...]:
+    """Prefer independent BotGuard tokens, then browser-minted tokens."""
+    return (*dynamic_bgutil_variants(), *dynamic_browser_variants())
+
+
 def verified_youtube_metadata(video: OfficialVideo) -> dict[str, Any]:
     """Do not trust a title, channel handle, RSS alone, or search result for provenance."""
     errors: list[str] = []
-    # Try browser-minted guest PO tokens first. YouTube may still independently
-    # refuse GitHub's public IP before any video metadata can be retrieved.
+    # Prefer independently generated PO tokens before the browser-backed provider.
+    # Both remain automatic guest-session transports; authenticated cookies are optional.
     client_variants = (
-        *dynamic_browser_variants(),
+        *dynamic_token_variants(),
         ("--extractor-args", "youtube:player_client=mweb"),
         ("--extractor-args", "youtube:player_client=tv"),
         ("--extractor-args", "youtube:player_client=web_safari"),
@@ -384,7 +399,7 @@ def download_original_excerpt(
     preferred = tuple((metadata or {}).get("_verified_client_args") or ())
     client_variants = (
         preferred,
-        *dynamic_browser_variants(),
+        *dynamic_token_variants(),
         ("--extractor-args", "youtube:player_client=mweb"),
         ("--extractor-args", "youtube:player_client=tv"),
         ("--extractor-args", "youtube:player_client=web_safari"),
