@@ -45,7 +45,7 @@ def test_selects_distinct_moments_without_two_clip_cap() -> None:
     text += "proper management before the price moves against us right now "
     text += "and we avoid another risky mistake"
     inputs = [clip(i * 45, text + f" number {i}", 20 - i) for i in range(5)]
-    chosen, rejected = select_editorial_moments(inputs, batch_limit=10)
+    chosen, rejected = select_editorial_moments(inputs, render_safety_limit=10)
     # Generic repeated risk talk must not be kept just to fill the batch.
     assert chosen == []
     assert all(
@@ -69,14 +69,14 @@ def test_real_distinct_hooks_can_yield_more_than_two_clips() -> None:
         for text in originals
     ]
     picks, _ = select_editorial_moments(
-        [clip(i * 45, text, 10) for i, text in enumerate(fuller)], batch_limit=10
+        [clip(i * 45, text, 10) for i, text in enumerate(fuller)], render_safety_limit=10
     )
     assert len(picks) == 3
 
 
-def test_batch_size_bounds_are_explicit() -> None:
+def test_render_safety_bounds_are_explicit() -> None:
     with pytest.raises(ValueError):
-        select_editorial_moments([], batch_limit=0)
+        select_editorial_moments([], render_safety_limit=0)
 
 
 def test_headline_from_full_context_and_campaign_topic() -> None:
@@ -126,7 +126,7 @@ def test_distinct_trade_moments_still_scored() -> None:
         "for the next position",
         10,
     )
-    selected, rejected = select_editorial_moments([a, b], batch_limit=12)
+    selected, rejected = select_editorial_moments([a, b], render_safety_limit=12)
     assert len(selected) <= 2
     assert all(not pick.hook.startswith('THE MOMENT: "') for pick in selected)
     if not selected:
@@ -219,7 +219,7 @@ def test_actual_first_two_seconds_override_misleading_transcript_opening() -> No
     aligned = [TranscriptSegment(0, 31, STRONG_SEGMENT, words=first_words)]
     # Candidate text contains "damn", but the actual first 2 seconds are filler.
     assert evaluate_candidate(source, segments=aligned) is None
-    selected, rejected = select_editorial_moments([source], segments=aligned, batch_limit=1)
+    selected, rejected = select_editorial_moments([source], segments=aligned, render_safety_limit=1)
     assert selected == []
     assert rejected[0]["reason"] == "WEAK_FIRST_TWO_SECONDS"
     assert "WEAK_FIRST_TWO_SECONDS" in rejected[0]["failed_gates"]
@@ -339,7 +339,7 @@ def test_hook_led_fallback_never_accepts_unfinished_trade_story() -> None:
     assert evaluate_candidate(item, allow_review_only_opening=True) is None
 
 
-def test_batch_limit_is_a_ceiling_not_a_content_quota() -> None:
+def test_render_safety_limit_is_not_a_content_quota() -> None:
     strong = (
         "Late at $200K? the coin migrates at $50K market caps and people are buying "
         "before the price runs, but this entry is already much later than the plan. "
@@ -351,7 +351,7 @@ def test_batch_limit_is_a_ceiling_not_a_content_quota() -> None:
         "and this is just another trading discussion about the position."
     )
     picks, rejected = select_editorial_moments(
-        [clip(0, strong, 30), clip(60, weak, 29)], batch_limit=12
+        [clip(0, strong, 30), clip(60, weak, 29)], render_safety_limit=12
     )
     assert len(picks) <= 1
     assert any(
