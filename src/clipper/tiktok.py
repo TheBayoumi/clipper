@@ -142,8 +142,8 @@ def creative_hook_from_text(text: str) -> str:
         return "A TRADER CLAIMS MILLIONS: HOW?"
     stop_was_hit = bool(
         re.search(
-            r"\\b(?:stop(?:[- ]loss)?\\s+(?:got|was|gets?|is)\\s+hit|"
-            r"(?:got|was|gets?|is)\\s+stopped\\s+out|stopped\\s+out)\\b",
+            r"\b(?:stop(?:[- ]loss)?\s+(?:got|was|gets?|is)\s+hit|"
+            r"(?:got|was|gets?|is)\s+stopped\s+out|stopped\s+out)\b",
             lowered,
         )
     )
