@@ -30,6 +30,14 @@ EVENT_DESCRIPTIONS = {
         "a specific explanation, disagreement, reasoning chain, or why something matters"
     ),
 }
+OFF_TOPIC_DESCRIPTIONS = (
+    "fashion, jewelry, luxury goods, clothing, watches, bags, shopping or personal collections",
+    "unrelated lifestyle entertainment, gossip, personal possessions or casual social banter",
+    "generic off-topic conversation without a clear actionable creator moment",
+)
+MIN_EVENT_SIMILARITY = 0.34
+MIN_CAMPAIGN_SIMILARITY = 0.34
+MIN_RELEVANCE_MARGIN = 0.04
 _WORD = re.compile(r"[A-Za-z0-9$%'.-]+")
 _LEADING_FILLER = re.compile(
     r"^(?:(?:okay|ok|so|well|basically|right|alright|all right|you know|i mean)\b[ ,.-]*)+",
@@ -225,30 +233,58 @@ def build_semantic_editorial_candidates(
     units = _thought_units(segments)
     if not units:
         return [], {
+            "architecture": "source_level_semantic_campaign_event_segmentation_v2",
             "semantic_model": SEMANTIC_MODEL,
             "semantic_unit_count": 0,
+            "campaign_relevant_unit_count": 0,
+            "out_of_domain_unit_count": 0,
             "event_anchor_count": 0,
             "candidate_count": 0,
             "event_distribution": {},
+            "fixed_candidate_or_output_quota": False,
         }
     backend = embedder or FastEmbedder()
     texts = [unit.text for unit in units]
     event_texts = list(EVENT_DESCRIPTIONS.values())
-    embedded = backend([*texts, *event_texts])
-    expected = len(texts) + len(event_texts)
+    campaign_text = (
+        f"{brief.title}. {brief.objective}. "
+        f"Campaign topics: {', '.join(brief.keywords)}."
+    )
+    reference_texts = [*event_texts, campaign_text, *OFF_TOPIC_DESCRIPTIONS]
+    embedded = backend([*texts, *reference_texts])
+    expected = len(texts) + len(reference_texts)
     if len(embedded) != expected:
         raise RuntimeError("semantic embedding backend returned an incomplete batch")
     unit_vectors = embedded[: len(texts)]
-    event_vectors = embedded[len(texts) :]
+    references = embedded[len(texts) :]
+    event_vectors = references[: len(event_texts)]
+    campaign_vector = references[len(event_texts)]
+    off_topic_vectors = references[len(event_texts) + 1 :]
     labels, strengths = _event_labels(unit_vectors, event_vectors)
     regions = _region_ids(units, unit_vectors)
+    campaign_scores = [_cosine(vector, campaign_vector) for vector in unit_vectors]
+    off_topic_scores = [
+        max((_cosine(vector, other) for other in off_topic_vectors), default=0.0)
+        for vector in unit_vectors
+    ]
+    relevance_margins = [
+        campaign - off_topic
+        for campaign, off_topic in zip(campaign_scores, off_topic_scores, strict=True)
+    ]
 
-    # Event relevance is a semantic anchor, not an output quota. A lower floor
-    # preserves recall; downstream editorial/visual gates decide whether a clip survives.
+    # First decide whether a unit belongs to this campaign. Only then may it be
+    # classified into an editorial event. This prevents a closed event taxonomy
+    # from forcing unrelated fashion/lifestyle speech into a trading label.
+    relevant_units = [
+        index
+        for index in range(len(units))
+        if campaign_scores[index] >= MIN_CAMPAIGN_SIMILARITY
+        and relevance_margins[index] >= MIN_RELEVANCE_MARGIN
+    ]
     anchors = [
         index
-        for index, strength in enumerate(strengths)
-        if strength >= 0.34 and len(_WORD.findall(units[index].text)) >= 3
+        for index in relevant_units
+        if strengths[index] >= MIN_EVENT_SIMILARITY and len(_WORD.findall(units[index].text)) >= 3
     ]
     provisional: list[tuple[ClipCandidate, list[float]]] = []
     seen_windows: set[tuple[int, int]] = set()
@@ -289,6 +325,9 @@ def build_semantic_editorial_candidates(
             f"semantic_model={SEMANTIC_MODEL}",
             f"semantic_event={labels[anchor]}",
             f"event_similarity={event_strength:.4f}",
+            f"campaign_relevance={campaign_scores[anchor]:.4f}",
+            f"off_topic_similarity={off_topic_scores[anchor]:.4f}",
+            f"relevance_margin={relevance_margins[anchor]:.4f}",
             f"semantic_coherence={coherence:.4f}",
             f"semantic_region={regions[anchor]}",
             f"semantic_hook={hook}",
@@ -313,14 +352,17 @@ def build_semantic_editorial_candidates(
     event_distribution = Counter(labels[index] for index in anchors)
     candidates = [candidate for candidate, _ in selected]
     audit = {
-        "architecture": "source_level_semantic_event_segmentation_v1",
+        "architecture": "source_level_semantic_campaign_event_segmentation_v2",
         "semantic_model": SEMANTIC_MODEL,
         "semantic_unit_count": len(units),
         "semantic_region_count": len(set(regions)),
+        "campaign_relevant_unit_count": len(relevant_units),
+        "out_of_domain_unit_count": len(units) - len(relevant_units),
         "event_anchor_count": len(anchors),
         "candidate_count": len(candidates),
         "event_distribution": dict(event_distribution),
-        "candidate_policy": "semantic_event_then_safety_and_visual_qualification",
+        "campaign_relevance_policy": "embedding_contrast_against_out_of_domain_references",
+        "candidate_policy": "campaign_relevance_then_event_then_safety_and_visual_qualification",
         "fixed_candidate_or_output_quota": False,
     }
     return candidates, audit
