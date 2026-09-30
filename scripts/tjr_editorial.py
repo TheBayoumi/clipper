@@ -528,10 +528,16 @@ def select_editorial_moments(
                 }
             )
             continue
+        if len(chosen) >= render_safety_limit:
+            rejected.append(
+                {
+                    "start": pick.clip.start,
+                    "end": pick.clip.end,
+                    "reason": "RENDER_SAFETY_LIMIT",
+                    "editorial_score": pick.editorial_score,
+                }
+            )
+            continue
         chosen.append(replace(pick, hook=headline))
         used_hooks.add(headline.casefold())
-        # This is not an editorial target or quota. It only bounds pathological
-        # render fan-out after every accepted moment has independently passed quality.
-        if len(chosen) >= render_safety_limit:
-            break
     return chosen, rejected
