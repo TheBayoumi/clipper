@@ -190,9 +190,18 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
                         {"url": url, "strategy": strategy_name, "reason": "VIDEO_OWNER_MISMATCH"}
                     )
                     break
-                if metadata.get("live_status") == "is_live":
+                live_status = str(metadata.get("live_status") or "")
+                if (
+                    metadata.get("is_live")
+                    or metadata.get("is_upcoming")
+                    or live_status in {"is_live", "is_upcoming"}
+                ):
                     attempts.append(
-                        {"url": url, "strategy": strategy_name, "reason": "ONGOING_LIVESTREAM"}
+                        {
+                            "url": url,
+                            "strategy": strategy_name,
+                            "reason": "LIVE_OR_UPCOMING_STREAM",
+                        }
                     )
                     break
                 duration = float(metadata.get("duration") or 0)
