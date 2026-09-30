@@ -16,28 +16,43 @@ from typing import Any
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
 
 SEMANTIC_MODEL = "BAAI/bge-small-en-v1.5"
+CREATOR_MOMENT_DESCRIPTIONS = (
+    "a self-contained funny or surprising creator reaction, memorable quote, disagreement, "
+    "challenge, reveal, flex, comparison, or payoff",
+    "a concrete trading psychology, risk-management, market decision, financial result, "
+    "trading lesson, or money-related creator moment",
+)
 EVENT_DESCRIPTIONS = {
-    "trade_setup": "a concrete trading setup, entry, exit, market thesis or decision",
-    "mistake_lesson": "a trading mistake, lesson learned, warning, or useful correction",
-    "risk_management": (
-        "risk management, stop loss, position sizing, discipline, or protecting capital"
+    "reaction_surprise": (
+        "a strong authentic reaction, surprise, disbelief, excitement, laughter, or "
+        "unexpected moment"
     ),
-    "surprise_reaction": (
-        "a surprising market event, strong authentic reaction, or unexpected outcome"
+    "comparison_challenge": (
+        "a comparison, challenge, flex, one-upmanship, ranking, or claim that one thing "
+        "is better, rarer, or worth more"
     ),
-    "result_payoff": "a clear result, payoff, consequence, resolution, or what happened next",
+    "reveal_showcase": (
+        "a reveal, discovery, showcase, collection item, unusual detail, or visual payoff"
+    ),
+    "story_payoff": "a clear setup, escalation, consequence, resolution, or what happened next",
     "explanation_argument": (
-        "a specific explanation, disagreement, reasoning chain, or why something matters"
+        "a specific explanation, disagreement, opinion, reasoning chain, or why something matters"
+    ),
+    "trading_decision": "a concrete financial-market trade, setup, entry, exit, thesis, or decision",
+    "risk_management": (
+        "risk management, stop loss, position sizing, discipline, protecting capital, "
+        "or a trading lesson"
     ),
 }
 OFF_TOPIC_DESCRIPTIONS = (
-    "fashion, jewelry, luxury goods, clothing, watches, bags, shopping or personal collections",
-    "unrelated lifestyle entertainment, gossip, personal possessions or casual social banter",
-    "generic off-topic conversation without a clear actionable creator moment",
+    "empty filler, housekeeping, greetings, repeated chatter, or transcript noise with no "
+    "distinct reaction, claim, reveal, lesson, result, or memorable quote",
+    "sponsor boilerplate, generic calls to action, navigation chatter, or technical noise "
+    "without a creator moment",
 )
 MIN_EVENT_SIMILARITY = 0.34
-MIN_CAMPAIGN_SIMILARITY = 0.34
-MIN_RELEVANCE_MARGIN = 0.04
+MIN_CAMPAIGN_SIMILARITY = 0.30
+MIN_RELEVANCE_MARGIN = 0.02
 _WORD = re.compile(r"[A-Za-z0-9$%'.-]+")
 _LEADING_FILLER = re.compile(
     r"^(?:(?:okay|ok|so|well|basically|right|alright|all right|you know|i mean)\b[ ,.-]*)+",
@@ -233,7 +248,7 @@ def build_semantic_editorial_candidates(
     units = _thought_units(segments)
     if not units:
         return [], {
-            "architecture": "source_level_semantic_campaign_event_segmentation_v2",
+            "architecture": "source_level_semantic_campaign_event_segmentation_v3",
             "semantic_model": SEMANTIC_MODEL,
             "semantic_unit_count": 0,
             "campaign_relevant_unit_count": 0,
@@ -246,22 +261,29 @@ def build_semantic_editorial_candidates(
     backend = embedder or FastEmbedder()
     texts = [unit.text for unit in units]
     event_texts = list(EVENT_DESCRIPTIONS.values())
-    campaign_text = (
-        f"{brief.title}. {brief.objective}. Campaign topics: {', '.join(brief.keywords)}."
-    )
-    reference_texts = [*event_texts, campaign_text, *OFF_TOPIC_DESCRIPTIONS]
+    campaign_texts = [
+        f"{brief.title}. {brief.objective}.",
+        *[f"{brief.title} creator moment about {keyword}" for keyword in brief.keywords],
+        *CREATOR_MOMENT_DESCRIPTIONS,
+    ]
+    reference_texts = [*event_texts, *campaign_texts, *OFF_TOPIC_DESCRIPTIONS]
     embedded = backend([*texts, *reference_texts])
     expected = len(texts) + len(reference_texts)
     if len(embedded) != expected:
         raise RuntimeError("semantic embedding backend returned an incomplete batch")
     unit_vectors = embedded[: len(texts)]
     references = embedded[len(texts) :]
-    event_vectors = references[: len(event_texts)]
-    campaign_vector = references[len(event_texts)]
-    off_topic_vectors = references[len(event_texts) + 1 :]
+    event_count = len(event_texts)
+    campaign_count = len(campaign_texts)
+    event_vectors = references[:event_count]
+    campaign_vectors = references[event_count : event_count + campaign_count]
+    off_topic_vectors = references[event_count + campaign_count :]
     labels, strengths = _event_labels(unit_vectors, event_vectors)
     regions = _region_ids(units, unit_vectors)
-    campaign_scores = [_cosine(vector, campaign_vector) for vector in unit_vectors]
+    campaign_scores = [
+        max((_cosine(vector, prototype) for prototype in campaign_vectors), default=0.0)
+        for vector in unit_vectors
+    ]
     off_topic_scores = [
         max((_cosine(vector, other) for other in off_topic_vectors), default=0.0)
         for vector in unit_vectors
@@ -318,7 +340,12 @@ def build_semantic_editorial_candidates(
         hook = _extractive_hook(units[anchor].text)
         if not hook:
             continue
-        score = round(100 * event_strength + 25 * max(0.0, coherence), 4)
+        score = round(
+            70 * event_strength
+            + 20 * max(0.0, coherence)
+            + 20 * max(0.0, campaign_scores[anchor]),
+            4,
+        )
         reasons = (
             "candidate_origin=source_level_semantic_event",
             f"semantic_model={SEMANTIC_MODEL}",
@@ -351,7 +378,7 @@ def build_semantic_editorial_candidates(
     event_distribution = Counter(labels[index] for index in anchors)
     candidates = [candidate for candidate, _ in selected]
     audit = {
-        "architecture": "source_level_semantic_campaign_event_segmentation_v2",
+        "architecture": "source_level_semantic_campaign_event_segmentation_v3",
         "semantic_model": SEMANTIC_MODEL,
         "semantic_unit_count": len(units),
         "semantic_region_count": len(set(regions)),
@@ -360,7 +387,14 @@ def build_semantic_editorial_candidates(
         "event_anchor_count": len(anchors),
         "candidate_count": len(candidates),
         "event_distribution": dict(event_distribution),
-        "campaign_relevance_policy": "embedding_contrast_against_out_of_domain_references",
+        "campaign_domain_gate": {
+            "minimum_similarity": MIN_CAMPAIGN_SIMILARITY,
+            "minimum_margin_over_non_campaign": MIN_RELEVANCE_MARGIN,
+            "positive_prototype_count": len(campaign_texts),
+            "negative_prototype_count": len(OFF_TOPIC_DESCRIPTIONS),
+            "positive_policy": "campaign_objective_keywords_plus_creator_moment_prototypes",
+        },
+        "campaign_relevance_policy": "embedding_contrast_against_generic_non_moments",
         "candidate_policy": "campaign_relevance_then_event_then_safety_and_visual_qualification",
         "fixed_candidate_or_output_quota": False,
     }
