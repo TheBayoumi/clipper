@@ -392,6 +392,13 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     assert "continue-on-error" not in modal_steps["Acquire newest eligible original from Modal"]
     assert "Classify Modal acquisition outcome" not in modal_steps
     assert "youtube_alternate_egress" not in jobs
+    assert browser["env"]["TJR_REQUIRE_AUTHENTICATED_YOUTUBE"] == "1"
+    browser_steps = {item.get("name"): item for item in browser["steps"] if item.get("name")}
+    assert "Load required persistent YouTube session" in browser_steps
+    auth_script = browser_steps["Load required persistent YouTube session"]["run"]
+    assert "TJR_YOUTUBE_COOKIES_B64" not in auth_script
+    assert "youtube_direct requires the encrypted TJR_YOUTUBE_COOKIES_B64 session secret" in auth_script
+    assert "Probe REAL official YouTube watch page in Chrome" not in browser_steps
     for name in ("youtube_preview", "youtube_modal_egress", "render"):
         assert jobs[name]["env"]["TJR_CAPTION_STYLE"] == "B2"
     assert jobs["youtube_modal_egress"]["env"]["TJR_RENDER_SAFETY_LIMIT"] == "20"
