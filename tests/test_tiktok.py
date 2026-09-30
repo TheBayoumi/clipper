@@ -488,12 +488,14 @@ def test_order_block_stop_hook_requires_affirmative_cessation() -> None:
 
 
 def test_no_reason_order_block_hook_rejects_meta_negation() -> None:
-    assert creative_hook_from_text(
-        "There is no reason to use order blocks anymore."
-    ) == "WHY HE STOPPED USING ORDER BLOCKS"
-    assert creative_hook_from_text(
-        "I wouldn't say there is no reason to use order blocks anymore."
-    ) != "WHY HE STOPPED USING ORDER BLOCKS"
+    assert (
+        creative_hook_from_text("There is no reason to use order blocks anymore.")
+        == "WHY HE STOPPED USING ORDER BLOCKS"
+    )
+    assert (
+        creative_hook_from_text("I wouldn't say there is no reason to use order blocks anymore.")
+        != "WHY HE STOPPED USING ORDER BLOCKS"
+    )
 
 
 def test_active_word_highlight_ends_at_measured_word_end(tmp_path: Path) -> None:
@@ -509,7 +511,8 @@ def test_active_word_highlight_ends_at_measured_word_end(tmp_path: Path) -> None
         hook_text="WHY HE'S WAITING TO ENTER THIS TRADE",
     )
     events = [
-        line for line in path.read_text(encoding="utf-8").splitlines()
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
         if line.startswith("Dialogue: 2,")
     ]
     assert "0:00:00.10,0:00:00.40,Caption" in events[0]
