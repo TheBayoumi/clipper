@@ -43,10 +43,10 @@ on:
         type: boolean
         default: false
       source_mode:
-        description: "Choose automatic multi-egress production, a specific direct transport, or an authorized mirror."
+        description: "Choose one explicit production transport or an authorized mirror."
         required: true
         type: choice
-        options: [validate_only, auto_direct, modal_direct, youtube_direct, verified_mirror, feedback_replay]
+        options: [validate_only, modal_direct, youtube_direct, verified_mirror, feedback_replay]
         default: validate_only
       target_channel_id:
         description: "Exact Reach-listed YouTube channel for direct production; source video is discovered dynamically inside this channel."
@@ -112,7 +112,7 @@ jobs:
                   raise SystemExit('feedback_replay requires a valid prior GitHub run ID')
               print(f'Replaying existing artifacts from run {source_run_id}; no paid source')
           else:
-              if mode not in {'auto_direct', 'modal_direct', 'youtube_direct', 'verified_mirror'}:
+              if mode not in {'modal_direct', 'youtube_direct', 'verified_mirror'}:
                   raise SystemExit('Unknown TJR source mode')
               if os.getenv('TJR_BUDGET_CONFIRMED', '').lower() != 'true':
                   raise SystemExit('Production requires explicit confirmation of the live Whop budget')
@@ -124,7 +124,7 @@ jobs:
               }
               if video_id and not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id):
                   raise SystemExit('source_video_id must be an exact 11-character YouTube ID')
-              if mode in {'auto_direct', 'modal_direct', 'youtube_direct'}:
+              if mode in {'modal_direct', 'youtube_direct'}:
                   if target_channel_id not in approved_channels:
                       raise SystemExit(
                           'Direct production requires exactly one Reach-listed target_channel_id'
@@ -212,15 +212,10 @@ jobs:
 
   youtube_preview:
     name: Browser-token YouTube original + editorial drafts
-    needs: [tests, youtube_modal_egress]
+    needs: tests
     if: >-
-      always() && github.event_name == 'workflow_dispatch' && inputs.budget_confirmed &&
-      needs.tests.result == 'success' &&
-      (
-        inputs.source_mode == 'youtube_direct' ||
-        (inputs.source_mode == 'auto_direct' &&
-         needs.youtube_modal_egress.outputs.acquisition_route == 'fallback')
-      )
+      github.event_name == 'workflow_dispatch' &&
+      inputs.source_mode == 'youtube_direct' && inputs.budget_confirmed
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     env:
@@ -279,7 +274,7 @@ jobs:
           print("bgutil-ytdlp-pot-provider:", version("bgutil-ytdlp-pot-provider"))
           print("yt-dlp-getpot-wpc:", version("yt-dlp-getpot-wpc"))
           PY
-          echo "BgUtils is primary; browser WPC remains the automatic fallback."
+          echo "YouTube PO-token providers are initialized for the explicit youtube_direct path."
       - name: Load optional persistent YouTube session if previously authorized
         env:
           COOKIES_B64: ${{ secrets.TJR_YOUTUBE_COOKIES_B64 }}
@@ -351,152 +346,16 @@ jobs:
 
 
 
-  youtube_alternate_egress:
-    name: Fallback YouTube original on ${{ matrix.os }}
-    needs: [tests, youtube_preview, youtube_modal_egress]
-    if: >-
-      always() && github.event_name == 'workflow_dispatch' && inputs.budget_confirmed &&
-      contains(fromJSON('["auto_direct","youtube_direct"]'), inputs.source_mode) &&
-      needs.tests.result == 'success' && needs.youtube_preview.result == 'failure'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-2025, macos-15]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 80
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-      - name: Prepare independent cookie-free YouTube transport
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install -e . "yt-dlp[default]" "curl-cffi>=0.15,<1"
-          mkdir -p tjr-alt-egress
-      - name: Confirm original source and HD formats on this runner's network
-        shell: bash
-        env:
-          ALT_EGRESS_PLATFORM: ${{ matrix.os }}
-          TJR_TARGET_CHANNEL_ID: ${{ inputs.target_channel_id }}
-          TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          from clipper.brief import load_brief
-          from scripts.tjr_media_policy import production_hd_format
-          from scripts.tjr_youtube_preview import (
-              constrain_official_sources, discover_official_uploads, verified_youtube_metadata,
-          )
-          report_file = Path("tjr-alt-egress/verified-transport.json")
-          report = {"platform": os.environ["ALT_EGRESS_PLATFORM"], "status": "BLOCKED", "tried": []}
-          try:
-              candidates, failures = discover_official_uploads()
-              report["discovery_failures"] = failures
-              requested = os.environ.get("TJR_SOURCE_VIDEO_ID", "").strip()
-              target_channel_id = os.environ.get("TJR_TARGET_CHANNEL_ID", "").strip() or None
-              published_after = load_brief(
-                  Path("campaigns/reach-tjr-weekly.yaml")
-              ).published_after
-              for video in constrain_official_sources(
-                  candidates,
-                  requested,
-                  published_after=published_after,
-                  target_channel_id=target_channel_id,
-              )[:3]:
-                  try:
-                      info = verified_youtube_metadata(video)
-                      formats = info.get("formats") or []
-                      if not any(
-                          isinstance(fmt, dict) and production_hd_format(fmt)
-                          for fmt in formats
-                      ):
-                          raise RuntimeError("No verified HD video formats")
-                      report.update({"status": "ORIGINAL_HD_FORMATS_ACCESSIBLE",
-                                     "video_url": video.url, "channel_id": video.channel_id})
-                      with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as envfile:
-                          envfile.write("TJR_SOURCE_VIDEO_ID=" + video.video_id + "\n")
-                      break
-                  except Exception as exc:
-                      reason = "BOT_CHALLENGE" if "Sign in to confirm" in str(exc) else type(exc).__name__
-                      report["tried"].append({"video_url": video.url, "reason": reason})
-              if report["status"] != "ORIGINAL_HD_FORMATS_ACCESSIBLE":
-                  raise RuntimeError("YouTube blocked verified originals on alternate runner")
-          finally:
-              report_file.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-          print("Verified original video:", report["video_url"])
-          PY
-      - name: Prepare real HD rendering only if the video is accessible
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            if [[ "$RUNNER_OS" == "Windows" ]]; then
-              choco install ffmpeg -y --no-progress
-              echo 'C:\ProgramData\chocolatey\bin' >> "$GITHUB_PATH"
-            else
-              brew install ffmpeg
-            fi
-          fi
-          python -m pip install -e ".[asr]"
-      - name: Render, source-verify, and fully decode real campaign MP4s
-        shell: bash
-        env:
-          CLIPPER_RENDER_PRESET: medium
-          CLIPPER_RENDER_CRF: "18"
-          CLIPPER_RENDER_THREADS: "2"
-        run: |
-          set -euo pipefail
-          TJR_CAPTION_STYLE=B2 TJR_RENDER_SAFETY_LIMIT=20 python -m scripts.tjr_youtube_preview \
-            --brief campaigns/reach-tjr-weekly.yaml \
-            --artifact-root tjr-alt-egress
-      - name: Upload real YouTube clips or runner-specific diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tjr-youtube-alt-${{ matrix.os }}-${{ github.run_id }}
-          path: |
-            tjr-alt-egress/verified-transport.json
-            tjr-alt-egress/**/clips/*.mp4
-            tjr-alt-egress/**/clips/*.srt
-            tjr-alt-egress/**/clips/*.ass
-            tjr-alt-egress/**/clips/*.quality.json
-            tjr-alt-egress/**/clips/*.ssim.txt
-            tjr-alt-egress/**/clips/*-preview.png
-            tjr-alt-egress/**/clips/*-contact.png
-            tjr-alt-egress/**/tjr-youtube-qa-report.json
-            tjr-alt-egress/**/source-acquisition-errors.json
-            tjr-alt-egress/**/official-source-candidates.json
-            tjr-alt-egress/**/transcript.json
-            tjr-alt-egress/**/editorial-candidate-audit.json
-            tjr-alt-egress/**/source-analysis-coverage.json
-            tjr-alt-egress/**/ranked-candidates.json
-          retention-days: 7
-          compression-level: 0
-          if-no-files-found: warn
-
-
   youtube_modal_egress:
-    name: Modal source acquisition + editorial when staged (${{ inputs.target_channel_id }})
+    name: Modal YouTube original + editorial drafts (${{ inputs.target_channel_id }})
     needs: tests
     if: >-
-      github.event_name == 'workflow_dispatch' && inputs.budget_confirmed &&
-      contains(fromJSON('["auto_direct","modal_direct"]'), inputs.source_mode)
+      github.event_name == 'workflow_dispatch' &&
+      inputs.source_mode == 'modal_direct' && inputs.budget_confirmed
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     permissions:
       contents: read
-    outputs:
-      acquisition_route: ${{ steps.modal_route.outputs.route }}
     env:
       TJR_MODAL_CHANNEL_ID: ${{ inputs.target_channel_id }}
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -520,55 +379,13 @@ jobs:
           python -m pip install -e . "curl-cffi>=0.15,<1" "modal>=1,<2"
           python -m py_compile scripts/tjr_modal_probe.py
       - name: Acquire newest eligible original from Modal
-        id: modal_acquire
-        continue-on-error: true
         env:
           TJR_MODAL_STAGE_ORIGINAL: "1"
         run: |
           set -euo pipefail
           rm -f tjr-modal-probe/staged-original.json
           modal run -m scripts.tjr_modal_probe
-      - name: Classify Modal acquisition outcome
-        id: modal_route
-        if: always()
-        env:
-          MODAL_ACQUIRE_OUTCOME: ${{ steps.modal_acquire.outcome }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          outcome = os.environ["MODAL_ACQUIRE_OUTCOME"]
-          staging_path = Path("tjr-modal-probe/staged-original.json")
-          egress_path = Path("tjr-modal-probe/verified-original-egress.json")
-          route = "fatal"
-          status = "MISSING_MODAL_EVIDENCE"
-
-          if outcome == "success" and staging_path.is_file():
-              staging = json.loads(staging_path.read_text(encoding="utf-8"))
-              status = str(staging.get("status") or "")
-              if status == "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED":
-                  route = "staged"
-          elif egress_path.is_file():
-              egress = json.loads(egress_path.read_text(encoding="utf-8"))
-              status = str(egress.get("status") or "")
-              if status in {
-                  "YOUTUBE_EGRESS_BOT_CHALLENGE",
-                  "NO_ACCESSIBLE_ORIGINAL_YOUTUBE",
-              }:
-                  route = "fallback"
-
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"route={route}\n")
-              output.write(f"status={status}\n")
-          print(f"Modal acquisition route: {route}; status: {status}")
-          if route == "fatal":
-              raise SystemExit("Modal failed outside the approved transport-fallback boundary")
-          PY
       - name: Render staged original through shared semantic editorial pipeline
-        if: steps.modal_route.outputs.route == 'staged'
         env:
           TJR_MODAL_USE_STAGED: "1"
         run: |
@@ -577,11 +394,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
           python -m pip install -e ".[asr]"
           python -m scripts.tjr_modal_runner
-      - name: Fail closed when strict Modal transport is unavailable
-        if: steps.modal_route.outputs.route == 'fallback' && inputs.source_mode == 'modal_direct'
-        run: |
-          echo "::error::Strict modal_direct acquisition was unavailable; no transport fallback allowed."
-          exit 1
       - name: Upload actual YouTube MP4s, SRT captions, source provenance and QA
         if: always()
         uses: actions/upload-artifact@v4
@@ -615,13 +427,12 @@ jobs:
 
   feedback_audit:
     name: Independent review of real MP4s and production evidence
-    needs:
-      [tests, youtube_preview, youtube_alternate_egress, youtube_modal_egress, render]
+    needs: [tests, youtube_preview, youtube_modal_egress, render]
     if: >-
       always() && github.event_name == 'workflow_dispatch' &&
       (
         (
-          contains(fromJSON('["auto_direct","modal_direct","youtube_direct","verified_mirror"]'),
+          contains(fromJSON('["modal_direct","youtube_direct","verified_mirror"]'),
           inputs.source_mode) &&
           inputs.budget_confirmed
         ) ||
@@ -642,27 +453,18 @@ jobs:
         with:
           python-version: "3.12"
       - name: Download both current Modal channel artifacts, including partial failures
-        if: inputs.source_mode == 'modal_direct' || (inputs.source_mode == 'auto_direct' && needs.youtube_preview.result == 'skipped')
+        if: inputs.source_mode == 'modal_direct'
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           pattern: tjr-real-original-youtube-hd-*
           path: tjr-feedback-input
       - name: Download direct YouTube production artifact
-        if: inputs.source_mode == 'youtube_direct' || (inputs.source_mode == 'auto_direct' && needs.youtube_preview.result == 'success')
+        if: inputs.source_mode == 'youtube_direct'
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           pattern: tjr-real-youtube-hd-*
-          path: tjr-feedback-input
-      - name: Download alternate-egress YouTube artifacts
-        if: >-
-          inputs.source_mode == 'youtube_direct' ||
-          (inputs.source_mode == 'auto_direct' && needs.youtube_alternate_egress.result != 'skipped')
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          pattern: tjr-youtube-alt-*
           path: tjr-feedback-input
       - name: Download verified-mirror production artifact
         if: inputs.source_mode == 'verified_mirror'
@@ -688,15 +490,6 @@ jobs:
           run-id: ${{ inputs.feedback_source_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: tjr-real-youtube-hd-*
-          path: tjr-feedback-input
-      - name: Replay existing alternate-egress production artifacts
-        if: inputs.source_mode == 'feedback_replay'
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          run-id: ${{ inputs.feedback_source_run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          pattern: tjr-youtube-alt-*
           path: tjr-feedback-input
       - name: Replay existing verified-mirror production artifacts
         if: inputs.source_mode == 'feedback_replay'
