@@ -382,9 +382,13 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     assert target_channel_error in preflight["run"]
     assert "do not pin source_video_id" in preflight["run"]
     assert "clip_limit" not in preflight["run"]
+    browser = jobs["youtube_preview"]
+    assert browser["needs"] == ["tests", "youtube_modal_egress"]
+    assert "needs.youtube_modal_egress.result == 'failure'" in browser["if"]
     fallback = jobs["youtube_alternate_egress"]
-    assert fallback["needs"] == ["tests", "youtube_preview"]
+    assert fallback["needs"] == ["tests", "youtube_preview", "youtube_modal_egress"]
     assert "needs.youtube_preview.result == 'failure'" in fallback["if"]
+    assert "auto_direct" in fallback["if"]
     for name in ("youtube_preview", "youtube_modal_egress", "render"):
         assert jobs[name]["env"]["TJR_CAPTION_STYLE"] == "B2"
     assert jobs["youtube_modal_egress"]["env"]["TJR_RENDER_SAFETY_LIMIT"] == "20"
