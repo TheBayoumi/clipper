@@ -476,21 +476,31 @@ def test_chunked_asr_preserves_absolute_video_and_word_offsets(
             return Mock(returncode=0)
         raise AssertionError(command)
 
-    def fake_asr(*_args: object, **_kwargs: object) -> list[TranscriptSegment]:
-        return [
-            TranscriptSegment(
-                1.0,
-                2.0,
-                "Trade now.",
-                words=(WordTiming(1.0, 1.4, "Trade"), WordTiming(1.4, 2.0, "now.")),
-            )
-        ]
+    initialized = 0
+    transcribed = 0
+
+    class FakeTranscriber:
+        def __init__(self, **_kwargs: object) -> None:
+            nonlocal initialized
+            initialized += 1
+
+        def transcribe(self, *_args: object, **_kwargs: object) -> list[TranscriptSegment]:
+            nonlocal transcribed
+            transcribed += 1
+            return [
+                TranscriptSegment(
+                    1.0,
+                    2.0,
+                    "Trade now.",
+                    words=(WordTiming(1.0, 1.4, "Trade"), WordTiming(1.4, 2.0, "now.")),
+                )
+            ]
 
     with patch.dict(
         transcribe_source_chunks.__globals__,
         {
             "subprocess": Mock(run=fake_run),
-            "transcribe_with_faster_whisper": fake_asr,
+            "FasterWhisperTranscriber": FakeTranscriber,
         },
     ):
         chunks, duration = transcribe_source_chunks(source, tmp_path)
@@ -499,6 +509,8 @@ def test_chunked_asr_preserves_absolute_video_and_word_offsets(
     assert [chunk[0].start for chunk in chunks] == [1, 841, 1681, 2521]
     assert [chunk[0].words[0].start for chunk in chunks] == [1, 841, 1681, 2521]
     assert len([call for call in received if call[0] == "ffmpeg"]) == 4
+    assert initialized == 1
+    assert transcribed == 4
     assert not list((tmp_path / "work").glob("audio-chunk-*.wav"))
 
 
@@ -520,9 +532,12 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
 
     def inspect_candidates(
         _brief: object, _video_id: str, words: list[TranscriptSegment], **_kwargs: object
-    ) -> list[object]:
+    ) -> tuple[list[object], dict[str, object]]:
         scored.append(list(words))
-        return []
+        return [], {
+            "architecture": "source_level_semantic_event_segmentation_v1",
+            "candidate_count": 0,
+        }
 
     monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", original.video_id)
     monkeypatch.setenv("TJR_REQUIRE_STAGED_ORIGINAL", "1")
@@ -540,7 +555,7 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
                 "probe_source_profile": lambda *_: Mock(as_dict=lambda: {"fps": "60/1"}),
                 "probe_original": lambda *_: {"width": 1920, "height": 1080},
                 "transcribe_source_chunks": lambda *_a, **_kw: ([[first], [second]], 900.0),
-                "score_transcript": inspect_candidates,
+                "build_semantic_editorial_candidates": inspect_candidates,
             },
         ),
     ):
