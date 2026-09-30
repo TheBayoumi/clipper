@@ -574,11 +574,7 @@ def select_editorial_moments(
         headline = (
             semantic_headline
             if semantic_headline and semantic_headline.casefold() not in used_hooks
-            else (
-                ""
-                if semantic_headline
-                else distinct_hook_from_text(pick.clip.text, used_hooks)
-            )
+            else ("" if semantic_headline else distinct_hook_from_text(pick.clip.text, used_hooks))
         )
         if (
             not headline
