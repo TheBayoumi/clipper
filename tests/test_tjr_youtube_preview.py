@@ -326,7 +326,7 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from clipper.models import TranscriptSegment
-    from scripts.tjr_youtube_preview import NoEditorialMoments, render_youtube_previews
+    from scripts.tjr_youtube_preview import render_youtube_previews
 
     channel = "UCZen39LQJPx04GjPj7FOMcw"
     official = OfficialVideo("X7msxvyQd_U", channel, "LIVE TRADING", "2026-09-27T15:45:16Z")
@@ -352,11 +352,13 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
                     media,
                     {"title": official.title, "duration": 100},
                 ),
-                "probe_source_profile": lambda *_: object(),
+                "probe_source_profile": lambda *_: Mock(
+                    as_dict=lambda: {"fps": "60/1"}
+                ),
+                "probe_original": lambda *_: {"width": 1920, "height": 1080},
                 "transcribe_source_chunks": lambda *_args, **_kwargs: ([segments], 100.0),
             },
         ),
-        pytest.raises(NoEditorialMoments, match="consult editorial-candidate-audit"),
     ):
         render_youtube_previews(tmp_path / "renders", Path("campaigns/reach-tjr-weekly.yaml"))
     runs = list((tmp_path / "renders").glob("reach-tjr-youtube-*"))
@@ -367,6 +369,10 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
     assert audit["selected"] == []
     assert audit["strict_candidate_count"] >= 0
     assert "relaxed_candidate_count" in audit
+    report = json.loads((run / "tjr-youtube-qa-report.json").read_text())
+    assert report["status"] == "NO_CREATOR_GRADE_MOMENTS"
+    assert report["clips"] == []
+    assert report["selection_policy"] == "quality_driven_zero_to_n"
     assert "ranked-candidates.json" in {p.name for p in run.iterdir()}
 
 
@@ -502,7 +508,7 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from clipper.models import TranscriptSegment
-    from scripts.tjr_youtube_preview import NoEditorialMoments, render_youtube_previews
+    from scripts.tjr_youtube_preview import render_youtube_previews
 
     channel = "UCZen39LQJPx04GjPj7FOMcw"
     original = OfficialVideo("X7msxvyQd_U", channel, "Trade setup", "2026-09-27T15:00:00Z")
@@ -533,12 +539,14 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
                     source,
                     {"title": original.title, "duration": 900},
                 ),
-                "probe_source_profile": lambda *_: object(),
+                "probe_source_profile": lambda *_: Mock(
+                    as_dict=lambda: {"fps": "60/1"}
+                ),
+                "probe_original": lambda *_: {"width": 1920, "height": 1080},
                 "transcribe_source_chunks": lambda *_a, **_kw: ([[first], [second]], 900.0),
                 "score_transcript": inspect_candidates,
             },
         ),
-        pytest.raises(NoEditorialMoments, match="consult editorial-candidate-audit"),
     ):
         render_youtube_previews(tmp_path / "renders", Path("campaigns/reach-tjr-weekly.yaml"))
     assert scored and all(items == [first, second] for items in scored)
