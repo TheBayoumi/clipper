@@ -100,7 +100,7 @@ def _word_text(value: object) -> str:
 
 
 def _segments_from_whisper(
-    raw_segments: object, *, word_timestamps: bool
+    raw_segments: Iterable[Any], *, word_timestamps: bool
 ) -> list[TranscriptSegment]:
     if word_timestamps:
         aligned: list[TranscriptSegment] = []
