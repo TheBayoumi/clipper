@@ -37,7 +37,7 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
         "100,100,0,0,3,18,0,2,120,120,375,1\n"
         "[Events]\n"
         r"Dialogue: 5,0:00:00.00,0:00:29.20,Hook,,0,0,0,,{\an8\pos(540,185)}"
-        "TRUTHFUL HOOK\n"
+        "WHEN IS THE MARKET-CAP ENTRY TOO LATE?\\n"
         r"Dialogue: 2,0:00:00.10,0:00:00.55,Caption,,0,0,0,,{\c&H0059DEFF&}"
         r"WORD{\rCaption}"
         "\n",
@@ -47,6 +47,7 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
         "status": "MEASURED_SOURCE_MATCHED_ENCODING",
         "source_to_delivery_mean_ssim": 0.997,
         "compared_frames": 1750,
+        "output_bytes": len(b"fixture"),
         "edit_plan": {
             "style": "semantic_micro_punch",
             "punch_scale": 1.025,
@@ -128,6 +129,27 @@ def test_success_is_review_only_and_checks_sidecars(tmp_path: Path) -> None:
     assert result["technically_verified_mp4_count"] == 1
     assert result["automatic_publication_allowed"] is False
     assert result["channels"][0]["minimum_ssim"] == 0.997
+
+
+def test_ass_hook_must_match_audited_hook(tmp_path: Path) -> None:
+    artifact = _fixture(tmp_path)
+    ass = next(artifact.rglob("*.ass"))
+    ass.write_text(
+        ass.read_text(encoding="utf-8").replace(
+            "WHEN IS THE MARKET-CAP ENTRY TOO LATE?", "MISLEADING STALE HOOK"
+        ),
+        encoding="utf-8",
+    )
+    result = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "CAPTION_OR_HOOK_TIMING_FAILED" in result["issues"]
+
+
+def test_fidelity_report_must_match_actual_mp4_size(tmp_path: Path) -> None:
+    artifact = _fixture(tmp_path)
+    mp4 = next(artifact.rglob("*.mp4"))
+    mp4.write_bytes(b"replaced-render-bytes")
+    result = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "SOURCE_FIDELITY_FAILED" in result["issues"]
 
 
 def test_generic_hooks_cannot_be_mislabeled_as_good_production(tmp_path: Path) -> None:
