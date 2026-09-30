@@ -272,9 +272,9 @@ def test_replay_channel_count_and_artifact_family_are_derived() -> None:
         Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
     ).read_text(encoding="utf-8")
     assert "EXPECTED_CHANNELS=1" in workflow
-    assert '"$TJR_SOURCE_MODE" == "modal_direct"' in workflow
     assert '"$TJR_SOURCE_MODE" == "feedback_replay"' in workflow
     assert "EXPECTED_CHANNELS=0" in workflow
+    assert "TJR_MODAL_CHANNEL_ID: ${{ inputs.target_channel_id }}" in workflow
     for pattern in (
         "tjr-real-original-youtube-hd-*",
         "tjr-real-youtube-hd-*",
