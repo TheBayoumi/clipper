@@ -247,8 +247,7 @@ def build_semantic_editorial_candidates(
     texts = [unit.text for unit in units]
     event_texts = list(EVENT_DESCRIPTIONS.values())
     campaign_text = (
-        f"{brief.title}. {brief.objective}. "
-        f"Campaign topics: {', '.join(brief.keywords)}."
+        f"{brief.title}. {brief.objective}. Campaign topics: {', '.join(brief.keywords)}."
     )
     reference_texts = [*event_texts, campaign_text, *OFF_TOPIC_DESCRIPTIONS]
     embedded = backend([*texts, *reference_texts])
