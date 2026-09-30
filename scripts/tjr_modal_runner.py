@@ -22,7 +22,19 @@ VOLUME = "clipper-tjr-source-transport"
 _REMOTE_SOURCE = re.compile(r"runs/\d{4,20}-\d{1,4}/[A-Za-z0-9_-]{11}/original\.(?:mp4|mkv|webm)")
 
 
+def _load_staged_original(root: Path) -> dict[str, Any]:
+    stage = root / "staged-original.json"
+    if not stage.is_file():
+        raise RuntimeError("Modal completed without a verified staged-original manifest")
+    data: Any = json.loads(stage.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("status") != "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED":
+        raise RuntimeError("Modal source staging did not verify real original bytes")
+    return data
+
+
 def _acquire_original(excluded: set[str], root: Path) -> dict[str, Any]:
+    if os.getenv("TJR_MODAL_USE_STAGED") == "1":
+        return _load_staged_original(root)
     env = {
         **os.environ,
         "TJR_MODAL_STAGE_ORIGINAL": "1",
@@ -31,12 +43,7 @@ def _acquire_original(excluded: set[str], root: Path) -> dict[str, Any]:
     stage = root / "staged-original.json"
     stage.unlink(missing_ok=True)
     subprocess.run(["modal", "run", "-m", "scripts.tjr_modal_probe"], env=env, check=True)
-    if not stage.is_file():
-        raise RuntimeError("Modal completed without a verified staged-original manifest")
-    data: Any = json.loads(stage.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or data.get("status") != "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED":
-        raise RuntimeError("Modal source staging did not verify real original bytes")
-    return data
+    return _load_staged_original(root)
 
 
 def _transfer_verified_original(staging: dict[str, Any], destination: Path) -> Path:
