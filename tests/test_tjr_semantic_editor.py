@@ -41,7 +41,11 @@ def test_semantic_editor_builds_complete_story_without_sliding_window_quota() ->
     assert 20 <= candidate.duration <= 42
     assert "candidate_origin=source_level_semantic_event" in candidate.reasons
     assert any(reason.startswith("semantic_event=") for reason in candidate.reasons)
-    hook = next(reason.removeprefix("semantic_hook=") for reason in candidate.reasons if reason.startswith("semantic_hook="))
+    hook = next(
+        reason.removeprefix("semantic_hook=")
+        for reason in candidate.reasons
+        if reason.startswith("semantic_hook=")
+    )
     assert hook == "WHY I WAITED FOR THIS TRADE BEFORE ENTERING"
     assert audit["fixed_candidate_or_output_quota"] is False
     assert audit["architecture"] == "source_level_semantic_event_segmentation_v1"
