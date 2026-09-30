@@ -21,6 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 asr = [
   "faster-whisper>=1.2.1,<2",
+  "av>=11,<19",
   "curl-cffi>=0.15,<1",
   "fastembed>=0.7,<1",
   "opencv-python-headless>=4.10,<5",
