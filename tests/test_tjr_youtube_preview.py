@@ -352,9 +352,7 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
                     media,
                     {"title": official.title, "duration": 100},
                 ),
-                "probe_source_profile": lambda *_: Mock(
-                    as_dict=lambda: {"fps": "60/1"}
-                ),
+                "probe_source_profile": lambda *_: Mock(as_dict=lambda: {"fps": "60/1"}),
                 "probe_original": lambda *_: {"width": 1920, "height": 1080},
                 "transcribe_source_chunks": lambda *_args, **_kwargs: ([segments], 100.0),
             },
@@ -539,9 +537,7 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
                     source,
                     {"title": original.title, "duration": 900},
                 ),
-                "probe_source_profile": lambda *_: Mock(
-                    as_dict=lambda: {"fps": "60/1"}
-                ),
+                "probe_source_profile": lambda *_: Mock(as_dict=lambda: {"fps": "60/1"}),
                 "probe_original": lambda *_: {"width": 1920, "height": 1080},
                 "transcribe_source_chunks": lambda *_a, **_kw: ([[first], [second]], 900.0),
                 "score_transcript": inspect_candidates,
