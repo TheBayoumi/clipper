@@ -31,7 +31,12 @@ from clipper.scoring import score_transcript
 from clipper.source_fidelity import probe_source_profile
 from clipper.tiktok import audit_tiktok_ass
 from clipper.transcript import transcribe_with_faster_whisper
-from scripts.tjr_editorial import RUBRIC_VERSION, WEIGHTS, select_editorial_moments
+from scripts.tjr_editorial import (
+    MAX_RENDERABLE_CLIPS,
+    RUBRIC_VERSION,
+    WEIGHTS,
+    select_editorial_moments,
+)
 from scripts.tjr_quality import check_full_decode, probe_original, probe_video
 
 LOGGER = logging.getLogger("tjr-youtube")
@@ -436,11 +441,18 @@ def constrain_official_sources(
     requested_id: str | None,
     *,
     published_after: str | None = None,
+    target_channel_id: str | None = None,
 ) -> list[OfficialVideo]:
-    """Require source provenance and the campaign publication window.
+    """Require source provenance, one target channel, and the campaign window.
 
     Missing or malformed publication dates never bypass the brief's cutoff.
+    Direct production may discover a video dynamically, but it must never spill
+    from the explicitly selected channel into the other Reach-listed channel.
     """
+    if target_channel_id:
+        if target_channel_id not in CHANNELS:
+            raise RuntimeError("target channel is not one of the Reach-listed channels")
+        candidates = [video for video in candidates if video.channel_id == target_channel_id]
     if published_after:
         cutoff = datetime.fromisoformat(published_after.replace("Z", "+00:00"))
         if cutoff.tzinfo is None:
@@ -464,7 +476,8 @@ def constrain_official_sources(
         raise RuntimeError("selected source_video_id must be exactly 11 YouTube ID characters")
     matches = [video for video in candidates if video.video_id == requested_id]
     if len(matches) != 1 or matches[0].channel_id not in CHANNELS:
-        raise RuntimeError("selected source_video_id is not in either Reach-listed channel feed")
+        scope = "target Reach-listed channel" if target_channel_id else "either Reach-listed channel"
+        raise RuntimeError(f"selected source_video_id is not in the {scope} feed")
     return matches
 
 
@@ -688,8 +701,12 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         # Put full videos before Shorts: a new 15-second hashtag Short is not
         # a suitable 20-42s clip source and must not consume the bot budget.
         requested_id = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip()
+        target_channel_id = os.getenv("TJR_TARGET_CHANNEL_ID", "").strip() or None
         official_candidates = constrain_official_sources(
-            candidates, requested_id, published_after=brief.published_after
+            candidates,
+            requested_id,
+            published_after=brief.published_after,
+            target_channel_id=target_channel_id,
         )
         if requested_id:
             LOGGER.info("Using explicitly requested official YouTube video ID: %s", requested_id)
@@ -769,7 +786,9 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             json.dumps([s.to_dict() for s in segments], indent=2) + "\n",
             encoding="utf-8",
         )
-        batch_limit = int(os.getenv("TJR_EDITORIAL_BATCH_LIMIT", str(brief.clip_count)))
+        render_safety_limit = int(
+            os.getenv("TJR_RENDER_SAFETY_LIMIT", str(MAX_RENDERABLE_CLIPS))
+        )
         # Chunk boundaries are not sentence boundaries; score all aligned words together.
         strict = score_transcript(
             brief,
@@ -782,7 +801,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         strict.sort(key=lambda item: (-item.score, item.start))
         ranked = strict
         picks, rejected = select_editorial_moments(
-            ranked, batch_limit=batch_limit, segments=segments
+            ranked, render_safety_limit=render_safety_limit, segments=segments
         )
         screening_mode = "strict_sentence_or_700ms_pause"
         relaxed_count = 0
@@ -801,7 +820,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             relaxed.sort(key=lambda item: (-item.score, item.start))
             relaxed_count = len(relaxed)
             relaxed_picks, relaxed_rejected = select_editorial_moments(
-                relaxed, batch_limit=batch_limit, segments=segments
+                relaxed, render_safety_limit=render_safety_limit, segments=segments
             )
             if relaxed_picks:
                 ranked, picks, rejected = relaxed, relaxed_picks, relaxed_rejected
@@ -817,7 +836,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 review_pool = sorted(unique.values(), key=lambda item: (-item.score, item.start))
                 draft_picks, draft_rejected = select_editorial_moments(
                     review_pool,
-                    batch_limit=batch_limit,
+                    render_safety_limit=render_safety_limit,
                     segments=segments,
                     allow_review_only_opening=True,
                 )
