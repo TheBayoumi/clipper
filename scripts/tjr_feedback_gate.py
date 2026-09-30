@@ -451,11 +451,12 @@ def inspect_artifact(
             try:
                 data = read_json(diagnostics[0])
                 detail = str(data.get("status") or data.get("error") or "")
-                issue = (
-                    "YOUTUBE_EGRESS_BLOCKED"
-                    if "BOT_CHALLENGE" in detail or "403" in detail
-                    else "ACQUISITION_OR_RENDER_FAILED"
-                )
+                if "BOT_CHALLENGE" in detail or "LOGIN_REQUIRED" in detail:
+                    issue = "AUTHENTICATED_YOUTUBE_SESSION_REQUIRED"
+                elif "403" in detail:
+                    issue = "YOUTUBE_EGRESS_BLOCKED"
+                else:
+                    issue = "ACQUISITION_OR_RENDER_FAILED"
                 issues.append(issue)
             except (ValueError, json.JSONDecodeError):
                 issues.append("INVALID_FAILURE_DIAGNOSTIC")
@@ -693,7 +694,9 @@ def review_run(
     if len(ids) != len(set(ids)):
         issues.add("DUPLICATE_CHANNEL_ARTIFACT")
     actions: list[str] = []
-    if any("EGRESS" in issue for issue in issues):
+    if "AUTHENTICATED_YOUTUBE_SESSION_REQUIRED" in issues:
+        actions.append("CONFIGURE_PERSISTENT_AUTHENTICATED_YOUTUBE_SESSION")
+    elif any("EGRESS" in issue for issue in issues):
         actions.append("REPAIR_YOUTUBE_SOURCE_TRANSPORT")
     if "GENERIC_HOOK_OVERUSE" in issues or "WEAK_OR_DUPLICATE_HOOK" in issues:
         actions.append("IMPROVE_GROUNDED_CREATIVE_HOOKS")
@@ -713,12 +716,16 @@ def review_run(
             else "REQUEST_HUMAN_VISUAL_AND_EDITORIAL_APPROVAL"
         )
     status = (
-        "BLOCKED"
-        if issues
+        "AUTHENTICATED_YOUTUBE_SESSION_REQUIRED"
+        if "AUTHENTICATED_YOUTUBE_SESSION_REQUIRED" in issues
         else (
+            "BLOCKED"
+            if issues
+            else (
             "NO_CREATOR_GRADE_MOMENTS__NO_RENDER_REQUIRED"
             if editorial_noop
-            else "TECHNICAL_QA_PASSED__HUMAN_REVIEW_REQUIRED"
+                else "TECHNICAL_QA_PASSED__HUMAN_REVIEW_REQUIRED"
+            )
         )
     )
     return {
