@@ -286,7 +286,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "${COOKIES_B64:-}" ]]; then
-            echo "No session secret required: attempting public YouTube playback with dynamic browser tokens."
+            echo "No authenticated YouTube session secret is configured; trying public transports only."
             exit 0
           fi
           umask 077
@@ -486,7 +486,7 @@ jobs:
 
 
   youtube_modal_egress:
-    name: Modal originals + editorial drafts (${{ inputs.target_channel_id }})
+    name: Modal source acquisition + editorial when staged (${{ inputs.target_channel_id }})
     needs: tests
     if: >-
       github.event_name == 'workflow_dispatch' && inputs.budget_confirmed &&
