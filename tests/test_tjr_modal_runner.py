@@ -142,9 +142,7 @@ def test_preacquired_staging_is_reused_without_second_modal_call(
     probe_root = tmp_path / "probe"
     probe_root.mkdir()
     staging = _staged("X7msxvyQd_U")
-    (probe_root / "staged-original.json").write_text(
-        json.dumps(staging), encoding="utf-8"
-    )
+    (probe_root / "staged-original.json").write_text(json.dumps(staging), encoding="utf-8")
     monkeypatch.setenv("TJR_MODAL_USE_STAGED", "1")
     with patch.object(runner.subprocess, "run") as command:
         actual = runner._acquire_original(set(), probe_root)
