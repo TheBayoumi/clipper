@@ -63,7 +63,7 @@ def test_ip_challenge_skips_only_one_video_not_entire_region(
                 "duration": 3400,
                 "live_status": "not_live",
                 "title": "LIVE TRADING",
-                "formats": [{"height": 1080, "vcodec": "avc1"}],
+                "formats": [{"width": 1920, "height": 1080, "vcodec": "avc1"}],
             }
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps(metadata), stderr="")
         if "--test" in command:
@@ -161,7 +161,7 @@ def test_plain_client_succeeds_after_provider_bot_challenge(
                 "duration": 3600,
                 "live_status": "was_live",
                 "title": "LIVE TRADING",
-                "formats": [{"height": 1080, "vcodec": "avc1"}],
+                "formats": [{"width": 1920, "height": 1080, "vcodec": "avc1"}],
             }
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps(metadata), stderr="")
         if "--test" in command:
