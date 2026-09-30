@@ -89,7 +89,6 @@ def config(
     if type(minimum_width) is not int or minimum_width < 1:
         raise MontageRejection(code, "source-detail floor is invalid")
 
-
     parsed: list[dict[str, Any]] = []
     previous_frame = -1
     previous_roi: list[float] | None = None

@@ -1545,10 +1545,9 @@ def render_portrait(
             and (end_roi[2] - end_roi[0]) < (pre_roi[2] - pre_roi[0])
             and (end_roi[3] - end_roi[1]) <= (pre_roi[3] - pre_roi[1])
         )
-        checks["portrait_continuous_reveal_legibility"] = (
-            reframe_qa["minimum_effective_source_width_px"]
-            >= int(reveal_cfg["minimum_effective_source_width"])
-        )
+        checks["portrait_continuous_reveal_legibility"] = reframe_qa[
+            "minimum_effective_source_width_px"
+        ] >= int(reveal_cfg["minimum_effective_source_width"])
         checks["portrait_continuous_reveal_no_ai"] = reframe_qa["ai_enhancement"] is False
         checks["portrait_continuous_reveal_effects_declared"] = reframe_qa["effects"] == {
             "smooth_source_push_in": True,
@@ -1667,10 +1666,9 @@ def render_portrait(
             and (end_roi[2] - end_roi[0]) < (pre_roi[2] - pre_roi[0])
             and (end_roi[3] - end_roi[1]) <= (pre_roi[3] - pre_roi[1])
         )
-        checks["portrait_archive_reveal_legibility"] = (
-            reframe_qa["minimum_effective_source_width_px"]
-            >= int(archive_cfg["minimum_effective_source_width"])
-        )
+        checks["portrait_archive_reveal_legibility"] = reframe_qa[
+            "minimum_effective_source_width_px"
+        ] >= int(archive_cfg["minimum_effective_source_width"])
         checks["portrait_archive_reveal_no_ai"] = reframe_qa["ai_enhancement"] is False
         checks["portrait_archive_reveal_effects_declared"] = (
             reframe_qa["effects"] == expected_archive_effects
