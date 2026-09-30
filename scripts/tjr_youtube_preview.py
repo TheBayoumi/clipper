@@ -484,9 +484,11 @@ def constrain_official_sources(
     matches = [video for video in candidates if video.video_id == requested_id]
     if len(matches) != 1 or matches[0].channel_id not in CHANNELS:
         scope = (
-            "target Reach-listed channel" if target_channel_id else "either Reach-listed channel"
+            "the target Reach-listed channel feed"
+            if target_channel_id
+            else "either Reach-listed channel feed"
         )
-        raise RuntimeError(f"selected source_video_id is not in the {scope} feed")
+        raise RuntimeError(f"selected source_video_id is not in {scope}")
     return matches
 
 
