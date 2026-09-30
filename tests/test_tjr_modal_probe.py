@@ -34,9 +34,9 @@ def _load_modal_probe(monkeypatch: pytest.MonkeyPatch) -> object:
 
 
 def test_modal_discovery_binds_channel_before_source_ordering() -> None:
-    source = (
-        Path(__file__).resolve().parents[1] / "scripts" / "tjr_modal_probe.py"
-    ).read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[1] / "scripts" / "tjr_modal_probe.py").read_text(
+        encoding="utf-8"
+    )
     assert "target_channel_id=channel_id or None" in source
     assert "official = [item for item in official if item.channel_id == channel_id]" not in source
 
