@@ -53,7 +53,11 @@ def test_semantic_editor_builds_complete_story_without_sliding_window_quota() ->
     )
     assert hook == "WHY I WAITED FOR THIS TRADE BEFORE ENTERING"
     assert audit["fixed_candidate_or_output_quota"] is False
-    assert audit["architecture"] == "source_level_semantic_event_segmentation_v1"
+    assert audit["architecture"] == "source_level_semantic_campaign_event_segmentation_v2"
+    assert audit["campaign_relevant_unit_count"] > 0
+    assert audit["out_of_domain_unit_count"] == 0
+    assert any(reason.startswith("campaign_relevance=") for reason in candidate.reasons)
+    assert any(reason.startswith("relevance_margin=") for reason in candidate.reasons)
 
 
 def test_semantic_editor_returns_zero_when_source_has_no_units() -> None:
@@ -62,3 +66,20 @@ def test_semantic_editor_returns_zero_when_source_has_no_units() -> None:
     )
     assert candidates == []
     assert audit["candidate_count"] == 0
+
+
+def test_semantic_editor_rejects_out_of_domain_luxury_content_before_event_labeling() -> None:
+    segments = [
+        TranscriptSegment(0, 6, "This Chrome Hearts vest is one of my favorite pieces."),
+        TranscriptSegment(6, 12, "The bracelet is twenty two carat gold and custom made."),
+        TranscriptSegment(12, 18, "This Rolex is another watch from the collection."),
+        TranscriptSegment(18, 24, "The leopard bag is the last thing I wanted to show."),
+    ]
+    candidates, audit = build_semantic_editorial_candidates(
+        _brief(), "976-d0RlyfQ", segments, embedder=_fake_embedder
+    )
+    assert candidates == []
+    assert audit["campaign_relevant_unit_count"] == 0
+    assert audit["out_of_domain_unit_count"] == audit["semantic_unit_count"]
+    assert audit["event_anchor_count"] == 0
+    assert audit["fixed_candidate_or_output_quota"] is False
