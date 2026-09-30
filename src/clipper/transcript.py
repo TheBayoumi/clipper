@@ -4,6 +4,7 @@ import html
 import re
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 from .models import TranscriptSegment, WordTiming
 
@@ -98,34 +99,8 @@ def _word_text(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def transcribe_with_faster_whisper(
-    media_path: str | Path,
-    *,
-    model_name: str = "small",
-    device: str = "auto",
-    compute_type: str = "int8",
-    language: str | None = None,
-    word_timestamps: bool = False,
-) -> list[TranscriptSegment]:
-    try:
-        from faster_whisper import WhisperModel  # type: ignore[import-not-found]
-    except ImportError as exc:  # pragma: no cover - optional dependency guard
-        raise RuntimeError(
-            "no subtitles were available and faster-whisper is not installed; "
-            "install with `pip install -e '.[asr]'`"
-        ) from exc
-
-    model = WhisperModel(model_name, device=device, compute_type=compute_type)
-    raw_segments, _ = model.transcribe(
-        str(media_path),
-        language=language,
-        vad_filter=True,
-        beam_size=5,
-        word_timestamps=word_timestamps,
-    )
+def _segments_from_whisper(raw_segments: object, *, word_timestamps: bool) -> list[TranscriptSegment]:
     if word_timestamps:
-        # Keep the established short groups for ranking and natural line breaks,
-        # but retain every authentic Whisper word boundary inside each group.
         aligned: list[TranscriptSegment] = []
         for sentence in raw_segments:
             group: list[WordTiming] = []
@@ -142,8 +117,6 @@ def transcribe_with_faster_whisper(
                     continue
                 start = float(raw_start)
                 end = float(raw_end)
-                # Ignore dubious overlapping alignments instead of fabricating
-                # corrected times for a word that Whisper did not place reliably.
                 if group and start < group[-1].end - 0.005:
                     continue
                 word = WordTiming(start, end, raw_text)
@@ -182,8 +155,6 @@ def transcribe_with_faster_whisper(
                 and sentence.text.strip()
                 and sentence.end > sentence.start
             ):
-                # Missing alignment is explicitly marked by an empty .words;
-                # Style B v2 renders a static fallback, never fake word pops.
                 aligned.append(
                     TranscriptSegment(
                         float(sentence.start), float(sentence.end), sentence.text.strip()
@@ -195,3 +166,66 @@ def transcribe_with_faster_whisper(
         for segment in raw_segments
         if segment.text.strip() and float(segment.end) > float(segment.start)
     ]
+
+
+class FasterWhisperTranscriber:
+    """Reusable local ASR model for a complete source.
+
+    Production uses distil-large-v3: a larger English model designed for
+    faster-whisper. The model is loaded once, then reused for every audio chunk.
+    """
+
+    def __init__(
+        self,
+        *,
+        model_name: str = "distil-large-v3",
+        device: str = "auto",
+        compute_type: str = "int8",
+        language: str | None = None,
+        word_timestamps: bool = False,
+    ) -> None:
+        try:
+            from faster_whisper import WhisperModel  # type: ignore[import-not-found]
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                "no subtitles were available and faster-whisper is not installed; "
+                "install with `pip install -e '.[asr]'`"
+            ) from exc
+        self.model_name = model_name
+        self.language = language
+        self.word_timestamps = word_timestamps
+        self._model: Any = WhisperModel(model_name, device=device, compute_type=compute_type)
+
+    def transcribe(self, media_path: str | Path) -> list[TranscriptSegment]:
+        raw_segments, _ = self._model.transcribe(
+            str(media_path),
+            language=self.language,
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500},
+            beam_size=5,
+            word_timestamps=self.word_timestamps,
+            condition_on_previous_text=False,
+        )
+        return _segments_from_whisper(raw_segments, word_timestamps=self.word_timestamps)
+
+
+def transcribe_with_faster_whisper(
+    media_path: str | Path,
+    *,
+    model_name: str = "distil-large-v3",
+    device: str = "auto",
+    compute_type: str = "int8",
+    language: str | None = None,
+    word_timestamps: bool = False,
+) -> list[TranscriptSegment]:
+    """Compatibility wrapper for one-off callers.
+
+    Multi-chunk production should instantiate FasterWhisperTranscriber once.
+    """
+    return FasterWhisperTranscriber(
+        model_name=model_name,
+        device=device,
+        compute_type=compute_type,
+        language=language,
+        word_timestamps=word_timestamps,
+    ).transcribe(media_path)
