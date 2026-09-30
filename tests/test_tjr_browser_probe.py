@@ -138,14 +138,16 @@ def test_browser_capture_is_full_length_and_rejects_partial_source(tmp_path: Pat
         )
 
 
-def test_pinned_source_and_parallel_routing_are_explicit_in_workflow() -> None:
+def test_direct_source_routing_is_bound_to_one_target_channel() -> None:
     workflow = (ROOT / ".github" / "workflows" / "tjr-weekly-hd.yml").read_text()
     assert (
         "ALT_EGRESS_PLATFORM: ${{ matrix.os }}\n"
+        "          TJR_TARGET_CHANNEL_ID: ${{ inputs.target_channel_id }}\n"
         "          TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}" in workflow
     )
-    assert "fromJSON(inputs.source_video_id != ''" in workflow
-    assert "max-parallel: 2" in workflow
+    assert "TJR_MODAL_CHANNEL_ID: ${{ inputs.target_channel_id }}" in workflow
+    assert "fromJSON(inputs.source_video_id != ''" not in workflow
+    assert "max-parallel: 2" not in workflow
 
 
 def test_every_tjr_production_script_triggers_pr_validation() -> None:
