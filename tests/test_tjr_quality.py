@@ -139,7 +139,7 @@ def test_staged_original_must_have_real_hd_resolution(tmp_path: Path) -> None:
     )
     with patch("subprocess.run", return_value=hd):
         assert probe_original(source) == {"width": 1920, "height": 1080}
-    with patch("subprocess.run", return_value=sd), pytest.raises(QualityError, match="below 720p"):
+    with patch("subprocess.run", return_value=sd), pytest.raises(QualityError, match="below production"):
         probe_original(source)
 
 
