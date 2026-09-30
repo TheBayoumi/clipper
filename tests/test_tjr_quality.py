@@ -384,7 +384,15 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     assert "clip_limit" not in preflight["run"]
     browser = jobs["youtube_preview"]
     assert browser["needs"] == ["tests", "youtube_modal_egress"]
-    assert "needs.youtube_modal_egress.result == 'failure'" in browser["if"]
+    assert "needs.youtube_modal_egress.outputs.acquisition_route == 'fallback'" in browser["if"]
+    modal = jobs["youtube_modal_egress"]
+    assert modal["outputs"]["acquisition_route"] == "${{ steps.modal_route.outputs.route }}"
+    modal_steps = {item.get("name"): item for item in modal["steps"] if item.get("name")}
+    assert modal_steps["Acquire newest eligible original from Modal"]["continue-on-error"] is True
+    route_script = modal_steps["Classify Modal acquisition outcome"]["run"]
+    assert "YOUTUBE_EGRESS_BOT_CHALLENGE" in route_script
+    assert "NO_ACCESSIBLE_ORIGINAL_YOUTUBE" in route_script
+    assert "route = \"fatal\"" in route_script
     fallback = jobs["youtube_alternate_egress"]
     assert fallback["needs"] == ["tests", "youtube_preview", "youtube_modal_egress"]
     assert "needs.youtube_preview.result == 'failure'" in fallback["if"]
