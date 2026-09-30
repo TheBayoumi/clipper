@@ -351,7 +351,7 @@ def verify_ass_sidecar(
     fields = hooks[0].split(",", 9)
     if len(fields) != 10 or fields[3] != "Hook":
         raise ValueError("ASS has no valid persistent hook")
-    rendered_hook = re.sub(r"\\{[^}]*\\}", "", fields[9]).replace(r"\\N", " ").strip()
+    rendered_hook = re.sub(r"\{[^}]*\}", "", fields[9]).replace(r"\N", " ").strip()
     if " ".join(rendered_hook.split()).casefold() != " ".join(expected_hook.split()).casefold():
         raise ValueError("ASS hook text does not match the audited hook")
 
