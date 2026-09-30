@@ -268,7 +268,9 @@ def test_failed_egress_is_distinct_from_missing_channel(tmp_path: Path) -> None:
     )
     result = review_run(tmp_path, expected_channels=2, probe=_probe)
     assert "MISSING_CHANNEL_ARTIFACT" in result["issues"]
-    assert "YOUTUBE_EGRESS_BLOCKED" in result["issues"]
+    assert "AUTHENTICATED_YOUTUBE_SESSION_REQUIRED" in result["issues"]
+    assert result["status"] == "AUTHENTICATED_YOUTUBE_SESSION_REQUIRED"
+    assert "CONFIGURE_PERSISTENT_AUTHENTICATED_YOUTUBE_SESSION" in result["next_actions"]
     assert result["technically_verified_mp4_count"] == 1
 
 
@@ -586,7 +588,7 @@ def test_replay_auto_channel_count_uses_original_modal_shape(tmp_path: Path) -> 
     result = review_run(tmp_path, expected_channels=0, probe=_probe)
     assert result["expected_channels"] == 2
     assert "MISSING_CHANNEL_ARTIFACT" in result["issues"]
-    assert "YOUTUBE_EGRESS_BLOCKED" in result["issues"]
+    assert "AUTHENTICATED_YOUTUBE_SESSION_REQUIRED" in result["issues"]
 
 
 def test_verified_mirror_upload_keeps_transcript_and_source_coverage() -> None:
