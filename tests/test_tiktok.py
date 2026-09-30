@@ -285,6 +285,21 @@ def test_distinct_hook_excludes_generic_and_repeated_templates() -> None:
     assert distinct_hook_from_text("") == ""
 
 
+def test_stop_hit_hook_requires_an_actual_hit_event() -> None:
+    assert creative_hook_from_text("The stop loss got hit before the reversal.") == (
+        "WHAT HAPPENS WHEN THE STOP GETS HIT?"
+    )
+    assert creative_hook_from_text("I was stopped out after the stop loss triggered.") == (
+        "WHAT HAPPENS WHEN THE STOP GETS HIT?"
+    )
+    for source in (
+        "The stop loss protects us from a bigger loss.",
+        "Use a stop loss so the loss cannot grow.",
+        "We discussed the stop loss and the risk of loss.",
+    ):
+        assert creative_hook_from_text(source) != "WHAT HAPPENS WHEN THE STOP GETS HIT?"
+
+
 def test_waiting_hook_requires_affirmative_trading_plan() -> None:
     assert (
         creative_hook_from_text("I am waiting to enter this trade after the market pulls back")
