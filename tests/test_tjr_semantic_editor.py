@@ -21,6 +21,7 @@ def _fake_embedder(texts: list[str]) -> list[list[float]]:
         lowered = text.lower()
         if (
             "concrete trading setup" in lowered
+            or "trading" in lowered
             or "trade" in lowered
             or "market" in lowered
             or "risk" in lowered
