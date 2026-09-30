@@ -168,7 +168,7 @@ def hook_grounded_in_transcript(hook: str, transcript: str) -> bool:
             "stop loss" in lowered
             and bool(
                 re.search(
-                    r"\b(?:stop(?:[- ]loss)?\s+(?:got|was|gets?|is)\s+hit|"
+                    r"\b(?:stop(?:[- ]loss)?\s+(?:(?:got|was|gets?|is)\s+)?hit|"
                     r"(?:got|was|gets?|is)\s+stopped\s+out|stopped\s+out)\b",
                     lowered,
                 )
