@@ -464,8 +464,13 @@ def test_auto_direct_uses_ordered_transport_failover() -> None:
     ).read_text(encoding="utf-8")
     assert "options: [validate_only, auto_direct, modal_direct, youtube_direct" in workflow
     assert "needs: [tests, youtube_modal_egress]" in workflow
-    assert "inputs.source_mode == 'auto_direct' && needs.youtube_modal_egress.result == 'failure'" in workflow
-    assert 'contains(fromJSON(\'["auto_direct","youtube_direct"]\'), inputs.source_mode)' in workflow
+    assert (
+        "inputs.source_mode == 'auto_direct' && needs.youtube_modal_egress.result == 'failure'"
+        in workflow
+    )
+    assert (
+        'contains(fromJSON(\'["auto_direct","youtube_direct"]\'), inputs.source_mode)' in workflow
+    )
     assert "needs.youtube_preview.result == 'failure'" in workflow
     assert "TJR_ASR_MODEL: distil-large-v3" in workflow
 
