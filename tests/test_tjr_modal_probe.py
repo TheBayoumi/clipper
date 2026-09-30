@@ -225,7 +225,7 @@ def test_staging_probe_rejects_corrupt_partial_and_missing_streams(
     )
     verify = script["verify_staged_media_probe"]
     good_streams = [
-        {"codec_type": "video", "height": 1080},
+        {"codec_type": "video", "width": 1920, "height": 1080},
         {"codec_type": "audio"},
     ]
     with pytest.raises(RuntimeError, match="CORRUPT_OR_INCOMPLETE_HD_TRANSFER"):
@@ -239,6 +239,21 @@ def test_staging_probe_rejects_corrupt_partial_and_missing_streams(
         verify(
             returncode=0,
             stdout=json.dumps({"streams": good_streams, "format": {"duration": "840"}}),
+            stderr="",
+            expected_seconds=2642,
+        )
+    with pytest.raises(RuntimeError, match="MISSING_PRODUCTION_HD_VIDEO_STREAM"):
+        verify(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "streams": [
+                        {"codec_type": "video", "width": 960, "height": 720},
+                        {"codec_type": "audio"},
+                    ],
+                    "format": {"duration": "2642"},
+                }
+            ),
             stderr="",
             expected_seconds=2642,
         )
