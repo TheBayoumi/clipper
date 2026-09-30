@@ -470,7 +470,10 @@ def main() -> None:
         requested_video = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip() or None
         published_after = load_brief(Path("campaigns/reach-tjr-weekly.yaml")).published_after
         official = constrain_official_sources(
-            candidates, requested_id=requested_video, published_after=published_after
+            candidates,
+            requested_id=requested_video,
+            published_after=published_after,
+            target_channel_id=channel_id or None,
         )
         excluded = {
             item.strip()
@@ -480,10 +483,8 @@ def main() -> None:
         if requested_video and requested_video in excluded:
             raise RuntimeError("explicit requested video cannot also be excluded")
         official = [item for item in official if item.video_id not in excluded]
-        if channel_id:
-            official = [item for item in official if item.channel_id == channel_id]
-        # One pipeline job per channel. Each selects its own latest verified
-        # long-form original; identical GitHub run IDs cannot collide on Volume.
+        # The target-channel constraint already orders direct discovery newest-first.
+        # Metadata verification below skips live/upcoming/short/inaccessible candidates.
         inputs = [
             {"video_id": item.video_id, "channel_id": item.channel_id} for item in official[:8]
         ]
