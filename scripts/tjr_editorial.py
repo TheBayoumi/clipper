@@ -100,7 +100,9 @@ _STOP = frozenset(
         "so",
     }
 )
-CriterionBasis = Literal["transcript_proxy", "semantic_model", "manual_verified", "manual_required"]
+CriterionBasis = Literal[
+    "transcript_proxy", "semantic_model", "machine_measured", "manual_verified", "manual_required"
+]
 IntegrityStatus = Literal["unverified", "pass", "fail"]
 
 
@@ -124,6 +126,7 @@ class EditorialReview:
 
     visual_score: float | None = None
     visual_notes: str = ""
+    visual_basis: Literal["machine_measured", "manual_verified"] = "manual_verified"
     integrity_passed: bool | None = None
     integrity_notes: str = ""
 
@@ -439,7 +442,7 @@ def evaluate_candidate(
     }
     if review is not None and review.visual_score is not None:
         ratings["visuals"] = CriterionRating(
-            review.visual_score, "manual_verified", (review.visual_notes.strip(),)
+            review.visual_score, review.visual_basis, (review.visual_notes.strip(),)
         )
 
     integrity: IntegrityStatus = "unverified"
