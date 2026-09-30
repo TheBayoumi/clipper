@@ -18,6 +18,7 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from .. import media_contract as media
 from ..montage import MontageRejection
 from ..profiles import CampaignProfile
+from . import portrait_layout
 
 SOURCE_REVEAL_MODES = frozenset({"continuous_reveal", "archive_reveal"})
 
@@ -53,16 +54,9 @@ def config(
         "sharpen_percent",
         "sharpen_threshold",
         "minimum_effective_source_width",
-        "visual_top",
-        "visual_height",
-        "title_top_height",
         "backdrop_blur_sigma",
         "backdrop_brightness",
         "backdrop_saturation",
-        "title_y_positions",
-        "title_bar_y",
-        "title_font_sizes",
-        "title_pill_heights",
         "storyboard_frames",
     }
     archive = {
@@ -86,22 +80,15 @@ def config(
     portrait = profile.config["output"]["portrait_matte"]
     target_width = int(portrait["width"])
     target_height = int(portrait["height"])
-    visual_top = cfg["visual_top"]
-    visual_height = cfg["visual_height"]
-    title_top_height = cfg["title_top_height"]
+    layout = portrait_layout.resolve(profile, target_width, target_height)
+    if layout is None:
+        raise MontageRejection(code, "source reveal requires the shared portrait layout")
+    visual_top = int(layout["visual_top"])
+    visual_height = int(layout["visual_height"])
     minimum_width = cfg["minimum_effective_source_width"]
-    if (
-        type(visual_top) is not int
-        or type(visual_height) is not int
-        or visual_height < 1
-        or type(title_top_height) is not int
-        or title_top_height < 1
-        or visual_top < title_top_height
-        or visual_top + visual_height >= target_height
-        or type(minimum_width) is not int
-        or minimum_width < 1
-    ):
-        raise MontageRejection(code, "portrait geometry or clarity floor is invalid")
+    if type(minimum_width) is not int or minimum_width < 1:
+        raise MontageRejection(code, "source-detail floor is invalid")
+
 
     parsed: list[dict[str, Any]] = []
     previous_frame = -1
@@ -144,25 +131,11 @@ def config(
         raise MontageRejection(code, "crop path must anchor first and final frames")
 
     storyboard = cfg["storyboard_frames"]
-    title_y = cfg["title_y_positions"]
-    font_sizes = cfg["title_font_sizes"]
-    pill_heights = cfg["title_pill_heights"]
     if (
         not isinstance(storyboard, list)
         or len(storyboard) != 6
         or storyboard != sorted(set(storyboard))
         or any(type(n) is not int or not 0 <= n < output_frames for n in storyboard)
-        or not isinstance(title_y, list)
-        or len(title_y) != 3
-        or any(type(n) is not int or n < 0 or n >= title_top_height for n in title_y)
-        or not isinstance(font_sizes, list)
-        or len(font_sizes) != 3
-        or any(type(n) is not int or n < 8 for n in font_sizes)
-        or not isinstance(pill_heights, list)
-        or len(pill_heights) != 3
-        or any(type(n) is not int or n < 8 for n in pill_heights)
-        or type(cfg["title_bar_y"]) is not int
-        or not 0 <= cfg["title_bar_y"] < title_top_height - 3
         or type(cfg["backdrop_blur_sigma"]) not in (int, float)
         or not 4 <= float(cfg["backdrop_blur_sigma"]) <= 40
         or type(cfg["backdrop_brightness"]) not in (int, float)
@@ -194,6 +167,7 @@ def config(
 
     return {
         **cfg,
+        **layout,
         "keyframes": parsed,
         "storyboard_frames": list(storyboard),
         "backdrop_bottom_height": target_height - visual_top - visual_height,
@@ -432,6 +406,7 @@ def render_frames(
         "ai_enhancement": False,
         "input_canonical_sha256": digest.hexdigest(),
         "visual_size": [canvas_width, visual_height],
+        "visual_left": int(cfg["visual_left"]),
         "visual_top": int(cfg["visual_top"]),
         "backdrop_bottom_height": int(cfg["backdrop_bottom_height"]),
         "minimum_effective_source_width_px": minimum_effective,

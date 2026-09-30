@@ -22,7 +22,7 @@ from PIL import Image, ImageChops, ImageColor, ImageDraw, ImageFont, ImageStat
 from .. import media_contract as media
 from ..montage import MontageRejection, rate, source_frame_count, source_windows
 from ..profiles import CampaignProfile
-from . import ffv1
+from . import ffv1, portrait_layout
 
 RGB = tuple[int, int, int]
 
@@ -40,6 +40,7 @@ PORTRAIT_REQUIRED_CHECKS = frozenset(
         "portrait_ssim",
         "portrait_psnr_db",
         "portrait_mattes_match",
+        "portrait_layout_exact",
         "portrait_target_size",
         "portrait_color_metadata",
     }
@@ -76,6 +77,7 @@ CONTINUOUS_REVEAL_REQUIRED_CHECKS = frozenset(
         "portrait_continuous_reveal_effects_declared",
         "portrait_continuous_reveal_backdrop_visible",
         "portrait_continuous_reveal_toggle_visible",
+        "portrait_continuous_reveal_toggle_enlargement",
     }
 )
 
@@ -91,6 +93,7 @@ ARCHIVE_REVEAL_REQUIRED_CHECKS = frozenset(
         "portrait_archive_reveal_pre_toggle_monochrome",
         "portrait_archive_reveal_transition_direction",
         "portrait_archive_reveal_post_toggle_color",
+        "portrait_archive_reveal_toggle_enlargement",
     }
 )
 
@@ -349,52 +352,9 @@ def mode_portrait_layout(
     width: int,
     height: int,
 ) -> dict[str, Any] | None:
-    """Resolve a profile-calibrated portrait source band without mode-specific rendering."""
-    matte = profile.config["output"]["portrait_matte"]
-    layouts = matte.get("mode_layouts", {})
-    raw = layouts.get(mode) if isinstance(layouts, dict) else None
-    if raw is None:
-        return None
-    expected = {
-        "visual_top",
-        "visual_height",
-        "title_top_height",
-        "title_y_positions",
-        "title_bar_y",
-        "title_font_sizes",
-        "title_pill_heights",
-    }
-    if not isinstance(raw, dict) or set(raw) != expected:
-        raise MontageRejection("portrait_geometry", "unsupported mode portrait calibration")
-    scale = width / 1080
-    values: dict[str, Any] = {
-        "visual_top": round(int(raw["visual_top"]) * scale),
-        "visual_height": round(int(raw["visual_height"]) * scale),
-        "title_top_height": round(int(raw["title_top_height"]) * scale),
-        "title_y_positions": [round(int(n) * scale) for n in raw["title_y_positions"]],
-        "title_bar_y": round(int(raw["title_bar_y"]) * scale),
-        "title_font_sizes": [max(8, round(int(n) * scale)) for n in raw["title_font_sizes"]],
-        "title_pill_heights": [round(int(n) * scale) for n in raw["title_pill_heights"]],
-    }
-    source_width = int(profile.config["output"]["width"])
-    source_height = int(profile.config["output"]["height"])
-    expected_source_height = round(width * source_height / source_width)
-    if (
-        values["visual_top"] != values["title_top_height"]
-        or values["visual_height"] != expected_source_height
-        or values["visual_top"] < 1
-        or values["visual_top"] + values["visual_height"] >= height
-        or len(values["title_y_positions"]) != 3
-        or len(values["title_font_sizes"]) != 3
-        or len(values["title_pill_heights"]) != 3
-        or values["title_bar_y"] >= values["title_top_height"]
-        or any(n < 0 or n >= values["title_top_height"] for n in values["title_y_positions"])
-    ):
-        raise MontageRejection(
-            "portrait_geometry",
-            "profile-calibrated portrait band leaves the legal 9:16 source-safe layout",
-        )
-    return values
+    """Resolve the one campaign-wide portrait source band for every edit mode."""
+    del mode
+    return portrait_layout.resolve(profile, width, height)
 
 
 def render_title_frames(
@@ -408,26 +368,18 @@ def render_title_frames(
     frames = int(plan["montage"]["output_frames"])
     mode = str(plan["montage"]["comparison_mode"])
     source_reveal = plan["montage"].get("type") == "continuous_source_reveal"
-    calibrated = None if source_reveal else mode_portrait_layout(profile, mode, width, height)
-    if source_reveal:
-        from . import kinetic_reframe
-
-        style = kinetic_reframe.config(profile, frames, mode)
-        top_height = int(style["title_top_height"])
-        source_display_height = int(style["visual_height"])
-        fonts = [_font(max(8, round(int(n) * width / 1080))) for n in style["title_font_sizes"]]
-        y_positions = [round(int(n) * width / 1080) for n in style["title_y_positions"]]
-        pill_heights = [round(int(n) * width / 1080) for n in style["title_pill_heights"]]
-        bar_y = round(int(style["title_bar_y"]) * width / 1080)
-        if top_height + source_display_height >= height:
-            raise MontageRejection("portrait_geometry", "continuous portrait geometry overflows")
-    elif calibrated is not None:
+    calibrated = mode_portrait_layout(profile, mode, width, height)
+    if calibrated is not None:
         top_height = int(calibrated["title_top_height"])
         source_display_height = int(calibrated["visual_height"])
         fonts = [_font(int(n)) for n in calibrated["title_font_sizes"]]
         y_positions = [int(n) for n in calibrated["title_y_positions"]]
         pill_heights = [int(n) for n in calibrated["title_pill_heights"]]
         bar_y = int(calibrated["title_bar_y"])
+        if source_reveal:
+            from . import kinetic_reframe
+
+            kinetic_reframe.config(profile, frames, mode)
     else:
         source_width = int(profile.config["output"]["width"])
         source_height = int(profile.config["output"]["height"])
@@ -808,6 +760,7 @@ def render_portrait(
         from . import kinetic_reframe
 
         reveal_cfg = kinetic_reframe.config(profile, frames, mode)
+        visual_left = int(reveal_cfg["visual_left"])
         visual_top = int(reveal_cfg["visual_top"])
         visual_height = int(reveal_cfg["visual_height"])
         if visual_height != center:
@@ -834,7 +787,7 @@ def render_portrait(
             f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
             f"crop={width}:{height},{archive_filter}gblur=sigma={blur_sigma}:steps=2,"
             f"eq=brightness={backdrop_brightness}:saturation={backdrop_saturation}[backdrop];"
-            f"[backdrop][2:v]overlay=0:{visual_top}:shortest=1:format=auto[with_video];"
+            f"[backdrop][2:v]overlay={visual_left}:{visual_top}:shortest=1:format=auto[with_video];"
             "[with_video][1:v]overlay=0:0:shortest=1:format=auto,"
             "format=yuv420p[outv]"
         )
@@ -1141,6 +1094,17 @@ def render_portrait(
         "portrait_ssim": ssim >= 0.96,
         "portrait_psnr_db": psnr >= 35.0,
         "portrait_mattes_match": (header_rgb_error <= 2 if source_reveal else matte_rgb_error <= 2),
+        "portrait_layout_exact": (
+            (resolved_layout := mode_portrait_layout(profile, mode, width, height)) is None
+            or (
+                int(title_qa["top_height"]) == int(resolved_layout["title_top_height"])
+                and int(title_qa["center_height"]) == int(resolved_layout["visual_height"])
+                and int(resolved_layout["visual_left"]) == 0
+                and int(resolved_layout["visual_width"]) == width
+                and int(resolved_layout["bottom_height"])
+                == height - int(title_qa["top_height"]) - int(title_qa["center_height"])
+            )
+        ),
         "portrait_target_size": abs(filesize_mb - size_target_mb) <= size_tolerance_mb,
         "portrait_color_metadata": all(
             actual_colors.get(k) == v for k, v in expected_colors.items()
@@ -1570,10 +1534,20 @@ def render_portrait(
             and reframe_qa["source_frame_grid_exact"] is True
             and reframe_qa["input_frame_count"] == frames
         )
-        checks["portrait_continuous_reveal_legibility"] = reframe_qa[
-            "minimum_effective_source_width_px"
-        ] >= int(reveal_cfg["minimum_effective_source_width"]) and visual_height > round(
-            width * int(profile.config["output"]["height"]) / int(profile.config["output"]["width"])
+        source_start = int(plan["montage"]["source_window"]["start_frame"])
+        trigger_start = int(plan["evidence"]["toggle_motion_start_frame"]) - source_start
+        trigger_end = int(plan["evidence"]["toggle_motion_end_frame"]) - source_start
+        pre_roi = reframe_qa["sampled_rois"].get(str(trigger_start - 1))
+        end_roi = reframe_qa["sampled_rois"].get(str(trigger_end))
+        checks["portrait_continuous_reveal_toggle_enlargement"] = (
+            isinstance(pre_roi, list)
+            and isinstance(end_roi, list)
+            and (end_roi[2] - end_roi[0]) < (pre_roi[2] - pre_roi[0])
+            and (end_roi[3] - end_roi[1]) <= (pre_roi[3] - pre_roi[1])
+        )
+        checks["portrait_continuous_reveal_legibility"] = (
+            reframe_qa["minimum_effective_source_width_px"]
+            >= int(reveal_cfg["minimum_effective_source_width"])
         )
         checks["portrait_continuous_reveal_no_ai"] = reframe_qa["ai_enhancement"] is False
         checks["portrait_continuous_reveal_effects_declared"] = reframe_qa["effects"] == {
@@ -1596,9 +1570,6 @@ def render_portrait(
             and all(value > 4.0 for value in backdrop_differences)
             and reframe_qa["effects"]["source_backdrop"]["source"] == "same_canonical_frame"
         )
-        source_start = int(plan["montage"]["source_window"]["start_frame"])
-        trigger_start = int(plan["evidence"]["toggle_motion_start_frame"]) - source_start
-        trigger_end = int(plan["evidence"]["toggle_motion_end_frame"]) - source_start
         selected = f"eq(n\\,{trigger_start})+eq(n\\,{trigger_end})"
         raw_reveal = subprocess.run(
             [
@@ -1685,10 +1656,20 @@ def render_portrait(
             and reframe_qa["source_frame_grid_exact"] is True
             and reframe_qa["input_frame_count"] == frames
         )
-        checks["portrait_archive_reveal_legibility"] = reframe_qa[
-            "minimum_effective_source_width_px"
-        ] >= int(archive_cfg["minimum_effective_source_width"]) and visual_height > round(
-            width * int(profile.config["output"]["height"]) / int(profile.config["output"]["width"])
+        source_start = int(plan["montage"]["source_window"]["start_frame"])
+        trigger_start = int(plan["evidence"]["toggle_motion_start_frame"]) - source_start
+        trigger_end = int(plan["evidence"]["toggle_motion_end_frame"]) - source_start
+        pre_roi = reframe_qa["sampled_rois"].get(str(trigger_start - 1))
+        end_roi = reframe_qa["sampled_rois"].get(str(trigger_end))
+        checks["portrait_archive_reveal_toggle_enlargement"] = (
+            isinstance(pre_roi, list)
+            and isinstance(end_roi, list)
+            and (end_roi[2] - end_roi[0]) < (pre_roi[2] - pre_roi[0])
+            and (end_roi[3] - end_roi[1]) <= (pre_roi[3] - pre_roi[1])
+        )
+        checks["portrait_archive_reveal_legibility"] = (
+            reframe_qa["minimum_effective_source_width_px"]
+            >= int(archive_cfg["minimum_effective_source_width"])
         )
         checks["portrait_archive_reveal_no_ai"] = reframe_qa["ai_enhancement"] is False
         checks["portrait_archive_reveal_effects_declared"] = (
@@ -1698,9 +1679,6 @@ def render_portrait(
             sampled_frames
         ) and all(value > 4.0 for value in backdrop_differences)
 
-        source_start = int(plan["montage"]["source_window"]["start_frame"])
-        trigger_start = int(plan["evidence"]["toggle_motion_start_frame"]) - source_start
-        trigger_end = int(plan["evidence"]["toggle_motion_end_frame"]) - source_start
         pre_frame = max(0, trigger_start - 2)
         mid_frame = (trigger_start + trigger_end) // 2
         post_frame = min(frames - 1, trigger_end + 2)

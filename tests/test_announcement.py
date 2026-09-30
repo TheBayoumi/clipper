@@ -1400,13 +1400,6 @@ def _continuous_reveal_test_profile(profile: CampaignProfile) -> CampaignProfile
     p = _cascade_test_profile(profile)
     cfg = p.config["output"]["portrait_matte"]["continuous_reveal"]
     cfg["minimum_effective_source_width"] = 150
-    cfg["visual_top"] = 60
-    cfg["visual_height"] = 170
-    cfg["title_top_height"] = 55
-    cfg["title_y_positions"] = [5, 20, 35]
-    cfg["title_bar_y"] = 50
-    cfg["title_font_sizes"] = [12, 11, 10]
-    cfg["title_pill_heights"] = [17, 16, 15]
     return p
 
 
@@ -1451,8 +1444,8 @@ def test_continuous_reveal_is_one_uninterrupted_certified_source_window(
     cfg = kinetic_reframe.config(p, 150)
     assert cfg["storyboard_frames"] == [0, 15, 29, 36, 100, 149]
     assert cfg["minimum_effective_source_width"] == 150
-    assert cfg["visual_top"] == 60
-    assert cfg["backdrop_bottom_height"] == 90
+    assert cfg["visual_top"] == 109
+    assert cfg["backdrop_bottom_height"] == 110
     expected = {0: 0.0, 28: 0.0, 29: 0.0, 36: 1.0, 100: 1.0, 149: 1.0}
     for frame, state in expected.items():
         assert portrait_matte.toggle_progress(frame, plan, p) == state
@@ -1527,10 +1520,14 @@ def test_continuous_reveal_certified_render_and_fail_closed_qualification(
     assert reveal["source_only"] is True
     assert reveal["ai_enhancement"] is False
     assert reveal["minimum_effective_source_width_px"] >= 150
-    assert reveal["visual_size"] == [180, 170]
-    assert reveal["visual_top"] == 60
-    assert reveal["backdrop_bottom_height"] == 90
+    assert reveal["visual_size"] == [180, 101]
+    assert reveal["visual_top"] == 109
+    assert reveal["backdrop_bottom_height"] == 110
     assert reveal["storyboard_frames"] == [0, 15, 29, 36, 100, 149]
+    assert reveal["visual_left"] == 0
+    assert reveal["sampled_rois"]["28"] == [0.15, 0.02, 0.85, 0.98]
+    assert reveal["sampled_rois"]["36"] == [0.2, 0.05, 0.8, 0.95]
+    assert portrait["qa"]["checks"]["portrait_continuous_reveal_toggle_enlargement"]
     assert reveal["effects"]["luminance_flash"] is False
     assert reveal["effects"]["source_backdrop"] == {
         "source": "same_canonical_frame",
@@ -1587,13 +1584,6 @@ def _archive_reveal_test_profile(profile: CampaignProfile) -> CampaignProfile:
     p = _cascade_test_profile(profile)
     cfg = p.config["output"]["portrait_matte"]["archive_reveal"]
     cfg["minimum_effective_source_width"] = 150
-    cfg["visual_top"] = 60
-    cfg["visual_height"] = 170
-    cfg["title_top_height"] = 55
-    cfg["title_y_positions"] = [5, 20, 35]
-    cfg["title_bar_y"] = 50
-    cfg["title_font_sizes"] = [12, 11, 10]
-    cfg["title_pill_heights"] = [17, 16, 15]
     cfg["transition_feather_px"] = 20
     return p
 
@@ -1667,6 +1657,13 @@ def test_archive_reveal_certified_render_and_fail_closed_qualification(
     assert reveal["style_samples"]["36"]["phase"] == "source_color"
     assert reveal["effects"]["archive_style"]["grayscale_before_toggle"] is True
     assert reveal["effects"]["archive_style"]["transition_direction"] == "left_to_right"
+    assert reveal["visual_size"] == [180, 101]
+    assert reveal["visual_left"] == 0
+    assert reveal["visual_top"] == 109
+    assert reveal["backdrop_bottom_height"] == 110
+    assert reveal["sampled_rois"]["28"] == [0.15, 0.02, 0.85, 0.98]
+    assert reveal["sampled_rois"]["36"] == [0.2, 0.05, 0.8, 0.95]
+    assert portrait["qa"]["checks"]["portrait_archive_reveal_toggle_enlargement"]
     metrics = portrait["qa"]["archive_reveal_metrics"]
     assert metrics["pre_toggle_chroma"] < 3.5
     assert metrics["post_toggle_chroma"] > 6

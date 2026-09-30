@@ -376,28 +376,37 @@
           {
             "frame": 0,
             "roi": [
-              0.18,
-              0.03,
-              0.82,
-              0.97
+              0.15,
+              0.02,
+              0.85,
+              0.98
             ]
           },
           {
             "frame": 28,
             "roi": [
-              0.185,
+              0.15,
+              0.02,
+              0.85,
+              0.98
+            ]
+          },
+          {
+            "frame": 32,
+            "roi": [
+              0.175,
               0.035,
-              0.815,
+              0.825,
               0.965
             ]
           },
           {
             "frame": 36,
             "roi": [
-              0.19,
-              0.04,
-              0.81,
-              0.96
+              0.2,
+              0.05,
+              0.8,
+              0.95
             ]
           },
           {
@@ -414,24 +423,6 @@
         "sharpen_percent": 18,
         "sharpen_threshold": 2,
         "minimum_effective_source_width": 1000,
-        "visual_height": 1000,
-        "title_top_height": 250,
-        "title_y_positions": [
-          32,
-          88,
-          144
-        ],
-        "title_bar_y": 216,
-        "title_font_sizes": [
-          44,
-          40,
-          37
-        ],
-        "title_pill_heights": [
-          55,
-          50,
-          46
-        ],
         "storyboard_frames": [
           0,
           15,
@@ -440,82 +431,46 @@
           100,
           149
         ],
-        "visual_top": 300,
         "backdrop_blur_sigma": 24,
         "backdrop_brightness": -0.28,
         "backdrop_saturation": 0.6
-      },
-      "mode_layouts": {
-        "cascade": {
-          "visual_top": 656,
-          "visual_height": 608,
-          "title_top_height": 656,
-          "title_y_positions": [
-            236,
-            352,
-            438
-          ],
-          "title_bar_y": 548,
-          "title_font_sizes": [
-            64,
-            59,
-            54
-          ],
-          "title_pill_heights": [
-            83,
-            70,
-            70
-          ]
-        },
-        "spotlight": {
-          "visual_top": 656,
-          "visual_height": 608,
-          "title_top_height": 656,
-          "title_y_positions": [
-            236,
-            352,
-            438
-          ],
-          "title_bar_y": 548,
-          "title_font_sizes": [
-            64,
-            59,
-            54
-          ],
-          "title_pill_heights": [
-            83,
-            70,
-            70
-          ]
-        }
       },
       "archive_reveal": {
         "keyframes": [
           {
             "frame": 0,
             "roi": [
-              0.18,
-              0.03,
-              0.82,
-              0.97
+              0.15,
+              0.02,
+              0.85,
+              0.98
             ]
           },
           {
             "frame": 28,
             "roi": [
-              0.185,
+              0.15,
+              0.02,
+              0.85,
+              0.98
+            ]
+          },
+          {
+            "frame": 32,
+            "roi": [
+              0.175,
               0.035,
-              0.815,
+              0.825,
               0.965
             ]
           },
           {
             "frame": 36,
             "roi": [
-              0.19,
-              0.04,
-              0.81,
-              0.96
+              0.2,
+              0.05,
+              0.8,
+              0.95
             ]
           },
           {
@@ -532,24 +487,6 @@
         "sharpen_percent": 18,
         "sharpen_threshold": 2,
         "minimum_effective_source_width": 1000,
-        "visual_height": 608,
-        "title_top_height": 250,
-        "title_y_positions": [
-          32,
-          88,
-          144
-        ],
-        "title_bar_y": 216,
-        "title_font_sizes": [
-          44,
-          40,
-          37
-        ],
-        "title_pill_heights": [
-          55,
-          50,
-          46
-        ],
         "storyboard_frames": [
           0,
           15,
@@ -558,7 +495,6 @@
           36,
           149
         ],
-        "visual_top": 656,
         "backdrop_blur_sigma": 24,
         "backdrop_brightness": -0.28,
         "backdrop_saturation": 0.6,
@@ -568,6 +504,29 @@
         "archive_flicker_strength": 0.025,
         "transition_direction": "left_to_right",
         "transition_feather_px": 120
+      },
+      "layout": {
+        "visual_left": 0,
+        "visual_top": 656,
+        "visual_width": 1080,
+        "visual_height": 608,
+        "title_top_height": 656,
+        "title_y_positions": [
+          236,
+          352,
+          438
+        ],
+        "title_bar_y": 548,
+        "title_font_sizes": [
+          64,
+          59,
+          54
+        ],
+        "title_pill_heights": [
+          83,
+          70,
+          70
+        ]
       }
     },
     "mode_encoding": {
