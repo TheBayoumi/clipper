@@ -374,10 +374,8 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
         if item.get("name") == "Validate production inputs before any real source acquisition"
     )
     assert "TJR_BUDGET_CONFIRMED" in preflight["run"]
-    assert (
-        "Direct production requires exactly one Reach-listed target_channel_id"
-        in preflight["run"]
-    )
+    target_channel_error = "Direct production requires exactly one Reach-listed target_channel_id"
+    assert target_channel_error in preflight["run"]
     assert "do not pin source_video_id" in preflight["run"]
     assert "clip_limit" not in preflight["run"]
     fallback = jobs["youtube_alternate_egress"]
