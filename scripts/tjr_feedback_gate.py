@@ -492,10 +492,16 @@ def inspect_artifact(
                 issues.append("NO_RENDERED_CLIPS")
                 return entry
             audit = read_json(base / "editorial-candidate-audit.json")
+            report_count = report.get("selected_clip_count")
+            audit_count = audit.get("selected_count")
             if (
-                audit.get("selection_policy") != "quality_driven_zero_to_n"
+                report.get("selection_policy") != "quality_driven_zero_to_n"
+                or type(report_count) is not int
+                or report_count != 0
+                or audit.get("selection_policy") != "quality_driven_zero_to_n"
                 or audit.get("selected") != []
-                or int(audit.get("selected_count") or 0) != 0
+                or type(audit_count) is not int
+                or audit_count != 0
             ):
                 issues.append("INVALID_EDITORIAL_NOOP")
                 return entry
