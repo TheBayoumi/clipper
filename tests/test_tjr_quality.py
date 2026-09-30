@@ -365,7 +365,6 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     assert inputs["budget_confirmed"]["required"] is False
     assert set(inputs["source_mode"]["options"]) == {
         "validate_only",
-        "auto_direct",
         "modal_direct",
         "youtube_direct",
         "verified_mirror",
@@ -383,20 +382,16 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     assert "do not pin source_video_id" in preflight["run"]
     assert "clip_limit" not in preflight["run"]
     browser = jobs["youtube_preview"]
-    assert browser["needs"] == ["tests", "youtube_modal_egress"]
-    assert "needs.youtube_modal_egress.outputs.acquisition_route == 'fallback'" in browser["if"]
+    assert browser["needs"] == "tests"
+    assert "inputs.source_mode == 'youtube_direct'" in browser["if"]
+    assert "youtube_modal_egress" not in browser["if"]
     modal = jobs["youtube_modal_egress"]
-    assert modal["outputs"]["acquisition_route"] == "${{ steps.modal_route.outputs.route }}"
+    assert "outputs" not in modal
+    assert "inputs.source_mode == 'modal_direct'" in modal["if"]
     modal_steps = {item.get("name"): item for item in modal["steps"] if item.get("name")}
-    assert modal_steps["Acquire newest eligible original from Modal"]["continue-on-error"] is True
-    route_script = modal_steps["Classify Modal acquisition outcome"]["run"]
-    assert "YOUTUBE_EGRESS_BOT_CHALLENGE" in route_script
-    assert "NO_ACCESSIBLE_ORIGINAL_YOUTUBE" in route_script
-    assert 'route = "fatal"' in route_script
-    fallback = jobs["youtube_alternate_egress"]
-    assert fallback["needs"] == ["tests", "youtube_preview", "youtube_modal_egress"]
-    assert "needs.youtube_preview.result == 'failure'" in fallback["if"]
-    assert "auto_direct" in fallback["if"]
+    assert "continue-on-error" not in modal_steps["Acquire newest eligible original from Modal"]
+    assert "Classify Modal acquisition outcome" not in modal_steps
+    assert "youtube_alternate_egress" not in jobs
     for name in ("youtube_preview", "youtube_modal_egress", "render"):
         assert jobs[name]["env"]["TJR_CAPTION_STYLE"] == "B2"
     assert jobs["youtube_modal_egress"]["env"]["TJR_RENDER_SAFETY_LIMIT"] == "20"
