@@ -27,10 +27,9 @@ import defusedxml.ElementTree as ET
 from clipper.brief import load_brief
 from clipper.models import ClipCandidate, TranscriptSegment, WordTiming
 from clipper.render import FFmpegRenderer
-from clipper.scoring import score_transcript
 from clipper.source_fidelity import probe_source_profile
 from clipper.tiktok import audit_tiktok_ass
-from clipper.transcript import transcribe_with_faster_whisper
+from clipper.transcript import FasterWhisperTranscriber
 from scripts.tjr_editorial import (
     MAX_RENDERABLE_CLIPS,
     RUBRIC_VERSION,
@@ -38,6 +37,8 @@ from scripts.tjr_editorial import (
     select_editorial_moments,
 )
 from scripts.tjr_quality import check_full_decode, probe_original, probe_video
+from scripts.tjr_semantic_editor import build_semantic_editorial_candidates
+from scripts.tjr_visual_analysis import analyze_candidate_visuals
 
 LOGGER = logging.getLogger("tjr-youtube")
 CHANNELS = {
@@ -613,6 +614,13 @@ def transcribe_source_chunks(
     work = run_dir / "work"
     work.mkdir(parents=True, exist_ok=True)
     chunks: list[list[TranscriptSegment]] = []
+    transcriber = FasterWhisperTranscriber(
+        model_name=os.getenv("TJR_ASR_MODEL", "distil-large-v3").strip() or "distil-large-v3",
+        device=os.getenv("TJR_ASR_DEVICE", "cpu").strip() or "cpu",
+        compute_type=os.getenv("TJR_ASR_COMPUTE_TYPE", "int8").strip() or "int8",
+        language="en",
+        word_timestamps=True,
+    )
     for index, start in enumerate(range(0, math.ceil(duration), chunk_seconds)):
         length = min(float(chunk_seconds), duration - start)
         if length < 1:
@@ -645,14 +653,7 @@ def transcribe_source_chunks(
                 capture_output=True,
                 timeout=420,
             )
-            local = transcribe_with_faster_whisper(
-                audio,
-                model_name="small.en",
-                device="cpu",
-                compute_type="int8",
-                language="en",
-                word_timestamps=True,
-            )
+            local = transcriber.transcribe(audio)
             shifted = [
                 TranscriptSegment(
                     item.start + start,
@@ -798,62 +799,19 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             encoding="utf-8",
         )
         render_safety_limit = int(os.getenv("TJR_RENDER_SAFETY_LIMIT", str(MAX_RENDERABLE_CLIPS)))
-        # Chunk boundaries are not sentence boundaries; score all aligned words together.
-        strict = score_transcript(
+        ranked, semantic_audit = build_semantic_editorial_candidates(
             brief,
             chosen_video.video_id,
             segments,
-            limit=900 * len(source_chunks),
-            sentence_boundaries=True,
-            diversify=False,
         )
-        strict.sort(key=lambda item: (-item.score, item.start))
-        ranked = strict
+        screening_mode = "source_level_semantic_event_segmentation_v1"
         picks, rejected = select_editorial_moments(
-            ranked, render_safety_limit=render_safety_limit, segments=segments
+            ranked,
+            render_safety_limit=render_safety_limit,
+            segments=segments,
+            allow_review_only_opening=True,
+            review_provider=lambda candidate: analyze_candidate_visuals(source, candidate),
         )
-        screening_mode = "strict_sentence_or_700ms_pause"
-        relaxed_count = 0
-        if not picks:
-            # Retry at genuine, shorter ASR-aligned pauses rather than cutting
-            # arbitrary mid-sentence transcript windows or lowering the rubric.
-            relaxed = score_transcript(
-                brief,
-                chosen_video.video_id,
-                segments,
-                limit=900 * len(source_chunks),
-                sentence_boundaries=True,
-                pause_threshold=0.35,
-                diversify=False,
-            )
-            relaxed.sort(key=lambda item: (-item.score, item.start))
-            relaxed_count = len(relaxed)
-            relaxed_picks, relaxed_rejected = select_editorial_moments(
-                relaxed, render_safety_limit=render_safety_limit, segments=segments
-            )
-            if relaxed_picks:
-                ranked, picks, rejected = relaxed, relaxed_picks, relaxed_rejected
-                screening_mode = "aligned_350ms_pause_manual_boundary_review"
-            else:
-                rejected.extend(relaxed_rejected)
-                # The brief permits memorable trading stories whose opening
-                # can be rescued by a grounded persistent on-screen hook.
-                # Keep them review-only and require a complete spoken ending.
-                unique = {
-                    (candidate.start, candidate.end): candidate for candidate in [*strict, *relaxed]
-                }
-                review_pool = sorted(unique.values(), key=lambda item: (-item.score, item.start))
-                draft_picks, draft_rejected = select_editorial_moments(
-                    review_pool,
-                    render_safety_limit=render_safety_limit,
-                    segments=segments,
-                    allow_review_only_opening=True,
-                )
-                if draft_picks:
-                    ranked, picks, rejected = review_pool, draft_picks, draft_rejected
-                    screening_mode = "full_source_hook_led_review_only_complete_trading_stories"
-                else:
-                    rejected.extend(draft_rejected)
         (run_dir / "ranked-candidates.json").write_text(
             json.dumps([c.to_dict() for c in ranked[:150]], indent=2) + "\n",
             encoding="utf-8",
@@ -865,7 +823,9 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                     "weights": WEIGHTS,
                     "provisional": True,
                     "requires_manual_visual_and_integrity_review": True,
+                    "measured_visual_precheck": True,
                     "screening_mode": screening_mode,
+                    "semantic_architecture": semantic_audit,
                     "selection_policy": "quality_driven_zero_to_n",
                     "render_safety_limit": render_safety_limit,
                     "selected_count": len(picks),
@@ -873,8 +833,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                         item.get("reason") == "RENDER_SAFETY_LIMIT" for item in rejected
                     ),
                     "transcript_segment_count": len(segments),
-                    "strict_candidate_count": len(strict),
-                    "relaxed_candidate_count": relaxed_count,
+                    "semantic_candidate_count": len(ranked),
                     "selected": [pick.to_dict() for pick in picks],
                     "rejected": rejected[:250],
                     "rejection_breakdown": dict(Counter(str(item["reason"]) for item in rejected)),
@@ -917,9 +876,8 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 json.dumps(report, indent=2) + "\n", encoding="utf-8"
             )
             LOGGER.info(
-                "EDITORIAL_NOOP=NO_CREATOR_GRADE_MOMENTS strict=%d relaxed=%d",
-                len(strict),
-                relaxed_count,
+                "EDITORIAL_NOOP=NO_CREATOR_GRADE_MOMENTS semantic_candidates=%d",
+                len(ranked),
             )
             return run_dir
         LOGGER.info(
