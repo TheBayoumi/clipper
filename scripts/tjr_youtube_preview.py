@@ -476,6 +476,8 @@ def constrain_official_sources(
                 eligible.append(video)
         candidates = eligible
     if not requested_id:
+        if target_channel_id:
+            return sorted(candidates, key=lambda video: video.published, reverse=True)
         return prioritize_campaign_moments(candidates)
     if not VIDEO_ID.fullmatch(requested_id):
         raise RuntimeError("selected source_video_id must be exactly 11 YouTube ID characters")
