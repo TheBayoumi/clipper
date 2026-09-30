@@ -14,6 +14,8 @@ from typing import Any
 
 import modal
 
+from scripts.tjr_media_policy import has_production_hd_video_stream, production_hd_format
+
 app = modal.App("clipper-tjr-official-youtube-probe")
 MAX_MODAL_EGRESS_ATTEMPTS = 3
 # Reuse the original Clipper Modal media image/provider that successfully
@@ -217,12 +219,7 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
                     )
                     break
                 formats = metadata.get("formats") or []
-                hd = any(
-                    isinstance(item, dict)
-                    and int(item.get("height") or 0) >= 720
-                    and item.get("vcodec") not in ("none", None)
-                    for item in formats
-                )
+                hd = any(isinstance(item, dict) and production_hd_format(item) for item in formats)
                 if not hd:
                     attempts.append(
                         {"url": url, "strategy": strategy_name, "reason": "NO_HD_FORMAT"}
@@ -235,7 +232,7 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
                         "--test",
                         "--no-part",
                         "-f",
-                        "bv*[height>=720]/b[height>=720]",
+                        "bv*[width>=1280][height>=720]/bv*[width>=720][height>=1280]/b[width>=1280][height>=720]/b[width>=720][height>=1280]",
                         "-o",
                         str(Path(temp) / "source.%(ext)s"),
                         url,
@@ -318,13 +315,8 @@ def verify_staged_media_probe(
         raise RuntimeError(
             "SOURCE_DURATION_INCOMPLETE: staged media ends before the verified scan window"
         )
-    if not any(
-        isinstance(stream, dict)
-        and stream.get("codec_type") == "video"
-        and int(stream.get("height") or 0) >= 720
-        for stream in streams
-    ):
-        raise RuntimeError("MISSING_HD_VIDEO_STREAM")
+    if not has_production_hd_video_stream(streams):
+        raise RuntimeError("MISSING_PRODUCTION_HD_VIDEO_STREAM")
     if not any(
         isinstance(stream, dict) and stream.get("codec_type") == "audio" for stream in streams
     ):
@@ -383,7 +375,9 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
             "mp4",
             *source_download_sections(expected_seconds),
             "-f",
-            "bv*[height>=720][height<=1080]+ba/b[height>=720]/bv*+ba/b",
+            "bv*[width>=1280][height>=720][height<=1080]+ba/"
+            "bv*[width>=720][height>=1280][width<=1080]+ba/"
+            "b[width>=1280][height>=720]/b[width>=720][height>=1280]",
             "--no-part",
             "-o",
             str(scratch_dir / "original.%(ext)s"),
