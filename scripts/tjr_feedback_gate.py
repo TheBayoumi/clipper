@@ -166,7 +166,13 @@ def hook_grounded_in_transcript(hook: str, transcript: str) -> bool:
         ),
         "WHAT HAPPENS WHEN THE STOP GETS HIT?": (
             "stop loss" in lowered
-            and any(cue in lowered for cue in ("got hit", "hit", "stopped out", "loss"))
+            and bool(
+                re.search(
+                    r"\b(?:stop(?:[- ]loss)?\s+(?:got|was|gets?|is)\s+hit|"
+                    r"(?:got|was|gets?|is)\s+stopped\s+out|stopped\s+out)\b",
+                    lowered,
+                )
+            )
         ),
         "WHAT'S THE SHORT SETUP IN THIS SELLOFF?": (
             any(
