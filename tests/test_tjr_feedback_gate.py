@@ -465,9 +465,10 @@ def test_auto_direct_uses_ordered_transport_failover() -> None:
     assert "options: [validate_only, auto_direct, modal_direct, youtube_direct" in workflow
     assert "needs: [tests, youtube_modal_egress]" in workflow
     assert (
-        "inputs.source_mode == 'auto_direct' && needs.youtube_modal_egress.result == 'failure'"
-        in workflow
+        "needs.youtube_modal_egress.outputs.acquisition_route == 'fallback'" in workflow
     )
+    assert "steps.modal_acquire.outcome" in workflow
+    assert "TJR_MODAL_USE_STAGED" in workflow
     assert (
         'contains(fromJSON(\'["auto_direct","youtube_direct"]\'), inputs.source_mode)' in workflow
     )
