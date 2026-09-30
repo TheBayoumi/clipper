@@ -218,7 +218,8 @@ jobs:
       needs.tests.result == 'success' &&
       (
         inputs.source_mode == 'youtube_direct' ||
-        (inputs.source_mode == 'auto_direct' && needs.youtube_modal_egress.result == 'failure')
+        (inputs.source_mode == 'auto_direct' &&
+         needs.youtube_modal_egress.outputs.acquisition_route == 'fallback')
       )
     runs-on: ubuntu-24.04
     timeout-minutes: 100
@@ -377,6 +378,7 @@ jobs:
           import os
           from pathlib import Path
           from clipper.brief import load_brief
+          from scripts.tjr_media_policy import production_hd_format
           from scripts.tjr_youtube_preview import (
               constrain_official_sources, discover_official_uploads, verified_youtube_metadata,
           )
@@ -400,9 +402,7 @@ jobs:
                       info = verified_youtube_metadata(video)
                       formats = info.get("formats") or []
                       if not any(
-                          isinstance(fmt, dict)
-                          and int(fmt.get("height") or 0) >= 720
-                          and fmt.get("vcodec") not in ("none", None)
+                          isinstance(fmt, dict) and production_hd_format(fmt)
                           for fmt in formats
                       ):
                           raise RuntimeError("No verified HD video formats")
@@ -480,6 +480,8 @@ jobs:
     timeout-minutes: 180
     permissions:
       contents: read
+    outputs:
+      acquisition_route: ${{ steps.modal_route.outputs.route }}
     env:
       TJR_MODAL_CHANNEL_ID: ${{ inputs.target_channel_id }}
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -502,13 +504,69 @@ jobs:
           set -euo pipefail
           python -m pip install -e . "curl-cffi>=0.15,<1" "modal>=1,<2"
           python -m py_compile scripts/tjr_modal_probe.py
-      - name: Acquire newest eligible original and render quality-driven editorial drafts
+      - name: Acquire newest eligible original from Modal
+        id: modal_acquire
+        continue-on-error: true
+        env:
+          TJR_MODAL_STAGE_ORIGINAL: "1"
+        run: |
+          set -euo pipefail
+          rm -f tjr-modal-probe/staged-original.json
+          modal run -m scripts.tjr_modal_probe
+      - name: Classify Modal acquisition outcome
+        id: modal_route
+        if: always()
+        env:
+          MODAL_ACQUIRE_OUTCOME: ${{ steps.modal_acquire.outcome }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          outcome = os.environ["MODAL_ACQUIRE_OUTCOME"]
+          staging_path = Path("tjr-modal-probe/staged-original.json")
+          egress_path = Path("tjr-modal-probe/verified-original-egress.json")
+          route = "fatal"
+          status = "MISSING_MODAL_EVIDENCE"
+
+          if outcome == "success" and staging_path.is_file():
+              staging = json.loads(staging_path.read_text(encoding="utf-8"))
+              status = str(staging.get("status") or "")
+              if status == "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED":
+                  route = "staged"
+          elif egress_path.is_file():
+              egress = json.loads(egress_path.read_text(encoding="utf-8"))
+              status = str(egress.get("status") or "")
+              if status in {
+                  "YOUTUBE_EGRESS_BOT_CHALLENGE",
+                  "NO_ACCESSIBLE_ORIGINAL_YOUTUBE",
+              }:
+                  route = "fallback"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"route={route}\n")
+              output.write(f"status={status}\n")
+          print(f"Modal acquisition route: {route}; status: {status}")
+          if route == "fatal":
+              raise SystemExit("Modal failed outside the approved transport-fallback boundary")
+          PY
+      - name: Render staged original through shared semantic editorial pipeline
+        if: steps.modal_route.outputs.route == 'staged'
+        env:
+          TJR_MODAL_USE_STAGED: "1"
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
           python -m pip install -e ".[asr]"
           python -m scripts.tjr_modal_runner
+      - name: Fail closed when strict Modal transport is unavailable
+        if: steps.modal_route.outputs.route == 'fallback' && inputs.source_mode == 'modal_direct'
+        run: |
+          echo "::error::Strict modal_direct acquisition was unavailable; no transport fallback allowed."
+          exit 1
       - name: Upload actual YouTube MP4s, SRT captions, source provenance and QA
         if: always()
         uses: actions/upload-artifact@v4
