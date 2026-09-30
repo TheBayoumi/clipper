@@ -884,11 +884,42 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             encoding="utf-8",
         )
         if not picks:
-            raise NoEditorialMoments(
-                "no distinct moments passed the provisional editorial rubric; "
-                f"strict={len(strict)} relaxed={relaxed_count} "
-                f"transcript_segments={len(segments)}; consult editorial-candidate-audit.json"
+            with source.open("rb") as media:
+                digest = hashlib.file_digest(media, "sha256").hexdigest()
+            report = {
+                "status": "NO_CREATOR_GRADE_MOMENTS",
+                "campaign": brief.campaign_id,
+                "source_platform": "youtube",
+                "source_url": chosen_video.url,
+                "source_channel_id": chosen_video.channel_id,
+                "source_channel_handle": CHANNELS[chosen_video.channel_id],
+                "source_title": metadata.get("title"),
+                "source_published_at": chosen_video.published,
+                "source_sha256": digest,
+                "source_transport": metadata.get("_transport", "verified_official_youtube"),
+                "source_dimensions": probe_original(source),
+                "source_profile": source_profile.as_dict(),
+                "editorial_rubric_version": RUBRIC_VERSION,
+                "editorial_weights": WEIGHTS,
+                "selection_policy": "quality_driven_zero_to_n",
+                "render_safety_limit": render_safety_limit,
+                "selected_clip_count": 0,
+                "clips": [],
+                "source_attempts": errors,
+                "manual_checks": [
+                    "No clip passed the creator-grade editorial gates for this source.",
+                    "Do not manufacture filler or switch sources because of editorial weakness.",
+                ],
+            }
+            (run_dir / "tjr-youtube-qa-report.json").write_text(
+                json.dumps(report, indent=2) + "\n", encoding="utf-8"
             )
+            LOGGER.info(
+                "EDITORIAL_NOOP=NO_CREATOR_GRADE_MOMENTS strict=%d relaxed=%d",
+                len(strict),
+                relaxed_count,
+            )
+            return run_dir
         LOGGER.info(
             "EDITORIAL_PROVISIONAL_SCREEN_PASSED=%d rubric=%s screening=%s",
             len(picks),
