@@ -59,7 +59,7 @@ on:
         type: boolean
         default: false
       source_video_id:
-        description: "Optional for channel discovery; required for a verified mirror."
+        description: "Exact source ID for verified-mirror/replay use only; direct modes discover dynamically inside target_channel_id."
         required: false
         type: string
         default: ""
