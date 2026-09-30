@@ -1,0 +1,320 @@
+"""Source-level semantic editorial discovery for TJR.
+
+The semantic model discovers topic/event structure across the whole transcript.
+Regex rules remain downstream safety checks; they are not the primary editor.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from collections import Counter
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Any
+
+from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
+
+SEMANTIC_MODEL = "BAAI/bge-small-en-v1.5"
+EVENT_DESCRIPTIONS = {
+    "trade_setup": "a concrete trading setup, entry, exit, market thesis or decision",
+    "mistake_lesson": "a trading mistake, lesson learned, warning, or useful correction",
+    "risk_management": "risk management, stop loss, position sizing, discipline, or protecting capital",
+    "surprise_reaction": "a surprising market event, strong authentic reaction, or unexpected outcome",
+    "result_payoff": "a clear result, payoff, consequence, resolution, or what happened next",
+    "explanation_argument": "a specific explanation, disagreement, reasoning chain, or why something matters",
+}
+_WORD = re.compile(r"[A-Za-z0-9$%'.-]+")
+_LEADING_FILLER = re.compile(
+    r"^(?:(?:okay|ok|so|well|basically|right|alright|all right|you know|i mean)\b[ ,.-]*)+",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticUnit:
+    start: float
+    end: float
+    text: str
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+
+EmbeddingFn = Callable[[Sequence[str]], list[list[float]]]
+
+
+class FastEmbedder:
+    """Lazy ONNX embedding backend; no hosted API and no PyTorch dependency."""
+
+    def __init__(self, model_name: str = SEMANTIC_MODEL) -> None:
+        try:
+            from fastembed import TextEmbedding  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "semantic editorial pass requires fastembed; install the production extras"
+            ) from exc
+        self.model_name = model_name
+        self._model = TextEmbedding(model_name=model_name)
+
+    def __call__(self, texts: Sequence[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        return [[float(value) for value in vector] for vector in self._model.embed(list(texts))]
+
+
+def _norm(vector: Sequence[float]) -> float:
+    return math.sqrt(sum(float(value) * float(value) for value in vector))
+
+
+def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
+    denominator = _norm(left) * _norm(right)
+    if denominator <= 0:
+        return 0.0
+    return max(
+        -1.0,
+        min(
+            1.0,
+            sum(float(a) * float(b) for a, b in zip(left, right, strict=False)) / denominator,
+        ),
+    )
+
+
+def _average(vectors: Sequence[Sequence[float]]) -> list[float]:
+    if not vectors:
+        return []
+    width = len(vectors[0])
+    if width == 0 or any(len(vector) != width for vector in vectors):
+        raise ValueError("semantic embedding dimensions are inconsistent")
+    return [
+        sum(float(vector[index]) for vector in vectors) / len(vectors) for index in range(width)
+    ]
+
+
+def _thought_units(segments: Sequence[TranscriptSegment]) -> list[SemanticUnit]:
+    """Build natural thought units before any candidate window exists."""
+    ordered = sorted(segments, key=lambda item: (item.start, item.end))
+    units: list[SemanticUnit] = []
+    group: list[TranscriptSegment] = []
+    for index, segment in enumerate(ordered):
+        if group and segment.start - group[-1].end >= 1.8:
+            units.append(
+                SemanticUnit(
+                    group[0].start,
+                    group[-1].end,
+                    " ".join(item.text.strip() for item in group).strip(),
+                )
+            )
+            group = []
+        group.append(segment)
+        next_segment = ordered[index + 1] if index + 1 < len(ordered) else None
+        next_pause = next_segment.start - segment.end if next_segment is not None else 99.0
+        duration = group[-1].end - group[0].start
+        sentence_end = segment.text.rstrip().endswith((".", "!", "?"))
+        if sentence_end or next_pause >= 0.65 or duration >= 9.0 or next_segment is None:
+            text = " ".join(item.text.strip() for item in group).strip()
+            if text:
+                units.append(SemanticUnit(group[0].start, group[-1].end, text))
+            group = []
+    return units
+
+
+def _extractive_hook(text: str, *, max_words: int = 12) -> str:
+    """Use a source-extractive, semantically salient phrase instead of a fixed template."""
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    cleaned = _LEADING_FILLER.sub("", cleaned).strip(" ,.-")
+    words = _WORD.findall(cleaned)
+    if len(words) < 3:
+        return ""
+    return " ".join(words[:max_words]).upper()
+
+
+def _event_labels(
+    unit_vectors: Sequence[Sequence[float]],
+    event_vectors: Sequence[Sequence[float]],
+) -> tuple[list[str], list[float]]:
+    names = list(EVENT_DESCRIPTIONS)
+    labels: list[str] = []
+    strengths: list[float] = []
+    for vector in unit_vectors:
+        scores = [_cosine(vector, event_vector) for event_vector in event_vectors]
+        best_index = max(range(len(scores)), key=scores.__getitem__)
+        labels.append(names[best_index])
+        strengths.append(scores[best_index])
+    return labels, strengths
+
+
+def _region_ids(units: Sequence[SemanticUnit], vectors: Sequence[Sequence[float]]) -> list[int]:
+    if not units:
+        return []
+    region = 0
+    result = [region]
+    for index in range(1, len(units)):
+        pause = units[index].start - units[index - 1].end
+        similarity = _cosine(vectors[index - 1], vectors[index])
+        if pause >= 1.8 or similarity < 0.30:
+            region += 1
+        result.append(region)
+    return result
+
+
+def _anchor_window(
+    index: int,
+    units: Sequence[SemanticUnit],
+    vectors: Sequence[Sequence[float]],
+    regions: Sequence[int],
+    *,
+    min_seconds: float,
+    max_seconds: float,
+) -> tuple[int, int] | None:
+    left = right = index
+    region = regions[index]
+    anchor_vector = vectors[index]
+    while units[right].end - units[left].start < min_seconds:
+        options: list[tuple[float, int, int]] = []
+        if left > 0 and regions[left - 1] == region:
+            options.append((_cosine(anchor_vector, vectors[left - 1]), left - 1, right))
+        if right + 1 < len(units) and regions[right + 1] == region:
+            options.append((_cosine(anchor_vector, vectors[right + 1]), left, right + 1))
+        if not options:
+            return None
+        _, new_left, new_right = max(options, key=lambda item: item[0])
+        if units[new_right].end - units[new_left].start > max_seconds:
+            return None
+        left, right = new_left, new_right
+
+    while True:
+        options = []
+        if left > 0 and regions[left - 1] == region:
+            duration = units[right].end - units[left - 1].start
+            similarity = _cosine(anchor_vector, vectors[left - 1])
+            if duration <= max_seconds and similarity >= 0.48:
+                options.append((similarity, left - 1, right))
+        if right + 1 < len(units) and regions[right + 1] == region:
+            duration = units[right + 1].end - units[left].start
+            similarity = _cosine(anchor_vector, vectors[right + 1])
+            if duration <= max_seconds and similarity >= 0.48:
+                options.append((similarity, left, right + 1))
+        if not options:
+            break
+        _, left, right = max(options, key=lambda item: item[0])
+    return left, right
+
+
+def _overlap(left: ClipCandidate, right: ClipCandidate) -> float:
+    intersection = max(0.0, min(left.end, right.end) - max(left.start, right.start))
+    union = max(left.end, right.end) - min(left.start, right.start)
+    return intersection / union if union > 0 else 0.0
+
+
+def build_semantic_editorial_candidates(
+    brief: CampaignBrief,
+    video_id: str,
+    segments: Sequence[TranscriptSegment],
+    *,
+    embedder: EmbeddingFn | None = None,
+) -> tuple[list[ClipCandidate], dict[str, Any]]:
+    """Discover complete 0..N candidate stories from full-source semantic structure."""
+    units = _thought_units(segments)
+    if not units:
+        return [], {
+            "semantic_model": SEMANTIC_MODEL,
+            "semantic_unit_count": 0,
+            "event_anchor_count": 0,
+            "candidate_count": 0,
+            "event_distribution": {},
+        }
+    backend = embedder or FastEmbedder()
+    texts = [unit.text for unit in units]
+    event_texts = list(EVENT_DESCRIPTIONS.values())
+    embedded = backend([*texts, *event_texts])
+    expected = len(texts) + len(event_texts)
+    if len(embedded) != expected:
+        raise RuntimeError("semantic embedding backend returned an incomplete batch")
+    unit_vectors = embedded[: len(texts)]
+    event_vectors = embedded[len(texts) :]
+    labels, strengths = _event_labels(unit_vectors, event_vectors)
+    regions = _region_ids(units, unit_vectors)
+
+    # Event relevance is a semantic anchor, not an output quota. A lower floor
+    # preserves recall; downstream editorial/visual gates decide whether a clip survives.
+    anchors = [
+        index
+        for index, strength in enumerate(strengths)
+        if strength >= 0.34 and len(_WORD.findall(units[index].text)) >= 3
+    ]
+    provisional: list[tuple[ClipCandidate, list[float]]] = []
+    seen_windows: set[tuple[int, int]] = set()
+    for anchor in anchors:
+        bounds = _anchor_window(
+            anchor,
+            units,
+            unit_vectors,
+            regions,
+            min_seconds=brief.min_clip_seconds,
+            max_seconds=brief.max_clip_seconds,
+        )
+        if bounds is None or bounds in seen_windows:
+            continue
+        seen_windows.add(bounds)
+        left, right = bounds
+        window_units = units[left : right + 1]
+        text = " ".join(unit.text for unit in window_units).strip()
+        if not text:
+            continue
+        start = max(0.0, math.floor(window_units[0].start * 10) / 10)
+        end = math.ceil(window_units[-1].end * 10) / 10
+        if not brief.min_clip_seconds <= end - start <= brief.max_clip_seconds:
+            continue
+        local_vectors = unit_vectors[left : right + 1]
+        coherence_pairs = [
+            _cosine(local_vectors[index - 1], local_vectors[index])
+            for index in range(1, len(local_vectors))
+        ]
+        coherence = sum(coherence_pairs) / len(coherence_pairs) if coherence_pairs else 1.0
+        event_strength = strengths[anchor]
+        hook = _extractive_hook(units[anchor].text)
+        if not hook:
+            continue
+        score = round(100 * event_strength + 25 * max(0.0, coherence), 4)
+        reasons = (
+            "candidate_origin=source_level_semantic_event",
+            f"semantic_model={SEMANTIC_MODEL}",
+            f"semantic_event={labels[anchor]}",
+            f"event_similarity={event_strength:.4f}",
+            f"semantic_coherence={coherence:.4f}",
+            f"semantic_region={regions[anchor]}",
+            f"semantic_hook={hook}",
+            "start_boundary=semantic_thought_boundary",
+            "end_boundary=semantic_thought_boundary",
+        )
+        provisional.append(
+            (ClipCandidate(video_id, start, end, text, score, reasons), _average(local_vectors))
+        )
+
+    ordered = sorted(provisional, key=lambda item: (-item[0].score, item[0].start))
+    selected: list[tuple[ClipCandidate, list[float]]] = []
+    for candidate, vector in ordered:
+        duplicate = False
+        for existing, existing_vector in selected:
+            if _overlap(candidate, existing) >= 0.55 or _cosine(vector, existing_vector) >= 0.90:
+                duplicate = True
+                break
+        if not duplicate:
+            selected.append((candidate, vector))
+
+    event_distribution = Counter(labels[index] for index in anchors)
+    candidates = [candidate for candidate, _ in selected]
+    audit = {
+        "architecture": "source_level_semantic_event_segmentation_v1",
+        "semantic_model": SEMANTIC_MODEL,
+        "semantic_unit_count": len(units),
+        "semantic_region_count": len(set(regions)),
+        "event_anchor_count": len(anchors),
+        "candidate_count": len(candidates),
+        "event_distribution": dict(event_distribution),
+        "candidate_policy": "semantic_event_then_safety_and_visual_qualification",
+        "fixed_candidate_or_output_quota": False,
+    }
+    return candidates, audit
