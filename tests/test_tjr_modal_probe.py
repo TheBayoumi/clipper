@@ -205,7 +205,9 @@ def test_modal_source_windowing_matches_runner_without_remote_editor_import(
             source_sections(seconds)
         with pytest.raises(ValueError, match="SOURCE_EXCEEDS_FULL_ANALYSIS_LIMIT"):
             youtube_scan_section_args(seconds)
-    assert "tjr_youtube_preview" not in inspect.getsource(script["stage_official_original"])
+    stage_source = inspect.getsource(script["stage_official_original"])
+    assert "tjr_youtube_preview" not in stage_source
+    assert "--abort-on-unavailable-fragments" in stage_source
 
 
 def test_staging_probe_rejects_corrupt_partial_and_missing_streams(
