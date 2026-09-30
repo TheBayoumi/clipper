@@ -476,7 +476,11 @@ def constrain_official_sources(
         raise RuntimeError("selected source_video_id must be exactly 11 YouTube ID characters")
     matches = [video for video in candidates if video.video_id == requested_id]
     if len(matches) != 1 or matches[0].channel_id not in CHANNELS:
-        scope = "target Reach-listed channel" if target_channel_id else "either Reach-listed channel"
+        scope = (
+            "target Reach-listed channel"
+            if target_channel_id
+            else "either Reach-listed channel"
+        )
         raise RuntimeError(f"selected source_video_id is not in the {scope} feed")
     return matches
 
