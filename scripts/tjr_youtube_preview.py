@@ -228,9 +228,14 @@ def discover_official_uploads() -> tuple[list[OfficialVideo], list[dict[str, str
 
 
 def _auth_args() -> list[str]:
-    """Optionally use an encrypted, explicitly supplied dedicated viewer session."""
+    """Use the explicitly supplied dedicated viewer session when production requires it."""
     value = os.environ.get("YOUTUBE_COOKIES_FILE", "").strip()
+    require_auth = os.environ.get("TJR_REQUIRE_AUTHENTICATED_YOUTUBE", "").strip() == "1"
     if not value:
+        if require_auth:
+            raise RuntimeError(
+                "authenticated YouTube session required: YOUTUBE_COOKIES_FILE is not configured"
+            )
         return []
     path = Path(value)
     if not path.is_file() or not path.stat().st_size:
@@ -284,13 +289,25 @@ def dynamic_token_variants() -> tuple[tuple[str, ...], ...]:
     return (*dynamic_bgutil_variants(), *dynamic_browser_variants())
 
 
-def verified_youtube_metadata(video: OfficialVideo) -> dict[str, Any]:
-    """Do not trust a title, channel handle, RSS alone, or search result for provenance."""
-    errors: list[str] = []
-    # Prefer independently generated PO tokens before the browser-backed provider.
-    # Both remain automatic guest-session transports; authenticated cookies are optional.
-    client_variants = (
-        *dynamic_token_variants(),
+def youtube_client_variants() -> tuple[tuple[str, ...], ...]:
+    """Choose clients for one explicit YouTube transport.
+
+    Authenticated production prefers yt-dlp's normal authenticated-client path first.
+    PO-token clients remain within the same authenticated session for cases where
+    YouTube requires playback attestation.
+    """
+    authenticated = bool(os.environ.get("YOUTUBE_COOKIES_FILE", "").strip())
+    token_variants = dynamic_token_variants()
+    if authenticated:
+        return (
+            (),
+            ("--extractor-args", "youtube:player_client=tv_downgraded"),
+            *token_variants,
+            ("--extractor-args", "youtube:player_client=mweb"),
+            ("--extractor-args", "youtube:player_client=web_safari"),
+        )
+    return (
+        *token_variants,
         ("--extractor-args", "youtube:player_client=mweb"),
         ("--extractor-args", "youtube:player_client=tv"),
         ("--extractor-args", "youtube:player_client=web_safari"),
@@ -298,6 +315,12 @@ def verified_youtube_metadata(video: OfficialVideo) -> dict[str, Any]:
         ("--extractor-args", "youtube:player_client=android_vr"),
         ("--impersonate", "chrome", "--extractor-args", "youtube:player_client=web_safari"),
     )
+
+
+def verified_youtube_metadata(video: OfficialVideo) -> dict[str, Any]:
+    """Do not trust a title, channel handle, RSS alone, or search result for provenance."""
+    errors: list[str] = []
+    client_variants = youtube_client_variants()
     for variant in client_variants:
         extra = list(variant)
         try:
@@ -397,15 +420,7 @@ def download_original_excerpt(
         str(work / "source.%(ext)s"),
     ]
     preferred = tuple((metadata or {}).get("_verified_client_args") or ())
-    client_variants = (
-        preferred,
-        *dynamic_token_variants(),
-        ("--extractor-args", "youtube:player_client=mweb"),
-        ("--extractor-args", "youtube:player_client=tv"),
-        ("--extractor-args", "youtube:player_client=web_safari"),
-        ("--extractor-args", "youtube:player_client=web_embedded"),
-        ("--extractor-args", "youtube:player_client=android_vr"),
-    )
+    client_variants = (preferred, *youtube_client_variants())
     errors: list[str] = []
     attempted: set[tuple[str, ...]] = set()
     for variant in client_variants:
