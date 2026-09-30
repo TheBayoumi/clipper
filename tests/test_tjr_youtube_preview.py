@@ -227,14 +227,20 @@ def test_explicit_youtube_source_cannot_fall_back_to_other_videos() -> None:
         constrain_official_sources([other, official], "not-a-video-id")
 
 
-def test_channel_bound_discovery_never_spills_to_other_reach_channel() -> None:
+def test_channel_bound_discovery_never_spills_and_is_newest_first() -> None:
     target = "UCGHBUXjDCeiIXNdKR0HUZnA"
     other_channel = "UCZen39LQJPx04GjPj7FOMcw"
-    target_video = OfficialVideo(
+    older_target = OfficialVideo(
         "AAAABBBB111",
         target,
-        "Target-channel upload",
+        "Older target-channel upload",
         "2026-09-29T18:00:00Z",
+    )
+    newest_target = OfficialVideo(
+        "EEEEFFFF333",
+        target,
+        "Newest target-channel upload",
+        "2026-09-30T00:30:00Z",
     )
     newer_other_video = OfficialVideo(
         "CCCCDDDD222",
@@ -243,11 +249,11 @@ def test_channel_bound_discovery_never_spills_to_other_reach_channel() -> None:
         "2026-09-30T01:00:00Z",
     )
     selected = constrain_official_sources(
-        [newer_other_video, target_video],
+        [newer_other_video, older_target, newest_target],
         None,
         target_channel_id=target,
     )
-    assert selected == [target_video]
+    assert selected == [newest_target, older_target]
 
 
 def test_explicit_video_must_belong_to_target_channel() -> None:
