@@ -135,6 +135,7 @@ def _noop_fixture(root: Path) -> Path:
                 "source_published_at": "2026-09-29T15:00:00Z",
                 "source_url": "https://www.youtube.com/watch?v=NoopVideo12",
                 "selection_policy": "quality_driven_zero_to_n",
+                "selected_clip_count": 0,
                 "clips": [],
             }
         ),
@@ -173,6 +174,32 @@ def test_zero_creator_grade_clips_is_a_valid_audited_noop(tmp_path: Path) -> Non
     assert result["editorial_noop_count"] == 1
     assert result["next_actions"] == ["SKIP_SOURCE_NO_CREATOR_GRADE_MOMENTS"]
     assert result["automatic_publication_allowed"] is False
+
+
+def test_zero_clip_noop_requires_explicit_consistent_counts(tmp_path: Path) -> None:
+    artifact = _noop_fixture(tmp_path)
+    report_path = next(artifact.rglob("tjr-youtube-qa-report.json"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report.pop("selected_clip_count")
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    result = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "INVALID_EDITORIAL_NOOP" in result["issues"]
+
+    artifact = _noop_fixture(tmp_path / "second")
+    audit_path = next(artifact.rglob("editorial-candidate-audit.json"))
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    audit.pop("selected_count")
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
+    result = review_run(tmp_path / "second", expected_channels=1, probe=_probe)
+    assert "INVALID_EDITORIAL_NOOP" in result["issues"]
+
+    artifact = _noop_fixture(tmp_path / "third")
+    report_path = next(artifact.rglob("tjr-youtube-qa-report.json"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["selected_clip_count"] = 1
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    result = review_run(tmp_path / "third", expected_channels=1, probe=_probe)
+    assert "INVALID_EDITORIAL_NOOP" in result["issues"]
 
 
 def test_success_is_review_only_and_checks_sidecars(tmp_path: Path) -> None:
