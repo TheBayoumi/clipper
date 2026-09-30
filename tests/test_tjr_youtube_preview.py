@@ -355,6 +355,14 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
                 "probe_source_profile": lambda *_: Mock(as_dict=lambda: {"fps": "60/1"}),
                 "probe_original": lambda *_: {"width": 1920, "height": 1080},
                 "transcribe_source_chunks": lambda *_args, **_kwargs: ([segments], 100.0),
+                "build_semantic_editorial_candidates": lambda *_args, **_kwargs: (
+                    [],
+                    {
+                        "architecture": "source_level_semantic_event_segmentation_v1",
+                        "candidate_count": 0,
+                        "fixed_candidate_or_output_quota": False,
+                    },
+                ),
             },
         ),
     ):
@@ -365,8 +373,8 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
     assert len(json.loads((run / "transcript.json").read_text())) == 3
     audit = json.loads((run / "editorial-candidate-audit.json").read_text())
     assert audit["selected"] == []
-    assert audit["strict_candidate_count"] >= 0
-    assert "relaxed_candidate_count" in audit
+    assert audit["semantic_candidate_count"] == 0
+    assert audit["semantic_architecture"]["fixed_candidate_or_output_quota"] is False
     report = json.loads((run / "tjr-youtube-qa-report.json").read_text())
     assert report["status"] == "NO_CREATOR_GRADE_MOMENTS"
     assert report["clips"] == []
