@@ -722,8 +722,8 @@ def review_run(
             "BLOCKED"
             if issues
             else (
-            "NO_CREATOR_GRADE_MOMENTS__NO_RENDER_REQUIRED"
-            if editorial_noop
+                "NO_CREATOR_GRADE_MOMENTS__NO_RENDER_REQUIRED"
+                if editorial_noop
                 else "TECHNICAL_QA_PASSED__HUMAN_REVIEW_REQUIRED"
             )
         )
