@@ -37,7 +37,7 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
         "100,100,0,0,3,18,0,2,120,120,375,1\n"
         "[Events]\n"
         r"Dialogue: 5,0:00:00.00,0:00:29.20,Hook,,0,0,0,,{\an8\pos(540,185)}"
-        "WHEN IS THE MARKET-CAP ENTRY TOO LATE?\\n"
+        "WHEN IS THE MARKET-CAP ENTRY TOO LATE?\n"
         r"Dialogue: 2,0:00:00.10,0:00:00.55,Caption,,0,0,0,,{\c&H0059DEFF&}"
         r"WORD{\rCaption}"
         "\n",
