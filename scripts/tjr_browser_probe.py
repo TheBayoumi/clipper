@@ -201,10 +201,14 @@ def run_probe(root: Path) -> Path:
         return report
     candidates, failures = discover_official_uploads()
     requested = os.environ.get("TJR_SOURCE_VIDEO_ID", "").strip()
+    target_channel_id = os.environ.get("TJR_TARGET_CHANNEL_ID", "").strip() or None
     published_after = load_brief(Path("campaigns/reach-tjr-weekly.yaml")).published_after
-    selected = constrain_official_sources(candidates, requested, published_after=published_after)[
-        :2
-    ]
+    selected = constrain_official_sources(
+        candidates,
+        requested,
+        published_after=published_after,
+        target_channel_id=target_channel_id,
+    )[:2]
     for index, video in enumerate(selected):
         record = {
             "source_url": video.url,
