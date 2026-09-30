@@ -365,6 +365,7 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     assert inputs["budget_confirmed"]["required"] is False
     assert set(inputs["source_mode"]["options"]) == {
         "validate_only",
+        "auto_direct",
         "modal_direct",
         "youtube_direct",
         "verified_mirror",
