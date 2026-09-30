@@ -19,7 +19,12 @@ def _fake_embedder(texts: list[str]) -> list[list[float]]:
     vectors: list[list[float]] = []
     for text in texts:
         lowered = text.lower()
-        if "concrete trading setup" in lowered or "trade" in lowered or "market" in lowered:
+        if (
+            "concrete trading setup" in lowered
+            or "trade" in lowered
+            or "market" in lowered
+            or "risk" in lowered
+        ):
             vectors.append([1.0, 0.0, 0.0])
         else:
             vectors.append([0.0, 1.0, 0.0])
