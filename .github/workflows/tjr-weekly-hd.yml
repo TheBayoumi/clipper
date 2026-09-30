@@ -249,10 +249,10 @@ jobs:
             -p 127.0.0.1:4416:4416 \
             brainicism/bgutil-ytdlp-pot-provider:2.0.0
           for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:4416/ >/dev/null; then break; fi
+            if curl -sS -o /dev/null http://127.0.0.1:4416/; then break; fi
             sleep 1
           done
-          curl -fsS http://127.0.0.1:4416/ >/dev/null
+          curl -sS -o /dev/null http://127.0.0.1:4416/
 
           CHROME="$(command -v google-chrome-stable || command -v google-chrome || command -v chromium)"
           if [[ -z "$CHROME" ]]; then
