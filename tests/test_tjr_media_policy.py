@@ -18,9 +18,7 @@ def test_ytdlp_and_ffprobe_use_the_same_hd_rule() -> None:
     assert production_hd_format({"width": 1280, "height": 720, "vcodec": "avc1"})
     assert not production_hd_format({"width": 960, "height": 720, "vcodec": "avc1"})
     assert not production_hd_format({"width": 1920, "height": 1080, "vcodec": "none"})
-    assert has_production_hd_video_stream(
-        [{"codec_type": "video", "width": 1920, "height": 1080}]
-    )
+    assert has_production_hd_video_stream([{"codec_type": "video", "width": 1920, "height": 1080}])
     assert not has_production_hd_video_stream(
         [{"codec_type": "video", "width": 960, "height": 720}]
     )
