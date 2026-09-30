@@ -74,6 +74,28 @@ def test_real_distinct_hooks_can_yield_more_than_two_clips() -> None:
     assert len(picks) == 3
 
 
+def test_render_safety_limit_records_overflow_instead_of_becoming_a_quota() -> None:
+    originals = [
+        "damn look at that move i did not expect the market to reverse "
+        "i will manage the stop before entering this next trade tomorrow",
+        "why do traders keep risking too much money on positions "
+        "because they do not have a trading plan and chase the price every time",
+        "what is the biggest mistake in a losing trade people move their "
+        "stop loss and turn a small loss into a huge financial problem",
+    ]
+    fuller = [
+        text + " my plan sets clear exits before taking the position so there "
+        "is never any need to panic or chase the next move"
+        for text in originals
+    ]
+    picks, rejected = select_editorial_moments(
+        [clip(i * 45, text, 10) for i, text in enumerate(fuller)],
+        render_safety_limit=1,
+    )
+    assert len(picks) == 1
+    assert sum(item["reason"] == "RENDER_SAFETY_LIMIT" for item in rejected) == 2
+
+
 def test_render_safety_bounds_are_explicit() -> None:
     with pytest.raises(ValueError):
         select_editorial_moments([], render_safety_limit=0)
