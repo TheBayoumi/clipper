@@ -21,6 +21,8 @@ from urllib.parse import urlparse
 
 import yaml
 
+from scripts.tjr_media_policy import production_hd_dimensions
+
 OFFICIAL_TJR_CHANNEL = "UCGHBUXjDCeiIXNdKR0HUZnA"
 OFFICIAL_TJR_CHANNELS = [OFFICIAL_TJR_CHANNEL, "UCZen39LQJPx04GjPj7FOMcw"]
 EXPECTED_SIZE = (1080, 1920)
