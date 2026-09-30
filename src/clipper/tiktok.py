@@ -68,9 +68,8 @@ def creative_hook_from_text(text: str) -> str:
         r"(?:the\s+)?order\s+blocks?\s+anymore\b",
         lowered,
     )
-    if (
-        (stopped_order_blocks and not negated_order_block_stop)
-        or (no_reason_order_blocks and not negated_no_reason)
+    if (stopped_order_blocks and not negated_order_block_stop) or (
+        no_reason_order_blocks and not negated_no_reason
     ):
         return "WHY HE STOPPED USING ORDER BLOCKS"
     if "copy trad" in lowered and any(x in lowered for x in ("blind", "never", "don't")):
