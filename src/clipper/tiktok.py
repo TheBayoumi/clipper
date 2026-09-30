@@ -140,9 +140,14 @@ def creative_hook_from_text(text: str) -> str:
     )
     if million_earnings and not negated_million_earnings:
         return "A TRADER CLAIMS MILLIONS: HOW?"
-    if "stop loss" in lowered and any(
-        x in lowered for x in ("got hit", "hit", "stopped out", "loss")
-    ):
+    stop_was_hit = bool(
+        re.search(
+            r"\\b(?:stop(?:[- ]loss)?\\s+(?:got|was|gets?|is)\\s+hit|"
+            r"(?:got|was|gets?|is)\\s+stopped\\s+out|stopped\\s+out)\\b",
+            lowered,
+        )
+    )
+    if "stop loss" in lowered and stop_was_hit:
         return "WHAT HAPPENS WHEN THE STOP GETS HIT?"
     # Require an affirmative waiting-to-enter construction, not mere keyword
     # co-occurrence; a persistent hook must never reverse the spoken meaning.
