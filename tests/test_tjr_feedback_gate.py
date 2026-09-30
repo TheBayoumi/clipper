@@ -279,7 +279,7 @@ def test_workflow_stores_independent_two_channel_evidence() -> None:
         Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
     ).read_text(encoding="utf-8")
     assert "feedback_audit:" in workflow
-    assert "youtube_preview, youtube_alternate_egress, youtube_modal_egress, render" in workflow
+    assert "youtube_preview, youtube_modal_egress, render" in workflow
     assert "python -m scripts.tjr_feedback_gate" in workflow
     assert "actions/download-artifact@v4" in workflow
     assert "gh issue comment 7" in workflow
@@ -452,27 +452,24 @@ def test_every_real_production_mode_routes_through_independent_feedback_audit() 
     workflow = (
         Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
     ).read_text(encoding="utf-8")
-    assert "youtube_preview, youtube_alternate_egress, youtube_modal_egress, render" in workflow
-    assert '["auto_direct","modal_direct","youtube_direct","verified_mirror"]' in workflow
+    assert "youtube_preview, youtube_modal_egress, render" in workflow
+    assert '["modal_direct","youtube_direct","verified_mirror"]' in workflow
     assert "pattern: tjr-real-original-youtube-hd-*" in workflow
     assert "pattern: tjr-real-youtube-hd-*" in workflow
-    assert "pattern: tjr-youtube-alt-*" in workflow
     assert "pattern: tjr-weekly-hd-*" in workflow
 
 
-def test_auto_direct_uses_ordered_transport_failover() -> None:
+def test_production_has_no_automatic_transport_fallback() -> None:
     workflow = (
         Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
     ).read_text(encoding="utf-8")
-    assert "options: [validate_only, auto_direct, modal_direct, youtube_direct" in workflow
-    assert "needs: [tests, youtube_modal_egress]" in workflow
-    assert "needs.youtube_modal_egress.outputs.acquisition_route == 'fallback'" in workflow
-    assert "steps.modal_acquire.outcome" in workflow
-    assert "TJR_MODAL_USE_STAGED" in workflow
-    assert (
-        'contains(fromJSON(\'["auto_direct","youtube_direct"]\'), inputs.source_mode)' in workflow
-    )
-    assert "needs.youtube_preview.result == 'failure'" in workflow
+    assert "auto_direct" not in workflow
+    assert "youtube_alternate_egress:" not in workflow
+    assert "Fallback YouTube original" not in workflow
+    assert "needs.youtube_preview.result == 'failure'" not in workflow
+    assert "acquisition_route" not in workflow
+    assert "inputs.source_mode == 'modal_direct'" in workflow
+    assert "inputs.source_mode == 'youtube_direct'" in workflow
     assert "bgutil-ytdlp-pot-provider:2.0.0" in workflow
     assert "-p 127.0.0.1:4416:4416" in workflow
     assert "TJR_BGUTIL_POT_PROVIDER_URL: http://127.0.0.1:4416" in workflow
