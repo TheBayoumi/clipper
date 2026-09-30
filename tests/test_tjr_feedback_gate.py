@@ -473,6 +473,9 @@ def test_auto_direct_uses_ordered_transport_failover() -> None:
         'contains(fromJSON(\'["auto_direct","youtube_direct"]\'), inputs.source_mode)' in workflow
     )
     assert "needs.youtube_preview.result == 'failure'" in workflow
+    assert "bgutil-ytdlp-pot-provider:2.0.0" in workflow
+    assert "-p 127.0.0.1:4416:4416" in workflow
+    assert "TJR_BGUTIL_POT_PROVIDER_URL: http://127.0.0.1:4416" in workflow
     assert "TJR_ASR_MODEL: distil-large-v3" in workflow
 
 
