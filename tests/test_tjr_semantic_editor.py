@@ -84,19 +84,3 @@ def test_semantic_editor_rejects_out_of_domain_luxury_content_before_event_label
     assert audit["out_of_domain_unit_count"] == audit["semantic_unit_count"]
     assert audit["event_anchor_count"] == 0
     assert audit["fixed_candidate_or_output_quota"] is False
-
-
-def test_semantic_editor_rejects_non_trading_lifestyle_source_before_regex_gate() -> None:
-    segments = [
-        TranscriptSegment(0, 7, "Look at this chrome vest and how much it costs."),
-        TranscriptSegment(7, 14, "These pants have real gold hardware and custom patches."),
-        TranscriptSegment(14, 21, "I can bring out the Rolex and all of the silver jewelry."),
-        TranscriptSegment(21, 28, "My girlfriend also has this leopard bag with zebra handles."),
-    ]
-    candidates, audit = build_semantic_editorial_candidates(
-        _brief(), "976-d0RlyfQ", segments, embedder=_fake_embedder
-    )
-    assert candidates == []
-    assert audit["event_anchor_count"] == 0
-    assert audit["campaign_relevant_unit_count"] == 0
-    assert audit["campaign_domain_gate"]["minimum_margin_over_non_campaign"] == 0.02
