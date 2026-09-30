@@ -16,7 +16,7 @@ from typing import Literal
 from clipper.models import ClipCandidate, TranscriptSegment
 from clipper.tiktok import creative_hook_from_text, distinct_hook_from_text
 
-RUBRIC_VERSION = "tjr-editorial-v3-creator-quality"
+RUBRIC_VERSION = "tjr-editorial-v4-semantic-campaign-quality"
 WEIGHTS = {"opening": 25, "story": 25, "emotion": 10, "visuals": 15, "retention": 25}
 MIN_CREATOR_EDITORIAL_SCORE = 74.0
 MAX_SCORE_DROP_FROM_BEST = 8.0
@@ -24,13 +24,15 @@ _WORDS = re.compile(r"[A-Za-z0-9$']+")
 _NUMBERS = re.compile(r"(?<!\w)\$?\d[\d,.]*(?:%|k|m)?\b", re.IGNORECASE)
 _REACTION = re.compile(
     r"\b(damn|wow|no way|what the hell|insane|unbelievable|wait|"
-    r"look at that|are you serious|holy shit|no shot|what the fuck)\b",
+    r"look at that|are you serious|holy shit|no shot|what the fuck|"
+    r"oh my god|oh my goodness|you don't even want to know|too much)\b",
     re.IGNORECASE,
 )
 _QUESTION = re.compile(r"^(why|how|what|who|when|where|did|does|can|should)\b", re.I)
 _ACTION = re.compile(
     r"\b(hit|broke|break|stopped|entered|reversed|crashed|spiked|"
-    r"lost|made|jumped|risk|mistake)\b",
+    r"lost|made|jumped|risk|mistake|show|showing|reveal|revealed|"
+    r"worth|cost|better|worse|compare|forgot|look)\b",
     re.IGNORECASE,
 )
 _TOPIC = re.compile(
@@ -206,11 +208,17 @@ def _semantic_hook_override(candidate: ClipCandidate) -> str | None:
     return None
 
 
+def _semantic_campaign_relevant(candidate: ClipCandidate) -> bool:
+    relevance = _reason_float(candidate, "campaign_relevance=")
+    margin = _reason_float(candidate, "relevance_margin=")
+    return relevance is not None and margin is not None and relevance >= 0.30 and margin >= 0.02
+
+
 def _story_rating_for_candidate(candidate: ClipCandidate) -> CriterionRating:
     strength = _reason_float(candidate, "event_similarity=")
     if strength is None:
         return _story_rating(candidate.text)
-    score = _clamp((strength - 0.28) / 0.50 * 5)
+    score = _clamp((strength - 0.30) / 0.35 * 5)
     return CriterionRating(
         score,
         "semantic_model",
@@ -225,7 +233,7 @@ def _retention_rating_for_candidate(candidate: ClipCandidate) -> CriterionRating
     coherence = _reason_float(candidate, "semantic_coherence=")
     if coherence is None:
         return _retention_rating(candidate.text)
-    score = _clamp((coherence - 0.25) / 0.60 * 5)
+    score = _clamp((coherence - 0.25) / 0.40 * 5)
     return CriterionRating(
         score,
         "semantic_model",
@@ -379,9 +387,10 @@ def candidate_gate_failures(
     if _OFF_TOPIC.search(text):
         failed.append("POLICY_SENSITIVE_OFF_TOPIC")
     story = _story_rating_for_candidate(candidate)
-    authentic_reaction = _REACTION.search(text) and (story.score or 0) >= 4
-    if not _TOPIC.search(text) and not authentic_reaction:
-        failed.append("NO_TRADING_CONTEXT_OR_COMPLETE_REACTION")
+    authentic_reaction = bool(_REACTION.search(text)) and (story.score or 0) >= 3
+    semantic_campaign_moment = _semantic_campaign_relevant(candidate) and (story.score or 0) >= 2.5
+    if not (_TOPIC.search(text) or authentic_reaction or semantic_campaign_moment):
+        failed.append("NO_CAMPAIGN_RELEVANT_COMPLETE_MOMENT")
     if not 28 <= len(words) <= 155:
         failed.append("WORD_COUNT_OUT_OF_RANGE")
     if not 0.9 <= len(words) / max(candidate.duration, 1.0) <= 5.0:
@@ -397,13 +406,13 @@ def candidate_gate_failures(
             failed.append("WEAK_FIRST_TWO_SECONDS")
         elif (
             opening.score is None
-            or not _TOPIC.search(text)
-            or (story.score or 0) < 3
+            or not (_TOPIC.search(text) or authentic_reaction or semantic_campaign_moment)
+            or (story.score or 0) < 2.5
             or not text.rstrip().endswith((".", "!", "?"))
         ):
-            # A persistent on-screen hook can be tried only on a complete,
-            # substantive trading story. It cannot repair a cut-off ending.
-            failed.append("WEAK_OPENING_WITHOUT_COMPLETE_TRADING_STORY")
+            # A persistent on-screen hook can rescue weak spoken openings only when
+            # the complete source-grounded moment is already campaign-relevant.
+            failed.append("WEAK_OPENING_WITHOUT_COMPLETE_STORY")
     return failed
 
 
@@ -475,8 +484,8 @@ def evaluate_candidate(
         integrity_evidence=evidence,
         reasons=(
             f"first_two_seconds={opening.score:.1f}/5 (transcript proxy)",
-            f"story={ratings['story'].score:.1f}/5 (lexical proxy)",
-            f"retention={ratings['retention'].score:.1f}/5 (lexical proxy)",
+            f"story={ratings['story'].score:.1f}/5 ({ratings['story'].basis})",
+            f"retention={ratings['retention'].score:.1f}/5 ({ratings['retention'].basis})",
             "portrait visuals and editorial integrity require source review",
             *(
                 ("review_only_weak_opening_needs_manual_first_two_seconds_approval",)
