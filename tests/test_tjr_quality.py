@@ -356,6 +356,8 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     inputs = events["workflow_dispatch"]["inputs"]
     assert inputs["source_mode"]["default"] == "validate_only"
     assert inputs["source_video_id"]["required"] is False
+    assert inputs["target_channel_id"]["required"] is False
+    assert "clip_limit" not in inputs
     assert inputs["source_verified"]["required"] is False
     assert inputs["budget_confirmed"]["required"] is False
     assert set(inputs["source_mode"]["options"]) == {
@@ -372,14 +374,17 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
         if item.get("name") == "Validate production inputs before any real source acquisition"
     )
     assert "TJR_BUDGET_CONFIRMED" in preflight["run"]
-    assert "clip_limit must be an integer between 1 and 20" in preflight["run"]
+    assert "Direct production requires exactly one Reach-listed target_channel_id" in preflight["run"]
+    assert "do not pin source_video_id" in preflight["run"]
+    assert "clip_limit" not in preflight["run"]
     fallback = jobs["youtube_alternate_egress"]
     assert fallback["needs"] == ["tests", "youtube_preview"]
     assert "needs.youtube_preview.result == 'failure'" in fallback["if"]
     for name in ("youtube_preview", "youtube_modal_egress", "render"):
         assert jobs[name]["env"]["TJR_CAPTION_STYLE"] == "B2"
-    assert jobs["youtube_modal_egress"]["env"]["TJR_EDITORIAL_BATCH_LIMIT"] == (
-        "${{ inputs.clip_limit }}"
+    assert jobs["youtube_modal_egress"]["env"]["TJR_RENDER_SAFETY_LIMIT"] == "20"
+    assert jobs["youtube_modal_egress"]["env"]["TJR_MODAL_CHANNEL_ID"] == (
+        "${{ inputs.target_channel_id }}"
     )
     mirror_script = " ".join(item.get("run", "") for item in jobs["render"]["steps"])
     assert "scripts.tjr_quality --stage" in mirror_script
