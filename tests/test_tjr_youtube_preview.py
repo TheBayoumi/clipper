@@ -142,6 +142,34 @@ def test_metadata_accepts_matching_official_channel_and_nonlive_video() -> None:
         assert verified_youtube_metadata(official)["channel_id"] == official.channel_id
 
 
+def test_metadata_rejects_live_and_upcoming_streams() -> None:
+    official = OfficialVideo(
+        "8PYgFVB0GHE",
+        "UCGHBUXjDCeiIXNdKR0HUZnA",
+        "Scheduled stream",
+        "2026-09-30T12:00:00+00:00",
+    )
+    for live_status in ("is_live", "is_upcoming"):
+        response = Mock(
+            stdout=json.dumps(
+                {
+                    "id": official.video_id,
+                    "channel_id": official.channel_id,
+                    "duration": 900,
+                    "live_status": live_status,
+                }
+            )
+        )
+        with (
+            patch.dict(
+                verified_youtube_metadata.__globals__,
+                {"invoke": Mock(return_value=response)},
+            ),
+            pytest.raises(RuntimeError, match="metadata unavailable"),
+        ):
+            verified_youtube_metadata(official)
+
+
 def test_campaign_prefers_a_recent_eligible_full_video_to_newer_hashtag_shorts() -> None:
     full = OfficialVideo(
         "p2LU37eat70",
