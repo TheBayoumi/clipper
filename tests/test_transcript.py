@@ -239,3 +239,12 @@ def test_word_aligned_whisper_preserves_exact_word_boundaries_and_groups() -> No
     assert actual[-1].text == "unaligned fallback"
     assert actual[-1].words == ()
     assert actual[0].to_dict()["words"][0]["text"] == "Wait"
+
+
+def test_asr_extra_pins_pyav_before_removed_metadata_api() -> None:
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    asr = config["project"]["optional-dependencies"]["asr"]
+    assert "av>=11,<19" in asr
