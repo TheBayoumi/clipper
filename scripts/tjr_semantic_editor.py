@@ -38,7 +38,9 @@ EVENT_DESCRIPTIONS = {
     "explanation_argument": (
         "a specific explanation, disagreement, opinion, reasoning chain, or why something matters"
     ),
-    "trading_decision": "a concrete financial-market trade, setup, entry, exit, thesis, or decision",
+    "trading_decision": (
+        "a concrete financial-market trade, setup, entry, exit, thesis, or decision"
+    ),
     "risk_management": (
         "risk management, stop loss, position sizing, discipline, protecting capital, "
         "or a trading lesson"
@@ -341,9 +343,7 @@ def build_semantic_editorial_candidates(
         if not hook:
             continue
         score = round(
-            70 * event_strength
-            + 20 * max(0.0, coherence)
-            + 20 * max(0.0, campaign_scores[anchor]),
+            70 * event_strength + 20 * max(0.0, coherence) + 20 * max(0.0, campaign_scores[anchor]),
             4,
         )
         reasons = (
