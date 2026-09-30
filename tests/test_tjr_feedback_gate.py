@@ -464,9 +464,7 @@ def test_auto_direct_uses_ordered_transport_failover() -> None:
     ).read_text(encoding="utf-8")
     assert "options: [validate_only, auto_direct, modal_direct, youtube_direct" in workflow
     assert "needs: [tests, youtube_modal_egress]" in workflow
-    assert (
-        "needs.youtube_modal_egress.outputs.acquisition_route == 'fallback'" in workflow
-    )
+    assert "needs.youtube_modal_egress.outputs.acquisition_route == 'fallback'" in workflow
     assert "steps.modal_acquire.outcome" in workflow
     assert "TJR_MODAL_USE_STAGED" in workflow
     assert (
