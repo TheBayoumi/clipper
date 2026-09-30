@@ -318,7 +318,13 @@ def probe_media(path: Path, *, full_decode: bool = False) -> dict[str, Any]:
     }
 
 
-def verify_ass_sidecar(path: Path, *, duration_seconds: float, reported_word_events: int) -> None:
+def verify_ass_sidecar(
+    path: Path,
+    *,
+    duration_seconds: float,
+    reported_word_events: int,
+    expected_hook: str,
+) -> None:
     """Independently inspect the persisted ASS events, not only the QA claim."""
     if path.stat().st_size > 6_000_000:
         raise ValueError("oversized ASS evidence")
@@ -339,6 +345,9 @@ def verify_ass_sidecar(path: Path, *, duration_seconds: float, reported_word_eve
     fields = hooks[0].split(",", 9)
     if len(fields) != 10 or fields[3] != "Hook":
         raise ValueError("ASS has no valid persistent hook")
+    rendered_hook = re.sub(r"\\{[^}]*\\}", "", fields[9]).replace(r"\\N", " ").strip()
+    if " ".join(rendered_hook.split()).casefold() != " ".join(expected_hook.split()).casefold():
+        raise ValueError("ASS hook text does not match the audited hook")
 
     def seconds(value: str) -> float:
         match = re.fullmatch(r"(\d+):(\d{2}):(\d{2})\.(\d{2})", value)
@@ -532,10 +541,13 @@ def inspect_artifact(
                         ass,
                         duration_seconds=float(clip["duration_seconds"]),
                         reported_word_events=int(overlay.get("spoken_word_highlight_events") or 0),
+                        expected_hook=hook,
                     )
                 except ValueError:
                     issues.append("CAPTION_OR_HOOK_TIMING_FAILED")
                 quality = read_json(checked_path(base, clip["source_matched_quality"]))
+                if int(quality.get("output_bytes") or -1) != mp4.stat().st_size:
+                    issues.append("SOURCE_FIDELITY_FAILED")
                 try:
                     verify_edit_plan(quality, duration_seconds=float(clip["duration_seconds"]))
                 except (TypeError, ValueError):
