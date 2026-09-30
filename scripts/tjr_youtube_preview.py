@@ -804,7 +804,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             chosen_video.video_id,
             segments,
         )
-        screening_mode = "source_level_semantic_event_segmentation_v1"
+        screening_mode = str(semantic_audit["architecture"])
         picks, rejected = select_editorial_moments(
             ranked,
             render_safety_limit=render_safety_limit,
