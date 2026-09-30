@@ -1,8 +1,8 @@
-"""GitHub-runner orchestration of verified Modal originals and shared TJR editing.
+"""GitHub-runner orchestration of one verified Modal original and shared TJR editing.
 
-Retries a different *approved* upload only when the previous video's own
-transcript failed the editorial gate. Never substitutes outside creators, an
-unverified mirror, or a synthetic clip. Each failed source retains diagnostics.
+Source discovery may skip ineligible live/short/unavailable uploads before staging,
+but once one original is verified and staged, editorial weakness never causes a
+silent switch to an older video. Zero creator-grade clips is a valid no-op.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.tjr_quality import probe_original
-from scripts.tjr_youtube_preview import NoEditorialMoments, render_youtube_previews
+from scripts.tjr_youtube_preview import render_youtube_previews
 
 VOLUME = "clipper-tjr-source-transport"
 _REMOTE_SOURCE = re.compile(r"runs/\d{4,20}-\d{1,4}/[A-Za-z0-9_-]{11}/original\.(?:mp4|mkv|webm)")
@@ -124,81 +124,57 @@ def run_modal_production(
     root: Path = Path("tjr-modal-artifacts"),
     brief: Path = Path("campaigns/reach-tjr-weekly.yaml"),
     probe_root: Path = Path("tjr-modal-probe"),
-    max_sources: int = 2,
 ) -> Path:
-    if not 1 <= max_sources <= 3:
-        raise ValueError("max_sources must be between 1 and 3")
-    explicitly_pinned = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip()
-    excluded: set[str] = set()
-    failures: list[dict[str, str]] = []
     root.mkdir(parents=True, exist_ok=True)
-    for attempt in range(1, (1 if explicitly_pinned else max_sources) + 1):
-        staging: dict[str, Any] | None = None
-        original: Path | None = None
-        attempt_root = root / f"attempt-{attempt}"
-        attempt_root.mkdir(parents=True, exist_ok=True)
-        try:
-            staging = _acquire_original(excluded, probe_root)
-            egress_report = probe_root / "verified-original-egress.json"
-            if egress_report.is_file():
-                (attempt_root / "verified-original-egress.json").write_text(
-                    egress_report.read_text(encoding="utf-8"), encoding="utf-8"
-                )
-            (attempt_root / "source-roundtrip.json").write_text(
-                json.dumps(
-                    {
-                        "attempt": attempt,
-                        "video_id": staging["video_id"],
-                        "channel_id": staging["channel_id"],
-                        "source_sha256": staging["source_sha256"],
-                    },
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
+    attempt_root = root / "attempt-1"
+    attempt_root.mkdir(parents=True, exist_ok=True)
+    staging: dict[str, Any] | None = None
+    original: Path | None = None
+    try:
+        staging = _acquire_original(set(), probe_root)
+        egress_report = probe_root / "verified-original-egress.json"
+        if egress_report.is_file():
+            (attempt_root / "verified-original-egress.json").write_text(
+                egress_report.read_text(encoding="utf-8"), encoding="utf-8"
             )
-            original = _transfer_verified_original(staging, attempt_root / "source")
-            env_manifest = str((attempt_root / "source.json").resolve())
-            # This exact source is required: the editor must never silently
-            # acquire another video after verification or an editorial failure.
-            os.environ["TJR_BROWSER_CAPTURE_FILE"] = env_manifest
-            os.environ["TJR_REQUIRE_STAGED_ORIGINAL"] = "1"
-            os.environ["TJR_SOURCE_VIDEO_ID"] = str(staging["video_id"])
-            try:
-                result = render_youtube_previews(attempt_root, brief)
-            except NoEditorialMoments as exc:
-                failed_id = str(staging["video_id"])
-                failures.append({"video_id": failed_id, "error": str(exc)})
-                (attempt_root / "editorial-failure.json").write_text(
-                    json.dumps(failures[-1], indent=2) + "\n", encoding="utf-8"
-                )
-                if explicitly_pinned:
-                    raise
-                excluded.add(failed_id)
-                os.environ.pop("TJR_SOURCE_VIDEO_ID", None)
-                continue
-            print("REAL_VERIFIED_TJR_RENDER_ARTIFACTS:", result, flush=True)
-            return result
+        (attempt_root / "source-roundtrip.json").write_text(
+            json.dumps(
+                {
+                    "attempt": 1,
+                    "video_id": staging["video_id"],
+                    "channel_id": staging["channel_id"],
+                    "source_sha256": staging["source_sha256"],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        original = _transfer_verified_original(staging, attempt_root / "source")
+        env_manifest = str((attempt_root / "source.json").resolve())
+        # This exact source is authoritative after verification. Editorial weakness
+        # must produce an audited zero-clip result, never a different source.
+        os.environ["TJR_BROWSER_CAPTURE_FILE"] = env_manifest
+        os.environ["TJR_REQUIRE_STAGED_ORIGINAL"] = "1"
+        os.environ["TJR_SOURCE_VIDEO_ID"] = str(staging["video_id"])
+        result = render_youtube_previews(attempt_root, brief)
+        print("REAL_VERIFIED_TJR_RENDER_ARTIFACTS:", result, flush=True)
+        return result
+    finally:
+        try:
+            if staging is not None:
+                _purge_remote(staging, attempt_root / "remote-cleanup-error.json")
         finally:
-            try:
-                if staging is not None:
-                    _purge_remote(staging, attempt_root / "remote-cleanup-error.json")
-            finally:
-                if original is not None:
-                    original.unlink(missing_ok=True)
-                (attempt_root / "source.json").unlink(missing_ok=True)
-                os.environ.pop("TJR_BROWSER_CAPTURE_FILE", None)
-                os.environ.pop("TJR_REQUIRE_STAGED_ORIGINAL", None)
-    raise NoEditorialMoments(
-        "all tested approved originals failed editorial screening: "
-        + json.dumps(failures, ensure_ascii=False)
-    )
-
+            if original is not None:
+                original.unlink(missing_ok=True)
+            (attempt_root / "source.json").unlink(missing_ok=True)
+            os.environ.pop("TJR_BROWSER_CAPTURE_FILE", None)
+            os.environ.pop("TJR_REQUIRE_STAGED_ORIGINAL", None)
+            os.environ.pop("TJR_SOURCE_VIDEO_ID", None)
 
 def main() -> int:
-    requested = os.getenv("TJR_MODAL_EDITORIAL_MAX_SOURCES", "2")
     try:
-        run_modal_production(max_sources=int(requested))
+        run_modal_production()
     except (ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as exc:
         print(f"TJR_MODAL_PRODUCTION_FAILED: {exc}", flush=True)
         return 1
