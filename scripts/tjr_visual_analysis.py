@@ -78,4 +78,6 @@ def analyze_candidate_visuals(source: Path, candidate: ClipCandidate) -> Editori
         f"mean_frame_motion={mean_motion:.4f}; "
         "visual score is measured pre-render evidence, not integrity approval"
     )
-    return EditorialReview(visual_score=round(score, 2), visual_notes=notes)
+    return EditorialReview(
+        visual_score=round(score, 2), visual_notes=notes, visual_basis="machine_measured"
+    )
