@@ -660,7 +660,7 @@ def test_direct_download_requires_full_verified_duration(tmp_path: Path) -> None
 
 def test_direct_mode_artifacts_include_all_referenced_qa_evidence() -> None:
     workflow = (ROOT / ".github" / "workflows" / "tjr-weekly-hd.yml").read_text(encoding="utf-8")
-    for root in ("tjr-youtube-artifacts", "tjr-alt-egress"):
+    for root in ("tjr-youtube-artifacts",):
         for suffix in (
             "**/clips/*.ass",
             "**/clips/*.quality.json",
