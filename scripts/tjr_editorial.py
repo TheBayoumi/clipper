@@ -9,7 +9,7 @@ is permitted while publication approval remains false.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from typing import Literal
 
@@ -100,7 +100,7 @@ _STOP = frozenset(
         "so",
     }
 )
-CriterionBasis = Literal["transcript_proxy", "manual_verified", "manual_required"]
+CriterionBasis = Literal["transcript_proxy", "semantic_model", "manual_verified", "manual_required"]
 IntegrityStatus = Literal["unverified", "pass", "fail"]
 
 
@@ -183,6 +183,54 @@ class EditorialPick:
 
 def _clamp(value: float) -> float:
     return round(max(0.0, min(5.0, value)), 2)
+
+
+def _reason_float(candidate: ClipCandidate, prefix: str) -> float | None:
+    for reason in candidate.reasons:
+        if reason.startswith(prefix):
+            try:
+                return float(reason.removeprefix(prefix))
+            except ValueError:
+                return None
+    return None
+
+
+def _semantic_hook_override(candidate: ClipCandidate) -> str | None:
+    for reason in candidate.reasons:
+        if reason.startswith("semantic_hook="):
+            value = reason.removeprefix("semantic_hook=").strip()
+            return value or None
+    return None
+
+
+def _story_rating_for_candidate(candidate: ClipCandidate) -> CriterionRating:
+    strength = _reason_float(candidate, "event_similarity=")
+    if strength is None:
+        return _story_rating(candidate.text)
+    score = _clamp((strength - 0.28) / 0.50 * 5)
+    return CriterionRating(
+        score,
+        "semantic_model",
+        (
+            f"full_source_event_similarity={strength:.4f}",
+            "candidate originated from source-level semantic event segmentation",
+        ),
+    )
+
+
+def _retention_rating_for_candidate(candidate: ClipCandidate) -> CriterionRating:
+    coherence = _reason_float(candidate, "semantic_coherence=")
+    if coherence is None:
+        return _retention_rating(candidate.text)
+    score = _clamp((coherence - 0.25) / 0.60 * 5)
+    return CriterionRating(
+        score,
+        "semantic_model",
+        (
+            f"semantic_story_coherence={coherence:.4f}",
+            "semantic continuity is a proxy; final pacing still requires video review",
+        ),
+    )
 
 
 def _opening_text(
@@ -327,7 +375,7 @@ def candidate_gate_failures(
     failed: list[str] = []
     if _OFF_TOPIC.search(text):
         failed.append("POLICY_SENSITIVE_OFF_TOPIC")
-    story = _story_rating(text)
+    story = _story_rating_for_candidate(candidate)
     authentic_reaction = _REACTION.search(text) and (story.score or 0) >= 4
     if not _TOPIC.search(text) and not authentic_reaction:
         failed.append("NO_TRADING_CONTEXT_OR_COMPLETE_REACTION")
@@ -377,7 +425,7 @@ def evaluate_candidate(
     opening = _opening_rating(candidate, segments)
     ratings = {
         "opening": opening,
-        "story": _story_rating(text),
+        "story": _story_rating_for_candidate(candidate),
         "emotion": _emotion_rating(text),
         "visuals": CriterionRating(
             None,
@@ -387,7 +435,7 @@ def evaluate_candidate(
                 "confirm TJR and important action stay visible throughout",
             ),
         ),
-        "retention": _retention_rating(text),
+        "retention": _retention_rating_for_candidate(candidate),
     }
     if review is not None and review.visual_score is not None:
         ratings["visuals"] = CriterionRating(
@@ -451,6 +499,7 @@ def select_editorial_moments(
     render_safety_limit: int = MAX_RENDERABLE_CLIPS,
     segments: Sequence[TranscriptSegment] | None = None,
     allow_review_only_opening: bool = False,
+    review_provider: Callable[[ClipCandidate], EditorialReview | None] | None = None,
 ) -> tuple[list[EditorialPick], list[dict[str, object]]]:
     """Qualify every creator-grade moment; the limit is infrastructure safety only."""
     if not 1 <= render_safety_limit <= MAX_RENDERABLE_CLIPS:
@@ -458,15 +507,20 @@ def select_editorial_moments(
     qualified: list[EditorialPick] = []
     rejected: list[dict[str, object]] = []
     for candidate in candidates:
+        hook_override = _semantic_hook_override(candidate)
+        review = review_provider(candidate) if review_provider is not None else None
         pick = evaluate_candidate(
             candidate,
             segments=segments,
+            review=review,
+            hook_override=hook_override,
             allow_review_only_opening=allow_review_only_opening,
         )
         if pick is None:
             failed = candidate_gate_failures(
                 candidate,
                 segments=segments,
+                hook_override=hook_override,
                 allow_review_only_opening=allow_review_only_opening,
             )
             rejected.append(
@@ -513,7 +567,16 @@ def select_editorial_moments(
                 }
             )
             continue
-        headline = distinct_hook_from_text(pick.clip.text, used_hooks)
+        semantic_headline = _semantic_hook_override(pick.clip)
+        headline = (
+            semantic_headline
+            if semantic_headline and semantic_headline.casefold() not in used_hooks
+            else (
+                ""
+                if semantic_headline
+                else distinct_hook_from_text(pick.clip.text, used_hooks)
+            )
+        )
         if (
             not headline
             or headline.startswith('THE MOMENT: "')
