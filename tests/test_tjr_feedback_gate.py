@@ -122,6 +122,59 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
     return artifact
 
 
+def _noop_fixture(root: Path) -> Path:
+    artifact = root / "tjr-real-original-youtube-hd-noop"
+    base = artifact / "tjr-modal-artifacts" / "attempt-1" / "render"
+    base.mkdir(parents=True)
+    (base / "tjr-youtube-qa-report.json").write_text(
+        json.dumps(
+            {
+                "status": "NO_CREATOR_GRADE_MOMENTS",
+                "source_channel_id": CHANNEL,
+                "source_sha256": "b" * 64,
+                "source_published_at": "2026-09-29T15:00:00Z",
+                "source_url": "https://www.youtube.com/watch?v=NoopVideo12",
+                "selection_policy": "quality_driven_zero_to_n",
+                "clips": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (base / "source-analysis-coverage.json").write_text(
+        json.dumps(
+            {
+                "reported_original_seconds": 1800,
+                "analyzed_source_seconds": 1800,
+                "full_source_analyzed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (base / "editorial-candidate-audit.json").write_text(
+        json.dumps(
+            {
+                "selection_policy": "quality_driven_zero_to_n",
+                "selected": [],
+                "selected_count": 0,
+                "rejected": [{"reason": "BELOW_CREATOR_QUALITY_FLOOR"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return artifact
+
+
+def test_zero_creator_grade_clips_is_a_valid_audited_noop(tmp_path: Path) -> None:
+    _noop_fixture(tmp_path)
+    result = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert result["status"] == "NO_CREATOR_GRADE_MOMENTS__NO_RENDER_REQUIRED"
+    assert result["issues"] == []
+    assert result["technically_verified_mp4_count"] == 0
+    assert result["editorial_noop_count"] == 1
+    assert result["next_actions"] == ["SKIP_SOURCE_NO_CREATOR_GRADE_MOMENTS"]
+    assert result["automatic_publication_allowed"] is False
+
+
 def test_success_is_review_only_and_checks_sidecars(tmp_path: Path) -> None:
     _fixture(tmp_path)
     result = review_run(tmp_path, expected_channels=1, probe=_probe)
