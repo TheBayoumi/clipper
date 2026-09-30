@@ -392,7 +392,7 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     route_script = modal_steps["Classify Modal acquisition outcome"]["run"]
     assert "YOUTUBE_EGRESS_BOT_CHALLENGE" in route_script
     assert "NO_ACCESSIBLE_ORIGINAL_YOUTUBE" in route_script
-    assert "route = \"fatal\"" in route_script
+    assert 'route = "fatal"' in route_script
     fallback = jobs["youtube_alternate_egress"]
     assert fallback["needs"] == ["tests", "youtube_preview", "youtube_modal_egress"]
     assert "needs.youtube_preview.result == 'failure'" in fallback["if"]
