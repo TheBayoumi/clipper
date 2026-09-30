@@ -864,6 +864,12 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                     "provisional": True,
                     "requires_manual_visual_and_integrity_review": True,
                     "screening_mode": screening_mode,
+                    "selection_policy": "quality_driven_zero_to_n",
+                    "render_safety_limit": render_safety_limit,
+                    "selected_count": len(picks),
+                    "render_safety_limit_rejections": sum(
+                        item.get("reason") == "RENDER_SAFETY_LIMIT" for item in rejected
+                    ),
                     "transcript_segment_count": len(segments),
                     "strict_candidate_count": len(strict),
                     "relaxed_candidate_count": relaxed_count,
@@ -1037,6 +1043,9 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             "source_profile": source_profile.as_dict(),
             "editorial_rubric_version": RUBRIC_VERSION,
             "editorial_weights": WEIGHTS,
+            "selection_policy": "quality_driven_zero_to_n",
+            "render_safety_limit": render_safety_limit,
+            "selected_clip_count": len(completed),
             "clips": completed,
             "source_attempts": errors,
             "manual_checks": [
