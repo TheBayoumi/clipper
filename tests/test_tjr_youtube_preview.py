@@ -18,7 +18,9 @@ OfficialVideo = SCRIPT["OfficialVideo"]
 CHANNELS = SCRIPT["CHANNELS"]
 _auth_args = SCRIPT["_auth_args"]
 prioritize_campaign_moments = SCRIPT["prioritize_campaign_moments"]
+dynamic_bgutil_variants = SCRIPT["dynamic_bgutil_variants"]
 dynamic_browser_variants = SCRIPT["dynamic_browser_variants"]
+dynamic_token_variants = SCRIPT["dynamic_token_variants"]
 constrain_official_sources = SCRIPT["constrain_official_sources"]
 _flat_channel_playlist = SCRIPT["_flat_channel_playlist"]
 discover_official_uploads = SCRIPT["discover_official_uploads"]
@@ -271,6 +273,24 @@ def test_explicit_video_must_belong_to_target_channel() -> None:
             other_video.video_id,
             target_channel_id=target,
         )
+
+
+def test_bgutil_tokens_are_primary_and_loopback_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    browser = tmp_path / "chrome"
+    browser.write_text("test executable", encoding="utf-8")
+    monkeypatch.setenv("TJR_BGUTIL_POT_PROVIDER_URL", "http://127.0.0.1:4416")
+    monkeypatch.setenv("YT_DLP_WPC_BROWSER_PATH", str(browser))
+    variants = dynamic_token_variants()
+    assert len(variants) == 4
+    assert "youtube:player_client=mweb" in variants[0]
+    assert "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416" in variants[0]
+    assert "youtubepot-wpc:browser_path=" + str(browser) in variants[2]
+
+    monkeypatch.setenv("TJR_BGUTIL_POT_PROVIDER_URL", "http://0.0.0.0:4416")
+    with pytest.raises(RuntimeError, match="runner loopback"):
+        dynamic_bgutil_variants()
 
 
 def test_dynamic_guest_tokens_do_not_require_exported_account_cookies(
