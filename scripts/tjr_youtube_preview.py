@@ -305,8 +305,13 @@ def verified_youtube_metadata(video: OfficialVideo) -> dict[str, Any]:
                 raise RuntimeError("YouTube video ID does not match the official feed")
             if metadata.get("channel_id") != video.channel_id:
                 raise RuntimeError("YouTube owner ID does not match Reach's channel")
-            if metadata.get("is_live") or metadata.get("live_status") == "is_live":
-                raise RuntimeError("current livestream is not a completed source video")
+            live_status = str(metadata.get("live_status") or "")
+            if (
+                metadata.get("is_live")
+                or metadata.get("is_upcoming")
+                or live_status in {"is_live", "is_upcoming"}
+            ):
+                raise RuntimeError("live or upcoming stream is not an eligible source video")
             if float(metadata.get("duration") or 0) < 90:
                 raise RuntimeError("video is shorter than the requested clipping workflow")
             metadata["_verified_client_args"] = extra
