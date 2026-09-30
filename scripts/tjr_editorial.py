@@ -442,16 +442,21 @@ def _similar(left: EditorialPick, right: EditorialPick) -> bool:
     return bool(lw and rw) and len(lw & rw) / len(lw | rw) > 0.70
 
 
+MAX_RENDERABLE_CLIPS = 20
+
+
 def select_editorial_moments(
     candidates: list[ClipCandidate],
     *,
-    batch_limit: int = 12,
+    render_safety_limit: int = MAX_RENDERABLE_CLIPS,
     segments: Sequence[TranscriptSegment] | None = None,
     allow_review_only_opening: bool = False,
 ) -> tuple[list[EditorialPick], list[dict[str, object]]]:
-    """Rank provisional draft candidates; never imply visual or integrity approval."""
-    if not 1 <= batch_limit <= 20:
-        raise ValueError("editorial batch limit must be 1-20 for one runner job")
+    """Qualify every creator-grade moment; the limit is infrastructure safety only."""
+    if not 1 <= render_safety_limit <= MAX_RENDERABLE_CLIPS:
+        raise ValueError(
+            f"render safety limit must be 1-{MAX_RENDERABLE_CLIPS} for one runner job"
+        )
     qualified: list[EditorialPick] = []
     rejected: list[dict[str, object]] = []
     for candidate in candidates:
@@ -527,6 +532,8 @@ def select_editorial_moments(
             continue
         chosen.append(replace(pick, hook=headline))
         used_hooks.add(headline.casefold())
-        if len(chosen) >= batch_limit:
+        # This is not an editorial target or quota. It only bounds pathological
+        # render fan-out after every accepted moment has independently passed quality.
+        if len(chosen) >= render_safety_limit:
             break
     return chosen, rejected
