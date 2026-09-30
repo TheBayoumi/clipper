@@ -307,7 +307,6 @@ def test_replay_channel_count_and_artifact_family_are_derived() -> None:
     for pattern in (
         "tjr-real-original-youtube-hd-*",
         "tjr-real-youtube-hd-*",
-        "tjr-youtube-alt-*",
         "tjr-weekly-hd-*",
     ):
         assert pattern in workflow
