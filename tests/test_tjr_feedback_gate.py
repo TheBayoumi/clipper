@@ -451,11 +451,23 @@ def test_every_real_production_mode_routes_through_independent_feedback_audit() 
         Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
     ).read_text(encoding="utf-8")
     assert "youtube_preview, youtube_alternate_egress, youtube_modal_egress, render" in workflow
-    assert '["modal_direct","youtube_direct","verified_mirror"]' in workflow
+    assert '["auto_direct","modal_direct","youtube_direct","verified_mirror"]' in workflow
     assert "pattern: tjr-real-original-youtube-hd-*" in workflow
     assert "pattern: tjr-real-youtube-hd-*" in workflow
     assert "pattern: tjr-youtube-alt-*" in workflow
     assert "pattern: tjr-weekly-hd-*" in workflow
+
+
+def test_auto_direct_uses_ordered_transport_failover() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
+    ).read_text(encoding="utf-8")
+    assert "options: [validate_only, auto_direct, modal_direct, youtube_direct" in workflow
+    assert "needs: [tests, youtube_modal_egress]" in workflow
+    assert "inputs.source_mode == 'auto_direct' && needs.youtube_modal_egress.result == 'failure'" in workflow
+    assert 'contains(fromJSON(\'["auto_direct","youtube_direct"]\'), inputs.source_mode)' in workflow
+    assert "needs.youtube_preview.result == 'failure'" in workflow
+    assert "TJR_ASR_MODEL: distil-large-v3" in workflow
 
 
 def test_known_source_cannot_regress_to_centered_desktop_layout(tmp_path: Path) -> None:
