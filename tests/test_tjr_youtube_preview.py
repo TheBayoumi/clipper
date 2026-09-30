@@ -375,6 +375,7 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
     assert audit["selected"] == []
     assert audit["semantic_candidate_count"] == 0
     assert audit["semantic_architecture"]["fixed_candidate_or_output_quota"] is False
+    assert audit["screening_mode"] == audit["semantic_architecture"]["architecture"]
     report = json.loads((run / "tjr-youtube-qa-report.json").read_text())
     assert report["status"] == "NO_CREATOR_GRADE_MOMENTS"
     assert report["clips"] == []
