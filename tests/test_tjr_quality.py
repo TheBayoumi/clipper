@@ -402,3 +402,12 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     assert "scripts.tjr_quality --stage" in mirror_script
     assert "scripts.tjr_youtube_preview" in mirror_script
     assert "clipper run" not in mirror_script
+
+
+def test_bgutils_provider_health_check_is_reachability_based() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
+    ).read_text(encoding="utf-8")
+    assert "bgutil-ytdlp-pot-provider:2.0.0" in workflow
+    assert "curl -sS -o /dev/null http://127.0.0.1:4416/" in workflow
+    assert "curl -fsS http://127.0.0.1:4416/" not in workflow
