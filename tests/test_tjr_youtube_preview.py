@@ -199,6 +199,46 @@ def test_explicit_youtube_source_cannot_fall_back_to_other_videos() -> None:
         constrain_official_sources([other, official], "not-a-video-id")
 
 
+def test_channel_bound_discovery_never_spills_to_other_reach_channel() -> None:
+    target = "UCGHBUXjDCeiIXNdKR0HUZnA"
+    other_channel = "UCZen39LQJPx04GjPj7FOMcw"
+    target_video = OfficialVideo(
+        "AAAABBBB111",
+        target,
+        "Target-channel upload",
+        "2026-09-29T18:00:00Z",
+    )
+    newer_other_video = OfficialVideo(
+        "CCCCDDDD222",
+        other_channel,
+        "Newer upload on the other channel",
+        "2026-09-30T01:00:00Z",
+    )
+    selected = constrain_official_sources(
+        [newer_other_video, target_video],
+        None,
+        target_channel_id=target,
+    )
+    assert selected == [target_video]
+
+
+def test_explicit_video_must_belong_to_target_channel() -> None:
+    target = "UCGHBUXjDCeiIXNdKR0HUZnA"
+    other_channel = "UCZen39LQJPx04GjPj7FOMcw"
+    other_video = OfficialVideo(
+        "CCCCDDDD222",
+        other_channel,
+        "Other-channel upload",
+        "2026-09-30T01:00:00Z",
+    )
+    with pytest.raises(RuntimeError, match="target Reach-listed channel"):
+        constrain_official_sources(
+            [other_video],
+            other_video.video_id,
+            target_channel_id=target,
+        )
+
+
 def test_dynamic_guest_tokens_do_not_require_exported_account_cookies(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
