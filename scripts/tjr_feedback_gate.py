@@ -291,6 +291,7 @@ def probe_media(path: Path, *, full_decode: bool = False) -> dict[str, Any]:
             capture_output=True,
             timeout=180,
         )
+
     def stream_duration(stream: dict[str, Any]) -> float:
         raw = stream.get("duration")
         if raw not in (None, "", "N/A"):
