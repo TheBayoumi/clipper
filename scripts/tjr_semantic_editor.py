@@ -19,10 +19,16 @@ SEMANTIC_MODEL = "BAAI/bge-small-en-v1.5"
 EVENT_DESCRIPTIONS = {
     "trade_setup": "a concrete trading setup, entry, exit, market thesis or decision",
     "mistake_lesson": "a trading mistake, lesson learned, warning, or useful correction",
-    "risk_management": "risk management, stop loss, position sizing, discipline, or protecting capital",
-    "surprise_reaction": "a surprising market event, strong authentic reaction, or unexpected outcome",
+    "risk_management": (
+        "risk management, stop loss, position sizing, discipline, or protecting capital"
+    ),
+    "surprise_reaction": (
+        "a surprising market event, strong authentic reaction, or unexpected outcome"
+    ),
     "result_payoff": "a clear result, payoff, consequence, resolution, or what happened next",
-    "explanation_argument": "a specific explanation, disagreement, reasoning chain, or why something matters",
+    "explanation_argument": (
+        "a specific explanation, disagreement, reasoning chain, or why something matters"
+    ),
 }
 _WORD = re.compile(r"[A-Za-z0-9$%'.-]+")
 _LEADING_FILLER = re.compile(
