@@ -223,8 +223,8 @@ def probe_original(path: Path) -> dict[str, int]:
         raise QualityError("unable to probe staged original footage") from exc
     except (ValueError, KeyError, TypeError, StopIteration) as exc:
         raise QualityError("invalid original video metadata") from exc
-    if min(width, height) < 720 or max(width, height) < 1280:
-        raise QualityError("original footage is below 720p HD")
+    if not production_hd_dimensions(width, height):
+        raise QualityError("original footage is below production 1280x720 / 720x1280 HD")
     return {"width": width, "height": height}
 
 
