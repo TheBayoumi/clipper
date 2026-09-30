@@ -16,17 +16,6 @@ from typing import Any
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
 
 SEMANTIC_MODEL = "BAAI/bge-small-en-v1.5"
-TRADING_DOMAIN_DESCRIPTIONS = (
-    "financial market trading, price action, entries, exits, risk, charts, market structure, "
-    "trade management, profits, losses, trading psychology, or investing decisions",
-    "a creator explaining or reacting to an actual financial-market trade, setup, market move, "
-    "trading mistake, result, or lesson",
-)
-NON_TRADING_DOMAIN_DESCRIPTIONS = (
-    "fashion, clothes, jewelry, watches, luxury goods, shopping, bags, lifestyle collections, "
-    "personal possessions, or unrelated consumer products",
-    "general entertainment or lifestyle conversation unrelated to financial markets or trading",
-)
 EVENT_DESCRIPTIONS = {
     "trade_setup": "a concrete trading setup, entry, exit, market thesis or decision",
     "mistake_lesson": "a trading mistake, lesson learned, warning, or useful correction",
@@ -326,7 +315,6 @@ def build_semantic_editorial_candidates(
         ]
         coherence = sum(coherence_pairs) / len(coherence_pairs) if coherence_pairs else 1.0
         event_strength = strengths[anchor]
-        domain_positive, domain_negative, domain_margin = domain_scores[anchor]
         hook = _extractive_hook(units[anchor].text)
         if not hook:
             continue
@@ -361,10 +349,6 @@ def build_semantic_editorial_candidates(
             selected.append((candidate, vector))
 
     event_distribution = Counter(labels[index] for index in anchors)
-    campaign_relevant_units = sum(
-        positive >= 0.34 and margin >= 0.02
-        for positive, _negative, margin in domain_scores
-    )
     candidates = [candidate for candidate, _ in selected]
     audit = {
         "architecture": "source_level_semantic_campaign_event_segmentation_v2",
@@ -374,13 +358,6 @@ def build_semantic_editorial_candidates(
         "campaign_relevant_unit_count": len(relevant_units),
         "out_of_domain_unit_count": len(units) - len(relevant_units),
         "event_anchor_count": len(anchors),
-        "campaign_relevant_unit_count": campaign_relevant_units,
-        "campaign_domain_gate": {
-            "minimum_similarity": 0.34,
-            "minimum_margin_over_non_campaign": 0.02,
-            "positive_prototype_count": len(positive_domain_texts),
-            "negative_prototype_count": len(negative_domain_texts),
-        },
         "candidate_count": len(candidates),
         "event_distribution": dict(event_distribution),
         "campaign_relevance_policy": "embedding_contrast_against_out_of_domain_references",
