@@ -130,3 +130,24 @@ def test_failed_remote_cleanup_is_reported_and_fails(tmp_path: Path) -> None:
     assert data["exit_code"] == 1
     assert data["source_remote_path"].endswith("/X7msxvyQd_U/original.mp4")
     assert data["stderr"] == "denied"
+
+
+def test_preacquired_staging_is_reused_without_second_modal_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    import scripts.tjr_modal_runner as runner
+
+    probe_root = tmp_path / "probe"
+    probe_root.mkdir()
+    staging = _staged("X7msxvyQd_U")
+    (probe_root / "staged-original.json").write_text(
+        json.dumps(staging), encoding="utf-8"
+    )
+    monkeypatch.setenv("TJR_MODAL_USE_STAGED", "1")
+    with patch.object(runner.subprocess, "run") as command:
+        actual = runner._acquire_original(set(), probe_root)
+    command.assert_not_called()
+    assert actual["video_id"] == "X7msxvyQd_U"
+    assert actual["status"] == "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED"
