@@ -230,6 +230,7 @@ jobs:
       TJR_RENDER_SAFETY_LIMIT: "20"
       TJR_TARGET_CHANNEL_ID: ${{ inputs.target_channel_id }}
       TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
+      TJR_BGUTIL_POT_PROVIDER_URL: http://127.0.0.1:4416
     steps:
       - uses: actions/checkout@v5
         with:
@@ -244,10 +245,20 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg xvfb x11-utils
           python -m pip install -e ".[asr]"
-      - name: Mint YouTube playback tokens on the fly in a real browser
+      - name: Start independent and browser-backed YouTube PO-token providers
         run: |
           set -euo pipefail
-          python -m pip install -U "yt-dlp[default]" "yt-dlp-getpot-wpc==1.1.2"
+          python -m pip install -e ".[youtube]"
+          docker rm -f bgutil-provider >/dev/null 2>&1 || true
+          docker run --name bgutil-provider -d --init \
+            -p 127.0.0.1:4416:4416 \
+            brainicism/bgutil-ytdlp-pot-provider:2.0.0
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4416/ >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:4416/ >/dev/null
+
           CHROME="$(command -v google-chrome-stable || command -v google-chrome || command -v chromium)"
           if [[ -z "$CHROME" ]]; then
             echo "::error::This runner has no Chromium-compatible browser."
@@ -265,9 +276,10 @@ jobs:
           python - <<'PY'
           from importlib.metadata import version
           print("yt-dlp:", version("yt-dlp"))
+          print("bgutil-ytdlp-pot-provider:", version("bgutil-ytdlp-pot-provider"))
           print("yt-dlp-getpot-wpc:", version("yt-dlp-getpot-wpc"))
           PY
-          echo "Browser token generation is enabled without account cookies."
+          echo "BgUtils is primary; browser WPC remains the automatic fallback."
       - name: Load optional persistent YouTube session if previously authorized
         env:
           COOKIES_B64: ${{ secrets.TJR_YOUTUBE_COOKIES_B64 }}
@@ -304,6 +316,9 @@ jobs:
           python -m scripts.tjr_youtube_preview \
             --artifact-root tjr-youtube-artifacts \
             --brief campaigns/reach-tjr-weekly.yaml
+      - name: Stop local PO-token provider
+        if: always()
+        run: docker rm -f bgutil-provider >/dev/null 2>&1 || true
       - name: Remove ephemeral YouTube viewer session
         if: always()
         run: rm -f "$RUNNER_TEMP/tjr-youtube-cookies.txt"
