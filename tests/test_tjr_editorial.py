@@ -175,7 +175,7 @@ STRONG_SEGMENT = (
 def test_weighted_provisional_score_tracks_unverified_visuals() -> None:
     result = evaluate_candidate(clip(0, STRONG_SEGMENT))
     assert result is not None
-    assert RUBRIC_VERSION == "tjr-editorial-v3-creator-quality"
+    assert RUBRIC_VERSION == "tjr-editorial-v4-semantic-campaign-quality"
     assert sum(WEIGHTS.values()) == 100
     assert result.score_coverage == 85
     assert result.criteria["visuals"].score is None
@@ -330,7 +330,7 @@ def test_rejection_audit_identifies_each_individual_gate() -> None:
 
     item = clip(0, "the chat is typing all day but nothing new happened")
     reasons = candidate_gate_failures(item)
-    assert "NO_TRADING_CONTEXT_OR_COMPLETE_REACTION" in reasons
+    assert "NO_CAMPAIGN_RELEVANT_COMPLETE_MOMENT" in reasons
     assert "WORD_COUNT_OUT_OF_RANGE" in reasons
     assert "WEAK_FIRST_TWO_SECONDS" in reasons
 
