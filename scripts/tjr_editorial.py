@@ -454,9 +454,7 @@ def select_editorial_moments(
 ) -> tuple[list[EditorialPick], list[dict[str, object]]]:
     """Qualify every creator-grade moment; the limit is infrastructure safety only."""
     if not 1 <= render_safety_limit <= MAX_RENDERABLE_CLIPS:
-        raise ValueError(
-            f"render safety limit must be 1-{MAX_RENDERABLE_CLIPS} for one runner job"
-        )
+        raise ValueError(f"render safety limit must be 1-{MAX_RENDERABLE_CLIPS} for one runner job")
     qualified: list[EditorialPick] = []
     rejected: list[dict[str, object]] = []
     for candidate in candidates:
