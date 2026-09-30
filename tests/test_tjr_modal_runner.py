@@ -32,19 +32,13 @@ def _staged(video_id: str) -> dict[str, object]:
     }
 
 
-def test_second_approved_original_after_first_editorial_rejection(
+def test_editorial_failure_never_switches_to_older_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import scripts.tjr_modal_runner as runner
 
     monkeypatch.delenv("TJR_SOURCE_VIDEO_ID", raising=False)
-    excluded_seen: list[set[str]] = []
-    originals = iter(["X7msxvyQd_U", "Xa-4kOvpGok"])
-    attempts = 0
-
-    def acquire(excluded: set[str], root: Path) -> dict[str, object]:
-        excluded_seen.append(set(excluded))
-        return _staged(next(originals))
+    video = _staged("X7msxvyQd_U")
 
     def transfer(staging: dict[str, object], destination: Path) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -53,27 +47,20 @@ def test_second_approved_original_after_first_editorial_rejection(
         destination.with_suffix(".json").write_text("{}", encoding="utf-8")
         return original
 
-    def render(root: Path, brief: Path) -> Path:
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise NoEditorialMoments("no qualified moments in this original")
-        result = root / "successful-render"
-        result.mkdir()
-        return result
-
     with (
-        patch.object(runner, "_acquire_original", side_effect=acquire),
+        patch.object(runner, "_acquire_original", return_value=video) as acquire,
         patch.object(runner, "_transfer_verified_original", side_effect=transfer),
         patch.object(runner, "_purge_remote"),
-        patch.object(runner, "render_youtube_previews", side_effect=render),
+        patch.object(
+            runner,
+            "render_youtube_previews",
+            side_effect=NoEditorialMoments("no qualified moments in this original"),
+        ),
+        pytest.raises(NoEditorialMoments, match="no qualified moments"),
     ):
-        path = run_modal_production(root=tmp_path / "artifacts", max_sources=2)
-    assert path.name == "successful-render"
-    assert excluded_seen == [set(), {"X7msxvyQd_U"}]
-    assert attempts == 2
-    assert (tmp_path / "artifacts" / "attempt-1" / "editorial-failure.json").is_file()
-    assert not (tmp_path / "artifacts" / "attempt-1" / "source.mp4").exists()
+        run_modal_production(root=tmp_path / "artifacts")
+    assert acquire.call_count == 1
+    assert not (tmp_path / "artifacts" / "attempt-2").exists()
 
 
 def test_pinned_source_never_switches_original_on_editorial_failure(
@@ -90,7 +77,7 @@ def test_pinned_source_never_switches_original_on_editorial_failure(
         patch.object(runner, "render_youtube_previews", side_effect=NoEditorialMoments("weak")),
         pytest.raises(NoEditorialMoments, match="weak"),
     ):
-        run_modal_production(root=tmp_path / "artifacts", max_sources=2)
+        run_modal_production(root=tmp_path / "artifacts")
     assert acquire.call_count == 1
 
 
@@ -118,11 +105,6 @@ def test_remote_source_identity_is_mandatory(tmp_path: Path) -> None:
     stage["public_video_url"] = "https://untrusted.invalid/not-the-original"
     with pytest.raises(RuntimeError, match="source or hash validation"):
         _transfer_verified_original(stage, tmp_path / "source")
-
-
-def test_retry_count_is_bounded(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="max_sources"):
-        run_modal_production(root=tmp_path / "artifacts", max_sources=5)
 
 
 def test_modal_rejects_partial_source_before_transferring(tmp_path: Path) -> None:
