@@ -482,9 +482,7 @@ def constrain_official_sources(
     matches = [video for video in candidates if video.video_id == requested_id]
     if len(matches) != 1 or matches[0].channel_id not in CHANNELS:
         scope = (
-            "target Reach-listed channel"
-            if target_channel_id
-            else "either Reach-listed channel"
+            "target Reach-listed channel" if target_channel_id else "either Reach-listed channel"
         )
         raise RuntimeError(f"selected source_video_id is not in the {scope} feed")
     return matches
@@ -795,9 +793,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             json.dumps([s.to_dict() for s in segments], indent=2) + "\n",
             encoding="utf-8",
         )
-        render_safety_limit = int(
-            os.getenv("TJR_RENDER_SAFETY_LIMIT", str(MAX_RENDERABLE_CLIPS))
-        )
+        render_safety_limit = int(os.getenv("TJR_RENDER_SAFETY_LIMIT", str(MAX_RENDERABLE_CLIPS)))
         # Chunk boundaries are not sentence boundaries; score all aligned words together.
         strict = score_transcript(
             brief,
