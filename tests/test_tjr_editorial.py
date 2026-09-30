@@ -350,9 +350,7 @@ def test_render_safety_limit_is_not_a_content_quota() -> None:
         "for a while because there are some things happening in the market today "
         "and this is just another trading discussion about the position."
     )
-    picks, rejected = select_editorial_moments(
-        [clip(0, strong, 30), clip(60, weak, 29)]
-    )
+    picks, rejected = select_editorial_moments([clip(0, strong, 30), clip(60, weak, 29)])
     assert len(picks) <= 1
     assert any(
         item["reason"]
