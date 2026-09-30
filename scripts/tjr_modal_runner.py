@@ -172,6 +172,7 @@ def run_modal_production(
             os.environ.pop("TJR_REQUIRE_STAGED_ORIGINAL", None)
             os.environ.pop("TJR_SOURCE_VIDEO_ID", None)
 
+
 def main() -> int:
     try:
         run_modal_production()
