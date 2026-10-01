@@ -423,3 +423,53 @@ def test_browser_timeout_kills_entire_process_group(monkeypatch: pytest.MonkeyPa
         kill.assert_called_once()
         assert kill.call_args.args[0] == process.pid
         assert process.communicate.call_count == 2
+
+
+def test_guest_watch_page_status_is_bound_to_exact_video(monkeypatch: pytest.MonkeyPatch) -> None:
+    probe = _load_modal_probe(monkeypatch)
+    parse = probe.__globals__["guest_watch_playability"]
+    details = {"videoId": "X7msxvyQd_U", "channelId": "UCf1q6dhccWr6eQEcFFnJSbA"}
+    html = "var ytInitialPlayerResponse = " + json.dumps(
+        {"videoDetails": details, "playabilityStatus": {"status": "OK"}}
+    )
+    assert parse(html, details["videoId"], details["channelId"]) == "OK"
+    assert parse(html, "different", details["channelId"]) == "SOURCE_IDENTITY_MISMATCH"
+    assert parse("no player", details["videoId"], details["channelId"]) == "NO_PLAYER_RESPONSE"
+
+
+def test_fresh_guest_profile_is_extracted_on_the_fly_and_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe = _load_modal_probe(monkeypatch)
+    functions = probe.__globals__
+    monkeypatch.setenv("TJR_YOUTUBE_SESSION_MODE", "browser_guest")
+    monkeypatch.delenv("TJR_GUEST_BROWSER_PROFILE", raising=False)
+    monkeypatch.delenv("TJR_YOUTUBE_COOKIES_B64", raising=False)
+    monkeypatch.delenv("YOUTUBE_COOKIES_FILE", raising=False)
+    candidate = {"video_id": "X7msxvyQd_U", "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA"}
+    profile_path = None
+
+    def bootstrap(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert "--password-store=basic" in command
+        assert command[-1].endswith(candidate["video_id"])
+        profile = Path(
+            next(arg.split("=", 1)[1] for arg in command if arg.startswith("--user-data-dir="))
+        )
+        profile.mkdir()
+        (profile / "Cookies").write_bytes(b"fake guest database")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    with (
+        patch.dict(functions, {"acquisition_run": bootstrap}),
+        functions["anonymous_watch_session"]([candidate]) as evidence,
+    ):
+        args = functions["viewer_cookie_args"]()
+        assert args[0] == "--cookies-from-browser"
+        profile_path = Path(args[1].split(":", 1)[1])
+        assert profile_path.is_dir()
+        assert evidence["account_login_used"] is False
+        assert evidence["cookie_database_created"] is True
+    assert profile_path is not None and not profile_path.exists()
+    import os
+
+    assert "TJR_GUEST_BROWSER_PROFILE" not in os.environ

@@ -11,6 +11,7 @@ import base64
 import binascii
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -152,6 +153,74 @@ def source_download_sections(duration_seconds: float) -> list[str]:
     return []
 
 
+def guest_watch_playability(html: str, video_id: str, channel_id: str) -> str:
+    """Report guest watch-page status only after binding it to the exact source."""
+    for match in re.finditer(r"(?:var\s+)?ytInitialPlayerResponse\s*=\s*", html):
+        try:
+            player, _ = json.JSONDecoder().raw_decode(html[match.end() :])
+        except ValueError:
+            continue
+        if not isinstance(player, dict):
+            continue
+        details = player.get("videoDetails") or {}
+        if details and (
+            details.get("videoId") != video_id or details.get("channelId") != channel_id
+        ):
+            return "SOURCE_IDENTITY_MISMATCH"
+        status = (player.get("playabilityStatus") or {}).get("status")
+        if status in {"OK", "LOGIN_REQUIRED", "UNPLAYABLE", "ERROR"}:
+            return str(status)
+    return "NO_PLAYER_RESPONSE"
+
+
+@contextmanager
+def anonymous_watch_session(candidates: list[dict[str, str]]) -> Iterator[dict[str, Any]]:
+    """Bootstrap guest cookies on this worker; never load a signed-in profile."""
+    if not candidates:
+        raise RuntimeError("ANONYMOUS_WATCH_SESSION_REQUIRES_EXACT_SOURCE")
+    selected = candidates[0]
+    video_id, channel_id = selected["video_id"], selected["channel_id"]
+    if channel_id != "UCf1q6dhccWr6eQEcFFnJSbA" or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+        raise RuntimeError("ANONYMOUS_WATCH_SESSION_SOURCE_NOT_ALLOWLISTED")
+    with tempfile.TemporaryDirectory(prefix="youtube-anonymous-") as private:
+        profile = Path(private) / "profile"
+        command = [
+            "xvfb-run",
+            "--auto-servernum",
+            "/usr/bin/chromium",
+            "--headless=new",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--password-store=basic",
+            f"--user-data-dir={profile}",
+            "--virtual-time-budget=12000",
+            "--dump-dom",
+            f"https://www.youtube.com/watch?v={video_id}",
+        ]
+        outcome = acquisition_run(command, timeout=60, text=True)
+        if outcome.returncode:
+            raise RuntimeError("ANONYMOUS_GUEST_BROWSER_BOOTSTRAP_FAILED")
+        evidence = {
+            "fresh_temporary_profile": True,
+            "account_login_used": False,
+            "watch_playability": guest_watch_playability(outcome.stdout, video_id, channel_id),
+            "cookie_database_created": any(profile.rglob("Cookies")),
+        }
+        if evidence["watch_playability"] == "SOURCE_IDENTITY_MISMATCH":
+            raise RuntimeError("ANONYMOUS_WATCH_PAGE_SOURCE_IDENTITY_MISMATCH")
+        previous = os.environ.get("TJR_GUEST_BROWSER_PROFILE")
+        os.environ["TJR_GUEST_BROWSER_PROFILE"] = str(profile)
+        try:
+            yield evidence
+        finally:
+            if previous is None:
+                os.environ.pop("TJR_GUEST_BROWSER_PROFILE", None)
+            else:
+                os.environ["TJR_GUEST_BROWSER_PROFILE"] = previous
+
+
 @contextmanager
 def viewer_cookie_session() -> Iterator[None]:
     """Materialize an explicitly configured viewer secret only for this call."""
@@ -181,6 +250,10 @@ def viewer_cookie_session() -> Iterator[None]:
 
 
 def viewer_cookie_args() -> list[str]:
+    if os.getenv("TJR_YOUTUBE_SESSION_MODE") == "browser_guest":
+        profile = os.getenv("TJR_GUEST_BROWSER_PROFILE", "").strip()
+        if profile:
+            return ["--cookies-from-browser", f"chromium:{profile}"]
     path = os.getenv("YOUTUBE_COOKIES_FILE", "").strip()
     return ["--cookies", path] if path else []
 
@@ -239,7 +312,10 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
 def inspect_browser_guest_youtube(
     candidates: list[dict[str, str]], run_key: str = ""
 ) -> dict[str, Any]:
-    return inspect_original_youtube.local(candidates, run_key)
+    with anonymous_watch_session(candidates) as evidence:
+        result = inspect_original_youtube.local(candidates, run_key)
+        result["guest_session_evidence"] = evidence
+        return result
 
 
 def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) -> dict[str, Any]:
