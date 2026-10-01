@@ -1,4 +1,4 @@
-"""Offline enforcement of the Reach TJR YouTube-only source allowlist."""
+"""Offline enforcement of the Reach Double Coverage YouTube source allowlist."""
 
 import json
 import runpy
@@ -35,7 +35,7 @@ def atom_feed(channel_id: str, entry_channel: str | None = None) -> bytes:
   <entry>
     <yt:videoId>8PYgFVB0GHE</yt:videoId>
     <yt:channelId>{owner}</yt:channelId>
-    <title>Official TJR content</title>
+    <title>Official Double Coverage content</title>
     <published>2026-09-25T12:00:00+00:00</published>
   </entry>
 </feed>""".encode()
@@ -50,7 +50,7 @@ def test_only_official_reach_channel_feeds_are_accepted(channel_id: str) -> None
 
 
 def test_live_official_feed_with_uc_prefix_elided_is_normalized() -> None:
-    channel = "UCGHBUXjDCeiIXNdKR0HUZnA"
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     raw = atom_feed(channel).replace(channel.encode(), channel.removeprefix("UC").encode())
     videos = parse_official_feed(raw, channel)
     assert len(videos) == 1
@@ -59,11 +59,11 @@ def test_live_official_feed_with_uc_prefix_elided_is_normalized() -> None:
 
 def test_wrong_feed_owner_fails_closed() -> None:
     with pytest.raises(ValueError, match="owner mismatch"):
-        parse_official_feed(atom_feed("UC-not-approved"), "UCGHBUXjDCeiIXNdKR0HUZnA")
+        parse_official_feed(atom_feed("UC-not-approved"), "UCf1q6dhccWr6eQEcFFnJSbA")
 
 
 def test_root_atom_channel_id_is_accepted_if_yt_channel_id_is_absent() -> None:
-    channel = "UCGHBUXjDCeiIXNdKR0HUZnA"
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     source = atom_feed(channel)
     source = source.replace(
         f"<yt:channelId>{channel}</yt:channelId>".encode(),
@@ -77,8 +77,8 @@ def test_root_atom_channel_id_is_accepted_if_yt_channel_id_is_absent() -> None:
 
 def test_foreign_video_entries_are_ignored() -> None:
     result = parse_official_feed(
-        atom_feed("UCGHBUXjDCeiIXNdKR0HUZnA", entry_channel="UC-not-approved"),
-        "UCGHBUXjDCeiIXNdKR0HUZnA",
+        atom_feed("UCf1q6dhccWr6eQEcFFnJSbA", entry_channel="UC-not-approved"),
+        "UCf1q6dhccWr6eQEcFFnJSbA",
     )
     assert result == []
 
@@ -103,7 +103,7 @@ def test_independent_moments_do_not_overlap() -> None:
 def test_youtube_metadata_must_match_original_video_and_exact_channel() -> None:
     official = OfficialVideo(
         "8PYgFVB0GHE",
-        "UCGHBUXjDCeiIXNdKR0HUZnA",
+        "UCf1q6dhccWr6eQEcFFnJSbA",
         "Original title",
         "2026-09-25T12:00:00+00:00",
     )
@@ -126,7 +126,7 @@ def test_youtube_metadata_must_match_original_video_and_exact_channel() -> None:
 def test_metadata_accepts_matching_official_channel_and_nonlive_video() -> None:
     official = OfficialVideo(
         "8PYgFVB0GHE",
-        "UCGHBUXjDCeiIXNdKR0HUZnA",
+        "UCf1q6dhccWr6eQEcFFnJSbA",
         "Original title",
         "2026-09-25T12:00:00+00:00",
     )
@@ -147,7 +147,7 @@ def test_metadata_accepts_matching_official_channel_and_nonlive_video() -> None:
 def test_metadata_rejects_live_and_upcoming_streams() -> None:
     official = OfficialVideo(
         "8PYgFVB0GHE",
-        "UCGHBUXjDCeiIXNdKR0HUZnA",
+        "UCf1q6dhccWr6eQEcFFnJSbA",
         "Scheduled stream",
         "2026-09-30T12:00:00+00:00",
     )
@@ -175,19 +175,19 @@ def test_metadata_rejects_live_and_upcoming_streams() -> None:
 def test_campaign_prefers_a_recent_eligible_full_video_to_newer_hashtag_shorts() -> None:
     full = OfficialVideo(
         "p2LU37eat70",
-        "UCZen39LQJPx04GjPj7FOMcw",
+        "UCf1q6dhccWr6eQEcFFnJSbA",
         "Live Day Trading Making $18,350",
         "2026-09-25T16:01:53+00:00",
     )
     short = OfficialVideo(
         "Uwlp9JBpdLc",
-        "UCGHBUXjDCeiIXNdKR0HUZnA",
+        "UCf1q6dhccWr6eQEcFFnJSbA",
         "Method #tjrtrades #tjr",
         "2026-09-26T00:58:31+00:00",
     )
     unknown = OfficialVideo(
         "5JR-dmmcpfw",
-        "UCGHBUXjDCeiIXNdKR0HUZnA",
+        "UCf1q6dhccWr6eQEcFFnJSbA",
         "unknown",
         "2026-09-25T22:04:46+00:00",
     )
@@ -212,26 +212,26 @@ def test_optional_auth_uses_only_explicit_existing_cookie_file(
 def test_explicit_youtube_source_cannot_fall_back_to_other_videos() -> None:
     official = OfficialVideo(
         "p2LU37eat70",
-        "UCZen39LQJPx04GjPj7FOMcw",
+        "UCf1q6dhccWr6eQEcFFnJSbA",
         "Live Day Trading Making $18,350",
         "2026-09-25T16:01:53+00:00",
     )
     other = OfficialVideo(
         "D9J3-dqV6JI",
-        "UCZen39LQJPx04GjPj7FOMcw",
+        "UCf1q6dhccWr6eQEcFFnJSbA",
         "TJR Reacts to the TJR and Aiden videos",
         "2026-09-25T13:54:41+00:00",
     )
     assert constrain_official_sources([other, official], official.video_id) == [official]
-    with pytest.raises(RuntimeError, match="not in either Reach-listed"):
+    with pytest.raises(RuntimeError, match="not in"):
         constrain_official_sources([other, official], "aaaaaaaaaaa")
     with pytest.raises(RuntimeError, match="exactly 11"):
         constrain_official_sources([other, official], "not-a-video-id")
 
 
 def test_channel_bound_discovery_never_spills_and_is_newest_first() -> None:
-    target = "UCGHBUXjDCeiIXNdKR0HUZnA"
-    other_channel = "UCZen39LQJPx04GjPj7FOMcw"
+    target = "UCf1q6dhccWr6eQEcFFnJSbA"
+    other_channel = "UC-not-approved-secondary"
     older_target = OfficialVideo(
         "AAAABBBB111",
         target,
@@ -259,8 +259,8 @@ def test_channel_bound_discovery_never_spills_and_is_newest_first() -> None:
 
 
 def test_explicit_video_must_belong_to_target_channel() -> None:
-    target = "UCGHBUXjDCeiIXNdKR0HUZnA"
-    other_channel = "UCZen39LQJPx04GjPj7FOMcw"
+    target = "UCf1q6dhccWr6eQEcFFnJSbA"
+    other_channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     other_video = OfficialVideo(
         "CCCCDDDD222",
         other_channel,
@@ -322,7 +322,7 @@ def test_required_staged_original_never_falls_back_to_another_source(
 ) -> None:
     from scripts.tjr_youtube_preview import render_youtube_previews
 
-    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     official = OfficialVideo("p2LU37eat70", channel, "Official", "2026-09-25T16:00:00Z")
     monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", official.video_id)
     monkeypatch.setenv("TJR_BROWSER_CAPTURE_FILE", str(tmp_path / "missing.json"))
@@ -339,7 +339,7 @@ def test_required_staged_original_never_falls_back_to_another_source(
         ),
         pytest.raises(RuntimeError, match="required approved staged original"),
     ):
-        render_youtube_previews(tmp_path / "artifacts", Path("campaigns/reach-tjr-weekly.yaml"))
+        render_youtube_previews(tmp_path / "artifacts", Path("campaigns/reach-double-coverage-dedicated.yaml"))
 
 
 def test_failed_editorial_writes_transcript_and_screening_audit(
@@ -348,7 +348,7 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
     from clipper.models import TranscriptSegment
     from scripts.tjr_youtube_preview import render_youtube_previews
 
-    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     official = OfficialVideo("X7msxvyQd_U", channel, "LIVE TRADING", "2026-09-27T15:45:16Z")
     media = tmp_path / "source.mp4"
     media.write_bytes(b"verified source fixture")
@@ -386,7 +386,7 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
             },
         ),
     ):
-        render_youtube_previews(tmp_path / "renders", Path("campaigns/reach-tjr-weekly.yaml"))
+        render_youtube_previews(tmp_path / "renders", Path("campaigns/reach-double-coverage-dedicated.yaml"))
     runs = list((tmp_path / "renders").glob("reach-tjr-youtube-*"))
     assert len(runs) == 1
     run = runs[0]
@@ -406,18 +406,18 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
 def test_official_playlist_finds_older_full_video_without_third_party_reposts() -> None:
     import json
 
-    channel = "UCGHBUXjDCeiIXNdKR0HUZnA"
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     official_long = {
         "id": "ABCD1234xyz",
         "channel_id": channel,
-        "title": "TJR LIVE TRADING",
+        "title": "Double Coverage Podcast Episode",
         "duration": 2400,
         "timestamp": 1790451200,
     }
     repost = {
         "id": "badR3post_X",
         "channel_id": "UC-foreign-channel",
-        "title": "Reposted TJR compilation",
+        "title": "Reposted Double Coverage compilation",
         "duration": 1200,
     }
     result = Mock(stdout="\n".join(json.dumps(x) for x in (official_long, repost)))
@@ -433,14 +433,14 @@ def test_short_filled_rss_is_enriched_with_older_official_long_form() -> None:
     import io
 
     short_feed = {
-        channel: atom_feed(channel).replace(b"Official TJR content", b"#TJR")
+        channel: atom_feed(channel).replace(b"Official Double Coverage content", b"#DoubleCoverage")
         for channel in CHANNELS
     }
-    long_channel = "UCGHBUXjDCeiIXNdKR0HUZnA"
+    long_channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     older = OfficialVideo(
         "ABCD1234xyz",
         long_channel,
-        "TJR LIVE TRADING",
+        "Double Coverage Podcast Episode",
         "",
         duration_seconds=3600,
     )
@@ -471,7 +471,7 @@ def test_short_filled_rss_is_enriched_with_older_official_long_form() -> None:
 
 
 def test_playlist_duration_prevents_known_short_from_blocking_long_source() -> None:
-    channel = "UCGHBUXjDCeiIXNdKR0HUZnA"
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     short = OfficialVideo("8PYgFVB0GHE", channel, "Great trading", "2026-09-27", 31)
     older = OfficialVideo("ABCD1234xyz", channel, "Market update", "2026-09-25", 1800)
     assert prioritize_campaign_moments([short, older])[0] == older
@@ -549,7 +549,7 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
     from clipper.models import TranscriptSegment
     from scripts.tjr_youtube_preview import render_youtube_previews
 
-    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     original = OfficialVideo("X7msxvyQd_U", channel, "Trade setup", "2026-09-27T15:00:00Z")
     source = tmp_path / "source.mp4"
     source.write_bytes(b"test source")
@@ -588,12 +588,12 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
             },
         ),
     ):
-        render_youtube_previews(tmp_path / "renders", Path("campaigns/reach-tjr-weekly.yaml"))
+        render_youtube_previews(tmp_path / "renders", Path("campaigns/reach-double-coverage-dedicated.yaml"))
     assert scored and all(items == [first, second] for items in scored)
 
 
 def test_campaign_source_cutoff_rejects_old_and_unknown_uploads() -> None:
-    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     old = OfficialVideo("ABCD1234xyz", channel, "Old show", "2026-08-29T18:00:00Z", 2200)
     unknown = OfficialVideo("ABCD1234xyy", channel, "Unverified date", "", 1800)
     fresh = OfficialVideo("X7msxvyQd_U", channel, "Current trading", "2026-09-27", 2200)
@@ -601,7 +601,7 @@ def test_campaign_source_cutoff_rejects_old_and_unknown_uploads() -> None:
     assert constrain_official_sources([old, unknown, fresh], None, published_after=cutoff) == [
         fresh
     ]
-    with pytest.raises(RuntimeError, match="not in either Reach-listed channel"):
+    with pytest.raises(RuntimeError, match="not in channel"):
         constrain_official_sources([old, fresh], old.video_id, published_after=cutoff)
 
 
@@ -632,7 +632,7 @@ def test_direct_download_requires_full_verified_duration(tmp_path: Path) -> None
 
     video = OfficialVideo(
         "X7msxvyQd_U",
-        "UCZen39LQJPx04GjPj7FOMcw",
+        "UCf1q6dhccWr6eQEcFFnJSbA",
         "Verified video",
         "2026-09-27T15:00:00Z",
         2642,
@@ -671,7 +671,9 @@ def test_direct_mode_artifacts_include_all_referenced_qa_evidence() -> None:
             assert f"{root}/{suffix}" in workflow
 
 
-def test_known_memecoin_source_uses_audited_logo_safe_split_layout() -> None:
+def test_double_coverage_uses_campaign_default_layout_and_required_watermark() -> None:
     source = (ROOT / "scripts" / "tjr_youtube_preview.py").read_text(encoding="utf-8")
-    assert 'chosen_video.video_id == "LvnemCfJpQU"' in source
-    assert 'layout = "tjr-memecoin-logo-safe"' in source
+    assert 'layout = "default"' in source
+    assert "double-coverage-watermark.png" in source
+    assert 'chosen_video.video_id == "LvnemCfJpQU"' not in source
+    assert 'chosen_video.video_id == "p2LU37eat70"' not in source
