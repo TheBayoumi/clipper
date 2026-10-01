@@ -130,8 +130,7 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
     import tempfile
 
     approved = {
-        "UCGHBUXjDCeiIXNdKR0HUZnA",
-        "UCZen39LQJPx04GjPj7FOMcw",
+        "UCf1q6dhccWr6eQEcFFnJSbA",
     }
     attempts: list[dict[str, str]] = []
     total_ip_challenges = 0
@@ -336,7 +335,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
     video_id = str(selected["source_video_id"])
     channel_id = str(selected["source_channel_id"])
     if (
-        channel_id not in {"UCGHBUXjDCeiIXNdKR0HUZnA", "UCZen39LQJPx04GjPj7FOMcw"}
+        channel_id not in {"UCf1q6dhccWr6eQEcFFnJSbA"}
         or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id)
         or not re.fullmatch(r"\d{4,20}-\d{1,4}", run_key)
     ):
@@ -463,7 +462,7 @@ def main() -> None:
                 "requested channel is not one of the Reach-approved YouTube channels"
             )
         requested_video = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip() or None
-        published_after = load_brief(Path("campaigns/reach-tjr-weekly.yaml")).published_after
+        published_after = load_brief(Path("campaigns/reach-double-coverage-dedicated.yaml")).published_after
         official = constrain_official_sources(
             candidates,
             requested_id=requested_video,
