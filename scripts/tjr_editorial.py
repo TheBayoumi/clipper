@@ -202,6 +202,30 @@ def _grounded_numbers(hook: str, source: str) -> bool:
     return normalize(hook).issubset(normalize(source))
 
 
+def _reviewed_exchange_headline(candidate: ClipCandidate, hook: str) -> bool:
+    """Accept a paraphrase only with retained exact-span review evidence."""
+    required = {
+        "headline_origin=reviewed_full_exchange_summary",
+        "span_review=standalone_opening_delivered_payoff_complete_ending",
+        "context_assessment=structured_local_instruct_model",
+    }
+    if not required.issubset(candidate.reasons) or hook != _semantic_hook_override(candidate):
+        return False
+    if not 4 <= len(_WORDS.findall(hook)) <= 14:
+        return False
+    for prefix in ("setup_quote=", "payoff_quote="):
+        quotes = [
+            reason.removeprefix(prefix) for reason in candidate.reasons if reason.startswith(prefix)
+        ]
+        if (
+            len(quotes) != 1
+            or not quotes[0].strip()
+            or quotes[0].casefold() not in candidate.text.casefold()
+        ):
+            return False
+    return True
+
+
 def candidate_gate_failures(
     candidate: ClipCandidate,
     *,
@@ -231,7 +255,9 @@ def candidate_gate_failures(
         failed.append("NO_GROUNDED_HOOK")
     elif not _grounded_numbers(hook, text):
         failed.append("UNSUPPORTED_NUMERICAL_HOOK")
-    elif hook.upper() not in source_headline_candidates(text):
+    elif hook.upper() not in source_headline_candidates(text) and not _reviewed_exchange_headline(
+        candidate, hook
+    ):
         failed.append("UNSUPPORTED_SOURCE_HOOK")
     if opening_margin is not None and opening_margin <= 0 and not allow_review_only_opening:
         failed.append("CONTEXT_OPENING_NEEDS_REVIEW")
@@ -280,7 +306,15 @@ def evaluate_candidate(
 
     integrity: IntegrityStatus = "unverified"
     evidence = (
-        "headline preserves an intact source sentence including its subject, negation and amounts",
+        (
+            "headline summarizes the selected exchange; "
+            "retained setup/payoff quotes match its source text"
+            if _reviewed_exchange_headline(candidate, hook)
+            else (
+                "headline preserves an intact source sentence "
+                "including its subject, negation and amounts"
+            )
+        ),
         "source context, implied outcome and visual claims still require human verification",
     )
     if review is not None and review.integrity_passed is not None:

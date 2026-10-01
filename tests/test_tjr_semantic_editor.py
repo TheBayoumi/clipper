@@ -247,9 +247,10 @@ def test_structured_editor_selects_complete_span_and_full_clip_hook(tmp_path) ->
         source_sha256="a" * 64,
         cache_path=output,
         assessor=assess,
+        reviewer=_review,
     )
     assert len(first) == 1 and first[0].start == 0 and first[0].end == 22
-    assert "semantic_hook=" + segments[2].text.upper() in first[0].reasons
+    assert "semantic_hook=SECURITY STOPPED THE PERFORMER AT HIS OWN SHOW" in first[0].reasons
     assert segments[3].text not in first[0].text
     assert audit["hook_scope"] == "entire_selected_exchange"
     second, reused = refine_contextual_candidates(
@@ -260,6 +261,7 @@ def test_structured_editor_selects_complete_span_and_full_clip_hook(tmp_path) ->
         cache_path=tmp_path / "reused.json",
         reuse_path=output,
         assessor=assess,
+        reviewer=_review,
     )
     assert second == first and reused["cache_reused"] is True and len(calls) == 1
 
@@ -297,6 +299,7 @@ def test_structured_editor_rejects_incomplete_cut_and_unsupported_hook(tmp_path)
         source_sha256="a" * 64,
         cache_path=tmp_path / "bad.json",
         assessor=assess,
+        reviewer=_review,
     )
     assert result == []
     assert audit["assessments"][0]["rejection"] == "UNSUPPORTED_BOUNDARY_OR_HEADLINE"
@@ -468,7 +471,139 @@ def test_editorial_checkpoint_resumes_completed_rejections_and_retains_failure(t
         cache_path=path,
         reuse_path=path,
         assessor=repair,
+        reviewer=_review,
     )
     assert len(calls) == 3 and len(clips) == 1
     assert audit["resumed_assessments"] == 1 and len(audit["assessments"]) == 2
     assert json.loads(path.read_text())["complete"] is True
+
+
+def _review(context):
+    units = context["selected_units"]
+    return dict(
+        opening_standalone=True,
+        payoff_complete=True,
+        ending_complete=True,
+        contains_promotion_or_intro=False,
+        headline_supported=True,
+        headline_self_contained=True,
+        headline="Security stopped the performer at his own show",
+        setup_quote=" ".join(units[0].split()[:6]),
+        payoff_quote=" ".join(units[-1].split()[-6:]),
+    )
+
+
+def test_span_review_rejects_high_ratings_when_payoff_is_outside_clip(tmp_path):
+    from clipper.models import ClipCandidate
+    from scripts.tjr_semantic_editor import refine_contextual_candidates
+
+    segments = [
+        TranscriptSegment(0, 12, "We received sixty million views last month."),
+        TranscriptSegment(12, 24, "The channel seemed to be doing very well."),
+        TranscriptSegment(24, 31, "But the revenue was zero despite those views."),
+    ]
+    proposal = ClipCandidate("v", 0, 24, " ".join(s.text for s in segments[:2]), 100)
+
+    def select(context):
+        return dict(
+            keep=True,
+            start_unit=0,
+            end_unit=1,
+            hook_index=0,
+            opening=5,
+            story=5,
+            ending=5,
+            hook=5,
+            reason="Views but no income.",
+        )
+
+    calls = []
+
+    def review(context):
+        calls.append(context)
+        return {**_review(context), "payoff_complete": False}
+
+    result, audit = refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "cache.json",
+        assessor=select,
+        reviewer=review,
+    )
+    assert result == []
+    assert calls[0]["after"] == [segments[2].text]
+    assert segments[2].text not in calls[0]["selected_units"]
+    assert audit["assessments"][0]["rejection"] == "SPAN_REVIEW_REJECTED"
+
+
+def test_span_review_rejects_intro_fragment_and_invented_payoff(tmp_path):
+    from clipper.models import ClipCandidate
+    from scripts.tjr_semantic_editor import refine_contextual_candidates
+
+    segments = [TranscriptSegment(0, 22, "The owner finally let me into my own show.")]
+    proposal = ClipCandidate("v", 0, 22, segments[0].text, 100)
+
+    def select(context):
+        return dict(
+            keep=True,
+            start_unit=0,
+            end_unit=0,
+            hook_index=0,
+            opening=5,
+            story=5,
+            ending=5,
+            hook=5,
+            reason="Owner resolved access.",
+        )
+
+    for field, value, expected in (
+        ("contains_promotion_or_intro", True, "SPAN_REVIEW_REJECTED"),
+        ("opening_standalone", False, "SPAN_REVIEW_REJECTED"),
+        ("ending_complete", False, "SPAN_REVIEW_REJECTED"),
+        ("payoff_quote", "He earned a million dollars", "UNSUPPORTED_EXCHANGE_REVIEW_EVIDENCE"),
+    ):
+        result, audit = refine_contextual_candidates(
+            _brief(),
+            [proposal],
+            segments,
+            source_sha256="a" * 64,
+            cache_path=tmp_path / "cache.json",
+            assessor=select,
+            reviewer=lambda context, key=field, item=value: {**_review(context), key: item},
+        )
+        assert not result
+        assert audit["assessments"][0]["rejection"] == expected
+
+
+def test_local_reviewer_separates_delivered_span_from_excluded_context():
+    import json
+
+    from scripts.tjr_semantic_editor import LocalContextualEditor
+
+    context = dict(
+        selected_units=["The owner let me into my own show."],
+        before=[],
+        after=["What happened next?"],
+    )
+
+    class Model:
+        def create_chat_completion(self, **kwargs):
+            self.request = kwargs
+            return {
+                "choices": [
+                    {"finish_reason": "stop", "message": {"content": json.dumps(_review(context))}}
+                ]
+            }
+
+    editor = object.__new__(LocalContextualEditor)
+    editor.model = Model()
+    assert editor.review(context)["payoff_complete"] is True
+    request = editor.model.request
+    assert json.loads(request["messages"][1]["content"]) == context
+    assert "ratings" not in request["messages"][1]["content"]
+    assert request["response_format"]["schema"]["properties"]["contains_promotion_or_intro"] == {
+        "type": "boolean"
+    }
+    assert request["seed"] == 0 and request["temperature"] == 0

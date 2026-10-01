@@ -605,3 +605,44 @@ def test_multiple_successful_fallbacks_are_all_audited_and_blocked_until_canonic
     assert "MULTIPLE_PRODUCTION_ARTIFACTS" in result["issues"]
     assert "DUPLICATE_CHANNEL_ARTIFACT" in result["issues"]
     assert len(result["channels"]) == 2
+
+
+def test_summary_audit_requires_matching_span_source_and_payoff(tmp_path):
+    import json
+
+    from scripts.tjr_feedback_gate import reviewed_summary_evidence
+
+    hook = "Security stopped the performer at his own show"
+    text = "Security stopped me outside my own show. The owner finally let me inside."
+    review = dict(
+        headline=hook,
+        opening_standalone=True,
+        payoff_complete=True,
+        ending_complete=True,
+        headline_supported=True,
+        headline_self_contained=True,
+        contains_promotion_or_intro=False,
+        setup_quote="Security stopped me outside",
+        payoff_quote="The owner finally let me inside.",
+    )
+    evidence = dict(reviewed_start=0, reviewed_end=24, exchange_review=review)
+    saved = dict(
+        complete=True,
+        identity=dict(version="podcast_structured_editor_v3", source_sha256="a" * 64),
+        audit=dict(assessments=[evidence]),
+    )
+    path = tmp_path / "editorial-cache.json"
+    assert not reviewed_summary_evidence(tmp_path, hook, text, 0, 24, "a" * 64)
+    path.write_text(json.dumps(saved))
+    assert reviewed_summary_evidence(tmp_path, hook, text, 0, 24, "a" * 64)
+    assert not reviewed_summary_evidence(tmp_path, hook, text, 0, 23, "a" * 64)
+    assert not reviewed_summary_evidence(tmp_path, hook, text, 0, 24, "b" * 64)
+    assert not reviewed_summary_evidence(tmp_path, hook, text, 0, 24, "")
+    for field, value in [
+        ("payoff_complete", False),
+        ("contains_promotion_or_intro", True),
+        ("payoff_quote", "He paid me millions of dollars"),
+    ]:
+        saved["audit"]["assessments"][0]["exchange_review"] = {**review, field: value}
+        path.write_text(json.dumps(saved))
+        assert not reviewed_summary_evidence(tmp_path, hook, text, 0, 24, "a" * 64)

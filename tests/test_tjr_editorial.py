@@ -347,3 +347,48 @@ def test_word_quota_does_not_reject_assessed_longer_exchange() -> None:
     item = clip(0, STRONG_SEGMENT + " " + "A substantive explanation continues. " * 35)
     assert len(item.text.split()) > 155
     assert evaluate_candidate(item) is not None
+
+
+def test_full_exchange_summary_requires_retained_source_evidence():
+    from dataclasses import replace
+
+    from clipper.models import ClipCandidate
+    from scripts.tjr_editorial import candidate_gate_failures, evaluate_candidate
+
+    hook = "SECURITY STOPPED THE PERFORMER AT HIS OWN SHOW"
+    clip = ClipCandidate(
+        "v",
+        0,
+        24,
+        "Security stopped me outside my own show. The owner finally let me inside.",
+        80,
+        (
+            "context_story_margin=1",
+            "context_ending_margin=1",
+            "context_opening_margin=1",
+            "context_assessment=structured_local_instruct_model",
+            "headline_origin=reviewed_full_exchange_summary",
+            "span_review=standalone_opening_delivered_payoff_complete_ending",
+            "semantic_hook=" + hook,
+            "setup_quote=Security stopped me outside",
+            "payoff_quote=The owner finally let me inside.",
+        ),
+    )
+    assert candidate_gate_failures(clip, hook_override=hook) == []
+    pick = evaluate_candidate(clip, hook_override=hook)
+    assert pick is not None and pick.hook == hook and pick.integrity_status == "unverified"
+    assert "summarizes" in pick.integrity_evidence[0]
+    for reasons in (
+        tuple(r for r in clip.reasons if not r.startswith("payoff_quote=")),
+        tuple(
+            "payoff_quote=He paid me millions." if r.startswith("payoff_quote=") else r
+            for r in clip.reasons
+        ),
+        (*clip.reasons, "setup_quote=outside my own show."),
+    ):
+        assert "UNSUPPORTED_SOURCE_HOOK" in candidate_gate_failures(
+            replace(clip, reasons=reasons), hook_override=hook
+        )
+    assert "UNSUPPORTED_SOURCE_HOOK" in candidate_gate_failures(
+        clip, hook_override="AN UNRELATED CLAIM ABOUT A DIFFERENT SHOW"
+    )

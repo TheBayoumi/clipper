@@ -77,6 +77,55 @@ def hook_grounded_in_transcript(hook: str, transcript: str) -> bool:
     return any(expected == normalize(sentence) for sentence in sentences)
 
 
+def reviewed_summary_evidence(
+    base: Path, hook: str, transcript: str, start: float, end: float, source_hash: str
+) -> bool:
+    """Check paraphrase provenance independently; never grant editorial approval."""
+    path = base / "editorial-cache.json"
+    if not path.is_file():
+        return False
+    saved = read_json(path)
+    identity = saved.get("identity", {})
+    if (
+        saved.get("complete") is not True
+        or identity.get("version") != "podcast_structured_editor_v3"
+        or identity.get("source_sha256") != source_hash
+    ):
+        return False
+    if not 4 <= len(re.findall(r"[\w$%'-]+", hook)) <= 14:
+        return False
+    numbers = set(re.findall(r"\d+(?:[.,]\d+)*", hook))
+    if not numbers.issubset(set(re.findall(r"\d+(?:[.,]\d+)*", transcript))):
+        return False
+    flags = (
+        "opening_standalone",
+        "payoff_complete",
+        "ending_complete",
+        "headline_supported",
+        "headline_self_contained",
+    )
+    for evidence in saved.get("audit", {}).get("assessments", []):
+        review = evidence.get("exchange_review", {})
+        if (
+            evidence.get("rejection")
+            or evidence.get("reviewed_start") != start
+            or evidence.get("reviewed_end") != end
+            or str(review.get("headline", "")).strip().casefold() != hook.casefold()
+            or any(review.get(key) is not True for key in flags)
+            or review.get("contains_promotion_or_intro") is not False
+        ):
+            continue
+        quotes = [review.get(key) for key in ("setup_quote", "payoff_quote")]
+        if all(
+            isinstance(quote, str)
+            and 3 <= len(quote.split()) <= 12
+            and quote.casefold() in transcript.casefold()
+            for quote in quotes
+        ):
+            return True
+    return False
+
+
 def checked_path(base: Path, value: object) -> Path:
     if not isinstance(value, str) or not value:
         raise ValueError("missing evidence path")
@@ -385,7 +434,16 @@ def inspect_artifact(
                 window_start = float(clip["source_start_seconds"])
                 window_end = float(clip["source_end_seconds"])
                 source_text = clip_transcript_text(base, start=window_start, end=window_end)
-                if not hook_grounded_in_transcript(hook, source_text):
+                if not hook_grounded_in_transcript(
+                    hook, source_text
+                ) and not reviewed_summary_evidence(
+                    base,
+                    hook,
+                    source_text,
+                    window_start,
+                    window_end,
+                    str(report.get("source_sha256") or ""),
+                ):
                     issues.append("HOOK_SOURCE_MISMATCH")
                 integrity = clip.get("editorial_integrity_gate")
                 if not isinstance(integrity, dict) or integrity.get("status") not in {
