@@ -244,9 +244,9 @@ def _ass_header() -> str:
         "-1,0,0,0,100,100,0,0,1,0,0,8,120,120,185,1\n"
         "Style: Caption,DejaVu Sans,64,&H00FFFFFF,&H00FFFFFF,&H00131620,&H58131620,"
         "-1,0,0,0,100,100,0,0,1,0,0,2,120,120,375,1\n\n"
-        "Style: HookPlate,DejaVu Sans,1,&H00201613,&H00201613,&H00201613,&H00201613,"
+        "Style: HookPlate,DejaVu Sans,1,&H00000000,&H00000000,&H00000000,&H00000000,"
         "0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n"
-        "Style: CaptionPlate,DejaVu Sans,1,&H00201613,&H00201613,&H00201613,&H00201613,"
+        "Style: CaptionPlate,DejaVu Sans,1,&H00000000,&H00000000,&H00000000,&H00000000,"
         "0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, "
@@ -318,15 +318,21 @@ def _plate_event(
 ) -> str:
     """One fixed rectangle per text block, independent of text-run transforms."""
     font = ImageFont.truetype(_FONT, size)
-    width = math.ceil(max(float(font.getlength(line)) for line in lines) * 1.12 + 40)
-    height = math.ceil(size * len(lines) * 1.2 + 36)
+    # libass normalizes Fontsize to the font ascender/descender height;
+    # Pillow measures at the em size. Convert before adding fixed padding.
+    ascent, descent = font.getmetrics()
+    scale = size / (ascent + descent)
+    width = math.ceil(max(float(font.getlength(line)) for line in lines) * scale * 1.06 + 36)
+    ink_height = max(font.getbbox(line)[3] - font.getbbox(line)[1] for line in lines)
+    height = math.ceil((len(lines) - 1) * size + ink_height * scale * 1.06 + 36)
     x = (1080 - width) // 2
-    y = 167 if hook else 1558 - height
+    center_y = 260 if hook else 1460
+    y = center_y - height // 2
     style = "HookPlate" if hook else "CaptionPlate"
     layer = 4 if hook else 0
     return (
         f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{style},,0,0,0,,"
-        f"{{\\an7\\pos({x},{y})\\p1\\bord0\\shad0\\alpha&H58&}}"
+        f"{{\\an7\\pos({x},{y})\\p1\\bord0\\shad0\\alpha&H00&}}"
         f"m 0 0 l {width} 0 l {width} {height} l 0 {height}"
     )
 
@@ -354,7 +360,7 @@ def create_tiktok_ass(
         events.append(
             "Dialogue: 5,"
             f"{_ass_time(0)},{_ass_time(clip.duration)},"
-            f"Hook,,0,0,0,,{{\\an8\\pos(540,185)\\fs{size}\\q2}}" + r"\N".join(lines)
+            f"Hook,,0,0,0,,{{\\an5\\pos(540,260)\\fs{size}\\q2}}" + r"\N".join(lines)
         )
     words, unaligned = _timed_words(segments, clip)
     phrases = _phrases(words)
@@ -381,13 +387,13 @@ def create_tiktok_ass(
             if word_start > cursor:
                 events.append(
                     f"Dialogue: 1,{_ass_time(cursor)},{_ass_time(word_start)},"
-                    f"Caption,,0,0,0,,{{\\an2\\pos(540,1540)\\fs{size}\\q2}}" + r"\N".join(lines)
+                    f"Caption,,0,0,0,,{{\\an5\\pos(540,1460)\\fs{size}\\q2}}" + r"\N".join(lines)
                 )
             cursor = max(cursor, word_end)
         if cursor < phrase_end:
             events.append(
                 f"Dialogue: 1,{_ass_time(cursor)},{_ass_time(phrase_end)},"
-                f"Caption,,0,0,0,,{{\\an2\\pos(540,1540)\\fs{size}\\q2}}" + r"\N".join(lines)
+                f"Caption,,0,0,0,,{{\\an5\\pos(540,1460)\\fs{size}\\q2}}" + r"\N".join(lines)
             )
         # Preserve measured word boundaries when wrapping a phrase.
         split = len(lines[0].split()) if len(lines) > 1 else len(phrase)
@@ -412,7 +418,7 @@ def create_tiktok_ass(
             events.append(
                 "Dialogue: 2,"
                 f"{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,"
-                f"{{\\an2\\pos(540,1540)\\fs{size}\\q2}}{rendered}"
+                f"{{\\an5\\pos(540,1460)\\fs{size}\\q2}}{rendered}"
             )
     for segment in unaligned:
         start = max(segment.start, clip.start) - clip.start
@@ -427,7 +433,7 @@ def create_tiktok_ass(
             events.append(
                 "Dialogue: 1,"
                 f"{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,"
-                f"{{\\an2\\pos(540,1540)\\fs{size}}}" + r"\N".join(lines)
+                f"{{\\an5\\pos(540,1460)\\fs{size}}}" + r"\N".join(lines)
             )
     output.write_text(_ass_header() + "\n".join(events) + "\n", encoding="utf-8")
     return output
@@ -448,7 +454,7 @@ def audit_tiktok_ass(path: str | Path, *, clip_duration: float) -> dict[str, obj
     fields = hook_events[0].split(",", 9)
     if fields[1:4] != [_ass_time(0), _ass_time(clip_duration), "Hook"]:
         raise ValueError("creative headline must cover the entire clip")
-    if r"\an8\pos(540,185)" not in hook_events[0]:
+    if r"\an5\pos(540,260)" not in hook_events[0]:
         raise ValueError("creative headline escaped the locked safe-area anchor")
     if "Style: Hook," not in content or "Style: Caption," not in content:
         raise ValueError("missing opaque hook or caption style")
@@ -466,7 +472,8 @@ def audit_tiktok_ass(path: str | Path, *, clip_duration: float) -> dict[str, obj
         raise ValueError("caption plate must be fixed vector geometry")
     return {
         "style": "B2",
-        "background_mode": "stable_phrase_plate_v1",
+        "background_mode": "centered_black_phrase_plate_v2",
+        "text_censorship": "source_transcript_verbatim_no_added_masking",
         "caption_plate_events": len(plates),
         "persistent_hook_seconds": clip_duration,
         "spoken_word_highlight_events": len(spoken),

@@ -260,9 +260,29 @@ def verify_ass_sidecar(
     if (
         abs(seconds(fields[1])) > 0.05
         or abs(seconds(fields[2]) - duration_seconds) > 0.15
-        or r"\an8\pos(540,185)" not in fields[9]
+        or not any(anchor in fields[9] for anchor in (r"\an8\pos(540,185)", r"\an5\pos(540,260)"))
     ):
         raise ValueError("ASS hook is not visible for the full safe-area duration")
+
+    if r"\an5\pos(540,260)" in fields[9]:
+        for style in ("HookPlate", "CaptionPlate"):
+            row = next(
+                (line for line in script.splitlines() if line.startswith(f"Style: {style},")), ""
+            )
+            if row.removeprefix("Style: ").split(",")[3:7] != ["&H00000000"] * 4:
+                raise ValueError("ASS centered plates must use pure black")
+        for plate in [
+            line
+            for line in script.splitlines()
+            if ",HookPlate," in line or ",CaptionPlate," in line
+        ]:
+            geometry = re.search(r"\\pos\((\d+),(\d+)\).*?m 0 0 l (\d+) 0 l \d+ (\d+)", plate)
+            if geometry is None or r"\alpha&H00&" not in plate:
+                raise ValueError("ASS centered black plate geometry is missing")
+            x, y, width, height = map(int, geometry.groups())
+            center = 260 if ",HookPlate," in plate else 1460
+            if abs(x + width / 2 - 540) > 1 or abs(y + height / 2 - center) > 1:
+                raise ValueError("ASS plate does not share the text center")
     previous_end = -1.0
     for line in sorted(captions, key=lambda row: seconds(row.split(",", 9)[1])):
         parts = line.split(",", 9)
@@ -505,7 +525,10 @@ def inspect_artifact(
                         or int(quality.get("compared_frames") or 0) < 1
                     ):
                         issues.append("SOURCE_FIDELITY_FAILED")
-                if overlay.get("background_mode") == "stable_phrase_plate_v1":
+                if overlay.get("background_mode") in {
+                    "stable_phrase_plate_v1",
+                    "centered_black_phrase_plate_v2",
+                }:
                     audio_proof = quality.get("audio_fidelity")
                     if (
                         not isinstance(audio_proof, dict)
@@ -517,7 +540,8 @@ def inspect_artifact(
                         issues.append("SOURCE_AUDIO_CONTINUITY_FAILED")
                 actual = probe(mp4)
                 if (
-                    overlay.get("background_mode") == "stable_phrase_plate_v1"
+                    overlay.get("background_mode")
+                    in {"stable_phrase_plate_v1", "centered_black_phrase_plate_v2"}
                     and actual.get("audio_sample_rate") != 48000
                 ):
                     issues.append("SOURCE_AUDIO_CONTINUITY_FAILED")

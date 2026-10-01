@@ -646,3 +646,47 @@ def test_summary_audit_requires_matching_span_source_and_payoff(tmp_path):
         saved["audit"]["assessments"][0]["exchange_review"] = {**review, field: value}
         path.write_text(json.dumps(saved))
         assert not reviewed_summary_evidence(tmp_path, hook, text, 0, 24, "a" * 64)
+
+
+def test_centered_black_ass_plate_audit_rejects_offset_or_tinted_plate(tmp_path):
+    import pytest
+
+    from clipper.models import ClipCandidate, TranscriptSegment, WordTiming
+    from clipper.tiktok import audit_tiktok_ass, create_tiktok_ass
+    from scripts.tjr_feedback_gate import verify_ass_sidecar
+
+    hook = "THIS IS THE COMPLETE EXCHANGE"
+    ass = create_tiktok_ass(
+        ClipCandidate("v", 0, 2, "Yeah, exactly.", 1),
+        [
+            TranscriptSegment(
+                0.1,
+                1.2,
+                "Yeah, exactly.",
+                (WordTiming(0.1, 0.5, "yeah,"), WordTiming(0.5, 1.2, "exactly.")),
+            )
+        ],
+        tmp_path / "centered.ass",
+        hook_text=hook,
+    )
+    proof = audit_tiktok_ass(ass, clip_duration=2)
+    verify_ass_sidecar(
+        ass,
+        duration_seconds=2,
+        reported_word_events=proof["spoken_word_highlight_events"],
+        expected_hook=hook,
+    )
+    original = ass.read_text()
+    for mutated in (
+        original.replace("&H00000000", "&H00201613"),
+        original.replace(r"\alpha&H00&", r"\alpha&H58&"),
+        original.replace("m 0 0 l ", "m 12 0 l "),
+    ):
+        ass.write_text(mutated)
+        with pytest.raises(ValueError, match=r"black|geometry"):
+            verify_ass_sidecar(
+                ass,
+                duration_seconds=2,
+                reported_word_events=proof["spoken_word_highlight_events"],
+                expected_hook=hook,
+            )

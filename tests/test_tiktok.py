@@ -49,8 +49,8 @@ def test_creative_hook_persists_and_active_word_follows_original_audio(tmp_path:
     assert "-1,0,0,0,100,100,0,0,1,0,0" in ass
     assert ",CaptionPlate," in ass and r"\p1" in ass
     assert f"{_ass_time(0)},{_ass_time(26)},Hook" in ass
-    assert r"\pos(540,185)" in ass
-    assert r"\pos(540,1540)" in ass
+    assert r"\pos(540,260)" in ass
+    assert r"\pos(540,1460)" in ass
     # Real word timings: each spoken word changes its own highlight interval.
     assert f"{_ass_time(0)},{_ass_time(0.35)},Caption" in ass
     assert f"{_ass_time(0.35)},{_ass_time(0.67)},Caption" in ass
@@ -205,7 +205,7 @@ def test_empty_headline_and_corrupted_ass_fail_closed(tmp_path: Path) -> None:
             "entire clip",
         ),
         (
-            original.replace(r"\an8\pos(540,185)", r"\an8\pos(999,185)"),
+            original.replace(r"\an5\pos(540,260)", r"\an5\pos(999,260)"),
             "safe-area",
         ),
         (
@@ -359,6 +359,38 @@ def test_stable_background_does_not_scale_with_active_word(tmp_path: Path) -> No
         # The rectangle is independent of glyph colors and active-word scale.
         mask = crop.point(lambda value: 255 if value < 200 else 0).convert("L")
         bboxes.append(mask.getbbox())
+        # Inspect painted glyphs inside the black plate, rather than trusting
+        # ASS anchors or font estimates. Both axes must have balanced padding.
+        pixels = crop.load()
+        black = Image.new("L", crop.size)
+        black.putdata([255 if max(pixel) < 15 else 0 for pixel in crop.getdata()])
+        bounds = black.getbbox()
+        assert bounds is not None
+        left, top, right, bottom = bounds
+        inner = crop.crop((left + 2, top + 2, right - 2, bottom - 2))
+        ink = Image.new("L", inner.size)
+        ink.putdata([255 if max(pixel) > 150 else 0 for pixel in inner.getdata()])
+        painted = ink.getbbox()
+        assert painted is not None
+        x0, y0, x1, y1 = painted
+        assert abs(x0 - (inner.width - x1)) <= 8
+        assert abs(y0 - (inner.height - y1)) <= 8
+        assert pixels[left + 3, top + 3] == (0, 0, 0)
+        # The hook uses the same centered block contract.
+        hook_crop = Image.open(frame).convert("RGB").crop((0, 100, 1080, 420))
+        hook_black = Image.new("L", hook_crop.size)
+        hook_black.putdata([255 if max(pixel) < 15 else 0 for pixel in hook_crop.getdata()])
+        hook_bounds = hook_black.getbbox()
+        assert hook_bounds is not None
+        hx0, hy0, hx1, hy1 = hook_bounds
+        hook_inner = hook_crop.crop((hx0 + 2, hy0 + 2, hx1 - 2, hy1 - 2))
+        hook_ink = Image.new("L", hook_inner.size)
+        hook_ink.putdata([255 if max(pixel) > 150 else 0 for pixel in hook_inner.getdata()])
+        hook_painted = hook_ink.getbbox()
+        assert hook_painted is not None
+        ix0, iy0, ix1, iy1 = hook_painted
+        assert abs(ix0 - (hook_inner.width - ix1)) <= 8
+        assert abs(iy0 - (hook_inner.height - iy1)) <= 8
     assert bboxes[0] is not None and len(set(bboxes)) == 1
     text = ass.read_text()
     plates = [row for row in text.splitlines() if ",CaptionPlate," in row]
@@ -376,3 +408,18 @@ def test_phrase_background_survives_pause_without_invented_highlight(tmp_path: P
     assert "0:00:00.10,0:00:01.00,CaptionPlate" in ass
     gap = next(row for row in ass.splitlines() if "0:00:00.40,0:00:00.70,Caption," in row)
     assert r"\c&H" not in gap
+
+
+def test_caption_text_does_not_inconsistently_mask_profanity(tmp_path):
+    words = (
+        WordTiming(0.1, 0.5, "fucking"),
+        WordTiming(0.5, 0.9, "shit"),
+        WordTiming(0.9, 1.3, "f***ing"),
+    )
+    ass = create_tiktok_ass(
+        ClipCandidate("v", 0, 2, "fucking shit f***ing", 1),
+        [TranscriptSegment(0.1, 1.3, "fucking shit f***ing", words)],
+        tmp_path / "verbatim.ass",
+        hook_text="THE COMPLETE SOURCE STORY IS HERE",
+    ).read_text()
+    assert "FUCKING" in ass and "SHIT" in ass and "F***ING" in ass
