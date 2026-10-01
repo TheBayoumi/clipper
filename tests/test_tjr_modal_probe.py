@@ -325,3 +325,29 @@ def test_late_cookie_free_strategy_is_not_suppressed_by_two_challenges(
     assert calls == 5
     assert result["status"] == "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED"
     assert result["transport_strategy"] == "bgutil_embedded_android_vr"
+
+
+def test_extractor_trace_redacts_auth_and_token_material(monkeypatch: pytest.MonkeyPatch) -> None:
+    functions = _load_modal_probe(monkeypatch).__globals__
+    secret = "a" * 80
+    stderr = (
+        "[debug] Command-line config: cookie=private-session\n"
+        "[debug] [youtube:pot] PO Token Providers: bgutil:script\n"
+        "[debug] [youtube:pot] po_token=" + secret + "\n"
+        "ERROR: [youtube] Sign in to confirm you're not a bot https://example.com/?token=secret\n"
+    )
+    trace = functions["safe_extractor_trace"](stderr)
+    assert "private-session" not in str(trace)
+    assert secret not in str(trace)
+    assert "token=secret" not in str(trace)
+    assert "bgutil:script" in str(trace)
+    assert "Sign in to confirm" in str(trace)
+
+
+def test_diagnostics_only_enable_verbosity_when_selected(monkeypatch: pytest.MonkeyPatch) -> None:
+    functions = _load_modal_probe(monkeypatch).__globals__
+    monkeypatch.delenv("TJR_ACQUISITION_DIAGNOSTICS", raising=False)
+    command = functions["_yt_command"]((), "https://www.youtube.com/watch?v=X7msxvyQd_U")
+    assert "--verbose" not in command
+    monkeypatch.setenv("TJR_ACQUISITION_DIAGNOSTICS", "1")
+    assert "--verbose" in functions["_yt_command"]((), command[-1])

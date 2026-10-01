@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -97,9 +98,79 @@ def acquisition_runtime() -> dict[str, str]:
     return versions
 
 
+def safe_extractor_trace(stderr: str) -> list[str]:
+    """Retain client/provider errors without URLs, cookies or raw PO tokens."""
+    prefixes = (
+        "[debug] [youtube",
+        "[youtube]",
+        "[youtube:pot",
+        "WARNING: [youtube",
+        "ERROR:",
+        "[debug] JS runtimes:",
+        "[debug] yt-dlp version",
+        "[debug] Plugin directories:",
+    )
+    trace = []
+    for line in stderr.splitlines():
+        if not line.startswith(prefixes):
+            continue
+        line = re.sub(r"https?://[^\s]+", "<url>", line)
+        line = re.sub(
+            r"(?i)(po_token|pot|visitor_data|authorization|cookie)(\s*[:=]\s*)[^\s,]+",
+            r"\1\2<redacted>",
+            line,
+        )
+        line = re.sub(r"[A-Za-z0-9_+/=-]{40,}", "<opaque-value>", line)
+        trace.append(line[:800])
+    return trace[-60:]
+
+
+def worker_network_diagnostics(video_id: str) -> dict[str, Any]:
+    """Independent bounded checks after acquisition; never reuse their sessions."""
+    import ipaddress
+    import subprocess
+    import urllib.request
+
+    evidence: dict[str, Any] = {}
+    try:
+        node = subprocess.run(
+            ["node", "--version"], capture_output=True, text=True, timeout=5, check=False
+        )
+        evidence["node_version"] = node.stdout.strip() if node.returncode == 0 else "UNAVAILABLE"
+    except (OSError, subprocess.TimeoutExpired):
+        evidence["node_version"] = "UNAVAILABLE"
+    try:
+        with urllib.request.urlopen("https://api.ipify.org?format=json", timeout=8) as response:
+            address = json.loads(response.read(2048))["ip"]
+        evidence["outbound_ip"] = str(ipaddress.ip_address(address))
+    except Exception as exc:
+        evidence["outbound_ip_check_error"] = type(exc).__name__
+    try:
+        request = urllib.request.Request(
+            f"https://www.youtube.com/watch?v={video_id}", headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310 - fixed HTTPS host
+            evidence["watch_http_status"] = response.status
+            html = response.read(3_000_000).decode("utf-8", errors="replace")
+        match = re.search(r"(?:var\s+)?ytInitialPlayerResponse\s*=\s*", html)
+        if match:
+            player, _ = json.JSONDecoder().raw_decode(html[match.end() :])
+            details = player.get("videoDetails") or {}
+            playback = player.get("playabilityStatus") or {}
+            evidence["watch_video_id"] = details.get("videoId")
+            evidence["watch_playability"] = playback.get("status")
+            evidence["watch_reason"] = str(playback.get("reason") or "")[:300]
+        else:
+            evidence["watch_playability"] = "NO_PLAYER_RESPONSE"
+    except Exception as exc:
+        evidence["watch_check_error"] = type(exc).__name__
+    return evidence
+
+
 def _yt_command(args: tuple[str, ...], url: str) -> list[str]:
     return [
         "yt-dlp",
+        *(["--verbose"] if os.getenv("TJR_ACQUISITION_DIAGNOSTICS") == "1" else []),
         "--ignore-config",
         "--no-warnings",
         "--js-runtimes",
@@ -136,6 +207,8 @@ volume = modal.Volume.from_name("clipper-tjr-source-transport", create_if_missin
 def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = "") -> dict[str, Any]:
     result = _inspect_original_youtube(candidates, run_key)
     result["worker_runtime"] = acquisition_runtime()
+    if os.getenv("TJR_ACQUISITION_DIAGNOSTICS") == "1" and candidates:
+        result["network_diagnostics"] = worker_network_diagnostics(candidates[0]["video_id"])
     return result
 
 
@@ -184,6 +257,7 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
                             "strategy": strategy_name,
                             "stage": "metadata",
                             "reason": reason,
+                            "extractor_trace": safe_extractor_trace(metadata_run.stderr),
                         }
                     )
                     if reason == "YOUTUBE_IP_OR_LOGIN_CHALLENGE":
@@ -517,6 +591,7 @@ def main() -> None:
                 if kind == "region"
                 else inspect_original_youtube
             )
+            provider = provider.with_options(env={"TJR_ACQUISITION_DIAGNOSTICS": "1"})
             try:
                 candidate = provider.remote(inputs, run_key)
                 result = candidate
