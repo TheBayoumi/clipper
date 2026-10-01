@@ -1,4 +1,4 @@
-"""Pure quality controls for scalable TJR editorial selection."""
+"""Pure quality controls for scalable campaign editorial selection."""
 
 import pytest
 
@@ -175,7 +175,7 @@ STRONG_SEGMENT = (
 def test_weighted_provisional_score_tracks_unverified_visuals() -> None:
     result = evaluate_candidate(clip(0, STRONG_SEGMENT))
     assert result is not None
-    assert RUBRIC_VERSION == "tjr-editorial-v4-semantic-campaign-quality"
+    assert RUBRIC_VERSION == "double-coverage-editorial-v1-semantic-campaign-quality"
     assert sum(WEIGHTS.values()) == 100
     assert result.score_coverage == 85
     assert result.criteria["visuals"].score is None
@@ -193,7 +193,7 @@ def test_weighted_provisional_score_tracks_unverified_visuals() -> None:
 def test_manual_review_supplies_visual_rating_and_integrity_verdict() -> None:
     review = EditorialReview(
         visual_score=4.5,
-        visual_notes="Source and final portrait crop manually inspected; TJR and chart visible.",
+        visual_notes="Source and final portrait crop manually inspected; host and important scene visible.",
         integrity_passed=True,
         integrity_notes=(
             "Creative hook matches source audio and actual payoff after full-context review."
