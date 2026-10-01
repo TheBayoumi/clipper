@@ -142,14 +142,15 @@ def test_style_b_high_quality_native_cadence_and_ass_filter(tmp_path: Path) -> N
         build_ffmpeg_command(
             "source.mp4", "out.mp4", clip, tmp_path / "style.ass", source_fps="0/0"
         )
-    with pytest.raises(RenderError, match="forbids"):
-        build_ffmpeg_command(
-            "source.mp4",
-            "out.mp4",
-            clip,
-            tmp_path / "style.ass",
-            watermark_path=tmp_path / "logo.png",
-        )
+    watermarked = build_ffmpeg_command(
+        "source.mp4",
+        "out.mp4",
+        clip,
+        tmp_path / "style.ass",
+        watermark_path=tmp_path / "logo.png",
+    )
+    assert "[1:v]scale=180:-1" in " ".join(watermarked)
+    assert "overlay=W-w-48:48" in " ".join(watermarked)
 
 
 def test_tiktok_renderer_writes_editable_ass_and_original_srt(tmp_path: Path) -> None:
