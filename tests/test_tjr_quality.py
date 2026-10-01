@@ -36,14 +36,14 @@ def test_campaign_accepts_verified_video_ids(campaign_brief: Path) -> None:
     data = check_campaign_brief(campaign_brief)
     assert data["allowed_video_ids"] == []
     assert data["watermark_url"] == (
-        "https://drive.google.com/file/d/1bVsR2jUqmP5i61TuFWo0NzN7_0dSLAou/view?usp=sharing"
+        "https://drive.google.com/file/d/1wn3gL5h7cUZn-8jzTfwkAvLhbleXgbL6/view?usp=sharing"
     )
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("source_channel_ids", ["UC-not-tjr"]),
+        ("source_channel_ids", ["UC-not-double-coverage"]),
         ("allowed_video_ids", ["not-a-video-id"]),
         ("allowed_video_ids", ["8PYgFVB0GHE", "8PYgFVB0GHE"]),
         ("watermark_text", "Branding"),
