@@ -776,8 +776,14 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
     )
     run_dir.mkdir(parents=True, exist_ok=False)
     errors: list[dict[str, str]] = []
-    step = "channel_discovery"
+    step = "watermark_validation"
     try:
+        watermark_path = _download_asset(
+            brief.watermark_url,
+            run_dir / "assets" / "double-coverage-watermark.png",
+            expected_kind="image",
+        )
+        step = "channel_discovery"
         candidates, failures = discover_official_uploads()
         errors.extend(failures)
         (run_dir / "official-source-candidates.json").write_text(
@@ -984,11 +990,6 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         )
         step = "render_and_decode"
         renderer = FFmpegRenderer()
-        watermark_path = _download_asset(
-            brief.watermark_url,
-            run_dir / "assets" / "double-coverage-watermark.png",
-            expected_kind="image",
-        )
         caption_style = os.getenv("TJR_CAPTION_STYLE", "").strip().upper()
         if caption_style != "B2":
             raise RuntimeError(

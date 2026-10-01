@@ -332,6 +332,7 @@ def test_required_staged_original_never_falls_back_to_another_source(
             render_youtube_previews.__globals__,
             {
                 "discover_official_uploads": lambda: ([official], []),
+                "_download_asset": lambda _url, path, **_kwargs: path,
                 "verified_youtube_metadata": Mock(
                     side_effect=AssertionError("Unverified fallback must not run")
                 ),
@@ -369,6 +370,7 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
             render_youtube_previews.__globals__,
             {
                 "discover_official_uploads": lambda: ([official], []),
+                "_download_asset": lambda _url, path, **_kwargs: path,
                 "load_verified_browser_original": lambda *_: (
                     official,
                     media,
@@ -580,6 +582,7 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
             render_youtube_previews.__globals__,
             {
                 "discover_official_uploads": lambda: ([original], []),
+                "_download_asset": lambda _url, path, **_kwargs: path,
                 "load_verified_browser_original": lambda *_: (
                     original,
                     source,
@@ -745,3 +748,21 @@ def test_transcript_cache_requires_exact_source_and_complete_analysis(
         assert chunks[0][0].words[0].text == "A"
         proof = json.loads((tmp_path / "transcript-cache-provenance.json").read_text())
         assert proof["source_hash_verified"] is True
+
+
+def test_watermark_failure_stops_before_video_discovery(tmp_path: Path) -> None:
+    from scripts.tjr_youtube_preview import render_youtube_previews
+
+    with (
+        patch.dict(
+            render_youtube_previews.__globals__,
+            {
+                "_download_asset": Mock(side_effect=RuntimeError("asset quota exceeded")),
+                "discover_official_uploads": Mock(
+                    side_effect=AssertionError("video work must not start")
+                ),
+            },
+        ),
+        pytest.raises(RuntimeError, match="asset quota exceeded"),
+    ):
+        render_youtube_previews(tmp_path, Path("campaigns/reach-double-coverage-dedicated.yaml"))

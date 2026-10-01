@@ -394,6 +394,8 @@ jobs:
       TJR_RENDER_SAFETY_LIMIT: "20"
       TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
       TJR_TRANSCRIPT_SOURCE_RUN_ID: ${{ inputs.transcript_source_run_id }}
+      CLIPPER_APPROVED_ASSET_SHA256: "5bd213d18ba0e8e29fbdecf62e967caa760fbb1d7f9700f990ee2e43feec698b"
+      CLIPPER_IMAGE_ASSET_CACHE_MANIFEST: "tjr-modal-probe/approved-watermark.json"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -407,6 +409,10 @@ jobs:
           set -euo pipefail
           python -m pip install -e . "curl-cffi>=0.15,<1" "modal>=1,<2"
           python -m py_compile scripts/tjr_modal_probe.py
+      - name: Verify approved watermark before acquiring video
+        env:
+          CLIPPER_APPROVED_ASSET_BOOTSTRAP_URL: ${{ secrets.CLIPPER_APPROVED_ASSET_BOOTSTRAP_URL }}
+        run: python -m scripts.tjr_modal_runner --prepare-watermark
       - name: Acquire newest eligible original from Modal
         env:
           TJR_MODAL_STAGE_ORIGINAL: "1"
@@ -442,6 +448,7 @@ jobs:
           path: |
             tjr-modal-probe/verified-original-egress.json
             tjr-modal-probe/staged-original.json
+            tjr-modal-probe/approved-watermark.json
             tjr-modal-artifacts/**/source-roundtrip.json
             tjr-modal-artifacts/**/verified-original-egress.json
             tjr-modal-artifacts/**/editorial-failure.json

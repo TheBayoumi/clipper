@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -180,9 +181,71 @@ def run_modal_production(
             os.environ.pop("TJR_SOURCE_VIDEO_ID", None)
 
 
+def prepare_watermark_cache(brief_path: Path, manifest_path: Path) -> None:
+    """Validate the exact approved image before acquiring a costly video original."""
+    from clipper.brief import load_brief
+    from clipper.pipeline import _download_asset, _verify_image_asset
+
+    brief = load_brief(brief_path)
+    expected = os.environ.get("CLIPPER_APPROVED_ASSET_SHA256", "")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected) or not brief.watermark_url:
+        raise RuntimeError("approved watermark URL and pinned SHA-256 are required")
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    local = manifest_path.with_suffix(".png")
+    remote = f"assets/{expected}.png"
+    result = subprocess.run(
+        ["modal", "volume", "get", VOLUME, remote, str(local)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        local.unlink(missing_ok=True)
+        bootstrap = os.getenv("CLIPPER_APPROVED_ASSET_BOOTSTRAP_URL", "").strip()
+        if not bootstrap:
+            raise RuntimeError("approved watermark is absent from the persistent asset cache")
+        try:
+            _download_asset(bootstrap, local, expected_kind="media")
+            _verify_image_asset(local, expected)
+            subprocess.run(
+                ["modal", "volume", "put", VOLUME, str(local), remote],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except Exception:
+            local.unlink(missing_ok=True)
+            raise RuntimeError(
+                "approved watermark bootstrap failed validation or storage"
+            ) from None
+    _verify_image_asset(local, expected)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "source_url": brief.watermark_url,
+                "sha256": expected,
+                "path": str(local.resolve()),
+                "cache_path": remote,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print("APPROVED_WATERMARK_VERIFIED:", expected, flush=True)
+
+
 def main() -> int:
     try:
-        run_modal_production()
+        if sys.argv[1:] == ["--prepare-watermark"]:
+            prepare_watermark_cache(
+                Path("campaigns/reach-double-coverage-dedicated.yaml"),
+                Path(os.environ["CLIPPER_IMAGE_ASSET_CACHE_MANIFEST"]),
+            )
+        else:
+            run_modal_production()
     except (ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as exc:
         print(f"TJR_MODAL_PRODUCTION_FAILED: {exc}", flush=True)
         return 1

@@ -345,6 +345,7 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
                     "duration": float(metadata.get("duration") or 0),
                     "title": str(metadata.get("title") or "")[:160],
                     "transport_strategy": strategy_name,
+                    "extractor_trace": safe_extractor_trace(metadata_run.stderr),
                     "attempts": attempts,
                 }
                 # The full original MUST be downloaded in the same Modal

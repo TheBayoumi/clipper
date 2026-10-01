@@ -149,3 +149,59 @@ def test_preacquired_staging_is_reused_without_second_modal_call(
     command.assert_not_called()
     assert actual["video_id"] == "X7msxvyQd_U"
     assert actual["status"] == "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED"
+
+
+def test_watermark_preflight_reuses_verified_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+    import json
+
+    from PIL import Image
+
+    from scripts.tjr_modal_runner import prepare_watermark_cache
+
+    manifest = tmp_path / "asset.json"
+    image = manifest.with_suffix(".png")
+    Image.new("RGBA", (8, 8)).save(image)
+    expected = hashlib.sha256(image.read_bytes()).hexdigest()
+    monkeypatch.setenv("CLIPPER_APPROVED_ASSET_SHA256", expected)
+    with (
+        patch("scripts.tjr_modal_runner.subprocess.run", return_value=Mock(returncode=0)),
+        patch("clipper.pipeline._download_asset") as download,
+    ):
+        prepare_watermark_cache(Path("campaigns/reach-double-coverage-dedicated.yaml"), manifest)
+        download.assert_not_called()
+    assert json.loads(manifest.read_text())["sha256"] == expected
+    image.write_bytes(b"corrupt")
+    with (
+        patch("scripts.tjr_modal_runner.subprocess.run", return_value=Mock(returncode=0)),
+        pytest.raises(RuntimeError, match="SHA-256 mismatch"),
+    ):
+        prepare_watermark_cache(Path("campaigns/reach-double-coverage-dedicated.yaml"), manifest)
+
+
+def test_watermark_preflight_rejects_invalid_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.tjr_modal_runner import prepare_watermark_cache
+
+    monkeypatch.setenv("CLIPPER_APPROVED_ASSET_SHA256", "a" * 64)
+    monkeypatch.setenv("CLIPPER_APPROVED_ASSET_BOOTSTRAP_URL", "https://example.com/bootstrap")
+
+    def download(url: str, output: Path, **kwargs: object) -> Path:
+        output.write_bytes(b"quota HTML")
+        return output
+
+    with (
+        patch(
+            "scripts.tjr_modal_runner.subprocess.run", return_value=Mock(returncode=1)
+        ) as command,
+        patch("clipper.pipeline._download_asset", side_effect=download),
+        pytest.raises(RuntimeError, match="bootstrap failed"),
+    ):
+        prepare_watermark_cache(
+            Path("campaigns/reach-double-coverage-dedicated.yaml"), tmp_path / "asset.json"
+        )
+    assert command.call_count == 1
+    assert not (tmp_path / "asset.png").exists()

@@ -412,3 +412,36 @@ def test_download_asset_uses_gdown_for_google_drive_media(tmp_path: Path) -> Non
             max_bytes=2,
             expected_kind="media",
         )
+
+
+def test_approved_image_cache_checks_source_hash_and_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    from PIL import Image
+
+    image = tmp_path / "approved.png"
+    Image.new("RGBA", (8, 8)).save(image)
+    expected = hashlib.sha256(image.read_bytes()).hexdigest()
+    manifest = tmp_path / "cache.json"
+    payload = {
+        "source_url": "https://example.com/approved.png",
+        "path": str(image),
+        "sha256": expected,
+    }
+    manifest.write_text(json.dumps(payload))
+    monkeypatch.setenv("CLIPPER_IMAGE_ASSET_CACHE_MANIFEST", str(manifest))
+    with patch("clipper.pipeline.urlopen") as request:
+        result = _download_asset(payload["source_url"], tmp_path / "output.png")
+        assert result.read_bytes() == image.read_bytes()
+        request.assert_not_called()
+    with pytest.raises(RuntimeError, match="campaign asset URL"):
+        _download_asset("https://example.com/other.png", tmp_path / "other.png")
+    image.write_bytes(b"corrupt")
+    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+        _download_asset(payload["source_url"], tmp_path / "bad.png")
+    payload["sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(payload))
+    with pytest.raises(RuntimeError, match="decodable image"):
+        _download_asset(payload["source_url"], tmp_path / "bad.png")
