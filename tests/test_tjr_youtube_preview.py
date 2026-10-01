@@ -260,7 +260,7 @@ def test_channel_bound_discovery_never_spills_and_is_newest_first() -> None:
 
 def test_explicit_video_must_belong_to_target_channel() -> None:
     target = "UCf1q6dhccWr6eQEcFFnJSbA"
-    other_channel = "UCf1q6dhccWr6eQEcFFnJSbA"
+    other_channel = "UC-not-approved-secondary"
     other_video = OfficialVideo(
         "CCCCDDDD222",
         other_channel,
@@ -607,7 +607,7 @@ def test_campaign_source_cutoff_rejects_old_and_unknown_uploads() -> None:
     assert constrain_official_sources([old, unknown, fresh], None, published_after=cutoff) == [
         fresh
     ]
-    with pytest.raises(RuntimeError, match="not in channel"):
+    with pytest.raises(RuntimeError, match="not in the Reach-listed campaign channel"):
         constrain_official_sources([old, fresh], old.video_id, published_after=cutoff)
 
 
