@@ -201,7 +201,7 @@ def discover_official_uploads() -> tuple[list[OfficialVideo], list[dict[str, str
         # channel's longer /videos uploads or completed /streams broadcasts.
         short_only = not feed_items or all(
             (item.duration_seconds is not None and item.duration_seconds < 90)
-            or item.title.lower().strip() in {"", "unknown", "#tjr"}
+            or item.title.lower().strip() in {"", "unknown", "#doublecoverage"}
             or ("#" in item.title and len(item.title) < 45)
             for item in feed_items
         )
