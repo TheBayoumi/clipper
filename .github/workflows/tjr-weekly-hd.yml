@@ -155,7 +155,7 @@ jobs:
 
           brief = check_campaign_brief(Path("campaigns/reach-double-coverage-dedicated.yaml"))
           assert brief["required_hashtags"] == ["#DoubleCoverage"]
-          assert brief["watermark_url"] == "https://drive.google.com/file/d/1bVsR2jUqmP5i61TuFWo0NzN7_0dSLAou/view?usp=sharing"
+          assert brief["watermark_url"] == "https://drive.google.com/file/d/1wn3gL5h7cUZn-8jzTfwkAvLhbleXgbL6/view?usp=sharing"
           assert set(brief["source_channel_ids"]) == {
               "UCf1q6dhccWr6eQEcFFnJSbA",
           }
