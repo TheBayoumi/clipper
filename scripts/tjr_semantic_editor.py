@@ -17,33 +17,38 @@ from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
 
 SEMANTIC_MODEL = "BAAI/bge-small-en-v1.5"
 CREATOR_MOMENT_DESCRIPTIONS = (
-    "a self-contained funny or surprising creator reaction, memorable quote, disagreement, "
-    "challenge, reveal, flex, comparison, or payoff",
-    "a concrete trading psychology, risk-management, market decision, financial result, "
-    "trading lesson, or money-related creator moment",
+    "a self-contained funny or surprising podcast reaction, memorable quote, disagreement, "
+    "challenge, reveal, flex, comparison, confession, story, or payoff",
+    "a specific guest or host story with a clear setup and memorable consequence, lesson, "
+    "punchline, surprising detail, or emotionally strong reaction",
 )
 EVENT_DESCRIPTIONS = {
     "reaction_surprise": (
-        "a strong authentic reaction, surprise, disbelief, excitement, laughter, or "
-        "unexpected moment"
+        "a strong authentic reaction, surprise, disbelief, excitement, laughter, embarrassment, "
+        "or unexpected moment"
     ),
-    "comparison_challenge": (
-        "a comparison, challenge, flex, one-upmanship, ranking, or claim that one thing "
-        "is better, rarer, or worth more"
+    "memorable_quote_opinion": (
+        "a memorable quote, bold opinion, provocative statement, unusual belief, or concise "
+        "take that makes sense outside the full episode"
     ),
-    "reveal_showcase": (
-        "a reveal, discovery, showcase, collection item, unusual detail, or visual payoff"
+    "story_confession": (
+        "a personal story, confession, behind-the-scenes anecdote, embarrassing moment, "
+        "career story, or unusual experience"
     ),
-    "story_payoff": "a clear setup, escalation, consequence, resolution, or what happened next",
-    "explanation_argument": (
-        "a specific explanation, disagreement, opinion, reasoning chain, or why something matters"
+    "conflict_disagreement": (
+        "a disagreement, challenge, confrontation, controversial exchange, pushback, or "
+        "strong difference of opinion"
     ),
-    "trading_decision": (
-        "a concrete financial-market trade, setup, entry, exit, thesis, or decision"
+    "comparison_flex": (
+        "a comparison, challenge, flex, one-upmanship, ranking, money detail, status claim, "
+        "or claim that one thing is better, rarer, harder, or worth more"
     ),
-    "risk_management": (
-        "risk management, stop loss, position sizing, discipline, protecting capital, "
-        "or a trading lesson"
+    "reveal_payoff": (
+        "a reveal, discovery, shocking detail, unexpected answer, consequence, resolution, "
+        "or satisfying payoff"
+    ),
+    "lesson_explanation": (
+        "a specific explanation, lesson, insight, reasoning chain, advice, or why something matters"
     ),
 }
 OFF_TOPIC_DESCRIPTIONS = (
