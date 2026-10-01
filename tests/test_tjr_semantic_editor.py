@@ -749,3 +749,26 @@ def test_stage_cache_reuses_selector_when_only_reviewer_changes(tmp_path, monkey
         reviewer=review,
     )
     assert calls == {"selector": 3, "reviewer": 5}
+
+
+def test_stage_ast_identity_ignores_version_optional_fields_but_keeps_semantics():
+    import ast
+    import copy
+
+    from scripts.tjr_semantic_editor import _canonical_ast
+
+    tree = ast.parse("def select(value):\n    return value + 1\n")
+    older = copy.deepcopy(tree)
+    older.body[0]._fields = tuple(
+        name for name in older.body[0]._fields if name not in {"type_params", "type_comment"}
+    )
+    newer = copy.deepcopy(tree)
+    newer.body[0]._fields = tuple(
+        dict.fromkeys((*newer.body[0]._fields, "type_params", "type_comment"))
+    )
+    newer.body[0].type_params = []
+    newer.body[0].type_comment = None
+    assert _canonical_ast(older) == _canonical_ast(newer)
+    assert _canonical_ast(tree) != _canonical_ast(
+        ast.parse("def select(value):\n    return value + 2\n")
+    )

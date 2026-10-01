@@ -761,6 +761,22 @@ class LocalContextualEditor:
         return result
 
 
+def _canonical_ast(node: object) -> object:
+    """Normalize semantic AST fields across supported Python versions."""
+    if isinstance(node, ast.AST):
+        return {
+            "node": type(node).__name__,
+            **{
+                name: _canonical_ast(value)
+                for name, value in ast.iter_fields(node)
+                if value is not None and value != []
+            },
+        }
+    if isinstance(node, list):
+        return [_canonical_ast(item) for item in node]
+    return node
+
+
 def _stage_fingerprint(*parts: object) -> str:
     """Ignore formatting; invalidate only code or prompts used by this stage."""
     normalized = []
@@ -768,15 +784,15 @@ def _stage_fingerprint(*parts: object) -> str:
         if callable(part):
             import textwrap
 
-            normalized.append(ast.dump(ast.parse(textwrap.dedent(inspect.getsource(part)))))
+            normalized.append(_canonical_ast(ast.parse(textwrap.dedent(inspect.getsource(part)))))
         else:
             normalized.append(str(part))
-    return hashlib.sha256(json.dumps(normalized).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(normalized, sort_keys=True).encode()).hexdigest()
 
 
 # Verified legacy editor implementations with the identical selector.
 # These hashes are code compatibility metadata, never content/topic gates.
-_LEGACY_SELECTOR_FINGERPRINT = "b2c338ca642bfd298634664c4cca823059505ff519793f4681d8676d2886c4d5"
+_LEGACY_SELECTOR_FINGERPRINT = "ee1ded6a8bfce3eee3855b7685c758d6573845c1b4d59ff0c1aa62a42e832b08"
 _LEGACY_SELECTOR_CODE_HASHES = {
     "d977781963fc02015cfb58bd70dae33f161e6b3773da3dd6aa6fb228597dd371",
     "34494b73b520d376ab8096c1c4718a0776d404787ebcea41edd1e5c98b3ee82d",
