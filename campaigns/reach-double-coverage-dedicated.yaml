@@ -30,7 +30,6 @@ region_code: US
 min_clip_seconds: 20
 max_clip_seconds: 45
 source_limit: 12
-published_after: "2025-01-01T00:00:00Z"
 source_channel_ids:
   - UCf1q6dhccWr6eQEcFFnJSbA # https://www.youtube.com/@DOUBL3COVERAGEPODCAST
 allowed_video_ids: []
