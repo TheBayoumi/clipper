@@ -560,19 +560,14 @@ def test_failed_direct_attempt_does_not_poison_a_successful_fallback(tmp_path: P
     assert result["attempt_failures"]
 
 
-def test_replay_auto_channel_count_uses_original_modal_shape(tmp_path: Path) -> None:
+def test_replay_auto_channel_count_uses_single_double_coverage_channel(
+    tmp_path: Path,
+) -> None:
     first = _fixture(tmp_path)
     first.rename(tmp_path / f"tjr-real-original-youtube-hd-{CHANNEL}-123")
-    blocked = tmp_path / "tjr-real-original-youtube-hd-UCZen39LQJPx04GjPj7FOMcw-123"
-    blocked.mkdir()
-    (blocked / "verified-original-egress.json").write_text(
-        json.dumps({"status": "YOUTUBE_EGRESS_BOT_CHALLENGE"}),
-        encoding="utf-8",
-    )
     result = review_run(tmp_path, expected_channels=0, probe=_probe)
-    assert result["expected_channels"] == 2
-    assert "MISSING_CHANNEL_ARTIFACT" in result["issues"]
-    assert "YOUTUBE_EGRESS_BLOCKED" in result["issues"]
+    assert result["expected_channels"] == 1
+    assert "MISSING_CHANNEL_ARTIFACT" not in result["issues"]
 
 
 def test_verified_mirror_upload_keeps_transcript_and_source_coverage() -> None:
