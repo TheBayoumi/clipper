@@ -447,9 +447,11 @@ def inspect_artifact(
             try:
                 data = read_json(diagnostics[0])
                 detail = str(data.get("status") or data.get("error") or "")
-                if "BOT_CHALLENGE" in detail or "LOGIN_REQUIRED" in detail:
-                    issue = "YOUTUBE_EGRESS_BLOCKED"
-                elif "403" in detail:
+                if (
+                    "BOT_CHALLENGE" in detail
+                    or "LOGIN_REQUIRED" in detail
+                    or "403" in detail
+                ):
                     issue = "YOUTUBE_EGRESS_BLOCKED"
                 else:
                     issue = "ACQUISITION_OR_RENDER_FAILED"
