@@ -246,11 +246,16 @@ jobs:
           docker run --name bgutil-provider -d --init \
             -p 127.0.0.1:4416:4416 \
             brainicism/bgutil-ytdlp-pot-provider:2.0.0
+          # v2.0.0 exposes /ping for readiness; GET / returns HTTP 400.
           for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:4416/ >/dev/null; then break; fi
+            if curl -fsS --connect-timeout 1 --max-time 2 http://127.0.0.1:4416/ping >/dev/null; then break; fi
             sleep 1
           done
-          curl -fsS http://127.0.0.1:4416/ >/dev/null
+          if ! curl -fsS --connect-timeout 1 --max-time 2 http://127.0.0.1:4416/ping; then
+            docker logs --tail 80 bgutil-provider
+            echo "::error::YouTube PO-token provider did not become ready at /ping."
+            exit 1
+          fi
 
           CHROME="$(command -v google-chrome-stable || command -v google-chrome || command -v chromium)"
           if [[ -z "$CHROME" ]]; then
