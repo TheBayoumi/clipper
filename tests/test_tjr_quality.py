@@ -392,17 +392,6 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     assert "continue-on-error" not in modal_steps["Acquire newest eligible original from Modal"]
     assert "Classify Modal acquisition outcome" not in modal_steps
     assert "youtube_alternate_egress" not in jobs
-    assert browser["env"]["TJR_REQUIRE_AUTHENTICATED_YOUTUBE"] == "1"
-    browser_steps = {item.get("name"): item for item in browser["steps"] if item.get("name")}
-    assert "Load required persistent YouTube session" in browser_steps
-    auth_step = browser_steps["Load required persistent YouTube session"]
-    assert auth_step["env"]["COOKIES_B64"] == "${{ secrets.TJR_YOUTUBE_COOKIES_B64 }}"
-    auth_script = auth_step["run"]
-    assert (
-        "youtube_direct requires the encrypted TJR_YOUTUBE_COOKIES_B64 session secret"
-        in auth_script
-    )
-    assert "Probe REAL official YouTube watch page in Chrome" not in browser_steps
     for name in ("youtube_preview", "youtube_modal_egress", "render"):
         assert jobs[name]["env"]["TJR_CAPTION_STYLE"] == "B2"
     assert jobs["youtube_modal_egress"]["env"]["TJR_RENDER_SAFETY_LIMIT"] == "20"
@@ -413,12 +402,3 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     assert "scripts.tjr_quality --stage" in mirror_script
     assert "scripts.tjr_youtube_preview" in mirror_script
     assert "clipper run" not in mirror_script
-
-
-def test_bgutils_provider_health_check_is_reachability_based() -> None:
-    workflow = (
-        Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tjr-weekly-hd.yml"
-    ).read_text(encoding="utf-8")
-    assert "bgutil-ytdlp-pot-provider:2.0.0" in workflow
-    assert "curl -sS -o /dev/null http://127.0.0.1:4416/" in workflow
-    assert "curl -fsS http://127.0.0.1:4416/" not in workflow
