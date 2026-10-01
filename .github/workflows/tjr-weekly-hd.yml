@@ -37,6 +37,11 @@ on:
       - "tests/**"
   workflow_dispatch:
     inputs:
+      reviewer_model_probe:
+        description: "Compare pinned replacement reviewer on saved preflight cuts; no production model change."
+        required: false
+        type: boolean
+        default: false
       editorial_preflight:
         description: "Run real-model reviewer regression on cached transcript only; no source acquisition."
         required: false
@@ -422,11 +427,15 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: reviewer-preflight-*
           path: reviewer-baseline
-      - name: Assess complete exchange and known bad cuts
+      - name: Assess reviewer evidence (regression, diagnostics or model comparison)
         run: |
           if [ -d reviewer-baseline ]; then
             BASELINE=$(find reviewer-baseline -name reviewer-preflight.json -print -quit)
             test -n "$BASELINE"
+            if [ '${{ inputs.reviewer_model_probe }}' = 'true' ]; then
+              python -m scripts.tjr_semantic_editor --reviewer-model-probe-baseline "$BASELINE" --output reviewer-preflight.json
+              exit $?
+            fi
             python -m scripts.tjr_semantic_editor --reviewer-diagnostics-baseline "$BASELINE" --output reviewer-preflight.json
             exit $?
           fi
@@ -822,4 +831,3 @@ jobs:
           retention-days: 14
           compression-level: 0
           if-no-files-found: warn
-

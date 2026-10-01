@@ -1536,8 +1536,126 @@ def reviewer_inference_diagnostics(baseline_path: Path, output: Path) -> int:
                 print(json.dumps(record), flush=True)
     finally:
         editor.close()
-    # Diagnostic data cannot masquerade as a successful semantic preflight.
-    return 1
+    # Completed diagnostics report execution success, never production eligibility.
+    return 0
+
+
+def reviewer_model_probe(baseline_path: Path, output: Path) -> int:
+    """Evaluate a pinned replacement on saved cuts without changing production models."""
+    from llama_cpp import Llama, llama_chat_format  # type: ignore[import-not-found]
+
+    saved = json.loads(baseline_path.read_text())
+    baseline = saved.get("baseline") if isinstance(saved, dict) else saved
+    if (
+        not isinstance(baseline, list)
+        or len(baseline) != 3
+        or any(not item.get("review_context", {}).get("selected_units") for item in baseline)
+    ):
+        raise ValueError("model probe requires three saved source-cut fixtures")
+    repo = "bartowski/Qwen_Qwen3.5-4B-GGUF"
+    revision = "4168f45a16a1290d65a4ec0fa312ae917a4c15d6"
+    filename = "Qwen_Qwen3.5-4B-Q4_K_M.gguf"
+    sha256 = "13c16f426047e2de38cd075bdade4a7bcbc8c774384876f677740cda65f8a983"
+    cache = Path.home() / ".cache" / "clipper" / "editor"
+    cache.mkdir(parents=True, exist_ok=True)
+    path = cache / filename
+    if not path.exists():
+        partial = path.with_suffix(".partial")
+        try:
+            with (
+                urllib.request.urlopen(
+                    f"https://huggingface.co/{repo}/resolve/{revision}/{filename}", timeout=120
+                ) as response,
+                partial.open("wb") as target,
+            ):
+                while chunk := response.read(1024 * 1024):
+                    target.write(chunk)
+            partial.replace(path)
+        except Exception:
+            partial.unlink(missing_ok=True)
+            raise
+    with path.open("rb") as source:
+        if hashlib.file_digest(source, "sha256").hexdigest() != sha256:
+            path.unlink(missing_ok=True)
+            raise RuntimeError("probe model failed pinned SHA-256 verification")
+    editor = LocalContextualEditor.__new__(LocalContextualEditor)
+    editor.model = Llama(
+        model_path=str(path),
+        n_ctx=4096,
+        n_threads=2,
+        n_threads_batch=2,
+        n_batch=256,
+        seed=0,
+        verbose=False,
+    )
+    report: dict[str, Any] = {
+        "diagnostic_only": True,
+        "production_approved": False,
+        "model_repo": repo,
+        "model_revision": revision,
+        "model_sha256": sha256,
+        "context_tokens": 4096,
+        "temperature": 0,
+        "seed": 0,
+        "baseline": baseline,
+        "cases": [],
+    }
+    try:
+        template = editor.model.metadata["tokenizer.chat_template"]
+        # Use the GGUF template with its official non-thinking switch, rather than
+        # suppressing an open thinking block through a JSON grammar.
+        formatter = llama_chat_format.Jinja2ChatFormatter(
+            template="{% set enable_thinking = false %}" + template,
+            eos_token=editor.model.detokenize([editor.model.token_eos()], special=True).decode(),
+            bos_token=editor.model.detokenize([editor.model.token_bos()], special=True).decode(),
+            stop_token_ids=[editor.model.token_eos()],
+        )
+        preview = formatter(messages=[{"role": "user", "content": "Template check"}]).prompt
+        if not preview.rstrip().endswith("</think>"):
+            raise RuntimeError("probe template did not close the disabled thinking block")
+        editor.model.chat_handler = formatter.to_chat_handler()
+        report["chat_template"] = formatter.template
+        report["generation_prefix"] = preview[-100:]
+        for item in baseline:
+            began = time.monotonic()
+            record = {"fixture": item["fixture"], "review_context": item["review_context"]}
+            try:
+                review = editor.review(item["review_context"])
+                accepted = (
+                    all(
+                        review[key]
+                        for key in (
+                            "opening_standalone",
+                            "payoff_complete",
+                            "ending_complete",
+                            "headline_supported",
+                            "headline_self_contained",
+                        )
+                    )
+                    and not review["contains_promotion_or_intro"]
+                )
+                flags_match = all(
+                    review[key] is value for key, value in item["expected_flags"].items()
+                )
+                record.update(
+                    review=review,
+                    actual_accept=accepted,
+                    expected_accept=item["expected_accept"],
+                    flags_match=flags_match,
+                    semantic_pass=accepted == item["expected_accept"] and flags_match,
+                )
+            except Exception as error:
+                record.update(error=f"{type(error).__name__}: {error}", semantic_pass=False)
+            record["seconds"] = round(time.monotonic() - began, 3)
+            report["cases"].append(record)
+            report["semantic_pass"] = len(report["cases"]) == 3 and all(
+                case["semantic_pass"] for case in report["cases"]
+            )
+            output.write_text(json.dumps(report, indent=2) + "\n")
+            print(json.dumps(record), flush=True)
+    finally:
+        editor.close()
+    return int(not report["semantic_pass"])
 
 
 def reviewer_preflight(transcript_path: Path, output: Path) -> int:
@@ -1645,8 +1763,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--reviewer-preflight-transcript", type=Path)
     parser.add_argument("--reviewer-diagnostics-baseline", type=Path)
+    parser.add_argument("--reviewer-model-probe-baseline", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.reviewer_model_probe_baseline:
+        raise SystemExit(reviewer_model_probe(args.reviewer_model_probe_baseline, args.output))
     if args.reviewer_diagnostics_baseline:
         raise SystemExit(
             reviewer_inference_diagnostics(args.reviewer_diagnostics_baseline, args.output)

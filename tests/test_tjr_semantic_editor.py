@@ -45,7 +45,7 @@ def test_inference_diagnostics_reuses_failures_and_never_approves(tmp_path, monk
         )
     )
     output = tmp_path / "diagnostics.json"
-    assert editor.reviewer_inference_diagnostics(baseline, output) == 1
+    assert editor.reviewer_inference_diagnostics(baseline, output) == 0
     report = json.loads(output.read_text())
     assert report["production_approved"] is False
     assert report["chat_template"] == "recorded template"
@@ -58,7 +58,7 @@ def test_inference_diagnostics_reuses_failures_and_never_approves(tmp_path, monk
     assert "schema" in requests[2]["messages"][1]["content"]
     assert "response_format" not in requests[3]
     assert report["baseline"][0]["review"]["boundary_audit"]["reason"] == "saved"
-    assert editor.reviewer_inference_diagnostics(output, tmp_path / "warm.json") == 1
+    assert editor.reviewer_inference_diagnostics(output, tmp_path / "warm.json") == 0
     assert len(requests) == 12
     assert all(
         item["cache_hit"]
@@ -71,11 +71,11 @@ def test_inference_diagnostics_reuses_failures_and_never_approves(tmp_path, monk
         if item["variant"] != "constrained_greedy_schema_in_prompt"
     ]
     output.write_text(json.dumps(report))
-    assert editor.reviewer_inference_diagnostics(output, tmp_path / "extended.json") == 1
+    assert editor.reviewer_inference_diagnostics(output, tmp_path / "extended.json") == 0
     assert len(requests) == 15
     report["comparisons"][0]["request"]["temperature"] = 0.6
     output.write_text(json.dumps(report))
-    assert editor.reviewer_inference_diagnostics(output, tmp_path / "changed.json") == 1
+    assert editor.reviewer_inference_diagnostics(output, tmp_path / "changed.json") == 0
     assert len(requests) == 19
 
 
@@ -90,6 +90,103 @@ def _brief() -> CampaignBrief:
         max_clip_seconds=45,
         rights_confirmed=True,
     )
+
+
+def test_model_probe_closes_thinking_and_preserves_production_init(tmp_path, monkeypatch):
+    import json
+    import sys
+    from types import SimpleNamespace
+
+    from scripts import tjr_semantic_editor as editor
+
+    monkeypatch.setattr(editor.Path, "home", lambda: tmp_path)
+    model_path = tmp_path / ".cache/clipper/editor/Qwen_Qwen3.5-4B-Q4_K_M.gguf"
+    model_path.parent.mkdir(parents=True)
+    model_path.touch()
+    monkeypatch.setattr(
+        editor.hashlib,
+        "file_digest",
+        lambda *args: SimpleNamespace(
+            hexdigest=lambda: "13c16f426047e2de38cd075bdade4a7bcbc8c774384876f677740cda65f8a983"
+        ),
+    )
+    requests = []
+
+    class Model:
+        def __init__(self, **kwargs):
+            requests.append(kwargs)
+            self.metadata = {"tokenizer.chat_template": "template"}
+
+        def token_eos(self):
+            return 1
+
+        def token_bos(self):
+            return 2
+
+        def detokenize(self, tokens, special):
+            return b"token"
+
+        def close(self):
+            pass
+
+    class Formatter:
+        def __init__(self, **kwargs):
+            self.template = kwargs["template"]
+            assert self.template.startswith("{% set enable_thinking = false %}")
+
+        def __call__(self, **kwargs):
+            return SimpleNamespace(prompt="assistant\n<think>\n\n</think>\n\n")
+
+        def to_chat_handler(self):
+            return "hard-non-thinking"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp",
+        SimpleNamespace(
+            Llama=Model, llama_chat_format=SimpleNamespace(Jinja2ChatFormatter=Formatter)
+        ),
+    )
+    monkeypatch.setattr(
+        editor.LocalContextualEditor,
+        "__init__",
+        lambda self: (_ for _ in ()).throw(
+            AssertionError("production model must not load during replacement probe")
+        ),
+    )
+    monkeypatch.setattr(
+        editor.LocalContextualEditor,
+        "review",
+        lambda self, context: {
+            "opening_standalone": True,
+            "payoff_complete": True,
+            "ending_complete": True,
+            "headline_supported": True,
+            "headline_self_contained": True,
+            "contains_promotion_or_intro": False,
+        },
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps(
+            [
+                {
+                    "fixture": str(i),
+                    "review_context": {"selected_units": ["An answer."]},
+                    "expected_accept": i == 0,
+                    "expected_flags": {"payoff_complete": i == 0},
+                }
+                for i in range(3)
+            ]
+        )
+    )
+    output = tmp_path / "probe.json"
+    assert editor.reviewer_model_probe(baseline, output) == 1
+    report = json.loads(output.read_text())
+    assert report["production_approved"] is False
+    assert report["semantic_pass"] is False
+    assert len(report["cases"]) == 3
+    assert len(requests) == 1 and requests[0]["n_ctx"] == 4096
 
 
 def _fake_embedder(texts: list[str]) -> list[list[float]]:
