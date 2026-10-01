@@ -25,7 +25,7 @@ _resolve_approved_youtube_video = _tjr_qa["_resolve_approved_youtube_video"]
 
 @pytest.fixture
 def campaign_brief(tmp_path: Path) -> Path:
-    path = Path("campaigns/reach-tjr-weekly.yaml")
+    path = Path("campaigns/reach-double-coverage-dedicated.yaml")
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     out = tmp_path / "campaign.yaml"
     out.write_text(yaml.safe_dump(data), encoding="utf-8")
@@ -34,8 +34,10 @@ def campaign_brief(tmp_path: Path) -> Path:
 
 def test_campaign_accepts_verified_video_ids(campaign_brief: Path) -> None:
     data = check_campaign_brief(campaign_brief)
-    assert data["allowed_video_ids"] == ["8PYgFVB0GHE"]
-    assert data["watermark_url"] is None
+    assert data["allowed_video_ids"] == []
+    assert data["watermark_url"] == (
+        "https://drive.google.com/file/d/1bVsR2jUqmP5i61TuFWo0NzN7_0dSLAou/view?usp=sharing"
+    )
 
 
 @pytest.mark.parametrize(
@@ -108,7 +110,7 @@ def test_staged_brief_requires_verified_budget_source_and_hash(
     monkeypatch.setitem(
         prepare_staged_brief.__globals__,
         "_resolve_approved_youtube_video",
-        lambda video_id: "UCZen39LQJPx04GjPj7FOMcw",
+        lambda video_id: "UCf1q6dhccWr6eQEcFFnJSbA",
     )
     with pytest.raises(QualityError, match="confirm live campaign budget"):
         prepare_staged_brief(campaign_brief, output)
@@ -117,7 +119,7 @@ def test_staged_brief_requires_verified_budget_source_and_hash(
     assert prepare_staged_brief(campaign_brief, output) == output
     parsed = check_campaign_brief(output)
     assert parsed["source_media_urls"] == {"p2LU37eat70": url}
-    assert parsed["source_channel_ids"] == ["UCZen39LQJPx04GjPj7FOMcw"]
+    assert parsed["source_channel_ids"] == ["UCf1q6dhccWr6eQEcFFnJSbA"]
     monkeypatch.setenv("TJR_SOURCE_MEDIA_SHA256", "invalid-hash")
     with pytest.raises(QualityError, match="64-character"):
         prepare_staged_brief(campaign_brief, tmp_path / "invalid.yaml")
@@ -158,7 +160,7 @@ def test_staged_original_hash_must_match(
     monkeypatch.setitem(
         prepare_staged_brief.__globals__,
         "_resolve_approved_youtube_video",
-        lambda video_id: "UCZen39LQJPx04GjPj7FOMcw",
+        lambda video_id: "UCf1q6dhccWr6eQEcFFnJSbA",
     )
     monkeypatch.setenv("TJR_BUDGET_CONFIRMED", "true")
     monkeypatch.setenv("TJR_SOURCE_VERIFIED", "true")
@@ -171,7 +173,7 @@ def test_staged_original_hash_must_match(
         json.dumps(
             {
                 "errors": [],
-                "discovered_videos": [{"channel_id": "UCZen39LQJPx04GjPj7FOMcw"}],
+                "discovered_videos": [{"channel_id": "UCf1q6dhccWr6eQEcFFnJSbA"}],
                 "planned_clips": [{"video_id": "p2LU37eat70"}],
                 "rendered_clips": [{"video_id": "8PYgFVB0GHE"}],
             }
@@ -271,7 +273,7 @@ def test_mirror_staging_uses_exact_hash_and_a_shared_source_manifest(
     monkeypatch.setitem(
         prepare_staged_brief.__globals__,
         "_resolve_approved_youtube_video",
-        lambda video_id: "UCZen39LQJPx04GjPj7FOMcw",
+        lambda video_id: "UCf1q6dhccWr6eQEcFFnJSbA",
     )
     brief = prepare_staged_brief(campaign_brief, tmp_path / "approved.yaml")
     output = tmp_path / "stage" / "original.mp4"
@@ -295,7 +297,7 @@ def test_mirror_staging_uses_exact_hash_and_a_shared_source_manifest(
     record = json.loads(manifest.read_text(encoding="utf-8"))
     assert record["source_sha256"] == expected
     assert record["video_id"] == "p2LU37eat70"
-    assert record["channel_id"] == "UCZen39LQJPx04GjPj7FOMcw"
+    assert record["channel_id"] == "UCf1q6dhccWr6eQEcFFnJSbA"
     assert record["source_transport"] == "approved_sha256_mirror"
     assert record["duration"] == 125.5
     assert "drive.google.com" not in manifest.read_text(encoding="utf-8")
@@ -315,7 +317,7 @@ def test_staging_rejects_wrong_hash_and_deletes_untrusted_media(
     monkeypatch.setitem(
         prepare_staged_brief.__globals__,
         "_resolve_approved_youtube_video",
-        lambda video_id: "UCZen39LQJPx04GjPj7FOMcw",
+        lambda video_id: "UCf1q6dhccWr6eQEcFFnJSbA",
     )
     brief = prepare_staged_brief(campaign_brief, tmp_path / "approved.yaml")
     output = tmp_path / "stage" / "original.mp4"
