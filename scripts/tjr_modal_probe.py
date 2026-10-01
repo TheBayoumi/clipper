@@ -454,10 +454,7 @@ def main() -> None:
     try:
         candidates, discovery_failures = discover_official_uploads()
         channel_id = os.getenv("TJR_MODAL_CHANNEL_ID", "").strip()
-        if channel_id and channel_id not in {
-            "UCGHBUXjDCeiIXNdKR0HUZnA",
-            "UCZen39LQJPx04GjPj7FOMcw",
-        }:
+        if channel_id and channel_id not in {"UCf1q6dhccWr6eQEcFFnJSbA"}:
             raise RuntimeError(
                 "requested channel is not one of the Reach-approved YouTube channels"
             )
