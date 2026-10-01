@@ -624,14 +624,22 @@ EXCHANGE_REVIEW_PROMPT = (
     "Evaluate promotion independently: a host delivering an advertisement or introducing the show "
     "is promotional; a guest explaining how their profession earns money is ordinary conversation, "
     "even when advertisers are mentioned. Never mark promotion merely to reject a weak story. "
-    "First identify what specific question, tension or contrast this exchange sets up. "
+    "First write central_setup and payoff_summary, each at most 12 words. Compare the last "
+    "selected thought with after: if after supplies the answer or contrast left unresolved by "
+    "the selected speech, payoff_location must be after. For an unrelated next topic, ignore "
+    "after. Use selected only when the selected speech itself resolves the central setup; "
+    "use absent if neither region resolves it. Excluded text can expose an incomplete cut "
+    "but cannot support its headline or quotes. "
+    "Classify segment_purpose independently as substantive_exchange, advertisement, "
+    "show_introduction, teaser or mixed_promotion. A substantive exchange about how "
+    "advertising revenue works remains substantive_exchange. "
     "payoff_complete requires the answer, consequence, insight or punchline actually inside "
     "selected_units. Reject a story that merely introduces an event or promises an explanation "
     "continued in after. A popularity metric, future ambition, event setup or repeated premise "
     "is not by itself a payoff to a question about consequences or earnings. A grammatically "
     "complete sentence can still stop before the central contrast is explained. The payoff_quote "
     "must demonstrate the resolution, not just a statistic that establishes the situation. "
-    "If the selected exchange never resolves its central setup, set payoff_complete=0. "
+    "If the selected exchange never resolves its central setup, never choose selected. "
     "ending_complete requires a complete final spoken thought, not just "
     "ASR punctuation; reject incomplete subordinate clauses and a new unresolved topic. "
     "contains_promotion_or_intro is true for sponsor reads, show introductions, teaser montages "
@@ -645,9 +653,9 @@ EXCHANGE_REVIEW_PROMPT = (
     "Provide setup_quote and payoff_quote, each 3 to 12 words copied exactly from selected_units, "
     "demonstrating the setup and delivered payoff. If no usable standalone exchange exists, "
     "set its failing flags to 0; do not fill gaps using excluded context. "
-    "Write the headline and exact quotes FIRST, even for a rejected clip, "
+    "After locating the resolution and classifying purpose, write headline and exact quotes, "
     "so the decision is auditable. "
-    "Then give a short reason naming the specific missing or delivered content. "
+    "Then give a reason of at most 35 words naming specific missing or delivered content. "
     "For decision fields use integer 1 for yes and 0 for no. Return only JSON."
 )
 EDITOR_PROMPT = (
@@ -788,16 +796,29 @@ class LocalContextualEditor:
 
     def review(self, context: dict[str, Any]) -> dict[str, Any]:
         """Verify the delivered span in a fresh call, without the selector's ratings."""
-        # Evidence precedes verdicts in the constrained generation order.
+        # Locate the actual resolution and speech purpose before generating a headline.
         properties: dict[str, Any] = {
-            name: {"type": "string"}
-            for name in ("headline", "setup_quote", "payoff_quote", "reason")
+            "central_setup": {"type": "string"},
+            "payoff_summary": {"type": "string"},
+            "payoff_location": {"type": "string", "enum": ["selected", "after", "absent"]},
+            "segment_purpose": {
+                "type": "string",
+                "enum": [
+                    "substantive_exchange",
+                    "advertisement",
+                    "show_introduction",
+                    "teaser",
+                    "mixed_promotion",
+                ],
+            },
+            **{
+                name: {"type": "string"}
+                for name in ("headline", "setup_quote", "payoff_quote", "reason")
+            },
         }
         flags = (
             "opening_standalone",
-            "payoff_complete",
             "ending_complete",
-            "contains_promotion_or_intro",
             "headline_supported",
             "headline_self_contained",
         )
@@ -829,9 +850,32 @@ class LocalContextualEditor:
             if type(result.get(name)) is not int or result[name] not in (0, 1):
                 raise RuntimeError("contextual reviewer returned invalid binary verdict")
             result[name] = bool(result[name])
+        if result.get("payoff_location") not in ("selected", "after", "absent"):
+            raise RuntimeError("contextual reviewer returned invalid payoff location")
+        if result.get("segment_purpose") not in (
+            "substantive_exchange",
+            "advertisement",
+            "show_introduction",
+            "teaser",
+            "mixed_promotion",
+        ):
+            raise RuntimeError("contextual reviewer returned invalid speech purpose")
+        result["payoff_complete"] = result["payoff_location"] == "selected"
+        result["contains_promotion_or_intro"] = result["segment_purpose"] != "substantive_exchange"
         if not isinstance(result.get("reason"), str) or not result["reason"].strip():
             raise RuntimeError("contextual reviewer omitted its evidence reason")
         return result
+
+
+def _review_context(units: Sequence[SemanticUnit], first: int, last: int) -> dict[str, Any]:
+    """Use identical delivered/excluded context in production and model diagnostics."""
+    if not 0 <= first <= last < len(units):
+        raise ValueError("review boundaries must select existing thought units")
+    return {
+        "selected_units": [unit.text for unit in units[first : last + 1]],
+        "before": [unit.text for unit in units[max(0, first - 2) : first]],
+        "after": [unit.text for unit in units[last + 1 : last + 3]],
+    }
 
 
 def _canonical_ast(node: object) -> object:
@@ -937,7 +981,7 @@ def refine_contextual_candidates(
         source_headline_candidates,
     )
     identity["reviewer_sha256"] = _stage_fingerprint(
-        LocalContextualEditor.review, EXCHANGE_REVIEW_PROMPT, "span-validation-v3"
+        LocalContextualEditor.review, EXCHANGE_REVIEW_PROMPT, _review_context, "span-validation-v4"
     )
     cached_by_proposal: dict[tuple[float, float], dict[str, Any]] = {}
     selector_reused = 0
@@ -1155,11 +1199,7 @@ def refine_contextual_candidates(
             if review_backend is None:
                 raise RuntimeError("contextual editor requires an independent span reviewer")
             review_started = time.monotonic()
-            review_context = {
-                "selected_units": [unit.text for unit in units[first : last + 1]],
-                "before": [unit.text for unit in units[max(0, first - 2) : first]],
-                "after": [unit.text for unit in units[last + 1 : last + 3]],
-            }
+            review_context = _review_context(units, first, last)
             review_input_sha = hashlib.sha256(
                 json.dumps(review_context, sort_keys=True).encode()
             ).hexdigest()
@@ -1285,6 +1325,12 @@ def refine_contextual_candidates(
 def reviewer_preflight(transcript_path: Path, output: Path) -> int:
     """Exercise the real pinned reviewer before spending a full production run."""
     segments = json.loads(transcript_path.read_text())
+    units = _thought_units(
+        [
+            TranscriptSegment(float(item["start"]), float(item["end"]), str(item["text"]))
+            for item in segments
+        ]
+    )
     # Regression fixtures, never production selection or campaign eligibility rules.
     fixtures = [
         (
@@ -1313,12 +1359,15 @@ def reviewer_preflight(transcript_path: Path, output: Path) -> int:
     records = []
     try:
         for name, start, end, expected, expected_flags in fixtures:
-            selected = [
-                item["text"]
-                for item in segments
-                if item["start"] >= start - 0.01 and item["end"] <= end + 0.01
+            selected_ids = [
+                index
+                for index, unit in enumerate(units)
+                if unit.start >= start - 0.01 and unit.end <= end + 0.01
             ]
-            context = {"selected_units": selected, "before": [], "after": []}
+            if not selected_ids:
+                raise RuntimeError(f"preflight fixture has no complete thought units: {name}")
+            context = _review_context(units, selected_ids[0], selected_ids[-1])
+            selected = context["selected_units"]
             began = time.monotonic()
             review = editor.review(context)
             passed = (
@@ -1346,6 +1395,7 @@ def reviewer_preflight(transcript_path: Path, output: Path) -> int:
                     "start": start,
                     "end": end,
                     "selected_text": text,
+                    "review_context": context,
                     "review": review,
                     "expected_accept": expected,
                     "actual_accept": passed,

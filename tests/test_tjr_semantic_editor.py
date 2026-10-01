@@ -603,6 +603,10 @@ def test_local_reviewer_separates_delivered_span_from_excluded_context():
                                         for key, value in _review(context).items()
                                     },
                                     "reason": "The selected speech resolves the stated setup.",
+                                    "central_setup": "Security prevented access",
+                                    "payoff_summary": "The owner resolved access",
+                                    "payoff_location": "selected",
+                                    "segment_purpose": "substantive_exchange",
                                 }
                             )
                         },
@@ -616,11 +620,26 @@ def test_local_reviewer_separates_delivered_span_from_excluded_context():
     request = editor.model.request
     assert json.loads(request["messages"][1]["content"]) == context
     assert "ratings" not in request["messages"][1]["content"]
-    assert request["response_format"]["schema"]["properties"]["contains_promotion_or_intro"] == {
-        "type": "integer",
-        "enum": [0, 1],
-    }
+    properties = request["response_format"]["schema"]["properties"]
+    assert properties["payoff_location"]["enum"] == ["selected", "after", "absent"]
+    assert "substantive_exchange" in properties["segment_purpose"]["enum"]
+    assert "payoff_complete" not in properties
+    assert "contains_promotion_or_intro" not in properties
     assert request["seed"] == 0 and request["temperature"] == 0
+
+    original_call = editor.model.create_chat_completion
+
+    def excluded_payoff(**kwargs):
+        response = original_call(**kwargs)
+        value = json.loads(response["choices"][0]["message"]["content"])
+        value["payoff_location"] = "after"
+        response["choices"][0]["message"]["content"] = json.dumps(value)
+        return response
+
+    editor.model.create_chat_completion = excluded_payoff
+    result = editor.review(context)
+    assert result["payoff_complete"] is False
+    assert result["contains_promotion_or_intro"] is False
 
 
 def test_stage_cache_reuses_selector_when_only_reviewer_changes(tmp_path, monkeypatch):
@@ -862,4 +881,15 @@ def test_preflight_rejects_wrong_reason_even_when_acceptance_matches(tmp_path, m
     assert records[1]["expected_flags"] == {
         "payoff_complete": False,
         "contains_promotion_or_intro": False,
+    }
+
+
+def test_review_context_marks_neighbors_excluded():
+    from scripts.tjr_semantic_editor import SemanticUnit, _review_context
+
+    units = [SemanticUnit(i, i + 1, f"Thought {i}") for i in range(7)]
+    assert _review_context(units, 2, 4) == {
+        "before": ["Thought 0", "Thought 1"],
+        "selected_units": ["Thought 2", "Thought 3", "Thought 4"],
+        "after": ["Thought 5", "Thought 6"],
     }
