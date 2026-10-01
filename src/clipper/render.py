@@ -163,9 +163,8 @@ def build_ffmpeg_command(
             "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000'"
         )
     )
-    if is_tiktok:
-        if width != 1080 or height != 1920:
-            raise RenderError("Style B requires an exact 1080x1920 vertical output")
+    if is_tiktok and (width != 1080 or height != 1920):
+        raise RenderError("Style B requires an exact 1080x1920 vertical output")
     if source_fps:
         try:
             rate = Fraction(source_fps)
