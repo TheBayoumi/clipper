@@ -60,7 +60,7 @@ def _transfer_verified_original(staging: dict[str, Any], destination: Path) -> P
         or not _REMOTE_SOURCE.fullmatch(remote)
         or video_id != Path(remote).parent.name
         or source_url != f"https://www.youtube.com/watch?v={video_id}"
-        or channel_id not in {"UCGHBUXjDCeiIXNdKR0HUZnA", "UCZen39LQJPx04GjPj7FOMcw"}
+        or channel_id not in {"UCf1q6dhccWr6eQEcFFnJSbA"}
         or not re.fullmatch(r"[0-9a-f]{64}", expected)
     ):
         raise RuntimeError("Modal original manifest failed channel, source or hash validation")
@@ -129,7 +129,7 @@ def _purge_remote(staging: dict[str, Any], diagnostic: Path | None = None) -> No
 def run_modal_production(
     *,
     root: Path = Path("tjr-modal-artifacts"),
-    brief: Path = Path("campaigns/reach-tjr-weekly.yaml"),
+    brief: Path = Path("campaigns/reach-double-coverage-dedicated.yaml"),
     probe_root: Path = Path("tjr-modal-probe"),
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
