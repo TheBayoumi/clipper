@@ -405,7 +405,7 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
     report = json.loads((run / "tjr-youtube-qa-report.json").read_text())
     assert report["status"] == "NO_CREATOR_GRADE_MOMENTS"
     assert report["clips"] == []
-    assert report["selection_policy"] == "quality_driven_zero_to_n"
+    assert report["selection_policy"] == "context_ranked_review_drafts_zero_to_n"
     assert "ranked-candidates.json" in {p.name for p in run.iterdir()}
 
 

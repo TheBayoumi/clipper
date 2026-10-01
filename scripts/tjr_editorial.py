@@ -8,6 +8,7 @@ is permitted while publication approval remains false.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
@@ -20,50 +21,10 @@ from clipper.tiktok import (
     source_headline_candidates,
 )
 
-RUBRIC_VERSION = "generic-editorial-v2-source-grounded"
+RUBRIC_VERSION = "podcast-contextual-v4-review-drafts"
 WEIGHTS = {"opening": 25, "story": 25, "emotion": 10, "visuals": 15, "retention": 25}
-MIN_CREATOR_EDITORIAL_SCORE = 74.0
-MAX_SCORE_DROP_FROM_BEST = 8.0
 _WORDS = re.compile(r"[A-Za-z0-9$']+")
 _NUMBERS = re.compile(r"(?<!\w)\$?\d[\d,.]*(?:%|k|m)?\b", re.IGNORECASE)
-_REACTION = re.compile(
-    r"\b(damn|wow|no way|what the hell|insane|unbelievable|wait|"
-    r"look at that|are you serious|holy shit|no shot|what the fuck|"
-    r"oh my god|oh my goodness|you don't even want to know|too much)\b",
-    re.IGNORECASE,
-)
-_QUESTION = re.compile(r"^(why|how|what|who|when|where|did|does|can|should)\b", re.I)
-_ACTION = re.compile(
-    r"\b(hit|broke|break|stopped|entered|reversed|crashed|spiked|lost|made|"
-    r"jumped|mistake|show|showing|reveal|revealed|worth|cost|better|worse|"
-    r"compare|forgot|look|said|admit|admitted|told|met|happened|bought|sold|"
-    r"won|quit|fired|paid|spent|learned|found|caught|called|asked)\b",
-    re.IGNORECASE,
-)
-_SETUP = re.compile(r"\b(why|how|what|if|when|because|plan|setup)\b", re.I)
-_TENSION = re.compile(
-    r"\b(but|however|instead|risk|lost|loss|wrong|mistake|against|"
-    r"problem|unexpected|reverse|reversal|chase)\b",
-    re.IGNORECASE,
-)
-_PAYOFF = re.compile(
-    r"\b(so|because|therefore|that's why|avoid|learn|manage|"
-    r"decide|exit|fix|result|instead|plan|before)\b",
-    re.IGNORECASE,
-)
-_WEAK_OPENINGS = (
-    "okay so",
-    "and then",
-    "all right so",
-    "uh ",
-    "um ",
-    "so basically",
-    "let me just",
-    "we should be",
-    "so we have",
-    "let's see",
-)
-_UNFINISHED = re.compile(r"\b(and then|but|because|and|when|which|that|i'm)\W*$", re.I)
 _STOP = frozenset(
     {
         "i",
@@ -162,14 +123,16 @@ class EditorialPick:
             "editorial_score": self.editorial_score,
             "weighted_points": self.weighted_points,
             "score_coverage": self.score_coverage,
-            "score_basis": "normalized_observed_criteria_not_predicted_virality",
+            "score_basis": "provisional_context_similarity_ranking_not_calibrated_quality",
             "integrity_gate": {
                 "status": self.integrity_status,
                 "evidence": list(self.integrity_evidence),
             },
             "editorial_reasons": list(self.reasons),
             "human_review_required": (
-                self.criteria["visuals"].score is None or self.integrity_status != "pass"
+                self.criteria["visuals"].score is None
+                or self.criteria["emotion"].score is None
+                or self.integrity_status != "pass"
             ),
             "publish_approved": False,
             "needs_checks": [
@@ -191,7 +154,8 @@ def _reason_float(candidate: ClipCandidate, prefix: str) -> float | None:
     for reason in candidate.reasons:
         if reason.startswith(prefix):
             try:
-                return float(reason.removeprefix(prefix))
+                value = float(reason.removeprefix(prefix))
+                return value if math.isfinite(value) else None
             except ValueError:
                 return None
     return None
@@ -205,160 +169,18 @@ def _semantic_hook_override(candidate: ClipCandidate) -> str | None:
     return None
 
 
-def _semantic_campaign_relevant(candidate: ClipCandidate) -> bool:
-    relevance = _reason_float(candidate, "campaign_relevance=")
-    margin = _reason_float(candidate, "relevance_margin=")
-    return relevance is not None and margin is not None and relevance >= 0.30 and margin >= 0.02
-
-
-def _story_rating_for_candidate(candidate: ClipCandidate) -> CriterionRating:
-    strength = _reason_float(candidate, "event_similarity=")
-    if strength is None:
-        return _story_rating(candidate.text)
-    score = _clamp((strength - 0.30) / 0.35 * 5)
-    return CriterionRating(
-        score,
-        "semantic_model",
-        (
-            f"full_source_event_similarity={strength:.4f}",
-            "candidate originated from source-level semantic event segmentation",
-        ),
-    )
-
-
-def _retention_rating_for_candidate(candidate: ClipCandidate) -> CriterionRating:
-    coherence = _reason_float(candidate, "semantic_coherence=")
-    if coherence is None:
-        return _retention_rating(candidate.text)
-    score = _clamp((coherence - 0.25) / 0.40 * 5)
-    return CriterionRating(
-        score,
-        "semantic_model",
-        (
-            f"semantic_story_coherence={coherence:.4f}",
-            "semantic continuity is a proxy; final pacing still requires video review",
-        ),
-    )
-
-
-def _opening_text(
-    candidate: ClipCandidate, segments: Sequence[TranscriptSegment] | None
-) -> tuple[str, str]:
-    """Use actual first-2s word timestamps when available, never later speech."""
-    if segments:
-        timed = sorted(
-            (
-                word
-                for segment in segments
-                if segment.end > candidate.start and segment.start < candidate.end
-                for word in segment.words
-                if word.end > candidate.start and word.start < candidate.end
-            ),
-            key=lambda word: (word.start, word.end),
+def _context_rating(candidate: ClipCandidate, dimension: str) -> CriterionRating:
+    margin = _reason_float(candidate, f"context_{dimension}_margin=")
+    if margin is None or not -2 <= margin <= 2:
+        return CriterionRating(
+            None, "manual_required", ("context assessment is missing or invalid",)
         )
-        if timed:
-            immediate = [
-                word.text
-                for word in timed
-                if word.start < candidate.start + 2.0 and word.end > candidate.start
-            ]
-            return " ".join(immediate), "first_two_seconds_word_aligned"
-    words = _WORDS.findall(candidate.text)
-    estimate = min(12, max(3, round(len(words) * 2 / max(candidate.duration, 1))))
-    return " ".join(words[:estimate]), "estimated_opening_no_word_timestamps"
-
-
-def _opening_rating(
-    candidate: ClipCandidate, segments: Sequence[TranscriptSegment] | None
-) -> CriterionRating:
-    opening, basis = _opening_text(candidate, segments)
-    lowered = opening.lower().strip()
-    if not lowered:
-        return CriterionRating(0, "transcript_proxy", (basis, "no aligned opening speech"))
-    reaction = bool(_REACTION.search(opening))
-    question = bool(_QUESTION.search(opening)) or "?" in opening
-    specific = bool(_NUMBERS.search(opening))
-    action = bool(_ACTION.search(opening))
-    weak = any(lowered.startswith(prefix) for prefix in _WEAK_OPENINGS)
-    score = 1.0 + 2.0 * (reaction or question) + float(specific) + float(action) - 2.0 * weak
     return CriterionRating(
-        _clamp(score),
-        "transcript_proxy",
+        _clamp((margin + 2) / 4 * 5),
+        "semantic_model",
         (
-            basis,
-            f"opening_excerpt={opening[:130]}",
-            f"reaction_cue={reaction}; question_cue={question}; specific_stake={specific}",
-            f"action_cue={action}; weak_opening={weak}",
-            "spoken text alone cannot verify an audible or visual hook",
-        ),
-    )
-
-
-def _story_rating(text: str) -> CriterionRating:
-    words = _WORDS.findall(text)
-    third = max(1, len(words) // 3)
-    beginning = " ".join(words[:third])
-    middle = " ".join(words[third : 2 * third])
-    end = " ".join(words[2 * third :])
-    setup = bool(_SETUP.search(beginning)) or "?" in beginning
-    tension = bool(_TENSION.search(middle)) or bool(_TENSION.search(text))
-    payoff = bool(_PAYOFF.search(end))
-    unfinished = bool(_UNFINISHED.search(text.rstrip()))
-    score = 0.5 + float(setup) + 1.5 * tension + 2.0 * payoff - 2.0 * unfinished
-    return CriterionRating(
-        _clamp(score),
-        "transcript_proxy",
-        (
-            f"setup_cue={setup}; tension_cue={tension}; payoff_cue={payoff}",
-            f"unfinished_boundary={unfinished}",
-            "lexical cues are not proof of an intelligible setup or payoff",
-        ),
-    )
-
-
-def _emotion_rating(text: str) -> CriterionRating:
-    words = _WORDS.findall(text)
-    early = " ".join(words[: max(1, len(words) // 2)])
-    reaction = bool(_REACTION.search(early))
-    emphasis = bool(
-        re.search(r"\b(never|really|i can't|can't believe|surprised|excited)\b", early, re.I)
-    )
-    # A measured absence of reaction words is NOT evidence of a boring delivery.
-    return CriterionRating(
-        4.0 if reaction else 2.5 if emphasis else 2.0,
-        "transcript_proxy",
-        (
-            f"reaction_word_cue={reaction}; emphasis_word_cue={emphasis}",
-            "genuine tone, humor and conviction require audio/video review",
-        ),
-    )
-
-
-def _retention_rating(text: str) -> CriterionRating:
-    tokens = [word.lower() for word in _WORDS.findall(text)]
-    third = max(1, len(tokens) // 3)
-    chunks = [tokens[:third], tokens[third : 2 * third], tokens[2 * third :]]
-    content = [
-        [token for token in chunk if token not in _STOP and len(token) > 2] for chunk in chunks
-    ]
-    earlier = set(content[0])
-    novelty: list[float] = []
-    for chunk in content[1:]:
-        novel = sum(word not in earlier for word in chunk)
-        novelty.append(novel / len(chunk) if chunk else 0.0)
-        earlier.update(chunk)
-    unique_triples = {tuple(tokens[index : index + 3]) for index in range(max(0, len(tokens) - 2))}
-    total_triples = max(0, len(tokens) - 2)
-    repetition = (1.0 - len(unique_triples) / total_triples) if total_triples else 0.0
-    score = 1.0 + 4.0 * sum(novelty) / 2.0 - 2.0 * repetition
-    return CriterionRating(
-        _clamp(score),
-        "transcript_proxy",
-        (
-            f"middle_new_token_ratio={novelty[0]:.2f}",
-            f"ending_new_token_ratio={novelty[1]:.2f}",
-            f"repeated_trigram_fraction={repetition:.2f}",
-            "new vocabulary is only a proxy for meaningful new information or action",
+            f"context_{dimension}_contrast={margin:.6f}",
+            "embedding contrast is ranking evidence, not calibrated editorial quality",
         ),
     )
 
@@ -381,16 +203,19 @@ def candidate_gate_failures(
     text = candidate.text.strip()
     words = _WORDS.findall(text)
     failed: list[str] = []
-    story = _story_rating_for_candidate(candidate)
-    authentic_reaction = bool(_REACTION.search(text)) and (story.score or 0) >= 3
-    semantic_campaign_moment = _semantic_campaign_relevant(candidate) and (story.score or 0) >= 2.5
-    complete_moment = semantic_campaign_moment or authentic_reaction or (story.score or 0) >= 2.5
-    if not complete_moment:
-        failed.append("NO_CAMPAIGN_RELEVANT_COMPLETE_MOMENT")
-    if not 28 <= len(words) <= 155:
-        failed.append("WORD_COUNT_OUT_OF_RANGE")
-    if not 0.9 <= len(words) / max(candidate.duration, 1.0) <= 5.0:
-        failed.append("SPEECH_DENSITY_OUT_OF_RANGE")
+    # Missing contextual evidence fails closed; lexical cues never substitute.
+    story_margin = _reason_float(candidate, "context_story_margin=")
+    ending_margin = _reason_float(candidate, "context_ending_margin=")
+    opening_margin = _reason_float(candidate, "context_opening_margin=")
+    if any(
+        value is None or not -2 <= value <= 2
+        for value in (story_margin, ending_margin, opening_margin)
+    ):
+        failed.append("CONTEXTUAL_ASSESSMENT_REQUIRED")
+    elif story_margin <= 0 or ending_margin <= 0:
+        failed.append("UNRESOLVED_CONTEXTUAL_MOMENT")
+    if not words:
+        failed.append("EMPTY_TRANSCRIPT")
     hook = creative_hook_from_text(text) if hook_override is None else hook_override.strip()
     if not hook:
         failed.append("NO_GROUNDED_HOOK")
@@ -398,19 +223,8 @@ def candidate_gate_failures(
         failed.append("UNSUPPORTED_NUMERICAL_HOOK")
     elif hook.upper() not in source_headline_candidates(text):
         failed.append("UNSUPPORTED_SOURCE_HOOK")
-    opening = _opening_rating(candidate, segments)
-    if opening.score is None or opening.score < 2:
-        if not allow_review_only_opening:
-            failed.append("WEAK_FIRST_TWO_SECONDS")
-        elif (
-            opening.score is None
-            or not complete_moment
-            or (story.score or 0) < 2.5
-            or not text.rstrip().endswith((".", "!", "?"))
-        ):
-            # A persistent on-screen hook can rescue weak spoken openings only when
-            # the complete source-grounded moment is already campaign-relevant.
-            failed.append("WEAK_OPENING_WITHOUT_COMPLETE_STORY")
+    if opening_margin is not None and opening_margin <= 0 and not allow_review_only_opening:
+        failed.append("CONTEXT_OPENING_NEEDS_REVIEW")
     return failed
 
 
@@ -432,11 +246,13 @@ def evaluate_candidate(
         return None
     text = candidate.text.strip()
     hook = creative_hook_from_text(text) if hook_override is None else hook_override.strip()
-    opening = _opening_rating(candidate, segments)
+    opening = _context_rating(candidate, "opening")
     ratings = {
         "opening": opening,
-        "story": _story_rating_for_candidate(candidate),
-        "emotion": _emotion_rating(text),
+        "story": _context_rating(candidate, "story"),
+        "emotion": CriterionRating(
+            None, "manual_required", ("vocal delivery and emotion require audio/video evidence",)
+        ),
         "visuals": CriterionRating(
             None,
             "manual_required",
@@ -445,7 +261,7 @@ def evaluate_candidate(
                 "confirm required subjects and the important action remain visible",
             ),
         ),
-        "retention": _retention_rating_for_candidate(candidate),
+        "retention": _context_rating(candidate, "ending"),
     }
     if review is not None and review.visual_score is not None:
         ratings["visuals"] = CriterionRating(
@@ -473,7 +289,7 @@ def evaluate_candidate(
     return EditorialPick(
         clip=candidate,
         hook=hook,
-        hook_score=round(opening.score * 1.2),
+        hook_score=round((opening.score or 0) * 1.2),
         editorial_score=score,
         weighted_points=round(points, 2),
         score_coverage=coverage,
@@ -481,13 +297,13 @@ def evaluate_candidate(
         integrity_status=integrity,
         integrity_evidence=evidence,
         reasons=(
-            f"first_two_seconds={opening.score:.1f}/5 (transcript proxy)",
-            f"story={ratings['story'].score:.1f}/5 ({ratings['story'].basis})",
-            f"retention={ratings['retention'].score:.1f}/5 ({ratings['retention'].basis})",
+            f"opening={opening.score}/5 (context similarity proxy)",
+            f"story={ratings['story'].score}/5 ({ratings['story'].basis})",
+            f"ending={ratings['retention'].score}/5 ({ratings['retention'].basis})",
             "portrait visuals and editorial integrity require source review",
             *(
                 ("review_only_weak_opening_needs_manual_first_two_seconds_approval",)
-                if opening.score is not None and opening.score < 2
+                if (_reason_float(candidate, "context_opening_margin=") or 0) <= 0
                 else ()
             ),
         ),
@@ -511,7 +327,7 @@ def select_editorial_moments(
     allow_review_only_opening: bool = False,
     review_provider: Callable[[ClipCandidate], EditorialReview | None] | None = None,
 ) -> tuple[list[EditorialPick], list[dict[str, object]]]:
-    """Qualify every creator-grade moment; the limit is infrastructure safety only."""
+    """Rank contextual review drafts; never invent an editorial-quality cutoff."""
     if not 1 <= render_safety_limit <= MAX_RENDERABLE_CLIPS:
         raise ValueError(f"render safety limit must be 1-{MAX_RENDERABLE_CLIPS} for one runner job")
     qualified: list[EditorialPick] = []
@@ -539,7 +355,7 @@ def select_editorial_moments(
                     "end": candidate.end,
                     "reason": failed[0] if failed else "MANUAL_INTEGRITY_GATE",
                     "failed_gates": failed,
-                    "opening_score": _opening_rating(candidate, segments).score,
+                    "opening_score": _context_rating(candidate, "opening").score,
                 }
             )
         else:
@@ -547,22 +363,9 @@ def select_editorial_moments(
     ordered = sorted(
         qualified, key=lambda pick: (-pick.editorial_score, -pick.clip.score, pick.clip.start)
     )
-    best_score = ordered[0].editorial_score if ordered else 0.0
-    dynamic_floor = max(MIN_CREATOR_EDITORIAL_SCORE, best_score - MAX_SCORE_DROP_FROM_BEST)
     chosen: list[EditorialPick] = []
     used_hooks: set[str] = set()
     for pick in ordered:
-        if pick.editorial_score < dynamic_floor:
-            rejected.append(
-                {
-                    "start": pick.clip.start,
-                    "end": pick.clip.end,
-                    "reason": "BELOW_CREATOR_QUALITY_FLOOR",
-                    "editorial_score": pick.editorial_score,
-                    "dynamic_floor": round(dynamic_floor, 2),
-                }
-            )
-            continue
         overlap = any(
             pick.clip.start < other.clip.end + 1.5 and other.clip.start < pick.clip.end + 1.5
             for other in chosen

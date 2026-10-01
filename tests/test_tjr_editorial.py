@@ -13,7 +13,18 @@ from scripts.tjr_editorial import (
 
 
 def clip(start: float, text: str, score: float = 8) -> ClipCandidate:
-    return ClipCandidate("p2LU37eat70", start, start + 31, text, score)
+    return ClipCandidate(
+        "p2LU37eat70",
+        start,
+        start + 31,
+        text,
+        score,
+        reasons=(
+            "context_story_margin=0.25",
+            "context_ending_margin=0.2",
+            "context_opening_margin=0.1",
+        ),
+    )
 
 
 def test_rejects_filler_and_weak_openers() -> None:
@@ -23,7 +34,8 @@ def test_rejects_filler_and_weak_openers() -> None:
         "and it gets there i guess now we can go and look at it tomorrow "
         "and wait to see what happens",
     )
-    assert evaluate_candidate(filler) is None
+    unassessed = ClipCandidate(filler.video_id, filler.start, filler.end, filler.text, filler.score)
+    assert evaluate_candidate(unassessed) is None
 
 
 def test_render_safety_bounds_are_explicit() -> None:
@@ -53,12 +65,13 @@ STRONG_SEGMENT = (
 def test_weighted_provisional_score_tracks_unverified_visuals() -> None:
     result = evaluate_candidate(clip(0, STRONG_SEGMENT))
     assert result is not None
-    assert RUBRIC_VERSION == "generic-editorial-v2-source-grounded"
+    assert RUBRIC_VERSION == "podcast-contextual-v4-review-drafts"
     assert sum(WEIGHTS.values()) == 100
-    assert result.score_coverage == 85
+    assert result.score_coverage == 75
     assert result.criteria["visuals"].score is None
     assert result.criteria["visuals"].basis == "manual_required"
-    assert result.criteria["emotion"].basis == "transcript_proxy"
+    assert result.criteria["emotion"].basis == "manual_required"
+    assert result.criteria["emotion"].score is None
     assert 0 <= result.editorial_score <= 100
     audit = result.to_dict()
     assert audit["publish_approved"] is False
@@ -81,11 +94,11 @@ def test_manual_review_supplies_visual_rating_and_integrity_verdict() -> None:
     )
     result = evaluate_candidate(clip(0, STRONG_SEGMENT), review=review)
     assert result is not None
-    assert result.score_coverage == 100
+    assert result.score_coverage == 90
     assert result.criteria["visuals"].score == 4.5
     assert result.criteria["visuals"].basis == "manual_verified"
     assert result.integrity_status == "pass"
-    assert result.to_dict()["human_review_required"] is False
+    assert result.to_dict()["human_review_required"] is True
     # Explicit completion of these two rubric gates does not authorize publishing.
     assert result.to_dict()["publish_approved"] is False
 
@@ -110,21 +123,34 @@ def test_unsupported_numeric_hook_claim_is_rejected() -> None:
     )
 
 
-def test_actual_first_two_seconds_override_misleading_transcript_opening() -> None:
+def test_reaction_words_do_not_override_contextual_opening_evidence() -> None:
     source = clip(0, STRONG_SEGMENT)
-    first_words = (
-        WordTiming(0.1, 0.4, "okay"),
-        WordTiming(0.5, 0.8, "so"),
-        WordTiming(0.9, 1.2, "now"),
-        WordTiming(3.0, 3.2, "damn"),
+    source = ClipCandidate(
+        source.video_id,
+        source.start,
+        source.end,
+        source.text,
+        source.score,
+        reasons=(
+            "context_story_margin=0.25",
+            "context_ending_margin=0.2",
+            "context_opening_margin=-0.2",
+        ),
     )
-    aligned = [TranscriptSegment(0, 31, STRONG_SEGMENT, words=first_words)]
-    # Candidate text contains "damn", but the actual first 2 seconds are filler.
+    aligned = [
+        TranscriptSegment(
+            0,
+            31,
+            STRONG_SEGMENT,
+            words=(WordTiming(0.1, 0.4, "WOW"), WordTiming(0.5, 0.8, "INSANE")),
+        )
+    ]
     assert evaluate_candidate(source, segments=aligned) is None
-    selected, rejected = select_editorial_moments([source], segments=aligned, render_safety_limit=1)
+    selected, rejected = select_editorial_moments([source], segments=aligned)
     assert selected == []
-    assert rejected[0]["reason"] == "WEAK_FIRST_TWO_SECONDS"
-    assert "WEAK_FIRST_TWO_SECONDS" in rejected[0]["failed_gates"]
+    assert "CONTEXT_OPENING_NEEDS_REVIEW" in rejected[0]["failed_gates"]
+    result = evaluate_candidate(source, segments=aligned, allow_review_only_opening=True)
+    assert result is not None and result.to_dict()["human_review_required"] is True
 
 
 @pytest.mark.parametrize(
@@ -164,11 +190,10 @@ def test_provisional_score_is_deterministic_and_serializable() -> None:
 def test_rejection_audit_identifies_each_individual_gate() -> None:
     from scripts.tjr_editorial import candidate_gate_failures
 
-    item = clip(0, "the chat is typing all day but nothing new happened")
+    item = ClipCandidate("v", 0, 31, "the chat is typing all day but nothing new happened", 1)
     reasons = candidate_gate_failures(item)
-    assert "NO_CAMPAIGN_RELEVANT_COMPLETE_MOMENT" in reasons
-    assert "WORD_COUNT_OUT_OF_RANGE" in reasons
-    assert "WEAK_FIRST_TWO_SECONDS" in reasons
+    assert "CONTEXTUAL_ASSESSMENT_REQUIRED" in reasons
+    assert "WORD_COUNT_OUT_OF_RANGE" not in reasons
 
 
 def test_hook_led_fallback_never_accepts_unfinished_trade_story() -> None:
@@ -178,6 +203,18 @@ def test_hook_led_fallback_never_accepts_unfinished_trade_story() -> None:
         "market already moved too far up and i knew chasing the position would "
         "increase the risk for no reason so i decided to wait for the next "
         "entry instead of risking another loss and then",
+    )
+    item = ClipCandidate(
+        item.video_id,
+        item.start,
+        item.end,
+        item.text,
+        item.score,
+        reasons=(
+            "context_story_margin=0.2",
+            "context_ending_margin=-0.15",
+            "context_opening_margin=0.1",
+        ),
     )
     assert evaluate_candidate(item, allow_review_only_opening=True) is None
 
@@ -223,6 +260,18 @@ def test_complete_story_with_weak_audio_opening_requires_review() -> None:
         "Why did security stop me at my own show?", "I had a problem at the door."
     )
     item = clip(0, text)
+    item = ClipCandidate(
+        item.video_id,
+        item.start,
+        item.end,
+        item.text,
+        item.score,
+        reasons=(
+            "context_story_margin=0.2",
+            "context_ending_margin=0.2",
+            "context_opening_margin=-0.1",
+        ),
+    )
     assert evaluate_candidate(item) is None
     result = evaluate_candidate(item, allow_review_only_opening=True)
     assert result is not None
@@ -254,3 +303,47 @@ def test_semantic_headline_cannot_bypass_source_grounding() -> None:
     picks, rejected = select_editorial_moments([fabricated])
     assert picks == []
     assert "UNSUPPORTED_SOURCE_HOOK" in rejected[0]["failed_gates"]
+
+
+def test_low_similarity_rank_is_not_a_creator_quality_veto() -> None:
+    item = clip(0, STRONG_SEGMENT, score=0.01)
+    item = ClipCandidate(
+        item.video_id,
+        item.start,
+        item.end,
+        item.text,
+        item.score,
+        reasons=(
+            "context_story_margin=0.001",
+            "context_ending_margin=0.001",
+            "context_opening_margin=0.001",
+        ),
+    )
+    selected, rejected = select_editorial_moments([item])
+    assert len(selected) == 1 and rejected == []
+    assert selected[0].editorial_score < 74
+    assert selected[0].to_dict()["publish_approved"] is False
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "invalid", "3"])
+def test_invalid_context_evidence_fails_closed(value: str) -> None:
+    item = clip(0, STRONG_SEGMENT)
+    item = ClipCandidate(
+        item.video_id,
+        item.start,
+        item.end,
+        item.text,
+        item.score,
+        reasons=(
+            f"context_story_margin={value}",
+            "context_ending_margin=0.2",
+            "context_opening_margin=0.1",
+        ),
+    )
+    assert evaluate_candidate(item) is None
+
+
+def test_word_quota_does_not_reject_assessed_longer_exchange() -> None:
+    item = clip(0, STRONG_SEGMENT + " " + "A substantive explanation continues. " * 35)
+    assert len(item.text.split()) > 155
+    assert evaluate_candidate(item) is not None

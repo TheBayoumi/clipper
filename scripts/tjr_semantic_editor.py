@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
-from clipper.tiktok import creative_hook_from_text
+from clipper.tiktok import creative_hook_from_text, source_headline_candidates
 
 SEMANTIC_MODEL = "BAAI/bge-small-en-v1.5"
 CREATOR_MOMENT_DESCRIPTIONS = (
@@ -59,13 +59,28 @@ OFF_TOPIC_DESCRIPTIONS = (
     "without a creator moment",
 )
 MIN_EVENT_SIMILARITY = 0.34
-MIN_CAMPAIGN_SIMILARITY = 0.30
-MIN_RELEVANCE_MARGIN = 0.02
+# Structural rubric descriptions are embedded, never matched as speech keywords.
+CONTEXT_RUBRIC = {
+    "story": (
+        "A self-contained podcast exchange establishes a specific situation or claim, "
+        "develops it, and delivers a meaningful answer, consequence, insight or punchline.",
+        "An isolated fragment, routine announcement or disconnected chatter has no "
+        "standalone situation and meaningful development or answer.",
+    ),
+    "opening": (
+        "The opening introduces an intelligible specific situation, claim or question "
+        "that gives a new viewer a reason to hear the rest of the exchange.",
+        "The opening is an acknowledgement or continuation whose subject and stakes "
+        "cannot be understood without the preceding conversation.",
+    ),
+    "ending": (
+        "The ending answers or resolves the preceding exchange with a consequence, "
+        "insight, complete opinion or punchline that can stand on its own.",
+        "The ending starts a new question or trails off before the answer, consequence "
+        "or point of the preceding exchange is delivered.",
+    ),
+}
 _WORD = re.compile(r"[A-Za-z0-9$%'.-]+")
-_QUESTION_OPENING = re.compile(
-    r"^(?:who|what|when|where|why|how|can|could|would|did|do|does|is|are|have|has|will|was|were)\b",
-    re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +117,24 @@ class FastEmbedder:
             [float(value) for value in vector]
             for vector in self._model.embed(list(texts), batch_size=32)
         ]
+
+
+def _embedding_batch(backend: EmbeddingFn, texts: Sequence[str], stage: str) -> list[list[float]]:
+    unique = list(dict.fromkeys(texts))
+    values = backend(unique) if unique else []
+    if len(values) != len(unique):
+        raise RuntimeError(f"{stage} backend returned an incomplete batch")
+    width = len(values[0]) if values else 0
+    if any(
+        len(value) != width
+        or not value
+        or any(not math.isfinite(number) for number in value)
+        or _norm(value) == 0
+        for value in values
+    ):
+        raise RuntimeError(f"{stage} backend returned invalid embedding vectors")
+    lookup = dict(zip(unique, values, strict=True))
+    return [lookup[text] for text in texts]
 
 
 def _norm(vector: Sequence[float]) -> float:
@@ -216,11 +249,7 @@ def _anchor_window(
         if units[index].end - units[preceding].start > max_seconds:
             break
         text = units[preceding].text.strip()
-        if (
-            _QUESTION_OPENING.search(text)
-            and "?" in text
-            and _cosine(anchor_vector, vectors[preceding]) >= 0.48
-        ):
+        if "?" in text and _cosine(anchor_vector, vectors[preceding]) >= 0.48:
             question_start = preceding
             left = preceding
             break
@@ -231,11 +260,7 @@ def _anchor_window(
         if (
             right + 1 < len(units)
             and regions[right + 1] == region
-            and not (
-                question_start is not None
-                and _QUESTION_OPENING.search(units[right + 1].text.strip())
-                and "?" in units[right + 1].text
-            )
+            and not (question_start is not None and "?" in units[right + 1].text)
         ):
             options.append((_cosine(anchor_vector, vectors[right + 1]), left, right + 1))
         if not options:
@@ -252,7 +277,7 @@ def _anchor_window(
             and right + 1 < len(units)
             and regions[right + 1] == region
             and units[right + 1].end - units[left].start <= max_seconds
-            and not _QUESTION_OPENING.search(units[right + 1].text.strip())
+            and "?" not in units[right + 1].text
         ):
             right += 1
         return left, right
@@ -288,155 +313,168 @@ def build_semantic_editorial_candidates(
     *,
     embedder: EmbeddingFn | None = None,
 ) -> tuple[list[ClipCandidate], dict[str, Any]]:
-    """Discover complete 0..N candidate stories from full-source semantic structure."""
+    """Rank topic-independent contextual review drafts, not publication verdicts."""
     units = _thought_units(segments)
+    audit: dict[str, Any] = {
+        "architecture": "podcast_contextual_editor_v4",
+        "semantic_model": SEMANTIC_MODEL,
+        "language_scope": "English transcripts; topic independent",
+        "semantic_unit_count": len(units),
+        "candidate_count": 0,
+        "fixed_candidate_or_output_quota": False,
+        "campaign_keyword_gate": False,
+        "score_cutoff": None,
+        "assessment_basis": "contrastive_embedding_proxy_requires_editorial_review",
+    }
     if not units:
-        return [], {
-            "architecture": "source_level_semantic_campaign_event_segmentation_v3",
-            "semantic_model": SEMANTIC_MODEL,
-            "semantic_unit_count": 0,
-            "campaign_relevant_unit_count": 0,
-            "out_of_domain_unit_count": 0,
-            "event_anchor_count": 0,
-            "candidate_count": 0,
-            "event_distribution": {},
-            "fixed_candidate_or_output_quota": False,
-        }
+        return [], audit
     backend = embedder or FastEmbedder()
     texts = [unit.text for unit in units]
     event_texts = list(EVENT_DESCRIPTIONS.values())
-    campaign_texts = [
-        f"{brief.title}. {brief.objective}.",
-        *[f"{brief.title} creator moment about {keyword}" for keyword in brief.keywords],
-        *CREATOR_MOMENT_DESCRIPTIONS,
-    ]
-    negative_texts = [*OFF_TOPIC_DESCRIPTIONS, *brief.negative_keywords]
-    reference_texts = [*event_texts, *campaign_texts, *negative_texts]
-    embedded = backend([*texts, *reference_texts])
-    expected = len(texts) + len(reference_texts)
-    if len(embedded) != expected:
+    references = [*event_texts, *OFF_TOPIC_DESCRIPTIONS]
+    embedded = _embedding_batch(backend, [*texts, *references], "semantic embedding")
+    if len(embedded) != len(texts) + len(references):
         raise RuntimeError("semantic embedding backend returned an incomplete batch")
-    unit_vectors = embedded[: len(texts)]
-    references = embedded[len(texts) :]
-    event_count = len(event_texts)
-    campaign_count = len(campaign_texts)
-    event_vectors = references[:event_count]
-    campaign_vectors = references[event_count : event_count + campaign_count]
-    off_topic_vectors = references[event_count + campaign_count :]
-    labels, strengths = _event_labels(unit_vectors, event_vectors)
-    regions = _region_ids(units, unit_vectors)
-    campaign_scores = [
-        max((_cosine(vector, prototype) for prototype in campaign_vectors), default=0.0)
-        for vector in unit_vectors
-    ]
-    off_topic_scores = [
-        max((_cosine(vector, other) for other in off_topic_vectors), default=0.0)
-        for vector in unit_vectors
-    ]
-    relevance_margins = [
-        campaign - off_topic
-        for campaign, off_topic in zip(campaign_scores, off_topic_scores, strict=True)
-    ]
-
-    # Campaign relevance comes from the supplied brief, never a hardcoded topic list.
-    relevant_units = [
-        index
-        for index in range(len(units))
-        if campaign_scores[index] >= MIN_CAMPAIGN_SIMILARITY
-        and relevance_margins[index] >= MIN_RELEVANCE_MARGIN
-    ]
+    vectors = embedded[: len(texts)]
+    event_vectors = embedded[len(texts) : len(texts) + len(event_texts)]
+    noise_vectors = embedded[len(texts) + len(event_texts) :]
+    labels, strengths = _event_labels(vectors, event_vectors)
+    regions = _region_ids(units, vectors)
     anchors = [
         index
-        for index in relevant_units
-        if strengths[index] >= MIN_EVENT_SIMILARITY and len(_WORD.findall(units[index].text)) >= 3
+        for index, vector in enumerate(vectors)
+        if strengths[index] >= MIN_EVENT_SIMILARITY
+        and strengths[index] > max(_cosine(vector, other) for other in noise_vectors)
     ]
-    provisional: list[tuple[ClipCandidate, list[float]]] = []
-    seen_windows: set[tuple[int, int]] = set()
+    # For each anchor, retain the original proposal plus shorter whole-thought
+    # alternatives. Context assessment chooses a repair before rejecting a span.
+    windows: dict[tuple[int, int], int] = {}
+    original_bounds: dict[int, tuple[int, int]] = {}
     for anchor in anchors:
         bounds = _anchor_window(
             anchor,
             units,
-            unit_vectors,
+            vectors,
             regions,
             min_seconds=brief.min_clip_seconds,
             max_seconds=brief.max_clip_seconds,
         )
-        if bounds is None or bounds in seen_windows:
+        if bounds is None:
             continue
-        seen_windows.add(bounds)
         left, right = bounds
-        window_units = units[left : right + 1]
-        text = " ".join(unit.text for unit in window_units).strip()
-        if not text:
-            continue
-        start = max(0.0, math.floor(window_units[0].start * 10) / 10)
-        end = math.ceil(window_units[-1].end * 10) / 10
-        if not brief.min_clip_seconds <= end - start <= brief.max_clip_seconds:
-            continue
-        local_vectors = unit_vectors[left : right + 1]
-        coherence_pairs = [
-            _cosine(local_vectors[index - 1], local_vectors[index])
-            for index in range(1, len(local_vectors))
-        ]
-        coherence = sum(coherence_pairs) / len(coherence_pairs) if coherence_pairs else 1.0
-        event_strength = strengths[anchor]
-        hook = _extractive_hook(text)
-        if not hook:
-            continue
-        score = round(
-            70 * event_strength + 20 * max(0.0, coherence) + 20 * max(0.0, campaign_scores[anchor]),
-            4,
+        original_bounds[anchor] = bounds
+        for new_left in range(left, min(anchor, left + 2) + 1):
+            for new_right in range(max(anchor, right - 2), right + 1):
+                duration = units[new_right].end - units[new_left].start
+                if brief.min_clip_seconds <= duration <= brief.max_clip_seconds:
+                    key = (new_left, new_right)
+                    previous = windows.get(key)
+                    if previous is None or strengths[anchor] > strengths[previous]:
+                        windows[key] = anchor
+    spans = list(windows)
+    rubric_texts = [text for pair in CONTEXT_RUBRIC.values() for text in pair]
+    assessment_texts: list[str] = []
+    for left, right in spans:
+        assessment_texts.extend(
+            [
+                " ".join(unit.text for unit in units[left : right + 1]),
+                units[left].text,
+                " ".join(unit.text for unit in units[max(left, right - 1) : right + 1]),
+            ]
         )
+    context_vectors = _embedding_batch(
+        backend, [*assessment_texts, *rubric_texts], "context assessment"
+    )
+    if len(context_vectors) != len(assessment_texts) + len(rubric_texts):
+        raise RuntimeError("context assessment backend returned an incomplete batch")
+    if any(len(vector) != len(vectors[0]) for vector in context_vectors):
+        raise RuntimeError("context assessment embedding dimensions changed")
+    rubric_vectors = context_vectors[len(assessment_texts) :]
+    headline_choices = {
+        bounds: source_headline_candidates(
+            " ".join(unit.text for unit in units[bounds[0] : bounds[1] + 1])
+        )
+        for bounds in spans
+    }
+    unique_headlines = list(
+        dict.fromkeys(hook for choices in headline_choices.values() for hook in choices)
+    )
+    headline_vectors = _embedding_batch(backend, unique_headlines, "headline assessment")
+    if len(headline_vectors) != len(unique_headlines):
+        raise RuntimeError("headline assessment backend returned an incomplete batch")
+    headline_embeddings = dict(zip(unique_headlines, headline_vectors, strict=True))
+    proposals: list[tuple[ClipCandidate, list[float]]] = []
+    rejected_context = 0
+    repaired_count = 0
+    for index, (left, right) in enumerate(spans):
+        anchor = windows[(left, right)]
+        margins = {
+            name: _cosine(context_vectors[index * 3 + dim], rubric_vectors[dim * 2])
+            - _cosine(context_vectors[index * 3 + dim], rubric_vectors[dim * 2 + 1])
+            for dim, name in enumerate(CONTEXT_RUBRIC)
+        }
+        # No absolute quality-score floor: positive contrast establishes a draft
+        # worth reviewing, never proof of payoff, emotion or publication quality.
+        if margins["story"] <= 0 or margins["ending"] <= 0:
+            rejected_context += 1
+            continue
+        text = " ".join(unit.text for unit in units[left : right + 1])
+        choices = headline_choices[(left, right)]
+        if not choices:
+            continue
+        # Choose source-grounded headlines by relation to the full exchange;
+        # punctuation and reaction tokens confer no editorial-score bonus.
+        whole = context_vectors[index * 3]
+        hook = max(choices, key=lambda choice: _cosine(whole, headline_embeddings[choice]))
+        coherence_pairs = [_cosine(vectors[i - 1], vectors[i]) for i in range(left + 1, right + 1)]
+        coherence = sum(coherence_pairs) / len(coherence_pairs) if coherence_pairs else 1.0
+        score = 100 * (margins["story"] + margins["ending"] + margins["opening"]) + 20 * coherence
         reasons = (
-            "candidate_origin=source_level_semantic_event",
+            "candidate_origin=podcast_contextual_editor",
             f"semantic_model={SEMANTIC_MODEL}",
             f"semantic_event={labels[anchor]}",
-            f"event_similarity={event_strength:.4f}",
-            f"campaign_relevance={campaign_scores[anchor]:.4f}",
-            f"off_topic_similarity={off_topic_scores[anchor]:.4f}",
-            f"relevance_margin={relevance_margins[anchor]:.4f}",
+            f"event_similarity={strengths[anchor]:.4f}",
             f"semantic_coherence={coherence:.4f}",
-            f"semantic_region={regions[anchor]}",
+            *(f"context_{name}_margin={value:.12g}" for name, value in margins.items()),
             f"semantic_hook={hook}",
-            "start_boundary=semantic_thought_boundary",
-            "end_boundary=semantic_thought_boundary",
+            f"boundary_repaired={str((left, right) != original_bounds[anchor]).lower()}",
+            "start_boundary=whole_source_thought",
+            "end_boundary=context_assessed_whole_source_thought",
         )
-        provisional.append(
-            (ClipCandidate(video_id, start, end, text, score, reasons), _average(local_vectors))
+        proposals.append(
+            (
+                ClipCandidate(
+                    video_id,
+                    math.floor(units[left].start * 10) / 10,
+                    math.ceil(units[right].end * 10) / 10,
+                    text,
+                    round(score, 4),
+                    reasons,
+                ),
+                whole,
+            )
         )
-
-    ordered = sorted(provisional, key=lambda item: (-item[0].score, item[0].start))
     selected: list[tuple[ClipCandidate, list[float]]] = []
-    for candidate, vector in ordered:
-        duplicate = False
-        for existing, existing_vector in selected:
-            if _overlap(candidate, existing) >= 0.55 or _cosine(vector, existing_vector) >= 0.90:
-                duplicate = True
-                break
-        if not duplicate:
-            selected.append((candidate, vector))
-
-    event_distribution = Counter(labels[index] for index in anchors)
+    for candidate, vector in sorted(proposals, key=lambda item: (-item[0].score, item[0].start)):
+        if any(
+            _overlap(candidate, other) >= 0.55 or _cosine(vector, other_vector) >= 0.90
+            for other, other_vector in selected
+        ):
+            continue
+        selected.append((candidate, vector))
+        repaired_count += int("boundary_repaired=true" in candidate.reasons)
     candidates = [candidate for candidate, _ in selected]
-    audit = {
-        "architecture": "source_level_semantic_campaign_event_segmentation_v3",
-        "semantic_model": SEMANTIC_MODEL,
-        "semantic_unit_count": len(units),
-        "semantic_region_count": len(set(regions)),
-        "campaign_relevant_unit_count": len(relevant_units),
-        "out_of_domain_unit_count": len(units) - len(relevant_units),
-        "event_anchor_count": len(anchors),
-        "candidate_count": len(candidates),
-        "event_distribution": dict(event_distribution),
-        "campaign_domain_gate": {
-            "minimum_similarity": MIN_CAMPAIGN_SIMILARITY,
-            "minimum_margin_over_non_campaign": MIN_RELEVANCE_MARGIN,
-            "positive_prototype_count": len(campaign_texts),
-            "negative_prototype_count": len(negative_texts),
-            "positive_policy": "campaign_objective_keywords_plus_creator_moment_prototypes",
-        },
-        "campaign_relevance_policy": "embedding_contrast_against_generic_non_moments",
-        "candidate_policy": "campaign_relevance_then_event_then_safety_and_visual_qualification",
-        "fixed_candidate_or_output_quota": False,
-    }
+    audit.update(
+        {
+            "semantic_region_count": len(set(regions)),
+            "event_anchor_count": len(anchors),
+            "boundary_variants_assessed": len(spans),
+            "context_rejected_variants": rejected_context,
+            "boundary_repaired_candidate_count": repaired_count,
+            "candidate_count": len(candidates),
+            "event_distribution": dict(Counter(labels[index] for index in anchors)),
+            "context_rubric": CONTEXT_RUBRIC,
+            "campaign_relevance_policy": "source_eligibility_separate_from_editorial_topic",
+        }
+    )
     return candidates, audit

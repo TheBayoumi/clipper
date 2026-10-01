@@ -928,7 +928,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                     "measured_visual_precheck": True,
                     "screening_mode": screening_mode,
                     "semantic_architecture": semantic_audit,
-                    "selection_policy": "quality_driven_zero_to_n",
+                    "selection_policy": "context_ranked_review_drafts_zero_to_n",
                     "render_safety_limit": render_safety_limit,
                     "selected_count": len(picks),
                     "render_safety_limit_rejections": sum(
@@ -964,7 +964,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 "source_profile": source_profile.as_dict(),
                 "editorial_rubric_version": RUBRIC_VERSION,
                 "editorial_weights": WEIGHTS,
-                "selection_policy": "quality_driven_zero_to_n",
+                "selection_policy": "context_ranked_review_drafts_zero_to_n",
                 "render_safety_limit": render_safety_limit,
                 "selected_clip_count": 0,
                 "clips": [],
@@ -1096,7 +1096,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                         for reason in clip.reasons
                         if reason.startswith(("start_boundary=", "end_boundary="))
                     ],
-                    "publication_status": "AI_SCREEN_PASSED__VISUAL_REVIEW_REQUIRED",
+                    "publication_status": "CONTEXT_RANKED_DRAFT__AUDIO_VISUAL_REVIEW_REQUIRED",
                     "logo_safe_layout": layout,
                     "logo_compliance_verified": False,
                     "contact_sheet": str(sheet.relative_to(run_dir)),
@@ -1112,7 +1112,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         with source.open("rb") as media:
             digest = hashlib.file_digest(media, "sha256").hexdigest()
         report = {
-            "status": "TECHNICAL_QA_AND_AI_SCREEN_PASSED__VISUAL_REVIEW_REQUIRED",
+            "status": "TECHNICAL_QA_AND_CONTEXT_RANKED_DRAFT__AUDIO_VISUAL_REVIEW_REQUIRED",
             "campaign": brief.campaign_id,
             "source_platform": "youtube",
             "source_url": chosen_video.url,
@@ -1126,7 +1126,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             "source_profile": source_profile.as_dict(),
             "editorial_rubric_version": RUBRIC_VERSION,
             "editorial_weights": WEIGHTS,
-            "selection_policy": "quality_driven_zero_to_n",
+            "selection_policy": "context_ranked_review_drafts_zero_to_n",
             "render_safety_limit": render_safety_limit,
             "selected_clip_count": len(completed),
             "clips": completed,

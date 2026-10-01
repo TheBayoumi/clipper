@@ -324,10 +324,11 @@ def inspect_artifact(
             report_count = report.get("selected_clip_count")
             audit_count = audit.get("selected_count")
             if (
-                report.get("selection_policy") != "quality_driven_zero_to_n"
+                report.get("selection_policy")
+                not in {"quality_driven_zero_to_n", "context_ranked_review_drafts_zero_to_n"}
                 or type(report_count) is not int
                 or report_count != 0
-                or audit.get("selection_policy") != "quality_driven_zero_to_n"
+                or audit.get("selection_policy") != report.get("selection_policy")
                 or audit.get("selected") != []
                 or type(audit_count) is not int
                 or audit_count != 0
