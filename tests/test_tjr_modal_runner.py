@@ -14,7 +14,7 @@ from scripts.tjr_modal_runner import (
 )
 from scripts.tjr_youtube_preview import NoEditorialMoments
 
-CHANNEL = "UCZen39LQJPx04GjPj7FOMcw"
+CHANNEL = "UCf1q6dhccWr6eQEcFFnJSbA"
 
 
 def _staged(video_id: str) -> dict[str, object]:
