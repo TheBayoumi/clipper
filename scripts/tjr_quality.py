@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed technical QA for the Reach TJR weekly preview artifacts.
+"""Fail-closed technical QA for the Reach Double Coverage preview artifacts.
 
 This verifies media and campaign-brief invariants, not human editorial or
 campaign approval. Never treat this report as permission to publish.
@@ -23,11 +23,11 @@ import yaml
 
 from scripts.tjr_media_policy import production_hd_dimensions
 
-OFFICIAL_TJR_CHANNEL = "UCGHBUXjDCeiIXNdKR0HUZnA"
-OFFICIAL_TJR_CHANNELS = [OFFICIAL_TJR_CHANNEL, "UCZen39LQJPx04GjPj7FOMcw"]
+OFFICIAL_TJR_CHANNEL = "UCf1q6dhccWr6eQEcFFnJSbA"
+OFFICIAL_TJR_CHANNELS = [OFFICIAL_TJR_CHANNEL]
 EXPECTED_SIZE = (1080, 1920)
 MIN_SECONDS = 20.0
-MAX_SECONDS = 42.0
+MAX_SECONDS = 45.0
 
 
 class QualityError(ValueError):
@@ -39,22 +39,17 @@ def check_campaign_brief(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise QualityError("campaign brief is not an object")
     channels = data.get("source_channel_ids")
-    pinned_channel = (
-        isinstance(channels, list)
-        and len(channels) == 1
-        and channels[0] in OFFICIAL_TJR_CHANNELS
-        and bool(data.get("source_media_urls"))
-    )
-    if channels != OFFICIAL_TJR_CHANNELS and not pinned_channel:
-        raise QualityError("source must be restricted to Reach's two listed TJR YouTube channels")
+    if channels != OFFICIAL_TJR_CHANNELS:
+        raise QualityError(
+            "source must be restricted to the official Double Coverage YouTube channel"
+        )
     video_ids = data.get("allowed_video_ids", [])
     if (
         not isinstance(video_ids, list)
-        or not video_ids
         or not all(isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{11}", v) for v in video_ids)
         or len(video_ids) != len(set(video_ids))
     ):
-        raise QualityError("allowed_video_ids must be unique YouTube video IDs")
+        raise QualityError("allowed_video_ids must contain only unique YouTube video IDs")
     mirrors = data.get("source_media_urls") or {}
     if not isinstance(mirrors, dict):
         raise QualityError("source_media_urls must be a mapping")
@@ -72,14 +67,19 @@ def check_campaign_brief(path: Path) -> dict[str, Any]:
                 raise QualityError("mirror must be a Google Drive file/view HTTPS URL")
     if data.get("rights_confirmed") is not True:
         raise QualityError("campaign clipping permission has not been verified")
-    if data.get("watermark_text") or data.get("watermark_url"):
-        raise QualityError("TJR campaign prohibits added logos and watermarks")
-    if "#TJR" not in data.get("required_hashtags", []):
-        raise QualityError("mandatory #TJR hashtag is missing")
+    watermark_url = data.get("watermark_url")
+    if data.get("watermark_text"):
+        raise QualityError("Double Coverage requires the official image watermark, not text")
+    if watermark_url != (
+        "https://drive.google.com/file/d/1bVsR2jUqmP5i61TuFWo0NzN7_0dSLAou/view?usp=sharing"
+    ):
+        raise QualityError("mandatory official Double Coverage watermark is missing or changed")
+    if "#DoubleCoverage" not in data.get("required_hashtags", []):
+        raise QualityError("mandatory #DoubleCoverage hashtag is missing")
     if int(data.get("min_clip_seconds", -1)) != 20:
         raise QualityError("expected 20 second minimum clip length")
-    if int(data.get("max_clip_seconds", -1)) != 42:
-        raise QualityError("expected 42 second maximum clip length")
+    if int(data.get("max_clip_seconds", -1)) != 45:
+        raise QualityError("expected 45 second maximum clip length")
     return data
 
 
