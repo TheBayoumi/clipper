@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Collection, Sequence
+from functools import lru_cache
 from itertools import combinations, pairwise
 from pathlib import Path
 
@@ -98,6 +99,7 @@ def distinct_hook_from_text(
     )
 
 
+@lru_cache(maxsize=512)
 def _fit_lines(
     text: str, *, max_width: int, max_size: int, min_size: int = 42, max_lines: int = 2
 ) -> tuple[int, tuple[str, ...], float]:
