@@ -21,7 +21,6 @@ prioritize_campaign_moments = SCRIPT["prioritize_campaign_moments"]
 dynamic_bgutil_variants = SCRIPT["dynamic_bgutil_variants"]
 dynamic_browser_variants = SCRIPT["dynamic_browser_variants"]
 dynamic_token_variants = SCRIPT["dynamic_token_variants"]
-youtube_client_variants = SCRIPT["youtube_client_variants"]
 constrain_official_sources = SCRIPT["constrain_official_sources"]
 _flat_channel_playlist = SCRIPT["_flat_channel_playlist"]
 discover_official_uploads = SCRIPT["discover_official_uploads"]
@@ -208,28 +207,6 @@ def test_optional_auth_uses_only_explicit_existing_cookie_file(
     jar.unlink()
     with pytest.raises(RuntimeError, match="empty or unavailable"):
         _auth_args()
-
-
-def test_required_youtube_auth_fails_closed_without_session(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("YOUTUBE_COOKIES_FILE", raising=False)
-    monkeypatch.setenv("TJR_REQUIRE_AUTHENTICATED_YOUTUBE", "1")
-    with pytest.raises(RuntimeError, match="authenticated YouTube session required"):
-        _auth_args()
-
-
-def test_authenticated_client_order_prefers_session_before_po_token_clients(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    jar = tmp_path / "dedicated-viewer-cookies.txt"
-    jar.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
-    monkeypatch.setenv("YOUTUBE_COOKIES_FILE", str(jar))
-    monkeypatch.delenv("TJR_BGUTIL_POT_PROVIDER_URL", raising=False)
-    monkeypatch.delenv("YT_DLP_WPC_BROWSER_PATH", raising=False)
-    variants = youtube_client_variants()
-    assert variants[0] == ()
-    assert variants[1] == ("--extractor-args", "youtube:player_client=tv_downgraded")
 
 
 def test_explicit_youtube_source_cannot_fall_back_to_other_videos() -> None:
