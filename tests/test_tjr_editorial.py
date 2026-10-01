@@ -65,7 +65,7 @@ STRONG_SEGMENT = (
 def test_weighted_provisional_score_tracks_unverified_visuals() -> None:
     result = evaluate_candidate(clip(0, STRONG_SEGMENT))
     assert result is not None
-    assert RUBRIC_VERSION == "podcast-contextual-v4-review-drafts"
+    assert RUBRIC_VERSION == "podcast-structured-v1-review-drafts"
     assert sum(WEIGHTS.values()) == 100
     assert result.score_coverage == 75
     assert result.criteria["visuals"].score is None

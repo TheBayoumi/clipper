@@ -6,6 +6,7 @@ boundaries, adding source logos, or making unverifiable claims.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Collection, Sequence
 from functools import lru_cache
@@ -218,7 +219,7 @@ def _fit_lines(
                     prefix[right] - prefix[left] + space_width * (right - left - 1)
                     for left, right in pairwise(boundaries)
                 )
-                if width * 1.12 + 40 <= max_width and size * line_count <= 210:
+                if width * 1.12 + 40 <= max_width and size * line_count * 1.2 + 36 <= 210:
                     choices.append((width, lines))
         for _, lines in sorted(
             choices, key=lambda x: (max(len(y) for y in x[1]) - min(len(y) for y in x[1]), x[0])
@@ -240,9 +241,13 @@ def _ass_header() -> str:
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         "Style: Hook,DejaVu Sans,70,&H00FFFFFF,&H00FFFFFF,&H00131620,&H54131620,"
-        "-1,0,0,0,100,100,0,0,3,18,0,8,120,120,185,1\n"
+        "-1,0,0,0,100,100,0,0,1,0,0,8,120,120,185,1\n"
         "Style: Caption,DejaVu Sans,64,&H00FFFFFF,&H00FFFFFF,&H00131620,&H58131620,"
-        "-1,0,0,0,100,100,0,0,3,18,0,2,120,120,375,1\n\n"
+        "-1,0,0,0,100,100,0,0,1,0,0,2,120,120,375,1\n\n"
+        "Style: HookPlate,DejaVu Sans,1,&H00201613,&H00201613,&H00201613,&H00201613,"
+        "0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n"
+        "Style: CaptionPlate,DejaVu Sans,1,&H00201613,&H00201613,&H00201613,&H00201613,"
+        "0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, "
         "MarginV, Effect, Text\n"
@@ -308,6 +313,24 @@ def _caption_text(phrase: Sequence[WordTiming], active: int, size: int) -> str:
     return " ".join(tokens)
 
 
+def _plate_event(
+    start: float, end: float, *, size: int, lines: Sequence[str], hook: bool = False
+) -> str:
+    """One fixed rectangle per text block, independent of text-run transforms."""
+    font = ImageFont.truetype(_FONT, size)
+    width = math.ceil(max(float(font.getlength(line)) for line in lines) * 1.12 + 40)
+    height = math.ceil(size * len(lines) * 1.2 + 36)
+    x = (1080 - width) // 2
+    y = 167 if hook else 1558 - height
+    style = "HookPlate" if hook else "CaptionPlate"
+    layer = 4 if hook else 0
+    return (
+        f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{style},,0,0,0,,"
+        f"{{\\an7\\pos({x},{y})\\p1\\bord0\\shad0\\alpha&H58&}}"
+        f"m 0 0 l {width} 0 l {width} {height} l 0 {height}"
+    )
+
+
 def create_tiktok_ass(
     clip: ClipCandidate,
     segments: Sequence[TranscriptSegment],
@@ -326,6 +349,7 @@ def create_tiktok_ass(
     hook = _safe(hook_text)
     if hook and clip.duration >= 1:
         size, lines, _ = _fit_lines(hook, max_width=_HOOK_SAFE_WIDTH, max_size=70, max_lines=3)
+        events.append(_plate_event(0, clip.duration, size=size, lines=lines, hook=True))
         # No fade-out: the hook remains visible on the first and last frames.
         events.append(
             "Dialogue: 5,"
@@ -333,16 +357,45 @@ def create_tiktok_ass(
             f"Hook,,0,0,0,,{{\\an8\\pos(540,185)\\fs{size}\\q2}}" + r"\N".join(lines)
         )
     words, unaligned = _timed_words(segments, clip)
-    for phrase in _phrases(words):
+    phrases = _phrases(words)
+    for phrase_index, phrase in enumerate(phrases):
         full_text = " ".join(_safe(word.text).upper() for word in phrase)
         size, lines, _ = _fit_lines(
             full_text, max_width=_CAPTION_SAFE_WIDTH, max_size=64, min_size=42
         )
+        phrase_start = max(clip.start, phrase[0].start) - clip.start
+        phrase_end = min(clip.end, max(word.end for word in phrase)) - clip.start
+        if phrase_index + 1 < len(phrases):
+            phrase_end = min(phrase_end, phrases[phrase_index + 1][0].start - clip.start)
+        if phrase_end <= phrase_start:
+            continue
+        events.append(_plate_event(phrase_start, phrase_end, size=size, lines=lines))
+        # Display the neutral phrase through measured pauses, without inventing
+        # active-word timing. Later word starts arbitrate overlapping ASR words.
+        cursor = phrase_start
+        for index, word in enumerate(phrase):
+            word_start = max(phrase_start, word.start - clip.start)
+            word_end = min(phrase_end, word.end - clip.start)
+            if index + 1 < len(phrase):
+                word_end = min(word_end, phrase[index + 1].start - clip.start)
+            if word_start > cursor:
+                events.append(
+                    f"Dialogue: 1,{_ass_time(cursor)},{_ass_time(word_start)},"
+                    f"Caption,,0,0,0,,{{\\an2\\pos(540,1540)\\fs{size}\\q2}}" + r"\N".join(lines)
+                )
+            cursor = max(cursor, word_end)
+        if cursor < phrase_end:
+            events.append(
+                f"Dialogue: 1,{_ass_time(cursor)},{_ass_time(phrase_end)},"
+                f"Caption,,0,0,0,,{{\\an2\\pos(540,1540)\\fs{size}\\q2}}" + r"\N".join(lines)
+            )
         # Preserve measured word boundaries when wrapping a phrase.
         split = len(lines[0].split()) if len(lines) > 1 else len(phrase)
         for index, word in enumerate(phrase):
             start = max(word.start, clip.start) - clip.start
-            end = min(word.end, clip.end) - clip.start
+            end = min(word.end - clip.start, phrase_end)
+            if index + 1 < len(phrase):
+                end = min(end, phrase[index + 1].start - clip.start)
             if end - start < 0.04:
                 continue
             first = (
@@ -370,6 +423,7 @@ def create_tiktok_ass(
         fallback = " ".join(_WORD.findall(_safe(segment.text).upper())[:5])
         if fallback:
             size, lines, _ = _fit_lines(fallback, max_width=_CAPTION_SAFE_WIDTH, max_size=64)
+            events.append(_plate_event(start, end, size=size, lines=lines))
             events.append(
                 "Dialogue: 1,"
                 f"{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,"
@@ -400,8 +454,20 @@ def audit_tiktok_ass(path: str | Path, *, clip_duration: float) -> dict[str, obj
         raise ValueError("missing opaque hook or caption style")
     if not spoken:
         raise ValueError("no genuinely word-timed captions were rendered")
+    caption_style = (
+        next(line for line in content.splitlines() if line.startswith("Style: Caption,"))
+        .removeprefix("Style: ")
+        .split(",")
+    )
+    plates = [line for line in content.splitlines() if ",CaptionPlate," in line]
+    if caption_style[15:18] != ["1", "0", "0"] or not plates:
+        raise ValueError("captions require one stable independent background plate")
+    if any(r"\p1" not in line or r"\t(" in line for line in plates):
+        raise ValueError("caption plate must be fixed vector geometry")
     return {
         "style": "B2",
+        "background_mode": "stable_phrase_plate_v1",
+        "caption_plate_events": len(plates),
         "persistent_hook_seconds": clip_duration,
         "spoken_word_highlight_events": len(spoken),
         "unaligned_static_fallback_events": len(fallback),

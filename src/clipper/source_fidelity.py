@@ -12,9 +12,11 @@ import json
 import math
 import re
 import subprocess
+from array import array
 from dataclasses import asdict, dataclass
 from fractions import Fraction
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 
@@ -219,3 +221,141 @@ def compare_encoded_to_composition(
     if not scores or any(not math.isfinite(value) for value in scores):
         raise FidelityError("invalid frame-level SSIM statistics")
     return round(sum(scores) / len(scores), 6), len(scores)
+
+
+def measure_audio_gain(source: Path, *, start: float, duration: float) -> float:
+    """Measure once, then use constant gain with a measured true-peak ceiling."""
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-ss",
+            str(start),
+            "-i",
+            str(source),
+            "-t",
+            str(duration),
+            "-vn",
+            "-af",
+            f"atrim=duration={duration},asetpts=PTS-STARTPTS,"
+            "loudnorm=I=-14:LRA=11:TP=-1.5:print_format=json",
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    match = re.search(r'\{\s*"input_i".*?\}', result.stderr, re.DOTALL)
+    if match is None:
+        raise FidelityError("audio loudness measurement is missing")
+    values = json.loads(match.group())
+    integrated, peak = float(values["input_i"]), float(values["input_tp"])
+    if not math.isfinite(integrated) or not math.isfinite(peak):
+        raise FidelityError("source clip has no measurable audio")
+    return round(min(-14 - integrated, -1.5 - peak), 6)
+
+
+def _audio_pcm(path: Path, *, start: float, duration: float) -> array[float]:
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-ss",
+            str(start),
+            "-i",
+            str(path),
+            "-t",
+            str(duration),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-f",
+            "f32le",
+            "-",
+        ],
+        capture_output=True,
+        check=True,
+        timeout=120,
+    )
+    samples: array[float] = array("f")
+    samples.frombytes(result.stdout)
+    if not samples or any(not math.isfinite(value) for value in samples):
+        raise FidelityError("source/output audio decode is empty or invalid")
+    return samples
+
+
+def compare_audio_to_source(
+    source: Path, output: Path, *, start: float, duration: float, enforce: bool = True
+) -> dict[str, Any]:
+    """Check signal continuity against the source; natural pauses must survive."""
+    reference = _audio_pcm(source, start=start, duration=duration)
+    delivered = _audio_pcm(output, start=0, duration=duration)
+    count = min(len(reference), len(delivered))
+
+    def correlation(lag: int) -> float:
+        lo, hi = max(0, -lag), min(count, len(delivered) - lag)
+        a = b = cross = 0.0
+        for i in range(lo, hi, 32):
+            x, y = reference[i], delivered[i + lag]
+            a += x * x
+            b += y * y
+            cross += x * y
+        return cross / math.sqrt(a * b) if a > 0 and b > 0 else 0.0
+
+    lag = max(range(-480, 481, 160), key=correlation)
+    lag = max(range(lag - 160, lag + 161, 8), key=correlation)
+    lag = max(range(lag - 8, lag + 9), key=correlation)
+    similarity = correlation(lag)
+    # Ten-millisecond windows catch short cutoffs without treating ordinary
+    # breathing, codec edge ringing or original source silence as missing speech.
+    window = 160
+    energies: list[tuple[float, float, float]] = []
+    for i in range(max(0, -lag), min(count, len(delivered) - lag) - window + 1, window):
+        source_rms = math.sqrt(sum(value * value for value in reference[i : i + window]) / window)
+        output_rms = math.sqrt(
+            sum(value * value for value in delivered[i + lag : i + lag + window]) / window
+        )
+        energies.append((i / 16000, source_rms, output_rms))
+    active_floor = max(0.0001, max((item[1] for item in energies), default=0) * 0.01)
+    ratios = [out / ref for _, ref, out in energies if ref > active_floor and out > 0]
+    gain = median(ratios) if ratios else 0
+    missing = [
+        timestamp
+        for timestamp, ref, out in energies
+        if ref > active_floor and out < ref * gain / 16
+    ]
+    spans: list[dict[str, float]] = []
+    for timestamp in missing:
+        if spans and timestamp - spans[-1]["end"] < 0.011:
+            spans[-1]["end"] = round(timestamp + 0.01, 3)
+        else:
+            spans.append({"start": round(timestamp, 3), "end": round(timestamp + 0.01, 3)})
+    spans = [span for span in spans if span["end"] - span["start"] >= 0.019]
+    passed = (
+        similarity >= 0.95
+        and not spans
+        and abs(len(delivered) / 16000 - duration) <= 0.05
+        and abs(len(reference) / 16000 - duration) <= 0.05
+    )
+    report = {
+        "status": "SOURCE_AUDIO_MATCHED" if passed else "SOURCE_AUDIO_MISMATCH",
+        "method": "decoded_source_waveform_and_10ms_energy_windows",
+        "waveform_correlation": round(similarity, 6),
+        "alignment_offset_ms": lag / 16,
+        "source_duration_seconds": len(reference) / 16000,
+        "output_duration_seconds": len(delivered) / 16000,
+        "introduced_dropout_spans": spans,
+        "source_silent_windows": sum(ref < active_floor for _, ref, _ in energies),
+        "comparison_windows": len(energies),
+    }
+    if enforce and not passed:
+        raise FidelityError("rendered audio failed source continuity: " + json.dumps(report))
+    return report

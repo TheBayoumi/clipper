@@ -46,7 +46,8 @@ def test_creative_hook_persists_and_active_word_follows_original_audio(tmp_path:
     assert "Style: Hook,DejaVu Sans" in ass
     assert "Style: Caption,DejaVu Sans" in ass
     assert "&H54131620" in ass and "&H58131620" in ass
-    assert "-1,0,0,0,100,100,0,0,3,18,0" in ass
+    assert "-1,0,0,0,100,100,0,0,1,0,0" in ass
+    assert ",CaptionPlate," in ass and r"\p1" in ass
     assert f"{_ass_time(0)},{_ass_time(26)},Hook" in ass
     assert r"\pos(540,185)" in ass
     assert r"\pos(540,1540)" in ass
@@ -306,3 +307,72 @@ def test_decimal_amount_is_preserved_in_source_headline() -> None:
     hook = creative_hook_from_text(text)
     assert hook == text.upper()
     assert hook_grounded_in_transcript(hook, text)
+
+
+def test_stable_background_does_not_scale_with_active_word(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    import pytest
+    from PIL import Image
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("FFmpeg unavailable")
+    words = (
+        WordTiming(0.1, 0.6, "yeah,"),
+        WordTiming(0.6, 1.1, "for"),
+        WordTiming(1.1, 1.6, "sure."),
+    )
+    ass = create_tiktok_ass(
+        ClipCandidate("v", 0, 2, "Yeah, for sure.", 1),
+        [TranscriptSegment(0.1, 1.6, "Yeah, for sure.", words)],
+        tmp_path / "background.ass",
+        hook_text="THIS IS THE WHOLE STORY",
+    )
+    bboxes = []
+    for index, timestamp in enumerate((0.2, 0.8, 1.3)):
+        frame = tmp_path / f"plate-{index}.png"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=white:s=1080x1920:r=30:d=2",
+                "-ss",
+                str(timestamp),
+                "-vf",
+                f"ass={ass}",
+                "-frames:v",
+                "1",
+                "-y",
+                str(frame),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+        crop = Image.open(frame).convert("RGB").crop((0, 1300, 1080, 1650))
+        # The rectangle is independent of glyph colors and active-word scale.
+        mask = crop.point(lambda value: 255 if value < 200 else 0).convert("L")
+        bboxes.append(mask.getbbox())
+    assert bboxes[0] is not None and len(set(bboxes)) == 1
+    text = ass.read_text()
+    plates = [row for row in text.splitlines() if ",CaptionPlate," in row]
+    assert len(plates) == 1 and r"\t(" not in plates[0]
+
+
+def test_phrase_background_survives_pause_without_invented_highlight(tmp_path: Path) -> None:
+    words = (WordTiming(0.1, 0.4, "yeah"), WordTiming(0.7, 1.0, "exactly"))
+    ass = create_tiktok_ass(
+        ClipCandidate("v", 0, 2, "", 1),
+        [TranscriptSegment(0.1, 1, "yeah exactly", words)],
+        tmp_path / "pause.ass",
+        hook_text="HOW THE STORY REALLY ENDED",
+    ).read_text()
+    assert "0:00:00.10,0:00:01.00,CaptionPlate" in ass
+    gap = next(row for row in ass.splitlines() if "0:00:00.40,0:00:00.70,Caption," in row)
+    assert r"\c&H" not in gap

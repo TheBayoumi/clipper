@@ -16,9 +16,13 @@ def _brief() -> CampaignBrief:
 
 
 def _fake_embedder(texts: list[str]) -> list[list[float]]:
-    from scripts.tjr_semantic_editor import CONTEXT_RUBRIC, OFF_TOPIC_DESCRIPTIONS
+    from scripts.tjr_semantic_editor import CONTEXT_RUBRIC, HOOK_RUBRIC, OFF_TOPIC_DESCRIPTIONS
 
-    negative_references = {*OFF_TOPIC_DESCRIPTIONS, *(pair[1] for pair in CONTEXT_RUBRIC.values())}
+    negative_references = {
+        *OFF_TOPIC_DESCRIPTIONS,
+        HOOK_RUBRIC[1],
+        *(pair[1] for pair in CONTEXT_RUBRIC.values()),
+    }
     return [[0.0, 1.0, 0.0] if text in negative_references else [1.0, 0.0, 0.0] for text in texts]
 
 
@@ -49,7 +53,7 @@ def test_semantic_editor_builds_complete_story_without_sliding_window_quota() ->
     assert hook.upper() in candidate.text.upper()
     assert not hook.startswith("THE MOMENT:")
     assert audit["fixed_candidate_or_output_quota"] is False
-    assert audit["architecture"] == "podcast_contextual_editor_v4"
+    assert audit["architecture"] == "podcast_contextual_editor_v5"
     assert audit["campaign_keyword_gate"] is False
     assert any(reason.startswith("context_story_margin=") for reason in candidate.reasons)
 
@@ -192,3 +196,116 @@ def test_invalid_embedding_vectors_fail_closed() -> None:
             _embedding_batch(
                 lambda texts, item=vector: [item for _ in texts], ["source"], "context assessment"
             )
+
+
+def test_closed_endings_reject_pauses_questions_and_ellipses() -> None:
+    from scripts.tjr_semantic_editor import _closed_ending
+
+    assert _closed_ending("That settled the question.")
+    assert _closed_ending('He said, "That settled it."')
+    assert not _closed_ending("Yeah, the only way is, like,")
+    assert not _closed_ending("How does it work out for you?")
+    assert not _closed_ending("I was going to say...")
+
+
+def test_structured_editor_selects_complete_span_and_full_clip_hook(tmp_path) -> None:
+    from clipper.models import ClipCandidate
+    from scripts.tjr_semantic_editor import refine_contextual_candidates
+
+    segments = [
+        TranscriptSegment(0, 7, "How did security stop you at your own show?"),
+        TranscriptSegment(7, 14, "I had left my own access pass in the car."),
+        TranscriptSegment(14, 22, "The owner came outside and finally let me inside."),
+        TranscriptSegment(22, 29, "How much did your next show pay you?"),
+    ]
+    calls = []
+
+    def assess(context):
+        calls.append(context)
+        hook_index = next(
+            item["id"] for item in context["headlines"] if item["text"] == segments[2].text.upper()
+        )
+        return dict(
+            keep=True,
+            start_unit=0,
+            end_unit=2,
+            hook_index=hook_index,
+            opening=4,
+            story=4,
+            ending=5,
+            hook=4,
+            reason="Forgotten pass caused rejection; the owner finally let him into his own show.",
+        )
+
+    brief = _brief()
+    proposal = ClipCandidate("v", 0, 29, " ".join(s.text for s in segments), 10)
+    output = tmp_path / "cache.json"
+    first, audit = refine_contextual_candidates(
+        brief,
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=output,
+        assessor=assess,
+    )
+    assert len(first) == 1 and first[0].start == 0 and first[0].end == 22
+    assert "semantic_hook=" + segments[2].text.upper() in first[0].reasons
+    assert segments[3].text not in first[0].text
+    assert audit["hook_scope"] == "entire_selected_exchange"
+    second, reused = refine_contextual_candidates(
+        brief,
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "reused.json",
+        reuse_path=output,
+        assessor=assess,
+    )
+    assert second == first and reused["cache_reused"] is True and len(calls) == 1
+
+
+def test_structured_editor_rejects_incomplete_cut_and_unsupported_hook(tmp_path) -> None:
+    import pytest
+
+    from clipper.models import ClipCandidate
+    from scripts.tjr_semantic_editor import refine_contextual_candidates
+
+    segments = [
+        TranscriptSegment(0, 12, "The first measurement contradicted our initial explanation."),
+        TranscriptSegment(12, 24, "The repeat experiment confirmed the unexpected finding."),
+        TranscriptSegment(24, 30, "The next reason for that was,"),
+    ]
+    proposal = ClipCandidate("v", 0, 30, " ".join(s.text for s in segments), 10)
+
+    def assess(context):
+        return dict(
+            keep=True,
+            start_unit=0,
+            end_unit=2,
+            hook_index=0,
+            opening=4,
+            story=4,
+            ending=4,
+            hook=4,
+            reason="Unfinished proposed end.",
+        )
+
+    result, audit = refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "bad.json",
+        assessor=assess,
+    )
+    assert result == []
+    assert audit["assessments"][0]["rejection"] == "UNSUPPORTED_BOUNDARY_OR_HEADLINE"
+    with pytest.raises(RuntimeError, match="keep flag"):
+        refine_contextual_candidates(
+            _brief(),
+            [proposal],
+            segments,
+            source_sha256="a" * 64,
+            cache_path=tmp_path / "invalid.json",
+            assessor=lambda context: {"keep": "yes"},
+        )

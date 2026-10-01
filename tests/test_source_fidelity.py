@@ -330,3 +330,103 @@ def test_real_animated_render_drops_negative_seek_frames_consistently(tmp_path: 
     )
     assert score >= 0.99
     assert frames >= 59
+
+
+def test_audio_measurement_uses_loudness_and_peak_ceiling(tmp_path) -> None:
+    from unittest.mock import Mock, patch
+
+    import pytest
+
+    from clipper.source_fidelity import FidelityError, measure_audio_gain
+
+    for payload, gain in (
+        ('{"input_i":"-20","input_tp":"-5"}', 3.5),
+        ('{"input_i":"-10","input_tp":"-2"}', -4),
+    ):
+        with patch("clipper.source_fidelity.subprocess.run", return_value=Mock(stderr=payload)):
+            assert measure_audio_gain(tmp_path / "source.wav", start=0, duration=2) == gain
+    for payload in ("missing", '{"input_i":"-inf","input_tp":"-inf"}'):
+        with (
+            patch("clipper.source_fidelity.subprocess.run", return_value=Mock(stderr=payload)),
+            pytest.raises(FidelityError),
+        ):
+            measure_audio_gain(tmp_path / "source.wav", start=0, duration=2)
+
+
+def test_source_audio_continuity_preserves_pauses_and_detects_new_cutoffs(tmp_path) -> None:
+    import math
+    import shutil
+    import struct
+    import subprocess
+    import wave
+
+    import pytest
+
+    from clipper.source_fidelity import FidelityError, compare_audio_to_source, measure_audio_gain
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("FFmpeg unavailable")
+    rate = 16000
+    source = tmp_path / "original.wav"
+    samples = [
+        0 if 0.4 <= i / rate < 0.6 else int(9000 * math.sin(2 * math.pi * 223 * i / rate))
+        for i in range(rate * 2)
+    ]
+    with wave.open(str(source), "wb") as audio:
+        audio.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+        audio.writeframes(struct.pack("<" + "h" * len(samples), *samples))
+    delivered = tmp_path / "delivery.m4a"
+    gain = measure_audio_gain(source, start=0, duration=2)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(source),
+            "-af",
+            f"volume={gain}dB",
+            "-c:a",
+            "aac",
+            "-ar",
+            "48000",
+            "-y",
+            str(delivered),
+        ],
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    proof = compare_audio_to_source(source, delivered, start=0, duration=2)
+    assert proof["status"] == "SOURCE_AUDIO_MATCHED"
+    assert proof["introduced_dropout_spans"] == []
+    broken = tmp_path / "cutoff.wav"
+    changed = samples.copy()
+    changed[rate : rate + rate // 2] = [0] * (rate // 2)
+    with wave.open(str(broken), "wb") as audio:
+        audio.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+        audio.writeframes(struct.pack("<" + "h" * len(changed), *changed))
+    proof = compare_audio_to_source(source, broken, start=0, duration=2, enforce=False)
+    assert proof["status"] == "SOURCE_AUDIO_MISMATCH"
+    assert proof["introduced_dropout_spans"]
+    with pytest.raises(FidelityError, match="continuity"):
+        compare_audio_to_source(source, broken, start=0, duration=2)
+
+
+def test_audio_pcm_rejects_empty_or_nonfinite_decode(tmp_path) -> None:
+    from array import array
+    from unittest.mock import Mock, patch
+
+    import pytest
+
+    from clipper.source_fidelity import FidelityError, _audio_pcm
+
+    for samples in (array("f"), array("f", [float("nan")])):
+        with (
+            patch(
+                "clipper.source_fidelity.subprocess.run",
+                return_value=Mock(stdout=samples.tobytes()),
+            ),
+            pytest.raises(FidelityError, match="empty or invalid"),
+        ):
+            _audio_pcm(tmp_path / "source.wav", start=0, duration=1)

@@ -21,7 +21,7 @@ from clipper.tiktok import (
     source_headline_candidates,
 )
 
-RUBRIC_VERSION = "podcast-contextual-v4-review-drafts"
+RUBRIC_VERSION = "podcast-structured-v1-review-drafts"
 WEIGHTS = {"opening": 25, "story": 25, "emotion": 10, "visuals": 15, "retention": 25}
 _WORDS = re.compile(r"[A-Za-z0-9$']+")
 _NUMBERS = re.compile(r"(?<!\w)\$?\d[\d,.]*(?:%|k|m)?\b", re.IGNORECASE)
@@ -123,7 +123,11 @@ class EditorialPick:
             "editorial_score": self.editorial_score,
             "weighted_points": self.weighted_points,
             "score_coverage": self.score_coverage,
-            "score_basis": "provisional_context_similarity_ranking_not_calibrated_quality",
+            "score_basis": (
+                "structured_local_instruct_model_ratings_requires_source_review"
+                if "context_assessment=structured_local_instruct_model" in self.clip.reasons
+                else "provisional_context_similarity_ranking_not_calibrated_quality"
+            ),
             "integrity_gate": {
                 "status": self.integrity_status,
                 "evidence": list(self.integrity_evidence),
@@ -175,12 +179,18 @@ def _context_rating(candidate: ClipCandidate, dimension: str) -> CriterionRating
         return CriterionRating(
             None, "manual_required", ("context assessment is missing or invalid",)
         )
+    structured = "context_assessment=structured_local_instruct_model" in candidate.reasons
     return CriterionRating(
         _clamp((margin + 2) / 4 * 5),
         "semantic_model",
         (
             f"context_{dimension}_contrast={margin:.6f}",
-            "embedding contrast is ranking evidence, not calibrated editorial quality",
+            (
+                "structured local instruct-model assessment; source review still required"
+                if structured
+                else "embedding contrast is ranking evidence, not calibrated editorial quality"
+            ),
+            *(reason for reason in candidate.reasons if reason.startswith("context_evidence=")),
         ),
     )
 
@@ -289,7 +299,7 @@ def evaluate_candidate(
     return EditorialPick(
         clip=candidate,
         hook=hook,
-        hook_score=round((opening.score or 0) * 1.2),
+        hook_score=round(((_reason_float(candidate, "context_hook_margin=") or 0) + 2) * 1.5),
         editorial_score=score,
         weighted_points=round(points, 2),
         score_coverage=coverage,
@@ -297,7 +307,7 @@ def evaluate_candidate(
         integrity_status=integrity,
         integrity_evidence=evidence,
         reasons=(
-            f"opening={opening.score}/5 (context similarity proxy)",
+            f"opening={opening.score}/5 ({opening.basis}; see assessment evidence)",
             f"story={ratings['story'].score}/5 ({ratings['story'].basis})",
             f"ending={ratings['retention'].score}/5 ({ratings['retention'].basis})",
             "portrait visuals and editorial integrity require source review",

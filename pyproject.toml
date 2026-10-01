@@ -29,6 +29,7 @@ asr = [
   "av>=11,<19",
   "curl-cffi>=0.15,<1",
   "fastembed>=0.7,<1",
+  "llama-cpp-python==0.3.35",
   "opencv-python-headless>=4.10,<5",
 ]
 dev = [

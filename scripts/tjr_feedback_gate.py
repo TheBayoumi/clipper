@@ -148,6 +148,7 @@ def probe_media(path: Path, *, full_decode: bool = False) -> dict[str, Any]:
         "fps": float(Fraction(video[0]["avg_frame_rate"])),
         "video_codec": video[0]["codec_name"],
         "audio_codec": audio[0]["codec_name"],
+        "audio_sample_rate": int(audio[0].get("sample_rate") or 0),
         "duration": video_duration,
         "video_duration": video_duration,
         "audio_duration": audio_duration,
@@ -172,8 +173,24 @@ def verify_ass_sidecar(
         "",
     )
     style_fields = caption_style.removeprefix("Style: ").split(",")
-    if len(style_fields) < 23 or style_fields[15] != "3":
+    if len(style_fields) < 23 or style_fields[15] not in {"1", "3"}:
         raise ValueError("ASS caption background plate is missing")
+    if style_fields[15] == "1":
+        plates = [line for line in script.splitlines() if line.startswith("Dialogue: 0,")]
+        hook_plates = [line for line in script.splitlines() if line.startswith("Dialogue: 4,")]
+        if (
+            style_fields[16:18] != ["0", "0"]
+            or not plates
+            or len(hook_plates) != 1
+            or any(
+                ",CaptionPlate," not in line
+                or r"\p1" not in line
+                or r"\t(" in line
+                or r"\fsc" in line
+                for line in plates
+            )
+        ):
+            raise ValueError("ASS stable caption background plate is missing or animated")
     hooks = [line for line in script.splitlines() if line.startswith("Dialogue: 5,")]
     captions = [line for line in script.splitlines() if line.startswith("Dialogue: 2,")]
     if len(hooks) != 1 or not captions or len(captions) != reported_word_events:
@@ -197,7 +214,8 @@ def verify_ass_sidecar(
         or r"\an8\pos(540,185)" not in fields[9]
     ):
         raise ValueError("ASS hook is not visible for the full safe-area duration")
-    for line in captions:
+    previous_end = -1.0
+    for line in sorted(captions, key=lambda row: seconds(row.split(",", 9)[1])):
         parts = line.split(",", 9)
         start = seconds(parts[1]) if len(parts) == 10 else -1.0
         end = seconds(parts[2]) if len(parts) == 10 else -1.0
@@ -209,6 +227,9 @@ def verify_ass_sidecar(
             or not (0 <= start < end <= duration_seconds + 0.05)
         ):
             raise ValueError("ASS word highlight event is not independently verified")
+        if start < previous_end:
+            raise ValueError("ASS caption events overlap and duplicate the displayed phrase")
+        previous_end = end
 
 
 def verify_edit_plan(quality: dict[str, Any], *, duration_seconds: float) -> None:
@@ -426,7 +447,22 @@ def inspect_artifact(
                         or int(quality.get("compared_frames") or 0) < 1
                     ):
                         issues.append("SOURCE_FIDELITY_FAILED")
+                if overlay.get("background_mode") == "stable_phrase_plate_v1":
+                    audio_proof = quality.get("audio_fidelity")
+                    if (
+                        not isinstance(audio_proof, dict)
+                        or audio_proof.get("status") != "SOURCE_AUDIO_MATCHED"
+                        or audio_proof.get("introduced_dropout_spans") != []
+                        or float(audio_proof.get("waveform_correlation") or 0) < 0.95
+                        or quality.get("audio_normalization", {}).get("sample_rate") != 48000
+                    ):
+                        issues.append("SOURCE_AUDIO_CONTINUITY_FAILED")
                 actual = probe(mp4)
+                if (
+                    overlay.get("background_mode") == "stable_phrase_plate_v1"
+                    and actual.get("audio_sample_rate") != 48000
+                ):
+                    issues.append("SOURCE_AUDIO_CONTINUITY_FAILED")
                 native_fps = float(Fraction(report["source_profile"]["fps"]))
                 if (
                     (int(actual["width"]), int(actual["height"])) != (1080, 1920)

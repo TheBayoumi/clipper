@@ -28,7 +28,7 @@ from clipper.brief import load_brief
 from clipper.models import ClipCandidate, TranscriptSegment, WordTiming
 from clipper.pipeline import _download_asset
 from clipper.render import FFmpegRenderer
-from clipper.source_fidelity import probe_source_profile
+from clipper.source_fidelity import compare_audio_to_source, probe_source_profile
 from clipper.tiktok import audit_tiktok_ass
 from clipper.transcript import FasterWhisperTranscriber
 from scripts.tjr_editorial import (
@@ -38,7 +38,10 @@ from scripts.tjr_editorial import (
     select_editorial_moments,
 )
 from scripts.tjr_quality import check_full_decode, probe_original, probe_video
-from scripts.tjr_semantic_editor import build_semantic_editorial_candidates
+from scripts.tjr_semantic_editor import (
+    build_semantic_editorial_candidates,
+    refine_contextual_candidates,
+)
 from scripts.tjr_visual_analysis import analyze_candidate_visuals
 
 LOGGER = logging.getLogger("tjr-youtube")
@@ -668,6 +671,77 @@ def load_verified_transcript_cache(
     return chunks, duration
 
 
+def audit_cached_delivery_audio(source: Path, cache_root: Path, run_dir: Path) -> None:
+    """Compare the previous delivered gaps with the exact verified source."""
+    reports = list(cache_root.rglob("tjr-youtube-qa-report.json"))
+    if len(reports) != 1:
+        raise RuntimeError("audio comparison requires one verified source report")
+    report = json.loads(reports[0].read_text())
+    base = reports[0].parent.resolve()
+    comparisons = []
+    for clip in report.get("clips", []):
+        path = (base / clip["file"]).resolve()
+        if not path.is_relative_to(base) or not path.is_file():
+            raise RuntimeError("previous delivered audio evidence is missing")
+        start, end = float(clip["source_start_seconds"]), float(clip["source_end_seconds"])
+        delivery = compare_audio_to_source(
+            source, path, start=start, duration=end - start, enforce=False
+        )
+        replay = run_dir / "work" / "prior-audio-normalizer.wav"
+        replay.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-y",
+                    "-ss",
+                    str(start),
+                    "-i",
+                    str(source),
+                    "-t",
+                    str(end - start),
+                    "-vn",
+                    "-af",
+                    "loudnorm=I=-14:LRA=11:TP=-1.5",
+                    "-ar",
+                    "48000",
+                    "-c:a",
+                    "pcm_f32le",
+                    str(replay),
+                ],
+                capture_output=True,
+                check=True,
+                timeout=120,
+            )
+            old_filter = compare_audio_to_source(
+                source, replay, start=start, duration=end - start, enforce=False
+            )
+        finally:
+            replay.unlink(missing_ok=True)
+        comparisons.append(
+            {
+                "file": clip["file"],
+                "source_start": start,
+                "source_end": end,
+                "delivered_audio": delivery,
+                "old_normalizer_replay": old_filter,
+                "interpretation": (
+                    "OLD_DYNAMIC_NORMALIZER_REPRODUCED_SOURCE_ABSENT_DROPOUT"
+                    if delivery["introduced_dropout_spans"]
+                    and old_filter["introduced_dropout_spans"]
+                    else "CHECK_RECORDED_SOURCE_AND_DELIVERY_EVIDENCE"
+                ),
+            }
+        )
+    (run_dir / "prior-audio-comparison.json").write_text(
+        json.dumps({"source_sha256": report["source_sha256"], "clips": comparisons}, indent=2)
+        + "\n"
+    )
+
+
 def transcribe_source_chunks(
     source: Path,
     run_dir: Path,
@@ -906,6 +980,26 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             chosen_video.video_id,
             segments,
         )
+        if cache_root:
+            step = "previous_audio_comparison"
+            audit_cached_delivery_audio(source, Path(cache_root), run_dir)
+        step = "structured_context_assessment"
+        with source.open("rb") as original:
+            source_digest = hashlib.file_digest(original, "sha256").hexdigest()
+        reuse = list(Path(cache_root).rglob("editorial-cache.json")) if cache_root else []
+        if len(reuse) > 1:
+            raise RuntimeError("editorial cache must contain one verified assessment")
+        ranked, structured_audit = refine_contextual_candidates(
+            brief,
+            ranked,
+            segments,
+            source_sha256=source_digest,
+            cache_path=run_dir / "editorial-cache.json",
+            reuse_path=reuse[0] if reuse else None,
+        )
+        semantic_audit["discovery_architecture"] = semantic_audit["architecture"]
+        semantic_audit["architecture"] = structured_audit["architecture"]
+        semantic_audit["structured_context_assessment"] = structured_audit
         screening_mode = str(semantic_audit["architecture"])
         picks, rejected = select_editorial_moments(
             ranked,

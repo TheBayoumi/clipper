@@ -259,7 +259,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg xvfb x11-utils
-          python -m pip install -e ".[asr]"
+          CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e ".[asr]"
       - name: Start independent and browser-backed YouTube PO-token providers
         run: |
           set -euo pipefail
@@ -365,6 +365,8 @@ jobs:
             tjr-youtube-artifacts/**/transcript.json
             tjr-youtube-artifacts/**/ranked-candidates.json
             tjr-youtube-artifacts/**/editorial-candidate-audit.json
+            tjr-youtube-artifacts/**/editorial-cache.json
+            tjr-youtube-artifacts/**/prior-audio-comparison.json
             tjr-youtube-artifacts/**/source-analysis-coverage.json
           retention-days: 14
           compression-level: 0
@@ -438,7 +440,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
-          python -m pip install -e ".[asr]"
+          CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e ".[asr]"
           python -m scripts.tjr_modal_runner
       - name: Upload actual YouTube MP4s, SRT captions, source provenance and QA
         if: always()
@@ -462,6 +464,8 @@ jobs:
             tjr-modal-artifacts/**/clips/*-preview.png
             tjr-modal-artifacts/**/clips/*-contact.png
             tjr-modal-artifacts/**/editorial-candidate-audit.json
+            tjr-modal-artifacts/**/editorial-cache.json
+            tjr-modal-artifacts/**/prior-audio-comparison.json
             tjr-modal-artifacts/**/source-analysis-coverage.json
             tjr-modal-artifacts/**/transcript-cache-provenance.json
             tjr-modal-artifacts/**/ranked-candidates.json
@@ -635,7 +639,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg
-          python -m pip install -e ".[asr]"
+          CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e ".[asr]"
           ffmpeg -version | head -n 1
       - name: Prepare verified staged Double Coverage original (secret URL and SHA-256)
         run: |
@@ -666,6 +670,8 @@ jobs:
           path: |
             tjr-mirror-artifacts/**/tjr-youtube-qa-report.json
             tjr-mirror-artifacts/**/editorial-candidate-audit.json
+            tjr-mirror-artifacts/**/editorial-cache.json
+            tjr-mirror-artifacts/**/prior-audio-comparison.json
             tjr-mirror-artifacts/**/ranked-candidates.json
             tjr-mirror-artifacts/**/source-acquisition-errors.json
             tjr-mirror-artifacts/**/official-source-candidates.json

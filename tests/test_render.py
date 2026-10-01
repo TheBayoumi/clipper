@@ -174,6 +174,11 @@ def test_tiktok_renderer_writes_editable_ass_and_original_srt(tmp_path: Path) ->
             "clipper.render.subprocess.run",
             side_effect=fake_ffmpeg,
         ) as run,
+        patch("clipper.render.measure_audio_gain", return_value=1.0),
+        patch(
+            "clipper.render.compare_audio_to_source",
+            return_value={"status": "SOURCE_AUDIO_MATCHED"},
+        ),
         patch(
             "clipper.render.compare_encoded_to_composition",
             return_value=(0.996, 360),
