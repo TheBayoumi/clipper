@@ -11,9 +11,11 @@ import base64
 import binascii
 import json
 import os
+import signal
+import subprocess
 import tempfile
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +41,11 @@ image = (
         "/root/bgutil-ytdlp-pot-provider",
         "cd /root/bgutil-ytdlp-pot-provider/server && npm ci && npx tsc",
     )
+)
+
+browser_image = image.apt_install("chromium", "xvfb", "xauth").run_commands(
+    "python -m venv /opt/youtube-wpc && "
+    "/opt/youtube-wpc/bin/pip install 'yt-dlp[default]==2026.8.19' 'yt-dlp-getpot-wpc==1.1.2'"
 )
 
 PROVIDER_HOME = "/root/bgutil-ytdlp-pot-provider/server"
@@ -74,6 +81,62 @@ ACQUISITION_STRATEGIES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
 )
+
+
+BROWSER_GUEST_STRATEGIES = (
+    (
+        "browser_guest_mweb_player_tokens",
+        (
+            "--extractor-args",
+            "youtube:player_client=mweb;fetch_pot=always",
+            "--extractor-args",
+            "youtubepot-wpc:browser_path=/usr/bin/chromium",
+        ),
+    ),
+)
+
+
+def acquisition_strategies() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    mode = os.getenv("TJR_YOUTUBE_SESSION_MODE", "bgutil_guest")
+    if mode == "browser_guest":
+        return BROWSER_GUEST_STRATEGIES
+    if mode not in {"bgutil_guest", "viewer_secret"}:
+        raise RuntimeError("INVALID_YOUTUBE_SESSION_MODE")
+    return ACQUISITION_STRATEGIES
+
+
+def acquisition_executable() -> list[str]:
+    if os.getenv("TJR_YOUTUBE_SESSION_MODE") == "browser_guest":
+        return ["xvfb-run", "--auto-servernum", "/opt/youtube-wpc/bin/yt-dlp"]
+    return ["yt-dlp"]
+
+
+def acquisition_run(
+    command: list[str],
+    *,
+    timeout: int,
+    capture_output: bool = True,
+    text: bool = False,
+    check: bool = False,
+) -> Any:
+    """Kill the entire browser process group when a guest-token call times out."""
+    if os.getenv("TJR_YOUTUBE_SESSION_MODE") != "browser_guest":
+        return subprocess.run(
+            command, timeout=timeout, capture_output=capture_output, text=text, check=check
+        )
+    with subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=text, start_new_session=True
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+            raise
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        if check:
+            result.check_returncode()
+        return result
 
 
 def source_download_sections(duration_seconds: float) -> list[str]:
@@ -124,7 +187,8 @@ def viewer_cookie_args() -> list[str]:
 
 def _yt_command(args: tuple[str, ...], url: str) -> list[str]:
     return [
-        "yt-dlp",
+        *acquisition_executable(),
+        *(["--verbose"] if os.getenv("TJR_YOUTUBE_SESSION_MODE") == "browser_guest" else []),
         "--ignore-config",
         "--no-warnings",
         "--js-runtimes",
@@ -162,8 +226,20 @@ volume = modal.Volume.from_name("clipper-tjr-source-transport", create_if_missin
 
 @app.function(image=image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=2048)
 def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = "") -> dict[str, Any]:
-    with viewer_cookie_session():
+    mode = os.getenv("TJR_YOUTUBE_SESSION_MODE", "bgutil_guest")
+    if mode != "viewer_secret" and (
+        os.getenv("TJR_YOUTUBE_COOKIES_B64") or os.getenv("YOUTUBE_COOKIES_FILE")
+    ):
+        raise RuntimeError("GUEST_ACQUISITION_REJECTS_ACCOUNT_COOKIES")
+    with viewer_cookie_session() if mode == "viewer_secret" else nullcontext():
         return _inspect_original_youtube(candidates, run_key)
+
+
+@app.function(image=browser_image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=3072)
+def inspect_browser_guest_youtube(
+    candidates: list[dict[str, str]], run_key: str = ""
+) -> dict[str, Any]:
+    return inspect_original_youtube.local(candidates, run_key)
 
 
 def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) -> dict[str, Any]:
@@ -172,15 +248,15 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
     Reuses Clipper's successful BgUtils strategy family. Metadata-only
     successes are insufficient: an actual signed HD CDN URL must serve bytes.
     """
-    import subprocess
     import tempfile
 
     approved = {
         "UCf1q6dhccWr6eQEcFFnJSbA",
     }
-    attempts: list[dict[str, str]] = []
+    attempts: list[dict[str, Any]] = []
     total_ip_challenges = 0
     blocked_video_count = 0
+    strategies = acquisition_strategies()
     for candidate in candidates[:6]:
         ip_challenges = 0
         video_id = candidate["video_id"]
@@ -189,9 +265,9 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
         if channel_id not in approved or len(video_id) != 11:
             attempts.append({"url": url, "reason": "SOURCE_NOT_ALLOWLISTED"})
             continue
-        for strategy_name, strategy_args in ACQUISITION_STRATEGIES:
+        for strategy_name, strategy_args in strategies:
             try:
-                metadata_run = subprocess.run(
+                metadata_run = acquisition_run(
                     [
                         *_yt_command(strategy_args, url)[:-1],
                         "--dump-single-json",
@@ -203,6 +279,17 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
                     timeout=100,
                     check=False,
                 )
+                token_evidence = (
+                    {
+                        "browser_launched": "Launching youtube.com in browser"
+                        in metadata_run.stderr,
+                        "player_token_received": "Retrieved a player PO Token"
+                        in metadata_run.stderr,
+                        "gvs_token_received": "Retrieved a gvs PO Token" in metadata_run.stderr,
+                    }
+                    if os.getenv("TJR_YOUTUBE_SESSION_MODE") == "browser_guest"
+                    else {}
+                )
                 if metadata_run.returncode:
                     reason = _transport_error(metadata_run.stderr)
                     attempts.append(
@@ -211,6 +298,7 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
                             "strategy": strategy_name,
                             "stage": "metadata",
                             "reason": reason,
+                            "guest_token_evidence": token_evidence,
                         }
                     )
                     if reason == "YOUTUBE_IP_OR_LOGIN_CHALLENGE":
@@ -270,7 +358,7 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
                         str(Path(temp) / "source.%(ext)s"),
                         url,
                     ]
-                    transfer = subprocess.run(
+                    transfer = acquisition_run(
                         media_command, capture_output=True, text=True, timeout=145, check=False
                     )
                     media_bytes = sum(
@@ -298,6 +386,7 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
                     "duration": float(metadata.get("duration") or 0),
                     "title": str(metadata.get("title") or "")[:160],
                     "transport_strategy": strategy_name,
+                    "guest_token_evidence": token_evidence,
                     "attempts": attempts,
                 }
                 # The full original MUST be downloaded in the same Modal
@@ -320,7 +409,7 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
                 )
         # Exhaust the bounded strategy set for this exact video. Two clients
         # cannot establish that every configured cookie-free client is blocked.
-        if ip_challenges == len(ACQUISITION_STRATEGIES):
+        if ip_challenges == len(strategies):
             blocked_video_count += 1
             if blocked_video_count >= 2:
                 return {"status": "YOUTUBE_EGRESS_BOT_CHALLENGE", "attempts": attempts}
@@ -368,7 +457,6 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
     """Download actual allowlisted original bytes via the verified Modal network."""
     import hashlib
     import re
-    import subprocess
     import tempfile
     from pathlib import Path
 
@@ -388,7 +476,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
     folder.mkdir(parents=True, exist_ok=True)
     verified_strategy = str(selected.get("transport_strategy") or "")
     extractor_args = next(
-        (args for label, args in ACQUISITION_STRATEGIES if label == verified_strategy),
+        (args for label, args in acquisition_strategies() if label == verified_strategy),
         None,
     )
     if extractor_args is None:
@@ -398,7 +486,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
     with tempfile.TemporaryDirectory(prefix="acquire-", dir=folder) as scratch:
         scratch_dir = Path(scratch)
         command = [
-            "yt-dlp",
+            *acquisition_executable(),
             "--ignore-config",
             "--js-runtimes",
             "node",
@@ -428,7 +516,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
             url,
         ]
         try:
-            outcome = subprocess.run(command, capture_output=True, timeout=1330, check=False)
+            outcome = acquisition_run(command, capture_output=True, timeout=1330, check=False)
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("ORIGINAL_TRANSFER_TIMEOUT") from exc
         if outcome.returncode:
@@ -549,7 +637,22 @@ def main() -> None:
                 if kind == "region"
                 else inspect_original_youtube
             )
-            viewer_secret = os.getenv("TJR_YOUTUBE_COOKIES_B64", "").strip()
+            session_mode = os.getenv("TJR_YOUTUBE_SESSION_MODE", "bgutil_guest")
+            acquisition_strategies()  # Reject unknown modes before a remote invocation.
+            provider = provider.with_options(env={"TJR_YOUTUBE_SESSION_MODE": session_mode})
+            if session_mode == "browser_guest":
+                provider = inspect_browser_guest_youtube.with_options(
+                    cloud="gcp",
+                    memory=3072,
+                    env={"TJR_YOUTUBE_SESSION_MODE": session_mode},
+                )
+            viewer_secret = (
+                os.getenv("TJR_YOUTUBE_COOKIES_B64", "").strip()
+                if session_mode == "viewer_secret"
+                else ""
+            )
+            if session_mode == "viewer_secret" and not viewer_secret:
+                raise RuntimeError("VIEWER_SECRET_MODE_REQUIRES_YOUTUBE_SESSION_SECRET")
             if viewer_secret:
                 provider = provider.with_options(
                     secrets=[modal.Secret.from_dict({"TJR_YOUTUBE_COOKIES_B64": viewer_secret})]
@@ -567,6 +670,7 @@ def main() -> None:
                 region_attempts.append({"egress": label, "status": str(candidate.get("status"))})
             except Exception as exc:
                 region_attempts.append({"egress": label, "error": type(exc).__name__})
+        result["session_mode"] = os.getenv("TJR_YOUTUBE_SESSION_MODE", "bgutil_guest")
         result["authenticated_viewer_session_configured"] = bool(
             os.getenv("TJR_YOUTUBE_COOKIES_B64", "").strip()
         )
@@ -578,8 +682,8 @@ def main() -> None:
             status = str(result["status"])
             if status == "YOUTUBE_EGRESS_BOT_CHALLENGE":
                 raise RuntimeError(
-                    status + ": configure or refresh the TJR_YOUTUBE_COOKIES_B64 "
-                    "authenticated viewer-session secret; no source or cloud fallback was attempted"
+                    status + ": selected acquisition mode could not establish playback; "
+                    "no source or cloud fallback was attempted"
                 )
             raise RuntimeError(status + ": official YouTube HD acquisition failed")
         print("Verified original YouTube URL:", result["source_url"])

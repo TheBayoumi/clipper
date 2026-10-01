@@ -63,6 +63,12 @@ on:
         required: false
         type: string
         default: ""
+      youtube_session_mode:
+        description: "Modal session: automatic guest tokens or explicitly authorized account cookies."
+        required: false
+        type: choice
+        options: [bgutil_guest, browser_guest, viewer_secret]
+        default: bgutil_guest
       transcript_source_run_id:
         description: "Optional prior Modal run transcript; exact source bytes and complete coverage must match."
         required: false
@@ -394,7 +400,8 @@ jobs:
       TJR_RENDER_SAFETY_LIMIT: "20"
       TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
       TJR_TRANSCRIPT_SOURCE_RUN_ID: ${{ inputs.transcript_source_run_id }}
-      TJR_YOUTUBE_COOKIES_B64: ${{ secrets.TJR_YOUTUBE_COOKIES_B64 }}
+      TJR_YOUTUBE_SESSION_MODE: ${{ inputs.youtube_session_mode || 'bgutil_guest' }}
+      TJR_YOUTUBE_COOKIES_B64: ${{ inputs.youtube_session_mode == 'viewer_secret' && secrets.TJR_YOUTUBE_COOKIES_B64 || '' }}
     steps:
       - uses: actions/checkout@v5
         with:

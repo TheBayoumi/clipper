@@ -385,3 +385,41 @@ def test_late_cookie_free_strategy_is_not_suppressed_by_two_challenges(
     assert calls == 5
     assert result["status"] == "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED"
     assert result["transport_strategy"] == "bgutil_embedded_android_vr"
+
+
+def test_browser_guest_uses_isolated_provider_and_player_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe = _load_modal_probe(monkeypatch)
+    functions = probe.__globals__
+    monkeypatch.setenv("TJR_YOUTUBE_SESSION_MODE", "browser_guest")
+    monkeypatch.delenv("TJR_YOUTUBE_COOKIES_B64", raising=False)
+    monkeypatch.delenv("YOUTUBE_COOKIES_FILE", raising=False)
+    strategies = functions["acquisition_strategies"]()
+    assert len(strategies) == 1
+    command = functions["_yt_command"](
+        strategies[0][1], "https://www.youtube.com/watch?v=976-d0RlyfQ"
+    )
+    assert command[:3] == ["xvfb-run", "--auto-servernum", "/opt/youtube-wpc/bin/yt-dlp"]
+    assert "youtube:player_client=mweb;fetch_pot=always" in command
+    assert "--cookies" not in command
+    assert not any("bgutil" in arg for arg in command)
+    monkeypatch.setenv("TJR_YOUTUBE_COOKIES_B64", "secret-must-not-be-used")
+    with pytest.raises(RuntimeError, match="GUEST_ACQUISITION_REJECTS_ACCOUNT_COOKIES"):
+        probe([])
+
+
+def test_browser_timeout_kills_entire_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    probe = _load_modal_probe(monkeypatch)
+    monkeypatch.setenv("TJR_YOUTUBE_SESSION_MODE", "browser_guest")
+    process = MagicMock()
+    process.pid = 123456
+    process.communicate.side_effect = [subprocess.TimeoutExpired("browser", 10), (b"", b"")]
+    popen = MagicMock()
+    popen.__enter__.return_value = process
+    with patch("subprocess.Popen", return_value=popen), patch("os.killpg") as kill:
+        with pytest.raises(subprocess.TimeoutExpired):
+            probe.__globals__["acquisition_run"](["browser"], timeout=10)
+        kill.assert_called_once()
+        assert kill.call_args.args[0] == process.pid
+        assert process.communicate.call_count == 2
