@@ -648,6 +648,55 @@ def test_summary_audit_requires_matching_span_source_and_payoff(tmp_path):
         assert not reviewed_summary_evidence(tmp_path, hook, text, 0, 24, "a" * 64)
 
 
+def test_independent_v5_review_rejects_false_boundary_or_quote_provenance(tmp_path):
+    import json
+
+    from scripts.tjr_feedback_gate import reviewed_summary_evidence
+
+    units = ["Security stopped me outside.", "The owner finally let me inside."]
+    text = " ".join(units)
+    hook = "The owner rescued his guest from security"
+    boundary = dict(
+        promotion_unit_ids=[],
+        opening="standalone",
+        ending="closed",
+        payoff_location="selected",
+        setup_unit_id=0,
+        payoff_unit_id=1,
+    )
+    review = dict(
+        headline=hook,
+        opening_standalone=True,
+        payoff_complete=True,
+        ending_complete=True,
+        headline_supported=True,
+        headline_self_contained=True,
+        contains_promotion_or_intro=False,
+        setup_quote=units[0],
+        payoff_quote=units[1],
+        delivered_units=units,
+        boundary_audit=boundary,
+    )
+    saved = dict(
+        complete=True,
+        identity=dict(version="podcast_structured_editor_v5", source_sha256="a" * 64),
+        audit=dict(assessments=[dict(reviewed_start=0, reviewed_end=24, exchange_review=review)]),
+    )
+    path = tmp_path / "editorial-cache.json"
+    path.write_text(json.dumps(saved))
+    assert reviewed_summary_evidence(tmp_path, hook, text, 0, 24, "a" * 64)
+    for changes in (
+        {"payoff_location": "after"},
+        {"payoff_unit_id": 0},
+        {"payoff_unit_id": 99},
+        {"promotion_unit_ids": [0]},
+        {"ending": "unresolved"},
+    ):
+        review["boundary_audit"] = {**boundary, **changes}
+        path.write_text(json.dumps(saved))
+        assert not reviewed_summary_evidence(tmp_path, hook, text, 0, 24, "a" * 64)
+
+
 def test_centered_black_ass_plate_audit_rejects_offset_or_tinted_plate(tmp_path):
     import pytest
 

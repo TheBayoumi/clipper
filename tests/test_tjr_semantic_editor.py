@@ -582,64 +582,78 @@ def test_local_reviewer_separates_delivered_span_from_excluded_context():
 
     from scripts.tjr_semantic_editor import LocalContextualEditor
 
-    context = dict(
-        selected_units=["The owner let me into my own show."],
-        before=[],
-        after=["What happened next?"],
-    )
+    context = {
+        "selected_units": ["The owner let me into my own show."],
+        "before": [],
+        "after": ["What happened next?"],
+    }
 
     class Model:
+        def __init__(self):
+            self.requests = []
+            self.boundary = {
+                "reason": "The owner resolves access; the next question is unrelated.",
+                "promotion_unit_ids": [],
+                "opening": "standalone",
+                "ending": "closed",
+                "payoff_location": "selected",
+                "setup_unit_id": 0,
+                "payoff_unit_id": 0,
+            }
+            self.headline = {
+                "headline": "The owner rescued access to his own show",
+                "setup_quote": "The owner let me",
+                "payoff_quote": "into my own show.",
+                "reason": "Delivered evidence supports the resolution.",
+                "headline_supported": 1,
+                "headline_self_contained": 1,
+            }
+
         def create_chat_completion(self, **kwargs):
-            self.request = kwargs
+            self.requests.append(kwargs)
+            payload = json.loads(kwargs["messages"][1]["content"])
+            value = self.boundary if "excluded_after" in payload else self.headline
             return {
-                "choices": [
-                    {
-                        "finish_reason": "stop",
-                        "message": {
-                            "content": json.dumps(
-                                {
-                                    **{
-                                        key: int(value) if type(value) is bool else value
-                                        for key, value in _review(context).items()
-                                    },
-                                    "reason": "The selected speech resolves the stated setup.",
-                                    "central_setup": "Security prevented access",
-                                    "payoff_summary": "The owner resolved access",
-                                    "payoff_location": "selected",
-                                    "segment_purpose": "substantive_exchange",
-                                }
-                            )
-                        },
-                    }
-                ]
+                "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(value)}}]
             }
 
     editor = object.__new__(LocalContextualEditor)
     editor.model = Model()
-    assert editor.review(context)["payoff_complete"] is True
-    request = editor.model.request
-    assert json.loads(request["messages"][1]["content"]) == context
-    assert "ratings" not in request["messages"][1]["content"]
-    properties = request["response_format"]["schema"]["properties"]
-    assert properties["payoff_location"]["enum"] == ["selected", "after", "absent"]
-    assert "substantive_exchange" in properties["segment_purpose"]["enum"]
-    assert "payoff_complete" not in properties
-    assert "contains_promotion_or_intro" not in properties
-    assert request["seed"] == 0 and request["temperature"] == 0
-
-    original_call = editor.model.create_chat_completion
-
-    def excluded_payoff(**kwargs):
-        response = original_call(**kwargs)
-        value = json.loads(response["choices"][0]["message"]["content"])
-        value["payoff_location"] = "after"
-        response["choices"][0]["message"]["content"] = json.dumps(value)
-        return response
-
-    editor.model.create_chat_completion = excluded_payoff
     result = editor.review(context)
-    assert result["payoff_complete"] is False
-    assert result["contains_promotion_or_intro"] is False
+    assert result["payoff_complete"] is True
+    assert result["headline_supported"] is True
+    assert len(editor.model.requests) == 2
+    audit_request, headline_request = editor.model.requests
+    audit_input = json.loads(audit_request["messages"][1]["content"])
+    assert audit_input["excluded_after"] == context["after"]
+    assert audit_input["delivered"] == [{"id": 0, "text": context["selected_units"][0]}]
+    headline_input = json.loads(headline_request["messages"][1]["content"])
+    assert "excluded_after" not in headline_input
+    assert "What happened next?" not in json.dumps(headline_input)
+    assert all(r["seed"] == 0 and r["temperature"] == 0 for r in editor.model.requests)
+
+    # A copied excluded quote cannot qualify even if the model says it is supported.
+    editor.model.headline["payoff_quote"] = "What happened next?"
+    assert editor.review(context)["headline_supported"] is False
+
+    # A missing payoff or mixed intro stops before creative inference.
+    for changes in (
+        {"payoff_location": "after", "payoff_unit_id": -1},
+        {"promotion_unit_ids": [0], "ending": "continues_in_after"},
+    ):
+        editor.model.requests.clear()
+        editor.model.boundary.update(changes)
+        rejected = editor.review(context)
+        assert len(editor.model.requests) == 1
+        assert rejected["headline"] == ""
+        assert rejected["headline_supported"] is False
+
+    # Grammar output is also independently checked, including invalid provenance IDs.
+    import pytest
+
+    editor.model.boundary["promotion_unit_ids"] = [2]
+    with pytest.raises(RuntimeError, match="invalid boundary evidence"):
+        editor.review(context)
 
 
 def test_stage_cache_reuses_selector_when_only_reviewer_changes(tmp_path, monkeypatch):

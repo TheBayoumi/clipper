@@ -91,7 +91,11 @@ def reviewed_summary_evidence(
     if (
         saved.get("complete") is not True
         or identity.get("version")
-        not in {"podcast_structured_editor_v3", "podcast_structured_editor_v4"}
+        not in {
+            "podcast_structured_editor_v3",
+            "podcast_structured_editor_v4",
+            "podcast_structured_editor_v5",
+        }
         or identity.get("source_sha256") != source_hash
     ):
         return False
@@ -118,6 +122,32 @@ def reviewed_summary_evidence(
             or review.get("contains_promotion_or_intro") is not False
         ):
             continue
+        if identity["version"] == "podcast_structured_editor_v5":
+            boundary = review.get("boundary_audit")
+            units = review.get("delivered_units")
+            if (
+                not isinstance(boundary, dict)
+                or not isinstance(units, list)
+                or not units
+                or any(not isinstance(unit, str) or not unit.strip() for unit in units)
+                or " ".join(" ".join(units).split()) != " ".join(transcript.split())
+                or boundary.get("promotion_unit_ids") != []
+                or boundary.get("opening") != "standalone"
+                or boundary.get("ending") != "closed"
+                or boundary.get("payoff_location") != "selected"
+            ):
+                continue
+            if any(
+                type(boundary.get(index)) is not int
+                or not 0 <= boundary[index] < len(units)
+                or not isinstance(review.get(quote), str)
+                or review[quote].casefold() not in units[boundary[index]].casefold()
+                for index, quote in (
+                    ("setup_unit_id", "setup_quote"),
+                    ("payoff_unit_id", "payoff_quote"),
+                )
+            ):
+                continue
         quotes = [review.get(key) for key in ("setup_quote", "payoff_quote")]
         if all(
             isinstance(quote, str)
