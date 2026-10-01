@@ -59,7 +59,7 @@ on:
         type: boolean
         default: false
       source_video_id:
-        description: "Exact source ID for verified-mirror/replay use only; direct modes discover dynamically inside target_channel_id."
+        description: "Optional exact official source ID; leave blank to discover within target_channel_id."
         required: false
         type: string
         default: ""
@@ -127,11 +127,6 @@ jobs:
                   if target_channel_id not in approved_channels:
                       raise SystemExit(
                           'Direct production requires exactly one Reach-listed target_channel_id'
-                      )
-                  if video_id:
-                      raise SystemExit(
-                          'Direct production discovers the newest eligible non-live source; '
-                          'do not pin source_video_id'
                       )
               if mode == 'verified_mirror' and (
                   not video_id or os.getenv('TJR_SOURCE_VERIFIED', '').lower() != 'true'
