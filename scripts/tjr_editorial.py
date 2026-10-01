@@ -39,7 +39,8 @@ _ACTION = re.compile(
 _TOPIC = re.compile(
     r"\b(podcast|host|guest|story|sports?|bet(?:ting)?|game|career|money|business|"
     r"creator|stream(?:er|ing)?|youtube|social media|relationship|family|fight|"
-    r"challenge|reaction|opinion|career|deal|contract|team|player|coach)\b",
+    r"challenge|reaction|opinion|deal|contract|team|player|coach|trad(?:e|ing|ers?)|"
+    r"market|price|risk|futures|position|chart|profit|loss|entry|exits?)\b",
     re.IGNORECASE,
 )
 _OFF_TOPIC = re.compile(
