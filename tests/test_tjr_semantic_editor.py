@@ -593,7 +593,20 @@ def test_local_reviewer_separates_delivered_span_from_excluded_context():
             self.request = kwargs
             return {
                 "choices": [
-                    {"finish_reason": "stop", "message": {"content": json.dumps(_review(context))}}
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    **{
+                                        key: int(value) if type(value) is bool else value
+                                        for key, value in _review(context).items()
+                                    },
+                                    "reason": "The selected speech resolves the stated setup.",
+                                }
+                            )
+                        },
+                    }
                 ]
             }
 
@@ -604,6 +617,7 @@ def test_local_reviewer_separates_delivered_span_from_excluded_context():
     assert json.loads(request["messages"][1]["content"]) == context
     assert "ratings" not in request["messages"][1]["content"]
     assert request["response_format"]["schema"]["properties"]["contains_promotion_or_intro"] == {
-        "type": "boolean"
+        "type": "integer",
+        "enum": [0, 1],
     }
     assert request["seed"] == 0 and request["temperature"] == 0

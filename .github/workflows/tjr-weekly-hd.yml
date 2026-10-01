@@ -37,6 +37,11 @@ on:
       - "tests/**"
   workflow_dispatch:
     inputs:
+      editorial_preflight:
+        description: "Run real-model reviewer regression on cached transcript only; no source acquisition."
+        required: false
+        type: boolean
+        default: false
       budget_confirmed:
         description: "Submission eligibility only: I checked Whop acceptance and budget. Direct renders are review-only."
         required: false
@@ -83,7 +88,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: double-coverage-hd-${{ github.ref }}
+  group: double-coverage-hd-${{ github.ref }}-${{ github.event_name }}-${{ inputs.source_mode || 'validation' }}
   cancel-in-progress: false
 
 jobs:
@@ -387,6 +392,41 @@ jobs:
 
 
 
+  editorial_preflight:
+    name: Real-model editorial regression (no media acquisition)
+    needs: tests
+    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'validate_only' && inputs.editorial_preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.transcript_source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ inputs.transcript_source_run_id }}
+          path: reviewer-input
+      - name: Install pinned CPU reviewer
+        run: CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e . "llama-cpp-python==0.3.35"
+      - name: Assess complete exchange and known bad cuts
+        run: |
+          TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
+          test -n "$TRANSCRIPT"
+          python -m scripts.tjr_semantic_editor --reviewer-preflight-transcript "$TRANSCRIPT" --output reviewer-preflight.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reviewer-preflight-${{ github.run_id }}
+          path: reviewer-preflight.json
+          if-no-files-found: warn
+
   youtube_modal_egress:
     name: Modal YouTube original + editorial drafts (${{ inputs.target_channel_id }})
     needs: tests
@@ -575,7 +615,16 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: tjr-weekly-hd-*
           path: tjr-feedback-input
+      - name: Check whether delivered media needs FFmpeg
+        id: delivered_media
+        run: |
+          if find tjr-feedback-input -name '*.mp4' -print -quit | grep -q .; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install independent media verifier
+        if: steps.delivered_media.outputs.present == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg
@@ -586,6 +635,7 @@ jobs:
           TJR_FEEDBACK_SOURCE_RUN_ID: ${{ inputs.feedback_source_run_id }}
         run: |
           set -euo pipefail
+          export TJR_REQUIRE_DELIVERY=1
           EXPECTED_CHANNELS=1
           if [[ "$TJR_SOURCE_MODE" == "feedback_replay" ]]; then
             EXPECTED_CHANNELS=0

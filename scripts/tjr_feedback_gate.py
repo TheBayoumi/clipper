@@ -88,7 +88,8 @@ def reviewed_summary_evidence(
     identity = saved.get("identity", {})
     if (
         saved.get("complete") is not True
-        or identity.get("version") != "podcast_structured_editor_v3"
+        or identity.get("version")
+        not in {"podcast_structured_editor_v3", "podcast_structured_editor_v4"}
         or identity.get("source_sha256") != source_hash
     ):
         return False
@@ -711,6 +712,10 @@ def main() -> int:
         head_sha=os.getenv("GITHUB_SHA", ""),
         run_id=os.getenv("GITHUB_RUN_ID", ""),
     )
+    if os.getenv("TJR_REQUIRE_DELIVERY") == "1" and result["technically_verified_mp4_count"] == 0:
+        result["issues"].append("PRODUCTION_VERIFICATION_ZERO_DELIVERIES")
+        result["status"] = "BLOCKED"
+        result["next_actions"] = ["INVESTIGATE_EDITORIAL_REJECTIONS"]
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "feedback-report.json").write_text(
         json.dumps(result, indent=2) + "\n", encoding="utf-8"
@@ -727,7 +732,15 @@ def main() -> int:
     ]
     (args.output / "feedback-summary.md").write_text("\n\n".join(summary) + "\n", encoding="utf-8")
     print("\n".join(summary), flush=True)
-    return 1 if result["issues"] else 0
+    return (
+        1
+        if result["issues"]
+        or (
+            os.getenv("TJR_REQUIRE_DELIVERY") == "1"
+            and result["technically_verified_mp4_count"] == 0
+        )
+        else 0
+    )
 
 
 if __name__ == "__main__":
