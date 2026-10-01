@@ -690,3 +690,29 @@ def test_centered_black_ass_plate_audit_rejects_offset_or_tinted_plate(tmp_path)
                 reported_word_events=proof["spoken_word_highlight_events"],
                 expected_hook=hook,
             )
+
+
+def test_independent_decode_cache_reuses_only_identical_media(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from scripts import tjr_feedback_gate as gate
+
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"original delivery")
+    calls = []
+
+    def probe(path, *, full_decode=False):
+        calls.append(full_decode)
+        return {"duration": 20.0, "width": 1080, "height": 1920}
+
+    monkeypatch.setattr(gate, "probe_media", probe)
+    monkeypatch.setattr(
+        gate.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="ffmpeg pinned")
+    )
+    prior = tmp_path / "prior"
+    gate.cached_probe_media(clip, full_decode=True, cache_root=None, output=prior)
+    gate.cached_probe_media(clip, full_decode=True, cache_root=prior, output=tmp_path / "retry")
+    assert calls == [True]
+    clip.write_bytes(b"changed delivery")
+    gate.cached_probe_media(clip, full_decode=True, cache_root=prior, output=tmp_path / "changed")
+    assert calls == [True, True]

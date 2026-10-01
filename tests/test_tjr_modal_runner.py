@@ -309,3 +309,65 @@ def test_same_source_challenge_retry_is_bounded_to_three_apps(
         _acquire_original(set(), tmp_path)
     assert run.call_count == 3
     assert len(list(tmp_path.glob("acquisition-attempt-*.json"))) == 3
+
+
+def test_source_cache_skips_youtube_acquisition(tmp_path, monkeypatch):
+    import json
+
+    import scripts.tjr_modal_runner as runner
+
+    cached = tmp_path / "prior"
+    cached.mkdir()
+    staged = _staged("_kDrxucOx9g")
+    (cached / "staged-original.json").write_text(json.dumps(staged))
+    local = tmp_path / "verified.mp4"
+    local.write_bytes(b"verified source")
+    monkeypatch.setenv("TJR_SOURCE_CACHE_ROOT", str(cached))
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "_kDrxucOx9g")
+    monkeypatch.setenv("TJR_MODAL_CHANNEL_ID", staged["channel_id"])
+    monkeypatch.delenv("TJR_MODAL_USE_STAGED", raising=False)
+    with (
+        patch.object(runner, "_transfer_verified_original", return_value=local),
+        patch.object(runner.subprocess, "run") as run,
+    ):
+        result = runner._acquire_original(set(), tmp_path / "retry")
+    assert result["source_cache_reused"] is True
+    run.assert_not_called()
+
+
+def test_source_cache_does_not_reuse_a_different_video(tmp_path, monkeypatch):
+    import json
+
+    import scripts.tjr_modal_runner as runner
+
+    (tmp_path / "staged-original.json").write_text(json.dumps(_staged("_kDrxucOx9g")))
+    monkeypatch.setenv("TJR_SOURCE_CACHE_ROOT", str(tmp_path))
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "X7msxvyQd_U")
+    assert runner._restore_source_cache(tmp_path / "retry") is None
+
+
+def test_completed_pipeline_replay_skips_source_and_invalidates_changed_settings(
+    tmp_path, monkeypatch
+):
+    import json
+
+    import scripts.tjr_modal_runner as runner
+
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "_kDrxucOx9g")
+    monkeypatch.setenv("TJR_MODAL_CHANNEL_ID", "UCf1q6dhccWr6eQEcFFnJSbA")
+    prior = tmp_path / "previous-run"
+    prior.mkdir()
+    (prior / "tjr-youtube-qa-report.json").write_text(json.dumps({"selected_clip_count": 1}))
+    clip = prior / "clips" / "01-video.mp4"
+    clip.parent.mkdir()
+    clip.write_bytes(b"unchanged delivery")
+    runner._save_pipeline_completion(prior, "a" * 64)
+    monkeypatch.setenv("TJR_RENDER_CACHE_ROOT", str(prior))
+    with patch.object(runner, "_acquire_original") as acquire:
+        assert runner._restore_completed_pipeline(tmp_path / "retry")
+        acquire.assert_not_called()
+    monkeypatch.setenv("TJR_CAPTION_STYLE", "changed-style")
+    assert not runner._restore_completed_pipeline(tmp_path / "changed")
+    monkeypatch.delenv("TJR_CAPTION_STYLE", raising=False)
+    clip.write_bytes(b"corrupted delivery")
+    assert not runner._restore_completed_pipeline(tmp_path / "corrupted")

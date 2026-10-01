@@ -328,7 +328,7 @@ def _overlap(left: ClipCandidate, right: ClipCandidate) -> float:
     return intersection / union if union > 0 else 0.0
 
 
-def build_semantic_editorial_candidates(
+def _build_semantic_editorial_candidates(
     brief: CampaignBrief,
     video_id: str,
     segments: Sequence[TranscriptSegment],
@@ -544,6 +544,70 @@ def build_semantic_editorial_candidates(
         }
     )
     return candidates, audit
+
+
+def build_semantic_editorial_candidates(
+    brief: CampaignBrief,
+    video_id: str,
+    segments: Sequence[TranscriptSegment],
+    *,
+    embedder: EmbeddingFn | None = None,
+    source_sha256: str = "",
+    cache_path: Path | None = None,
+    reuse_path: Path | None = None,
+) -> tuple[list[ClipCandidate], dict[str, Any]]:
+    discovery_code = Path(__file__).read_text().split("\nEDITOR_MODEL_REPO =", 1)[0]
+    identity = hashlib.sha256(
+        json.dumps(
+            {
+                "source": source_sha256,
+                "video": video_id,
+                "transcript": [item.to_dict() for item in segments],
+                "bounds": [brief.min_clip_seconds, brief.max_clip_seconds],
+                "code": _canonical_ast(ast.parse(discovery_code)),
+                "headline_code": _stage_fingerprint(
+                    source_headline_candidates, creative_hook_from_text
+                ),
+                "model_configuration": SEMANTIC_MODEL,
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    if reuse_path is not None and reuse_path.is_file() and source_sha256:
+        saved = json.loads(reuse_path.read_text())
+        if saved.get("identity") == identity and saved.get("complete") is True:
+            candidates = [
+                ClipCandidate(
+                    item["video_id"],
+                    item["start"],
+                    item["end"],
+                    item["text"],
+                    item["score"],
+                    tuple(item["reasons"]),
+                )
+                for item in saved["candidates"]
+            ]
+            if cache_path is not None:
+                cache_path.write_text(json.dumps(saved, indent=2) + "\n")
+            print("PROPOSAL_CACHE_HIT: embedding discovery skipped", flush=True)
+            return candidates, {**saved["audit"], "cache_reused": True}
+    candidates, audit = _build_semantic_editorial_candidates(
+        brief, video_id, segments, embedder=embedder
+    )
+    if cache_path is not None:
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "identity": identity,
+                    "complete": True,
+                    "audit": audit,
+                    "candidates": [item.to_dict() for item in candidates],
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+    return candidates, {**audit, "cache_reused": False}
 
 
 EDITOR_MODEL_REPO = "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF"

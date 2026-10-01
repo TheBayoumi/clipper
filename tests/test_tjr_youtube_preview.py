@@ -766,3 +766,19 @@ def test_watermark_failure_stops_before_video_discovery(tmp_path: Path) -> None:
         pytest.raises(RuntimeError, match="asset quota exceeded"),
     ):
         render_youtube_previews(tmp_path, Path("campaigns/reach-double-coverage-dedicated.yaml"))
+
+
+def test_clip_cache_reuses_verified_files_and_rejects_corruption(tmp_path):
+    from scripts.tjr_youtube_preview import _restore_clip_render, _save_clip_render
+
+    out = tmp_path / "prior" / "01-video.mp4"
+    out.parent.mkdir()
+    for suffix in (".mp4", ".ass", ".srt", ".quality.json", "-preview.png", "-contact.png"):
+        out.with_name(out.stem + suffix).write_bytes(suffix.encode())
+    _save_clip_render(out, "identity")
+    restored = tmp_path / "retry" / "02-video.mp4"
+    assert _restore_clip_render(out.parent, restored, "identity")
+    assert restored.read_bytes() == b".mp4"
+    assert not _restore_clip_render(out.parent, restored, "changed-renderer")
+    out.write_bytes(b"corrupted")
+    assert not _restore_clip_render(out.parent, restored, "identity")

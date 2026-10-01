@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import subprocess
 import urllib.request
 from collections import Counter
@@ -835,6 +836,113 @@ def transcribe_source_chunks(
     return chunks, duration
 
 
+def _sha_file(path: Path) -> str:
+    with path.open("rb") as file:
+        return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def _clip_render_identity(
+    source_sha: str,
+    clip: ClipCandidate,
+    hook: str,
+    segments: list[TranscriptSegment],
+    watermark: Path,
+) -> str:
+    root = Path(__file__).resolve().parents[1]
+    code = {
+        name: _sha_file(root / name)
+        for name in (
+            "src/clipper/render.py",
+            "src/clipper/tiktok.py",
+            "src/clipper/source_fidelity.py",
+            "scripts/tjr_quality.py",
+        )
+    }
+    runtime = subprocess.run(
+        ["ffmpeg", "-version"], check=True, capture_output=True, text=True, timeout=15
+    ).stdout
+    fonts = {
+        str(path): _sha_file(path)
+        for path in Path("/usr/share/fonts/truetype/dejavu").glob("*.ttf")
+    }
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "version": "verified-per-clip-render-v1",
+                "source": source_sha,
+                "clip": clip.to_dict(),
+                "hook": hook,
+                "transcript": [item.to_dict() for item in segments],
+                "watermark": _sha_file(watermark),
+                "code": code,
+                "fonts": fonts,
+                "ffmpeg": runtime,
+                "settings": {
+                    name: os.getenv(name, "")
+                    for name in (
+                        "CLIPPER_RENDER_PRESET",
+                        "CLIPPER_RENDER_THREADS",
+                        "TJR_CAPTION_STYLE",
+                    )
+                },
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+
+
+def _restore_clip_render(cache_root: Path, out: Path, identity: str) -> bool:
+    for manifest in cache_root.rglob("*.cache.json"):
+        try:
+            saved = json.loads(manifest.read_text())
+        except (ValueError, OSError):
+            continue
+        if not isinstance(saved, dict):
+            continue
+        if saved.get("identity") != identity or saved.get("full_decode_passed") is not True:
+            continue
+        prefix = manifest.name.removesuffix(".cache.json")
+        files = saved.get("files", {})
+        required = {".mp4", ".ass", ".srt", ".quality.json", "-preview.png", "-contact.png"}
+        if not required.issubset(files):
+            continue
+        if any(
+            not suffix.startswith((".", "-")) or "/" in suffix or "\\" in suffix for suffix in files
+        ):
+            continue
+        if any(
+            not (manifest.parent / (prefix + suffix)).is_file()
+            or _sha_file(manifest.parent / (prefix + suffix)) != digest
+            for suffix, digest in files.items()
+        ):
+            continue
+        out.parent.mkdir(parents=True, exist_ok=True)
+        for suffix in files:
+            shutil.copyfile(manifest.parent / (prefix + suffix), out.with_name(out.stem + suffix))
+        LOGGER.info("RENDER_CACHE_HIT: %s unchanged bytes and complete decode proof", out.name)
+        return True
+    return False
+
+
+def _save_clip_render(out: Path, identity: str) -> None:
+    files = {
+        path.name.removeprefix(out.stem): _sha_file(path)
+        for path in out.parent.glob(out.stem + "*")
+        if path.is_file() and not path.name.endswith(".cache.json")
+    }
+    out.with_suffix(".cache.json").write_text(
+        json.dumps(
+            {
+                "identity": identity,
+                "full_decode_passed": True,
+                "files": files,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
 def render_youtube_previews(root: Path, brief_path: Path) -> Path:
     brief = load_brief(brief_path)
     if (
@@ -938,11 +1046,21 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         source_profile = probe_source_profile(source)
         step = "transcription"
         cache_root = os.getenv("TJR_TRANSCRIPT_CACHE_ROOT", "").strip()
-        source_chunks, analyzed_seconds = (
-            load_verified_transcript_cache(source, chosen_video.video_id, Path(cache_root), run_dir)
-            if cache_root
-            else transcribe_source_chunks(source, run_dir)
-        )
+        if cache_root:
+            try:
+                source_chunks, analyzed_seconds = load_verified_transcript_cache(
+                    source, chosen_video.video_id, Path(cache_root), run_dir
+                )
+            except (RuntimeError, OSError, ValueError):
+                if os.getenv("TJR_TRANSCRIPT_SOURCE_RUN_ID", "").strip():
+                    raise
+                LOGGER.info(
+                    "TRANSCRIPT_CACHE_MISS: incompatible automatic cache; transcribing source"
+                )
+                cache_root = ""
+                source_chunks, analyzed_seconds = transcribe_source_chunks(source, run_dir)
+        else:
+            source_chunks, analyzed_seconds = transcribe_source_chunks(source, run_dir)
         segments = [item for chunk in source_chunks for item in chunk]
         (run_dir / "source-analysis-coverage.json").write_text(
             json.dumps(
@@ -975,12 +1093,21 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             encoding="utf-8",
         )
         render_safety_limit = int(os.getenv("TJR_RENDER_SAFETY_LIMIT", str(MAX_RENDERABLE_CLIPS)))
+        with source.open("rb") as original:
+            source_digest = hashlib.file_digest(original, "sha256").hexdigest()
+        proposal_root = os.getenv("TJR_EDITORIAL_CACHE_ROOT", "").strip() or cache_root
+        proposal_caches = (
+            list(Path(proposal_root).rglob("proposal-cache.json")) if proposal_root else []
+        )
         ranked, semantic_audit = build_semantic_editorial_candidates(
             brief,
             chosen_video.video_id,
             segments,
+            source_sha256=source_digest,
+            cache_path=run_dir / "proposal-cache.json",
+            reuse_path=proposal_caches[0] if len(proposal_caches) == 1 else None,
         )
-        if cache_root:
+        if cache_root and os.getenv("TJR_COMPARE_PRIOR_AUDIO") == "1":
             step = "previous_audio_comparison"
             audit_cached_delivery_audio(source, Path(cache_root), run_dir)
         step = "structured_context_assessment"
@@ -1002,6 +1129,17 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             cache_path=run_dir / "editorial-cache.json",
             reuse_path=reuse[0] if reuse else None,
         )
+        pipeline_state = {
+            "source_sha256": source_digest,
+            "video_id": chosen_video.video_id,
+            "transcript": "cache_hit" if cache_root else "transcribed",
+            "discovery": "cache_hit" if semantic_audit.get("cache_reused") else "computed",
+            "selector_cache_hits": structured_audit.get("selector_cache_hits", 0),
+            "reviewer_cache_hits": structured_audit.get("reviewer_cache_hits", 0),
+            "editorial_cache_reused": structured_audit.get("cache_reused", False),
+            "renders": [],
+        }
+        (run_dir / "pipeline-state.json").write_text(json.dumps(pipeline_state, indent=2) + "\n")
         semantic_audit["discovery_architecture"] = semantic_audit["architecture"]
         semantic_audit["architecture"] = structured_audit["architecture"]
         semantic_audit["structured_context_assessment"] = structured_audit
@@ -1099,16 +1237,28 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             clip = pick.clip
             out = run_dir / "clips" / f"{number:02d}-double-coverage-{chosen_video.video_id}.mp4"
             layout = "default"
-            renderer.render(
-                source,
-                out,
-                clip,
-                segments,
-                watermark_path=watermark_path,
-                editorial_layout=layout,
-                tiktok_hook=pick.hook if caption_style in {"B", "B2"} else None,
-                source_profile=source_profile if caption_style in {"B", "B2"} else None,
+            render_identity = _clip_render_identity(
+                source_digest, clip, pick.hook, segments, watermark_path
             )
+            render_cache_root = os.getenv("TJR_RENDER_CACHE_ROOT", "").strip()
+            render_reused = bool(render_cache_root) and _restore_clip_render(
+                Path(render_cache_root), out, render_identity
+            )
+            if render_reused:
+                renderer.quality_results[str(out.resolve())] = json.loads(
+                    out.with_suffix(".quality.json").read_text()
+                )
+            else:
+                renderer.render(
+                    source,
+                    out,
+                    clip,
+                    segments,
+                    watermark_path=watermark_path,
+                    editorial_layout=layout,
+                    tiktok_hook=pick.hook if caption_style in {"B", "B2"} else None,
+                    source_profile=source_profile if caption_style in {"B", "B2"} else None,
+                )
             overlay_acceptance = (
                 audit_tiktok_ass(out.with_suffix(".ass"), clip_duration=clip.duration)
                 if caption_style == "B2"
@@ -1120,46 +1270,49 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 and abs(details["fps"] - float(Fraction(source_profile.fps))) > 0.04
             ):
                 raise RuntimeError("finished TikTok output changed native source frame rate")
-            check_full_decode(out)
+            if not render_reused:
+                check_full_decode(out)
             thumbnail = out.with_name(out.stem + "-preview.png")
-            invoke(
-                [
-                    "ffmpeg",
-                    "-nostdin",
-                    "-v",
-                    "error",
-                    "-y",
-                    "-ss",
-                    "3",
-                    "-i",
-                    str(out),
-                    "-frames:v",
-                    "1",
-                    str(thumbnail),
-                ],
-                timeout=90,
-            )
             sheet = out.with_name(out.stem + "-contact.png")
-            invoke(
-                [
-                    "ffmpeg",
-                    "-nostdin",
-                    "-v",
-                    "error",
-                    "-y",
-                    "-i",
-                    str(out),
-                    "-vf",
-                    "fps=1/6,scale=270:480,tile=4x1",
-                    "-frames:v",
-                    "1",
-                    str(sheet),
-                ],
-                timeout=110,
-            )
+            if not render_reused:
+                invoke(
+                    [
+                        "ffmpeg",
+                        "-nostdin",
+                        "-v",
+                        "error",
+                        "-y",
+                        "-ss",
+                        "3",
+                        "-i",
+                        str(out),
+                        "-frames:v",
+                        "1",
+                        str(thumbnail),
+                    ],
+                    timeout=90,
+                )
+                invoke(
+                    [
+                        "ffmpeg",
+                        "-nostdin",
+                        "-v",
+                        "error",
+                        "-y",
+                        "-i",
+                        str(out),
+                        "-vf",
+                        "fps=1/6,scale=270:480,tile=4x1",
+                        "-frames:v",
+                        "1",
+                        str(sheet),
+                    ],
+                    timeout=110,
+                )
             completed.append(
                 {
                     **details,
+                    "render_cache_reused": render_reused,
                     "hook_candidate": pick.hook,
                     "caption_style": caption_style if caption_style else "legacy_srt",
                     "creative_headline": pick.hook if caption_style == "B2" else None,
@@ -1207,6 +1360,13 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                     "source_end_seconds": clip.end,
                     "review_required": True,
                 }
+            )
+            _save_clip_render(out, render_identity)
+            pipeline_state["renders"].append(
+                {"file": out.name, "state": "cache_hit" if render_reused else "rendered"}
+            )
+            (run_dir / "pipeline-state.json").write_text(
+                json.dumps(pipeline_state, indent=2) + "\n"
             )
         with source.open("rb") as media:
             digest = hashlib.file_digest(media, "sha256").hexdigest()

@@ -411,10 +411,11 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     assert "inputs.source_mode == 'youtube_direct'" in browser["if"]
     assert "youtube_modal_egress" not in browser["if"]
     modal = jobs["youtube_modal_egress"]
-    assert "outputs" not in modal
+    assert set(modal["outputs"]) == {"cache_run_id"}
     assert "inputs.source_mode == 'modal_direct'" in modal["if"]
     modal_steps = {item.get("name"): item for item in modal["steps"] if item.get("name")}
-    assert "continue-on-error" not in modal_steps["Acquire newest eligible original from Modal"]
+    acquisition = modal_steps["Reuse completed pipeline or acquire missing verified source"]
+    assert "continue-on-error" not in acquisition
     assert "Classify Modal acquisition outcome" not in modal_steps
     assert "youtube_alternate_egress" not in jobs
     for name in ("youtube_preview", "youtube_modal_egress", "render"):

@@ -772,3 +772,31 @@ def test_stage_ast_identity_ignores_version_optional_fields_but_keeps_semantics(
     assert _canonical_ast(tree) != _canonical_ast(
         ast.parse("def select(value):\n    return value + 2\n")
     )
+
+
+def test_discovery_cache_skips_embedding_and_invalidates_source(tmp_path):
+    from unittest.mock import patch
+
+    from scripts import tjr_semantic_editor as editor
+
+    segments = [TranscriptSegment(0, 24, "The owner finally let the performer into his own show.")]
+    first = tmp_path / "discovery.json"
+    editor.build_semantic_editorial_candidates(
+        _brief(), "v", segments, embedder=_fake_embedder, source_sha256="a" * 64, cache_path=first
+    )
+    with patch.object(editor, "_build_semantic_editorial_candidates") as discover:
+        _, audit = editor.build_semantic_editorial_candidates(
+            _brief(),
+            "v",
+            segments,
+            source_sha256="a" * 64,
+            cache_path=tmp_path / "retry.json",
+            reuse_path=first,
+        )
+        assert audit["cache_reused"] is True
+        discover.assert_not_called()
+        discover.return_value = ([], {})
+        editor.build_semantic_editorial_candidates(
+            _brief(), "v", segments, source_sha256="b" * 64, reuse_path=first
+        )
+        discover.assert_called_once()

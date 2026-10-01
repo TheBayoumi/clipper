@@ -7,6 +7,8 @@ This module reads only inert artifact files and produces actionable, durable JSO
 from __future__ import annotations
 
 import argparse
+import hashlib
+import inspect
 import json
 import math
 import os
@@ -203,6 +205,44 @@ def probe_media(path: Path, *, full_decode: bool = False) -> dict[str, Any]:
         "video_duration": video_duration,
         "audio_duration": audio_duration,
     }
+
+
+def cached_probe_media(
+    path: Path, *, full_decode: bool, cache_root: Path | None, output: Path
+) -> dict[str, Any]:
+    """Reuse a completed independent decode only for identical bytes and verifier."""
+    with path.open("rb") as media:
+        digest = hashlib.file_digest(media, "sha256").hexdigest()
+    runtime = subprocess.run(
+        ["ffmpeg", "-version"], check=True, capture_output=True, text=True, timeout=15
+    ).stdout
+    key = hashlib.sha256(
+        json.dumps(
+            {
+                "media_sha256": digest,
+                "verifier": inspect.getsource(probe_media),
+                "runtime": runtime,
+                "full_decode": full_decode,
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    result = None
+    if cache_root is not None:
+        for manifest in cache_root.rglob("decode-cache.json"):
+            records = json.loads(manifest.read_text())
+            if key in records:
+                result = records[key]
+                print("AUDIT_DECODE_CACHE_HIT: " + path.name, flush=True)
+                break
+    if result is None:
+        result = probe_media(path, full_decode=full_decode)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = output / "decode-cache.json"
+    records = json.loads(manifest.read_text()) if manifest.is_file() else {}
+    records[key] = result
+    manifest.write_text(json.dumps(records, indent=2) + "\n")
+    return result
 
 
 def verify_ass_sidecar(
@@ -703,7 +743,13 @@ def main() -> int:
     args = parser.parse_args()
 
     def inspect(path: Path) -> dict[str, Any]:
-        return probe_media(path, full_decode=args.full_decode)
+        cache_root = os.getenv("TJR_AUDIT_CACHE_ROOT", "").strip()
+        return cached_probe_media(
+            path,
+            full_decode=args.full_decode,
+            cache_root=Path(cache_root) if cache_root else None,
+            output=args.output,
+        )
 
     result = review_run(
         args.artifact_root,

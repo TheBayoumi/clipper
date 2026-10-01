@@ -435,10 +435,13 @@ jobs:
       inputs.source_mode == 'modal_direct'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    outputs:
+      cache_run_id: ${{ steps.editorial_cache.outputs.run_id }}
     permissions:
       contents: read
       actions: read
     env:
+      TJR_PERSIST_SOURCE: "1"
       TJR_MODAL_CHANNEL_ID: ${{ inputs.target_channel_id }}
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -467,25 +470,7 @@ jobs:
         env:
           CLIPPER_APPROVED_ASSET_BOOTSTRAP_URL: ${{ secrets.CLIPPER_APPROVED_ASSET_BOOTSTRAP_URL }}
         run: python -m scripts.tjr_modal_runner --prepare-watermark
-      - name: Acquire newest eligible original from Modal
-        env:
-          TJR_MODAL_STAGE_ORIGINAL: "1"
-        run: |
-          set -euo pipefail
-          rm -f tjr-modal-probe/staged-original.json
-          python -m scripts.tjr_modal_runner --acquire-original
-      - name: Download complete transcript from an explicitly selected prior run
-        if: inputs.transcript_source_run_id != ''
-        uses: actions/download-artifact@v4
-        with:
-          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ inputs.transcript_source_run_id }}
-          path: tjr-transcript-cache
-          run-id: ${{ inputs.transcript_source_run_id }}
-          github-token: ${{ github.token }}
-      - name: Enable exact-source transcript reuse
-        if: inputs.transcript_source_run_id != ''
-        run: echo "TJR_TRANSCRIPT_CACHE_ROOT=$PWD/tjr-transcript-cache" >> "$GITHUB_ENV"
-      - name: Resolve reusable editorial artifact
+      - name: Plan reusable source, transcript, editorial and render stages
         id: editorial_cache
         uses: actions/github-script@v7
         env:
@@ -517,8 +502,34 @@ jobs:
           github-token: ${{ github.token }}
       - name: Enable verified editorial checkpoint reuse
         if: steps.editorial_cache.outputs.run_id != ''
-        run: echo "TJR_EDITORIAL_CACHE_ROOT=$PWD/tjr-editorial-cache" >> "$GITHUB_ENV"
-      - name: Render staged original through shared semantic editorial pipeline
+        run: |
+          echo "TJR_EDITORIAL_CACHE_ROOT=$PWD/tjr-editorial-cache" >> "$GITHUB_ENV"
+          echo "TJR_SOURCE_CACHE_ROOT=$PWD/tjr-editorial-cache" >> "$GITHUB_ENV"
+          echo "TJR_RENDER_CACHE_ROOT=$PWD/tjr-editorial-cache" >> "$GITHUB_ENV"
+          if [[ -z "${{ inputs.transcript_source_run_id }}" ]]; then
+            echo "TJR_TRANSCRIPT_CACHE_ROOT=$PWD/tjr-editorial-cache" >> "$GITHUB_ENV"
+          fi
+      - name: Reuse completed pipeline or acquire missing verified source
+        id: source_plan
+        env:
+          TJR_MODAL_STAGE_ORIGINAL: "1"
+        run: |
+          set -euo pipefail
+          rm -f tjr-modal-probe/staged-original.json
+          python -m scripts.tjr_modal_runner --acquire-original
+      - name: Download complete transcript from an explicitly selected prior run
+        if: inputs.transcript_source_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ inputs.transcript_source_run_id }}
+          path: tjr-transcript-cache
+          run-id: ${{ inputs.transcript_source_run_id }}
+          github-token: ${{ github.token }}
+      - name: Enable exact-source transcript reuse
+        if: inputs.transcript_source_run_id != ''
+        run: echo "TJR_TRANSCRIPT_CACHE_ROOT=$PWD/tjr-transcript-cache" >> "$GITHUB_ENV"
+      - name: Run only missing or invalidated editorial and rendering stages
+        if: steps.source_plan.outputs.pipeline_reused != 'true'
         env:
           TJR_MODAL_USE_STAGED: "1"
         run: |
@@ -535,6 +546,7 @@ jobs:
           path: |
             tjr-modal-probe/verified-original-egress.json
             tjr-modal-probe/staged-original.json
+            tjr-modal-probe/pipeline-source-state.json
             tjr-modal-probe/approved-watermark.json
             tjr-modal-probe/acquisition-attempt-*.json
             tjr-modal-artifacts/**/source-roundtrip.json
@@ -542,6 +554,7 @@ jobs:
             tjr-modal-artifacts/**/editorial-failure.json
             tjr-modal-artifacts/**/remote-cleanup-error.json
             tjr-modal-artifacts/**/clips/*.mp4
+            tjr-modal-artifacts/**/clips/*.cache.json
             tjr-modal-artifacts/**/clips/*.srt
             tjr-modal-artifacts/**/clips/*.ass
             tjr-modal-artifacts/**/clips/*.quality.json
@@ -550,6 +563,10 @@ jobs:
             tjr-modal-artifacts/**/clips/*-contact.png
             tjr-modal-artifacts/**/editorial-candidate-audit.json
             tjr-modal-artifacts/**/editorial-cache.json
+            tjr-modal-artifacts/**/proposal-cache.json
+            tjr-modal-artifacts/**/pipeline-state.json
+            tjr-modal-artifacts/**/pipeline-completion.json
+            tjr-modal-artifacts/**/*.json
             tjr-modal-artifacts/**/prior-audio-comparison.json
             tjr-modal-artifacts/**/source-analysis-coverage.json
             tjr-modal-artifacts/**/transcript-cache-provenance.json
@@ -637,6 +654,15 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: tjr-weekly-hd-*
           path: tjr-feedback-input
+      - name: Restore prior independent decode proofs
+        if: needs.youtube_modal_egress.outputs.cache_run_id != ''
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          run-id: ${{ needs.youtube_modal_egress.outputs.cache_run_id }}
+          github-token: ${{ github.token }}
+          pattern: tjr-feedback-evidence-*
+          path: tjr-prior-audit
       - name: Check whether delivered media needs FFmpeg
         id: delivered_media
         run: |
@@ -655,6 +681,7 @@ jobs:
           TJR_SOURCE_MODE: ${{ inputs.source_mode }}
           TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
           TJR_FEEDBACK_SOURCE_RUN_ID: ${{ inputs.feedback_source_run_id }}
+          TJR_AUDIT_CACHE_ROOT: tjr-prior-audit
         run: |
           set -euo pipefail
           export TJR_REQUIRE_DELIVERY=1
