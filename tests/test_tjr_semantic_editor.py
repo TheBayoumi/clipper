@@ -212,6 +212,14 @@ def test_model_probe_closes_thinking_and_preserves_production_init(tmp_path, mon
     assert editor.reviewer_model_probe(warm, tmp_path / "changed-probe.json") == 1
     assert len(inferences) == 6
 
+    expanded = json.loads((tmp_path / "changed-probe.json").read_text())
+    expanded["baseline"].append({**expanded["baseline"][0], "fixture": "extra"})
+    extra = tmp_path / "expanded.json"
+    extra.write_text(json.dumps(expanded))
+    assert editor.reviewer_model_probe(extra, tmp_path / "expanded-result.json") == 1
+    assert len(inferences) == 6
+    assert json.loads((tmp_path / "expanded-result.json").read_text())["request_cache_hits"] == 4
+
 
 def test_source_quote_provenance_crosses_units_without_changing_words_or_numbers():
     from scripts import tjr_semantic_editor as editor
@@ -268,9 +276,10 @@ def test_focused_review_separates_speech_purpose_and_excluded_payoff():
         },
         {
             "reason": "The next topic is not needed for the delivered resolution.",
-            "following_speech_needed": 0,
-            "unfinished_clip_quote": "",
-            "missing_point_quote": "",
+            "final_point": "Views drive the podcast",
+            "final_point_quote": "drive my podcast instead",
+            "continuation_quote": "Then another topic starts here",
+            "relation": "new_topic",
         },
         {
             "reason": "The delivered exchange contrasts views with income.",
@@ -300,11 +309,19 @@ def test_focused_review_separates_speech_purpose_and_excluded_payoff():
     with pytest.raises(RuntimeError, match="not in delivered speech"):
         editor._focused_span_review(FakeEditor(), context)
     replies[1]["resolution_quote"] = "drive my podcast instead"
-    replies[2]["following_speech_needed"] = 1
-    replies[2]["unfinished_clip_quote"] = "drive my podcast instead"
-    replies[2]["missing_point_quote"] = "invented missing fact without source"
+    replies[2]["relation"] = "missing_contrast"
     calls.clear()
-    with pytest.raises(RuntimeError, match="grounded missing-point evidence"):
+    rejected = editor._focused_span_review(FakeEditor(), context)
+    assert rejected["exchange_has_payoff"] is True
+    assert rejected["ending_complete"] is False
+    assert rejected["payoff_complete"] is False
+    assert rejected["headline"] == ""
+    assert len(calls) == 3
+    assert "delivered_resolution_quote" not in calls[2]
+    assert "delivered_setup_quote" not in calls[2]
+    replies[2]["continuation_quote"] = "invented missing fact without source"
+    calls.clear()
+    with pytest.raises(RuntimeError, match="grounded boundary evidence"):
         editor._focused_span_review(FakeEditor(), context)
 
 
@@ -1215,3 +1232,31 @@ def test_long_source_evidence_is_distinct_from_short_quote_format():
     assert span is not None
     assert span["text"] == source.rstrip(".")
     assert _source_quote_span(source.replace("60", "600"), [source], max_words=64) is None
+
+
+def test_bounded_evidence_preserves_full_source_and_shared_contract():
+    from scripts.tjr_semantic_editor import (
+        _evidence_excerpt,
+        _review_evidence_valid,
+        _source_quote_span,
+    )
+
+    source = (
+        "Well, bro, if you had a podcast getting 60 million views, "
+        "you'd be making millions of dollars."
+    )
+    span = _source_quote_span(source, [source], max_words=64)
+    assert span is not None
+    excerpt = _evidence_excerpt(span["text"])
+    assert excerpt in source and len(excerpt.split()) <= 12
+    assert span["text"] == source.rstrip(".")
+    review = {
+        "headline": "A large audience can support a podcast",
+        "setup_quote": excerpt,
+        "payoff_quote": "making millions of dollars",
+    }
+    assert _review_evidence_valid(review, [source])
+    assert not _review_evidence_valid({**review, "setup_quote": source}, [source])
+    assert not _review_evidence_valid(
+        {**review, "payoff_quote": "making billions of dollars"}, [source]
+    )

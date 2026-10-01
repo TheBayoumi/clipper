@@ -1571,6 +1571,27 @@ def _source_quote_span(
     return None
 
 
+def _evidence_excerpt(text: str) -> str:
+    """Format bounded evidence only after full source-span verification."""
+    words = list(_WORD.finditer(text))
+    return text[: words[11].end()] if len(words) > 12 else text
+
+
+def _review_evidence_valid(review: dict[str, Any], selected: list[str]) -> bool:
+    """Same accepted-output evidence contract for production preflight and probe."""
+    headline = review.get("headline")
+    return (
+        isinstance(headline, str)
+        and 4 <= len(_WORD.findall(headline)) <= 14
+        and all(
+            isinstance(review.get(key), str)
+            and 3 <= len(_WORD.findall(review[key])) <= 12
+            and _source_quote_span(review[key], selected) is not None
+            for key in ("setup_quote", "payoff_quote")
+        )
+    )
+
+
 def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any]) -> dict[str, Any]:
     """Diagnostic alternative: delivered-only purpose/story plus a narrow continuation check."""
     selected = context["selected_units"]
@@ -1643,51 +1664,67 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
         quote_ids[key] = span["first_unit"] if span else -1
     ending = story["last_thought_finished"] == 1
     continuation = None
-    if (
-        ending
-        and quote_spans["setup_quote"]
-        and quote_spans["resolution_quote"]
-        and context.get("after")
-    ):
+    if context.get("after"):
+        # Judge the boundary from source speech, without the previous model's
+        # proposed setup/resolution or completion verdict anchoring this decision.
         continuation = editor._review_completion(
-            "Check whether source_continuation_not_delivered supplies a MISSING POINT of "
-            "the actual final delivered thought or completes its unfinished clause/quotation. "
-            "Ignore whether the continuation itself finishes. A new related observation or "
-            "list after an already delivered resolution is not needed by the clip. "
-            "following_speech_needed is 1 only for a missing point or unfinished thought, "
-            "else 0. If 1 copy 3-12 exact words from actual_final_delivered_text into "
-            "unfinished_clip_quote and 3-12 exact continuation words into missing_point_quote. "
-            "If 0 leave both quotes empty. reason at most 15 words. Return output_schema JSON.",
+            "Assess the CUT at the end of actual_final_delivered_text. Read the full "
+            "delivered transcript for context, then identify the final substantive point. "
+            "An earlier answered question does not resolve a newly introduced point. "
+            "Classify the relation of source_continuation_not_delivered to that final point: "
+            "missing_answer, missing_contrast, unfinished_clause, optional_elaboration, "
+            "new_topic, or uncertain. A grammatically complete statement can still be "
+            "the setup of a contrast whose meaning changes in the following speech. "
+            "Conversely, a related example after an already delivered point is optional. "
+            "Do not judge whether the continuation itself ends cleanly. "
+            "Copy 3-12 exact words from the final delivered text and from the continuation "
+            "as final_point_quote and continuation_quote. State final_point in at most "
+            "15 words and explain their relationship in reason (at most 25 words). "
+            "Return JSON matching output_schema.",
             {
+                "delivered_transcript": text,
                 "source_continuation_not_delivered": " ".join(context["after"]),
-                "delivered_setup_quote": quote_spans["setup_quote"]["text"],
-                "delivered_resolution_quote": quote_spans["resolution_quote"]["text"],
                 "actual_final_delivered_text": " ".join(selected[-3:]),
             },
             {
+                "final_point": {"type": "string"},
+                "final_point_quote": {"type": "string"},
+                "continuation_quote": {"type": "string"},
+                "relation": {
+                    "type": "string",
+                    "enum": [
+                        "missing_answer",
+                        "missing_contrast",
+                        "unfinished_clause",
+                        "optional_elaboration",
+                        "new_topic",
+                        "uncertain",
+                    ],
+                },
                 "reason": {"type": "string"},
-                "following_speech_needed": {"type": "integer", "enum": [0, 1]},
-                "unfinished_clip_quote": {"type": "string"},
-                "missing_point_quote": {"type": "string"},
             },
-            96,
+            192,
         )
-        needed = continuation.get("following_speech_needed")
-        if type(needed) is not int or needed not in (0, 1):
-            raise RuntimeError("continuation review returned an invalid verdict")
-        if needed:
-            for key, region in (
-                ("unfinished_clip_quote", selected[-3:]),
-                ("missing_point_quote", context["after"]),
+        relation = continuation.get("relation")
+        if relation not in {
+            "missing_answer",
+            "missing_contrast",
+            "unfinished_clause",
+            "optional_elaboration",
+            "new_topic",
+            "uncertain",
+        }:
+            raise RuntimeError("continuation review returned an invalid relation")
+        for key, region in (
+            ("final_point_quote", selected[-3:]),
+            ("continuation_quote", context["after"]),
+        ):
+            if (
+                not isinstance(continuation.get(key), str)
+                or _source_quote_span(continuation[key], region, max_words=64) is None
             ):
-                if (
-                    not isinstance(continuation.get(key), str)
-                    or _source_quote_span(continuation[key], region) is None
-                ):
-                    raise RuntimeError(
-                        "continuation review omitted grounded missing-point evidence"
-                    )
-            ending = False
+                raise RuntimeError("continuation review omitted grounded boundary evidence")
+        ending = ending and relation in {"optional_elaboration", "new_topic"}
     payoff = quote_spans["resolution_quote"] is not None and ending
     setup_span = quote_spans["setup_quote"]
     payoff_span = quote_spans["resolution_quote"]
@@ -1711,11 +1748,12 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
         },
         "opening_standalone": story["opening_independent"] == 1,
         "ending_complete": ending,
+        "exchange_has_payoff": quote_spans["resolution_quote"] is not None,
         "payoff_complete": payoff,
         "contains_promotion_or_intro": bool(promotion_ids),
         "headline": "",
-        "setup_quote": setup_span["text"] if setup_span else "",
-        "payoff_quote": payoff_span["text"] if payoff_span else "",
+        "setup_quote": _evidence_excerpt(setup_span["text"]) if setup_span else "",
+        "payoff_quote": _evidence_excerpt(payoff_span["text"]) if payoff_span else "",
         "headline_supported": False,
         "headline_self_contained": False,
         "reason": story["reason"],
@@ -1752,7 +1790,9 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
     return result
 
 
-def reviewer_model_probe(baseline_path: Path, output: Path) -> int:
+def reviewer_model_probe(
+    baseline_path: Path, output: Path, transcript_path: Path | None = None
+) -> int:
     """Evaluate a pinned replacement on saved cuts without changing production models."""
     from importlib.metadata import PackageNotFoundError, version
 
@@ -1766,10 +1806,61 @@ def reviewer_model_probe(baseline_path: Path, output: Path) -> int:
     baseline = saved.get("baseline") if isinstance(saved, dict) else saved
     if (
         not isinstance(baseline, list)
-        or len(baseline) != 3
+        or len(baseline) < 3
         or any(not item.get("review_context", {}).get("selected_units") for item in baseline)
     ):
-        raise ValueError("model probe requires three saved source-cut fixtures")
+        raise ValueError("model probe requires at least three saved source-cut fixtures")
+    if transcript_path is not None:
+        segments = json.loads(transcript_path.read_text())
+        units = _thought_units(
+            [
+                TranscriptSegment(float(item["start"]), float(item["end"]), str(item["text"]))
+                for item in segments
+            ]
+        )
+        # Fixed diagnostic examples from the preserved source, never selection gates.
+        for name, start, end, accepted, flags in (
+            (
+                "fighter_meeting_complete",
+                1501.32,
+                1534.98,
+                True,
+                {"ending_complete": True, "contains_promotion_or_intro": False},
+            ),
+            (
+                "fighter_meeting_setup_only",
+                1501.32,
+                1514.88,
+                False,
+                {"payoff_complete": False, "contains_promotion_or_intro": False},
+            ),
+            (
+                "separate_host_ad_read",
+                1131.61,
+                1140.53,
+                False,
+                {"contains_promotion_or_intro": True},
+            ),
+        ):
+            if any(item["fixture"] == name for item in baseline):
+                continue
+            ids = [
+                i
+                for i, unit in enumerate(units)
+                if unit.start >= start - 0.01 and unit.end <= end + 0.01
+            ]
+            if not ids:
+                raise ValueError(f"missing diagnostic source units: {name}")
+            baseline.append(
+                {
+                    "fixture": name,
+                    "start": start,
+                    "end": end,
+                    "review_context": _review_context(units, ids[0], ids[-1]),
+                    "expected_accept": accepted,
+                    "expected_flags": flags,
+                }
+            )
     repo = "bartowski/Qwen_Qwen3.5-4B-GGUF"
     revision = "4168f45a16a1290d65a4ec0fa312ae917a4c15d6"
     filename = "Qwen_Qwen3.5-4B-Q4_K_M.gguf"
@@ -1906,14 +1997,26 @@ def reviewer_model_probe(baseline_path: Path, output: Path) -> int:
                     actual_accept=accepted,
                     expected_accept=item["expected_accept"],
                     flags_match=flags_match,
-                    semantic_pass=accepted == item["expected_accept"] and flags_match,
+                    evidence_valid=_review_evidence_valid(
+                        review, item["review_context"]["selected_units"]
+                    ),
+                    semantic_pass=(
+                        accepted == item["expected_accept"]
+                        and flags_match
+                        and (
+                            not accepted
+                            or _review_evidence_valid(
+                                review, item["review_context"]["selected_units"]
+                            )
+                        )
+                    ),
                 )
             except Exception as error:
                 record.update(error=f"{type(error).__name__}: {error}", semantic_pass=False)
             record["seconds"] = round(time.monotonic() - began, 3)
             record["raw_calls"] = list(raw_calls)
             report["cases"].append(record)
-            report["semantic_pass"] = len(report["cases"]) == 3 and all(
+            report["semantic_pass"] = len(report["cases"]) == len(baseline) and all(
                 case["semantic_pass"] for case in report["cases"]
             )
             output.write_text(json.dumps(report, indent=2) + "\n")
@@ -1985,11 +2088,7 @@ def reviewer_preflight(transcript_path: Path, output: Path) -> int:
                 and not review["contains_promotion_or_intro"]
             )
             text = " ".join(selected)
-            evidence_valid = 4 <= len(_WORD.findall(review["headline"])) <= 14 and all(
-                3 <= len(_WORD.findall(review[key])) <= 12
-                and review[key].casefold() in text.casefold()
-                for key in ("setup_quote", "payoff_quote")
-            )
+            evidence_valid = _review_evidence_valid(review, selected)
             records.append(
                 {
                     "fixture": name,
@@ -2032,7 +2131,11 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.reviewer_model_probe_baseline:
-        raise SystemExit(reviewer_model_probe(args.reviewer_model_probe_baseline, args.output))
+        raise SystemExit(
+            reviewer_model_probe(
+                args.reviewer_model_probe_baseline, args.output, args.reviewer_preflight_transcript
+            )
+        )
     if args.reviewer_diagnostics_baseline:
         raise SystemExit(
             reviewer_inference_diagnostics(args.reviewer_diagnostics_baseline, args.output)

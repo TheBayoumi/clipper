@@ -443,7 +443,9 @@ jobs:
             BASELINE=$(find reviewer-baseline -name reviewer-preflight.json -print -quit)
             test -n "$BASELINE"
             if [ '${{ inputs.reviewer_model_probe }}' = 'true' ]; then
-              python -m scripts.tjr_semantic_editor --reviewer-model-probe-baseline "$BASELINE" --output reviewer-preflight.json
+              TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
+              test -n "$TRANSCRIPT"
+              python -m scripts.tjr_semantic_editor --reviewer-model-probe-baseline "$BASELINE" --reviewer-preflight-transcript "$TRANSCRIPT" --output reviewer-preflight.json
               exit $?
             fi
             python -m scripts.tjr_semantic_editor --reviewer-diagnostics-baseline "$BASELINE" --output reviewer-preflight.json
