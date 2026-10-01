@@ -46,7 +46,7 @@ def test_ip_challenge_skips_only_one_video_not_entire_region(
 ) -> None:
     inspect = _load_modal_probe(monkeypatch)
     first, second = "lxu_J1Ec1XI", "X7msxvyQd_U"
-    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     urls_seen: list[str] = []
 
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -62,7 +62,7 @@ def test_ip_challenge_skips_only_one_video_not_entire_region(
                 "channel_id": channel,
                 "duration": 3400,
                 "live_status": "not_live",
-                "title": "LIVE TRADING",
+                "title": "DOUBLE COVERAGE PODCAST",
                 "formats": [{"width": 1920, "height": 1080, "vcodec": "avc1"}],
             }
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps(metadata), stderr="")
@@ -92,7 +92,7 @@ def test_all_blocked_videos_still_report_challenge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     inspect = _load_modal_probe(monkeypatch)
-    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     videos = [
         {"video_id": video, "channel_id": channel} for video in ("lxu_J1Ec1XI", "X7msxvyQd_U")
     ]
@@ -116,7 +116,7 @@ def test_region_aborts_after_two_distinct_videos_are_ip_blocked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     inspect = _load_modal_probe(monkeypatch)
-    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     videos = [
         {"video_id": vid, "channel_id": channel}
         for vid in ("lxu_J1Ec1XI", "X7msxvyQd_U", "Xa-4kOvpGok")
@@ -142,7 +142,7 @@ def test_plain_client_succeeds_after_provider_bot_challenge(
 ) -> None:
     inspect = _load_modal_probe(monkeypatch)
     video_id = "X7msxvyQd_U"
-    channel = "UCZen39LQJPx04GjPj7FOMcw"
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     client_attempts: list[str] = []
 
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -160,7 +160,7 @@ def test_plain_client_succeeds_after_provider_bot_challenge(
                 "channel_id": channel,
                 "duration": 3600,
                 "live_status": "was_live",
-                "title": "LIVE TRADING",
+                "title": "DOUBLE COVERAGE PODCAST",
                 "formats": [{"width": 1920, "height": 1080, "vcodec": "avc1"}],
             }
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps(metadata), stderr="")
