@@ -621,9 +621,18 @@ EXCHANGE_REVIEW_PROMPT = (
     "Be skeptical of the selector: punctuation and high ratings do not prove a complete thought. "
     "opening_standalone requires an identifiable subject and situation inside the selected clip; "
     "reject a response to an excluded question, unexplained he/him/it/that, or a clipped clause. "
+    "Evaluate promotion independently: a host delivering an advertisement or introducing the show "
+    "is promotional; a guest explaining how their profession earns money is ordinary conversation, "
+    "even when advertisers are mentioned. Never mark promotion merely to reject a weak story. "
+    "First identify what specific question, tension or contrast this exchange sets up. "
     "payoff_complete requires the answer, consequence, insight or punchline actually inside "
     "selected_units. Reject a story that merely introduces an event or promises an explanation "
-    "continued in after. ending_complete requires a complete final spoken thought, not just "
+    "continued in after. A popularity metric, future ambition, event setup or repeated premise "
+    "is not by itself a payoff to a question about consequences or earnings. A grammatically "
+    "complete sentence can still stop before the central contrast is explained. The payoff_quote "
+    "must demonstrate the resolution, not just a statistic that establishes the situation. "
+    "If the selected exchange never resolves its central setup, set payoff_complete=0. "
+    "ending_complete requires a complete final spoken thought, not just "
     "ASR punctuation; reject incomplete subordinate clauses and a new unresolved topic. "
     "contains_promotion_or_intro is true for sponsor reads, show introductions, teaser montages "
     "or promotional boilerplate mixed into the clip; discussion of business or sponsors as a "
@@ -1278,14 +1287,32 @@ def reviewer_preflight(transcript_path: Path, output: Path) -> int:
     segments = json.loads(transcript_path.read_text())
     # Regression fixtures, never production selection or campaign eligibility rules.
     fixtures = [
-        ("complete_business_exchange", 2308.64, 2328.88, True),
-        ("payoff_excluded", 2281.2, 2312.44, False),
-        ("intro_and_unfinished_thought", 8.28, 52.16, False),
+        (
+            "complete_business_exchange",
+            2308.64,
+            2328.88,
+            True,
+            {"payoff_complete": True, "contains_promotion_or_intro": False},
+        ),
+        (
+            "payoff_excluded",
+            2281.2,
+            2312.44,
+            False,
+            {"payoff_complete": False, "contains_promotion_or_intro": False},
+        ),
+        (
+            "intro_and_unfinished_thought",
+            8.28,
+            52.16,
+            False,
+            {"ending_complete": False, "contains_promotion_or_intro": True},
+        ),
     ]
     editor = LocalContextualEditor()
     records = []
     try:
-        for name, start, end, expected in fixtures:
+        for name, start, end, expected, expected_flags in fixtures:
             selected = [
                 item["text"]
                 for item in segments
@@ -1322,6 +1349,10 @@ def reviewer_preflight(transcript_path: Path, output: Path) -> int:
                     "review": review,
                     "expected_accept": expected,
                     "actual_accept": passed,
+                    "expected_flags": expected_flags,
+                    "flags_match": all(
+                        review[key] is value for key, value in expected_flags.items()
+                    ),
                     "evidence_valid": evidence_valid,
                     "seconds": round(time.monotonic() - began, 3),
                 }
@@ -1333,6 +1364,7 @@ def reviewer_preflight(transcript_path: Path, output: Path) -> int:
     return int(
         any(
             item["actual_accept"] != item["expected_accept"]
+            or not item["flags_match"]
             or (item["actual_accept"] and not item["evidence_valid"])
             for item in records
         )

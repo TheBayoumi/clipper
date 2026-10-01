@@ -800,3 +800,66 @@ def test_discovery_cache_skips_embedding_and_invalidates_source(tmp_path):
             _brief(), "v", segments, source_sha256="b" * 64, reuse_path=first
         )
         discover.assert_called_once()
+
+
+def test_preflight_rejects_wrong_reason_even_when_acceptance_matches(tmp_path, monkeypatch):
+    import json
+
+    import scripts.tjr_semantic_editor as editor
+
+    transcript = tmp_path / "transcript.json"
+    transcript.write_text(
+        json.dumps(
+            [
+                {
+                    "start": 2308.64,
+                    "end": 2328.88,
+                    "text": "The audience is large but earnings remain small.",
+                },
+                {
+                    "start": 2281.2,
+                    "end": 2308.0,
+                    "text": "The audience is large but earnings remain small.",
+                },
+                {
+                    "start": 8.28,
+                    "end": 52.16,
+                    "text": "The audience is large but earnings remain small.",
+                },
+            ]
+        )
+    )
+
+    class FakeEditor:
+        def __init__(self):
+            self.index = 0
+
+        def review(self, context):
+            self.index += 1
+            positive = self.index != 3
+            return {
+                "headline": "Large audiences do not guarantee earnings",
+                "setup_quote": "The audience is large",
+                "payoff_quote": "but earnings remain small",
+                "reason": "Evidence from the selected exchange",
+                "opening_standalone": positive,
+                "payoff_complete": positive,
+                "ending_complete": positive,
+                "headline_supported": positive,
+                "headline_self_contained": positive,
+                "contains_promotion_or_intro": self.index != 1,
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(editor, "LocalContextualEditor", FakeEditor)
+    output = tmp_path / "review.json"
+    assert editor.reviewer_preflight(transcript, output) == 1
+    records = json.loads(output.read_text())
+    assert all(r["actual_accept"] == r["expected_accept"] for r in records)
+    assert records[1]["flags_match"] is False
+    assert records[1]["expected_flags"] == {
+        "payoff_complete": False,
+        "contains_promotion_or_intro": False,
+    }
