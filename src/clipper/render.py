@@ -166,8 +166,6 @@ def build_ffmpeg_command(
     if is_tiktok:
         if width != 1080 or height != 1920:
             raise RenderError("Style B requires an exact 1080x1920 vertical output")
-        if watermark_path is not None:
-            raise RenderError("Style B forbids adding any logos or watermarks")
     if source_fps:
         try:
             rate = Fraction(source_fps)
