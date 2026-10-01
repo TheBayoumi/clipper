@@ -1541,9 +1541,39 @@ def reviewer_inference_diagnostics(baseline_path: Path, output: Path) -> int:
     return 0
 
 
+def _source_quote_span(quote: str, units: list[str]) -> dict[str, Any] | None:
+    """Recover source words across ASR units without changing words or numbers."""
+    token = re.compile(r"\d+(?:[.,]\d+)*(?:[^\W\d_]+)?|\w+(?:['\u2019*]+\w+)*", re.UNICODE)
+
+    def folded(value: str) -> str:
+        return value.replace("\u2019", "'").casefold()
+
+    wanted = [folded(match.group()) for match in token.finditer(quote)]
+    if not 3 <= len(wanted) <= 12:
+        return None
+    source = " ".join(units)
+    tokens = list(token.finditer(source))
+    words = [folded(match.group()) for match in tokens]
+    starts = []
+    offset = 0
+    for unit in units:
+        starts.append(offset)
+        offset += len(unit) + 1
+    for index in range(len(words) - len(wanted) + 1):
+        if words[index : index + len(wanted)] != wanted:
+            continue
+        start, end = tokens[index].start(), tokens[index + len(wanted) - 1].end()
+        first = max(i for i, unit_start in enumerate(starts) if unit_start <= start)
+        last = max(i for i, unit_start in enumerate(starts) if unit_start < end)
+        return {"text": source[start:end], "first_unit": first, "last_unit": last}
+    return None
+
+
 def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any]) -> dict[str, Any]:
-    """Diagnostic alternative: speech purpose and thought completion are separate tasks."""
+    """Diagnostic alternative: delivered-only purpose/story plus a narrow continuation check."""
     selected = context["selected_units"]
+    if not selected or any(not isinstance(unit, str) or not unit.strip() for unit in selected):
+        raise ValueError("review requires nonempty delivered units")
     text = " ".join(selected)
     purpose = editor._review_completion(
         "Identify speech PURPOSE in clip_transcript only. Is the host actually reading an "
@@ -1562,28 +1592,30 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
         96,
     )
     promotion_ids = []
+    purpose_spans = {}
     for key in ("ad_read_quote", "show_intro_quote"):
         quote = purpose.get(key)
         if not isinstance(quote, str):
             raise RuntimeError("speech-purpose review omitted its quote")
         if quote:
-            matches = [i for i, unit in enumerate(selected) if quote.casefold() in unit.casefold()]
-            if not 3 <= len(_WORD.findall(quote)) <= 12 or not matches:
+            span = _source_quote_span(quote, selected)
+            if span is None:
                 raise RuntimeError("speech-purpose evidence is not in delivered speech")
-            promotion_ids.extend(matches)
+            purpose_spans[key] = span
+            promotion_ids.extend(range(span["first_unit"], span["last_unit"] + 1))
     story = editor._review_completion(
-        "Assess ONLY clip_transcript as the finished video. excluded_after is NOT delivered. "
+        "Assess ONLY clip_transcript as the finished video. No surrounding speech is supplied. "
         "Copy 3-12 exact delivered words for its central setup_quote and resolution_quote. "
         "Leave resolution_quote empty when the final point has no delivered answer, "
         "consequence, contrast or punchline. Do not credit an earlier answer when a new "
         "unfinished premise starts at the end. opening_independent is 1 when a new viewer "
-        "can understand the subject from the clip alone, else 0. last_thought_finished is "
-        "1 when the last substantive thought has delivered its point, else 0. A following "
-        "related observation is not itself proof of an incomplete cut. Use excluded_after "
-        "only to detect an unfinished clause, quotation or missing promised answer. "
-        "ASR punctuation is not proof of completion. reason must be at most 20 words. "
-        "Return a JSON object matching output_schema.",
-        {"clip_transcript": text, "excluded_after": " ".join(context.get("after", []))},
+        "can understand the subject from the clip alone, else 0. First-person accounts refer "
+        "to the visible speaker; a missing name alone is not dependency. Fillers and "
+        "conjunctions alone do not make an understandable opening dependent. "
+        "last_thought_finished is 1 when the last substantive thought has delivered its "
+        "point, else 0. ASR punctuation is not proof of completion. "
+        "reason must be at most 20 words. Return a JSON object matching output_schema.",
+        {"clip_transcript": text},
         {
             "reason": {"type": "string"},
             "setup_quote": {"type": "string"},
@@ -1597,19 +1629,72 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
         if type(story.get(key)) is not int or story[key] not in (0, 1):
             raise RuntimeError("thought reviewer returned an invalid verdict")
     quote_ids = {}
+    quote_spans = {}
     for key in ("setup_quote", "resolution_quote"):
         quote = story.get(key)
         if not isinstance(quote, str):
             raise RuntimeError("thought reviewer omitted source quotes")
-        matches = [i for i, unit in enumerate(selected) if quote.casefold() in unit.casefold()]
-        if quote and (not 3 <= len(_WORD.findall(quote)) <= 12 or not matches):
-            raise RuntimeError("thought evidence is not in a delivered unit")
-        quote_ids[key] = matches[0] if quote else -1
+        span = _source_quote_span(quote, selected) if quote else None
+        if quote and span is None:
+            raise RuntimeError("thought evidence is not in delivered speech")
+        quote_spans[key] = span
+        quote_ids[key] = span["first_unit"] if span else -1
     ending = story["last_thought_finished"] == 1
-    payoff = bool(story["resolution_quote"]) and ending
+    continuation = None
+    if (
+        ending
+        and quote_spans["setup_quote"]
+        and quote_spans["resolution_quote"]
+        and context.get("after")
+    ):
+        continuation = editor._review_completion(
+            "Check whether source_continuation_not_delivered supplies a MISSING POINT of "
+            "the actual final delivered thought or completes its unfinished clause/quotation. "
+            "Ignore whether the continuation itself finishes. A new related observation or "
+            "list after an already delivered resolution is not needed by the clip. "
+            "following_speech_needed is 1 only for a missing point or unfinished thought, "
+            "else 0. If 1 copy 3-12 exact words from actual_final_delivered_text into "
+            "unfinished_clip_quote and 3-12 exact continuation words into missing_point_quote. "
+            "If 0 leave both quotes empty. reason at most 15 words. Return output_schema JSON.",
+            {
+                "source_continuation_not_delivered": " ".join(context["after"]),
+                "delivered_setup_quote": quote_spans["setup_quote"]["text"],
+                "delivered_resolution_quote": quote_spans["resolution_quote"]["text"],
+                "actual_final_delivered_text": " ".join(selected[-3:]),
+            },
+            {
+                "reason": {"type": "string"},
+                "following_speech_needed": {"type": "integer", "enum": [0, 1]},
+                "unfinished_clip_quote": {"type": "string"},
+                "missing_point_quote": {"type": "string"},
+            },
+            96,
+        )
+        needed = continuation.get("following_speech_needed")
+        if type(needed) is not int or needed not in (0, 1):
+            raise RuntimeError("continuation review returned an invalid verdict")
+        if needed:
+            for key, region in (
+                ("unfinished_clip_quote", selected[-3:]),
+                ("missing_point_quote", context["after"]),
+            ):
+                if (
+                    not isinstance(continuation.get(key), str)
+                    or _source_quote_span(continuation[key], region) is None
+                ):
+                    raise RuntimeError(
+                        "continuation review omitted grounded missing-point evidence"
+                    )
+            ending = False
+    payoff = quote_spans["resolution_quote"] is not None and ending
+    setup_span = quote_spans["setup_quote"]
+    payoff_span = quote_spans["resolution_quote"]
     result = {
         "speech_purpose_review": purpose,
         "thought_completion_review": story,
+        "speech_purpose_quote_spans": purpose_spans,
+        "source_quote_spans": quote_spans,
+        "continuation_review": continuation,
         "delivered_units": selected,
         "boundary_audit": {
             "reason": story["reason"],
@@ -1617,26 +1702,23 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
             "opening": "standalone" if story["opening_independent"] else "dependent",
             "ending": "closed" if ending else "unresolved",
             "payoff_location": "selected" if payoff else "absent",
-            "setup_unit_id": quote_ids["setup_quote"],
-            "payoff_unit_id": quote_ids["resolution_quote"] if payoff else -1,
+            "setup_unit_id": setup_span["first_unit"] if setup_span else -1,
+            "setup_unit_last_id": setup_span["last_unit"] if setup_span else -1,
+            "payoff_unit_id": payoff_span["first_unit"] if payoff else -1,
+            "payoff_unit_last_id": payoff_span["last_unit"] if payoff else -1,
         },
         "opening_standalone": story["opening_independent"] == 1,
         "ending_complete": ending,
         "payoff_complete": payoff,
         "contains_promotion_or_intro": bool(promotion_ids),
         "headline": "",
-        "setup_quote": story["setup_quote"],
-        "payoff_quote": story["resolution_quote"],
+        "setup_quote": setup_span["text"] if setup_span else "",
+        "payoff_quote": payoff_span["text"] if payoff_span else "",
         "headline_supported": False,
         "headline_self_contained": False,
         "reason": story["reason"],
     }
-    if (
-        promotion_ids
-        or not result["opening_standalone"]
-        or not payoff
-        or quote_ids["setup_quote"] < 0
-    ):
+    if promotion_ids or not result["opening_standalone"] or not payoff or setup_span is None:
         return result
     headline = editor._review_completion(
         "Write a 4-14 word headline for the central insight or contrast of clip_transcript. "
@@ -1646,8 +1728,8 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
         "reason must be at most 15 words. Return JSON matching output_schema.",
         {
             "clip_transcript": text,
-            "setup_quote": story["setup_quote"],
-            "resolution_quote": story["resolution_quote"],
+            "setup_quote": result["setup_quote"],
+            "resolution_quote": result["payoff_quote"],
         },
         {
             "reason": {"type": "string"},
@@ -1670,8 +1752,14 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
 
 def reviewer_model_probe(baseline_path: Path, output: Path) -> int:
     """Evaluate a pinned replacement on saved cuts without changing production models."""
+    from importlib.metadata import PackageNotFoundError, version
+
     from llama_cpp import Llama, llama_chat_format  # type: ignore[import-not-found]
 
+    try:
+        runtime = version("llama-cpp-python")
+    except PackageNotFoundError:
+        runtime = None
     saved = json.loads(baseline_path.read_text())
     baseline = saved.get("baseline") if isinstance(saved, dict) else saved
     if (
@@ -1720,6 +1808,7 @@ def reviewer_model_probe(baseline_path: Path, output: Path) -> int:
         "diagnostic_only": True,
         "production_approved": False,
         "model_repo": repo,
+        "llama_cpp_python_version": runtime,
         "model_revision": revision,
         "model_sha256": sha256,
         "context_tokens": 4096,
@@ -1747,9 +1836,44 @@ def reviewer_model_probe(baseline_path: Path, output: Path) -> int:
         completion = editor.model.create_chat_completion
         raw_calls: list[dict[str, Any]] = []
 
+        previous_calls = [
+            call
+            for case in (saved.get("cases", []) if isinstance(saved, dict) else [])
+            for call in case.get("raw_calls", [])
+        ]
+        compatible_model = isinstance(saved, dict) and all(
+            saved.get(key) == report[key]
+            for key in ("model_sha256", "model_revision", "context_tokens", "chat_template")
+        )
+        compatible_model = compatible_model and (
+            saved.get("llama_cpp_python_version", "0.3.35") == runtime
+        )
+        report["request_cache_hits"] = 0
+
         def recorded_completion(**request: Any) -> dict[str, Any]:
+            reused = next(
+                (
+                    call
+                    for call in previous_calls
+                    if (
+                        compatible_model
+                        and call.get("request") == request
+                        and isinstance(call.get("response"), dict)
+                        and isinstance(call["response"].get("choices"), list)
+                        and bool(call["response"]["choices"])
+                        and isinstance(call["response"]["choices"][0], dict)
+                        and call["response"]["choices"][0].get("finish_reason") == "stop"
+                    )
+                ),
+                None,
+            )
+            if reused is not None:
+                response = reused["response"]
+                report["request_cache_hits"] += 1
+                raw_calls.append({"request": request, "response": response, "cache_hit": True})
+                return response
             response = completion(**request)
-            raw_calls.append({"request": request, "response": response})
+            raw_calls.append({"request": request, "response": response, "cache_hit": False})
             return response
 
         editor.model.create_chat_completion = recorded_completion

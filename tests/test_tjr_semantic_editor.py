@@ -111,6 +111,8 @@ def test_model_probe_closes_thinking_and_preserves_production_init(tmp_path, mon
         ),
     )
     requests = []
+    inferences = []
+    probe_prompt = {"value": "same speech-purpose task"}
 
     class Model:
         def __init__(self, **kwargs):
@@ -127,7 +129,15 @@ def test_model_probe_closes_thinking_and_preserves_production_init(tmp_path, mon
             return b"token"
 
         def create_chat_completion(self, **kwargs):
-            return {}
+            inferences.append(kwargs)
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": json.dumps({"reason": "Saved source evidence"})},
+                    }
+                ]
+            }
 
         def close(self):
             pass
@@ -157,18 +167,21 @@ def test_model_probe_closes_thinking_and_preserves_production_init(tmp_path, mon
             AssertionError("production model must not load during replacement probe")
         ),
     )
-    monkeypatch.setattr(
-        editor,
-        "_focused_span_review",
-        lambda self, context: {
+
+    def focused_review(self, context):
+        self._review_completion(
+            probe_prompt["value"], {"speech": "An answer."}, {"reason": {"type": "string"}}, 32
+        )
+        return {
             "opening_standalone": True,
             "payoff_complete": True,
             "ending_complete": True,
             "headline_supported": True,
             "headline_self_contained": True,
             "contains_promotion_or_intro": False,
-        },
-    )
+        }
+
+    monkeypatch.setattr(editor, "_focused_span_review", focused_review)
     baseline = tmp_path / "baseline.json"
     baseline.write_text(
         json.dumps(
@@ -190,6 +203,40 @@ def test_model_probe_closes_thinking_and_preserves_production_init(tmp_path, mon
     assert report["semantic_pass"] is False
     assert len(report["cases"]) == 3
     assert len(requests) == 1 and requests[0]["n_ctx"] == 4096
+    assert len(inferences) == 3
+    warm = tmp_path / "warm-probe.json"
+    assert editor.reviewer_model_probe(output, warm) == 1
+    assert len(inferences) == 3
+    assert json.loads(warm.read_text())["request_cache_hits"] == 3
+    probe_prompt["value"] = "changed speech-purpose task"
+    assert editor.reviewer_model_probe(warm, tmp_path / "changed-probe.json") == 1
+    assert len(inferences) == 6
+
+
+def test_source_quote_provenance_crosses_units_without_changing_words_or_numbers():
+    from scripts import tjr_semantic_editor as editor
+
+    units = ["Do you get paid for views?", "Like, how is that?"]
+    span = editor._source_quote_span("Do you get paid for views? Like, how is that.", units)
+    assert span == {
+        "text": "Do you get paid for views? Like, how is that",
+        "first_unit": 0,
+        "last_unit": 1,
+    }
+    money = ["I got 60 million views but earned nothing."]
+    assert (
+        editor._source_quote_span("I got 60 million views.", money)["text"]
+        == "I got 60 million views"
+    )
+    assert editor._source_quote_span("I got 600 million views.", money) is None
+    assert editor._source_quote_span("I earned 60 million views.", money) is None
+    assert editor._source_quote_span("I got 60 million views.", ["Other source words."]) is None
+    profanity = ["He said this was f***ing brilliant."]
+    assert (
+        editor._source_quote_span("this was f***ing brilliant", profanity)["text"]
+        == "this was f***ing brilliant"
+    )
+    assert editor._source_quote_span("this was fucking brilliant", profanity) is None
 
 
 def test_focused_review_separates_speech_purpose_and_excluded_payoff():
@@ -220,6 +267,12 @@ def test_focused_review_separates_speech_purpose_and_excluded_payoff():
             "last_thought_finished": 1,
         },
         {
+            "reason": "The next topic is not needed for the delivered resolution.",
+            "following_speech_needed": 0,
+            "unfinished_clip_quote": "",
+            "missing_point_quote": "",
+        },
+        {
             "reason": "The delivered exchange contrasts views with income.",
             "headline": "Huge social views earned nothing but helped the podcast",
             "headline_supported": 1,
@@ -238,11 +291,20 @@ def test_focused_review_separates_speech_purpose_and_excluded_payoff():
     assert review["contains_promotion_or_intro"] is False
     assert review["boundary_audit"]["payoff_unit_id"] == 2
     assert set(calls[0]) == {"clip_transcript"}
-    assert "before" not in calls[1]
-    assert "excluded_after" not in calls[2]
+    assert set(calls[1]) == {"clip_transcript"}
+    assert list(calls[2])[-1] == "actual_final_delivered_text"
+    assert "source_continuation_not_delivered" not in calls[3]
+    assert "Then another topic" not in str(calls[3])
     replies[1]["resolution_quote"] = "another topic starts here"
     calls.clear()
-    with pytest.raises(RuntimeError, match="not in a delivered unit"):
+    with pytest.raises(RuntimeError, match="not in delivered speech"):
+        editor._focused_span_review(FakeEditor(), context)
+    replies[1]["resolution_quote"] = "drive my podcast instead"
+    replies[2]["following_speech_needed"] = 1
+    replies[2]["unfinished_clip_quote"] = "drive my podcast instead"
+    replies[2]["missing_point_quote"] = "invented missing fact without source"
+    calls.clear()
+    with pytest.raises(RuntimeError, match="grounded missing-point evidence"):
         editor._focused_span_review(FakeEditor(), context)
 
 
