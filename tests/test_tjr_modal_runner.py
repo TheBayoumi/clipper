@@ -205,3 +205,107 @@ def test_watermark_preflight_rejects_invalid_bootstrap(
         )
     assert command.call_count == 1
     assert not (tmp_path / "asset.png").exists()
+
+
+def test_exact_source_challenge_retries_same_modal_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from scripts.tjr_modal_runner import _acquire_original
+
+    monkeypatch.delenv("TJR_MODAL_USE_STAGED", raising=False)
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "_kDrxucOx9g")
+    calls: list[list[str]] = []
+
+    def acquire(command: list[str], **kwargs: object) -> Mock:
+        calls.append(command)
+        env = kwargs["env"]
+        assert env["TJR_SOURCE_VIDEO_ID"] == "_kDrxucOx9g"
+        assert env["TJR_MODAL_EXCLUDE_VIDEO_IDS"] == ""
+        if len(calls) == 1:
+            report = {
+                "status": "YOUTUBE_EGRESS_BOT_CHALLENGE",
+                "attempts": [
+                    {
+                        "url": "https://www.youtube.com/watch?v=_kDrxucOx9g",
+                        "stage": "metadata",
+                        "reason": "YOUTUBE_IP_OR_LOGIN_CHALLENGE",
+                    }
+                ],
+            }
+            (tmp_path / "verified-original-egress.json").write_text(json.dumps(report))
+            return Mock(returncode=1)
+        (tmp_path / "verified-original-egress.json").write_text(
+            json.dumps({"status": "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED"})
+        )
+        (tmp_path / "staged-original.json").write_text(json.dumps(_staged("_kDrxucOx9g")))
+        return Mock(returncode=0)
+
+    with patch("scripts.tjr_modal_runner.subprocess.run", side_effect=acquire):
+        assert _acquire_original(set(), tmp_path)["video_id"] == "_kDrxucOx9g"
+    assert calls[0] == calls[1] == ["modal", "run", "-m", "scripts.tjr_modal_probe"]
+    assert (tmp_path / "acquisition-attempt-1.json").is_file()
+    assert (tmp_path / "acquisition-attempt-2.json").is_file()
+
+
+def test_acquisition_does_not_retry_other_failure_or_change_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    import subprocess
+
+    from scripts.tjr_modal_runner import _acquire_original
+
+    monkeypatch.delenv("TJR_MODAL_USE_STAGED", raising=False)
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "_kDrxucOx9g")
+
+    def fail(command: list[str], **kwargs: object) -> Mock:
+        (tmp_path / "verified-original-egress.json").write_text(
+            json.dumps({"status": "MODAL_PROBE_FAILED_BEFORE_REMOTE_RESULT"})
+        )
+        return Mock(returncode=1)
+
+    with (
+        patch("scripts.tjr_modal_runner.subprocess.run", side_effect=fail) as run,
+        pytest.raises(subprocess.CalledProcessError),
+    ):
+        _acquire_original(set(), tmp_path)
+    assert run.call_count == 1
+
+
+def test_same_source_challenge_retry_is_bounded_to_three_apps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    import subprocess
+
+    from scripts.tjr_modal_runner import _acquire_original
+
+    monkeypatch.delenv("TJR_MODAL_USE_STAGED", raising=False)
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "_kDrxucOx9g")
+
+    def challenged(command: list[str], **kwargs: object) -> Mock:
+        (tmp_path / "verified-original-egress.json").write_text(
+            json.dumps(
+                {
+                    "status": "YOUTUBE_EGRESS_BOT_CHALLENGE",
+                    "attempts": [
+                        {
+                            "url": "https://www.youtube.com/watch?v=_kDrxucOx9g",
+                            "stage": "metadata",
+                            "reason": "YOUTUBE_IP_OR_LOGIN_CHALLENGE",
+                        }
+                    ],
+                }
+            )
+        )
+        return Mock(returncode=1)
+
+    with (
+        patch("scripts.tjr_modal_runner.subprocess.run", side_effect=challenged) as run,
+        pytest.raises(subprocess.CalledProcessError),
+    ):
+        _acquire_original(set(), tmp_path)
+    assert run.call_count == 3
+    assert len(list(tmp_path.glob("acquisition-attempt-*.json"))) == 3

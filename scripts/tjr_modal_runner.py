@@ -42,9 +42,45 @@ def _acquire_original(excluded: set[str], root: Path) -> dict[str, Any]:
         "TJR_MODAL_EXCLUDE_VIDEO_IDS": ",".join(sorted(excluded)),
     }
     stage = root / "staged-original.json"
-    stage.unlink(missing_ok=True)
-    subprocess.run(["modal", "run", "-m", "scripts.tjr_modal_probe"], env=env, check=True)
-    return _load_staged_original(root)
+    report_path = root / "verified-original-egress.json"
+    requested = env.get("TJR_SOURCE_VIDEO_ID", "").strip()
+    # Only transient challenges for one explicitly selected source may retry.
+    # Each Modal app invocation keeps the same GCP route and original image.
+    limit = 3 if requested else 1
+    for attempt in range(1, limit + 1):
+        stage.unlink(missing_ok=True)
+        report_path.unlink(missing_ok=True)
+        command = ["modal", "run", "-m", "scripts.tjr_modal_probe"]
+        result = subprocess.run(command, env=env, check=False)
+        report: dict[str, Any] = {}
+        if report_path.is_file():
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            (root / f"acquisition-attempt-{attempt}.json").write_text(
+                json.dumps(report, indent=2) + "\n", encoding="utf-8"
+            )
+        if result.returncode == 0:
+            staged = _load_staged_original(root)
+            if requested and staged.get("video_id") != requested:
+                raise RuntimeError("acquisition retry changed the explicitly selected source")
+            return staged
+        attempts = report.get("attempts") or []
+        retryable = (
+            report.get("status") == "YOUTUBE_EGRESS_BOT_CHALLENGE"
+            and bool(attempts)
+            and all(
+                item.get("url") == f"https://www.youtube.com/watch?v={requested}"
+                and item.get("stage") == "metadata"
+                and item.get("reason") == "YOUTUBE_IP_OR_LOGIN_CHALLENGE"
+                for item in attempts
+            )
+        )
+        if not retryable or attempt == limit:
+            raise subprocess.CalledProcessError(result.returncode, command)
+        print(
+            f"YOUTUBE_TRANSIENT_CHALLENGE_RETRY: {attempt + 1}/{limit} same source and GCP route",
+            flush=True,
+        )
+    raise RuntimeError("acquisition exhausted its bounded retry limit")
 
 
 def _transfer_verified_original(staging: dict[str, Any], destination: Path) -> Path:
@@ -244,6 +280,8 @@ def main() -> int:
                 Path("campaigns/reach-double-coverage-dedicated.yaml"),
                 Path(os.environ["CLIPPER_IMAGE_ASSET_CACHE_MANIFEST"]),
             )
+        elif sys.argv[1:] == ["--acquire-original"]:
+            _acquire_original(set(), Path("tjr-modal-probe"))
         else:
             run_modal_production()
     except (ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as exc:

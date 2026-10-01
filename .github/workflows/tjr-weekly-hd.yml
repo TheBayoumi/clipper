@@ -419,7 +419,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -f tjr-modal-probe/staged-original.json
-          modal run -m scripts.tjr_modal_probe
+          python -m scripts.tjr_modal_runner --acquire-original
       - name: Download complete transcript from an explicitly selected prior run
         if: inputs.transcript_source_run_id != ''
         uses: actions/download-artifact@v4
@@ -449,6 +449,7 @@ jobs:
             tjr-modal-probe/verified-original-egress.json
             tjr-modal-probe/staged-original.json
             tjr-modal-probe/approved-watermark.json
+            tjr-modal-probe/acquisition-attempt-*.json
             tjr-modal-artifacts/**/source-roundtrip.json
             tjr-modal-artifacts/**/verified-original-egress.json
             tjr-modal-artifacts/**/editorial-failure.json
