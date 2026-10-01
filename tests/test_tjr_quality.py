@@ -36,7 +36,7 @@ def test_campaign_accepts_verified_video_ids(campaign_brief: Path) -> None:
     data = check_campaign_brief(campaign_brief)
     assert data["allowed_video_ids"] == []
     assert data["watermark_url"] == (
-        "https://drive.google.com/file/d/1wn3gL5h7cUZn-8jzTfwkAvLhbleXgbL6/view?usp=sharing"
+        "https://drive.google.com/file/d/1bVsR2jUqmP5i61TuFWo0NzN7_0dSLAou/view?usp=sharing"
     )
 
 
