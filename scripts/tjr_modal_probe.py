@@ -7,8 +7,10 @@ not a different video source. No original bytes or browser cookies are uploaded.
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +86,17 @@ def source_download_sections(duration_seconds: float) -> list[str]:
     return []
 
 
+def acquisition_runtime() -> dict[str, str]:
+    """Record resolved worker packages; declarations alone are not provenance."""
+    versions = {"python": sys.version.split()[0]}
+    for package in ("yt-dlp", "yt-dlp-ejs", "bgutil-ytdlp-pot-provider"):
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = "NOT_INSTALLED"
+    return versions
+
+
 def _yt_command(args: tuple[str, ...], url: str) -> list[str]:
     return [
         "yt-dlp",
@@ -121,6 +134,12 @@ volume = modal.Volume.from_name("clipper-tjr-source-transport", create_if_missin
 
 @app.function(image=image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=2048)
 def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = "") -> dict[str, Any]:
+    result = _inspect_original_youtube(candidates, run_key)
+    result["worker_runtime"] = acquisition_runtime()
+    return result
+
+
+def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) -> dict[str, Any]:
     """Verify source identity and transfer real HD bytes on one Modal egress.
 
     Reuses Clipper's successful BgUtils strategy family. Metadata-only
@@ -170,18 +189,6 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
                     if reason == "YOUTUBE_IP_OR_LOGIN_CHALLENGE":
                         ip_challenges += 1
                         total_ip_challenges += 1
-                    if ip_challenges >= 2:
-                        # Both a provider-backed mweb request and an independent
-                        # plain YouTube client were challenged for this video.
-                        # Confirm on another approved video before declaring
-                        # this regional/IP route blocked.
-                        blocked_video_count += 1
-                        if blocked_video_count >= 2:
-                            return {
-                                "status": "YOUTUBE_EGRESS_BOT_CHALLENGE",
-                                "attempts": attempts,
-                            }
-                        break
                     continue
                 metadata = json.loads(metadata_run.stdout)
                 if not isinstance(metadata, dict):
@@ -284,6 +291,12 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
                         else type(exc).__name__,
                     }
                 )
+        # A challenge from two clients does not establish that all configured
+        # clients fail. Exhaust this exact video's bounded strategy set first.
+        if ip_challenges == len(ACQUISITION_STRATEGIES):
+            blocked_video_count += 1
+            if blocked_video_count >= 2:
+                return {"status": "YOUTUBE_EGRESS_BOT_CHALLENGE", "attempts": attempts}
     status = (
         "YOUTUBE_EGRESS_BOT_CHALLENGE"
         if total_ip_challenges and total_ip_challenges >= len(attempts) - 1
