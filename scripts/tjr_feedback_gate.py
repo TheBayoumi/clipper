@@ -19,8 +19,7 @@ from pathlib import Path
 from typing import Any
 
 OFFICIAL_CHANNELS = {
-    "UCZen39LQJPx04GjPj7FOMcw",
-    "UCGHBUXjDCeiIXNdKR0HUZnA",
+    "UCf1q6dhccWr6eQEcFFnJSbA",
 }
 MIN_SSIM = 0.99
 MAX_GENERIC_FRACTION = 0.0
@@ -28,10 +27,7 @@ BANNED_GENERIC_HOOKS = {
     "WHAT'S THE REAL TAKEAWAY HERE?",
     "THE RISK QUESTION BEFORE THE TRADE",
 }
-KNOWN_CREATOR_LAYOUTS = {
-    "LvnemCfJpQU": "tjr-memecoin-logo-safe",
-    "p2LU37eat70": "tjr-trading-logo-safe",
-}
+KNOWN_CREATOR_LAYOUTS: dict[str, str] = {}
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -769,7 +765,7 @@ def main() -> int:
         json.dumps(result, indent=2) + "\n", encoding="utf-8"
     )
     summary = [
-        "## TJR real-media evidence gate",
+        "## Double Coverage real-media evidence gate",
         "Status: **" + result["status"] + "**",
         "Audit commit: " + result["head_sha"] + " · Audit run: " + result["run_id"],
         "Original production run: " + result["audited_production_run_id"],
