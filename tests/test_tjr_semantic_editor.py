@@ -309,3 +309,166 @@ def test_structured_editor_rejects_incomplete_cut_and_unsupported_hook(tmp_path)
             cache_path=tmp_path / "invalid.json",
             assessor=lambda context: {"keep": "yes"},
         )
+
+
+def test_local_editor_constrains_ranges_ratings_and_separates_headline_id() -> None:
+    import json
+
+    from scripts.tjr_semantic_editor import LocalContextualEditor
+
+    class Model:
+        def create_chat_completion(self, **kwargs):
+            self.request = kwargs
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "keep": True,
+                                    "window_index": 0,
+                                    "headline_index": 0,
+                                    "opening": 4,
+                                    "story": 4,
+                                    "ending": 5,
+                                    "headline_quality": 4,
+                                    "reason": "Missing pass; owner resolved access.",
+                                }
+                            )
+                        },
+                    }
+                ]
+            }
+
+    context = {
+        "min_seconds": 20,
+        "max_seconds": 45,
+        "units": [
+            {"id": 101, "start": 100, "end": 107, "text": "Why did security stop you?"},
+            {"id": 102, "start": 107, "end": 114, "text": "I forgot my pass in the car."},
+            {"id": 103, "start": 114, "end": 122, "text": "The owner let me into my own show."},
+            {"id": 104, "start": 122, "end": 129, "text": "What did your next show pay?"},
+        ],
+        "headlines": [{"id": 0, "text": "THE OWNER LET ME INTO MY OWN SHOW."}],
+    }
+    editor = object.__new__(LocalContextualEditor)
+    editor.model = Model()
+    decision = editor(context)
+    assert (decision["start_unit"], decision["end_unit"], decision["hook"]) == (101, 103, 4)
+    request = editor.model.request
+    schema = request["response_format"]["schema"]["properties"]
+    assert schema["window_index"]["enum"] == [0]
+    assert schema["headline_index"]["enum"] == [0]
+    assert all(
+        schema[name]["enum"] == list(range(6))
+        for name in ("opening", "story", "ending", "headline_quality")
+    )
+    sent = json.loads(request["messages"][1]["content"])
+    assert sent["valid_windows"] == [[0, 101, 103]]
+    assert all(set(unit) == {"id", "text"} for unit in sent["units"])
+    assert request["temperature"] == 0 and request["seed"] == 0 and request["max_tokens"] == 256
+    assert schema["reason"]["maxLength"] == 180
+
+
+def test_local_editor_rejects_invalid_selection_and_truncated_assessment() -> None:
+    import json
+
+    import pytest
+
+    from scripts.tjr_semantic_editor import LocalContextualEditor
+
+    editor = object.__new__(LocalContextualEditor)
+
+    class Model:
+        finish = "stop"
+
+        def create_chat_completion(self, **kwargs):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": self.finish,
+                        "message": {"content": json.dumps({"window_index": 22})},
+                    }
+                ]
+            }
+
+    editor.model = Model()
+    context = {
+        "min_seconds": 20,
+        "max_seconds": 45,
+        "units": [{"id": 8, "start": 100, "end": 122, "text": "The answer settled it."}],
+        "headlines": [{"id": 0, "text": "THE ANSWER SETTLED IT."}],
+    }
+    with pytest.raises(RuntimeError, match="invalid window"):
+        editor(context)
+    editor.model.finish = "length"
+    with pytest.raises(RuntimeError, match="truncated"):
+        editor(context)
+    context["units"][0]["text"] = "The next question is,"
+    assert editor(context)["keep"] is False
+
+
+def test_editorial_checkpoint_resumes_completed_rejections_and_retains_failure(tmp_path) -> None:
+    import json
+
+    import pytest
+
+    from clipper.models import ClipCandidate
+    from scripts.tjr_semantic_editor import refine_contextual_candidates
+
+    segments = [TranscriptSegment(0, 22, "The owner finally let me into my own show.")]
+    proposals = [ClipCandidate("v", 0, 22, segments[0].text, score) for score in (10, 9)]
+    calls = []
+
+    def assess(context):
+        calls.append(context)
+        if len(calls) == 1:
+            return {"keep": False, "reason": "Dependent setup."}
+        return dict(
+            keep=True,
+            start_unit=0,
+            end_unit=0,
+            hook_index=0,
+            opening=4,
+            story=4,
+            ending=4,
+            hook=17,
+            reason="Invalid rating.",
+        )
+
+    path = tmp_path / "checkpoint.json"
+    with pytest.raises(RuntimeError, match="out-of-range"):
+        refine_contextual_candidates(
+            _brief(), proposals, segments, source_sha256="a" * 64, cache_path=path, assessor=assess
+        )
+    saved = json.loads(path.read_text())
+    assert saved["complete"] is False and saved["processed_count"] == 1
+    assert saved["decisions"][1]["decision"]["hook"] == 17
+
+    def repair(context):
+        calls.append(context)
+        return dict(
+            keep=True,
+            start_unit=0,
+            end_unit=0,
+            hook_index=0,
+            opening=4,
+            story=4,
+            ending=4,
+            hook=4,
+            reason="The owner resolved the access problem.",
+        )
+
+    clips, audit = refine_contextual_candidates(
+        _brief(),
+        proposals,
+        segments,
+        source_sha256="a" * 64,
+        cache_path=path,
+        reuse_path=path,
+        assessor=repair,
+    )
+    assert len(calls) == 3 and len(clips) == 1
+    assert audit["resumed_assessments"] == 1 and len(audit["assessments"]) == 2
+    assert json.loads(path.read_text())["complete"] is True
