@@ -444,6 +444,7 @@ class FFmpegRenderer:
                 "source_profile": native.as_dict(),
                 "output_cadence": native.fps,
                 "output_format": "1080x1920 H.264 high yuv420p",
+                "campaign_watermark_applied": watermark_path is not None,
                 "source_to_delivery_mean_ssim": measured,
                 "minimum_mean_ssim": 0.99,
                 "compared_frames": compared,
