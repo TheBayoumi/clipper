@@ -158,8 +158,8 @@ def test_model_probe_closes_thinking_and_preserves_production_init(tmp_path, mon
         ),
     )
     monkeypatch.setattr(
-        editor.LocalContextualEditor,
-        "review",
+        editor,
+        "_focused_span_review",
         lambda self, context: {
             "opening_standalone": True,
             "payoff_complete": True,
@@ -190,6 +190,60 @@ def test_model_probe_closes_thinking_and_preserves_production_init(tmp_path, mon
     assert report["semantic_pass"] is False
     assert len(report["cases"]) == 3
     assert len(requests) == 1 and requests[0]["n_ctx"] == 4096
+
+
+def test_focused_review_separates_speech_purpose_and_excluded_payoff():
+    import pytest
+
+    from scripts import tjr_semantic_editor as editor
+
+    context = {
+        "selected_units": [
+            "I had huge views on my social account.",
+            "But I did not earn any money from those views.",
+            "I used them to drive my podcast instead.",
+        ],
+        "before": ["An unrelated host ad read."],
+        "after": ["Then another topic starts here."],
+    }
+    replies = [
+        {
+            "reason": "Personal earnings discussion without an ad read or show introduction.",
+            "ad_read_quote": "",
+            "show_intro_quote": "",
+        },
+        {
+            "reason": "The clip resolves the views-versus-income contrast.",
+            "setup_quote": "huge views on my social account",
+            "resolution_quote": "drive my podcast instead",
+            "opening_independent": 1,
+            "last_thought_finished": 1,
+        },
+        {
+            "reason": "The delivered exchange contrasts views with income.",
+            "headline": "Huge social views earned nothing but helped the podcast",
+            "headline_supported": 1,
+            "headline_self_contained": 1,
+        },
+    ]
+    calls = []
+
+    class FakeEditor:
+        def _review_completion(self, prompt, payload, properties, tokens):
+            calls.append(payload)
+            return replies[len(calls) - 1]
+
+    review = editor._focused_span_review(FakeEditor(), context)
+    assert review["payoff_complete"] is True
+    assert review["contains_promotion_or_intro"] is False
+    assert review["boundary_audit"]["payoff_unit_id"] == 2
+    assert set(calls[0]) == {"clip_transcript"}
+    assert "before" not in calls[1]
+    assert "excluded_after" not in calls[2]
+    replies[1]["resolution_quote"] = "another topic starts here"
+    calls.clear()
+    with pytest.raises(RuntimeError, match="not in a delivered unit"):
+        editor._focused_span_review(FakeEditor(), context)
 
 
 def _fake_embedder(texts: list[str]) -> list[list[float]]:

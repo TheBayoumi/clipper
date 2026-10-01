@@ -1541,6 +1541,133 @@ def reviewer_inference_diagnostics(baseline_path: Path, output: Path) -> int:
     return 0
 
 
+def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any]) -> dict[str, Any]:
+    """Diagnostic alternative: speech purpose and thought completion are separate tasks."""
+    selected = context["selected_units"]
+    text = " ".join(selected)
+    purpose = editor._review_completion(
+        "Identify speech PURPOSE in clip_transcript only. Is the host actually reading an "
+        "advertisement to the audience or introducing the show/guest? Discussion ABOUT "
+        "sponsors, earnings, views or business is ordinary conversation, not an ad read. "
+        "For an actual ad read copy 3-12 exact words into ad_read_quote. For an actual "
+        "show/guest introduction copy 3-12 exact words into show_intro_quote. Otherwise "
+        "leave that quote empty. Do not label topics or platform advice as advertisements. "
+        "reason must be at most 15 words. Return a JSON object matching output_schema.",
+        {"clip_transcript": text},
+        {
+            "reason": {"type": "string"},
+            "ad_read_quote": {"type": "string"},
+            "show_intro_quote": {"type": "string"},
+        },
+        96,
+    )
+    promotion_ids = []
+    for key in ("ad_read_quote", "show_intro_quote"):
+        quote = purpose.get(key)
+        if not isinstance(quote, str):
+            raise RuntimeError("speech-purpose review omitted its quote")
+        if quote:
+            matches = [i for i, unit in enumerate(selected) if quote.casefold() in unit.casefold()]
+            if not 3 <= len(_WORD.findall(quote)) <= 12 or not matches:
+                raise RuntimeError("speech-purpose evidence is not in delivered speech")
+            promotion_ids.extend(matches)
+    story = editor._review_completion(
+        "Assess ONLY clip_transcript as the finished video. excluded_after is NOT delivered. "
+        "Copy 3-12 exact delivered words for its central setup_quote and resolution_quote. "
+        "Leave resolution_quote empty when the final point has no delivered answer, "
+        "consequence, contrast or punchline. Do not credit an earlier answer when a new "
+        "unfinished premise starts at the end. opening_independent is 1 when a new viewer "
+        "can understand the subject from the clip alone, else 0. last_thought_finished is "
+        "1 when the last substantive thought has delivered its point, else 0. A following "
+        "related observation is not itself proof of an incomplete cut. Use excluded_after "
+        "only to detect an unfinished clause, quotation or missing promised answer. "
+        "ASR punctuation is not proof of completion. reason must be at most 20 words. "
+        "Return a JSON object matching output_schema.",
+        {"clip_transcript": text, "excluded_after": " ".join(context.get("after", []))},
+        {
+            "reason": {"type": "string"},
+            "setup_quote": {"type": "string"},
+            "resolution_quote": {"type": "string"},
+            "opening_independent": {"type": "integer", "enum": [0, 1]},
+            "last_thought_finished": {"type": "integer", "enum": [0, 1]},
+        },
+        128,
+    )
+    for key in ("opening_independent", "last_thought_finished"):
+        if type(story.get(key)) is not int or story[key] not in (0, 1):
+            raise RuntimeError("thought reviewer returned an invalid verdict")
+    quote_ids = {}
+    for key in ("setup_quote", "resolution_quote"):
+        quote = story.get(key)
+        if not isinstance(quote, str):
+            raise RuntimeError("thought reviewer omitted source quotes")
+        matches = [i for i, unit in enumerate(selected) if quote.casefold() in unit.casefold()]
+        if quote and (not 3 <= len(_WORD.findall(quote)) <= 12 or not matches):
+            raise RuntimeError("thought evidence is not in a delivered unit")
+        quote_ids[key] = matches[0] if quote else -1
+    ending = story["last_thought_finished"] == 1
+    payoff = bool(story["resolution_quote"]) and ending
+    result = {
+        "speech_purpose_review": purpose,
+        "thought_completion_review": story,
+        "delivered_units": selected,
+        "boundary_audit": {
+            "reason": story["reason"],
+            "promotion_unit_ids": sorted(set(promotion_ids)),
+            "opening": "standalone" if story["opening_independent"] else "dependent",
+            "ending": "closed" if ending else "unresolved",
+            "payoff_location": "selected" if payoff else "absent",
+            "setup_unit_id": quote_ids["setup_quote"],
+            "payoff_unit_id": quote_ids["resolution_quote"] if payoff else -1,
+        },
+        "opening_standalone": story["opening_independent"] == 1,
+        "ending_complete": ending,
+        "payoff_complete": payoff,
+        "contains_promotion_or_intro": bool(promotion_ids),
+        "headline": "",
+        "setup_quote": story["setup_quote"],
+        "payoff_quote": story["resolution_quote"],
+        "headline_supported": False,
+        "headline_self_contained": False,
+        "reason": story["reason"],
+    }
+    if (
+        promotion_ids
+        or not result["opening_standalone"]
+        or not payoff
+        or quote_ids["setup_quote"] < 0
+    ):
+        return result
+    headline = editor._review_completion(
+        "Write a 4-14 word headline for the central insight or contrast of clip_transcript. "
+        "Use only delivered facts; no keyword lists, invented outcomes or dangling pronouns. "
+        "Its promise must be supported by setup_quote and resolution_quote. "
+        "headline_supported and headline_self_contained are integers 0 or 1. "
+        "reason must be at most 15 words. Return JSON matching output_schema.",
+        {
+            "clip_transcript": text,
+            "setup_quote": story["setup_quote"],
+            "resolution_quote": story["resolution_quote"],
+        },
+        {
+            "reason": {"type": "string"},
+            "headline": {"type": "string"},
+            "headline_supported": {"type": "integer", "enum": [0, 1]},
+            "headline_self_contained": {"type": "integer", "enum": [0, 1]},
+        },
+        96,
+    )
+    for key in ("headline_supported", "headline_self_contained"):
+        if type(headline.get(key)) is not int or headline[key] not in (0, 1):
+            raise RuntimeError("headline reviewer returned invalid flags")
+        result[key] = headline[key] == 1
+    result["headline"] = headline["headline"]
+    if not 4 <= len(_WORD.findall(result["headline"])) <= 14:
+        result["headline_supported"] = False
+    result["headline_review"] = headline
+    return result
+
+
 def reviewer_model_probe(baseline_path: Path, output: Path) -> int:
     """Evaluate a pinned replacement on saved cuts without changing production models."""
     from llama_cpp import Llama, llama_chat_format  # type: ignore[import-not-found]
@@ -1631,7 +1758,7 @@ def reviewer_model_probe(baseline_path: Path, output: Path) -> int:
             raw_calls.clear()
             record = {"fixture": item["fixture"], "review_context": item["review_context"]}
             try:
-                review = editor.review(item["review_context"])
+                review = _focused_span_review(editor, item["review_context"])
                 accepted = (
                     all(
                         review[key]
