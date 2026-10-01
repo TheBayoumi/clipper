@@ -1541,7 +1541,9 @@ def reviewer_inference_diagnostics(baseline_path: Path, output: Path) -> int:
     return 0
 
 
-def _source_quote_span(quote: str, units: list[str]) -> dict[str, Any] | None:
+def _source_quote_span(
+    quote: str, units: list[str], *, max_words: int = 12
+) -> dict[str, Any] | None:
     """Recover source words across ASR units without changing words or numbers."""
     token = re.compile(r"\d+(?:[.,]\d+)*(?:[^\W\d_]+)?|\w+(?:['\u2019*]+\w+)*", re.UNICODE)
 
@@ -1549,7 +1551,7 @@ def _source_quote_span(quote: str, units: list[str]) -> dict[str, Any] | None:
         return value.replace("\u2019", "'").casefold()
 
     wanted = [folded(match.group()) for match in token.finditer(quote)]
-    if not 3 <= len(wanted) <= 12:
+    if not 3 <= len(wanted) <= max_words:
         return None
     source = " ".join(units)
     tokens = list(token.finditer(source))
@@ -1598,7 +1600,7 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
         if not isinstance(quote, str):
             raise RuntimeError("speech-purpose review omitted its quote")
         if quote:
-            span = _source_quote_span(quote, selected)
+            span = _source_quote_span(quote, selected, max_words=64)
             if span is None:
                 raise RuntimeError("speech-purpose evidence is not in delivered speech")
             purpose_spans[key] = span
@@ -1634,7 +1636,7 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
         quote = story.get(key)
         if not isinstance(quote, str):
             raise RuntimeError("thought reviewer omitted source quotes")
-        span = _source_quote_span(quote, selected) if quote else None
+        span = _source_quote_span(quote, selected, max_words=64) if quote else None
         if quote and span is None:
             raise RuntimeError("thought evidence is not in delivered speech")
         quote_spans[key] = span

@@ -1201,3 +1201,17 @@ def test_review_context_marks_neighbors_excluded():
         "selected_units": ["Thought 2", "Thought 3", "Thought 4"],
         "after": ["Thought 5", "Thought 6"],
     }
+
+
+def test_long_source_evidence_is_distinct_from_short_quote_format():
+    from scripts.tjr_semantic_editor import _source_quote_span
+
+    source = (
+        "Well, bro, if you had a podcast getting 60 million views, "
+        "you'd be making millions of dollars."
+    )
+    assert _source_quote_span(source, [source]) is None
+    span = _source_quote_span(source, [source], max_words=64)
+    assert span is not None
+    assert span["text"] == source.rstrip(".")
+    assert _source_quote_span(source.replace("60", "600"), [source], max_words=64) is None
