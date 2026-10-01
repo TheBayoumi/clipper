@@ -411,7 +411,7 @@ jobs:
         with:
           run-id: ${{ inputs.transcript_source_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ inputs.transcript_source_run_id }}
+          pattern: tjr-real-original-youtube-hd-*
           path: reviewer-input
       - name: Install pinned CPU reviewer
         run: CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e . "llama-cpp-python==0.3.35"
@@ -485,16 +485,38 @@ jobs:
       - name: Enable exact-source transcript reuse
         if: inputs.transcript_source_run_id != ''
         run: echo "TJR_TRANSCRIPT_CACHE_ROOT=$PWD/tjr-transcript-cache" >> "$GITHUB_ENV"
-      - name: Download independently selected editorial checkpoint
-        if: inputs.editorial_source_run_id != ''
+      - name: Resolve reusable editorial artifact
+        id: editorial_cache
+        uses: actions/github-script@v7
+        env:
+          EXPLICIT_EDITORIAL_RUN: ${{ inputs.editorial_source_run_id }}
+          TARGET_CHANNEL: ${{ inputs.target_channel_id }}
+        with:
+          script: |
+            if (process.env.EXPLICIT_EDITORIAL_RUN) {
+              core.setOutput('run_id', process.env.EXPLICIT_EDITORIAL_RUN);
+              return;
+            }
+            const prefix = 'tjr-real-original-youtube-hd-' + process.env.TARGET_CHANNEL + '-';
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {
+              ...context.repo, per_page: 100
+            });
+            const match = artifacts.find(a => !a.expired && a.name.startsWith(prefix)
+              && a.workflow_run?.head_branch === context.ref.replace('refs/heads/', '')
+              && String(a.workflow_run.id) !== String(context.runId));
+            core.setOutput('run_id', match ? String(match.workflow_run.id) : '');
+            core.info(match ? 'Prior editorial artifact found; Python validates each stage identity.'
+              : 'No prior editorial artifact found; fresh assessment required.');
+      - name: Download reusable editorial checkpoint
+        if: steps.editorial_cache.outputs.run_id != ''
         uses: actions/download-artifact@v4
         with:
-          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ inputs.editorial_source_run_id }}
+          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ steps.editorial_cache.outputs.run_id }}
           path: tjr-editorial-cache
-          run-id: ${{ inputs.editorial_source_run_id }}
+          run-id: ${{ steps.editorial_cache.outputs.run_id }}
           github-token: ${{ github.token }}
       - name: Enable verified editorial checkpoint reuse
-        if: inputs.editorial_source_run_id != ''
+        if: steps.editorial_cache.outputs.run_id != ''
         run: echo "TJR_EDITORIAL_CACHE_ROOT=$PWD/tjr-editorial-cache" >> "$GITHUB_ENV"
       - name: Render staged original through shared semantic editorial pipeline
         env:

@@ -6,7 +6,9 @@ Regex rules remain downstream safety checks; they are not the primary editor.
 
 from __future__ import annotations
 
+import ast
 import hashlib
+import inspect
 import json
 import math
 import re
@@ -759,6 +761,54 @@ class LocalContextualEditor:
         return result
 
 
+def _stage_fingerprint(*parts: object) -> str:
+    """Ignore formatting; invalidate only code or prompts used by this stage."""
+    normalized = []
+    for part in parts:
+        if callable(part):
+            import textwrap
+
+            normalized.append(ast.dump(ast.parse(textwrap.dedent(inspect.getsource(part)))))
+        else:
+            normalized.append(str(part))
+    return hashlib.sha256(json.dumps(normalized).encode()).hexdigest()
+
+
+# Verified legacy editor implementations with the identical selector.
+# These hashes are code compatibility metadata, never content/topic gates.
+_LEGACY_SELECTOR_FINGERPRINT = "b2c338ca642bfd298634664c4cca823059505ff519793f4681d8676d2886c4d5"
+_LEGACY_SELECTOR_CODE_HASHES = {
+    "d977781963fc02015cfb58bd70dae33f161e6b3773da3dd6aa6fb228597dd371",
+    "34494b73b520d376ab8096c1c4718a0776d404787ebcea41edd1e5c98b3ee82d",
+}
+
+
+def _selection_context(
+    units: Sequence[SemanticUnit],
+    covered: list[int],
+    brief: CampaignBrief,
+    candidate: ClipCandidate,
+) -> tuple[int, int, list[str], dict[str, Any]]:
+    left, right = max(0, covered[0] - 3), min(len(units) - 1, covered[-1] + 3)
+    hooks = source_headline_candidates(" ".join(unit.text for unit in units[left : right + 1]))
+    return (
+        left,
+        right,
+        hooks,
+        {
+            "min_seconds": brief.min_clip_seconds,
+            "max_seconds": brief.max_clip_seconds,
+            "proposed_start": candidate.start,
+            "proposed_end": candidate.end,
+            "units": [
+                {"id": i, "start": units[i].start, "end": units[i].end, "text": units[i].text}
+                for i in range(left, right + 1)
+            ],
+            "headlines": [{"id": i, "text": text} for i, text in enumerate(hooks)],
+        },
+    )
+
+
 def refine_contextual_candidates(
     brief: CampaignBrief,
     candidates: list[ClipCandidate],
@@ -788,11 +838,54 @@ def refine_contextual_candidates(
         "seed": 0,
         "temperature": 0,
     }
+    identity["selector_sha256"] = _stage_fingerprint(
+        LocalContextualEditor.__init__,
+        LocalContextualEditor.__call__,
+        EDITOR_PROMPT,
+        _selection_context,
+        _thought_units,
+        _closed_ending,
+        source_headline_candidates,
+    )
+    identity["reviewer_sha256"] = _stage_fingerprint(
+        LocalContextualEditor.review, EXCHANGE_REVIEW_PROMPT, "span-validation-v3"
+    )
+    cached_by_proposal: dict[tuple[float, float], dict[str, Any]] = {}
+    selector_reused = 0
+    reviewer_reused = 0
+    cached_review_identity_matches = False
     decisions: list[dict[str, Any]] = []
     result: list[ClipCandidate] = []
     resume_count = 0
     if reuse_path is not None and reuse_path.is_file():
         saved = json.loads(reuse_path.read_text())
+        previous_identity = saved.get("identity", {})
+        common_keys = (
+            "source_sha256",
+            "transcript_sha256",
+            "proposal_sha256",
+            "model_sha256",
+            "model_revision",
+            "duration_bounds",
+            "seed",
+            "temperature",
+        )
+        shared_inputs = all(previous_identity.get(key) == identity[key] for key in common_keys)
+        selector_matches = previous_identity.get("selector_sha256") == identity[
+            "selector_sha256"
+        ] or (
+            previous_identity.get("editor_code_sha256") in _LEGACY_SELECTOR_CODE_HASHES
+            and identity["selector_sha256"] == _LEGACY_SELECTOR_FINGERPRINT
+        )
+        if shared_inputs and selector_matches:
+            cached_by_proposal = {
+                (item["proposal_start"], item["proposal_end"]): item
+                for item in saved.get("audit", {}).get("assessments", saved.get("decisions", []))
+                if isinstance(item.get("decision"), dict)
+            }
+            cached_review_identity_matches = (
+                previous_identity.get("reviewer_sha256") == identity["reviewer_sha256"]
+            )
         if saved.get("identity") == identity:
             result = [
                 ClipCandidate(
@@ -819,10 +912,28 @@ def refine_contextual_candidates(
             ):
                 raise RuntimeError("editorial checkpoint does not match proposal order")
     units = _thought_units(segments)
-    local = LocalContextualEditor() if resume_count < len(candidates) and assessor is None else None
-    backend = assessor or local
-    review_backend = reviewer or (local.review if local is not None else None)
+    local: LocalContextualEditor | None = None
+
+    def local_editor() -> LocalContextualEditor:
+        nonlocal local
+        if local is None:
+            local = LocalContextualEditor()
+        return local
+
+    def select_with_local(context: dict[str, Any]) -> dict[str, Any]:
+        return local_editor()(context)
+
+    def review_with_local(context: dict[str, Any]) -> dict[str, Any]:
+        return local_editor().review(context)
+
+    backend = assessor or select_with_local
+    review_backend = reviewer or (review_with_local if assessor is None else None)
     began = time.monotonic()
+    print(
+        f"EDITORIAL_CACHE_PLAN reusable_selectors={len(cached_by_proposal)} "
+        f"reviewer_identity_match={cached_review_identity_matches}",
+        flush=True,
+    )
 
     def checkpoint(processed_count: int) -> None:
         cache_path.write_text(
@@ -858,23 +969,46 @@ def refine_contextual_candidates(
                 )
                 checkpoint(number + 1)
                 continue
-            left, right = max(0, covered[0] - 3), min(len(units) - 1, covered[-1] + 3)
-            context_text = " ".join(unit.text for unit in units[left : right + 1])
-            hooks = source_headline_candidates(context_text)
-            context = {
-                "min_seconds": brief.min_clip_seconds,
-                "max_seconds": brief.max_clip_seconds,
-                "proposed_start": candidate.start,
-                "proposed_end": candidate.end,
-                "units": [
-                    {"id": i, "start": units[i].start, "end": units[i].end, "text": units[i].text}
-                    for i in range(left, right + 1)
-                ],
-                "headlines": [{"id": i, "text": text} for i, text in enumerate(hooks)],
-            }
+            left, right, hooks, context = _selection_context(units, covered, brief, candidate)
+            cached = cached_by_proposal.get((candidate.start, candidate.end), {})
             started = time.monotonic()
             checkpoint(number)
-            decision = backend(context)
+            cached_decision = cached.get("decision")
+            valid_cached_decision = (
+                isinstance(cached_decision, dict)
+                and type(cached_decision.get("keep")) is bool
+                and (
+                    not cached_decision["keep"]
+                    or (
+                        all(
+                            type(cached_decision.get(key)) is int
+                            for key in (
+                                "start_unit",
+                                "end_unit",
+                                "hook_index",
+                                "opening",
+                                "story",
+                                "ending",
+                                "hook",
+                            )
+                        )
+                        and all(
+                            0 <= cached_decision[key] <= 5
+                            for key in ("opening", "story", "ending", "hook")
+                        )
+                        and left
+                        <= cached_decision["start_unit"]
+                        <= cached_decision["end_unit"]
+                        <= right
+                        and 0 <= cached_decision["hook_index"] < len(hooks)
+                    )
+                )
+            )
+            if valid_cached_decision:
+                decision = cached["decision"]
+                selector_reused += 1
+            else:
+                decision = backend(context)
             if type(decision.get("keep")) is not bool:
                 raise RuntimeError("contextual editor returned invalid keep flag")
             evidence = {
@@ -882,6 +1016,7 @@ def refine_contextual_candidates(
                 "proposal_end": candidate.end,
                 "decision": decision,
                 "assessment_seconds": round(time.monotonic() - started, 3),
+                "selector_cache_reused": valid_cached_decision,
             }
             decisions.append(evidence)
             # Preserve the raw decision even if validation fails; only completed
@@ -931,12 +1066,29 @@ def refine_contextual_candidates(
             if review_backend is None:
                 raise RuntimeError("contextual editor requires an independent span reviewer")
             review_started = time.monotonic()
-            review = review_backend(
-                {
-                    "selected_units": [unit.text for unit in units[first : last + 1]],
-                    "before": [unit.text for unit in units[max(0, first - 2) : first]],
-                    "after": [unit.text for unit in units[last + 1 : last + 3]],
-                }
+            review_context = {
+                "selected_units": [unit.text for unit in units[first : last + 1]],
+                "before": [unit.text for unit in units[max(0, first - 2) : first]],
+                "after": [unit.text for unit in units[last + 1 : last + 3]],
+            }
+            review_input_sha = hashlib.sha256(
+                json.dumps(review_context, sort_keys=True).encode()
+            ).hexdigest()
+            if (
+                valid_cached_decision
+                and cached_review_identity_matches
+                and cached.get("review_input_sha256") == review_input_sha
+                and isinstance(cached.get("exchange_review"), dict)
+            ):
+                review = cached["exchange_review"]
+                reviewer_reused += 1
+            else:
+                review = review_backend(review_context)
+            evidence["review_input_sha256"] = review_input_sha
+            evidence["reviewer_cache_reused"] = (
+                cached_review_identity_matches
+                and cached.get("review_input_sha256") == review_input_sha
+                and isinstance(cached.get("exchange_review"), dict)
             )
             evidence["exchange_review"] = review
             evidence["reviewed_start"] = units[first].start
@@ -1025,6 +1177,8 @@ def refine_contextual_candidates(
         "assessments": decisions,
         "cache_reused": False,
         "resumed_assessments": resume_count,
+        "selector_cache_hits": selector_reused,
+        "reviewer_cache_hits": reviewer_reused,
         "assessment_seconds": round(time.monotonic() - began, 3),
         "candidate_count": len(result),
         "human_review_required": True,

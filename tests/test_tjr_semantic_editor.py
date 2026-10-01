@@ -621,3 +621,131 @@ def test_local_reviewer_separates_delivered_span_from_excluded_context():
         "enum": [0, 1],
     }
     assert request["seed"] == 0 and request["temperature"] == 0
+
+
+def test_stage_cache_reuses_selector_when_only_reviewer_changes(tmp_path, monkeypatch):
+    import json
+
+    from clipper.models import ClipCandidate
+    from scripts import tjr_semantic_editor as editor
+
+    segments = [
+        TranscriptSegment(0, 7, "How did security stop you at your own show?"),
+        TranscriptSegment(7, 14, "I had left my own access pass in the car."),
+        TranscriptSegment(14, 22, "The owner came outside and finally let me inside."),
+    ]
+    proposal = ClipCandidate("v", 0, 22, " ".join(s.text for s in segments), 10)
+    calls = {"selector": 0, "reviewer": 0}
+
+    def assess(context):
+        calls["selector"] += 1
+        return dict(
+            keep=True,
+            start_unit=0,
+            end_unit=2,
+            hook_index=0,
+            opening=4,
+            story=4,
+            ending=5,
+            hook=4,
+            reason="Missing pass; owner let him inside.",
+        )
+
+    def review(context):
+        calls["reviewer"] += 1
+        return _review(context)
+
+    first = tmp_path / "first.json"
+    editor.refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=first,
+        assessor=assess,
+        reviewer=review,
+    )
+    monkeypatch.setattr(
+        editor, "EXCHANGE_REVIEW_PROMPT", editor.EXCHANGE_REVIEW_PROMPT + " Revised review."
+    )
+    second = tmp_path / "second.json"
+    result, audit = editor.refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=second,
+        reuse_path=first,
+        assessor=assess,
+        reviewer=review,
+    )
+    assert len(result) == 1
+    assert calls == {"selector": 1, "reviewer": 2}
+    assert audit["selector_cache_hits"] == 1
+    assert audit["reviewer_cache_hits"] == 0
+
+    # Changing unrelated module metadata must not call either model stage.
+    saved = json.loads(second.read_text())
+    saved["identity"]["editor_code_sha256"] = "unrelated-module-edit"
+    second.write_text(json.dumps(saved))
+    _, audit = editor.refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "third.json",
+        reuse_path=second,
+        assessor=assess,
+        reviewer=review,
+    )
+    assert calls == {"selector": 1, "reviewer": 2}
+    assert audit["selector_cache_hits"] == audit["reviewer_cache_hits"] == 1
+
+    # Changed source invalidates both stages.
+    editor.refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        segments,
+        source_sha256="b" * 64,
+        cache_path=tmp_path / "changed-source.json",
+        reuse_path=second,
+        assessor=assess,
+        reviewer=review,
+    )
+    assert calls == {"selector": 2, "reviewer": 3}
+
+    # A known v3 artifact migrates selector decisions, never its faulty reviews.
+    legacy = json.loads(first.read_text())
+    legacy["identity"].pop("selector_sha256")
+    legacy["identity"].pop("reviewer_sha256")
+    legacy["identity"]["version"] = "podcast_structured_editor_v3"
+    legacy["identity"]["editor_code_sha256"] = (
+        "d977781963fc02015cfb58bd70dae33f161e6b3773da3dd6aa6fb228597dd371"
+    )
+    legacy_path = tmp_path / "legacy.json"
+    legacy_path.write_text(json.dumps(legacy))
+    _, audit = editor.refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "migrated.json",
+        reuse_path=legacy_path,
+        assessor=assess,
+        reviewer=review,
+    )
+    assert calls == {"selector": 2, "reviewer": 4}
+    assert audit["selector_cache_hits"] == 1 and audit["reviewer_cache_hits"] == 0
+
+    monkeypatch.setattr(editor, "EDITOR_PROMPT", editor.EDITOR_PROMPT + " Changed selector.")
+    editor.refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "changed-selector.json",
+        reuse_path=second,
+        assessor=assess,
+        reviewer=review,
+    )
+    assert calls == {"selector": 3, "reviewer": 5}
