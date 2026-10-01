@@ -37,6 +37,7 @@ def _fake_embedder(texts: list[str]) -> list[list[float]]:
             vectors.append([1.0, 0.0, 0.0])
     return vectors
 
+
 def test_semantic_editor_builds_complete_story_without_sliding_window_quota() -> None:
     segments = [
         TranscriptSegment(0, 6, "The guest told us the wildest story from his first big show."),
