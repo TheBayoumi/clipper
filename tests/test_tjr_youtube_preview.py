@@ -391,7 +391,7 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
         render_youtube_previews(
             tmp_path / "renders", Path("campaigns/reach-double-coverage-dedicated.yaml")
         )
-    runs = list((tmp_path / "renders").glob("reach-tjr-youtube-*"))
+    runs = list((tmp_path / "renders").glob("reach-double-coverage-youtube-*"))
     assert len(runs) == 1
     run = runs[0]
     assert len(json.loads((run / "transcript.json").read_text())) == 3
