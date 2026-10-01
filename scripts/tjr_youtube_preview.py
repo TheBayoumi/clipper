@@ -915,11 +915,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         completed: list[dict[str, Any]] = []
         for number, pick in enumerate(picks, start=1):
             clip = pick.clip
-            out = (
-                run_dir
-                / "clips"
-                / f"{number:02d}-double-coverage-{chosen_video.video_id}.mp4"
-            )
+            out = run_dir / "clips" / f"{number:02d}-double-coverage-{chosen_video.video_id}.mp4"
             layout = "default"
             renderer.render(
                 source,
