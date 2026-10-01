@@ -7,7 +7,7 @@ from pathlib import Path
 
 from scripts.tjr_feedback_gate import review_run
 
-CHANNEL = "UCGHBUXjDCeiIXNdKR0HUZnA"
+CHANNEL = "UCf1q6dhccWr6eQEcFFnJSbA"
 
 
 def _probe(_path: Path) -> dict[str, object]:
@@ -48,6 +48,7 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
         "source_to_delivery_mean_ssim": 0.997,
         "compared_frames": 1750,
         "output_bytes": len(b"fixture"),
+        "campaign_watermark_applied": True,
         "edit_plan": {
             "style": "semantic_micro_punch",
             "punch_scale": 1.025,
@@ -257,21 +258,19 @@ def test_missing_sidecar_and_partial_source_are_reported(tmp_path: Path) -> None
     assert "INCOMPLETE_SOURCE_COVERAGE" in result["issues"]
 
 
-def test_failed_egress_is_distinct_from_missing_channel(tmp_path: Path) -> None:
-    _fixture(tmp_path)
-    first = review_run(tmp_path, expected_channels=2, probe=_probe)
-    assert "MISSING_CHANNEL_ARTIFACT" in first["issues"]
+def test_failed_egress_is_reported_without_claiming_missing_campaign_channel(
+    tmp_path: Path,
+) -> None:
     failed = tmp_path / "tjr-real-original-youtube-hd-blocked"
     failed.mkdir()
     (failed / "verified-original-egress.json").write_text(
         json.dumps({"status": "YOUTUBE_EGRESS_BOT_CHALLENGE"})
     )
-    result = review_run(tmp_path, expected_channels=2, probe=_probe)
+    result = review_run(tmp_path, expected_channels=1, probe=_probe)
     assert "MISSING_CHANNEL_ARTIFACT" in result["issues"]
-    assert "AUTHENTICATED_YOUTUBE_SESSION_REQUIRED" in result["issues"]
-    assert result["status"] == "AUTHENTICATED_YOUTUBE_SESSION_REQUIRED"
-    assert "CONFIGURE_PERSISTENT_AUTHENTICATED_YOUTUBE_SESSION" in result["next_actions"]
-    assert result["technically_verified_mp4_count"] == 1
+    assert "YOUTUBE_EGRESS_BLOCKED" in result["issues"]
+    assert result["status"] == "YOUTUBE_EGRESS_BLOCKED"
+    assert "REPAIR_YOUTUBE_SOURCE_TRANSPORT" in result["next_actions"]
 
 
 def test_workflow_stores_independent_two_channel_evidence() -> None:
@@ -396,7 +395,7 @@ def test_random_or_aggressive_edit_plan_is_rejected(tmp_path: Path) -> None:
     assert report["technically_verified_mp4_count"] == 0
 
 
-def test_split_screen_montage_is_an_intentional_edit_plan(tmp_path: Path) -> None:
+def test_unaudited_split_screen_layout_is_rejected_for_double_coverage(tmp_path: Path) -> None:
     artifact = _fixture(tmp_path)
     quality = next(artifact.rglob("01-tjr-test.quality.json"))
     evidence = json.loads(quality.read_text(encoding="utf-8"))
@@ -409,7 +408,7 @@ def test_split_screen_montage_is_an_intentional_edit_plan(tmp_path: Path) -> Non
     }
     quality.write_text(json.dumps(evidence), encoding="utf-8")
     report = review_run(tmp_path, expected_channels=1, probe=_probe)
-    assert "EDITORIAL_EDIT_PLAN_FAILED" not in report["issues"]
+    assert "EDITORIAL_EDIT_PLAN_FAILED" in report["issues"]
 
 
 def test_independent_audit_rejects_overlapping_source_windows(tmp_path: Path) -> None:
@@ -475,28 +474,14 @@ def test_production_has_no_automatic_transport_fallback() -> None:
     assert "TJR_ASR_MODEL: distil-large-v3" in workflow
 
 
-def test_known_source_cannot_regress_to_centered_desktop_layout(tmp_path: Path) -> None:
+def test_double_coverage_has_no_tjr_source_layout_exception(tmp_path: Path) -> None:
     artifact = _fixture(tmp_path)
     report_path = next(artifact.rglob("tjr-youtube-qa-report.json"))
     report = json.loads(report_path.read_text(encoding="utf-8"))
     report["source_url"] = "https://www.youtube.com/watch?v=LvnemCfJpQU"
     report_path.write_text(json.dumps(report), encoding="utf-8")
-    blocked = review_run(tmp_path, expected_channels=1, probe=_probe)
-    assert "KNOWN_SOURCE_LAYOUT_REGRESSION" in blocked["issues"]
-
-    quality_path = next(artifact.rglob("01-tjr-test.quality.json"))
-    quality = json.loads(quality_path.read_text(encoding="utf-8"))
-    quality["edit_plan"] = {
-        "style": "split_screen_montage",
-        "punch_scale": 1.0,
-        "attention_beats": [],
-        "random_effects": False,
-        "editorial_layout": "tjr-memecoin-logo-safe",
-    }
-    quality_path.write_text(json.dumps(quality), encoding="utf-8")
-    accepted = review_run(tmp_path, expected_channels=1, probe=_probe)
-    assert "KNOWN_SOURCE_LAYOUT_REGRESSION" not in accepted["issues"]
-    assert "EDITORIAL_EDIT_PLAN_FAILED" not in accepted["issues"]
+    result = review_run(tmp_path, expected_channels=1, probe=_probe)
+    assert "KNOWN_SOURCE_LAYOUT_REGRESSION" not in result["issues"]
 
 
 def test_duplicate_semantic_headlines_are_rejected_even_for_distinct_windows(
@@ -587,7 +572,7 @@ def test_replay_auto_channel_count_uses_original_modal_shape(tmp_path: Path) -> 
     result = review_run(tmp_path, expected_channels=0, probe=_probe)
     assert result["expected_channels"] == 2
     assert "MISSING_CHANNEL_ARTIFACT" in result["issues"]
-    assert "AUTHENTICATED_YOUTUBE_SESSION_REQUIRED" in result["issues"]
+    assert "YOUTUBE_EGRESS_BLOCKED" in result["issues"]
 
 
 def test_verified_mirror_upload_keeps_transcript_and_source_coverage() -> None:
