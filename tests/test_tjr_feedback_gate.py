@@ -37,7 +37,7 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
         "100,100,0,0,3,18,0,2,120,120,375,1\n"
         "[Events]\n"
         r"Dialogue: 5,0:00:00.00,0:00:29.20,Hook,,0,0,0,,{\an8\pos(540,185)}"
-        "WHEN IS THE MARKET-CAP ENTRY TOO LATE?\n"
+        "WHY DID THE REFEREE CANCEL THAT GOAL?\n"
         r"Dialogue: 2,0:00:00.10,0:00:00.55,Caption,,0,0,0,,{\c&H0059DEFF&}"
         r"WORD{\rCaption}"
         "\n",
@@ -83,7 +83,7 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
                 "hook_candidate": (
                     'THE MOMENT: "PARTIAL QUOTE"'
                     if generic
-                    else "WHEN IS THE MARKET-CAP ENTRY TOO LATE?"
+                    else "WHY DID THE REFEREE CANCEL THAT GOAL?"
                 ),
                 "source_start_seconds": 2861.2,
                 "source_end_seconds": 2890.4,
@@ -103,8 +103,8 @@ def _fixture(root: Path, *, generic: bool = False) -> Path:
                     "start": 2860.0,
                     "end": 2891.0,
                     "text": (
-                        "Late at $200K? The coin is already at this market cap and "
-                        "this entry may be too late, so I wait before buying."
+                        "Why did the referee cancel that goal? The replay showed a handball before "
+                        "the shot went in, so we accepted the decision and started again."
                     ),
                 }
             ]
@@ -217,7 +217,7 @@ def test_ass_hook_must_match_audited_hook(tmp_path: Path) -> None:
     ass = next(artifact.rglob("*.ass"))
     ass.write_text(
         ass.read_text(encoding="utf-8").replace(
-            "WHEN IS THE MARKET-CAP ENTRY TOO LATE?", "MISLEADING STALE HOOK"
+            "WHY DID THE REFEREE CANCEL THAT GOAL?", "MISLEADING STALE HOOK"
         ),
         encoding="utf-8",
     )

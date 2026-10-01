@@ -26,94 +26,9 @@ def test_rejects_filler_and_weak_openers() -> None:
     assert evaluate_candidate(filler) is None
 
 
-def test_preserves_authentic_reaction_hook() -> None:
-    moment = clip(
-        0,
-        "damn wait what the hell just happened to the price i was "
-        "short and the market moved much faster than i expected "
-        "so i have to manage my position before getting stopped out again",
-    )
-    pick = evaluate_candidate(moment)
-    assert pick is not None
-    assert pick.hook_score >= 2
-    assert pick.to_dict()["publish_approved"] is False
-
-
-def test_selects_distinct_moments_without_two_clip_cap() -> None:
-    text = "what just happened i never expected to see a move like that "
-    text += "the risk on this trade is important and the position needs "
-    text += "proper management before the price moves against us right now "
-    text += "and we avoid another risky mistake"
-    inputs = [clip(i * 45, text + f" number {i}", 20 - i) for i in range(5)]
-    chosen, rejected = select_editorial_moments(inputs, render_safety_limit=10)
-    # Generic repeated risk talk must not be kept just to fill the batch.
-    assert chosen == []
-    assert all(
-        x["reason"] in {"NO_CREATOR_GRADE_GROUNDED_HOOK", "BELOW_CREATOR_QUALITY_FLOOR"}
-        for x in rejected
-    )
-
-
-def test_real_distinct_hooks_can_yield_more_than_two_clips() -> None:
-    originals = [
-        "damn look at that move i did not expect the market to reverse "
-        "i will manage the stop before entering this next trade tomorrow",
-        "why do traders keep risking too much money on positions "
-        "because they do not have a trading plan and chase the price every time",
-        "what is the biggest mistake in a losing trade people move their "
-        "stop loss and turn a small loss into a huge financial problem",
-    ]
-    fuller = [
-        text + " my plan sets clear exits before taking the position so there "
-        "is never any need to panic or chase the next move"
-        for text in originals
-    ]
-    picks, _ = select_editorial_moments(
-        [clip(i * 45, text, 10) for i, text in enumerate(fuller)], render_safety_limit=10
-    )
-    assert len(picks) == 3
-
-
-def test_render_safety_limit_records_overflow_instead_of_becoming_a_quota() -> None:
-    originals = [
-        "damn look at that move i did not expect the market to reverse "
-        "i will manage the stop before entering this next trade tomorrow",
-        "why do traders keep risking too much money on positions "
-        "because they do not have a trading plan and chase the price every time",
-        "what is the biggest mistake in a losing trade people move their "
-        "stop loss and turn a small loss into a huge financial problem",
-    ]
-    fuller = [
-        text + " my plan sets clear exits before taking the position so there "
-        "is never any need to panic or chase the next move"
-        for text in originals
-    ]
-    picks, rejected = select_editorial_moments(
-        [clip(i * 45, text, 10) for i, text in enumerate(fuller)],
-        render_safety_limit=1,
-    )
-    assert len(picks) == 1
-    assert sum(item["reason"] == "RENDER_SAFETY_LIMIT" for item in rejected) == 2
-
-
 def test_render_safety_bounds_are_explicit() -> None:
     with pytest.raises(ValueError):
         select_editorial_moments([], render_safety_limit=0)
-
-
-def test_headline_from_full_context_and_campaign_topic() -> None:
-    clip = ClipCandidate(
-        "video",
-        0,
-        31,
-        "what is happening in this market here so i wonder why he stopped using order blocks "
-        "because there's no reason to use them anymore since equilibrium gets hit "
-        "and that is the trade",
-        12,
-    )
-    p = evaluate_candidate(clip)
-    assert p is not None
-    assert p.hook == "WHY HE STOPPED USING ORDER BLOCKS"
 
 
 def test_no_creative_trading_claim_for_unrelated_stream_banter() -> None:
@@ -128,54 +43,17 @@ def test_no_creative_trading_claim_for_unrelated_stream_banter() -> None:
     assert evaluate_candidate(clip) is None
 
 
-def test_distinct_trade_moments_still_scored() -> None:
-    a = ClipCandidate(
-        "video",
-        0,
-        31,
-        "why do traders keep risking too much money on positions because they do "
-        "not have a trading plan "
-        "and chase the price every time the market moves and i never want that mistake again",
-        10,
-    )
-    b = ClipCandidate(
-        "video",
-        45,
-        76,
-        "what is the biggest mistake in a losing trade people move their stop loss "
-        "and turn a small loss "
-        "into a huge financial problem in this market and that changes the setup "
-        "for the next position",
-        10,
-    )
-    selected, rejected = select_editorial_moments([a, b], render_safety_limit=12)
-    assert len(selected) <= 2
-    assert all(not pick.hook.startswith('THE MOMENT: "') for pick in selected)
-    if not selected:
-        assert len(rejected) == 2
-        assert all(
-            item["reason"]
-            in {
-                "BELOW_CREATOR_QUALITY_FLOOR",
-                "NO_CREATOR_GRADE_GROUNDED_HOOK",
-                "WEAK_FIRST_TWO_SECONDS",
-            }
-            for item in rejected
-        )
-
-
 STRONG_SEGMENT = (
-    "damn what happened to this price i entered the trade but the market reversed "
-    "and the position moved against me i had to manage risk and exit my position "
-    "before the loss became even bigger so the lesson is to plan the stop loss "
-    "before entering another trade tomorrow"
+    "Why did security stop me at my own show? I had planned the entire evening "
+    "with the team. But I forgot the one pass everyone needed at the door. "
+    "So the manager called me and fixed the problem before the whole room started laughing."
 )
 
 
 def test_weighted_provisional_score_tracks_unverified_visuals() -> None:
     result = evaluate_candidate(clip(0, STRONG_SEGMENT))
     assert result is not None
-    assert RUBRIC_VERSION == "double-coverage-editorial-v1-semantic-campaign-quality"
+    assert RUBRIC_VERSION == "generic-editorial-v2-source-grounded"
     assert sum(WEIGHTS.values()) == 100
     assert result.score_coverage == 85
     assert result.criteria["visuals"].score is None
@@ -283,50 +161,6 @@ def test_provisional_score_is_deterministic_and_serializable() -> None:
     json.dumps(first.to_dict())
 
 
-def test_repeated_topic_gets_distinct_grounded_source_headlines() -> None:
-    first = clip(0, STRONG_SEGMENT, 11)
-    second = clip(
-        55,
-        "why did the stop loss hit my trade when the market started moving so "
-        "fast my position went against the plan and the reversal was far bigger "
-        "than expected so i decided to exit the position and manage risk first",
-        10,
-    )
-    selected, rejected = select_editorial_moments([first, second])
-    assert 1 <= len(selected) <= 2
-    assert len({pick.hook.casefold() for pick in selected}) == len(selected)
-    assert all(
-        pick.hook != "WHAT'S THE REAL TAKEAWAY HERE?" and not pick.hook.startswith('THE MOMENT: "')
-        for pick in selected
-    )
-    if len(selected) == 1:
-        assert any(
-            item["reason"] in {"BELOW_CREATOR_QUALITY_FLOOR", "NO_CREATOR_GRADE_GROUNDED_HOOK"}
-            for item in rejected
-        )
-
-
-def test_generic_topic_requires_source_specific_headline() -> None:
-    source = clip(
-        0,
-        "why did the trading plan fail on this market we talked about several "
-        "important facts but the risk grew because we did not anticipate the "
-        "move and we decided to exit before the loss became an even bigger problem",
-    )
-    picks, rejected = select_editorial_moments([source])
-    assert all(
-        pick.hook
-        and pick.hook != "WHAT'S THE REAL TAKEAWAY HERE?"
-        and not pick.hook.startswith('THE MOMENT: "')
-        for pick in picks
-    )
-    if not picks:
-        assert any(
-            item["reason"] in {"BELOW_CREATOR_QUALITY_FLOOR", "NO_CREATOR_GRADE_GROUNDED_HOOK"}
-            for item in rejected
-        )
-
-
 def test_rejection_audit_identifies_each_individual_gate() -> None:
     from scripts.tjr_editorial import candidate_gate_failures
 
@@ -335,21 +169,6 @@ def test_rejection_audit_identifies_each_individual_gate() -> None:
     assert "NO_CAMPAIGN_RELEVANT_COMPLETE_MOMENT" in reasons
     assert "WORD_COUNT_OUT_OF_RANGE" in reasons
     assert "WEAK_FIRST_TWO_SECONDS" in reasons
-
-
-def test_complete_trade_story_can_be_rendered_for_hook_led_manual_review() -> None:
-    item = clip(
-        0,
-        "i wanted a retrace on the nasdaq before taking another trade but the "
-        "market already moved too far up and i knew chasing the position would "
-        "increase the risk for no reason so i decided to wait for the next "
-        "entry instead of risking another loss.",
-    )
-    assert evaluate_candidate(item) is None
-    reviewed = evaluate_candidate(item, allow_review_only_opening=True)
-    assert reviewed is not None
-    assert reviewed.to_dict()["publish_approved"] is False
-    assert any("review_only_weak_opening" in r for r in reviewed.reasons)
 
 
 def test_hook_led_fallback_never_accepts_unfinished_trade_story() -> None:
@@ -363,25 +182,75 @@ def test_hook_led_fallback_never_accepts_unfinished_trade_story() -> None:
     assert evaluate_candidate(item, allow_review_only_opening=True) is None
 
 
-def test_render_safety_limit_is_not_a_content_quota() -> None:
-    strong = (
-        "Late at $200K? the coin migrates at $50K market caps and people are buying "
-        "before the price runs, but this entry is already much later than the plan. "
-        "The market setup has risk, a clear entry, and a reason to wait for price."
+@pytest.mark.parametrize("subject", ["security", "the referee", "the scientist"])
+def test_complete_stories_are_not_restricted_to_trading(subject: str) -> None:
+    text = STRONG_SEGMENT.replace("security", subject)
+    result = evaluate_candidate(clip(0, text))
+    assert result is not None
+    assert result.hook in text.upper()
+    assert result.to_dict()["publish_approved"] is False
+
+
+def test_distinct_source_stories_and_render_limit() -> None:
+    texts = [
+        STRONG_SEGMENT,
+        "Why did the referee cancel that goal? We had planned a final attack against "
+        "the other team. But the ball touched my hand before the shot went in. So "
+        "the replay showed the mistake and we accepted the decision before starting "
+        "again.",
+        "How did the scientist save the experiment? She wanted to measure a rare "
+        "reaction with the equipment. But the temperature suddenly increased during "
+        "the night. So she changed the cooling system and solved the problem before "
+        "losing the entire sample.",
+    ]
+    inputs = [clip(i * 45, text) for i, text in enumerate(texts)]
+    picks, rejected = select_editorial_moments(inputs, render_safety_limit=10)
+    assert len(picks) == 3
+    assert len({pick.hook for pick in picks}) == 3
+    picks, rejected = select_editorial_moments(inputs, render_safety_limit=1)
+    assert len(picks) == 1
+    assert sum(x["reason"] == "RENDER_SAFETY_LIMIT" for x in rejected) == 2
+
+
+def test_repeated_identical_headlines_do_not_fill_a_quota() -> None:
+    picks, rejected = select_editorial_moments([clip(i * 45, STRONG_SEGMENT) for i in range(5)])
+    assert len({pick.hook for pick in picks}) == len(picks)
+    assert len(picks) + len(rejected) == 5
+
+
+def test_complete_story_with_weak_audio_opening_requires_review() -> None:
+    text = STRONG_SEGMENT.replace(
+        "Why did security stop me at my own show?", "I had a problem at the door."
     )
-    weak = (
-        "we are talking about a trade and the market and the price and the position "
-        "for a while because there are some things happening in the market today "
-        "and this is just another trading discussion about the position."
+    item = clip(0, text)
+    assert evaluate_candidate(item) is None
+    result = evaluate_candidate(item, allow_review_only_opening=True)
+    assert result is not None
+    assert result.to_dict()["publish_approved"] is False
+
+
+def test_override_cannot_invent_a_non_numeric_claim() -> None:
+    assert (
+        evaluate_candidate(clip(0, STRONG_SEGMENT), hook_override="SECURITY RUINED THE ENTIRE SHOW")
+        is None
     )
-    picks, rejected = select_editorial_moments([clip(0, strong, 30), clip(60, weak, 29)])
-    assert len(picks) <= 1
-    assert any(
-        item["reason"]
-        in {
-            "NO_CREATOR_GRADE_GROUNDED_HOOK",
-            "BELOW_CREATOR_QUALITY_FLOOR",
-            "WEAK_FIRST_TWO_SECONDS",
-        }
-        for item in rejected
+
+
+def test_semantic_headline_cannot_bypass_source_grounding() -> None:
+    source = clip(0, STRONG_SEGMENT)
+    fabricated = ClipCandidate(
+        source.video_id,
+        source.start,
+        source.end,
+        source.text,
+        source.score,
+        reasons=(
+            "semantic_hook=SECURITY RUINED THE ENTIRE SHOW",
+            "event_similarity=0.65",
+            "campaign_relevance=0.8",
+            "relevance_margin=0.4",
+        ),
     )
+    picks, rejected = select_editorial_moments([fabricated])
+    assert picks == []
+    assert "UNSUPPORTED_SOURCE_HOOK" in rejected[0]["failed_gates"]

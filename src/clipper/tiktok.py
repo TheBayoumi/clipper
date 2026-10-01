@@ -1,13 +1,14 @@
 """Safe, full-duration editorial headlines and real word-aligned TikTok captions.
 
 Style B v2 creates a burn-in-ready ASS sidecar without inventing spoken-word
-boundaries, adding source logos, or making unverifiable financial claims.
+boundaries, adding source logos, or making unverifiable claims.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Collection, Sequence
+from itertools import combinations, pairwise
 from pathlib import Path
 
 from PIL import ImageFont
@@ -36,169 +37,43 @@ def _ass_time(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{whole:02d}.{centiseconds:02d}"
 
 
-def creative_hook_from_text(text: str) -> str:
-    """Create a compact, evidence-grounded headline from the *entire* clip.
+def source_headline_candidates(text: str) -> list[str]:
+    """Rank intact source sentences; never invent a topic, outcome, or speaker.
 
-    These are question/topic headlines, not invented returns or claims about
-    footage. A real financial claim is explicitly attributed to the speaker.
+    These are extractive review headlines, not model-written paraphrases.
+    Complete sentences preserve negation and amounts. Oversized sentences are
+    rejected rather than truncated into a claim with missing context.
     """
     original = _safe(text)
-    lowered = original.lower()
     if not original:
-        return ""
-    stopped_order_blocks = re.search(
-        r"\b(?:i|he|we|they)\s+(?:have\s+|has\s+|had\s+)?"
-        r"stopped\s+using\s+(?:the\s+)?order\s+blocks?\b",
-        lowered,
-    )
-    no_reason_order_blocks = re.search(
-        r"\b(?:there(?:'s| is)|i\s+(?:see|have)|we\s+(?:see|have)|"
-        r"he\s+(?:sees|has))\s+no\s+reason\s+to\s+use\s+"
-        r"(?:the\s+)?order\s+blocks?\s+anymore\b",
-        lowered,
-    )
-    negated_order_block_stop = re.search(
-        r"\b(?:not|never|didn't|didnt|haven't|hasn't|hadn't|can't|cannot)\b"
-        r"(?:\s+\w+){0,4}\s+stopped?\s+using\s+(?:the\s+)?order\s+blocks?\b",
-        lowered,
-    )
-    negated_no_reason = re.search(
-        r"\b(?:wouldn't|wouldnt|don't|dont|didn't|didnt|can't|cant|cannot|not|never)\b"
-        r"(?:\s+\w+){0,6}\s+no\s+reason\s+to\s+use\s+"
-        r"(?:the\s+)?order\s+blocks?\s+anymore\b",
-        lowered,
-    )
-    if (stopped_order_blocks and not negated_order_block_stop) or (
-        no_reason_order_blocks and not negated_no_reason
-    ):
-        return "WHY HE STOPPED USING ORDER BLOCKS"
-    if "copy trad" in lowered and any(x in lowered for x in ("blind", "never", "don't")):
-        return "WHY HE WARNS ABOUT COPY TRADING"
-    # Editorially meaningful questions require affirmative source-language cues.
-    # Questions invite viewing without inventing outcomes or financial guarantees.
-    if "market cap" in lowered and any(
-        cue in lowered for cue in ("bullshit", "scam", "looks wrong", "suspicious")
-    ):
-        return "WHAT MAKES THIS MARKET-CAP SETUP SUSPICIOUS?"
-    wallet_buying = re.search(r"\bwallets?\s+(?:are\s+)?buying\b", lowered)
-    denied_buying = re.search(
-        r"\b(?:no|not|never|without)\s+(?:\w+\s+){0,2}"
-        r"wallets?\s+(?:are\s+)?buying\b",
-        lowered,
-    )
-    if (
-        ("no socials" in lowered or "don't see any socials" in lowered)
-        and wallet_buying
-        and not denied_buying
-    ):
-        return "WHY ARE WALLETS BUYING WITHOUT SOCIALS?"
-    sell_half = re.search(
-        r"\b(?:should|would|could)\s+we\s+(?:just\s+)?sell\s+"
-        r"(?:like\s+)?(?:50\s*%|half)(?=\s|[?.!,]|$)",
-        lowered,
-    )
-    if sell_half:
-        return "WOULD YOU SELL HALF HERE?"
-    if (
-        ("on chain" in lowered or "on-chain" in lowered)
-        and "volume" in lowered
-        and re.search(r"\bbuys?\b|\bbuying\b", lowered)
-    ):
-        return "CAN ON-CHAIN BUYS CONFIRM THE MOVE?"
-    if "fomo" in lowered and re.search(r"\bbuy(?:ing|s)?\b", lowered):
-        return "IS FOMO DRIVING THESE BUYS?"
-    if "tweet" in lowered and "coin" in lowered:
-        return "CAN A SINGLE TWEET MOVE A COIN?"
-    if "coin" in lowered and any(
-        cue in lowered for cue in ("sold off", "selling off", "getting sold off")
-    ):
-        return "WHY IS THIS COIN GETTING SOLD OFF?"
-    if "community" in lowered and "good" in lowered and "bad" in lowered:
-        return "GOOD COIN OR BAD COIN: HOW DO YOU TELL?"
-    if "fee" in lowered and "rug" in lowered:
-        return "CAN FEES FILTER OUT RUG COINS?"
-    if "trade" in lowered and re.search(r"\brisk\s*-\s*free\b", lowered):
-        return "IS THIS 'RISK-FREE' TRADE REALLY SAFE?"
-    if "market cap" in lowered and any(
-        term in lowered for term in ("late", "early", "entry", "enter", "buying")
-    ):
-        return "WHEN IS THE MARKET-CAP ENTRY TOO LATE?"
-    if "meme coin" in lowered and any(
-        x in lowered for x in ("beginner", "first", "get started", "start trading")
-    ):
-        return "MEMECOIN TRADING: WHERE DO YOU START?"
-    million_earnings = re.search(
-        r"\b(?:made|earned|profited?|up\s+over)\b(?:\s+\w+){0,5}\s+\bmillions?\b"
-        r"|\bmillions?\b(?:\s+\w+){0,5}\b(?:made|earned|profited?)\b",
-        lowered,
-    )
-    negated_million_earnings = re.search(
-        r"\b(?:not|never|no|didn't|didnt|haven't|hasn't|can't|cant|cannot)\b"
-        r"(?:\s+\w+){0,4}\s+\b(?:made|earned|profit(?:ed)?)\b"
-        r"(?:\s+\w+){0,5}\s+\bmillions?\b",
-        lowered,
-    )
-    if million_earnings and not negated_million_earnings:
-        return "A TRADER CLAIMS MILLIONS: HOW?"
-    stop_was_hit = bool(
-        re.search(
-            r"\b(?:stop(?:[- ]loss)?\s+(?:(?:got|was|gets?|is)\s+)?hit|"
-            r"(?:got|was|gets?|is)\s+stopped\s+out|stopped\s+out)\b",
-            lowered,
-        )
-    )
-    if "stop loss" in lowered and stop_was_hit:
-        return "WHAT HAPPENS WHEN THE STOP GETS HIT?"
-    # Require an affirmative waiting-to-enter construction, not mere keyword
-    # co-occurrence; a persistent hook must never reverse the spoken meaning.
-    waiting_to_enter = re.search(
-        r"\bwait(?:ing)?\b(?:\s+\w+){0,7}\s+(?:enter|entry)\b",
-        lowered,
-    )
-    negated_wait = re.search(
-        r"\b(?:not|never|no|without|didn't|don't|doesn't|cannot|can't|"
-        r"cant|won't|wont|wouldn't|couldn't|shouldn't)\b"
-        r"(?:\s+\w+){0,2}\s+wait(?:ing)?\b",
-        lowered,
-    )
-    if waiting_to_enter and not negated_wait:
-        return "WHY HE'S WAITING TO ENTER THIS TRADE"
-    selloff = any(x in lowered for x in ("massive sell off", "massive sell-off", "massive selloff"))
-    declining_short = re.search(
-        r"\b(?:(?:will|would|could|should|do|does|did|can|am|is|are|was|were)\s+"
-        r"not\s+short(?:ing)?|(?:won't|wont|can't|cant|cannot|don't|didn't|"
-        r"wouldn't|wouldnt)\s+short(?:ing)?|never\s+short(?:ing)?|"
-        r"refuse(?:d)?\s+to\s+short|avoid(?:ed)?\s+shorting|"
-        r"stayed\s+away\s+from\s+shorting|not\s+going\s+to\s+short)\b",
-        lowered,
-    )
-    if selloff and declining_short:
-        return "WHY HE'S NOT SHORTING THE SELLOFF"
-    if selloff and re.search(r"\bshort(?:ed|ing)?\b", lowered):
-        return "WHAT'S THE SHORT SETUP IN THIS SELLOFF?"
-    affirmative_excess_risk = re.search(
-        r"\b(?:why\s+do\s+)?traders?\s+(?:keep\s+)?risk(?:ing)?\s+too\s+much\b"
-        r"|\b(?:you|they|we)\s+(?:are\s+|keep\s+)?risk(?:ing)?\s+too\s+much\b"
-        r"|\brisk(?:ed|ing)\s+too\s+much\s+(?:money|capital)\b",
-        lowered,
-    )
-    if affirmative_excess_risk:
-        return "WHY TRADERS RISK TOO MUCH"
-    if (
-        "stop loss" in lowered
-        and re.search(r"\bmov(?:e|ed|ing)\b", lowered)
-        and any(cue in lowered for cue in ("mistake", "losing", "loss", "bigger"))
-    ):
-        return "THE STOP-LOSS MISTAKE THAT MAKES LOSSES WORSE"
-    if any(x in lowered for x in ("reversal", "reverse", "retracement")):
-        return "WHAT CHANGED IN THIS MARKET SETUP?"
-    if "meme coin" in lowered:
-        return "WHAT MATTERS IN A MEMECOIN TRADE?"
-    if "order block" in lowered:
-        return "DO ORDER BLOCKS REALLY MATTER HERE?"
-    # Fallback is a truthful invitation, not an invented reaction, outcome or
-    # market opinion. The 2-second spoken hook remains in the audio itself.
-    return "WHAT'S THE REAL TAKEAWAY HERE?"
+        return []
+    sentences = re.findall(r".+?(?:[!?]+|\.(?!\d)|$)", original, flags=re.DOTALL)
+    choices: list[tuple[float, int, str]] = []
+    seen: set[str] = set()
+    for index, sentence in enumerate(sentences):
+        sentence = sentence.strip()
+        tokens = re.findall(r"[\w$%'-]+", sentence)
+        if not 4 <= len(tokens) <= 16:
+            continue
+        headline = sentence.upper()
+        key = headline.casefold()
+        if key in seen:
+            continue
+        try:
+            _fit_lines(headline, max_width=_HOOK_SAFE_WIDTH, max_size=70, max_lines=3)
+        except ValueError:
+            continue
+        seen.add(key)
+        diversity = len({token.casefold() for token in tokens}) / len(tokens)
+        score = diversity + float(sentence.endswith("?")) + min(len(tokens), 10) / 10
+        choices.append((-score, index, headline))
+    return [headline for _, _, headline in sorted(choices)]
+
+
+def creative_hook_from_text(text: str) -> str:
+    """Return the best fitting intact source sentence without campaign templates."""
+    choices = source_headline_candidates(text)
+    return choices[0] if choices else ""
 
 
 def distinct_hook_from_text(
@@ -207,70 +82,26 @@ def distinct_hook_from_text(
     *,
     allow_quote_fallback: bool = False,
 ) -> str:
-    """Choose a distinct source-grounded headline without padding the batch.
+    """Choose another intact source headline without padding an output quota.
 
-    Production TJR drafts must earn a semantic hook. Exact-quote fallbacks are
-    available only for explicit review tooling; they never fill a production
-    quota by default.
+    The legacy keyword remains API-compatible; all candidates now have the
+    same source-grounding requirement regardless of its value.
     """
-    original = _safe(text)
-    if not original:
-        return ""
     used = {hook.casefold() for hook in used_hooks}
-    template = creative_hook_from_text(original)
-    if template != "WHAT'S THE REAL TAKEAWAY HERE?" and template.casefold() not in used:
-        return template
-    if not allow_quote_fallback:
-        return ""
-
-    tokens = re.findall(r"[A-Za-z0-9$']+", original)
-    noise = {"and", "then", "this", "that", "like", "really", "just", "because", "the"}
-    choices: list[tuple[int, int, str]] = []
-    for start in range(max(0, len(tokens) - 3)):
-        phrase = tokens[start : start + 5]
-        if len(phrase) < 4 or phrase[0].casefold() in noise:
-            continue
-        snippet = " ".join(phrase)
-        if len(snippet) > 37:
-            continue
-        relevance = sum(
-            token.casefold()
-            in {
-                "risk",
-                "trade",
-                "trading",
-                "market",
-                "price",
-                "loss",
-                "stop",
-                "enter",
-                "entry",
-                "exit",
-                "profit",
-                "position",
-                "reversal",
-                "mistake",
-                "plan",
-                "money",
-            }
-            for token in phrase
-        )
-        choices.append((-relevance, start, f'THE MOMENT: "{snippet.upper()}"'))
-    for _, _, headline in sorted(choices):
-        if headline.casefold() in used:
-            continue
-        try:
-            _fit_lines(headline, max_width=_HOOK_SAFE_WIDTH, max_size=70)
-        except ValueError:
-            continue
-        return headline
-    return ""
+    return next(
+        (
+            headline
+            for headline in source_headline_candidates(text)
+            if headline.casefold() not in used
+        ),
+        "",
+    )
 
 
 def _fit_lines(
-    text: str, *, max_width: int, max_size: int, min_size: int = 42
+    text: str, *, max_width: int, max_size: int, min_size: int = 42, max_lines: int = 2
 ) -> tuple[int, tuple[str, ...], float]:
-    """Measure true DejaVu Bold glyph widths and fit at most two safe lines.
+    """Measure glyph widths and fit within bounded horizontal and vertical safe areas.
 
     libass is configured for the same font in the ASS style. A 12% pop/plate
     allowance prevents transient animation from crossing the safe-area edge.
@@ -282,24 +113,24 @@ def _fit_lines(
     for size in range(max_size, min_size - 1, -2):
         font = ImageFont.truetype(_FONT, size)
         choices: list[tuple[float, tuple[str, ...]]] = []
-        for split in range(1, len(words) + 1):
-            lines: tuple[str, ...] = (" ".join(words[:split]),)
-            if split < len(words):
-                lines += (" ".join(words[split:]),)
-            width = max(float(font.getlength(line)) for line in lines)
-            if width * 1.12 + 40 <= max_width:
-                choices.append((width, lines))
+        for line_count in range(1, min(max_lines, len(words)) + 1):
+            for cuts in combinations(range(1, len(words)), line_count - 1):
+                boundaries = (0, *cuts, len(words))
+                lines = tuple(" ".join(words[left:right]) for left, right in pairwise(boundaries))
+                width = max(float(font.getlength(line)) for line in lines)
+                if width * 1.12 + 40 <= max_width and size * line_count <= 210:
+                    choices.append((width, lines))
         if choices:
             width, lines = min(
                 choices, key=lambda x: (max(len(y) for y in x[1]) - min(len(y) for y in x[1]), x[0])
             )
             return size, lines, width
-    raise ValueError("headline exceeds two-line portrait safe area; shorten editorial headline")
+    raise ValueError("headline exceeds portrait safe area; shorten editorial headline")
 
 
 def _ass_header() -> str:
     return (
-        "[Script Info]\nTitle: TJR Style B v2 review overlay\n"
+        "[Script Info]\nTitle: Source-grounded Style B v2 review overlay\n"
         "ScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n"
         "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
         "[V4+ Styles]\n"
@@ -393,7 +224,7 @@ def create_tiktok_ass(
     events: list[str] = []
     hook = _safe(hook_text)
     if hook and clip.duration >= 1:
-        size, lines, _ = _fit_lines(hook, max_width=_HOOK_SAFE_WIDTH, max_size=70)
+        size, lines, _ = _fit_lines(hook, max_width=_HOOK_SAFE_WIDTH, max_size=70, max_lines=3)
         # No fade-out: the hook remains visible on the first and last frames.
         events.append(
             "Dialogue: 5,"

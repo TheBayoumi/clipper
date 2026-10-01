@@ -13,29 +13,6 @@ from clipper.tiktok import (
 )
 
 
-def test_creative_headline_from_full_context_not_spoken_intro() -> None:
-    assert (
-        creative_hook_from_text(
-            "What's up guys. We will explain how to start trading meme coins as beginners."
-        )
-        == "MEMECOIN TRADING: WHERE DO YOU START?"
-    )
-    assert (
-        creative_hook_from_text(
-            "Hey man, why did you stop using order blocks? There's no reason to use them."
-        )
-        == "DO ORDER BLOCKS REALLY MATTER HERE?"
-    )
-    assert (
-        creative_hook_from_text(
-            "He made over ten million, I'm up over a million in the last two months."
-        )
-        == "A TRADER CLAIMS MILLIONS: HOW?"
-    )
-    assert creative_hook_from_text("") == ""
-    assert _safe(r"{\pos(0,0)}show \N next") == "pos(0,0) show N next"
-
-
 def test_hook_bounds_measured_with_real_font() -> None:
     for headline in (
         "MEMECOIN TRADING: WHERE DO YOU START?",
@@ -79,7 +56,7 @@ def test_creative_hook_persists_and_active_word_follows_original_audio(tmp_path:
     assert "{\\c&H0059DEFF&" in ass
     # Unaligned fallback is static; it receives no invented word transitions.
     assert f"{_ass_time(5)},{_ass_time(7)},Caption" in ass
-    assert "TJR Style B v2" in ass
+    assert "Source-grounded Style B v2" in ass
     assert r"{\bord9}" not in ass
 
 
@@ -204,24 +181,6 @@ def test_v2_ass_auditor_rejects_missing_hook_and_missing_timing(tmp_path: Path) 
         audit_tiktok_ass(corrupted, clip_duration=clip.duration)
 
 
-def test_editorial_hook_variants_are_supported_by_their_transcripts() -> None:
-    """Exercise every truthful headline branch, including neutral fallbacks."""
-    pairs = (
-        ("Never copy trade blindly when the price is moving.", "WHY HE WARNS ABOUT COPY TRADING"),
-        ("The stop loss got hit before the reversal.", "WHAT HAPPENS WHEN THE STOP GETS HIT?"),
-        ("I will wait before I enter the market.", "WHY HE'S WAITING TO ENTER THIS TRADE"),
-        (
-            "There was a massive sell-off but I would not short.",
-            "WHY HE'S NOT SHORTING THE SELLOFF",
-        ),
-        ("We reviewed this meme coin chart yesterday.", "WHAT MATTERS IN A MEMECOIN TRADE?"),
-        ("The order block is still a useful concept.", "DO ORDER BLOCKS REALLY MATTER HERE?"),
-        ("We looked at the screenshot together.", "WHAT'S THE REAL TAKEAWAY HERE?"),
-    )
-    for transcript, expected_hook in pairs:
-        assert creative_hook_from_text(transcript) == expected_hook
-
-
 def test_empty_headline_and_corrupted_ass_fail_closed(tmp_path: Path) -> None:
     import pytest
 
@@ -264,255 +223,6 @@ def test_empty_headline_and_corrupted_ass_fail_closed(tmp_path: Path) -> None:
             audit_tiktok_ass(path, clip_duration=clip.duration)
 
 
-def test_distinct_hook_excludes_generic_and_repeated_templates() -> None:
-    from clipper.tiktok import distinct_hook_from_text
-
-    text = (
-        "why did the stop loss hit when the market started reversing our position "
-        "we decided to exit the trade because the risk was growing every minute"
-    )
-    first = distinct_hook_from_text(text)
-    second = distinct_hook_from_text(text, {first})
-    assert first == "WHAT HAPPENS WHEN THE STOP GETS HIT?"
-    assert second == ""
-    quoted = distinct_hook_from_text(text, {first}, allow_quote_fallback=True)
-    assert quoted and quoted != first
-    assert quoted.startswith('THE MOMENT: "')
-    assert (
-        distinct_hook_from_text("What if our market entry was late and the trading plan changed?")
-        != "WHAT'S THE REAL TAKEAWAY HERE?"
-    )
-    assert distinct_hook_from_text("") == ""
-
-
-def test_stop_hit_hook_requires_an_actual_hit_event() -> None:
-    assert creative_hook_from_text("The stop loss got hit before the reversal.") == (
-        "WHAT HAPPENS WHEN THE STOP GETS HIT?"
-    )
-    assert creative_hook_from_text("I was stopped out after the stop loss triggered.") == (
-        "WHAT HAPPENS WHEN THE STOP GETS HIT?"
-    )
-    for source in (
-        "The stop loss protects us from a bigger loss.",
-        "Use a stop loss so the loss cannot grow.",
-        "We discussed the stop loss and the risk of loss.",
-    ):
-        assert creative_hook_from_text(source) != "WHAT HAPPENS WHEN THE STOP GETS HIT?"
-
-
-def test_waiting_hook_requires_affirmative_trading_plan() -> None:
-    assert (
-        creative_hook_from_text("I am waiting to enter this trade after the market pulls back")
-        == "WHY HE'S WAITING TO ENTER THIS TRADE"
-    )
-    assert (
-        creative_hook_from_text("I entered early because I did not wait for the trade")
-        != "WHY HE'S WAITING TO ENTER THIS TRADE"
-    )
-    assert (
-        creative_hook_from_text("I am not waiting to enter this trade")
-        != "WHY HE'S WAITING TO ENTER THIS TRADE"
-    )
-
-
-def test_waiting_hook_rejects_modal_negations() -> None:
-    for sentence in (
-        "I cannot wait to enter this trade",
-        "I can't wait to enter this trade",
-        "I won't wait to enter this trade",
-        "I couldn't wait to enter this trade",
-        "I have no reason to wait to enter this trade",
-    ):
-        assert creative_hook_from_text(sentence) != "WHY HE'S WAITING TO ENTER THIS TRADE"
-    assert (
-        creative_hook_from_text("I will wait to enter after the pullback")
-        == "WHY HE'S WAITING TO ENTER THIS TRADE"
-    )
-
-
-def test_short_selloff_hooks_never_reverse_the_spoken_trade() -> None:
-    positive = (
-        "There was a massive sell-off but I would not short.",
-        "I won't short this massive selloff because the bounce is too risky.",
-        "I avoided shorting the massive sell off and waited.",
-    )
-    for transcript in positive:
-        assert creative_hook_from_text(transcript) == "WHY HE'S NOT SHORTING THE SELLOFF"
-    for transcript in (
-        "I shorted the massive selloff and made a profit.",
-        "I am shorting this massive sell-off.",
-        "We discussed whether to short during this massive sell off.",
-    ):
-        assert creative_hook_from_text(transcript) != "WHY HE'S NOT SHORTING THE SELLOFF"
-
-
-def test_market_cap_hook_is_source_specific_not_a_fragment_quote() -> None:
-    transcript = "Late at $200K? The coin migrates at $50K market caps, then people buy."
-    assert creative_hook_from_text(transcript) == "WHEN IS THE MARKET-CAP ENTRY TOO LATE?"
-
-
-def test_contextual_questions_avoid_baseline_fragment_hooks() -> None:
-    from clipper.tiktok import distinct_hook_from_text
-
-    examples = (
-        (
-            "Late at $200K? The coin migrates at $50K market caps.",
-            "WHEN IS THE MARKET-CAP ENTRY TOO LATE?",
-        ),
-        (
-            "I don't see any socials. We have some wallets buying right now.",
-            "WHY ARE WALLETS BUYING WITHOUT SOCIALS?",
-        ),
-        ("Should we just sell 50% of this position?", "WOULD YOU SELL HALF HERE?"),
-        (
-            "This coin has been at $80K market cap; I think it is bullshit.",
-            "WHAT MAKES THIS MARKET-CAP SETUP SUSPICIOUS?",
-        ),
-        (
-            "I can see on chain buys starting as volume pushes higher.",
-            "CAN ON-CHAIN BUYS CONFIRM THE MOVE?",
-        ),
-        ("Why are people buying? This is FOMO.", "IS FOMO DRIVING THESE BUYS?"),
-        ("Elon could tweet about a coin any day.", "CAN A SINGLE TWEET MOVE A COIN?"),
-        (
-            "The coin looks interesting but is getting sold off crazy.",
-            "WHY IS THIS COIN GETTING SOLD OFF?",
-        ),
-        (
-            "These community coins: how do you tell good coins from bad?",
-            "GOOD COIN OR BAD COIN: HOW DO YOU TELL?",
-        ),
-        ("The fees should filter the rug coins.", "CAN FEES FILTER OUT RUG COINS?"),
-        ("He says the trade is risk-free now.", "IS THIS 'RISK-FREE' TRADE REALLY SAFE?"),
-    )
-    for source, expected in examples:
-        headline = distinct_hook_from_text(source)
-        assert headline == expected
-        assert not headline.startswith("THE MOMENT:")
-
-
-def test_contextual_questions_reject_negated_wallet_buying() -> None:
-    from clipper.tiktok import creative_hook_from_text
-
-    text = "No socials linked, but no wallets buying either."
-    assert creative_hook_from_text(text) != "WHY ARE WALLETS BUYING WITHOUT SOCIALS?"
-
-
-def test_sell_half_hook_requires_the_amount_to_modify_the_sale() -> None:
-    assert creative_hook_from_text("Should we just sell 50% of this position?") == (
-        "WOULD YOU SELL HALF HERE?"
-    )
-    assert creative_hook_from_text("Could we sell now? Half the viewers said no.") != (
-        "WOULD YOU SELL HALF HERE?"
-    )
-
-
-def test_short_decline_must_negate_the_shorting_action_itself() -> None:
-    assert creative_hook_from_text("I won't short this massive selloff.") == (
-        "WHY HE'S NOT SHORTING THE SELLOFF"
-    )
-    assert (
-        creative_hook_from_text("I am not worried about shorting this massive selloff.")
-        != "WHY HE'S NOT SHORTING THE SELLOFF"
-    )
-
-
-def test_excess_risk_hook_requires_affirmative_risk_taking() -> None:
-    assert (
-        creative_hook_from_text("Why do traders keep risking too much money on positions?")
-        == "WHY TRADERS RISK TOO MUCH"
-    )
-    for source in (
-        "Traders are not risking too much on this trade.",
-        "I am not worried about risking too much on this trade.",
-        "They never risk too much money because the plan caps the position.",
-    ):
-        assert creative_hook_from_text(source) != "WHY TRADERS RISK TOO MUCH"
-
-
-def test_generic_risk_talk_is_rejected_instead_of_rendered_with_a_weak_hook() -> None:
-    source = (
-        "Risk matters in every trade and position, so you need a plan before trading. "
-        "The market can move either way and the position has to be managed."
-    )
-    assert creative_hook_from_text(source) == "WHAT'S THE REAL TAKEAWAY HERE?"
-    assert distinct_hook_from_text(source) == ""
-
-
-def test_real_failed_batch_patterns_now_get_specific_semantic_hooks() -> None:
-    examples = (
-        (
-            "Late at $200K? the coin migrates at $50K market caps and people are buying.",
-            "WHEN IS THE MARKET-CAP ENTRY TOO LATE?",
-        ),
-        (
-            "I don't see any socials linked. We have some wallets buying this token.",
-            "WHY ARE WALLETS BUYING WITHOUT SOCIALS?",
-        ),
-        ("So should we just sell like 50%?", "WOULD YOU SELL HALF HERE?"),
-        (
-            "This has been sitting at $80,000 market cap and it is clearly some bullshit.",
-            "WHAT MAKES THIS MARKET-CAP SETUP SUSPICIOUS?",
-        ),
-        (
-            "We don't want to copy trade this person blindly after one winning trade.",
-            "WHY HE WARNS ABOUT COPY TRADING",
-        ),
-        (
-            "On chain, buys are starting to come through as volume starts pushing up.",
-            "CAN ON-CHAIN BUYS CONFIRM THE MOVE?",
-        ),
-        ("Why are people buying this? This is the beauty of FOMO.", "IS FOMO DRIVING THESE BUYS?"),
-        (
-            "There was a coin today that ran because Trump tweeted about it.",
-            "CAN A SINGLE TWEET MOVE A COIN?",
-        ),
-        (
-            "I can see why people like this coin, but it is getting sold off crazy.",
-            "WHY IS THIS COIN GETTING SOLD OFF?",
-        ),
-        (
-            "You are kind of risk-free in the trade now after covering the initial.",
-            "IS THIS 'RISK-FREE' TRADE REALLY SAFE?",
-        ),
-    )
-    for source, expected in examples:
-        assert distinct_hook_from_text(source) == expected
-
-
-def test_millions_hook_requires_an_affirmative_earnings_claim() -> None:
-    assert creative_hook_from_text("I made a million dollars trading last year.") == (
-        "A TRADER CLAIMS MILLIONS: HOW?"
-    )
-    for source in (
-        "I never made a million dollars trading.",
-        "I did not make a million dollars trading.",
-        "I haven't made millions from this.",
-    ):
-        assert creative_hook_from_text(source) != "A TRADER CLAIMS MILLIONS: HOW?"
-
-
-def test_order_block_stop_hook_requires_affirmative_cessation() -> None:
-    assert creative_hook_from_text("He stopped using order blocks last month.") == (
-        "WHY HE STOPPED USING ORDER BLOCKS"
-    )
-    assert (
-        creative_hook_from_text("I never stopped using order blocks because they still matter.")
-        != "WHY HE STOPPED USING ORDER BLOCKS"
-    )
-
-
-def test_no_reason_order_block_hook_rejects_meta_negation() -> None:
-    assert (
-        creative_hook_from_text("There is no reason to use order blocks anymore.")
-        == "WHY HE STOPPED USING ORDER BLOCKS"
-    )
-    assert (
-        creative_hook_from_text("I wouldn't say there is no reason to use order blocks anymore.")
-        != "WHY HE STOPPED USING ORDER BLOCKS"
-    )
-
-
 def test_active_word_highlight_ends_at_measured_word_end(tmp_path: Path) -> None:
     clip = ClipCandidate("v", 0, 3, "wait now", 1)
     words = (
@@ -532,3 +242,62 @@ def test_active_word_highlight_ends_at_measured_word_end(tmp_path: Path) -> None
     ]
     assert "0:00:00.10,0:00:00.40,Caption" in events[0]
     assert "0:00:01.00,0:00:01.30,Caption" in events[1]
+
+
+def test_headlines_preserve_source_subject_negation_and_amounts() -> None:
+    from scripts.tjr_feedback_gate import hook_grounded_in_transcript
+
+    sources = [
+        "I never made a million dollars.",
+        "Security stopped me at my own show.",
+        "We found water beneath the frozen surface.",
+        "Why did the referee cancel that goal?",
+        "I gave away 300 computers last year.",
+        "I would not short this selloff.",
+    ]
+    for source in sources:
+        headline = creative_hook_from_text(source)
+        assert headline == source.upper()
+        assert hook_grounded_in_transcript(headline, source)
+    assert not hook_grounded_in_transcript("I MADE A MILLION DOLLARS.", sources[0])
+    assert not hook_grounded_in_transcript("I GAVE AWAY 3000 COMPUTERS LAST YEAR.", sources[4])
+
+
+def test_headline_selection_uses_entire_clip_and_preserves_distinct_sentences() -> None:
+    text = (
+        "Welcome back. Why did the referee cancel that goal? Nobody expected that final decision."
+    )
+    first = distinct_hook_from_text(text)
+    second = distinct_hook_from_text(text, [first])
+    assert first == "WHY DID THE REFEREE CANCEL THAT GOAL?"
+    assert second == "NOBODY EXPECTED THAT FINAL DECISION."
+    assert distinct_hook_from_text(text, [first, second]) == ""
+    assert distinct_hook_from_text("") == ""
+
+
+def test_oversized_sentence_is_rejected_without_cutting_off_its_negation() -> None:
+    text = (
+        "The entire audience assumed the presenter had earned the promised prize "
+        "even though the final decision showed that he had never won it."
+    )
+    assert creative_hook_from_text(text) == ""
+    assert distinct_hook_from_text(text, allow_quote_fallback=True) == ""
+
+
+def test_generic_headline_layout_has_bounded_height_and_width() -> None:
+    text = "The guest told us the wildest story from his first big show."
+    headline = creative_hook_from_text(text)
+    size, lines, width = _fit_lines(headline, max_width=800, max_size=70, max_lines=3)
+    assert 1 <= len(lines) <= 3
+    assert len(lines) * size <= 210
+    assert width * 1.12 + 40 <= 800
+    assert _safe(r"{\pos(0,0)}show \N next") == "pos(0,0) show N next"
+
+
+def test_decimal_amount_is_preserved_in_source_headline() -> None:
+    from scripts.tjr_feedback_gate import hook_grounded_in_transcript
+
+    text = "I did not earn $3.5 million from that show."
+    hook = creative_hook_from_text(text)
+    assert hook == text.upper()
+    assert hook_grounded_in_transcript(hook, text)

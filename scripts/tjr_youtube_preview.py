@@ -259,7 +259,7 @@ def dynamic_bgutil_variants() -> tuple[tuple[str, ...], ...]:
         raise RuntimeError("BgUtils PO-token provider must be bound to runner loopback")
     plugin = ("--extractor-args", f"youtubepot-bgutilhttp:base_url={base_url}")
     return (
-        ("--extractor-args", "youtube:player_client=mweb", *plugin),
+        ("--extractor-args", "youtube:player_client=default,mweb", *plugin),
         ("--extractor-args", "youtube:player_client=web_safari", *plugin),
     )
 
@@ -274,7 +274,7 @@ def dynamic_browser_variants() -> tuple[tuple[str, ...], ...]:
         raise RuntimeError("dynamic YouTube token browser executable is missing")
     plugin = ("--extractor-args", f"youtubepot-wpc:browser_path={path}")
     return (
-        ("--extractor-args", "youtube:player_client=mweb", *plugin),
+        ("--extractor-args", "youtube:player_client=default,mweb", *plugin),
         ("--extractor-args", "youtube:player_client=web_safari", *plugin),
     )
 
@@ -290,6 +290,7 @@ def verified_youtube_metadata(video: OfficialVideo) -> dict[str, Any]:
     # Prefer independently generated PO tokens before the browser-backed provider.
     # Both remain automatic guest-session transports; authenticated cookies are optional.
     client_variants = (
+        (),  # Match the original PR: let yt-dlp select its supported default clients.
         *dynamic_token_variants(),
         ("--extractor-args", "youtube:player_client=mweb"),
         ("--extractor-args", "youtube:player_client=tv"),
@@ -304,6 +305,13 @@ def verified_youtube_metadata(video: OfficialVideo) -> dict[str, Any]:
             result = invoke(
                 [
                     "yt-dlp",
+                    "--ignore-config",
+                    "--js-runtimes",
+                    "node",
+                    "--socket-timeout",
+                    "20",
+                    "--retries",
+                    "3",
                     *_auth_args(),
                     "--no-warnings",
                     "--no-playlist",
@@ -384,6 +392,15 @@ def download_original_excerpt(
     expected_seconds = float((metadata or {}).get("duration") or video.duration_seconds or 0)
     common = [
         "yt-dlp",
+        "--ignore-config",
+        "--js-runtimes",
+        "node",
+        "--socket-timeout",
+        "20",
+        "--retries",
+        "3",
+        "--fragment-retries",
+        "3",
         *_auth_args(),
         "--no-playlist",
         "--no-warnings",

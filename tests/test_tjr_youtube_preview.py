@@ -284,7 +284,7 @@ def test_bgutil_tokens_are_primary_and_loopback_only(
     monkeypatch.setenv("YT_DLP_WPC_BROWSER_PATH", str(browser))
     variants = dynamic_token_variants()
     assert len(variants) == 4
-    assert "youtube:player_client=mweb" in variants[0]
+    assert "youtube:player_client=default,mweb" in variants[0]
     assert "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416" in variants[0]
     assert "youtubepot-wpc:browser_path=" + str(browser) in variants[2]
 
@@ -303,7 +303,7 @@ def test_dynamic_guest_tokens_do_not_require_exported_account_cookies(
     variants = dynamic_browser_variants()
     assert len(variants) == 2
     assert all("youtubepot-wpc:browser_path=" + str(browser) in variant for variant in variants)
-    assert "youtube:player_client=mweb" in variants[0]
+    assert "youtube:player_client=default,mweb" in variants[0]
     assert _auth_args() == []
 
 

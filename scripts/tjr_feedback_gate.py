@@ -1,4 +1,4 @@
-"""Evidence-gated review of actual TJR production artifacts.
+"""Evidence-gated review of actual production artifacts.
 
 Never substitute a green workflow for validated MP4s or human editorial approval.
 This module reads only inert artifact files and produces actionable, durable JSON.
@@ -63,184 +63,18 @@ def clip_transcript_text(base: Path, *, start: float, end: float) -> str:
 
 
 def hook_grounded_in_transcript(hook: str, transcript: str) -> bool:
-    """Fail closed on known persistent-hook semantics using independent rules."""
-    lowered = transcript.lower()
+    """Independently require an intact source sentence, including its negations."""
     if not hook or hook.startswith("THE MOMENT:") or hook in BANNED_GENERIC_HOOKS:
         return False
-    rules: dict[str, bool] = {
-        "WHY HE STOPPED USING ORDER BLOCKS": (
-            (
-                bool(
-                    re.search(
-                        r"\b(?:i|he|we|they)\s+(?:have\s+|has\s+|had\s+)?"
-                        r"stopped\s+using\s+(?:the\s+)?order\s+blocks?\b",
-                        lowered,
-                    )
-                )
-                or (
-                    bool(
-                        re.search(
-                            r"\b(?:there(?:'s| is)|i\s+(?:see|have)|"
-                            r"we\s+(?:see|have)|he\s+(?:sees|has))\s+"
-                            r"no\s+reason\s+to\s+use\s+(?:the\s+)?"
-                            r"order\s+blocks?\s+anymore\b",
-                            lowered,
-                        )
-                    )
-                    and not bool(
-                        re.search(
-                            r"\b(?:wouldn't|wouldnt|don't|dont|didn't|didnt|"
-                            r"can't|cant|cannot|not|never)\b(?:\s+\w+){0,6}\s+"
-                            r"no\s+reason\s+to\s+use\s+(?:the\s+)?"
-                            r"order\s+blocks?\s+anymore\b",
-                            lowered,
-                        )
-                    )
-                )
-            )
-            and not bool(
-                re.search(
-                    r"\b(?:not|never|didn't|didnt|haven't|hasn't|hadn't|can't|cannot)\b"
-                    r"(?:\s+\w+){0,4}\s+stopped?\s+using\s+"
-                    r"(?:the\s+)?order\s+blocks?\b",
-                    lowered,
-                )
-            )
-        ),
-        "WHY HE WARNS ABOUT COPY TRADING": (
-            "copy trad" in lowered and any(cue in lowered for cue in ("blind", "never", "don't"))
-        ),
-        "WHAT MAKES THIS MARKET-CAP SETUP SUSPICIOUS?": (
-            "market cap" in lowered
-            and any(cue in lowered for cue in ("bullshit", "scam", "looks wrong", "suspicious"))
-        ),
-        "WHY ARE WALLETS BUYING WITHOUT SOCIALS?": (
-            ("no socials" in lowered or "don't see any socials" in lowered)
-            and bool(re.search(r"\bwallets?\s+(?:are\s+)?buying\b", lowered))
-            and not bool(
-                re.search(
-                    r"\b(?:no|not|never|without)\s+(?:\w+\s+){0,2}"
-                    r"wallets?\s+(?:are\s+)?buying\b",
-                    lowered,
-                )
-            )
-        ),
-        "WOULD YOU SELL HALF HERE?": bool(
-            re.search(
-                r"\b(?:should|would|could)\s+we\s+(?:just\s+)?sell\s+"
-                r"(?:like\s+)?(?:50\s*%|half)(?=\s|[?.!,]|$)",
-                lowered,
-            )
-        ),
-        "CAN ON-CHAIN BUYS CONFIRM THE MOVE?": (
-            ("on chain" in lowered or "on-chain" in lowered)
-            and "volume" in lowered
-            and bool(re.search(r"\bbuys?\b|\bbuying\b", lowered))
-        ),
-        "IS FOMO DRIVING THESE BUYS?": (
-            "fomo" in lowered and bool(re.search(r"\bbuy(?:ing|s)?\b", lowered))
-        ),
-        "CAN A SINGLE TWEET MOVE A COIN?": "tweet" in lowered and "coin" in lowered,
-        "WHY IS THIS COIN GETTING SOLD OFF?": (
-            "coin" in lowered
-            and any(cue in lowered for cue in ("sold off", "selling off", "getting sold off"))
-        ),
-        "GOOD COIN OR BAD COIN: HOW DO YOU TELL?": all(
-            cue in lowered for cue in ("community", "good", "bad")
-        ),
-        "CAN FEES FILTER OUT RUG COINS?": "fee" in lowered and "rug" in lowered,
-        "IS THIS 'RISK-FREE' TRADE REALLY SAFE?": (
-            "trade" in lowered and bool(re.search(r"\brisk\s*-\s*free\b", lowered))
-        ),
-        "WHEN IS THE MARKET-CAP ENTRY TOO LATE?": (
-            "market cap" in lowered
-            and any(cue in lowered for cue in ("late", "early", "entry", "enter", "buying"))
-        ),
-        "MEMECOIN TRADING: WHERE DO YOU START?": (
-            "meme coin" in lowered
-            and any(cue in lowered for cue in ("beginner", "first", "get started", "start trading"))
-        ),
-        "WHAT HAPPENS WHEN THE STOP GETS HIT?": (
-            "stop loss" in lowered
-            and bool(
-                re.search(
-                    r"\b(?:stop(?:[- ]loss)?\s+(?:(?:got|was|gets?|is)\s+)?hit|"
-                    r"(?:got|was|gets?|is)\s+stopped\s+out|stopped\s+out)\b",
-                    lowered,
-                )
-            )
-        ),
-        "WHAT'S THE SHORT SETUP IN THIS SELLOFF?": (
-            any(
-                cue in lowered
-                for cue in ("massive sell off", "massive sell-off", "massive selloff")
-            )
-            and bool(re.search(r"\bshort(?:ed|ing)?\b", lowered))
-        ),
-        "THE STOP-LOSS MISTAKE THAT MAKES LOSSES WORSE": (
-            "stop loss" in lowered
-            and bool(re.search(r"\bmov(?:e|ed|ing)\b", lowered))
-            and any(cue in lowered for cue in ("mistake", "losing", "loss", "bigger"))
-        ),
-        "WHAT CHANGED IN THIS MARKET SETUP?": any(
-            cue in lowered for cue in ("reversal", "reverse", "retracement")
-        ),
-        "WHAT MATTERS IN A MEMECOIN TRADE?": "meme coin" in lowered,
-        "DO ORDER BLOCKS REALLY MATTER HERE?": "order block" in lowered,
-    }
-    if hook == "A TRADER CLAIMS MILLIONS: HOW?":
-        positive = bool(
-            re.search(
-                r"\b(?:made|earned|profited?|up\s+over)\b(?:\s+\w+){0,5}\s+\bmillions?\b"
-                r"|\bmillions?\b(?:\s+\w+){0,5}\b(?:made|earned|profited?)\b",
-                lowered,
-            )
-        )
-        negated = bool(
-            re.search(
-                r"\b(?:not|never|no|didn't|didnt|haven't|hasn't|can't|cant|cannot)\b"
-                r"(?:\s+\w+){0,4}\s+\b(?:made|earned|profit(?:ed)?)\b"
-                r"(?:\s+\w+){0,5}\s+\bmillions?\b",
-                lowered,
-            )
-        )
-        return positive and not negated
-    if hook == "WHY HE'S WAITING TO ENTER THIS TRADE":
-        positive = bool(re.search(r"\bwait(?:ing)?\b(?:\s+\w+){0,7}\s+(?:enter|entry)\b", lowered))
-        negated = bool(
-            re.search(
-                r"\b(?:not|never|no|without|didn't|don't|doesn't|cannot|can't|"
-                r"cant|won't|wont|wouldn't|couldn't|shouldn't)\b"
-                r"(?:\s+\w+){0,2}\s+wait(?:ing)?\b",
-                lowered,
-            )
-        )
-        return positive and not negated
-    if hook == "WHY HE'S NOT SHORTING THE SELLOFF":
-        selloff = any(
-            cue in lowered for cue in ("massive sell off", "massive sell-off", "massive selloff")
-        )
-        declined = bool(
-            re.search(
-                r"\b(?:(?:will|would|could|should|do|does|did|can|am|is|are|was|were)\s+"
-                r"not\s+short(?:ing)?|(?:won't|wont|can't|cant|cannot|don't|didn't|"
-                r"wouldn't|wouldnt)\s+short(?:ing)?|never\s+short(?:ing)?|"
-                r"refuse(?:d)?\s+to\s+short|avoid(?:ed)?\s+shorting|"
-                r"stayed\s+away\s+from\s+shorting|not\s+going\s+to\s+short)\b",
-                lowered,
-            )
-        )
-        return selloff and declined
-    if hook == "WHY TRADERS RISK TOO MUCH":
-        return bool(
-            re.search(
-                r"\b(?:why\s+do\s+)?traders?\s+(?:keep\s+)?risk(?:ing)?\s+too\s+much\b"
-                r"|\b(?:you|they|we)\s+(?:are\s+|keep\s+)?risk(?:ing)?\s+too\s+much\b"
-                r"|\brisk(?:ed|ing)\s+too\s+much\s+(?:money|capital)\b",
-                lowered,
-            )
-        )
-    return rules.get(hook, False)
+
+    def normalize(value: str) -> str:
+        return " ".join(re.findall(r"[\w$%'-]+", value.casefold()))
+
+    expected = normalize(hook)
+    if not 4 <= len(expected.split()) <= 16:
+        return False
+    sentences = re.findall(r".+?(?:[!?]+|\.(?!\d)|$)", transcript, flags=re.DOTALL)
+    return any(expected == normalize(sentence) for sentence in sentences)
 
 
 def checked_path(base: Path, value: object) -> Path:

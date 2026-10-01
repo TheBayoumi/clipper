@@ -1,4 +1,4 @@
-"""Source-level semantic editorial discovery for TJR.
+"""Source-level semantic editorial discovery for any configured campaign.
 
 The semantic model discovers topic/event structure across the whole transcript.
 Regex rules remain downstream safety checks; they are not the primary editor.
@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
+from clipper.tiktok import creative_hook_from_text
 
 SEMANTIC_MODEL = "BAAI/bge-small-en-v1.5"
 CREATOR_MOMENT_DESCRIPTIONS = (
@@ -61,10 +62,6 @@ MIN_EVENT_SIMILARITY = 0.34
 MIN_CAMPAIGN_SIMILARITY = 0.30
 MIN_RELEVANCE_MARGIN = 0.02
 _WORD = re.compile(r"[A-Za-z0-9$%'.-]+")
-_LEADING_FILLER = re.compile(
-    r"^(?:(?:okay|ok|so|well|basically|right|alright|all right|you know|i mean)\b[ ,.-]*)+",
-    re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,14 +153,10 @@ def _thought_units(segments: Sequence[TranscriptSegment]) -> list[SemanticUnit]:
     return units
 
 
-def _extractive_hook(text: str, *, max_words: int = 12) -> str:
-    """Use a source-extractive, semantically salient phrase instead of a fixed template."""
-    cleaned = re.sub(r"\s+", " ", text).strip()
-    cleaned = _LEADING_FILLER.sub("", cleaned).strip(" ,.-")
-    words = _WORD.findall(cleaned)
-    if len(words) < 3:
-        return ""
-    return " ".join(words[:max_words]).upper()
+def _extractive_hook(text: str, *, max_words: int = 16) -> str:
+    """Keep complete source meaning; never clip a sentence at a word quota."""
+    headline = creative_hook_from_text(text)
+    return headline if len(_WORD.findall(headline)) <= max_words else ""
 
 
 def _event_labels(
@@ -273,7 +266,8 @@ def build_semantic_editorial_candidates(
         *[f"{brief.title} creator moment about {keyword}" for keyword in brief.keywords],
         *CREATOR_MOMENT_DESCRIPTIONS,
     ]
-    reference_texts = [*event_texts, *campaign_texts, *OFF_TOPIC_DESCRIPTIONS]
+    negative_texts = [*OFF_TOPIC_DESCRIPTIONS, *brief.negative_keywords]
+    reference_texts = [*event_texts, *campaign_texts, *negative_texts]
     embedded = backend([*texts, *reference_texts])
     expected = len(texts) + len(reference_texts)
     if len(embedded) != expected:
@@ -300,9 +294,7 @@ def build_semantic_editorial_candidates(
         for campaign, off_topic in zip(campaign_scores, off_topic_scores, strict=True)
     ]
 
-    # First decide whether a unit belongs to this campaign. Only then may it be
-    # classified into an editorial event. This prevents a closed event taxonomy
-    # from forcing unrelated fashion/lifestyle speech into a trading label.
+    # Campaign relevance comes from the supplied brief, never a hardcoded topic list.
     relevant_units = [
         index
         for index in range(len(units))
@@ -344,7 +336,7 @@ def build_semantic_editorial_candidates(
         ]
         coherence = sum(coherence_pairs) / len(coherence_pairs) if coherence_pairs else 1.0
         event_strength = strengths[anchor]
-        hook = _extractive_hook(units[anchor].text)
+        hook = _extractive_hook(text)
         if not hook:
             continue
         score = round(
@@ -396,7 +388,7 @@ def build_semantic_editorial_candidates(
             "minimum_similarity": MIN_CAMPAIGN_SIMILARITY,
             "minimum_margin_over_non_campaign": MIN_RELEVANCE_MARGIN,
             "positive_prototype_count": len(campaign_texts),
-            "negative_prototype_count": len(OFF_TOPIC_DESCRIPTIONS),
+            "negative_prototype_count": len(negative_texts),
             "positive_policy": "campaign_objective_keywords_plus_creator_moment_prototypes",
         },
         "campaign_relevance_policy": "embedding_contrast_against_generic_non_moments",

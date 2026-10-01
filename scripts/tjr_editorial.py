@@ -1,4 +1,4 @@
-"""Evidence-labeled editorial screening for TJR review drafts.
+"""Evidence-labeled editorial screening for source-grounded review drafts.
 
 The five weighted criteria use transcript *proxies*, never pretend to measure
 genuine emotion, semantic payoff, or whether important action survives a crop.
@@ -14,9 +14,13 @@ from dataclasses import asdict, dataclass, replace
 from typing import Literal
 
 from clipper.models import ClipCandidate, TranscriptSegment
-from clipper.tiktok import creative_hook_from_text, distinct_hook_from_text
+from clipper.tiktok import (
+    creative_hook_from_text,
+    distinct_hook_from_text,
+    source_headline_candidates,
+)
 
-RUBRIC_VERSION = "double-coverage-editorial-v1-semantic-campaign-quality"
+RUBRIC_VERSION = "generic-editorial-v2-source-grounded"
 WEIGHTS = {"opening": 25, "story": 25, "emotion": 10, "visuals": 15, "retention": 25}
 MIN_CREATOR_EDITORIAL_SCORE = 74.0
 MAX_SCORE_DROP_FROM_BEST = 8.0
@@ -36,21 +40,10 @@ _ACTION = re.compile(
     r"won|quit|fired|paid|spent|learned|found|caught|called|asked)\b",
     re.IGNORECASE,
 )
-_TOPIC = re.compile(
-    r"\b(podcast|host|guest|story|sports?|bet(?:ting)?|game|career|money|business|"
-    r"creator|stream(?:er|ing)?|youtube|social media|relationship|family|fight|"
-    r"challenge|reaction|opinion|deal|contract|team|player|coach|trad(?:e|ing|ers?)|"
-    r"market|price|risk|futures|position|chart|profit|loss|entry|exits?)\b",
-    re.IGNORECASE,
-)
-_OFF_TOPIC = re.compile(
-    r"\b(sponsor(?:ed)?|promo code|use code|subscribe to|link in bio|ad break)\b",
-    re.IGNORECASE,
-)
-_SETUP = re.compile(r"\b(why|how|what|if|when|because|plan|setup|trade)\b", re.I)
+_SETUP = re.compile(r"\b(why|how|what|if|when|because|plan|setup)\b", re.I)
 _TENSION = re.compile(
     r"\b(but|however|instead|risk|lost|loss|wrong|mistake|against|"
-    r"problem|stopped out|unexpected|reverse|reversal|chase)\b",
+    r"problem|unexpected|reverse|reversal|chase)\b",
     re.IGNORECASE,
 )
 _PAYOFF = re.compile(
@@ -180,7 +173,7 @@ class EditorialPick:
             ),
             "publish_approved": False,
             "needs_checks": [
-                "TJR actually visible; important action survives the portrait crop",
+                "Required subjects visible; important action survives the portrait crop",
                 "No embedded or newly added logos; captions match exact speech",
                 "First two seconds contain a real spoken or visual hook",
                 "Setup, tension and payoff survive the final cut",
@@ -388,12 +381,11 @@ def candidate_gate_failures(
     text = candidate.text.strip()
     words = _WORDS.findall(text)
     failed: list[str] = []
-    if _OFF_TOPIC.search(text):
-        failed.append("POLICY_SENSITIVE_OFF_TOPIC")
     story = _story_rating_for_candidate(candidate)
     authentic_reaction = bool(_REACTION.search(text)) and (story.score or 0) >= 3
     semantic_campaign_moment = _semantic_campaign_relevant(candidate) and (story.score or 0) >= 2.5
-    if not (_TOPIC.search(text) or authentic_reaction or semantic_campaign_moment):
+    complete_moment = semantic_campaign_moment or authentic_reaction or (story.score or 0) >= 2.5
+    if not complete_moment:
         failed.append("NO_CAMPAIGN_RELEVANT_COMPLETE_MOMENT")
     if not 28 <= len(words) <= 155:
         failed.append("WORD_COUNT_OUT_OF_RANGE")
@@ -404,13 +396,15 @@ def candidate_gate_failures(
         failed.append("NO_GROUNDED_HOOK")
     elif not _grounded_numbers(hook, text):
         failed.append("UNSUPPORTED_NUMERICAL_HOOK")
+    elif hook.upper() not in source_headline_candidates(text):
+        failed.append("UNSUPPORTED_SOURCE_HOOK")
     opening = _opening_rating(candidate, segments)
     if opening.score is None or opening.score < 2:
         if not allow_review_only_opening:
             failed.append("WEAK_FIRST_TWO_SECONDS")
         elif (
             opening.score is None
-            or not (_TOPIC.search(text) or authentic_reaction or semantic_campaign_moment)
+            or not complete_moment
             or (story.score or 0) < 2.5
             or not text.rstrip().endswith((".", "!", "?"))
         ):
@@ -448,7 +442,7 @@ def evaluate_candidate(
             "manual_required",
             (
                 "inspect final portrait crop and sampled source frames",
-                "confirm Host Mystic Zach and the important action stay visible throughout",
+                "confirm required subjects and the important action remain visible",
             ),
         ),
         "retention": _retention_rating_for_candidate(candidate),
@@ -460,7 +454,7 @@ def evaluate_candidate(
 
     integrity: IntegrityStatus = "unverified"
     evidence = (
-        "generated hook contains no numerical claim absent from the source transcript",
+        "headline preserves an intact source sentence including its subject, negation and amounts",
         "source context, implied outcome and visual claims still require human verification",
     )
     if review is not None and review.integrity_passed is not None:

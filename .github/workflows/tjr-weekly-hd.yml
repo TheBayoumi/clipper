@@ -38,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       budget_confirmed:
-        description: "I checked Whop and the Dedicated Double Coverage campaign is accepting submissions with budget."
+        description: "Submission eligibility only: I checked Whop acceptance and budget. Direct renders are review-only."
         required: false
         type: boolean
         default: false
@@ -114,7 +114,7 @@ jobs:
           else:
               if mode not in {'modal_direct', 'youtube_direct', 'verified_mirror'}:
                   raise SystemExit('Unknown campaign source mode')
-              if os.getenv('TJR_BUDGET_CONFIRMED', '').lower() != 'true':
+              if mode == 'verified_mirror' and os.getenv('TJR_BUDGET_CONFIRMED', '').lower() != 'true':
                   raise SystemExit('Production requires explicit confirmation of the live Whop budget')
               video_id = os.getenv('TJR_SOURCE_VIDEO_ID', '')
               target_channel_id = os.getenv('TJR_TARGET_CHANNEL_ID', '')
@@ -161,6 +161,19 @@ jobs:
           }
           print("Reach YouTube source policy: PASS")
           PY
+      - name: Verify pinned PO-token provider readiness without downloading video
+        run: |
+          set -euo pipefail
+          docker run --name bgutil-canary -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider:2.0.0
+          trap 'docker rm -f bgutil-canary >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS --connect-timeout 1 --max-time 2 http://127.0.0.1:4416/ping >/dev/null; then break; fi
+            sleep 1
+          done
+          if ! curl -fsS --connect-timeout 1 --max-time 2 http://127.0.0.1:4416/ping; then
+            docker logs --tail 80 bgutil-canary
+            exit 1
+          fi
       - name: Install FFmpeg for HD canary
         run: |
           sudo apt-get update -qq
@@ -213,7 +226,7 @@ jobs:
     needs: tests
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      inputs.source_mode == 'youtube_direct' && inputs.budget_confirmed
+      inputs.source_mode == 'youtube_direct'
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     env:
@@ -232,6 +245,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install FFmpeg, Chrome display, and YouTube transcription dependencies
         run: |
           set -euo pipefail
@@ -276,6 +292,7 @@ jobs:
           print("yt-dlp:", version("yt-dlp"))
           print("bgutil-ytdlp-pot-provider:", version("bgutil-ytdlp-pot-provider"))
           print("yt-dlp-getpot-wpc:", version("yt-dlp-getpot-wpc"))
+          print("yt-dlp-ejs:", version("yt-dlp-ejs"))
           PY
           echo "YouTube PO-token providers are initialized for the explicit youtube_direct path."
       - name: Load optional persistent YouTube session if previously authorized
@@ -354,7 +371,7 @@ jobs:
     needs: tests
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      inputs.source_mode == 'modal_direct' && inputs.budget_confirmed
+      inputs.source_mode == 'modal_direct'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     permissions:
@@ -436,8 +453,7 @@ jobs:
       (
         (
           contains(fromJSON('["modal_direct","youtube_direct","verified_mirror"]'),
-          inputs.source_mode) &&
-          inputs.budget_confirmed
+          inputs.source_mode)
         ) ||
         inputs.source_mode == 'feedback_replay'
       ) &&
