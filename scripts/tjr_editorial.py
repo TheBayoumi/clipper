@@ -16,7 +16,7 @@ from typing import Literal
 from clipper.models import ClipCandidate, TranscriptSegment
 from clipper.tiktok import creative_hook_from_text, distinct_hook_from_text
 
-RUBRIC_VERSION = "tjr-editorial-v4-semantic-campaign-quality"
+RUBRIC_VERSION = "double-coverage-editorial-v1-semantic-campaign-quality"
 WEIGHTS = {"opening": 25, "story": 25, "emotion": 10, "visuals": 15, "retention": 25}
 MIN_CREATOR_EDITORIAL_SCORE = 74.0
 MAX_SCORE_DROP_FROM_BEST = 8.0
@@ -30,19 +30,22 @@ _REACTION = re.compile(
 )
 _QUESTION = re.compile(r"^(why|how|what|who|when|where|did|does|can|should)\b", re.I)
 _ACTION = re.compile(
-    r"\b(hit|broke|break|stopped|entered|reversed|crashed|spiked|"
-    r"lost|made|jumped|risk|mistake|show|showing|reveal|revealed|"
-    r"worth|cost|better|worse|compare|forgot|look)\b",
+    r"\b(hit|broke|break|stopped|entered|reversed|crashed|spiked|lost|made|"
+    r"jumped|mistake|show|showing|reveal|revealed|worth|cost|better|worse|"
+    r"compare|forgot|look|said|admit|admitted|told|met|happened|bought|sold|"
+    r"won|quit|fired|paid|spent|learned|found|caught|called|asked)\b",
     re.IGNORECASE,
 )
 _TOPIC = re.compile(
-    r"\b(trad(?:e|ing|ers?)|market|price|risk|coin|futures|nasdaq|"
-    r"order blocks?|bullish|bearish|position|equilibrium|chart|candle|"
-    r"stop loss|profit|loss|retrace|liquidity|pullback|breakout|"
-    r"daily bias|nasdaq|\bNQ\b|\bES\b|vwap|scalp|entry|exits?)\b",
+    r"\b(podcast|host|guest|story|sports?|bet(?:ting)?|game|career|money|business|"
+    r"creator|stream(?:er|ing)?|youtube|social media|relationship|family|fight|"
+    r"challenge|reaction|opinion|career|deal|contract|team|player|coach)\b",
     re.IGNORECASE,
 )
-_OFF_TOPIC = re.compile(r"\b(cocaine|ketamine|weed|stoner|snort|smoking)\b", re.I)
+_OFF_TOPIC = re.compile(
+    r"\b(sponsor(?:ed)?|promo code|use code|subscribe to|link in bio|ad break)\b",
+    re.IGNORECASE,
+)
 _SETUP = re.compile(r"\b(why|how|what|if|when|because|plan|setup|trade)\b", re.I)
 _TENSION = re.compile(
     r"\b(but|however|instead|risk|lost|loss|wrong|mistake|against|"
@@ -444,7 +447,7 @@ def evaluate_candidate(
             "manual_required",
             (
                 "inspect final portrait crop and sampled source frames",
-                "confirm TJR and important action stay visible throughout",
+                "confirm Host Mystic Zach and the important action stay visible throughout",
             ),
         ),
         "retention": _retention_rating_for_candidate(candidate),
