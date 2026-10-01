@@ -1,11 +1,11 @@
-name: TJR Weekly HD clipping
+name: Double Coverage HD clipping
 
 on:
   push:
     branches: [feat/tjr-weekly-hd-actions]
     paths:
       - ".github/workflows/tjr-weekly-hd.yml"
-      - "campaigns/reach-tjr-weekly.yaml"
+      - "campaigns/reach-double-coverage-dedicated.yaml"
       - "scripts/tjr_quality.py"
       - "scripts/tjr_youtube_preview.py"
       - "src/clipper/scoring.py"
@@ -31,14 +31,14 @@ on:
   pull_request:
     paths:
       - ".github/workflows/tjr-weekly-hd.yml"
-      - "campaigns/reach-tjr-weekly.yaml"
+      - "campaigns/reach-double-coverage-dedicated.yaml"
       - "scripts/tjr_*.py"
       - "src/clipper/**"
       - "tests/**"
   workflow_dispatch:
     inputs:
       budget_confirmed:
-        description: "I checked Whop and the TJR campaign is accepting submissions with budget."
+        description: "I checked Whop and the Dedicated Double Coverage campaign is accepting submissions with budget."
         required: false
         type: boolean
         default: false
@@ -54,7 +54,7 @@ on:
         type: string
         default: ""
       source_verified:
-        description: "I verified the staged video is authentic authorized TJR footage."
+        description: "I verified the staged video is authentic authorized Double Coverage footage."
         required: false
         type: boolean
         default: false
@@ -73,7 +73,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: tjr-hd-${{ github.ref }}
+  group: double-coverage-hd-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -113,14 +113,13 @@ jobs:
               print(f'Replaying existing artifacts from run {source_run_id}; no paid source')
           else:
               if mode not in {'modal_direct', 'youtube_direct', 'verified_mirror'}:
-                  raise SystemExit('Unknown TJR source mode')
+                  raise SystemExit('Unknown campaign source mode')
               if os.getenv('TJR_BUDGET_CONFIRMED', '').lower() != 'true':
                   raise SystemExit('Production requires explicit confirmation of the live Whop budget')
               video_id = os.getenv('TJR_SOURCE_VIDEO_ID', '')
               target_channel_id = os.getenv('TJR_TARGET_CHANNEL_ID', '')
               approved_channels = {
-                  'UCGHBUXjDCeiIXNdKR0HUZnA',
-                  'UCZen39LQJPx04GjPj7FOMcw',
+                  'UCf1q6dhccWr6eQEcFFnJSbA',
               }
               if video_id and not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id):
                   raise SystemExit('source_video_id must be an exact 11-character YouTube ID')
@@ -154,12 +153,11 @@ jobs:
           from pathlib import Path
           from scripts.tjr_quality import check_campaign_brief
 
-          brief = check_campaign_brief(Path("campaigns/reach-tjr-weekly.yaml"))
-          assert brief["required_hashtags"] == ["#TJR"]
-          assert brief["watermark_url"] is None
+          brief = check_campaign_brief(Path("campaigns/reach-double-coverage-dedicated.yaml"))
+          assert brief["required_hashtags"] == ["#DoubleCoverage"]
+          assert brief["watermark_url"] == "https://drive.google.com/file/d/1bVsR2jUqmP5i61TuFWo0NzN7_0dSLAou/view?usp=sharing"
           assert set(brief["source_channel_ids"]) == {
-              "UCGHBUXjDCeiIXNdKR0HUZnA",
-              "UCZen39LQJPx04GjPj7FOMcw",
+              "UCf1q6dhccWr6eQEcFFnJSbA",
           }
           print("Reach YouTube source policy: PASS")
           PY
@@ -310,7 +308,7 @@ jobs:
           set -euo pipefail
           python -m scripts.tjr_youtube_preview \
             --artifact-root tjr-youtube-artifacts \
-            --brief campaigns/reach-tjr-weekly.yaml
+            --brief campaigns/reach-double-coverage-dedicated.yaml
       - name: Stop local PO-token provider
         if: always()
         run: docker rm -f bgutil-provider >/dev/null 2>&1 || true
@@ -556,7 +554,7 @@ jobs:
 
 
   render:
-    name: Render and QA real TJR HD clips
+    name: Render and QA real Double Coverage HD clips
     needs: tests
     if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'verified_mirror' && inputs.budget_confirmed && inputs.source_verified
     runs-on: ubuntu-24.04
@@ -589,11 +587,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
           python -m pip install -e ".[asr]"
           ffmpeg -version | head -n 1
-      - name: Prepare verified staged TJR original (secret URL and SHA-256)
+      - name: Prepare verified staged Double Coverage original (secret URL and SHA-256)
         run: |
           set -euo pipefail
           python -m scripts.tjr_quality --prepare \
-            --brief campaigns/reach-tjr-weekly.yaml \
+            --brief campaigns/reach-double-coverage-dedicated.yaml \
             --output-brief tjr-runtime/brief.yaml
       - name: Download original, verify SHA-256, and stage for editorial renderer
         run: |
@@ -604,11 +602,11 @@ jobs:
             --output-manifest tjr-mirror-stage/staged-original.json
           echo "TJR_BROWSER_CAPTURE_FILE=$PWD/tjr-mirror-stage/staged-original.json" >> "$GITHUB_ENV"
           echo "TJR_REQUIRE_STAGED_ORIGINAL=1" >> "$GITHUB_ENV"
-      - name: Execute shared TJR editorial selection and Style B2 rendering
+      - name: Execute shared Double Coverage editorial selection and Style B2 rendering
         run: |
           set -euo pipefail
           python -m scripts.tjr_youtube_preview \
-            --brief campaigns/reach-tjr-weekly.yaml \
+            --brief campaigns/reach-double-coverage-dedicated.yaml \
             --artifact-root tjr-mirror-artifacts
       - name: Upload clips, source provenance and editorial QA evidence
         if: always()
