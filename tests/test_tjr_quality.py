@@ -1,7 +1,10 @@
 """Campaign-specific technical and encoding guards."""
 
 import json
+import os
 import runpy
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -381,7 +384,27 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     assert "TJR_BUDGET_CONFIRMED" in preflight["run"]
     target_channel_error = "Direct production requires exactly one Reach-listed target_channel_id"
     assert target_channel_error in preflight["run"]
-    assert "do not pin source_video_id" in preflight["run"]
+    code = preflight["run"].split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
+    for video_id, target, expected in (
+        ("2Y4LP85PTak", channel, 0),
+        ("malformed", channel, 1),
+        ("2Y4LP85PTak", "unapproved", 1),
+    ):
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            env={
+                **os.environ,
+                "TJR_SOURCE_MODE": "youtube_direct",
+                "TJR_BUDGET_CONFIRMED": "false",
+                "TJR_SOURCE_VIDEO_ID": video_id,
+                "TJR_TARGET_CHANNEL_ID": target,
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == expected, result.stderr
     assert "clip_limit" not in preflight["run"]
     browser = jobs["youtube_preview"]
     assert browser["needs"] == "tests"
