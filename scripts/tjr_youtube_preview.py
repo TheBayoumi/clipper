@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Review-only clips from Reach's TWO explicitly listed TJR YouTube channels.
+"""Review-only clips from Reach's explicitly approved campaign YouTube channel.
 
-No Kick/reposts/search results. Verify the video owner independently before
+No reposts/search-result substitution. Verify the video owner independently before
 acquisition, and fail closed if YouTube denies direct media access.
 """
 
@@ -26,6 +26,7 @@ import defusedxml.ElementTree as ET
 
 from clipper.brief import load_brief
 from clipper.models import ClipCandidate, TranscriptSegment, WordTiming
+from clipper.pipeline import _download_asset
 from clipper.render import FFmpegRenderer
 from clipper.source_fidelity import probe_source_profile
 from clipper.tiktok import audit_tiktok_ass
@@ -42,8 +43,7 @@ from scripts.tjr_visual_analysis import analyze_candidate_visuals
 
 LOGGER = logging.getLogger("tjr-youtube")
 CHANNELS = {
-    "UCGHBUXjDCeiIXNdKR0HUZnA": "@TJRTrades",
-    "UCZen39LQJPx04GjPj7FOMcw": "@TRichesTrades",
+    "UCf1q6dhccWr6eQEcFFnJSbA": "@DOUBL3COVERAGEPODCAST",
 }
 ATOM = "{http://www.w3.org/2005/Atom}"
 YT = "{http://www.youtube.com/xml/schemas/2015}"
@@ -434,23 +434,20 @@ def download_original_excerpt(
 
 
 def prioritize_campaign_moments(videos: list[OfficialVideo]) -> list[OfficialVideo]:
-    """Prefer long-form, TJR-featured campaign moments over newer hashtag Shorts.
-
-    Still inspect and independently validate each actual owner and duration.
-    """
+    """Prefer full podcast episodes over Shorts while keeping newest-first behavior."""
 
     def priority(video: OfficialVideo) -> tuple[int, str]:
         title = video.title.lower().strip()
-        if video.duration_seconds is not None and video.duration_seconds < 90:
+        duration = video.duration_seconds
+        if duration is not None and duration < 90:
             return (-1, video.published)
-        if any(term in title for term in ("trading", "livestream", "react", "tjr and", "stream")):
-            return (
-                4 if video.duration_seconds and video.duration_seconds >= 90 else 2,
-                video.published,
-            )
-        if video.duration_seconds is not None and video.duration_seconds >= 90:
+        if duration is not None and duration >= 10 * 60:
+            return (4, video.published)
+        if any(term in title for term in ("podcast", "episode", "interview", "reacts", "shares")):
             return (3, video.published)
-        if title in {"", "unknown", "#tjr"} or ("#" in title and len(title) < 45):
+        if duration is not None and duration >= 90:
+            return (2, video.published)
+        if title in {"", "unknown"} or ("#" in title and len(title) < 45):
             return (0, video.published)
         return (1, video.published)
 
@@ -693,11 +690,13 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         set(brief.source_channel_ids) != set(CHANNELS)
         or not brief.rights_confirmed
         or brief.watermark_text
-        or brief.watermark_url
-        or brief.required_hashtags != ["#TJR"]
+        or not brief.watermark_url
+        or brief.required_hashtags != ["#DoubleCoverage"]
     ):
-        raise RuntimeError("brief differs from Reach's exact approved YouTube channels or policy")
-    run_dir = root / ("reach-tjr-youtube-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"))
+        raise RuntimeError("brief differs from Reach's exact Double Coverage channel or policy")
+    run_dir = root / (
+        "reach-double-coverage-youtube-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    )
     run_dir.mkdir(parents=True, exist_ok=False)
     errors: list[dict[str, str]] = []
     step = "channel_discovery"
@@ -720,7 +719,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             encoding="utf-8",
         )
         if not candidates:
-            raise RuntimeError("both official YouTube channel feeds unavailable")
+            raise RuntimeError("official Double Coverage YouTube channel feed unavailable")
         chosen_video: OfficialVideo | None = None
         source: Path | None = None
         metadata: dict[str, Any] = {}
@@ -903,32 +902,31 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         )
         step = "render_and_decode"
         renderer = FFmpegRenderer()
+        watermark_path = _download_asset(
+            brief.watermark_url,
+            run_dir / "assets" / "double-coverage-watermark.png",
+            expected_kind="image",
+        )
         caption_style = os.getenv("TJR_CAPTION_STYLE", "").strip().upper()
         if caption_style != "B2":
             raise RuntimeError(
-                "TJR real-source drafts require Style B2 captions and persistent hooks"
+                "Double Coverage drafts require Style B2 captions and persistent hooks"
             )
         completed: list[dict[str, Any]] = []
         for number, pick in enumerate(picks, start=1):
             clip = pick.clip
-            out = run_dir / "clips" / f"{number:02d}-tjr-youtube-{chosen_video.video_id}.mp4"
-            # Explicit approved crop for the visually audited 2026-09-25
-            # TRiches livestream. New layouts remain review-only until audited.
-            dimensions = probe_original(source)
-            if dimensions == {"width": 1920, "height": 1080}:
-                if chosen_video.video_id == "p2LU37eat70":
-                    layout = "tjr-trading-logo-safe"
-                elif chosen_video.video_id == "LvnemCfJpQU":
-                    layout = "tjr-memecoin-logo-safe"
-                else:
-                    layout = "default"
-            else:
-                layout = "default"
+            out = (
+                run_dir
+                / "clips"
+                / f"{number:02d}-double-coverage-{chosen_video.video_id}.mp4"
+            )
+            layout = "default"
             renderer.render(
                 source,
                 out,
                 clip,
                 segments,
+                watermark_path=watermark_path,
                 editorial_layout=layout,
                 tiktok_hook=pick.hook if caption_style in {"B", "B2"} else None,
                 source_profile=source_profile if caption_style in {"B", "B2"} else None,
@@ -1055,13 +1053,15 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             "clips": completed,
             "source_attempts": errors,
             "manual_checks": [
-                "Watch each draft to verify TJR is actually on screen and portrayed appropriately.",
+                "Verify Host Mystic Zach appears in every publishable clip.",
                 "Check spoken words against subtitles, story, retention, framing and hooks.",
                 "Assign a verified portrait-visual score and explicitly approve or reject "
                 "editorial integrity after watching the full source context.",
-                "Reject any source logos, watermarks, synthetic visuals or AI voices.",
-                "Verify Reach/Whop account eligibility, remaining budget and audience.",
-                "Only publish after human approval; add #TJR and submit within 30 minutes.",
+                "Verify the official Double Coverage watermark is clearly visible and reject "
+                "unrelated logos or synthetic video footage.",
+                "Verify the clip does not portray the creators, guests or podcast negatively.",
+                "Verify Reach/Whop dedicated-account eligibility, remaining budget and audience.",
+                "Only publish after human approval; add #DoubleCoverage and submit within 30 minutes.",
             ],
         }
         (run_dir / "tjr-youtube-qa-report.json").write_text(
@@ -1082,8 +1082,12 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--brief", type=Path, default=Path("campaigns/reach-tjr-weekly.yaml"))
-    parser.add_argument("--artifact-root", type=Path, default=Path("tjr-youtube-artifacts"))
+    parser.add_argument(
+        "--brief", type=Path, default=Path("campaigns/reach-double-coverage-dedicated.yaml")
+    )
+    parser.add_argument(
+        "--artifact-root", type=Path, default=Path("double-coverage-youtube-artifacts")
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     try:
