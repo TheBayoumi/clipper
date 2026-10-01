@@ -1,26 +1,16 @@
 #!/usr/bin/env python3
-"""Original YouTube acquisition on the user's explicitly selected Modal route.
+"""Cookie-free original YouTube egress probe on the user's existing Modal account.
 
-An optional GitHub viewer-session secret is injected through Modal Secrets.
-Cookie files are ephemeral and excluded from source transport and artifacts.
+GitHub Actions controls the task. Modal supplies a different network path,
+not a different video source. No original bytes or browser cookies are uploaded.
 """
 
 from __future__ import annotations
 
-import base64
-import binascii
 import json
 import os
-import re
-import select
-import signal
-import subprocess
-import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 import modal
 
@@ -36,20 +26,14 @@ image = (
     .apt_install("ffmpeg", "git", "ca-certificates")
     .uv_pip_install(
         "yt-dlp[default]>=2026.7.4,<2027",
-        "bgutil-ytdlp-pot-provider==2.0.0",
+        "bgutil-ytdlp-pot-provider==1.3.1",
     )
     .run_commands(
-        "git clone --depth 1 --branch 2.0.0 "
+        "git clone --depth 1 --branch 1.3.1 "
         "https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git "
         "/root/bgutil-ytdlp-pot-provider",
         "cd /root/bgutil-ytdlp-pot-provider/server && npm ci && npx tsc",
     )
-)
-
-browser_image = image.apt_install("chromium", "xvfb", "xauth").run_commands(
-    "npm install --prefix /opt/youtube-egress --omit=dev proxy-chain@3.0.1",
-    "python -m venv /opt/youtube-wpc && "
-    "/opt/youtube-wpc/bin/pip install 'yt-dlp[default]==2026.8.19' 'yt-dlp-getpot-wpc==1.1.2'",
 )
 
 PROVIDER_HOME = "/root/bgutil-ytdlp-pot-provider/server"
@@ -87,142 +71,6 @@ ACQUISITION_STRATEGIES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
-BROWSER_GUEST_STRATEGIES = (
-    (
-        "browser_guest_mweb_player_tokens",
-        (
-            "--extractor-args",
-            "youtube:player_client=mweb;fetch_pot=always",
-            "--extractor-args",
-            "youtubepot-wpc:browser_path=/usr/bin/chromium",
-        ),
-    ),
-)
-
-
-def egress_configuration() -> tuple[str, str]:
-    mode = os.getenv("TJR_YOUTUBE_EGRESS_MODE", "direct")
-    if mode not in {"direct", "static_proxy"}:
-        raise RuntimeError("INVALID_YOUTUBE_EGRESS_MODE")
-    if mode == "direct":
-        return mode, ""
-    if os.getenv("TJR_YOUTUBE_SESSION_MODE") != "browser_guest":
-        raise RuntimeError("STATIC_PROXY_REQUIRES_BROWSER_GUEST_MODE")
-    endpoint = os.getenv("TJR_YOUTUBE_EGRESS_PROXY_URL", "").strip()
-    try:
-        parsed = urlsplit(endpoint)
-        valid = (
-            parsed.scheme in {"http", "https"}
-            and bool(parsed.hostname)
-            and parsed.port is not None
-            and parsed.path in {"", "/"}
-            and not parsed.query
-            and not parsed.fragment
-        )
-    except ValueError:
-        valid = False
-    if not valid:
-        raise RuntimeError("STATIC_PROXY_REQUIRES_VALID_PRIVATE_ENDPOINT")
-    return mode, endpoint
-
-
-@contextmanager
-def fixed_egress_session() -> Iterator[None]:
-    """Keep one authenticated upstream behind a private loopback forwarder."""
-    mode, endpoint = egress_configuration()
-    if mode == "direct":
-        yield
-        return
-    # Standard proxy-chain adapter; upstream credentials never enter argv/logs.
-    program = r"""
-import { Server } from '/opt/youtube-egress/node_modules/proxy-chain/dist/index.js';
-const server = new Server({
-    host: '127.0.0.1', port: 0, verbose: false,
-    prepareRequestFunction: () => ({ upstreamProxyUrl: process.env.TJR_YOUTUBE_EGRESS_PROXY_URL }),
-});
-server.on('requestFailed', () => {});
-await server.listen();
-process.stdout.write('http://127.0.0.1:' + server.port + '\n');
-"""
-    previous = os.environ.get("TJR_LOCAL_YOUTUBE_PROXY")
-    with subprocess.Popen(
-        ["node", "--input-type=module", "-e", program],
-        env={**os.environ, "TJR_YOUTUBE_EGRESS_PROXY_URL": endpoint},
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    ) as process:
-        try:
-            if process.stdout is None or not select.select([process.stdout], [], [], 15)[0]:
-                raise RuntimeError("STATIC_PROXY_FORWARDER_START_TIMEOUT")
-            local = process.stdout.readline().strip()
-            if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]+", local):
-                raise RuntimeError("STATIC_PROXY_FORWARDER_START_FAILED")
-            os.environ["TJR_LOCAL_YOUTUBE_PROXY"] = local
-            yield
-        finally:
-            if previous is None:
-                os.environ.pop("TJR_LOCAL_YOUTUBE_PROXY", None)
-            else:
-                os.environ["TJR_LOCAL_YOUTUBE_PROXY"] = previous
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-
-
-def youtube_proxy_args() -> list[str]:
-    proxy = os.getenv("TJR_LOCAL_YOUTUBE_PROXY", "")
-    if os.getenv("TJR_YOUTUBE_EGRESS_MODE") == "static_proxy" and not proxy:
-        raise RuntimeError("STATIC_PROXY_FORWARDER_REQUIRED")
-    return ["--proxy", proxy] if proxy else []
-
-
-def acquisition_strategies() -> tuple[tuple[str, tuple[str, ...]], ...]:
-    mode = os.getenv("TJR_YOUTUBE_SESSION_MODE", "bgutil_guest")
-    if mode == "browser_guest":
-        return BROWSER_GUEST_STRATEGIES
-    if mode not in {"bgutil_guest", "viewer_secret"}:
-        raise RuntimeError("INVALID_YOUTUBE_SESSION_MODE")
-    return ACQUISITION_STRATEGIES
-
-
-def acquisition_executable() -> list[str]:
-    if os.getenv("TJR_YOUTUBE_SESSION_MODE") == "browser_guest":
-        return ["xvfb-run", "--auto-servernum", "/opt/youtube-wpc/bin/yt-dlp"]
-    return ["yt-dlp"]
-
-
-def acquisition_run(
-    command: list[str],
-    *,
-    timeout: int,
-    capture_output: bool = True,
-    text: bool = False,
-    check: bool = False,
-) -> Any:
-    """Kill the entire browser process group when a guest-token call times out."""
-    if os.getenv("TJR_YOUTUBE_SESSION_MODE") != "browser_guest":
-        return subprocess.run(
-            command, timeout=timeout, capture_output=capture_output, text=text, check=check
-        )
-    with subprocess.Popen(
-        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=text, start_new_session=True
-    ) as process:
-        try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.communicate()
-            raise
-        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-        if check:
-            result.check_returncode()
-        return result
-
-
 def source_download_sections(duration_seconds: float) -> list[str]:
     """Isolated Modal worker uses the same full-source limit as the runner.
 
@@ -236,121 +84,9 @@ def source_download_sections(duration_seconds: float) -> list[str]:
     return []
 
 
-def guest_watch_playability(html: str, video_id: str, channel_id: str) -> str:
-    """Report guest watch-page status only after binding it to the exact source."""
-    for match in re.finditer(r"(?:var\s+)?ytInitialPlayerResponse\s*=\s*", html):
-        try:
-            player, _ = json.JSONDecoder().raw_decode(html[match.end() :])
-        except ValueError:
-            continue
-        if not isinstance(player, dict):
-            continue
-        details = player.get("videoDetails") or {}
-        if details and (
-            details.get("videoId") != video_id or details.get("channelId") != channel_id
-        ):
-            return "SOURCE_IDENTITY_MISMATCH"
-        status = (player.get("playabilityStatus") or {}).get("status")
-        if status in {"OK", "LOGIN_REQUIRED", "UNPLAYABLE", "ERROR"}:
-            return str(status)
-    return "NO_PLAYER_RESPONSE"
-
-
-@contextmanager
-def anonymous_watch_session(candidates: list[dict[str, str]]) -> Iterator[dict[str, Any]]:
-    """Bootstrap guest cookies on this worker; never load a signed-in profile."""
-    if not candidates:
-        raise RuntimeError("ANONYMOUS_WATCH_SESSION_REQUIRES_EXACT_SOURCE")
-    selected = candidates[0]
-    video_id, channel_id = selected["video_id"], selected["channel_id"]
-    if channel_id != "UCf1q6dhccWr6eQEcFFnJSbA" or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
-        raise RuntimeError("ANONYMOUS_WATCH_SESSION_SOURCE_NOT_ALLOWLISTED")
-    with tempfile.TemporaryDirectory(prefix="youtube-anonymous-") as private:
-        profile = Path(private) / "profile"
-        command = [
-            "xvfb-run",
-            "--auto-servernum",
-            "/usr/bin/chromium",
-            "--headless=new",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--password-store=basic",
-            f"--user-data-dir={profile}",
-            "--virtual-time-budget=12000",
-            "--disable-quic",
-            *(
-                [f"--proxy-server={os.environ['TJR_LOCAL_YOUTUBE_PROXY']}"]
-                if os.getenv("TJR_LOCAL_YOUTUBE_PROXY")
-                else []
-            ),
-            "--dump-dom",
-            f"https://www.youtube.com/watch?v={video_id}",
-        ]
-        outcome = acquisition_run(command, timeout=60, text=True)
-        if outcome.returncode:
-            raise RuntimeError("ANONYMOUS_GUEST_BROWSER_BOOTSTRAP_FAILED")
-        evidence = {
-            "fresh_temporary_profile": True,
-            "account_login_used": False,
-            "watch_playability": guest_watch_playability(outcome.stdout, video_id, channel_id),
-            "cookie_database_created": any(profile.rglob("Cookies")),
-        }
-        if evidence["watch_playability"] == "SOURCE_IDENTITY_MISMATCH":
-            raise RuntimeError("ANONYMOUS_WATCH_PAGE_SOURCE_IDENTITY_MISMATCH")
-        previous = os.environ.get("TJR_GUEST_BROWSER_PROFILE")
-        os.environ["TJR_GUEST_BROWSER_PROFILE"] = str(profile)
-        try:
-            yield evidence
-        finally:
-            if previous is None:
-                os.environ.pop("TJR_GUEST_BROWSER_PROFILE", None)
-            else:
-                os.environ["TJR_GUEST_BROWSER_PROFILE"] = previous
-
-
-@contextmanager
-def viewer_cookie_session() -> Iterator[None]:
-    """Materialize an explicitly configured viewer secret only for this call."""
-    encoded = os.getenv("TJR_YOUTUBE_COOKIES_B64", "").strip()
-    if not encoded:
-        yield
-        return
-    try:
-        payload = base64.b64decode(encoded, validate=True)
-    except (ValueError, binascii.Error):
-        raise RuntimeError("INVALID_YOUTUBE_VIEWER_SESSION_SECRET") from None
-    if not payload.startswith((b"# Netscape HTTP Cookie File", b"# HTTP Cookie File")):
-        raise RuntimeError("INVALID_YOUTUBE_VIEWER_SESSION_COOKIE_FORMAT")
-    previous = os.environ.get("YOUTUBE_COOKIES_FILE")
-    with tempfile.TemporaryDirectory(prefix="youtube-viewer-") as private:
-        path = Path(private) / "cookies.txt"
-        path.touch(mode=0o600)
-        path.write_bytes(payload)
-        os.environ["YOUTUBE_COOKIES_FILE"] = str(path)
-        try:
-            yield
-        finally:
-            if previous is None:
-                os.environ.pop("YOUTUBE_COOKIES_FILE", None)
-            else:
-                os.environ["YOUTUBE_COOKIES_FILE"] = previous
-
-
-def viewer_cookie_args() -> list[str]:
-    if os.getenv("TJR_YOUTUBE_SESSION_MODE") == "browser_guest":
-        profile = os.getenv("TJR_GUEST_BROWSER_PROFILE", "").strip()
-        if profile:
-            return ["--cookies-from-browser", f"chromium:{profile}"]
-    path = os.getenv("YOUTUBE_COOKIES_FILE", "").strip()
-    return ["--cookies", path] if path else []
-
-
 def _yt_command(args: tuple[str, ...], url: str) -> list[str]:
     return [
-        *acquisition_executable(),
-        *(["--verbose"] if os.getenv("TJR_YOUTUBE_SESSION_MODE") == "browser_guest" else []),
+        "yt-dlp",
         "--ignore-config",
         "--no-warnings",
         "--js-runtimes",
@@ -358,14 +94,10 @@ def _yt_command(args: tuple[str, ...], url: str) -> list[str]:
         "--no-playlist",
         "--socket-timeout",
         "20",
-        "--sleep-requests",
-        "1",
         "--retries",
         "4",
         "--fragment-retries",
         "4",
-        *viewer_cookie_args(),
-        *youtube_proxy_args(),
         *args,
         url,
     ]
@@ -389,40 +121,20 @@ volume = modal.Volume.from_name("clipper-tjr-source-transport", create_if_missin
 
 @app.function(image=image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=2048)
 def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = "") -> dict[str, Any]:
-    mode = os.getenv("TJR_YOUTUBE_SESSION_MODE", "bgutil_guest")
-    if mode != "viewer_secret" and (
-        os.getenv("TJR_YOUTUBE_COOKIES_B64") or os.getenv("YOUTUBE_COOKIES_FILE")
-    ):
-        raise RuntimeError("GUEST_ACQUISITION_REJECTS_ACCOUNT_COOKIES")
-    with viewer_cookie_session() if mode == "viewer_secret" else nullcontext():
-        return _inspect_original_youtube(candidates, run_key)
-
-
-@app.function(image=browser_image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=3072)
-def inspect_browser_guest_youtube(
-    candidates: list[dict[str, str]], run_key: str = ""
-) -> dict[str, Any]:
-    with fixed_egress_session(), anonymous_watch_session(candidates) as evidence:
-        result = inspect_original_youtube.local(candidates, run_key)
-        result["guest_session_evidence"] = evidence
-        return result
-
-
-def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) -> dict[str, Any]:
     """Verify source identity and transfer real HD bytes on one Modal egress.
 
     Reuses Clipper's successful BgUtils strategy family. Metadata-only
     successes are insufficient: an actual signed HD CDN URL must serve bytes.
     """
+    import subprocess
     import tempfile
 
     approved = {
         "UCf1q6dhccWr6eQEcFFnJSbA",
     }
-    attempts: list[dict[str, Any]] = []
+    attempts: list[dict[str, str]] = []
     total_ip_challenges = 0
     blocked_video_count = 0
-    strategies = acquisition_strategies()
     for candidate in candidates[:6]:
         ip_challenges = 0
         video_id = candidate["video_id"]
@@ -431,9 +143,9 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
         if channel_id not in approved or len(video_id) != 11:
             attempts.append({"url": url, "reason": "SOURCE_NOT_ALLOWLISTED"})
             continue
-        for strategy_name, strategy_args in strategies:
+        for strategy_name, strategy_args in ACQUISITION_STRATEGIES:
             try:
-                metadata_run = acquisition_run(
+                metadata_run = subprocess.run(
                     [
                         *_yt_command(strategy_args, url)[:-1],
                         "--dump-single-json",
@@ -445,17 +157,6 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
                     timeout=100,
                     check=False,
                 )
-                token_evidence = (
-                    {
-                        "browser_launched": "Launching youtube.com in browser"
-                        in metadata_run.stderr,
-                        "player_token_received": "Retrieved a player PO Token"
-                        in metadata_run.stderr,
-                        "gvs_token_received": "Retrieved a gvs PO Token" in metadata_run.stderr,
-                    }
-                    if os.getenv("TJR_YOUTUBE_SESSION_MODE") == "browser_guest"
-                    else {}
-                )
                 if metadata_run.returncode:
                     reason = _transport_error(metadata_run.stderr)
                     attempts.append(
@@ -464,12 +165,23 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
                             "strategy": strategy_name,
                             "stage": "metadata",
                             "reason": reason,
-                            "guest_token_evidence": token_evidence,
                         }
                     )
                     if reason == "YOUTUBE_IP_OR_LOGIN_CHALLENGE":
                         ip_challenges += 1
                         total_ip_challenges += 1
+                    if ip_challenges >= 2:
+                        # Both a provider-backed mweb request and an independent
+                        # plain YouTube client were challenged for this video.
+                        # Confirm on another approved video before declaring
+                        # this regional/IP route blocked.
+                        blocked_video_count += 1
+                        if blocked_video_count >= 2:
+                            return {
+                                "status": "YOUTUBE_EGRESS_BOT_CHALLENGE",
+                                "attempts": attempts,
+                            }
+                        break
                     continue
                 metadata = json.loads(metadata_run.stdout)
                 if not isinstance(metadata, dict):
@@ -524,7 +236,7 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
                         str(Path(temp) / "source.%(ext)s"),
                         url,
                     ]
-                    transfer = acquisition_run(
+                    transfer = subprocess.run(
                         media_command, capture_output=True, text=True, timeout=145, check=False
                     )
                     media_bytes = sum(
@@ -552,7 +264,6 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
                     "duration": float(metadata.get("duration") or 0),
                     "title": str(metadata.get("title") or "")[:160],
                     "transport_strategy": strategy_name,
-                    "guest_token_evidence": token_evidence,
                     "attempts": attempts,
                 }
                 # The full original MUST be downloaded in the same Modal
@@ -573,12 +284,6 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
                         else type(exc).__name__,
                     }
                 )
-        # Exhaust the bounded strategy set for this exact video. Two clients
-        # cannot establish that every configured cookie-free client is blocked.
-        if ip_challenges == len(strategies):
-            blocked_video_count += 1
-            if blocked_video_count >= 2:
-                return {"status": "YOUTUBE_EGRESS_BOT_CHALLENGE", "attempts": attempts}
     status = (
         "YOUTUBE_EGRESS_BOT_CHALLENGE"
         if total_ip_challenges and total_ip_challenges >= len(attempts) - 1
@@ -623,6 +328,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
     """Download actual allowlisted original bytes via the verified Modal network."""
     import hashlib
     import re
+    import subprocess
     import tempfile
     from pathlib import Path
 
@@ -642,7 +348,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
     folder.mkdir(parents=True, exist_ok=True)
     verified_strategy = str(selected.get("transport_strategy") or "")
     extractor_args = next(
-        (args for label, args in acquisition_strategies() if label == verified_strategy),
+        (args for label, args in ACQUISITION_STRATEGIES if label == verified_strategy),
         None,
     )
     if extractor_args is None:
@@ -652,16 +358,10 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
     with tempfile.TemporaryDirectory(prefix="acquire-", dir=folder) as scratch:
         scratch_dir = Path(scratch)
         command = [
-            *acquisition_executable(),
+            "yt-dlp",
             "--ignore-config",
             "--js-runtimes",
             "node",
-            "--socket-timeout",
-            "20",
-            "--sleep-requests",
-            "1",
-            *viewer_cookie_args(),
-            *youtube_proxy_args(),
             *extractor_args,
             "--retries",
             "10",
@@ -683,7 +383,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
             url,
         ]
         try:
-            outcome = acquisition_run(command, capture_output=True, timeout=1330, check=False)
+            outcome = subprocess.run(command, capture_output=True, timeout=1330, check=False)
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("ORIGINAL_TRANSFER_TIMEOUT") from exc
         if outcome.returncode:
@@ -752,7 +452,6 @@ def main() -> None:
     root.mkdir(parents=True, exist_ok=True)
     output = root / "verified-original-egress.json"
     try:
-        egress_mode, proxy_endpoint = egress_configuration()
         candidates, discovery_failures = discover_official_uploads()
         channel_id = os.getenv("TJR_MODAL_CHANNEL_ID", "").strip()
         if channel_id and channel_id not in {"UCf1q6dhccWr6eQEcFFnJSbA"}:
@@ -805,35 +504,6 @@ def main() -> None:
                 if kind == "region"
                 else inspect_original_youtube
             )
-            session_mode = os.getenv("TJR_YOUTUBE_SESSION_MODE", "bgutil_guest")
-            acquisition_strategies()  # Reject unknown modes before a remote invocation.
-            provider = provider.with_options(env={"TJR_YOUTUBE_SESSION_MODE": session_mode})
-            if session_mode == "browser_guest":
-                provider = inspect_browser_guest_youtube.with_options(
-                    cloud="gcp",
-                    memory=3072,
-                    env={"TJR_YOUTUBE_SESSION_MODE": session_mode},
-                )
-            private_secrets = {}
-            if proxy_endpoint:
-                private_secrets["TJR_YOUTUBE_EGRESS_PROXY_URL"] = proxy_endpoint
-                provider = provider.with_options(
-                    env={
-                        "TJR_YOUTUBE_SESSION_MODE": session_mode,
-                        "TJR_YOUTUBE_EGRESS_MODE": egress_mode,
-                    }
-                )
-            viewer_secret = (
-                os.getenv("TJR_YOUTUBE_COOKIES_B64", "").strip()
-                if session_mode == "viewer_secret"
-                else ""
-            )
-            if session_mode == "viewer_secret" and not viewer_secret:
-                raise RuntimeError("VIEWER_SECRET_MODE_REQUIRES_YOUTUBE_SESSION_SECRET")
-            if viewer_secret:
-                private_secrets["TJR_YOUTUBE_COOKIES_B64"] = viewer_secret
-            if private_secrets:
-                provider = provider.with_options(secrets=[modal.Secret.from_dict(private_secrets)])
             try:
                 candidate = provider.remote(inputs, run_key)
                 result = candidate
@@ -847,24 +517,14 @@ def main() -> None:
                 region_attempts.append({"egress": label, "status": str(candidate.get("status"))})
             except Exception as exc:
                 region_attempts.append({"egress": label, "error": type(exc).__name__})
-        result["egress_mode"] = egress_mode
-        result["automatic_egress_fallback"] = False
-        result["session_mode"] = os.getenv("TJR_YOUTUBE_SESSION_MODE", "bgutil_guest")
-        result["authenticated_viewer_session_configured"] = bool(
-            os.getenv("TJR_YOUTUBE_COOKIES_B64", "").strip()
-        )
         result["region_attempts"] = region_attempts
         result["egress_attempt_limit"] = MAX_MODAL_EGRESS_ATTEMPTS
         result["discovery_failures"] = discovery_failures
         output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         if result["status"] != "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED":
-            status = str(result["status"])
-            if status == "YOUTUBE_EGRESS_BOT_CHALLENGE":
-                raise RuntimeError(
-                    status + ": selected acquisition mode could not establish playback; "
-                    "no source or cloud fallback was attempted"
-                )
-            raise RuntimeError(status + ": official YouTube HD acquisition failed")
+            raise RuntimeError(
+                "No tested Modal region could fetch HD bytes from the official YouTube video"
+            )
         print("Verified original YouTube URL:", result["source_url"])
         if stage_media:
             staging = result.get("staging")
