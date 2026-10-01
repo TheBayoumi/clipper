@@ -31,10 +31,10 @@ image = (
     .apt_install("ffmpeg", "git", "ca-certificates")
     .uv_pip_install(
         "yt-dlp[default]>=2026.7.4,<2027",
-        "bgutil-ytdlp-pot-provider==1.3.1",
+        "bgutil-ytdlp-pot-provider==2.0.0",
     )
     .run_commands(
-        "git clone --depth 1 --branch 1.3.1 "
+        "git clone --depth 1 --branch 2.0.0 "
         "https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git "
         "/root/bgutil-ytdlp-pot-provider",
         "cd /root/bgutil-ytdlp-pot-provider/server && npm ci && npx tsc",
@@ -132,6 +132,8 @@ def _yt_command(args: tuple[str, ...], url: str) -> list[str]:
         "--no-playlist",
         "--socket-timeout",
         "20",
+        "--sleep-requests",
+        "1",
         "--retries",
         "4",
         "--fragment-retries",
@@ -214,18 +216,6 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
                     if reason == "YOUTUBE_IP_OR_LOGIN_CHALLENGE":
                         ip_challenges += 1
                         total_ip_challenges += 1
-                    if ip_challenges >= 2:
-                        # Both a provider-backed mweb request and an independent
-                        # plain YouTube client were challenged for this video.
-                        # Confirm on another approved video before declaring
-                        # this regional/IP route blocked.
-                        blocked_video_count += 1
-                        if blocked_video_count >= 2:
-                            return {
-                                "status": "YOUTUBE_EGRESS_BOT_CHALLENGE",
-                                "attempts": attempts,
-                            }
-                        break
                     continue
                 metadata = json.loads(metadata_run.stdout)
                 if not isinstance(metadata, dict):
@@ -328,6 +318,12 @@ def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) ->
                         else type(exc).__name__,
                     }
                 )
+        # Exhaust the bounded strategy set for this exact video. Two clients
+        # cannot establish that every configured cookie-free client is blocked.
+        if ip_challenges == len(ACQUISITION_STRATEGIES):
+            blocked_video_count += 1
+            if blocked_video_count >= 2:
+                return {"status": "YOUTUBE_EGRESS_BOT_CHALLENGE", "attempts": attempts}
     status = (
         "YOUTUBE_EGRESS_BOT_CHALLENGE"
         if total_ip_challenges and total_ip_challenges >= len(attempts) - 1
@@ -406,6 +402,10 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
             "--ignore-config",
             "--js-runtimes",
             "node",
+            "--socket-timeout",
+            "20",
+            "--sleep-requests",
+            "1",
             *viewer_cookie_args(),
             *extractor_args,
             "--retries",
