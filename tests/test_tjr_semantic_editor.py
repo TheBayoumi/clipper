@@ -95,3 +95,17 @@ def test_semantic_editor_rejects_out_of_domain_luxury_content_before_event_label
     assert audit["out_of_domain_unit_count"] == audit["semantic_unit_count"]
     assert audit["event_anchor_count"] == 0
     assert audit["fixed_candidate_or_output_quota"] is False
+
+
+def test_question_window_keeps_setup_and_stops_before_new_question() -> None:
+    from scripts.tjr_semantic_editor import SemanticUnit, _anchor_window
+
+    units = [
+        SemanticUnit(0, 6, "Yeah, that reminds me of something else."),
+        SemanticUnit(6, 12, "How did your first show pay you?"),
+        SemanticUnit(12, 20, "They promised a percentage of the ticket revenue."),
+        SemanticUnit(20, 28, "The room sold out, but I received nothing."),
+        SemanticUnit(28, 36, "What happened at your next show?"),
+    ]
+    assert _anchor_window(2, units, [[1.0]] * 5, [0] * 5, min_seconds=20, max_seconds=45) == (1, 3)
+    assert _anchor_window(2, units, [[1.0]] * 5, [0] * 5, min_seconds=30, max_seconds=45) is None

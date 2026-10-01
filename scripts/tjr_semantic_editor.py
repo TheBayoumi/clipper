@@ -62,6 +62,10 @@ MIN_EVENT_SIMILARITY = 0.34
 MIN_CAMPAIGN_SIMILARITY = 0.30
 MIN_RELEVANCE_MARGIN = 0.02
 _WORD = re.compile(r"[A-Za-z0-9$%'.-]+")
+_QUESTION_OPENING = re.compile(
+    r"^(?:who|what|when|where|why|how|can|could|would|did|do|does|is|are|have|has|will|was|were)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,12 +93,15 @@ class FastEmbedder:
                 "semantic editorial pass requires fastembed; install the production extras"
             ) from exc
         self.model_name = model_name
-        self._model = TextEmbedding(model_name=model_name)
+        self._model = TextEmbedding(model_name=model_name, threads=2)
 
     def __call__(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
             return []
-        return [[float(value) for value in vector] for vector in self._model.embed(list(texts))]
+        return [
+            [float(value) for value in vector]
+            for vector in self._model.embed(list(texts), batch_size=32)
+        ]
 
 
 def _norm(vector: Sequence[float]) -> float:
@@ -200,11 +207,36 @@ def _anchor_window(
     left = right = index
     region = regions[index]
     anchor_vector = vectors[index]
+    # Preserve an actual spoken setup rather than greedily adding earlier filler.
+    # Question words describe structure; the supplied brief controls topic relevance.
+    question_start: int | None = None
+    for preceding in range(index, -1, -1):
+        if regions[preceding] != region:
+            break
+        if units[index].end - units[preceding].start > max_seconds:
+            break
+        text = units[preceding].text.strip()
+        if (
+            _QUESTION_OPENING.search(text)
+            and "?" in text
+            and _cosine(anchor_vector, vectors[preceding]) >= 0.48
+        ):
+            question_start = preceding
+            left = preceding
+            break
     while units[right].end - units[left].start < min_seconds:
         options: list[tuple[float, int, int]] = []
-        if left > 0 and regions[left - 1] == region:
+        if question_start is None and left > 0 and regions[left - 1] == region:
             options.append((_cosine(anchor_vector, vectors[left - 1]), left - 1, right))
-        if right + 1 < len(units) and regions[right + 1] == region:
+        if (
+            right + 1 < len(units)
+            and regions[right + 1] == region
+            and not (
+                question_start is not None
+                and _QUESTION_OPENING.search(units[right + 1].text.strip())
+                and "?" in units[right + 1].text
+            )
+        ):
             options.append((_cosine(anchor_vector, vectors[right + 1]), left, right + 1))
         if not options:
             return None
@@ -213,9 +245,21 @@ def _anchor_window(
             return None
         left, right = new_left, new_right
 
+    if question_start is not None:
+        # Stop after a complete answer; do not drag the next question into the clip.
+        while (
+            not units[right].text.rstrip().endswith((".", "!"))
+            and right + 1 < len(units)
+            and regions[right + 1] == region
+            and units[right + 1].end - units[left].start <= max_seconds
+            and not _QUESTION_OPENING.search(units[right + 1].text.strip())
+        ):
+            right += 1
+        return left, right
+
     while True:
         options = []
-        if left > 0 and regions[left - 1] == region:
+        if question_start is None and left > 0 and regions[left - 1] == region:
             duration = units[right].end - units[left - 1].start
             similarity = _cosine(anchor_vector, vectors[left - 1])
             if duration <= max_seconds and similarity >= 0.48:

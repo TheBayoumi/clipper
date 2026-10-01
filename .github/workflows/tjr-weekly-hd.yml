@@ -63,6 +63,11 @@ on:
         required: false
         type: string
         default: ""
+      transcript_source_run_id:
+        description: "Optional prior Modal run transcript; exact source bytes and complete coverage must match."
+        required: false
+        type: string
+        default: ""
       feedback_source_run_id:
         description: "Existing production run to replay and audit without downloading video anew."
         required: false
@@ -98,6 +103,7 @@ jobs:
           TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
           TJR_TARGET_CHANNEL_ID: ${{ inputs.target_channel_id }}
           TJR_FEEDBACK_SOURCE_RUN_ID: ${{ inputs.feedback_source_run_id }}
+          TJR_TRANSCRIPT_SOURCE_RUN_ID: ${{ inputs.transcript_source_run_id }}
         run: |
           python - <<'PY'
           import os
@@ -116,7 +122,12 @@ jobs:
                   raise SystemExit('Unknown campaign source mode')
               if mode == 'verified_mirror' and os.getenv('TJR_BUDGET_CONFIRMED', '').lower() != 'true':
                   raise SystemExit('Production requires explicit confirmation of the live Whop budget')
+              cache_run = os.getenv('TJR_TRANSCRIPT_SOURCE_RUN_ID', '')
+              if cache_run and (mode != 'modal_direct' or not re.fullmatch(r'[1-9][0-9]{7,14}', cache_run)):
+                  raise SystemExit('Transcript reuse requires modal_direct and a valid prior run ID')
               video_id = os.getenv('TJR_SOURCE_VIDEO_ID', '')
+              if cache_run and not video_id:
+                  raise SystemExit('Transcript reuse requires the exact source_video_id')
               target_channel_id = os.getenv('TJR_TARGET_CHANNEL_ID', '')
               approved_channels = {
                   'UCf1q6dhccWr6eQEcFFnJSbA',
@@ -372,6 +383,7 @@ jobs:
     timeout-minutes: 180
     permissions:
       contents: read
+      actions: read
     env:
       TJR_MODAL_CHANNEL_ID: ${{ inputs.target_channel_id }}
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
@@ -381,6 +393,7 @@ jobs:
       TJR_CAPTION_STYLE: B2
       TJR_RENDER_SAFETY_LIMIT: "20"
       TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
+      TJR_TRANSCRIPT_SOURCE_RUN_ID: ${{ inputs.transcript_source_run_id }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -401,6 +414,17 @@ jobs:
           set -euo pipefail
           rm -f tjr-modal-probe/staged-original.json
           modal run -m scripts.tjr_modal_probe
+      - name: Download complete transcript from an explicitly selected prior run
+        if: inputs.transcript_source_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ inputs.transcript_source_run_id }}
+          path: tjr-transcript-cache
+          run-id: ${{ inputs.transcript_source_run_id }}
+          github-token: ${{ github.token }}
+      - name: Enable exact-source transcript reuse
+        if: inputs.transcript_source_run_id != ''
+        run: echo "TJR_TRANSCRIPT_CACHE_ROOT=$PWD/tjr-transcript-cache" >> "$GITHUB_ENV"
       - name: Render staged original through shared semantic editorial pipeline
         env:
           TJR_MODAL_USE_STAGED: "1"
@@ -431,6 +455,7 @@ jobs:
             tjr-modal-artifacts/**/clips/*-contact.png
             tjr-modal-artifacts/**/editorial-candidate-audit.json
             tjr-modal-artifacts/**/source-analysis-coverage.json
+            tjr-modal-artifacts/**/transcript-cache-provenance.json
             tjr-modal-artifacts/**/ranked-candidates.json
             tjr-modal-artifacts/**/tjr-youtube-qa-report.json
             tjr-modal-artifacts/**/source-acquisition-errors.json

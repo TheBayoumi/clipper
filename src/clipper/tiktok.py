@@ -38,6 +38,92 @@ def _ass_time(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{whole:02d}.{centiseconds:02d}"
 
 
+_HEADLINE_FUNCTION_WORDS = frozenset(
+    [
+        "a",
+        "an",
+        "the",
+        "i",
+        "me",
+        "my",
+        "mine",
+        "you",
+        "your",
+        "yours",
+        "he",
+        "him",
+        "his",
+        "she",
+        "her",
+        "hers",
+        "it",
+        "its",
+        "we",
+        "us",
+        "our",
+        "they",
+        "them",
+        "their",
+        "theirs",
+        "and",
+        "or",
+        "but",
+        "so",
+        "then",
+        "well",
+        "yeah",
+        "yes",
+        "no",
+        "okay",
+        "like",
+        "just",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "do",
+        "does",
+        "did",
+        "have",
+        "has",
+        "had",
+        "to",
+        "of",
+        "in",
+        "on",
+        "at",
+        "for",
+        "with",
+        "from",
+        "by",
+        "as",
+        "that",
+        "this",
+        "these",
+        "those",
+        "what",
+        "who",
+        "when",
+        "where",
+        "why",
+        "how",
+        "can",
+        "could",
+        "would",
+        "will",
+        "should",
+        "know",
+        "knew",
+        "think",
+        "thing",
+        "things",
+    ]
+)
+
+
 def source_headline_candidates(text: str) -> list[str]:
     """Rank intact source sentences; never invent a topic, outcome, or speaker.
 
@@ -55,6 +141,9 @@ def source_headline_candidates(text: str) -> list[str]:
         sentence = sentence.strip()
         tokens = re.findall(r"[\w$%'-]+", sentence)
         if not 4 <= len(tokens) <= 16:
+            continue
+        content = {token.casefold() for token in tokens} - _HEADLINE_FUNCTION_WORDS
+        if len(content) < 2:
             continue
         headline = sentence.upper()
         key = headline.casefold()
@@ -114,19 +203,29 @@ def _fit_lines(
         raise ValueError("empty headline cannot be laid out")
     for size in range(max_size, min_size - 1, -2):
         font = ImageFont.truetype(_FONT, size)
+        # Measure each word once to screen partitions cheaply; verify every
+        # chosen line with the actual glyph renderer before accepting it.
+        prefix = [0.0]
+        for word in words:
+            prefix.append(prefix[-1] + float(font.getlength(word)))
+        space_width = float(font.getlength(" "))
         choices: list[tuple[float, tuple[str, ...]]] = []
         for line_count in range(1, min(max_lines, len(words)) + 1):
             for cuts in combinations(range(1, len(words)), line_count - 1):
                 boundaries = (0, *cuts, len(words))
                 lines = tuple(" ".join(words[left:right]) for left, right in pairwise(boundaries))
-                width = max(float(font.getlength(line)) for line in lines)
+                width = max(
+                    prefix[right] - prefix[left] + space_width * (right - left - 1)
+                    for left, right in pairwise(boundaries)
+                )
                 if width * 1.12 + 40 <= max_width and size * line_count <= 210:
                     choices.append((width, lines))
-        if choices:
-            width, lines = min(
-                choices, key=lambda x: (max(len(y) for y in x[1]) - min(len(y) for y in x[1]), x[0])
-            )
-            return size, lines, width
+        for _, lines in sorted(
+            choices, key=lambda x: (max(len(y) for y in x[1]) - min(len(y) for y in x[1]), x[0])
+        ):
+            actual_width = max(float(font.getlength(line)) for line in lines)
+            if actual_width * 1.12 + 40 <= max_width:
+                return size, lines, actual_width
     raise ValueError("headline exceeds portrait safe area; shorten editorial headline")
 
 

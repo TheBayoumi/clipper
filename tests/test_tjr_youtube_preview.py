@@ -683,3 +683,65 @@ def test_double_coverage_uses_campaign_default_layout_and_required_watermark() -
     assert "double-coverage-watermark.png" in source
     assert 'chosen_video.video_id == "LvnemCfJpQU"' not in source
     assert 'chosen_video.video_id == "p2LU37eat70"' not in source
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "hash", "video", "coverage", "duration", "times", "chunks", "empty"]
+)
+def test_transcript_cache_requires_exact_source_and_complete_analysis(
+    tmp_path: Path, fault: str | None
+) -> None:
+    import hashlib
+
+    source = tmp_path / "original.mp4"
+    source.write_bytes(b"verified original media")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    report = {
+        "source_url": "https://www.youtube.com/watch?v=976-d0RlyfQ",
+        "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "source_duration_seconds": 60,
+    }
+    coverage = {
+        "full_source_analyzed": True,
+        "analyzed_source_seconds": 60,
+        "chunks": [{"start": 0, "end": 60}],
+    }
+    transcript = [
+        {
+            "start": 1,
+            "end": 8,
+            "text": "A complete spoken statement.",
+            "words": [{"start": 1, "end": 2, "text": "A"}],
+        }
+    ]
+    if fault == "hash":
+        report["source_sha256"] = "wrong"
+    elif fault == "video":
+        report["source_url"] = "https://www.youtube.com/watch?v=different"
+    elif fault == "coverage":
+        coverage["full_source_analyzed"] = False
+    elif fault == "duration":
+        coverage["analyzed_source_seconds"] = 10
+    elif fault == "times":
+        transcript[0]["end"] = 90
+    elif fault == "chunks":
+        coverage["chunks"] = [{"start": 20, "end": 60}]
+    elif fault == "empty":
+        transcript = []
+    for filename, data in [
+        ("tjr-youtube-qa-report.json", report),
+        ("source-analysis-coverage.json", coverage),
+        ("transcript.json", transcript),
+    ]:
+        (cache / filename).write_text(json.dumps(data))
+    load = SCRIPT["load_verified_transcript_cache"]
+    if fault:
+        with pytest.raises(RuntimeError, match="TRANSCRIPT_CACHE"):
+            load(source, "976-d0RlyfQ", cache, tmp_path)
+    else:
+        chunks, duration = load(source, "976-d0RlyfQ", cache, tmp_path)
+        assert duration == 60
+        assert chunks[0][0].words[0].text == "A"
+        proof = json.loads((tmp_path / "transcript-cache-provenance.json").read_text())
+        assert proof["source_hash_verified"] is True

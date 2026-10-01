@@ -608,6 +608,66 @@ class NoEditorialMoments(RuntimeError):
     """An approved source had no qualifying draft moments; try another official original."""
 
 
+def load_verified_transcript_cache(
+    source: Path, video_id: str, cache_root: Path, run_dir: Path
+) -> tuple[list[list[TranscriptSegment]], float]:
+    """Reuse only a complete transcript bound to these exact original bytes."""
+    matches = list(cache_root.rglob("transcript.json"))
+    if len(matches) != 1:
+        raise RuntimeError("TRANSCRIPT_CACHE_MUST_CONTAIN_ONE_SOURCE")
+    transcript = matches[0]
+    report = json.loads((transcript.parent / "tjr-youtube-qa-report.json").read_text())
+    coverage = json.loads((transcript.parent / "source-analysis-coverage.json").read_text())
+    with source.open("rb") as media:
+        digest = hashlib.file_digest(media, "sha256").hexdigest()
+    if (
+        report.get("source_url") != f"https://www.youtube.com/watch?v={video_id}"
+        or report.get("source_sha256") != digest
+        or coverage.get("full_source_analyzed") is not True
+        or not coverage.get("chunks")
+    ):
+        raise RuntimeError("TRANSCRIPT_CACHE_SOURCE_OR_COVERAGE_MISMATCH")
+    duration = float(coverage["analyzed_source_seconds"])
+    expected = float(report.get("source_duration_seconds") or coverage["reported_original_seconds"])
+    if not math.isfinite(duration) or abs(duration - expected) > 30:
+        raise RuntimeError("TRANSCRIPT_CACHE_INCOMPLETE_DURATION")
+    data = json.loads(transcript.read_text())
+    segments = [
+        TranscriptSegment(
+            float(item["start"]),
+            float(item["end"]),
+            str(item["text"]),
+            tuple(
+                WordTiming(float(w["start"]), float(w["end"]), str(w["text"]))
+                for w in item.get("words", [])
+            ),
+        )
+        for item in data
+    ]
+    if not segments or any(item.end > duration + 1 for item in segments):
+        raise RuntimeError("TRANSCRIPT_CACHE_INVALID_TIMESTAMPS")
+    chunks = [
+        [item for item in segments if float(chunk["start"]) <= item.start < float(chunk["end"])]
+        for chunk in coverage["chunks"]
+    ]
+    if sum(map(len, chunks)) != len(segments):
+        raise RuntimeError("TRANSCRIPT_CACHE_INVALID_CHUNK_COVERAGE")
+    (run_dir / "transcript-cache-provenance.json").write_text(
+        json.dumps(
+            {
+                "source_url": report["source_url"],
+                "source_sha256": digest,
+                "origin_run_id": os.getenv("TJR_TRANSCRIPT_SOURCE_RUN_ID", ""),
+                "source_hash_verified": True,
+                "full_source_analyzed": True,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return chunks, duration
+
+
 def transcribe_source_chunks(
     source: Path,
     run_dir: Path,
@@ -797,7 +857,12 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             raise RuntimeError("no recent approved-channel YouTube original could be downloaded")
         source_profile = probe_source_profile(source)
         step = "transcription"
-        source_chunks, analyzed_seconds = transcribe_source_chunks(source, run_dir)
+        cache_root = os.getenv("TJR_TRANSCRIPT_CACHE_ROOT", "").strip()
+        source_chunks, analyzed_seconds = (
+            load_verified_transcript_cache(source, chosen_video.video_id, Path(cache_root), run_dir)
+            if cache_root
+            else transcribe_source_chunks(source, run_dir)
+        )
         segments = [item for chunk in source_chunks for item in chunk]
         (run_dir / "source-analysis-coverage.json").write_text(
             json.dumps(
