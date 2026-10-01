@@ -17,7 +17,7 @@ import modal
 from scripts.tjr_media_policy import has_production_hd_video_stream, production_hd_format
 
 app = modal.App("clipper-tjr-official-youtube-probe")
-MAX_MODAL_EGRESS_ATTEMPTS = 3
+MAX_MODAL_EGRESS_ATTEMPTS = 1
 # Reuse the original Clipper Modal media image/provider that successfully
 # acquired YouTube masters in August, not bare yt-dlp in Debian/Deno.
 image = (
@@ -494,20 +494,8 @@ def main() -> None:
             "status": "NO_ACCESSIBLE_ORIGINAL_YOUTUBE",
             "attempts": [],
         }
-        # Bound each job to three distinct egress providers; stop immediately on
-        # a real HD transfer. Never treat a metadata-only hit as successful.
-        # Reuse the old working pipeline's independent cloud/region
-        # selection rather than testing three regions of one network.
-        routes = (
-            ("cloud:gcp", "cloud", "gcp"),
-            ("cloud:aws", "cloud", "aws"),
-            ("cloud:oci", "cloud", "oci"),
-            ("region:eu", "region", "eu"),
-            ("region:ap", "region", "ap"),
-            ("region:sa", "region", "sa"),
-            ("region:af", "region", "af"),
-            ("default", "default", "auto"),
-        )
+        # One explicitly selected Modal route. Do not switch clouds automatically.
+        routes = (("cloud:gcp", "cloud", "gcp"),)
         for label, kind, value in routes[:MAX_MODAL_EGRESS_ATTEMPTS]:
             provider = (
                 inspect_original_youtube.with_options(cloud=value)
