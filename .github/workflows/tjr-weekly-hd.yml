@@ -68,6 +68,11 @@ on:
         required: false
         type: string
         default: ""
+      editorial_source_run_id:
+        description: "Optional prior editorial checkpoint; reuse requires exact source, transcript, proposals, model and editor code."
+        required: false
+        type: string
+        default: ""
       feedback_source_run_id:
         description: "Existing production run to replay and audit without downloading video anew."
         required: false
@@ -104,6 +109,7 @@ jobs:
           TJR_TARGET_CHANNEL_ID: ${{ inputs.target_channel_id }}
           TJR_FEEDBACK_SOURCE_RUN_ID: ${{ inputs.feedback_source_run_id }}
           TJR_TRANSCRIPT_SOURCE_RUN_ID: ${{ inputs.transcript_source_run_id }}
+          TJR_EDITORIAL_SOURCE_RUN_ID: ${{ inputs.editorial_source_run_id }}
         run: |
           python - <<'PY'
           import os
@@ -128,6 +134,12 @@ jobs:
               video_id = os.getenv('TJR_SOURCE_VIDEO_ID', '')
               if cache_run and not video_id:
                   raise SystemExit('Transcript reuse requires the exact source_video_id')
+              editorial_run = os.getenv('TJR_EDITORIAL_SOURCE_RUN_ID', '')
+              if editorial_run and (
+                  mode != 'modal_direct' or not video_id
+                  or not re.fullmatch(r'[1-9][0-9]{7,14}', editorial_run)
+              ):
+                  raise SystemExit('Editorial reuse requires modal_direct, exact source ID and valid prior run ID')
               target_channel_id = os.getenv('TJR_TARGET_CHANNEL_ID', '')
               approved_channels = {
                   'UCf1q6dhccWr6eQEcFFnJSbA',
@@ -433,6 +445,17 @@ jobs:
       - name: Enable exact-source transcript reuse
         if: inputs.transcript_source_run_id != ''
         run: echo "TJR_TRANSCRIPT_CACHE_ROOT=$PWD/tjr-transcript-cache" >> "$GITHUB_ENV"
+      - name: Download independently selected editorial checkpoint
+        if: inputs.editorial_source_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ inputs.editorial_source_run_id }}
+          path: tjr-editorial-cache
+          run-id: ${{ inputs.editorial_source_run_id }}
+          github-token: ${{ github.token }}
+      - name: Enable verified editorial checkpoint reuse
+        if: inputs.editorial_source_run_id != ''
+        run: echo "TJR_EDITORIAL_CACHE_ROOT=$PWD/tjr-editorial-cache" >> "$GITHUB_ENV"
       - name: Render staged original through shared semantic editorial pipeline
         env:
           TJR_MODAL_USE_STAGED: "1"

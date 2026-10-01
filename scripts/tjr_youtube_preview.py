@@ -986,7 +986,12 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         step = "structured_context_assessment"
         with source.open("rb") as original:
             source_digest = hashlib.file_digest(original, "sha256").hexdigest()
-        reuse = list(Path(cache_root).rglob("editorial-cache.json")) if cache_root else []
+        editorial_cache_root = os.getenv("TJR_EDITORIAL_CACHE_ROOT", "").strip() or cache_root
+        reuse = (
+            list(Path(editorial_cache_root).rglob("editorial-cache.json"))
+            if editorial_cache_root
+            else []
+        )
         if len(reuse) > 1:
             raise RuntimeError("editorial cache must contain one verified assessment")
         ranked, structured_audit = refine_contextual_candidates(
