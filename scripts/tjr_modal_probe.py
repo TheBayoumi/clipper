@@ -12,6 +12,7 @@ import binascii
 import json
 import os
 import re
+import select
 import signal
 import subprocess
 import tempfile
@@ -19,6 +20,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import modal
 
@@ -45,8 +47,9 @@ image = (
 )
 
 browser_image = image.apt_install("chromium", "xvfb", "xauth").run_commands(
+    "npm install --prefix /opt/youtube-egress --omit=dev proxy-chain@3.0.1",
     "python -m venv /opt/youtube-wpc && "
-    "/opt/youtube-wpc/bin/pip install 'yt-dlp[default]==2026.8.19' 'yt-dlp-getpot-wpc==1.1.2'"
+    "/opt/youtube-wpc/bin/pip install 'yt-dlp[default]==2026.8.19' 'yt-dlp-getpot-wpc==1.1.2'",
 )
 
 PROVIDER_HOME = "/root/bgutil-ytdlp-pot-provider/server"
@@ -95,6 +98,86 @@ BROWSER_GUEST_STRATEGIES = (
         ),
     ),
 )
+
+
+def egress_configuration() -> tuple[str, str]:
+    mode = os.getenv("TJR_YOUTUBE_EGRESS_MODE", "direct")
+    if mode not in {"direct", "static_proxy"}:
+        raise RuntimeError("INVALID_YOUTUBE_EGRESS_MODE")
+    if mode == "direct":
+        return mode, ""
+    if os.getenv("TJR_YOUTUBE_SESSION_MODE") != "browser_guest":
+        raise RuntimeError("STATIC_PROXY_REQUIRES_BROWSER_GUEST_MODE")
+    endpoint = os.getenv("TJR_YOUTUBE_EGRESS_PROXY_URL", "").strip()
+    try:
+        parsed = urlsplit(endpoint)
+        valid = (
+            parsed.scheme in {"http", "https"}
+            and bool(parsed.hostname)
+            and parsed.port is not None
+            and parsed.path in {"", "/"}
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise RuntimeError("STATIC_PROXY_REQUIRES_VALID_PRIVATE_ENDPOINT")
+    return mode, endpoint
+
+
+@contextmanager
+def fixed_egress_session() -> Iterator[None]:
+    """Keep one authenticated upstream behind a private loopback forwarder."""
+    mode, endpoint = egress_configuration()
+    if mode == "direct":
+        yield
+        return
+    # Standard proxy-chain adapter; upstream credentials never enter argv/logs.
+    program = r"""
+import { Server } from '/opt/youtube-egress/node_modules/proxy-chain/dist/index.js';
+const server = new Server({
+    host: '127.0.0.1', port: 0, verbose: false,
+    prepareRequestFunction: () => ({ upstreamProxyUrl: process.env.TJR_YOUTUBE_EGRESS_PROXY_URL }),
+});
+server.on('requestFailed', () => {});
+await server.listen();
+process.stdout.write('http://127.0.0.1:' + server.port + '\n');
+"""
+    previous = os.environ.get("TJR_LOCAL_YOUTUBE_PROXY")
+    with subprocess.Popen(
+        ["node", "--input-type=module", "-e", program],
+        env={**os.environ, "TJR_YOUTUBE_EGRESS_PROXY_URL": endpoint},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    ) as process:
+        try:
+            if process.stdout is None or not select.select([process.stdout], [], [], 15)[0]:
+                raise RuntimeError("STATIC_PROXY_FORWARDER_START_TIMEOUT")
+            local = process.stdout.readline().strip()
+            if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]+", local):
+                raise RuntimeError("STATIC_PROXY_FORWARDER_START_FAILED")
+            os.environ["TJR_LOCAL_YOUTUBE_PROXY"] = local
+            yield
+        finally:
+            if previous is None:
+                os.environ.pop("TJR_LOCAL_YOUTUBE_PROXY", None)
+            else:
+                os.environ["TJR_LOCAL_YOUTUBE_PROXY"] = previous
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
+
+def youtube_proxy_args() -> list[str]:
+    proxy = os.getenv("TJR_LOCAL_YOUTUBE_PROXY", "")
+    if os.getenv("TJR_YOUTUBE_EGRESS_MODE") == "static_proxy" and not proxy:
+        raise RuntimeError("STATIC_PROXY_FORWARDER_REQUIRED")
+    return ["--proxy", proxy] if proxy else []
 
 
 def acquisition_strategies() -> tuple[tuple[str, tuple[str, ...]], ...]:
@@ -196,6 +279,12 @@ def anonymous_watch_session(candidates: list[dict[str, str]]) -> Iterator[dict[s
             "--password-store=basic",
             f"--user-data-dir={profile}",
             "--virtual-time-budget=12000",
+            "--disable-quic",
+            *(
+                [f"--proxy-server={os.environ['TJR_LOCAL_YOUTUBE_PROXY']}"]
+                if os.getenv("TJR_LOCAL_YOUTUBE_PROXY")
+                else []
+            ),
             "--dump-dom",
             f"https://www.youtube.com/watch?v={video_id}",
         ]
@@ -276,6 +365,7 @@ def _yt_command(args: tuple[str, ...], url: str) -> list[str]:
         "--fragment-retries",
         "4",
         *viewer_cookie_args(),
+        *youtube_proxy_args(),
         *args,
         url,
     ]
@@ -312,7 +402,7 @@ def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = ""
 def inspect_browser_guest_youtube(
     candidates: list[dict[str, str]], run_key: str = ""
 ) -> dict[str, Any]:
-    with anonymous_watch_session(candidates) as evidence:
+    with fixed_egress_session(), anonymous_watch_session(candidates) as evidence:
         result = inspect_original_youtube.local(candidates, run_key)
         result["guest_session_evidence"] = evidence
         return result
@@ -571,6 +661,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
             "--sleep-requests",
             "1",
             *viewer_cookie_args(),
+            *youtube_proxy_args(),
             *extractor_args,
             "--retries",
             "10",
@@ -661,6 +752,7 @@ def main() -> None:
     root.mkdir(parents=True, exist_ok=True)
     output = root / "verified-original-egress.json"
     try:
+        egress_mode, proxy_endpoint = egress_configuration()
         candidates, discovery_failures = discover_official_uploads()
         channel_id = os.getenv("TJR_MODAL_CHANNEL_ID", "").strip()
         if channel_id and channel_id not in {"UCf1q6dhccWr6eQEcFFnJSbA"}:
@@ -722,6 +814,15 @@ def main() -> None:
                     memory=3072,
                     env={"TJR_YOUTUBE_SESSION_MODE": session_mode},
                 )
+            private_secrets = {}
+            if proxy_endpoint:
+                private_secrets["TJR_YOUTUBE_EGRESS_PROXY_URL"] = proxy_endpoint
+                provider = provider.with_options(
+                    env={
+                        "TJR_YOUTUBE_SESSION_MODE": session_mode,
+                        "TJR_YOUTUBE_EGRESS_MODE": egress_mode,
+                    }
+                )
             viewer_secret = (
                 os.getenv("TJR_YOUTUBE_COOKIES_B64", "").strip()
                 if session_mode == "viewer_secret"
@@ -730,9 +831,9 @@ def main() -> None:
             if session_mode == "viewer_secret" and not viewer_secret:
                 raise RuntimeError("VIEWER_SECRET_MODE_REQUIRES_YOUTUBE_SESSION_SECRET")
             if viewer_secret:
-                provider = provider.with_options(
-                    secrets=[modal.Secret.from_dict({"TJR_YOUTUBE_COOKIES_B64": viewer_secret})]
-                )
+                private_secrets["TJR_YOUTUBE_COOKIES_B64"] = viewer_secret
+            if private_secrets:
+                provider = provider.with_options(secrets=[modal.Secret.from_dict(private_secrets)])
             try:
                 candidate = provider.remote(inputs, run_key)
                 result = candidate
@@ -746,6 +847,8 @@ def main() -> None:
                 region_attempts.append({"egress": label, "status": str(candidate.get("status"))})
             except Exception as exc:
                 region_attempts.append({"egress": label, "error": type(exc).__name__})
+        result["egress_mode"] = egress_mode
+        result["automatic_egress_fallback"] = False
         result["session_mode"] = os.getenv("TJR_YOUTUBE_SESSION_MODE", "bgutil_guest")
         result["authenticated_viewer_session_configured"] = bool(
             os.getenv("TJR_YOUTUBE_COOKIES_B64", "").strip()

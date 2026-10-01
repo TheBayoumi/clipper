@@ -473,3 +473,77 @@ def test_fresh_guest_profile_is_extracted_on_the_fly_and_removed(
     import os
 
     assert "TJR_GUEST_BROWSER_PROFILE" not in os.environ
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "",
+        "socks5://host:1080",
+        "http://host",
+        "http://host:bad",
+        "http://host:1234/path",
+        "http://host:1234?rotate=1",
+    ],
+)
+def test_static_egress_rejects_missing_or_invalid_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint: str,
+) -> None:
+    functions = _load_modal_probe(monkeypatch).__globals__
+    monkeypatch.setenv("TJR_YOUTUBE_SESSION_MODE", "browser_guest")
+    monkeypatch.setenv("TJR_YOUTUBE_EGRESS_MODE", "static_proxy")
+    monkeypatch.setenv("TJR_YOUTUBE_EGRESS_PROXY_URL", endpoint)
+    with pytest.raises(RuntimeError, match="STATIC_PROXY_REQUIRES_VALID_PRIVATE_ENDPOINT"):
+        functions["egress_configuration"]()
+
+
+def test_static_proxy_stops_without_forwarder_and_never_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    functions = _load_modal_probe(monkeypatch).__globals__
+    monkeypatch.setenv("TJR_YOUTUBE_EGRESS_MODE", "static_proxy")
+    monkeypatch.delenv("TJR_LOCAL_YOUTUBE_PROXY", raising=False)
+    with pytest.raises(RuntimeError, match="STATIC_PROXY_FORWARDER_REQUIRED"):
+        functions["_yt_command"]((), "https://www.youtube.com/watch?v=X7msxvyQd_U")
+    monkeypatch.setenv("TJR_YOUTUBE_SESSION_MODE", "bgutil_guest")
+    with pytest.raises(RuntimeError, match="STATIC_PROXY_REQUIRES_BROWSER_GUEST_MODE"):
+        functions["egress_configuration"]()
+
+
+def test_fixed_proxy_credentials_stay_out_of_commands_and_cleanup_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    functions = _load_modal_probe(monkeypatch).__globals__
+    endpoint = "http://private-user:private-password@fixed.example:3128"
+    monkeypatch.setenv("TJR_YOUTUBE_SESSION_MODE", "browser_guest")
+    monkeypatch.setenv("TJR_YOUTUBE_EGRESS_MODE", "static_proxy")
+    monkeypatch.setenv("TJR_YOUTUBE_EGRESS_PROXY_URL", endpoint)
+    monkeypatch.delenv("TJR_LOCAL_YOUTUBE_PROXY", raising=False)
+    process = MagicMock()
+    process.stdout.readline.return_value = "http://127.0.0.1:43210\n"
+    popen = MagicMock()
+    popen.__enter__.return_value = process
+    with (
+        patch("subprocess.Popen", return_value=popen) as launch,
+        patch("select.select", return_value=([process.stdout], [], [])),
+        pytest.raises(ValueError, match="render failure"),
+        functions["fixed_egress_session"](),
+    ):
+        command = functions["_yt_command"]((), "https://www.youtube.com/watch?v=X7msxvyQd_U")
+        assert command[command.index("--proxy") + 1] == "http://127.0.0.1:43210"
+        assert "private-password" not in str(command)
+        raise ValueError("render failure")
+    assert "TJR_LOCAL_YOUTUBE_PROXY" not in os.environ
+    process.terminate.assert_called_once()
+    assert "private-password" not in str(launch.call_args.args)
+    assert launch.call_args.kwargs["env"]["TJR_YOUTUBE_EGRESS_PROXY_URL"] == endpoint
+
+
+def test_direct_mode_ignores_unselected_proxy_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    functions = _load_modal_probe(monkeypatch).__globals__
+    monkeypatch.setenv("TJR_YOUTUBE_EGRESS_MODE", "direct")
+    monkeypatch.setenv("TJR_YOUTUBE_EGRESS_PROXY_URL", "unused-secret")
+    assert functions["egress_configuration"]() == ("direct", "")
