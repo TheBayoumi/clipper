@@ -189,7 +189,7 @@ def fetch_browser_original(
         return "downloaded_media_not_verified_HD"
 
 
-def run_probe(root: Path) -> Path:
+def run_probe(root: Path, brief_path: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     report = root / "browser-probe.json"
     source_manifest = root / "browser-source.json"
@@ -202,7 +202,7 @@ def run_probe(root: Path) -> Path:
     candidates, failures = discover_official_uploads()
     requested = os.environ.get("TJR_SOURCE_VIDEO_ID", "").strip()
     target_channel_id = os.environ.get("TJR_TARGET_CHANNEL_ID", "").strip() or None
-    published_after = load_brief(Path("campaigns/reach-tjr-weekly.yaml")).published_after
+    published_after = load_brief(brief_path).published_after
     selected = constrain_official_sources(
         candidates,
         requested,
@@ -306,9 +306,10 @@ def run_probe(root: Path) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--brief", type=Path, required=True)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    run_probe(args.root)
+    run_probe(args.root, args.brief)
     return 0
 
 

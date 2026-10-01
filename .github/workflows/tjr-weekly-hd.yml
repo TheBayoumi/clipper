@@ -323,7 +323,8 @@ jobs:
         run: |
           set -euo pipefail
           ROOT="$PWD/tjr-youtube-artifacts/browser-capture"
-          python -m scripts.tjr_browser_probe --root "$ROOT"
+          python -m scripts.tjr_browser_probe --root "$ROOT" \
+            --brief campaigns/reach-double-coverage-dedicated.yaml
           echo "TJR_BROWSER_CAPTURE_FILE=$ROOT/browser-source.json" >> "$GITHUB_ENV"
       - name: Check source channel IDs and acquire authentic YouTube HD original
         run: |

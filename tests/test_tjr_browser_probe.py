@@ -153,3 +153,36 @@ def test_every_tjr_production_script_triggers_pr_validation() -> None:
     workflow = (ROOT / ".github" / "workflows" / "tjr-weekly-hd.yml").read_text()
     assert workflow.count('      - "scripts/tjr_*.py"') == 2
     assert "scripts/tjr_modal_runner.py" in workflow
+
+
+def test_browser_discovery_uses_the_supplied_brief(tmp_path: Path) -> None:
+    from clipper.models import CampaignBrief
+
+    probe = PROBE["run_probe"]
+    brief_path = tmp_path / "custom.yaml"
+    browser_path = tmp_path / "chrome"
+    browser_path.touch()
+    brief = CampaignBrief(
+        "custom",
+        "Custom show",
+        "Find complete stories",
+        keywords=("story",),
+        source_channel_ids=("UCf1q6dhccWr6eQEcFFnJSbA",),
+        rights_confirmed=True,
+    )
+    load = Mock(return_value=brief)
+    constrain = Mock(return_value=[])
+    with (
+        patch.dict(
+            probe.__globals__,
+            {
+                "load_brief": load,
+                "discover_official_uploads": lambda: ([], []),
+                "constrain_official_sources": constrain,
+            },
+        ),
+        patch.dict("os.environ", {"YT_DLP_WPC_BROWSER_PATH": str(browser_path)}),
+    ):
+        report = probe(tmp_path / "output", brief_path)
+    load.assert_called_once_with(brief_path)
+    assert json.loads(report.read_text())["status"] == "NO_BROWSER_ORIGINAL"
