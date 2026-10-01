@@ -151,19 +151,40 @@ def compare_encoded_to_composition(
     if not graph.endswith("format=yuv420p,setsar=1[v]"):
         raise FidelityError("unexpected filter graph: fidelity reference would differ")
     stats_path.unlink(missing_ok=True)
-    reference = f"{graph};[v][1:v]ssim=stats_file='{stats_path.as_posix()}'[verified]"
+    # Preserve every composition input (including its watermark) and append
+    # the encoded output afterward. Replacing input 1 with the output makes
+    # a watermarked graph accidentally scale the whole output as its logo.
+    inputs = command[: command.index("-filter_complex")]
+    input_count = inputs.count("-i")
+    if input_count:
+        if inputs[inputs.index("-i") + 1] != str(source):
+            raise FidelityError("composition source does not match the verified original")
+    else:
+        inputs = [
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{clip_start:.3f}",
+            "-i",
+            str(source),
+        ]
+        input_count = 1
+    # Compare corresponding native-cadence frames on a canonical clock.
+    # Container timestamp quantization must not select a neighboring frame.
+    if float(Fraction(fps)) <= 0:
+        raise FidelityError("comparison requires a positive native frame rate")
+    clock = f"settb=AVTB,setpts=N/({fps})/TB"
+    reference = (
+        f"{graph};[v]{clock}[reference];[{input_count}:v]{clock}[encoded];"
+        f"[reference][encoded]ssim=stats_file='{stats_path.as_posix()}'[verified]"
+    )
     try:
         subprocess.run(
             [
-                "ffmpeg",
-                "-nostdin",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-ss",
-                f"{clip_start:.3f}",
-                "-i",
-                str(source),
+                *inputs,
                 "-i",
                 str(output),
                 "-filter_complex",

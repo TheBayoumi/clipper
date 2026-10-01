@@ -156,3 +156,106 @@ def test_ssim_rejects_wrong_graph_and_comparison_failure(tmp_path: Path) -> None
             fps="30/1",
             stats_path=tmp_path / "q",
         )
+
+
+def test_ssim_preserves_watermark_input_and_compares_encoded_third_input(tmp_path: Path) -> None:
+    source, watermark, output = (
+        tmp_path / name for name in ("source.mp4", "logo.png", "output.mp4")
+    )
+    graph = (
+        "[0:v]null[base];[1:v]scale=180:-1[wm];[base][wm]overlay=10:10,format=yuv420p,setsar=1[v]"
+    )
+    original_inputs = ["ffmpeg", "-ss", "8.000", "-i", str(source), "-i", str(watermark)]
+    command = [*original_inputs, "-filter_complex", graph]
+    stats = tmp_path / "stats.txt"
+
+    def compare(actual: list[str], **kwargs: object) -> Mock:
+        assert actual[: len(original_inputs)] == original_inputs
+        assert actual[len(original_inputs) : len(original_inputs) + 2] == ["-i", str(output)]
+        reference = actual[actual.index("-filter_complex") + 1]
+        assert "[1:v]scale=180:-1" in reference
+        assert "[2:v]settb=AVTB,setpts=N/(30/1)/TB[encoded]" in reference
+        assert "[reference][encoded]ssim=" in reference
+        stats.write_text("".join(f"n:{i} All:0.999\n" for i in range(60)))
+        return Mock()
+
+    with patch("clipper.source_fidelity.subprocess.run", side_effect=compare):
+        assert compare_encoded_to_composition(
+            command,
+            source=source,
+            output=output,
+            clip_start=8,
+            duration=2,
+            fps="30/1",
+            stats_path=stats,
+        ) == (0.999, 60)
+
+
+def test_real_watermarked_video_keeps_corresponding_frames_aligned(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    from PIL import Image
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("FFmpeg is required for the real composition regression")
+    source, output, logo = (tmp_path / name for name in ("source.mkv", "output.mp4", "logo.png"))
+    Image.new("RGBA", (50, 30), (30, 190, 20, 255)).save(logo)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x240:rate=30",
+            "-t",
+            "2",
+            "-c:v",
+            "ffv1",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    graph = (
+        "[0:v]null[base];[1:v]scale=50:-1[wm];"
+        "[base][wm]overlay=W-w-10:10:format=auto,format=yuv420p,setsar=1[v]"
+    )
+    command = [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-y",
+        "-ss",
+        "0.000",
+        "-i",
+        str(source),
+        "-i",
+        str(logo),
+        "-filter_complex",
+        graph,
+        "-map",
+        "[v]",
+        "-t",
+        "2",
+        "-c:v",
+        "libx264",
+        "-crf",
+        "12",
+        str(output),
+    ]
+    subprocess.run(command, check=True, capture_output=True)
+    score, frames = compare_encoded_to_composition(
+        command,
+        source=source,
+        output=output,
+        clip_start=0,
+        duration=2,
+        fps="30/1",
+        stats_path=tmp_path / "ssim.txt",
+    )
+    assert score >= 0.99
+    assert frames == 60
