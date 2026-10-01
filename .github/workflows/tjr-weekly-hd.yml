@@ -152,6 +152,12 @@ jobs:
         if: failure()
         run: ruff format --diff .
       - run: mypy
+      - name: Install FFmpeg for media regression tests and HD canary
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
       - run: pytest
       - name: Validate campaign rules
         run: |
@@ -180,12 +186,6 @@ jobs:
             docker logs --tail 80 bgutil-canary
             exit 1
           fi
-      - name: Install FFmpeg for HD canary
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg
-          ffmpeg -version | head -n 1
-          ffprobe -version | head -n 1
       - name: Render and inspect a synthetic HD FFmpeg canary
         run: |
           set -euo pipefail
