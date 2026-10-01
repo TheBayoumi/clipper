@@ -420,7 +420,7 @@ def valid_publication_date(value: object) -> bool:
         date = datetime.fromisoformat(value.replace("Z", "+00:00"))
         if date.tzinfo is None:
             date = date.replace(tzinfo=UTC)
-        return date >= datetime(2026, 9, 1, tzinfo=UTC)
+        return datetime(2005, 1, 1, tzinfo=UTC) <= date <= datetime.now(UTC)
     except ValueError:
         return False
 
@@ -448,7 +448,7 @@ def inspect_artifact(
                 data = read_json(diagnostics[0])
                 detail = str(data.get("status") or data.get("error") or "")
                 if "BOT_CHALLENGE" in detail or "LOGIN_REQUIRED" in detail:
-                    issue = "AUTHENTICATED_YOUTUBE_SESSION_REQUIRED"
+                    issue = "YOUTUBE_EGRESS_BLOCKED"
                 elif "403" in detail:
                     issue = "YOUTUBE_EGRESS_BLOCKED"
                 else:
@@ -572,6 +572,8 @@ def inspect_artifact(
                 quality = read_json(checked_path(base, clip["source_matched_quality"]))
                 if int(quality.get("output_bytes") or -1) != mp4.stat().st_size:
                     issues.append("SOURCE_FIDELITY_FAILED")
+                if quality.get("campaign_watermark_applied") is not True:
+                    issues.append("CAMPAIGN_WATERMARK_MISSING")
                 try:
                     verify_edit_plan(quality, duration_seconds=float(clip["duration_seconds"]))
                 except (TypeError, ValueError):
@@ -690,9 +692,7 @@ def review_run(
     if len(ids) != len(set(ids)):
         issues.add("DUPLICATE_CHANNEL_ARTIFACT")
     actions: list[str] = []
-    if "AUTHENTICATED_YOUTUBE_SESSION_REQUIRED" in issues:
-        actions.append("CONFIGURE_PERSISTENT_AUTHENTICATED_YOUTUBE_SESSION")
-    elif any("EGRESS" in issue for issue in issues):
+    if any("EGRESS" in issue for issue in issues):
         actions.append("REPAIR_YOUTUBE_SOURCE_TRANSPORT")
     if "GENERIC_HOOK_OVERUSE" in issues or "WEAK_OR_DUPLICATE_HOOK" in issues:
         actions.append("IMPROVE_GROUNDED_CREATIVE_HOOKS")
@@ -712,8 +712,8 @@ def review_run(
             else "REQUEST_HUMAN_VISUAL_AND_EDITORIAL_APPROVAL"
         )
     status = (
-        "AUTHENTICATED_YOUTUBE_SESSION_REQUIRED"
-        if "AUTHENTICATED_YOUTUBE_SESSION_REQUIRED" in issues
+        "YOUTUBE_EGRESS_BLOCKED"
+        if "YOUTUBE_EGRESS_BLOCKED" in issues
         else (
             "BLOCKED"
             if issues
