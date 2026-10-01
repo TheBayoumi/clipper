@@ -193,7 +193,10 @@ def test_weighted_provisional_score_tracks_unverified_visuals() -> None:
 def test_manual_review_supplies_visual_rating_and_integrity_verdict() -> None:
     review = EditorialReview(
         visual_score=4.5,
-        visual_notes="Source and final portrait crop manually inspected; host and important scene visible.",
+        visual_notes=(
+            "Source and final portrait crop manually inspected; "
+            "host and important scene visible."
+        ),
         integrity_passed=True,
         integrity_notes=(
             "Creative hook matches source audio and actual payoff after full-context review."
