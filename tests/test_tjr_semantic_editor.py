@@ -4,6 +4,7 @@ from scripts.tjr_semantic_editor import build_semantic_editorial_candidates
 
 def test_inference_diagnostics_reuses_failures_and_never_approves(tmp_path, monkeypatch):
     import json
+    from importlib import metadata
 
     from scripts import tjr_semantic_editor as editor
 
@@ -26,6 +27,7 @@ def test_inference_diagnostics_reuses_failures_and_never_approves(tmp_path, monk
             pass
 
     monkeypatch.setattr(editor, "LocalContextualEditor", FakeEditor)
+    monkeypatch.setattr(metadata, "version", lambda name: "0.3.35")
     baseline = tmp_path / "baseline.json"
     baseline.write_text(
         json.dumps(
@@ -47,13 +49,34 @@ def test_inference_diagnostics_reuses_failures_and_never_approves(tmp_path, monk
     report = json.loads(output.read_text())
     assert report["production_approved"] is False
     assert report["chat_template"] == "recorded template"
-    assert len(requests) == 9
+    assert len(requests) == 12
     assert requests[0]["temperature"] == 0.7
     assert requests[0]["response_format"]["schema"]["properties"]["promotion_unit_ids"]
     assert "response_format" not in requests[1]
     assert "schema" in requests[1]["messages"][1]["content"]
-    assert "response_format" not in requests[2]
+    assert "response_format" in requests[2]
+    assert "schema" in requests[2]["messages"][1]["content"]
+    assert "response_format" not in requests[3]
     assert report["baseline"][0]["review"]["boundary_audit"]["reason"] == "saved"
+    assert editor.reviewer_inference_diagnostics(output, tmp_path / "warm.json") == 1
+    assert len(requests) == 12
+    assert all(
+        item["cache_hit"]
+        for item in json.loads((tmp_path / "warm.json").read_text())["comparisons"]
+    )
+    report.pop("llama_cpp_python_version")
+    report["comparisons"] = [
+        item
+        for item in report["comparisons"]
+        if item["variant"] != "constrained_greedy_schema_in_prompt"
+    ]
+    output.write_text(json.dumps(report))
+    assert editor.reviewer_inference_diagnostics(output, tmp_path / "extended.json") == 1
+    assert len(requests) == 15
+    report["comparisons"][0]["request"]["temperature"] = 0.6
+    output.write_text(json.dumps(report))
+    assert editor.reviewer_inference_diagnostics(output, tmp_path / "changed.json") == 1
+    assert len(requests) == 19
 
 
 def _brief() -> CampaignBrief:

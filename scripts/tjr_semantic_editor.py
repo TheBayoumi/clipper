@@ -1385,7 +1385,14 @@ def refine_contextual_candidates(
 
 def reviewer_inference_diagnostics(baseline_path: Path, output: Path) -> int:
     """Compare inference factors against saved failures; never approve production."""
-    baseline = json.loads(baseline_path.read_text())
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        runtime = version("llama-cpp-python")
+    except PackageNotFoundError:
+        runtime = None
+    saved = json.loads(baseline_path.read_text())
+    baseline = saved.get("baseline") if isinstance(saved, dict) else saved
     if (
         not isinstance(baseline, list)
         or len(baseline) != 3
@@ -1398,12 +1405,14 @@ def reviewer_inference_diagnostics(baseline_path: Path, output: Path) -> int:
     ):
         raise ValueError("diagnostics require the three recorded boundary-audit fixtures")
     editor = LocalContextualEditor()
+    cached = saved.get("comparisons", []) if isinstance(saved, dict) else []
     report: dict[str, Any] = {
         "diagnostic_only": True,
         "production_approved": False,
         "baseline_sha256": hashlib.sha256(baseline_path.read_bytes()).hexdigest(),
         "model_sha256": EDITOR_MODEL_SHA256,
         "model_revision": EDITOR_MODEL_REVISION,
+        "llama_cpp_python_version": runtime,
         "chat_format": getattr(editor.model, "chat_format", None),
         "chat_handler": type(getattr(editor.model, "chat_handler", None)).__name__,
         "chat_template": getattr(editor.model, "metadata", {}).get("tokenizer.chat_template"),
@@ -1449,6 +1458,22 @@ def reviewer_inference_diagnostics(baseline_path: Path, output: Path) -> int:
                     {"temperature": 0},
                 ),
                 (
+                    "constrained_greedy_schema_in_prompt",
+                    [
+                        messages[0],
+                        {
+                            "role": "user",
+                            "content": messages[1]["content"]
+                            + "\nReturn JSON with this schema: "
+                            + json.dumps(schema),
+                        },
+                    ],
+                    {
+                        "temperature": 0,
+                        "response_format": {"type": "json_object", "schema": schema},
+                    },
+                ),
+                (
                     "minimal_unconstrained_greedy",
                     [
                         {
@@ -1475,6 +1500,31 @@ def reviewer_inference_diagnostics(baseline_path: Path, output: Path) -> int:
                     "variant": variant,
                     "request": request,
                 }
+                reuse = next(
+                    (
+                        entry
+                        for entry in cached
+                        if (
+                            isinstance(saved, dict)
+                            and saved.get("model_sha256") == report["model_sha256"]
+                            and saved.get("model_revision") == report["model_revision"]
+                            # Initial diagnostic release used the same workflow-pinned runtime.
+                            and saved.get("llama_cpp_python_version", "0.3.35") == runtime
+                            and saved.get("chat_template") == report["chat_template"]
+                            and saved.get("chat_format") == report["chat_format"]
+                            and entry.get("fixture") == item["fixture"]
+                            and entry.get("request") == request
+                            and isinstance(entry.get("response"), dict)
+                        )
+                    ),
+                    None,
+                )
+                if reuse is not None:
+                    record.update(response=reuse["response"], cache_hit=True, seconds=0)
+                    report["comparisons"].append(record)
+                    output.write_text(json.dumps(report, indent=2) + "\n")
+                    print(json.dumps(record), flush=True)
+                    continue
                 try:
                     response = editor.model.create_chat_completion(**request)
                     record["response"] = response
