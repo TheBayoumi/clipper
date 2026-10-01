@@ -164,6 +164,7 @@ def test_tiktok_renderer_writes_editable_ass_and_original_srt(tmp_path: Path) ->
 
     def fake_ffmpeg(command: list[str], **_kwargs: object) -> Mock:
         assert "ass='" in " ".join(command)
+        assert "fgzoom" not in " ".join(command)
         output.write_bytes(b"encoded")
         return Mock()
 
@@ -191,6 +192,9 @@ def test_tiktok_renderer_writes_editable_ass_and_original_srt(tmp_path: Path) ->
         assert "ass='" in " ".join(run.call_args_list[0].args[0])
         assert "fps=30000/1001" in " ".join(run.call_args_list[0].args[0])
         assert ssim.call_count == 1
+        plan = renderer.quality_results[str(output.resolve())]["edit_plan"]
+        assert plan["attention_beats"] == []
+        assert plan["punch_scale"] == 1.0
         assert renderer.quality_results[str(output.resolve())]["accepted_crf"] == 18
     assert output.with_suffix(".ass").is_file()
     assert output.with_suffix(".srt").is_file()
@@ -216,42 +220,16 @@ def test_style_b_native_frame_rate_validation(tmp_path: Path) -> None:
         _source_frame_rate(tmp_path / "source.mp4")
 
 
-def test_attention_beats_are_sparse_and_source_timed() -> None:
-    from clipper.models import WordTiming
-    from clipper.render import _attention_beats
-
-    clip = ClipCandidate("v", 10, 40, "story", 5)
-    words = (
-        WordTiming(10.0, 10.2, "Damn"),
-        WordTiming(10.25, 10.45, "look"),
-        WordTiming(13.9, 14.1, "risk"),
-        WordTiming(18.0, 18.2, "wait"),
-        WordTiming(18.21, 18.4, "now"),
-        WordTiming(24.0, 24.2, "sell"),
-    )
-    segments = [TranscriptSegment(10, 25, "timed story", words)]
-    beats = _attention_beats(clip, segments)
-    assert 2 <= len(beats) <= 4
-    assert beats[0][0] == 0
-    assert all(0 <= start < end <= clip.duration for start, end in beats)
-    assert all(beats[index][0] - beats[index - 1][0] >= 3.2 for index in range(1, len(beats)))
-
-
-def test_style_b_command_uses_sparse_micro_punch_not_aggressive_zoom(tmp_path: Path) -> None:
+def test_style_b_command_keeps_foreground_scale_stable(tmp_path: Path) -> None:
     clip = ClipCandidate("v", 0, 30, "story", 4)
     command = build_ffmpeg_command(
-        "source.mp4",
-        "out.mp4",
-        clip,
-        tmp_path / "style.ass",
-        source_fps="30/1",
-        attention_beats=((0.0, 0.68), (8.0, 8.52)),
+        "source.mp4", "out.mp4", clip, tmp_path / "style.ass", source_fps="30/1"
     )
-    joined = " ".join(command)
-    assert "1.025" in joined
-    assert "between(t,0.000,0.680)" in joined
-    assert "between(t,8.000,8.520)" in joined
-    assert "zoompan" not in joined
+    graph = command[command.index("-filter_complex") + 1]
+    assert "[fg]scale=1080:1920:force_original_aspect_ratio=decrease[fg2]" in graph
+    assert "fgzoom" not in graph
+    assert "between(t," not in graph
+    assert "fps=30/1:start_time=0" in graph
 
 
 def test_memecoin_layout_is_chart_reaction_montage_without_visible_ui_edges(
