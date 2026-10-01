@@ -602,7 +602,7 @@ def test_campaign_source_cutoff_rejects_old_and_unknown_uploads() -> None:
     channel = "UCf1q6dhccWr6eQEcFFnJSbA"
     old = OfficialVideo("ABCD1234xyz", channel, "Old show", "2026-08-29T18:00:00Z", 2200)
     unknown = OfficialVideo("ABCD1234xyy", channel, "Unverified date", "", 1800)
-    fresh = OfficialVideo("X7msxvyQd_U", channel, "Current trading", "2026-09-27", 2200)
+    fresh = OfficialVideo("X7msxvyQd_U", channel, "Current podcast episode", "2026-09-27", 2200)
     cutoff = "2026-09-01T00:00:00Z"
     assert constrain_official_sources([old, unknown, fresh], None, published_after=cutoff) == [
         fresh
