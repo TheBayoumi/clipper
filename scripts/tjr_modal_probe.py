@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Cookie-free original YouTube egress probe on the user's existing Modal account.
+"""Original YouTube acquisition on the user's explicitly selected Modal route.
 
-GitHub Actions controls the task. Modal supplies a different network path,
-not a different video source. No original bytes or browser cookies are uploaded.
+An optional GitHub viewer-session secret is injected through Modal Secrets.
+Cookie files are ephemeral and excluded from source transport and artifacts.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +89,39 @@ def source_download_sections(duration_seconds: float) -> list[str]:
     return []
 
 
+@contextmanager
+def viewer_cookie_session() -> Iterator[None]:
+    """Materialize an explicitly configured viewer secret only for this call."""
+    encoded = os.getenv("TJR_YOUTUBE_COOKIES_B64", "").strip()
+    if not encoded:
+        yield
+        return
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        raise RuntimeError("INVALID_YOUTUBE_VIEWER_SESSION_SECRET") from None
+    if not payload.startswith((b"# Netscape HTTP Cookie File", b"# HTTP Cookie File")):
+        raise RuntimeError("INVALID_YOUTUBE_VIEWER_SESSION_COOKIE_FORMAT")
+    previous = os.environ.get("YOUTUBE_COOKIES_FILE")
+    with tempfile.TemporaryDirectory(prefix="youtube-viewer-") as private:
+        path = Path(private) / "cookies.txt"
+        path.touch(mode=0o600)
+        path.write_bytes(payload)
+        os.environ["YOUTUBE_COOKIES_FILE"] = str(path)
+        try:
+            yield
+        finally:
+            if previous is None:
+                os.environ.pop("YOUTUBE_COOKIES_FILE", None)
+            else:
+                os.environ["YOUTUBE_COOKIES_FILE"] = previous
+
+
+def viewer_cookie_args() -> list[str]:
+    path = os.getenv("YOUTUBE_COOKIES_FILE", "").strip()
+    return ["--cookies", path] if path else []
+
+
 def _yt_command(args: tuple[str, ...], url: str) -> list[str]:
     return [
         "yt-dlp",
@@ -98,6 +136,7 @@ def _yt_command(args: tuple[str, ...], url: str) -> list[str]:
         "4",
         "--fragment-retries",
         "4",
+        *viewer_cookie_args(),
         *args,
         url,
     ]
@@ -121,6 +160,11 @@ volume = modal.Volume.from_name("clipper-tjr-source-transport", create_if_missin
 
 @app.function(image=image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=2048)
 def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = "") -> dict[str, Any]:
+    with viewer_cookie_session():
+        return _inspect_original_youtube(candidates, run_key)
+
+
+def _inspect_original_youtube(candidates: list[dict[str, str]], run_key: str) -> dict[str, Any]:
     """Verify source identity and transfer real HD bytes on one Modal egress.
 
     Reuses Clipper's successful BgUtils strategy family. Metadata-only
@@ -362,6 +406,7 @@ def stage_official_original(selected: dict[str, Any], run_key: str) -> dict[str,
             "--ignore-config",
             "--js-runtimes",
             "node",
+            *viewer_cookie_args(),
             *extractor_args,
             "--retries",
             "10",
@@ -504,6 +549,11 @@ def main() -> None:
                 if kind == "region"
                 else inspect_original_youtube
             )
+            viewer_secret = os.getenv("TJR_YOUTUBE_COOKIES_B64", "").strip()
+            if viewer_secret:
+                provider = provider.with_options(
+                    secrets=[modal.Secret.from_dict({"TJR_YOUTUBE_COOKIES_B64": viewer_secret})]
+                )
             try:
                 candidate = provider.remote(inputs, run_key)
                 result = candidate
@@ -517,14 +567,21 @@ def main() -> None:
                 region_attempts.append({"egress": label, "status": str(candidate.get("status"))})
             except Exception as exc:
                 region_attempts.append({"egress": label, "error": type(exc).__name__})
+        result["authenticated_viewer_session_configured"] = bool(
+            os.getenv("TJR_YOUTUBE_COOKIES_B64", "").strip()
+        )
         result["region_attempts"] = region_attempts
         result["egress_attempt_limit"] = MAX_MODAL_EGRESS_ATTEMPTS
         result["discovery_failures"] = discovery_failures
         output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         if result["status"] != "EXACT_OFFICIAL_YOUTUBE_HD_MEDIA_BYTES_VERIFIED":
-            raise RuntimeError(
-                "No tested Modal region could fetch HD bytes from the official YouTube video"
-            )
+            status = str(result["status"])
+            if status == "YOUTUBE_EGRESS_BOT_CHALLENGE":
+                raise RuntimeError(
+                    status + ": configure or refresh the TJR_YOUTUBE_COOKIES_B64 "
+                    "authenticated viewer-session secret; no source or cloud fallback was attempted"
+                )
+            raise RuntimeError(status + ": official YouTube HD acquisition failed")
         print("Verified original YouTube URL:", result["source_url"])
         if stage_media:
             staging = result.get("staging")

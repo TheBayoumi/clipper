@@ -264,6 +264,11 @@ def test_headlines_preserve_source_subject_negation_and_amounts() -> None:
 
 
 def test_headline_selection_uses_entire_clip_and_preserves_distinct_sentences() -> None:
+    assert creative_hook_from_text("And I knew it.") == ""
+    assert (
+        creative_hook_from_text("And I knew it. Security stopped me at my own show.")
+        == "SECURITY STOPPED ME AT MY OWN SHOW."
+    )
     text = (
         "Welcome back. Why did the referee cancel that goal? Nobody expected that final decision."
     )

@@ -288,3 +288,61 @@ def test_modal_route_count_is_bounded() -> None:
     script = path.read_text(encoding="utf-8")
     assert "MAX_MODAL_EGRESS_ATTEMPTS = 1" in script
     assert "routes[:MAX_MODAL_EGRESS_ATTEMPTS]" in script
+
+
+@pytest.mark.parametrize("fail_inside", [False, True])
+def test_viewer_cookie_secret_is_ephemeral_and_used_by_extractor(
+    monkeypatch: pytest.MonkeyPatch, fail_inside: bool
+) -> None:
+    import base64
+
+    mock_modal = SimpleNamespace(
+        App=lambda *_args, **_kwargs: _FakeApp(), Image=MagicMock(), Volume=MagicMock()
+    )
+    monkeypatch.setitem(sys.modules, "modal", mock_modal)
+    script = runpy.run_path(
+        str(Path(__file__).resolve().parents[1] / "scripts" / "tjr_modal_probe.py")
+    )
+    cookie = b"# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSESSION\tfake\n"
+    monkeypatch.setenv("TJR_YOUTUBE_COOKIES_B64", base64.b64encode(cookie).decode())
+    monkeypatch.setenv("YOUTUBE_COOKIES_FILE", "previous-session")
+    cookie_path = None
+    try:
+        with script["viewer_cookie_session"]():
+            args = script["viewer_cookie_args"]()
+            cookie_path = Path(args[1])
+            assert args[0] == "--cookies"
+            assert cookie_path.read_bytes() == cookie
+            assert cookie_path.stat().st_mode & 0o777 == 0o600
+            assert (
+                args
+                == script["_yt_command"]((), "https://www.youtube.com/watch?v=976-d0RlyfQ")[-3:-1]
+            )
+            if fail_inside:
+                raise RuntimeError("simulated transport failure")
+    except RuntimeError:
+        assert fail_inside
+    assert cookie_path is not None and not cookie_path.exists()
+    import os
+
+    assert os.environ["YOUTUBE_COOKIES_FILE"] == "previous-session"
+
+
+@pytest.mark.parametrize("encoded", ["not base64", "c2VjcmV0"])
+def test_invalid_viewer_secret_fails_without_exposing_value(
+    monkeypatch: pytest.MonkeyPatch, encoded: str
+) -> None:
+    mock_modal = SimpleNamespace(
+        App=lambda *_args, **_kwargs: _FakeApp(), Image=MagicMock(), Volume=MagicMock()
+    )
+    monkeypatch.setitem(sys.modules, "modal", mock_modal)
+    script = runpy.run_path(
+        str(Path(__file__).resolve().parents[1] / "scripts" / "tjr_modal_probe.py")
+    )
+    monkeypatch.setenv("TJR_YOUTUBE_COOKIES_B64", encoded)
+    with (
+        pytest.raises(RuntimeError, match="INVALID_YOUTUBE_VIEWER_SESSION") as exc,
+        script["viewer_cookie_session"](),
+    ):
+        pytest.fail("Invalid credentials must not reach acquisition")
+    assert encoded not in str(exc.value)

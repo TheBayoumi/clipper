@@ -394,6 +394,7 @@ jobs:
       TJR_RENDER_SAFETY_LIMIT: "20"
       TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
       TJR_TRANSCRIPT_SOURCE_RUN_ID: ${{ inputs.transcript_source_run_id }}
+      TJR_YOUTUBE_COOKIES_B64: ${{ secrets.TJR_YOUTUBE_COOKIES_B64 }}
     steps:
       - uses: actions/checkout@v5
         with:
