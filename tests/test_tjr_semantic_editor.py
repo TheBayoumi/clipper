@@ -62,7 +62,7 @@ def test_semantic_editor_builds_complete_story_without_sliding_window_quota() ->
         for reason in candidate.reasons
         if reason.startswith("semantic_hook=")
     )
-    assert hook == "THE GUEST TOLD US THE WILDEST STORY FROM HIS FIRST BIG"
+    assert hook == "THE GUEST TOLD US THE WILDEST STORY FROM HIS FIRST BIG SHOW"
     assert audit["fixed_candidate_or_output_quota"] is False
     assert audit["architecture"] == "source_level_semantic_campaign_event_segmentation_v3"
     assert audit["campaign_relevant_unit_count"] > 0
