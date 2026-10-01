@@ -418,8 +418,18 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: tjr-real-original-youtube-hd-*
           path: reviewer-input
+      - uses: actions/cache/restore@v4
+        id: reviewer_cpu_cache
+        with:
+          path: ~/.cache/pip
+          key: reviewer-cpu-ubuntu24-${{ runner.arch }}-py312-llamacpp035-nativeoff-v1
       - name: Install pinned CPU reviewer
         run: CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e . "llama-cpp-python==0.3.35"
+      - uses: actions/cache/save@v4
+        if: steps.reviewer_cpu_cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/pip
+          key: reviewer-cpu-ubuntu24-${{ runner.arch }}-py312-llamacpp035-nativeoff-v1
       - uses: actions/download-artifact@v4
         if: inputs.editorial_source_run_id != ''
         with:

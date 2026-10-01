@@ -126,6 +126,9 @@ def test_model_probe_closes_thinking_and_preserves_production_init(tmp_path, mon
         def detokenize(self, tokens, special):
             return b"token"
 
+        def create_chat_completion(self, **kwargs):
+            return {}
+
         def close(self):
             pass
 
@@ -799,6 +802,7 @@ def test_local_reviewer_separates_delivered_span_from_excluded_context():
     assert len(editor.model.requests) == 2
     audit_request, headline_request = editor.model.requests
     audit_input = json.loads(audit_request["messages"][1]["content"])
+    assert audit_input["output_schema"] == audit_request["response_format"]["schema"]
     assert audit_input["excluded_after"] == context["after"]
     assert audit_input["delivered"] == [{"id": 0, "text": context["selected_units"][0]}]
     headline_input = json.loads(headline_request["messages"][1]["content"])

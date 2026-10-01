@@ -808,20 +808,21 @@ class LocalContextualEditor:
     def _review_completion(
         self, prompt: str, payload: dict[str, Any], properties: dict[str, Any], tokens: int
     ) -> dict[str, Any]:
+        schema = {
+            "type": "object",
+            "properties": properties,
+            "required": list(properties),
+            "additionalProperties": False,
+        }
         response = self.model.create_chat_completion(
             messages=[
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-            ],
-            response_format={
-                "type": "json_object",
-                "schema": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": list(properties),
-                    "additionalProperties": False,
+                {
+                    "role": "user",
+                    "content": json.dumps({**payload, "output_schema": schema}, ensure_ascii=False),
                 },
-            },
+            ],
+            response_format={"type": "json_object", "schema": schema},
             temperature=0,
             seed=0,
             max_tokens=tokens,
@@ -1616,8 +1617,18 @@ def reviewer_model_probe(baseline_path: Path, output: Path) -> int:
         editor.model.chat_handler = formatter.to_chat_handler()
         report["chat_template"] = formatter.template
         report["generation_prefix"] = preview[-100:]
+        completion = editor.model.create_chat_completion
+        raw_calls: list[dict[str, Any]] = []
+
+        def recorded_completion(**request: Any) -> dict[str, Any]:
+            response = completion(**request)
+            raw_calls.append({"request": request, "response": response})
+            return response
+
+        editor.model.create_chat_completion = recorded_completion
         for item in baseline:
             began = time.monotonic()
+            raw_calls.clear()
             record = {"fixture": item["fixture"], "review_context": item["review_context"]}
             try:
                 review = editor.review(item["review_context"])
@@ -1647,6 +1658,7 @@ def reviewer_model_probe(baseline_path: Path, output: Path) -> int:
             except Exception as error:
                 record.update(error=f"{type(error).__name__}: {error}", semantic_pass=False)
             record["seconds"] = round(time.monotonic() - began, 3)
+            record["raw_calls"] = list(raw_calls)
             report["cases"].append(record)
             report["semantic_pass"] = len(report["cases"]) == 3 and all(
                 case["semantic_pass"] for case in report["cases"]
