@@ -339,7 +339,9 @@ def test_required_staged_original_never_falls_back_to_another_source(
         ),
         pytest.raises(RuntimeError, match="required approved staged original"),
     ):
-        render_youtube_previews(tmp_path / "artifacts", Path("campaigns/reach-double-coverage-dedicated.yaml"))
+        render_youtube_previews(
+            tmp_path / "artifacts", Path("campaigns/reach-double-coverage-dedicated.yaml")
+        )
 
 
 def test_failed_editorial_writes_transcript_and_screening_audit(
@@ -386,7 +388,9 @@ def test_failed_editorial_writes_transcript_and_screening_audit(
             },
         ),
     ):
-        render_youtube_previews(tmp_path / "renders", Path("campaigns/reach-double-coverage-dedicated.yaml"))
+        render_youtube_previews(
+            tmp_path / "renders", Path("campaigns/reach-double-coverage-dedicated.yaml")
+        )
     runs = list((tmp_path / "renders").glob("reach-tjr-youtube-*"))
     assert len(runs) == 1
     run = runs[0]
@@ -588,7 +592,9 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
             },
         ),
     ):
-        render_youtube_previews(tmp_path / "renders", Path("campaigns/reach-double-coverage-dedicated.yaml"))
+        render_youtube_previews(
+            tmp_path / "renders", Path("campaigns/reach-double-coverage-dedicated.yaml")
+        )
     assert scored and all(items == [first, second] for items in scored)
 
 
