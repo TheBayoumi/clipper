@@ -84,17 +84,17 @@ def check_campaign_brief(path: Path) -> dict[str, Any]:
 
 
 def _resolve_approved_youtube_video(video_id: str) -> str:
-    """Check a selected original's ID against the TWO real official channel feeds."""
+    """Check a selected original's ID against the official campaign channel feed."""
     if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
-        raise QualityError("TJR_SOURCE_VIDEO_ID must be an 11-character YouTube video ID")
+        raise QualityError("source video ID must be an 11-character YouTube video ID")
     from scripts.tjr_youtube_preview import discover_official_uploads
 
     listings, _failures = discover_official_uploads()
     channels = {item.channel_id for item in listings if item.video_id == video_id}
     if len(channels) != 1 or not channels.issubset(set(OFFICIAL_TJR_CHANNELS)):
         raise QualityError(
-            "selected video ID was not confirmed in either current Reach-listed "
-            "official YouTube channel feed; do not substitute an unrelated mirror"
+            "selected video ID was not confirmed in the current Reach-listed "
+            "Double Coverage YouTube channel feed; do not substitute an unrelated mirror"
         )
     return channels.pop()
 
@@ -102,7 +102,7 @@ def _resolve_approved_youtube_video(video_id: str) -> str:
 def prepare_staged_brief(template: Path, output: Path) -> Path:
     """Prepare a source-ID- and SHA-pinned brief after explicit user verification."""
     if os.getenv("TJR_BUDGET_CONFIRMED") != "true" or os.getenv("TJR_SOURCE_VERIFIED") != "true":
-        raise QualityError("confirm live campaign budget and authentic TJR source")
+        raise QualityError("confirm live campaign budget and authentic Double Coverage source")
     sha = os.getenv("TJR_SOURCE_MEDIA_SHA256", "")
     if not re.fullmatch(r"[0-9a-fA-F]{64}", sha):
         raise QualityError("TJR_SOURCE_MEDIA_SHA256 must be a 64-character hex digest")
@@ -384,14 +384,14 @@ def validate_artifacts(brief: Path, artifact_root: Path) -> dict[str, Any]:
         results.append(inspected)
     return {
         "status": "TECHNICAL_QA_PASSED__HUMAN_REVIEW_REQUIRED",
-        "campaign": "reach-tjr-weekly",
+        "campaign": "reach-double-coverage-dedicated",
         "source": source_details,
         "clips": results,
         "manual_checks": [
-            "Confirm TJR appears in every video, and clips preserve the original context.",
+            "Confirm Host Mystic Zach appears in every video and clips preserve original context.",
             "Inspect every frame for pre-existing source logos and forbidden watermarks.",
             "Review subtitle accuracy, framing, hook, audio and financial claims.",
-            "Verify source permissions, live campaign budget, #TJR, account branding and audience.",
+            "Verify permissions, budget, #DoubleCoverage, dedicated account branding and audience.",
             "Publish manually; submit the public URL to Whop within 30 minutes.",
         ],
     }
