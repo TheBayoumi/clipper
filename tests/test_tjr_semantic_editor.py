@@ -42,7 +42,11 @@ def test_semantic_editor_builds_complete_story_without_sliding_window_quota() ->
         TranscriptSegment(0, 6, "The guest told us the wildest story from his first big show."),
         TranscriptSegment(6, 12, "Zach asked what happened when security suddenly stopped him."),
         TranscriptSegment(12, 18, "He admitted he had forgotten the one pass everyone needed."),
-        TranscriptSegment(18, 24, "Then the whole room laughed when he revealed how he got inside."),
+        TranscriptSegment(
+            18,
+            24,
+            "Then the whole room laughed when he revealed how he got inside.",
+        ),
     ]
     candidates, audit = build_semantic_editorial_candidates(
         _brief(), "976-d0RlyfQ", segments, embedder=_fake_embedder
