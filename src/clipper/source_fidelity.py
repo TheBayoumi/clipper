@@ -176,7 +176,7 @@ def compare_encoded_to_composition(
     # Container timestamp quantization must not select a neighboring frame.
     if float(Fraction(fps)) <= 0:
         raise FidelityError("comparison requires a positive native frame rate")
-    clock = f"settb=AVTB,setpts=N/({fps})/TB"
+    clock = f"trim=start=0,settb=AVTB,setpts=N/({fps})/TB"
     reference = (
         f"{graph};[v]{clock}[reference];[{input_count}:v]{clock}[encoded];"
         f"[reference][encoded]ssim=stats_file='{stats_path.as_posix()}'[verified]"

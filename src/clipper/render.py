@@ -191,7 +191,7 @@ def build_ffmpeg_command(
             "[fgzoomsrc]scale='ceil(iw*1.025/2)*2':'ceil(ih*1.025/2)*2'[fgzoom];"
             "[bg2][fgbase]overlay=(W-w)/2:(H-h)/2[scene];"
             f"[scene][fgzoom]overlay=(W-w)/2:(H-h)/2:enable='{effect_enable}',"
-            f"{caption_filter},fps={fps}[captioned]"
+            f"{caption_filter},fps={fps}:start_time=0[captioned]"
         )
     else:
         base_filter = (
@@ -200,7 +200,7 @@ def build_ffmpeg_command(
             f"crop={blur_width}:{blur_height},gblur=sigma=18,scale={width}:{height}[bg2];"
             f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
             f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,"
-            f"{caption_filter},fps={fps}[captioned]"
+            f"{caption_filter},fps={fps}:start_time=0[captioned]"
         )
     if editorial_layout not in {
         "default",
@@ -221,7 +221,7 @@ def build_ffmpeg_command(
             f"color=c=0x10131a:s=1080x1920:r={fps}[canvas];"
             "[canvas][top]overlay=0:180[layout];"
             "[layout][face]overlay=0:830,"
-            f"{caption_filter},fps={fps}[captioned]"
+            f"{caption_filter},fps={fps}:start_time=0[captioned]"
         )
     if editorial_layout == "tjr-memecoin-logo-safe":
         if watermark_path is not None or (width, height) != (1080, 1920):
@@ -236,7 +236,7 @@ def build_ffmpeg_command(
             f"color=c=0x10131a:s=1080x1920:r={fps}[canvas];"
             "[canvas][top]overlay=0:310[layout];"
             "[layout][face]overlay=0:850,"
-            f"{caption_filter},fps={fps}[captioned]"
+            f"{caption_filter},fps={fps}:start_time=0[captioned]"
         )
     inputs = [
         "ffmpeg",

@@ -174,7 +174,7 @@ def test_ssim_preserves_watermark_input_and_compares_encoded_third_input(tmp_pat
         assert actual[len(original_inputs) : len(original_inputs) + 2] == ["-i", str(output)]
         reference = actual[actual.index("-filter_complex") + 1]
         assert "[1:v]scale=180:-1" in reference
-        assert "[2:v]settb=AVTB,setpts=N/(30/1)/TB[encoded]" in reference
+        assert "[2:v]trim=start=0,settb=AVTB,setpts=N/(30/1)/TB[encoded]" in reference
         assert "[reference][encoded]ssim=" in reference
         stats.write_text("".join(f"n:{i} All:0.999\n" for i in range(60)))
         return Mock()
@@ -259,3 +259,74 @@ def test_real_watermarked_video_keeps_corresponding_frames_aligned(tmp_path: Pat
     )
     assert score >= 0.99
     assert frames == 60
+
+
+def test_real_animated_render_drops_negative_seek_frames_consistently(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    from PIL import Image
+
+    from clipper.models import ClipCandidate, TranscriptSegment
+    from clipper.render import build_ffmpeg_command
+    from clipper.source_fidelity import SourceProfile
+    from clipper.tiktok import create_tiktok_ass
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("FFmpeg is required for the negative-timestamp regression")
+    source, output, logo = (tmp_path / name for name in ("source.mkv", "output.mp4", "logo.png"))
+    Image.new("RGBA", (50, 30), (30, 190, 20, 255)).save(logo)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x240:rate=30000/1001",
+            "-t",
+            "3",
+            "-c:v",
+            "ffv1",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    clip = ClipCandidate("video", 0.3, 2.3, "Why did this happen?", 1)
+    ass = create_tiktok_ass(
+        clip,
+        [TranscriptSegment(0.3, 2.3, "Why did this happen?")],
+        tmp_path / "captions.ass",
+        hook_text=clip.text,
+    )
+    profile = SourceProfile(320, 240, "30000/1001", "ffv1", "yuv420p", None, None)
+    command = build_ffmpeg_command(
+        source,
+        output,
+        clip,
+        ass,
+        watermark_path=logo,
+        source_fps=profile.fps,
+        source_profile=profile,
+        crf_override=12,
+    )
+    graph_index = command.index("-filter_complex") + 1
+    assert "fps=30000/1001:start_time=0" in command[graph_index]
+    command[graph_index] = command[graph_index].replace(
+        "[0:v]split=2", "[0:v]setpts=PTS-0.1/TB,split=2", 1
+    )
+    subprocess.run(command, check=True, capture_output=True)
+    score, frames = compare_encoded_to_composition(
+        command,
+        source=source,
+        output=output,
+        clip_start=0.3,
+        duration=2,
+        fps=profile.fps,
+        stats_path=tmp_path / "ssim.txt",
+    )
+    assert score >= 0.99
+    assert frames >= 59
