@@ -4,13 +4,13 @@ from scripts.tjr_semantic_editor import build_semantic_editorial_candidates
 
 def _brief() -> CampaignBrief:
     return CampaignBrief(
-        campaign_id="tjr-test",
-        title="TJR",
-        objective="Find complete trading moments",
-        keywords=["trading"],
-        source_channel_ids=["UCGHBUXjDCeiIXNdKR0HUZnA"],
+        campaign_id="double-coverage-test",
+        title="Double Coverage Podcast",
+        objective="Find complete funny, surprising, memorable podcast moments",
+        keywords=["podcast", "story", "reaction", "guest"],
+        source_channel_ids=["UCf1q6dhccWr6eQEcFFnJSbA"],
         min_clip_seconds=20,
-        max_clip_seconds=42,
+        max_clip_seconds=45,
         rights_confirmed=True,
     )
 
@@ -19,25 +19,30 @@ def _fake_embedder(texts: list[str]) -> list[list[float]]:
     vectors: list[list[float]] = []
     for text in texts:
         lowered = text.lower()
-        if (
-            "concrete trading setup" in lowered
-            or "trading" in lowered
-            or "trade" in lowered
-            or "market" in lowered
-            or "risk" in lowered
+        if any(
+            term in lowered
+            for term in (
+                "filler",
+                "housekeeping",
+                "sponsor boilerplate",
+                "navigation chatter",
+                "chrome hearts",
+                "bracelet",
+                "rolex",
+                "leopard bag",
+            )
         ):
-            vectors.append([1.0, 0.0, 0.0])
-        else:
             vectors.append([0.0, 1.0, 0.0])
+        else:
+            vectors.append([1.0, 0.0, 0.0])
     return vectors
-
 
 def test_semantic_editor_builds_complete_story_without_sliding_window_quota() -> None:
     segments = [
-        TranscriptSegment(0, 6, "Why I waited for this trade before entering."),
-        TranscriptSegment(6, 12, "The market pushed higher but the setup was incomplete."),
-        TranscriptSegment(12, 18, "My stop would have been too wide for the risk."),
-        TranscriptSegment(18, 24, "So I waited for price to return before taking the trade."),
+        TranscriptSegment(0, 6, "The guest told us the wildest story from his first big show."),
+        TranscriptSegment(6, 12, "Zach asked what happened when security suddenly stopped him."),
+        TranscriptSegment(12, 18, "He admitted he had forgotten the one pass everyone needed."),
+        TranscriptSegment(18, 24, "Then the whole room laughed when he revealed how he got inside."),
     ]
     candidates, audit = build_semantic_editorial_candidates(
         _brief(), "976-d0RlyfQ", segments, embedder=_fake_embedder
@@ -52,7 +57,7 @@ def test_semantic_editor_builds_complete_story_without_sliding_window_quota() ->
         for reason in candidate.reasons
         if reason.startswith("semantic_hook=")
     )
-    assert hook == "WHY I WAITED FOR THIS TRADE BEFORE ENTERING"
+    assert hook == "THE GUEST TOLD US THE WILDEST STORY FROM HIS FIRST BIG"
     assert audit["fixed_candidate_or_output_quota"] is False
     assert audit["architecture"] == "source_level_semantic_campaign_event_segmentation_v3"
     assert audit["campaign_relevant_unit_count"] > 0
