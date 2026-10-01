@@ -55,7 +55,7 @@ def check_campaign_brief(path: Path) -> dict[str, Any]:
         raise QualityError("source_media_urls must be a mapping")
     if mirrors:
         if len(video_ids) != 1 or set(mirrors) != set(video_ids):
-            raise QualityError("mirrored media must match the pinned TJR video ID")
+            raise QualityError("mirrored media must match the pinned Double Coverage video ID")
         for url in mirrors.values():
             parsed = urlparse(url) if isinstance(url, str) else None
             if (
@@ -71,7 +71,7 @@ def check_campaign_brief(path: Path) -> dict[str, Any]:
     if data.get("watermark_text"):
         raise QualityError("Double Coverage requires the official image watermark, not text")
     if watermark_url != (
-        "https://drive.google.com/file/d/1bVsR2jUqmP5i61TuFWo0NzN7_0dSLAou/view?usp=sharing"
+        "https://drive.google.com/file/d/1wn3gL5h7cUZn-8jzTfwkAvLhbleXgbL6/view?usp=sharing"
     ):
         raise QualityError("mandatory official Double Coverage watermark is missing or changed")
     if "#DoubleCoverage" not in data.get("required_hashtags", []):
