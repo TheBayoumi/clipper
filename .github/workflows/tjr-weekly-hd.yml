@@ -415,8 +415,21 @@ jobs:
           path: reviewer-input
       - name: Install pinned CPU reviewer
         run: CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e . "llama-cpp-python==0.3.35"
+      - uses: actions/download-artifact@v4
+        if: inputs.editorial_source_run_id != ''
+        with:
+          run-id: ${{ inputs.editorial_source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: reviewer-preflight-*
+          path: reviewer-baseline
       - name: Assess complete exchange and known bad cuts
         run: |
+          if [ -d reviewer-baseline ]; then
+            BASELINE=$(find reviewer-baseline -name reviewer-preflight.json -print -quit)
+            test -n "$BASELINE"
+            python -m scripts.tjr_semantic_editor --reviewer-diagnostics-baseline "$BASELINE" --output reviewer-preflight.json
+            exit $?
+          fi
           TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
           test -n "$TRANSCRIPT"
           python -m scripts.tjr_semantic_editor --reviewer-preflight-transcript "$TRANSCRIPT" --output reviewer-preflight.json
@@ -809,3 +822,4 @@ jobs:
           retention-days: 14
           compression-level: 0
           if-no-files-found: warn
+

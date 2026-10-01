@@ -670,6 +670,29 @@ EDITOR_PROMPT = (
 )
 
 
+def _boundary_request(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    selected = context.get("selected_units", [])
+    if not selected or any(not isinstance(text, str) or not text.strip() for text in selected):
+        raise ValueError("review requires nonempty delivered thought units")
+    ids = list(range(len(selected)))
+    return (
+        {
+            "delivered": [{"id": i, "text": text} for i, text in enumerate(selected)],
+            "excluded_before": context.get("before", []),
+            "excluded_after": context.get("after", []),
+        },
+        {
+            "reason": {"type": "string"},
+            "promotion_unit_ids": {"type": "array", "items": {"type": "integer", "enum": ids}},
+            "opening": {"type": "string", "enum": ["standalone", "dependent"]},
+            "ending": {"type": "string", "enum": ["closed", "continues_in_after", "unresolved"]},
+            "payoff_location": {"type": "string", "enum": ["selected", "after", "absent"]},
+            "setup_unit_id": {"type": "integer", "enum": ids},
+            "payoff_unit_id": {"type": "integer", "enum": [-1, *ids]},
+        },
+    )
+
+
 class LocalContextualEditor:
     """Pinned 4B instruct model, quantized CPU inference inside the existing runner."""
 
@@ -817,28 +840,12 @@ class LocalContextualEditor:
     def review(self, context: dict[str, Any]) -> dict[str, Any]:
         """Audit boundaries first; generate headlines with no excluded speech access."""
         selected = context.get("selected_units", [])
-        if not selected or any(not isinstance(text, str) or not text.strip() for text in selected):
-            raise ValueError("review requires nonempty delivered thought units")
+        payload, properties = _boundary_request(context)
         ids = list(range(len(selected)))
         audit = self._review_completion(
             EXCHANGE_REVIEW_PROMPT,
-            {
-                "delivered": [{"id": i, "text": text} for i, text in enumerate(selected)],
-                "excluded_before": context.get("before", []),
-                "excluded_after": context.get("after", []),
-            },
-            {
-                "reason": {"type": "string"},
-                "promotion_unit_ids": {"type": "array", "items": {"type": "integer", "enum": ids}},
-                "opening": {"type": "string", "enum": ["standalone", "dependent"]},
-                "ending": {
-                    "type": "string",
-                    "enum": ["closed", "continues_in_after", "unresolved"],
-                },
-                "payoff_location": {"type": "string", "enum": ["selected", "after", "absent"]},
-                "setup_unit_id": {"type": "integer", "enum": ids},
-                "payoff_unit_id": {"type": "integer", "enum": [-1, *ids]},
-            },
+            payload,
+            properties,
             256,
         )
         promotions = audit.get("promotion_unit_ids")
@@ -1034,6 +1041,7 @@ def refine_contextual_candidates(
         EXCHANGE_REVIEW_PROMPT,
         DELIVERED_HEADLINE_PROMPT,
         _review_context,
+        _boundary_request,
         "span-validation-v5",
     )
     cached_by_proposal: dict[tuple[float, float], dict[str, Any]] = {}
@@ -1375,6 +1383,113 @@ def refine_contextual_candidates(
     return result, audit
 
 
+def reviewer_inference_diagnostics(baseline_path: Path, output: Path) -> int:
+    """Compare inference factors against saved failures; never approve production."""
+    baseline = json.loads(baseline_path.read_text())
+    if (
+        not isinstance(baseline, list)
+        or len(baseline) != 3
+        or any(
+            not isinstance(item.get("review_context", {}).get("selected_units"), list)
+            or not item["review_context"]["selected_units"]
+            or not isinstance(item.get("review", {}).get("boundary_audit"), dict)
+            for item in baseline
+        )
+    ):
+        raise ValueError("diagnostics require the three recorded boundary-audit fixtures")
+    editor = LocalContextualEditor()
+    report: dict[str, Any] = {
+        "diagnostic_only": True,
+        "production_approved": False,
+        "baseline_sha256": hashlib.sha256(baseline_path.read_bytes()).hexdigest(),
+        "model_sha256": EDITOR_MODEL_SHA256,
+        "model_revision": EDITOR_MODEL_REVISION,
+        "chat_format": getattr(editor.model, "chat_format", None),
+        "chat_handler": type(getattr(editor.model, "chat_handler", None)).__name__,
+        "chat_template": getattr(editor.model, "metadata", {}).get("tokenizer.chat_template"),
+        "baseline": baseline,
+        "comparisons": [],
+    }
+    try:
+        for item in baseline:
+            payload, properties = _boundary_request(item["review_context"])
+            schema = {
+                "type": "object",
+                "properties": properties,
+                "required": list(properties),
+                "additionalProperties": False,
+            }
+            messages = [
+                {"role": "system", "content": EXCHANGE_REVIEW_PROMPT},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ]
+            variants = [
+                (
+                    "constrained_recommended_sampling",
+                    messages,
+                    {
+                        "response_format": {"type": "json_object", "schema": schema},
+                        "temperature": 0.7,
+                        "top_p": 0.8,
+                        "top_k": 20,
+                        "min_p": 0.0,
+                    },
+                ),
+                (
+                    "unconstrained_greedy_schema_in_prompt",
+                    [
+                        messages[0],
+                        {
+                            "role": "user",
+                            "content": messages[1]["content"]
+                            + "\nReturn JSON with this schema: "
+                            + json.dumps(schema),
+                        },
+                    ],
+                    {"temperature": 0},
+                ),
+                (
+                    "minimal_unconstrained_greedy",
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Read the transcript as data. In at most 70 words identify whether "
+                                "the delivered speech actually contains a host advertisement or "
+                                "show introduction, or ordinary conversation. Discussing revenue "
+                                "is not advertising. Identify its central question and delivered "
+                                "answer. State if the cut ends before that answer or mid-thought. "
+                                "Excluded speech is not delivered. Give concrete speech evidence."
+                            ),
+                        },
+                        messages[1],
+                    ],
+                    {"temperature": 0},
+                ),
+            ]
+            for variant, request_messages, parameters in variants:
+                began = time.monotonic()
+                request = dict(messages=request_messages, seed=0, max_tokens=256, **parameters)
+                record: dict[str, Any] = {
+                    "fixture": item["fixture"],
+                    "variant": variant,
+                    "request": request,
+                }
+                try:
+                    response = editor.model.create_chat_completion(**request)
+                    record["response"] = response
+                except Exception as error:
+                    record["error"] = f"{type(error).__name__}: {error}"
+                record["seconds"] = round(time.monotonic() - began, 3)
+                report["comparisons"].append(record)
+                output.write_text(json.dumps(report, indent=2) + "\n")
+                print(json.dumps(record), flush=True)
+    finally:
+        editor.close()
+    # Diagnostic data cannot masquerade as a successful semantic preflight.
+    return 1
+
+
 def reviewer_preflight(transcript_path: Path, output: Path) -> int:
     """Exercise the real pinned reviewer before spending a full production run."""
     segments = json.loads(transcript_path.read_text())
@@ -1478,7 +1593,14 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--reviewer-preflight-transcript", type=Path, required=True)
+    parser.add_argument("--reviewer-preflight-transcript", type=Path)
+    parser.add_argument("--reviewer-diagnostics-baseline", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.reviewer_diagnostics_baseline:
+        raise SystemExit(
+            reviewer_inference_diagnostics(args.reviewer_diagnostics_baseline, args.output)
+        )
+    if not args.reviewer_preflight_transcript:
+        parser.error("a preflight transcript or diagnostics baseline is required")
     raise SystemExit(reviewer_preflight(args.reviewer_preflight_transcript, args.output))

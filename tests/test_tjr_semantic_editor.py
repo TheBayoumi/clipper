@@ -2,6 +2,60 @@ from clipper.models import CampaignBrief, TranscriptSegment
 from scripts.tjr_semantic_editor import build_semantic_editorial_candidates
 
 
+def test_inference_diagnostics_reuses_failures_and_never_approves(tmp_path, monkeypatch):
+    import json
+
+    from scripts import tjr_semantic_editor as editor
+
+    requests = []
+
+    class Model:
+        chat_format = "chatml"
+
+        def __init__(self):
+            self.metadata = {"tokenizer.chat_template": "recorded template"}
+
+        def create_chat_completion(self, **request):
+            requests.append(request)
+            return {"choices": [{"finish_reason": "stop", "message": {"content": "evidence"}}]}
+
+    class FakeEditor:
+        model = Model()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(editor, "LocalContextualEditor", FakeEditor)
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps(
+            [
+                {
+                    "fixture": str(index),
+                    "review_context": {
+                        "selected_units": ["A delivered answer."],
+                        "after": ["Excluded continuation."],
+                    },
+                    "review": {"boundary_audit": {"reason": "saved"}},
+                }
+                for index in range(3)
+            ]
+        )
+    )
+    output = tmp_path / "diagnostics.json"
+    assert editor.reviewer_inference_diagnostics(baseline, output) == 1
+    report = json.loads(output.read_text())
+    assert report["production_approved"] is False
+    assert report["chat_template"] == "recorded template"
+    assert len(requests) == 9
+    assert requests[0]["temperature"] == 0.7
+    assert requests[0]["response_format"]["schema"]["properties"]["promotion_unit_ids"]
+    assert "response_format" not in requests[1]
+    assert "schema" in requests[1]["messages"][1]["content"]
+    assert "response_format" not in requests[2]
+    assert report["baseline"][0]["review"]["boundary_audit"]["reason"] == "saved"
+
+
 def _brief() -> CampaignBrief:
     return CampaignBrief(
         campaign_id="double-coverage-test",
