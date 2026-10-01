@@ -1061,7 +1061,8 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                 "unrelated logos or synthetic video footage.",
                 "Verify the clip does not portray the creators, guests or podcast negatively.",
                 "Verify Reach/Whop dedicated-account eligibility, remaining budget and audience.",
-                "Only publish after human approval; add #DoubleCoverage and submit within 30 minutes.",
+                "Only publish after human approval; add #DoubleCoverage and submit "
+                "within 30 minutes.",
             ],
         }
         (run_dir / "tjr-youtube-qa-report.json").write_text(
