@@ -292,11 +292,6 @@ def test_focused_review_separates_speech_purpose_and_excluded_payoff():
             "continuation_quote": "Then another topic starts here",
             "relation": "new_topic",
         },
-        {
-            "central_quote": "I had huge views on my social account",
-            "context_quote": "But I did not earn any money from those views",
-            "payoff_quote": "I used them to drive my podcast instead",
-        },
         {"headline": "Huge social views earned nothing but helped the podcast"},
     ]
     replies.append(_audit_reply("supported", "Views were not paid; they drove the podcast."))
@@ -316,6 +311,12 @@ def test_focused_review_separates_speech_purpose_and_excluded_payoff():
     assert list(calls[2])[-1] == "actual_final_delivered_text"
     assert "source_continuation_not_delivered" not in calls[3]
     assert "Then another topic" not in str(calls[3])
+    assert calls[3]["source_passages"] == {
+        "setup_quote": "huge views on my social account",
+        "resolution_quote": "drive my podcast instead",
+    }
+    assert len(calls) == 5
+    assert review["headline_source_spans"] == review["source_quote_spans"]
     replies[1]["resolution_quote"] = "another topic starts here"
     calls.clear()
     with pytest.raises(RuntimeError, match="not in delivered speech"):
@@ -1336,11 +1337,6 @@ def test_opening_dependency_requires_source_evidence_without_prior_verdict():
             "reason": "The speaker states the event and situation.",
             "opening_standalone": 1,
         },
-        {
-            "central_quote": "the door staff stopped me",
-            "context_quote": "At my first performance",
-            "payoff_quote": "The owner came out and let me inside",
-        },
         {"headline": "Door staff stopped the performer at his own show"},
     ]
     replies.append(_audit_reply("supported", "The door staff stopped the performer."))
@@ -1893,3 +1889,69 @@ def test_ablation_reuses_every_unchanged_request_and_invalidates_other_model(tmp
     profile["model_sha256"] = "changed-model"
     assert editor.reviewer_model_ablation(second, third) == 0
     assert len(calls) == 64
+
+
+def test_headline_preserves_reviewed_resolution_without_reselecting_quotes():
+    from scripts.tjr_semantic_editor import _source_grounded_headline, _source_quote_span
+
+    units = [
+        "I have sixty million social views and earn nothing.",
+        "If a podcast had sixty million views, it could earn millions.",
+        "Those social views only drive listeners to the podcast.",
+    ]
+    spans = {
+        "setup_quote": _source_quote_span(units[0], units, max_words=64),
+        "resolution_quote": _source_quote_span(units[2], units, max_words=64),
+    }
+    replies = [
+        {"headline": "Huge social views earn nothing but drive podcast listeners"},
+        _audit_reply("supported", "Views bring listeners, not proven earnings"),
+    ]
+    calls = []
+
+    class Editor:
+        def _review_completion(self, prompt, payload, *args):
+            calls.append(payload)
+            return replies.pop(0)
+
+    result = _source_grounded_headline(Editor(), units, exchange_spans=spans)
+    assert len(calls) == 2 and not replies
+    assert result["headline_source_spans"] == spans
+    assert calls[0]["source_passages"] == {key: span["text"] for key, span in spans.items()}
+    assert calls[0]["source_passages"]["resolution_quote"] == units[2][:-1]
+    assert [unit["text"] for unit in calls[0]["source_context"]] == units
+    assert "reason" not in str(calls[0])
+    assert "could earn" not in str(calls[0]["source_passages"])
+
+
+def test_headline_rejects_forged_reviewed_spans_before_inference():
+    import pytest
+
+    from scripts.tjr_semantic_editor import _source_grounded_headline, _source_quote_span
+
+    units = ["The visitor waited outside.", "The owner finally unlocked the door."]
+    spans = {
+        "setup_quote": _source_quote_span(units[0], units, max_words=64),
+        "resolution_quote": _source_quote_span(units[1], units, max_words=64),
+    }
+
+    class Editor:
+        def _review_completion(self, *args):
+            raise AssertionError("Invalid source handoff must not call any model")
+
+    for changed in (
+        {"text": "The owner locked the door", "first_unit": 1, "last_unit": 1},
+        {**spans["resolution_quote"], "first_unit": 0},
+        {**spans["resolution_quote"], "last_unit": 0},
+        {**spans["resolution_quote"], "first_unit": True},
+        {**spans["resolution_quote"], "reason": "Invented interpretation"},
+        None,
+    ):
+        with pytest.raises(RuntimeError, match="canonical source evidence"):
+            _source_grounded_headline(
+                Editor(), units, exchange_spans={**spans, "resolution_quote": changed}
+            )
+    with pytest.raises(RuntimeError, match="setup and resolution"):
+        _source_grounded_headline(
+            Editor(), units, exchange_spans={"setup_quote": spans["setup_quote"]}
+        )

@@ -1670,29 +1670,54 @@ def _headline_consensus(first: dict[str, Any], second: dict[str, Any]) -> dict[s
     return {**components, "supported": all(value == "supported" for value in components.values())}
 
 
-def _source_grounded_headline(editor: LocalContextualEditor, units: list[str]) -> dict[str, Any]:
-    """Extract source passages before wording a hook; never consume critic prose."""
-    evidence = editor._review_completion(
-        "Select exact passages from delivered_units for the central highlight of the "
-        "whole exchange, not merely its opening. central_quote must include the explicit "
-        "subject and action or the central factual contrast. context_quote supplies any "
-        "needed setting or quantity; payoff_quote supplies the delivered consequence, "
-        "reaction or contrasting outcome. Copy continuous source words, not paraphrases, "
-        "and preserve negation and conditional language. Use the shortest passages that "
-        "retain who did what. Do not resolve ambiguous pronouns by guessing a person, "
-        "relationship or role. Each quote must contain 3-50 exact words. "
-        "Return output_schema JSON; no explanations or inferred facts.",
-        {"delivered_units": [{"id": i, "text": unit} for i, unit in enumerate(units)]},
-        {key: {"type": "string"} for key in ("central_quote", "context_quote", "payoff_quote")},
-        224,
-    )
-    spans = {}
-    for key in ("central_quote", "context_quote", "payoff_quote"):
-        quote = evidence.get(key)
-        span = _source_quote_span(quote, units, max_words=64) if isinstance(quote, str) else None
-        if span is None:
-            raise RuntimeError("headline evidence is not an exact delivered source passage")
-        spans[key] = span
+def _source_grounded_headline(
+    editor: LocalContextualEditor,
+    units: list[str],
+    *,
+    exchange_spans: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Keep reviewed setup/resolution roles; never consume critic prose."""
+    if exchange_spans is not None:
+        if set(exchange_spans) != {"setup_quote", "resolution_quote"}:
+            raise RuntimeError("headline requires reviewed setup and resolution spans")
+        spans = {}
+        for key, supplied in exchange_spans.items():
+            if (
+                not isinstance(supplied, dict)
+                or set(supplied) != {"text", "first_unit", "last_unit"}
+                or not isinstance(supplied["text"], str)
+                or type(supplied["first_unit"]) is not int
+                or type(supplied["last_unit"]) is not int
+            ):
+                raise RuntimeError("headline reviewed span is not canonical source evidence")
+            canonical = _source_quote_span(supplied["text"], units, max_words=64)
+            if canonical is None or canonical != supplied:
+                raise RuntimeError("headline reviewed span is not canonical source evidence")
+            spans[key] = canonical
+    else:
+        evidence = editor._review_completion(
+            "Select exact passages from delivered_units for the central highlight of the "
+            "whole exchange, not merely its opening. central_quote must include the explicit "
+            "subject and action or the central factual contrast. context_quote supplies any "
+            "needed setting or quantity; payoff_quote supplies the delivered consequence, "
+            "reaction or contrasting outcome. Copy continuous source words, not paraphrases, "
+            "and preserve negation and conditional language. Use the shortest passages that "
+            "retain who did what. Do not resolve ambiguous pronouns by guessing a person, "
+            "relationship or role. Each quote must contain 3-50 exact words. "
+            "Return output_schema JSON; no explanations or inferred facts.",
+            {"delivered_units": [{"id": i, "text": unit} for i, unit in enumerate(units)]},
+            {key: {"type": "string"} for key in ("central_quote", "context_quote", "payoff_quote")},
+            224,
+        )
+        spans = {}
+        for key in ("central_quote", "context_quote", "payoff_quote"):
+            quote = evidence.get(key)
+            span = (
+                _source_quote_span(quote, units, max_words=64) if isinstance(quote, str) else None
+            )
+            if span is None:
+                raise RuntimeError("headline evidence is not an exact delivered source passage")
+            spans[key] = span
     headline = editor._review_completion(
         "Write a clear 4-14 word on-screen hook expressing the central event or contrast "
         "across these source_passages in their full source_context. A quoted rule, "
@@ -1700,7 +1725,10 @@ def _source_grounded_headline(editor: LocalContextualEditor, units: list[str]) -
         "because its words occur in a passage. Retain the reporting scope and speaker "
         "when reading the full context. Write one coherent highlight, not a keyword list "
         "or an opening transcription. These are literal source passages, not model "
-        "interpretations. Preserve who acts, what happens and where it happens. Use an "
+        "interpretations. When setup_quote and resolution_quote are supplied, preserve "
+        "those reviewed roles: summarize the setup in light of its delivered resolution. "
+        "Do not substitute another source sentence for the actual resolution. "
+        "Preserve who acts, what happens and where it happens. Use an "
         "explicit source name when available; do not invent an opponent, employer or "
         "other relationship. Do not transfer actions between people or change a meeting "
         "into the event itself. Do not invent motives or turn conditional earnings into "
@@ -1933,7 +1961,7 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
     }
     if promotion_ids or not result["opening_standalone"] or not payoff or setup_span is None:
         return result
-    result.update(_source_grounded_headline(editor, selected))
+    result.update(_source_grounded_headline(editor, selected, exchange_spans=quote_spans))
     return result
 
 
