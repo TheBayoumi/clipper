@@ -523,15 +523,17 @@ jobs:
           FAILED_RUN_ID: ${{ inputs.editorial_source_run_id }}
         run: |
           python - <<'PY'
-          import json, os, re, subprocess, urllib.request
+          import json, os, re, subprocess, requests
           from pathlib import Path
           root = "https://api.github.com/repos/TheBayoumi/clipper"
           headers = {"Authorization": "Bearer " + os.environ["GH_READ_TOKEN"], "Accept": "application/vnd.github+json"}
           run_id = os.environ["FAILED_RUN_ID"]
           assert run_id.isdigit(), "failed run ID must be numeric"
           def fetch(path):
-              with urllib.request.urlopen(urllib.request.Request(root + path, headers=headers), timeout=60) as response:
-                  return response.read().decode("utf-8-sig")
+              response = requests.get(root + path, headers=headers, timeout=60)
+              response.raise_for_status()
+              response.encoding = "utf-8-sig"
+              return response.text
           jobs = json.loads(fetch("/actions/runs/" + run_id + "/jobs"))["jobs"]
           failed = next(job for job in jobs if job["name"].startswith("Real-model") and job["conclusion"] == "failure")
           log = fetch("/actions/jobs/" + str(failed["id"]) + "/logs")
