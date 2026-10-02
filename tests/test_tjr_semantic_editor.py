@@ -1335,6 +1335,9 @@ def test_opening_dependency_requires_source_evidence_without_prior_verdict():
 
     class Editor:
         def _review_completion(self, prompt, payload, *args):
+            if "opening_text" in payload:
+                assert args[0]["reason"]["minLength"] == 1
+                assert "for either verdict" in prompt
             payloads.append(payload)
             return replies.pop(0)
 

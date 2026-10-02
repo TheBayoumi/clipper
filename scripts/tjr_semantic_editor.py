@@ -1741,12 +1741,14 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
             "opening actually requires absent information. If so copy the unresolved "
             "reference from opening_text into missing_context_quote and identify the "
             "specific absent information in reason. Otherwise leave missing_context_quote "
-            "empty. opening_standalone is 0 or 1. Return output_schema JSON.",
+            "empty. Always provide a nonempty reason (at most 20 words) explaining the "
+            "available subject/context or the specific missing information, for either verdict. "
+            "opening_standalone is 0 or 1. Return output_schema JSON.",
             {"delivered_transcript": text, "opening_text": " ".join(selected[:2])},
             {
                 "subject_quote": {"type": "string"},
                 "missing_context_quote": {"type": "string"},
-                "reason": {"type": "string"},
+                "reason": {"type": "string", "minLength": 1, "maxLength": 180},
                 "opening_standalone": {"type": "integer", "enum": [0, 1]},
             },
             128,
