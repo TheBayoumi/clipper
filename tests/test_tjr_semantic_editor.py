@@ -1987,7 +1987,21 @@ def test_nli_probe_reuses_exact_source_claim_proofs_without_loading_model(tmp_pa
     fixtures = [
         {
             "headline": f"Claim number {index} is stated here",
-            "delivered_units": [{"id": 0, "text": "Some unchanged exact source words."}],
+            "request": {
+                "messages": [
+                    {},
+                    {
+                        "content": json.dumps(
+                            {
+                                "headline": f"Claim number {index} is stated here",
+                                "source_units": [
+                                    {"id": 0, "text": "Some unchanged exact source words."}
+                                ],
+                            }
+                        )
+                    },
+                ]
+            },
             "expected_supported": index < 2,
         }
         for index in range(8)
@@ -2044,7 +2058,9 @@ def test_nli_probe_reuses_exact_source_claim_proofs_without_loading_model(tmp_pa
                 ).encode()
             ).hexdigest()
         )
-    fixtures[0]["delivered_units"][0]["text"] += " Changed."
+    changed_payload = json.loads(fixtures[0]["request"]["messages"][1]["content"])
+    changed_payload["source_units"][0]["text"] += " Changed."
+    fixtures[0]["request"]["messages"][1]["content"] = json.dumps(changed_payload)
     baseline.write_text(
         json.dumps(
             {
@@ -2056,3 +2072,54 @@ def test_nli_probe_reuses_exact_source_claim_proofs_without_loading_model(tmp_pa
     assert reviewer_nli_probe(baseline, output) == 1
     assert len(imports) == 1
     assert json.loads(output.read_text())["cache_hits"] == 7
+
+
+def test_nli_adapter_reads_persisted_audit_request_and_preserves_full_source():
+    import copy
+    import json
+
+    import pytest
+
+    from scripts.tjr_semantic_editor import _nli_request
+
+    units = [
+        {"id": 0, "text": "She reported no earnings from her social audience."},
+        {"id": 1, "text": "Those views only brought listeners to her podcast."},
+    ]
+    fixture = {
+        "headline": "Social views brought listeners without paying her",
+        "request": {
+            "messages": [
+                {"role": "system", "content": "An old audit instruction"},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "source_units": units,
+                            "headline": "Social views brought listeners without paying her",
+                        }
+                    ),
+                },
+            ]
+        },
+    }
+    request = _nli_request(fixture)
+    assert request == {
+        "premise": " ".join(unit["text"] for unit in units),
+        "hypothesis": fixture["headline"],
+        "truncation": False,
+    }
+    for changed in (
+        [{"id": True, "text": units[0]["text"]}],
+        [{"id": 9, "text": units[0]["text"]}],
+        [{"id": 0, "text": ""}],
+        [],
+    ):
+        bad = copy.deepcopy(fixture)
+        payload = json.loads(bad["request"]["messages"][1]["content"])
+        payload["source_units"] = changed
+        bad["request"]["messages"][1]["content"] = json.dumps(payload)
+        with pytest.raises(ValueError, match="invalid NLI"):
+            _nli_request(bad)
+    with pytest.raises(ValueError, match="invalid NLI"):
+        _nli_request({**fixture, "headline": "A different unsupported claim"})

@@ -2127,6 +2127,31 @@ def _nli_verdict(probabilities: list[float]) -> str:
     return ("contradiction", "entailment", "neutral")[max(range(3), key=probabilities.__getitem__)]
 
 
+def _nli_request(fixture: dict[str, Any]) -> dict[str, Any]:
+    """Read the persisted source audit request without guessing its schema."""
+    payload = json.loads(fixture["request"]["messages"][1]["content"])
+    units = payload["source_units"]
+    if (
+        payload["headline"] != fixture["headline"]
+        or not isinstance(units, list)
+        or not units
+        or any(
+            not isinstance(unit, dict)
+            or type(unit.get("id")) is not int
+            or unit["id"] != index
+            or not isinstance(unit.get("text"), str)
+            or not unit["text"].strip()
+            for index, unit in enumerate(units)
+        )
+    ):
+        raise ValueError("invalid NLI source/claim fixture")
+    return {
+        "premise": " ".join(unit["text"] for unit in units),
+        "hypothesis": fixture["headline"],
+        "truncation": False,
+    }
+
+
 def reviewer_nli_probe(baseline_path: Path, output: Path) -> int:
     """Qualify a separate entailment classifier; never approve production."""
     import importlib.metadata
@@ -2161,11 +2186,7 @@ def reviewer_nli_probe(baseline_path: Path, output: Path) -> int:
     }
     model = tokenizer = torch = None
     for fixture in fixtures:
-        request = {
-            "premise": " ".join(unit["text"] for unit in fixture["delivered_units"]),
-            "hypothesis": fixture["headline"],
-            "truncation": False,
-        }
+        request = _nli_request(fixture)
         identity = {"profile": profile, "request": request, "code": "nli-full-premise-v1"}
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         row = {"fixture": fixture, "request": request, "request_key": key}
