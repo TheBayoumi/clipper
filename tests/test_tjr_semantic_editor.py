@@ -1468,3 +1468,34 @@ def test_headline_generation_requires_literal_evidence_and_preserves_conditions(
         with pytest.raises(RuntimeError, match="exact delivered source passage"):
             _source_grounded_headline(Editor(), units)
         assert len(calls) == 1
+
+
+def test_review_parser_enforces_declared_fields_without_inventing_reason_requirement():
+    import json
+
+    import pytest
+
+    from scripts.tjr_semantic_editor import LocalContextualEditor
+
+    value = {"central_quote": "A visitor waited outside"}
+
+    class Model:
+        def create_chat_completion(self, **request):
+            return {
+                "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(value)}}]
+            }
+
+    editor = object.__new__(LocalContextualEditor)
+    editor.model = Model()
+    quote_schema = {"central_quote": {"type": "string"}}
+    assert editor._review_completion("Extract", {}, quote_schema, 32) == value
+    value["reason"] = "Invented explanation"
+    with pytest.raises(RuntimeError, match="declared schema"):
+        editor._review_completion("Extract", {}, quote_schema, 32)
+    value.clear()
+    value["reason"] = ""
+    with pytest.raises(RuntimeError, match="evidence reason"):
+        editor._review_completion("Assess", {}, {"reason": {"type": "string"}}, 32)
+    value.clear()
+    with pytest.raises(RuntimeError, match="declared schema"):
+        editor._review_completion("Extract", {}, quote_schema, 32)

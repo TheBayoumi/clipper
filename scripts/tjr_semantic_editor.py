@@ -830,10 +830,10 @@ class LocalContextualEditor:
         if response["choices"][0]["finish_reason"] != "stop":
             raise RuntimeError("contextual reviewer returned a truncated assessment")
         result = json.loads(response["choices"][0]["message"]["content"])
-        if (
-            not isinstance(result, dict)
-            or not isinstance(result.get("reason"), str)
-            or not result["reason"].strip()
+        if not isinstance(result, dict) or set(result) != set(properties):
+            raise RuntimeError("contextual reviewer returned fields outside its declared schema")
+        if "reason" in properties and (
+            not isinstance(result.get("reason"), str) or not result["reason"].strip()
         ):
             raise RuntimeError("contextual reviewer omitted its evidence reason")
         return result
