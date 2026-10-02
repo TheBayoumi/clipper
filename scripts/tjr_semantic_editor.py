@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from clipper.editorial_benchmark import load_heldout_claims
 from clipper.editorial_claims import audit_headline_claims
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
 from clipper.tiktok import creative_hook_from_text, source_headline_candidates
@@ -3625,6 +3626,7 @@ def reviewer_evidence_qualification(
     model_profile: dict[str, Any] | None = None,
     replay_only: bool = False,
     claim_level_probe: bool = False,
+    heldout_path: Path | None = None,
 ) -> int:
     """Qualify the exact production path and blind QA, without acquisition or rendering."""
     saved = json.loads(baseline_path.read_text())
@@ -3687,6 +3689,11 @@ def reviewer_evidence_qualification(
         or provenance.get("transcript_sha256") != transcript_hash
     ):
         raise ValueError("qualification source/transcript identity does not match")
+    heldout = (
+        load_heldout_claims(heldout_path, transcript_path, provenance_path)
+        if heldout_path is not None
+        else []
+    )
     local = None
 
     review_profile = model_profile or _review_model_profile()
@@ -3730,6 +3737,13 @@ def reviewer_evidence_qualification(
         "cases": [],
         "comparisons": [],
         "claim_comparisons": [],
+        "heldout_comparisons": [],
+        "heldout_annotation_status": (heldout[0].annotation_status if heldout else "not_requested"),
+        "heldout_fixture_sha256": (
+            hashlib.sha256(heldout_path.read_bytes()).hexdigest()
+            if heldout_path is not None
+            else None
+        ),
         "semantic_pass": False,
         "experiment_complete": False,
     }
@@ -3900,6 +3914,45 @@ def reviewer_evidence_qualification(
                     f"ATOMIC_CLAIM {fixture['headline']} passed={claim_row['passed']}",
                     flush=True,
                 )
+        if heldout:
+            for case in heldout:
+                source_units = list(case.source_units)
+                row: dict[str, Any] = {
+                    "case_id": case.case_id,
+                    "headline": case.headline,
+                    "expected_supported": case.expected_supported,
+                    "source_start": case.source_start,
+                    "source_end": case.source_end,
+                    "source_clip": case.source_clip,
+                    "annotation_status": case.annotation_status,
+                    "annotation_reason": case.annotation_reason,
+                }
+                for name, backend in (
+                    ("existing", _position_headline_audit),
+                    ("experimental_claim_level", audit_headline_claims),
+                ):
+                    try:
+                        audit = backend(cache, case.headline, source_units)
+                        accepted = audit["verdict"] == "supported"
+                        row[name] = {
+                            "review": audit,
+                            "contract_valid": True,
+                            "actual_supported": accepted,
+                            "passed": accepted is case.expected_supported,
+                        }
+                    except (RuntimeError, ValueError, KeyError) as error:
+                        row[name] = {
+                            "contract_valid": False,
+                            "passed": False,
+                            "error": f"{type(error).__name__}: {error}",
+                        }
+                report["heldout_comparisons"].append(row)
+                checkpoint()
+                print(
+                    f"HELDOUT_CLAIM {case.case_id} existing={row['existing']['passed']} "
+                    f"experimental={row['experimental_claim_level']['passed']}",
+                    flush=True,
+                )
         report["experiment_complete"] = True
         report["semantic_pass"] = all(
             row["passed"] for row in (*report["cases"], *report["comparisons"])
@@ -3919,6 +3972,25 @@ def reviewer_evidence_qualification(
                 for row in report["claim_comparisons"]
             )
             report["claim_level_pass"] = all(row["passed"] for row in report["claim_comparisons"])
+        if heldout_path is not None:
+            report["heldout_scores"] = {
+                name: {
+                    "correct": sum(row[name]["passed"] for row in report["heldout_comparisons"]),
+                    "contract_errors": sum(
+                        row[name]["contract_valid"] is not True
+                        for row in report["heldout_comparisons"]
+                    ),
+                    "false_approvals": sum(
+                        row[name].get("actual_supported") is True and not row["expected_supported"]
+                        for row in report["heldout_comparisons"]
+                    ),
+                    "false_rejections": sum(
+                        row[name].get("actual_supported") is False and row["expected_supported"]
+                        for row in report["heldout_comparisons"]
+                    ),
+                }
+                for name in ("existing", "experimental_claim_level")
+            }
         report["qualification_rule"] = (
             "All 18 controls must be contract-valid and semantically correct. "
             "Exceptions never count as rejection."
@@ -3968,6 +4040,11 @@ def reviewer_gpu_qualification(baseline: Path, transcript: Path, output: Path) -
         "baseline": json.loads(baseline.read_text()),
         "transcript": json.loads(transcript.read_text()),
         "provenance": json.loads(transcript.with_name("editorial-cache.json").read_text()),
+        "heldout": json.loads(
+            (
+                Path(__file__).resolve().parents[1] / "tests/fixtures/issue8_heldout_claims.json"
+            ).read_text()
+        ),
     }
     source_hash = inputs["provenance"].get("identity", {}).get("source_sha256")
     if source_hash != "2a7e07b37074f3073d71b65e10a3efb4019b3cdd4277bc2d3770a99dcbc55e0a":
@@ -3975,6 +4052,7 @@ def reviewer_gpu_qualification(baseline: Path, transcript: Path, output: Path) -
     code_hash = hashlib.sha256(
         Path(__file__).read_bytes()
         + (Path(__file__).resolve().parents[1] / "src/clipper/editorial_claims.py").read_bytes()
+        + (Path(__file__).resolve().parents[1] / "src/clipper/editorial_benchmark.py").read_bytes()
     ).hexdigest()
     packed = gzip.compress(json.dumps(inputs, sort_keys=True).encode(), mtime=0)
     report: dict[str, Any] = {

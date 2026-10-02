@@ -261,6 +261,7 @@ def qualify_source_reviewer_gpu(
     actual_code_hash = hashlib.sha256(
         Path("/app/scripts/tjr_semantic_editor.py").read_bytes()
         + Path("/app/src/clipper/editorial_claims.py").read_bytes()
+        + Path("/app/src/clipper/editorial_benchmark.py").read_bytes()
     ).hexdigest()
     expected_key = hashlib.sha256(
         packed + json.dumps(profile, sort_keys=True).encode() + code_hash.encode()
@@ -296,6 +297,7 @@ def qualify_source_reviewer_gpu(
         ("baseline.json", inputs["baseline"]),
         ("transcript.json", inputs["transcript"]),
         ("editorial-cache.json", inputs["provenance"]),
+        ("heldout.json", inputs["heldout"]),
     ):
         (root / name).write_text(json.dumps(value))
     stop = threading.Event()
@@ -341,6 +343,7 @@ def qualify_source_reviewer_gpu(
             cold_output,
             model_profile=profile,
             claim_level_probe=True,
+            heldout_path=root / "heldout.json",
         )
         proof = json.loads(cold_output.read_text())
         manifest.update(
@@ -355,6 +358,7 @@ def qualify_source_reviewer_gpu(
                     "claim_level_pass",
                     "claim_level_contract_error_count",
                     "claim_level_semantic_error_count",
+                    "heldout_scores",
                 )
             }
         )
@@ -371,6 +375,7 @@ def qualify_source_reviewer_gpu(
                 replay / "proof.json",
                 model_profile=profile,
                 claim_level_probe=True,
+                heldout_path=root / "heldout.json",
             )
             warm = json.loads((replay / "proof.json").read_text())
             stable = all(
@@ -383,6 +388,11 @@ def qualify_source_reviewer_gpu(
                     for row in warm[key]
                 ]
                 for key in ("cases", "comparisons", "claim_comparisons")
+            )
+            stable = stable and all(
+                [row[name].get("actual_supported") for row in proof["heldout_comparisons"]]
+                == [row[name].get("actual_supported") for row in warm["heldout_comparisons"]]
+                for name in ("existing", "experimental_claim_level")
             )
             manifest["warm_replay"] = {
                 "performed": True,
