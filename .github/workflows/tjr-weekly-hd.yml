@@ -41,7 +41,7 @@ on:
         description: "Diagnostic model comparison only; factual_9b tests saved headline claims without selection or media."
         required: false
         type: choice
-        options: [disabled, focused_4b, factual_9b]
+        options: [disabled, focused_4b, factual_9b, factual_consensus]
         default: disabled
       editorial_preflight:
         description: "Run real-model reviewer regression on cached transcript only; no source acquisition."
@@ -507,8 +507,11 @@ jobs:
               TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
               test -n "$TRANSCRIPT"
               PROBE_ARGUMENTS=()
-              if [[ '${{ inputs.reviewer_model_probe == 'factual_9b' }}' == 'true' ]]; then
+              if [[ '${{ inputs.reviewer_model_probe == 'factual_9b' || inputs.reviewer_model_probe == 'factual_consensus' }}' == 'true' ]]; then
                 PROBE_ARGUMENTS+=(--headline-factual-probe)
+              fi
+              if [[ '${{ inputs.reviewer_model_probe == 'factual_consensus' }}' == 'true' ]]; then
+                PROBE_ARGUMENTS+=(--headline-consensus-probe)
               fi
               python -m scripts.tjr_semantic_editor --reviewer-model-probe-baseline "$BASELINE" --reviewer-preflight-transcript "$TRANSCRIPT" "${PROBE_ARGUMENTS[@]}" --output reviewer-preflight.json
               exit $?

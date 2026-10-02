@@ -1592,37 +1592,82 @@ def _review_evidence_valid(review: dict[str, Any], selected: list[str]) -> bool:
     )
 
 
+_HEADLINE_COMPONENTS = ("actor_action", "relationship_role", "setting_time", "quantities_outcomes")
+
+
 def _audit_headline(
     editor: LocalContextualEditor, headline: str, units: list[str]
 ) -> dict[str, Any]:
-    """Audit factual entailment without generator ratings or excluded speech."""
+    """Bind claim checks to immutable source units, not model-authored quotations."""
+    states = ["supported", "unsupported", "uncertain"]
     audit = editor._review_completion(
-        "Fact-check headline against source_transcript only. Check WHO did WHAT, the "
-        "setting/time, quantities and any stated relationship or role. A person's "
-        "presence in an event does not establish their role or relationship to another "
-        "person. A meeting, preparation and the event itself are distinct settings. "
-        "Do not infer absent relationships, transfer one person's action to another, "
-        "or turn a hypothetical outcome into a fact. verdict is supported only if every "
-        "headline claim follows from the transcript; otherwise unsupported or uncertain. "
-        "Copy 3-30 exact source words as source_quote supporting your explanation. "
-        "Always give a nonempty reason naming any unsupported claim (at most 30 words). "
-        "Return output_schema JSON.",
-        {"source_transcript": " ".join(units), "headline": headline},
+        "Fact-check headline against source_units only. Check actor_action: WHO actually "
+        "did WHAT; do not assign an action to a nearby name merely mentioned as an object. "
+        "Check relationship_role: presence does not establish an opponent, employer or "
+        "other relationship. Check setting_time: a quoted instruction or discussion of "
+        "an event does not establish that the described action happened in that setting. "
+        "Check quantities_outcomes: preserve numbers, negation and conditional versus "
+        "actual outcomes. A component not claimed by the headline is supported. Otherwise "
+        "supported requires explicit source support; use unsupported or uncertain when "
+        "absent or ambiguous. Cite 1-3 source unit IDs as evidence_unit_ids. Do not rewrite "
+        "or concatenate source quotations. Give a nonempty reason at most 15 words naming "
+        "the unsupported claim, if any. Return output_schema JSON.",
         {
-            "reason": {"type": "string", "minLength": 1, "maxLength": 240},
-            "source_quote": {"type": "string"},
-            "verdict": {"type": "string", "enum": ["supported", "unsupported", "uncertain"]},
+            "source_units": [{"id": i, "text": unit} for i, unit in enumerate(units)],
+            "headline": headline,
         },
-        160,
+        {
+            "evidence_unit_ids": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 3,
+                "uniqueItems": True,
+                "items": {"type": "integer", "enum": list(range(len(units)))},
+            },
+            "reason": {"type": "string", "minLength": 1, "maxLength": 160},
+            **{key: {"type": "string", "enum": states} for key in _HEADLINE_COMPONENTS},
+        },
+        144,
     )
-    if audit.get("verdict") not in {"supported", "unsupported", "uncertain"}:
-        raise RuntimeError("headline audit returned an invalid verdict")
+    ids = audit.get("evidence_unit_ids")
     if (
-        not isinstance(audit.get("source_quote"), str)
-        or _source_quote_span(audit["source_quote"], units, max_words=64) is None
+        not isinstance(ids, list)
+        or not 1 <= len(ids) <= 3
+        or any(type(i) is not int or not 0 <= i < len(units) for i in ids)
+        or len(set(ids)) != len(ids)
     ):
-        raise RuntimeError("headline audit omitted exact source evidence")
-    return audit
+        raise RuntimeError("headline audit omitted valid source unit evidence")
+    if any(audit.get(key) not in states for key in _HEADLINE_COMPONENTS):
+        raise RuntimeError("headline audit returned invalid claim components")
+    verdict = (
+        "supported"
+        if all(audit[key] == "supported" for key in _HEADLINE_COMPONENTS)
+        else "unsupported"
+        if any(audit[key] == "unsupported" for key in _HEADLINE_COMPONENTS)
+        else "uncertain"
+    )
+    return {
+        **audit,
+        "verdict": verdict,
+        "source_evidence": [{"unit_id": i, "text": units[i]} for i in ids],
+    }
+
+
+def _headline_consensus(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    """A supported claim needs both pinned verifiers; a veto never becomes a rewrite."""
+    components = {}
+    for key in _HEADLINE_COMPONENTS:
+        values = [first.get(key), second.get(key)]
+        if any(value not in {"supported", "unsupported", "uncertain"} for value in values):
+            raise RuntimeError("headline consensus needs complete component evidence")
+        components[key] = (
+            "supported"
+            if all(value == "supported" for value in values)
+            else "unsupported"
+            if "unsupported" in values
+            else "uncertain"
+        )
+    return {**components, "supported": all(value == "supported" for value in components.values())}
 
 
 def _source_grounded_headline(editor: LocalContextualEditor, units: list[str]) -> dict[str, Any]:
@@ -1892,12 +1937,77 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
     return result
 
 
+def _load_probe_peer(runtime: str | None) -> tuple[LocalContextualEditor, dict[str, Any]]:
+    """Load the complementary verifier only after the primary model is closed."""
+    from llama_cpp import Llama, llama_chat_format  # type: ignore[import-not-found]
+
+    repo = "bartowski/Qwen_Qwen3.5-4B-GGUF"
+    revision = "4168f45a16a1290d65a4ec0fa312ae917a4c15d6"
+    filename = "Qwen_Qwen3.5-4B-Q4_K_M.gguf"
+    sha256 = "13c16f426047e2de38cd075bdade4a7bcbc8c774384876f677740cda65f8a983"
+    path = Path.home() / ".cache" / "clipper" / "editor" / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        partial = path.with_suffix(".partial")
+        try:
+            with (
+                urllib.request.urlopen(
+                    f"https://huggingface.co/{repo}/resolve/{revision}/{filename}", timeout=120
+                ) as response,
+                partial.open("wb") as target,
+            ):
+                while chunk := response.read(1024 * 1024):
+                    target.write(chunk)
+            partial.replace(path)
+        except Exception:
+            partial.unlink(missing_ok=True)
+            raise
+    with path.open("rb") as source:
+        if hashlib.file_digest(source, "sha256").hexdigest() != sha256:
+            path.unlink(missing_ok=True)
+            raise RuntimeError("peer model failed pinned SHA-256 verification")
+    peer = LocalContextualEditor.__new__(LocalContextualEditor)
+    peer.model = Llama(
+        model_path=str(path),
+        n_ctx=4096,
+        n_threads=2,
+        n_threads_batch=2,
+        n_batch=256,
+        seed=0,
+        verbose=False,
+    )
+    try:
+        formatter = llama_chat_format.Jinja2ChatFormatter(
+            template="{% set enable_thinking = false %}"
+            + peer.model.metadata["tokenizer.chat_template"],
+            eos_token=peer.model.detokenize([peer.model.token_eos()], special=True).decode(),
+            bos_token=peer.model.detokenize([peer.model.token_bos()], special=True).decode(),
+            stop_token_ids=[peer.model.token_eos()],
+        )
+        preview = formatter(messages=[{"role": "user", "content": "Template check"}]).prompt
+        if not preview.rstrip().endswith("</think>"):
+            raise RuntimeError("peer template did not close disabled thinking")
+        peer.model.chat_handler = formatter.to_chat_handler()
+        return peer, dict(
+            model_repo=repo,
+            model_revision=revision,
+            model_sha256=sha256,
+            context_tokens=4096,
+            chat_template=formatter.template,
+            llama_cpp_python_version=runtime,
+        )
+    except Exception:
+        peer.close()
+        raise
+
+
 def reviewer_model_probe(
     baseline_path: Path,
     output: Path,
     transcript_path: Path | None = None,
     *,
     factual_probe: bool = False,
+    consensus_probe: bool = False,
 ) -> int:
     """Evaluate a pinned replacement on saved cuts without changing production models."""
     from importlib.metadata import PackageNotFoundError, version
@@ -2010,9 +2120,12 @@ def reviewer_model_probe(
         seed=0,
         verbose=False,
     )
+    primary_closed = False
     report: dict[str, Any] = {
         "diagnostic_only": True,
         "production_approved": False,
+        "consensus_required": consensus_probe,
+        "consensus_complete": False,
         "model_repo": repo,
         "llama_cpp_python_version": runtime,
         "model_revision": revision,
@@ -2151,14 +2264,19 @@ def reviewer_model_probe(
             (item for item in baseline if item["fixture"] == "fighter_meeting_complete"), None
         )
         if story_fixture is not None:
-            for headline, supported in (
-                ("Opponent is a crazy nut like me during first fight.", False),
-                ("Bobby Green paced during the fighter meeting", True),
-                ("Sean Shelby paced during the fighter meeting", False),
-                ("Bobby Green paces back and forth while on live TV.", False),
+            for headline, supported, component in (
+                ("Opponent is a crazy nut like me during first fight.", False, "relationship_role"),
+                ("Bobby Green paced during the fighter meeting", True, None),
+                ("Sean Shelby paced during the fighter meeting", False, "actor_action"),
+                ("Bobby Green paces back and forth while on live TV.", False, "setting_time"),
             ):
                 raw_calls.clear()
-                check = {"headline": headline, "expected_supported": supported}
+                check = {
+                    "headline": headline,
+                    "expected_supported": supported,
+                    "expected_unsupported_component": component,
+                    "fixture": story_fixture["fixture"],
+                }
                 try:
                     audit = _audit_headline(
                         editor, headline, story_fixture["review_context"]["selected_units"]
@@ -2176,12 +2294,21 @@ def reviewer_model_probe(
             (item for item in baseline if item["fixture"] == "complete_business_exchange"), None
         )
         if business_fixture is not None:
-            for headline, supported in (
-                ("60 million Instagram views earned millions of dollars", False),
-                ("60 million Instagram views drive podcast, not income.", True),
+            for headline, supported, component in (
+                (
+                    "60 million Instagram views earned millions of dollars",
+                    False,
+                    "quantities_outcomes",
+                ),
+                ("60 million Instagram views drive podcast, not income.", True, None),
             ):
                 raw_calls.clear()
-                check = {"headline": headline, "expected_supported": supported}
+                check = {
+                    "headline": headline,
+                    "expected_supported": supported,
+                    "expected_unsupported_component": component,
+                    "fixture": business_fixture["fixture"],
+                }
                 try:
                     audit = _audit_headline(
                         editor, headline, business_fixture["review_context"]["selected_units"]
@@ -2195,12 +2322,112 @@ def reviewer_model_probe(
             report["semantic_pass"] = report["semantic_pass"] and all(
                 check["passed"] for check in report["headline_checks"]
             )
+        if consensus_probe:
+            if not factual_probe:
+                raise ValueError("consensus comparison requires the factual model profile")
+            report["primary_semantic_pass"] = report["semantic_pass"]
+            report["semantic_pass"] = False
+            output.write_text(json.dumps(report, indent=2) + "\n")
+            editor.close()
+            primary_closed = True
+            peer, peer_profile = _load_probe_peer(runtime)
+            report["peer_verifier"] = peer_profile
+            previous_peer = saved.get("peer_verifier", {}) if isinstance(saved, dict) else {}
+            peer_compatible = all(
+                previous_peer.get(key) == value for key, value in peer_profile.items()
+            )
+            peer_calls = [
+                call
+                for record in (
+                    saved.get("cases", []) + saved.get("headline_checks", [])
+                    if isinstance(saved, dict)
+                    else []
+                )
+                for call in record.get("peer_raw_calls", [])
+            ]
+            peer_completion = peer.model.create_chat_completion
+            peer_trace = []
+            peer_profile["request_cache_hits"] = 0
+
+            def peer_recorded_completion(**request: Any) -> dict[str, Any]:
+                cached = next(
+                    (
+                        call
+                        for call in peer_calls
+                        if peer_compatible
+                        and call.get("request") == request
+                        and isinstance(call.get("response"), dict)
+                        and call["response"].get("choices", [{}])[0].get("finish_reason") == "stop"
+                    ),
+                    None,
+                )
+                response = cached["response"] if cached else peer_completion(**request)
+                if cached:
+                    peer_profile["request_cache_hits"] += 1
+                peer_trace.append(
+                    {"request": request, "response": response, "cache_hit": cached is not None}
+                )
+                return response
+
+            peer.model.create_chat_completion = peer_recorded_completion
+            try:
+                for record in report["cases"] + report["headline_checks"]:
+                    began = time.monotonic()
+                    peer_trace.clear()
+                    source = next(item for item in baseline if item["fixture"] == record["fixture"])
+                    headline = record.get("headline", record.get("review", {}).get("headline", ""))
+                    try:
+                        primary = (
+                            record["audit"]
+                            if "audit" in record
+                            else record["review"]["headline_audits"][-1]
+                        )
+                        peer_audit = _audit_headline(
+                            peer, headline, source["review_context"]["selected_units"]
+                        )
+                        combined = _headline_consensus(primary, peer_audit)
+                        record.update(peer_audit=peer_audit, consensus=combined)
+                        if "expected_supported" in record:
+                            record["passed"] = combined["supported"] == record["expected_supported"]
+                            component = record.get("expected_unsupported_component")
+                            if component:
+                                record["expected_unsupported_component"] = component
+                                record["passed"] = (
+                                    record["passed"] and combined[component] != "supported"
+                                )
+                        else:
+                            record["actual_accept"] = combined["supported"]
+                            record["semantic_pass"] = (
+                                combined["supported"] == record["expected_accept"]
+                            )
+                    except Exception as error:
+                        record["peer_error"] = f"{type(error).__name__}: {error}"
+                        record["passed" if "expected_supported" in record else "semantic_pass"] = (
+                            False
+                        )
+                    record["peer_seconds"] = round(time.monotonic() - began, 3)
+                    record["peer_raw_calls"] = list(peer_trace)
+                    output.write_text(json.dumps(report, indent=2) + "\n")
+                    print(json.dumps({"consensus_check": record}), flush=True)
+                report["consensus_complete"] = True
+                report["semantic_pass"] = all(
+                    record["semantic_pass"] for record in report["cases"]
+                ) and all(record["passed"] for record in report["headline_checks"])
+            finally:
+                peer.close()
+        import os
         import resource
 
         report["peak_ram_bytes"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+        report["runner_resources"] = {
+            "cpu_count": os.cpu_count(),
+            "physical_ram_bytes": os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"),
+            "inference_threads": 2,
+        }
         output.write_text(json.dumps(report, indent=2) + "\n")
     finally:
-        editor.close()
+        if not primary_closed:
+            editor.close()
     return int(not report["semantic_pass"])
 
 
@@ -2307,6 +2534,7 @@ if __name__ == "__main__":
     parser.add_argument("--reviewer-diagnostics-baseline", type=Path)
     parser.add_argument("--reviewer-model-probe-baseline", type=Path)
     parser.add_argument("--headline-factual-probe", action="store_true")
+    parser.add_argument("--headline-consensus-probe", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.reviewer_model_probe_baseline:
@@ -2316,6 +2544,7 @@ if __name__ == "__main__":
                 args.output,
                 args.reviewer_preflight_transcript,
                 factual_probe=args.headline_factual_probe,
+                consensus_probe=args.headline_consensus_probe,
             )
         )
     if args.reviewer_diagnostics_baseline:

@@ -2,6 +2,17 @@ from clipper.models import CampaignBrief, TranscriptSegment
 from scripts.tjr_semantic_editor import build_semantic_editorial_candidates
 
 
+def _audit_reply(verdict, reason, unit_ids=None):
+    return {
+        "reason": reason,
+        "evidence_unit_ids": [0] if unit_ids is None else unit_ids,
+        "actor_action": verdict,
+        "relationship_role": "supported",
+        "setting_time": "supported",
+        "quantities_outcomes": "supported",
+    }
+
+
 def test_inference_diagnostics_reuses_failures_and_never_approves(tmp_path, monkeypatch):
     import json
     from importlib import metadata
@@ -288,13 +299,7 @@ def test_focused_review_separates_speech_purpose_and_excluded_payoff():
         },
         {"headline": "Huge social views earned nothing but helped the podcast"},
     ]
-    replies.append(
-        {
-            "reason": "Views were not paid; they drove the podcast.",
-            "source_quote": "I used them to drive my podcast instead",
-            "verdict": "supported",
-        }
-    )
+    replies.append(_audit_reply("supported", "Views were not paid; they drove the podcast."))
     calls = []
 
     class FakeEditor:
@@ -1338,13 +1343,7 @@ def test_opening_dependency_requires_source_evidence_without_prior_verdict():
         },
         {"headline": "Door staff stopped the performer at his own show"},
     ]
-    replies.append(
-        {
-            "reason": "The door staff stopped the performer.",
-            "source_quote": "the door staff stopped me",
-            "verdict": "supported",
-        }
-    )
+    replies.append(_audit_reply("supported", "The door staff stopped the performer."))
     payloads = []
 
     class Editor:
@@ -1361,29 +1360,25 @@ def test_opening_dependency_requires_source_evidence_without_prior_verdict():
     assert review["opening_review"]["subject_quote"] in context["selected_units"][0]
 
 
-def test_headline_audit_rejects_invented_roles_and_requires_source_quote():
+def test_headline_audit_rejects_invented_roles_and_requires_bound_source_units():
     import pytest
 
     from scripts.tjr_semantic_editor import _audit_headline
 
     units = ["A visitor waited while the owner unlocked the shop."]
-    response = {
-        "reason": "The visitor is not identified as the owner.",
-        "source_quote": "A visitor waited",
-        "verdict": "unsupported",
-    }
+    response = _audit_reply("unsupported", "The visitor is not identified as the owner.")
 
     class Editor:
         def _review_completion(self, prompt, payload, *args):
-            assert set(payload) == {"source_transcript", "headline"}
+            assert set(payload) == {"source_units", "headline"}
             return response
 
     assert (
         _audit_headline(Editor(), "The owner waited outside his shop", units)["verdict"]
         == "unsupported"
     )
-    response["source_quote"] = "The visitor owned the shop"
-    with pytest.raises(RuntimeError, match="exact source evidence"):
+    response["evidence_unit_ids"] = [99]
+    with pytest.raises(RuntimeError, match="source unit evidence"):
         _audit_headline(Editor(), "The owner waited outside his shop", units)
 
 
@@ -1398,12 +1393,7 @@ def test_headline_critic_prose_never_becomes_generation_input():
             "payoff_quote": "and let him in",
         },
         {"headline": "The owner waited outside his shop"},
-        {
-            # A correct negative verdict can still have a false explanation.
-            "reason": "The visitor broke into the shop instead",
-            "source_quote": "A visitor waited outside",
-            "verdict": "unsupported",
-        },
+        _audit_reply("unsupported", "The visitor broke into the shop instead"),
     ]
     calls = []
 
@@ -1442,11 +1432,7 @@ def test_headline_generation_requires_literal_evidence_and_preserves_conditions(
     replies = [
         evidence,
         {"headline": "Analyst reports failed trial and sponsor thanks them"},
-        {
-            "reason": "Reporting is explicit",
-            "source_quote": evidence["payoff_quote"],
-            "verdict": "supported",
-        },
+        _audit_reply("supported", "Reporting is explicit"),
     ]
     calls = []
 
@@ -1628,17 +1614,26 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
     monkeypatch.setenv("PATH", f"{executable.parent}:{os.environ['PATH']}")
     capture = tmp_path / "args.txt"
     monkeypatch.setenv("PROBE_ARGUMENT_CAPTURE", str(capture))
-    for mode in ("disabled", "focused_4b", "factual_9b"):
-        rendered = script.replace("${{ inputs.reviewer_model_probe }}", mode).replace(
-            "${{ inputs.reviewer_model_probe == 'factual_9b' }}",
-            "true" if mode == "factual_9b" else "false",
+    for mode in ("disabled", "focused_4b", "factual_9b", "factual_consensus"):
+        rendered = (
+            script.replace("${{ inputs.reviewer_model_probe }}", mode)
+            .replace(
+                "${{ inputs.reviewer_model_probe == 'factual_9b' "
+                "|| inputs.reviewer_model_probe == 'factual_consensus' }}",
+                "true" if mode in {"factual_9b", "factual_consensus"} else "false",
+            )
+            .replace(
+                "${{ inputs.reviewer_model_probe == 'factual_consensus' }}",
+                "true" if mode == "factual_consensus" else "false",
+            )
         )
         assert "${{" not in rendered
         subprocess.run(["bash", "-e", "-c", rendered], cwd=tmp_path, check=True)
         args = capture.read_text().splitlines()
         assert ("--reviewer-model-probe-baseline" in args) == (mode != "disabled")
         assert ("--reviewer-diagnostics-baseline" in args) == (mode == "disabled")
-        assert ("--headline-factual-probe" in args) == (mode == "factual_9b")
+        assert ("--headline-factual-probe" in args) == (mode in {"factual_9b", "factual_consensus"})
+        assert ("--headline-consensus-probe" in args) == (mode == "factual_consensus")
         assert "scripts.tjr_semantic_editor" in args
 
 
@@ -1726,3 +1721,25 @@ const github = {rest: {actions: {
         assert (json.loads(result.stdout)["reused"] == "true") is expected
     inputs = next(s for s in steps if s.get("name", "").startswith("Validate production inputs"))
     assert inputs["if"] == "github.event_name == 'workflow_dispatch'"
+
+
+def test_headline_consensus_vetoes_complementary_failures_and_requires_all_components():
+    import pytest
+
+    from scripts.tjr_semantic_editor import _headline_consensus
+
+    supported = {
+        key: "supported"
+        for key in ("actor_action", "relationship_role", "setting_time", "quantities_outcomes")
+    }
+    assert _headline_consensus(supported, supported)["supported"] is True
+    for component in supported:
+        rejected = {**supported, component: "unsupported"}
+        for first, second in ((supported, rejected), (rejected, supported)):
+            combined = _headline_consensus(first, second)
+            assert combined["supported"] is False and combined[component] == "unsupported"
+        assert not _headline_consensus(supported, {**supported, component: "uncertain"})[
+            "supported"
+        ]
+    with pytest.raises(RuntimeError, match="complete component evidence"):
+        _headline_consensus(supported, {"actor_action": "supported"})
