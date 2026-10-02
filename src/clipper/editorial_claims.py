@@ -1,7 +1,8 @@
 """Experimental, source-positioned headline audit; not a publication gate.
 
-The model proposes claims and judgments. Python owns coverage, evidence identity,
-and fail-closed verdict aggregation. A valid pointer proves provenance, not truth.
+The model proposes subclaims and judgments. Python retains the whole headline,
+checks copied subclaims, and owns evidence identity and verdict aggregation.
+A valid pointer proves provenance, not truth.
 """
 
 from __future__ import annotations
@@ -32,8 +33,8 @@ def audit_headline_claims(
         raise ValueError("claim audit requires a headline and nonempty source units")
     claims_result = reviewer._review_completion(
         "Split the headline into its smallest independently checkable factual claims. "
-        "Copy each claim as an exact contiguous substring of the headline and give its "
-        "zero-based start and exclusive end character offsets. Include attribution, "
+        "Copy each claim as an exact contiguous substring of the headline. "
+        "Include attribution, "
         "actual-versus-conditional outcomes, roles, quantities, and settings as claims. "
         "Classify the scope each claim asserts: actual, reported, conditional, "
         "quoted_instruction, or unknown. "
@@ -48,11 +49,9 @@ def audit_headline_claims(
                     "type": "object",
                     "properties": {
                         "text": {"type": "string"},
-                        "start": {"type": "integer"},
-                        "end": {"type": "integer"},
                         "claim_scope": {"type": "string", "enum": list(_SCOPES)},
                     },
-                    "required": ["text", "start", "end", "claim_scope"],
+                    "required": ["text", "claim_scope"],
                     "additionalProperties": False,
                 },
             }
@@ -62,30 +61,28 @@ def audit_headline_claims(
     if not isinstance(claims_result, list) or not 1 <= len(claims_result) <= 8:
         raise RuntimeError("claim extraction returned an invalid claim count")
     coverage = [False] * len(headline)
-    claims: list[str] = []
+    claims: list[dict[str, str]] = [{"text": headline, "claim_scope": "whole_headline"}]
     for item in claims_result:
-        if not isinstance(item, dict) or set(item) != {"text", "start", "end", "claim_scope"}:
+        if not isinstance(item, dict) or set(item) != {"text", "claim_scope"}:
             raise RuntimeError("claim extraction returned an invalid span")
-        start, end, value = item["start"], item["end"], item["text"]
+        value = item["text"]
         if (
-            type(start) is not int
-            or type(end) is not int
-            or not isinstance(value, str)
-            or not 0 <= start < end <= len(headline)
-            or headline[start:end] != value
+            not isinstance(value, str)
             or not _WORD.search(value)
             or item["claim_scope"] not in _SCOPES
+            or value not in headline
         ):
             raise RuntimeError("claim extraction did not copy a headline span")
-        for index in range(start, end):
+        start = headline.index(value)
+        for index in range(start, start + len(value)):
             coverage[index] = True
-        claims.append(value)
-    if any(not all(coverage[match.start() : match.end()]) for match in _WORD.finditer(headline)):
-        raise RuntimeError("claim extraction omitted headline words")
+        if value != headline:
+            claims.append(item)
 
     reviews = []
     numbered_source = [{"id": index, "text": unit} for index, unit in enumerate(source_units)]
-    for claim, extracted in zip(claims, claims_result, strict=True):
+    for extracted in claims:
+        claim = extracted["text"]
         judgment = reviewer._review_completion(
             "Assess this one headline claim against the delivered source speech. "
             "The cited source range is evidence to interpret, not proof of entailment. "
@@ -126,7 +123,11 @@ def audit_headline_claims(
             raise RuntimeError("claim judgment has invalid evidence or labels")
         if verdict == "supported" and (first == -1 or scope == "unknown"):
             raise RuntimeError("supported claim lacks cited source evidence and scope")
-        if verdict == "supported" and scope != extracted["claim_scope"]:
+        if (
+            verdict == "supported"
+            and extracted["claim_scope"] != "whole_headline"
+            and scope != extracted["claim_scope"]
+        ):
             verdict = "uncertain"
         reviews.append(
             {
@@ -144,4 +145,12 @@ def audit_headline_claims(
         if any(item["verdict"] == "unsupported" for item in reviews)
         else "uncertain"
     )
-    return {"verdict": verdict, "claims": reviews, "experimental": True}
+    covered_words = sum(
+        all(coverage[match.start() : match.end()]) for match in _WORD.finditer(headline)
+    )
+    return {
+        "verdict": verdict,
+        "claims": reviews,
+        "subclaim_word_coverage": covered_words / len(_WORD.findall(headline)),
+        "experimental": True,
+    }
