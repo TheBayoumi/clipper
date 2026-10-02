@@ -38,10 +38,11 @@ on:
   workflow_dispatch:
     inputs:
       reviewer_model_probe:
-        description: "Compare pinned replacement reviewer on saved preflight cuts; no production model change."
+        description: "Diagnostic model comparison only; factual_9b tests saved headline claims without selection or media."
         required: false
-        type: boolean
-        default: false
+        type: choice
+        options: [disabled, focused_4b, factual_9b]
+        default: disabled
       editorial_preflight:
         description: "Run real-model reviewer regression on cached transcript only; no source acquisition."
         required: false
@@ -445,7 +446,11 @@ jobs:
             if [ '${{ inputs.reviewer_model_probe }}' = 'true' ]; then
               TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
               test -n "$TRANSCRIPT"
-              python -m scripts.tjr_semantic_editor --reviewer-model-probe-baseline "$BASELINE" --reviewer-preflight-transcript "$TRANSCRIPT" --output reviewer-preflight.json
+              PROBE_ARGUMENTS=()
+              if [[ '${{ inputs.reviewer_model_probe == 'factual_9b' }}' == 'true' ]]; then
+                PROBE_ARGUMENTS+=(--headline-factual-probe)
+              fi
+              python -m scripts.tjr_semantic_editor --reviewer-model-probe-baseline "$BASELINE" --reviewer-preflight-transcript "$TRANSCRIPT" "${PROBE_ARGUMENTS[@]}" --output reviewer-preflight.json
               exit $?
             fi
             python -m scripts.tjr_semantic_editor --reviewer-diagnostics-baseline "$BASELINE" --output reviewer-preflight.json

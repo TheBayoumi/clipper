@@ -1887,7 +1887,11 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
 
 
 def reviewer_model_probe(
-    baseline_path: Path, output: Path, transcript_path: Path | None = None
+    baseline_path: Path,
+    output: Path,
+    transcript_path: Path | None = None,
+    *,
+    factual_probe: bool = False,
 ) -> int:
     """Evaluate a pinned replacement on saved cuts without changing production models."""
     from importlib.metadata import PackageNotFoundError, version
@@ -1961,6 +1965,13 @@ def reviewer_model_probe(
     revision = "4168f45a16a1290d65a4ec0fa312ae917a4c15d6"
     filename = "Qwen_Qwen3.5-4B-Q4_K_M.gguf"
     sha256 = "13c16f426047e2de38cd075bdade4a7bcbc8c774384876f677740cda65f8a983"
+    if factual_probe:
+        # Diagnostic comparison only: retain the production selector and reviewer.
+        repo = "bartowski/Qwen_Qwen3.5-9B-GGUF"
+        revision = "182be2fd6c7bc44887d88a91cb03ff009cc9f549"
+        filename = "Qwen_Qwen3.5-9B-Q4_K_S.gguf"
+        sha256 = "25bacefaea1654a359bab316793f217a646da8610ee7973a26548fb2d624c7a9"
+    context_tokens = 2048 if factual_probe else 4096
     cache = Path.home() / ".cache" / "clipper" / "editor"
     cache.mkdir(parents=True, exist_ok=True)
     path = cache / filename
@@ -1986,10 +1997,10 @@ def reviewer_model_probe(
     editor = LocalContextualEditor.__new__(LocalContextualEditor)
     editor.model = Llama(
         model_path=str(path),
-        n_ctx=4096,
+        n_ctx=context_tokens,
         n_threads=2,
         n_threads_batch=2,
-        n_batch=256,
+        n_batch=128 if factual_probe else 256,
         seed=0,
         verbose=False,
     )
@@ -2000,7 +2011,8 @@ def reviewer_model_probe(
         "llama_cpp_python_version": runtime,
         "model_revision": revision,
         "model_sha256": sha256,
-        "context_tokens": 4096,
+        "context_tokens": context_tokens,
+        "probe_scope": "headline_facts_only" if factual_probe else "focused_exchange",
         "temperature": 0,
         "seed": 0,
         "baseline": baseline,
@@ -2070,45 +2082,52 @@ def reviewer_model_probe(
             return response
 
         editor.model.create_chat_completion = recorded_completion
-        for item in baseline:
+        assessed_baseline = (
+            [item for item in baseline if item["expected_accept"]] if factual_probe else baseline
+        )
+        for item in assessed_baseline:
             began = time.monotonic()
             raw_calls.clear()
             record = {"fixture": item["fixture"], "review_context": item["review_context"]}
             try:
-                review = _focused_span_review(editor, item["review_context"])
-                accepted = (
-                    all(
-                        review[key]
-                        for key in (
-                            "opening_standalone",
-                            "payoff_complete",
-                            "ending_complete",
-                            "headline_supported",
-                            "headline_self_contained",
-                        )
+                if factual_probe:
+                    review = _source_grounded_headline(
+                        editor, item["review_context"]["selected_units"]
                     )
-                    and not review["contains_promotion_or_intro"]
-                )
-                flags_match = all(
-                    review[key] is value for key, value in item["expected_flags"].items()
-                )
+                    accepted = review["headline_supported"] and review["headline_self_contained"]
+                    flags_match = True
+                    evidence_valid = len(review["headline_source_spans"]) == 3
+                else:
+                    review = _focused_span_review(editor, item["review_context"])
+                    accepted = (
+                        all(
+                            review[key]
+                            for key in (
+                                "opening_standalone",
+                                "payoff_complete",
+                                "ending_complete",
+                                "headline_supported",
+                                "headline_self_contained",
+                            )
+                        )
+                        and not review["contains_promotion_or_intro"]
+                    )
+                    flags_match = all(
+                        review[key] is value for key, value in item["expected_flags"].items()
+                    )
+                    evidence_valid = _review_evidence_valid(
+                        review, item["review_context"]["selected_units"]
+                    )
                 record.update(
                     review=review,
                     actual_accept=accepted,
                     expected_accept=item["expected_accept"],
                     flags_match=flags_match,
-                    evidence_valid=_review_evidence_valid(
-                        review, item["review_context"]["selected_units"]
-                    ),
+                    evidence_valid=evidence_valid,
                     semantic_pass=(
                         accepted == item["expected_accept"]
                         and flags_match
-                        and (
-                            not accepted
-                            or _review_evidence_valid(
-                                review, item["review_context"]["selected_units"]
-                            )
-                        )
+                        and (not accepted or evidence_valid)
                     ),
                 )
             except Exception as error:
@@ -2116,7 +2135,7 @@ def reviewer_model_probe(
             record["seconds"] = round(time.monotonic() - began, 3)
             record["raw_calls"] = list(raw_calls)
             report["cases"].append(record)
-            report["semantic_pass"] = len(report["cases"]) == len(baseline) and all(
+            report["semantic_pass"] = len(report["cases"]) == len(assessed_baseline) and all(
                 case["semantic_pass"] for case in report["cases"]
             )
             output.write_text(json.dumps(report, indent=2) + "\n")
@@ -2130,6 +2149,7 @@ def reviewer_model_probe(
                 ("Opponent is a crazy nut like me during first fight.", False),
                 ("Bobby Green paced during the fighter meeting", True),
                 ("Sean Shelby paced during the fighter meeting", False),
+                ("Bobby Green paces back and forth while on live TV.", False),
             ):
                 raw_calls.clear()
                 check = {"headline": headline, "expected_supported": supported}
@@ -2146,6 +2166,32 @@ def reviewer_model_probe(
             report["semantic_pass"] = report["semantic_pass"] and all(
                 check["passed"] for check in report["headline_checks"]
             )
+        business_fixture = next(
+            (item for item in baseline if item["fixture"] == "complete_business_exchange"), None
+        )
+        if business_fixture is not None:
+            for headline, supported in (
+                ("60 million Instagram views earned millions of dollars", False),
+                ("60 million Instagram views drive podcast, not income.", True),
+            ):
+                raw_calls.clear()
+                check = {"headline": headline, "expected_supported": supported}
+                try:
+                    audit = _audit_headline(
+                        editor, headline, business_fixture["review_context"]["selected_units"]
+                    )
+                    check.update(audit=audit, passed=(audit["verdict"] == "supported") == supported)
+                except Exception as error:
+                    check.update(passed=False, error=f"{type(error).__name__}: {error}")
+                check["raw_calls"] = list(raw_calls)
+                report["headline_checks"].append(check)
+                print(json.dumps({"headline_check": check}), flush=True)
+            report["semantic_pass"] = report["semantic_pass"] and all(
+                check["passed"] for check in report["headline_checks"]
+            )
+        import resource
+
+        report["peak_ram_bytes"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
         output.write_text(json.dumps(report, indent=2) + "\n")
     finally:
         editor.close()
@@ -2254,12 +2300,16 @@ if __name__ == "__main__":
     parser.add_argument("--reviewer-preflight-transcript", type=Path)
     parser.add_argument("--reviewer-diagnostics-baseline", type=Path)
     parser.add_argument("--reviewer-model-probe-baseline", type=Path)
+    parser.add_argument("--headline-factual-probe", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.reviewer_model_probe_baseline:
         raise SystemExit(
             reviewer_model_probe(
-                args.reviewer_model_probe_baseline, args.output, args.reviewer_preflight_transcript
+                args.reviewer_model_probe_baseline,
+                args.output,
+                args.reviewer_preflight_transcript,
+                factual_probe=args.headline_factual_probe,
             )
         )
     if args.reviewer_diagnostics_baseline:

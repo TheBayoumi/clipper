@@ -1499,3 +1499,104 @@ def test_review_parser_enforces_declared_fields_without_inventing_reason_require
     value.clear()
     with pytest.raises(RuntimeError, match="declared schema"):
         editor._review_completion("Extract", {}, quote_schema, 32)
+
+
+def test_factual_probe_uses_separate_model_with_bounded_memory_and_no_exchange_rerun(
+    tmp_path, monkeypatch
+):
+    import json
+    import sys
+    from types import SimpleNamespace
+
+    from scripts import tjr_semantic_editor as editor
+
+    monkeypatch.setattr(editor.Path, "home", lambda: tmp_path)
+    path = tmp_path / ".cache/clipper/editor/Qwen_Qwen3.5-9B-Q4_K_S.gguf"
+    path.parent.mkdir(parents=True)
+    path.touch()
+    monkeypatch.setattr(
+        editor.hashlib,
+        "file_digest",
+        lambda *args: SimpleNamespace(
+            hexdigest=lambda: "25bacefaea1654a359bab316793f217a646da8610ee7973a26548fb2d624c7a9"
+        ),
+    )
+    loads = []
+
+    class Model:
+        def __init__(self, **kwargs):
+            loads.append(kwargs)
+            self.metadata = {"tokenizer.chat_template": "template"}
+
+        def token_eos(self):
+            return 1
+
+        def token_bos(self):
+            return 2
+
+        def detokenize(self, *args, **kwargs):
+            return b"token"
+
+        def create_chat_completion(self, **kwargs):
+            raise AssertionError("only the stubbed factual generation may run")
+
+        def close(self):
+            pass
+
+    class Formatter:
+        def __init__(self, **kwargs):
+            self.template = kwargs["template"]
+
+        def __call__(self, **kwargs):
+            return SimpleNamespace(prompt="assistant\n<think>\n\n</think>\n\n")
+
+        def to_chat_handler(self):
+            return "hard-non-thinking"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp",
+        SimpleNamespace(
+            Llama=Model, llama_chat_format=SimpleNamespace(Jinja2ChatFormatter=Formatter)
+        ),
+    )
+    monkeypatch.setattr(
+        editor,
+        "_focused_span_review",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("factual comparison must not repeat exchange assessment")
+        ),
+    )
+    generated = []
+
+    def generate(model, units):
+        generated.append(units)
+        return {
+            "headline": "A visitor waited outside the shop",
+            "headline_supported": True,
+            "headline_self_contained": True,
+            "headline_source_spans": {"central_quote": {}, "context_quote": {}, "payoff_quote": {}},
+        }
+
+    monkeypatch.setattr(editor, "_source_grounded_headline", generate)
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps(
+            [
+                {
+                    "fixture": str(i),
+                    "expected_accept": i == 0,
+                    "review_context": {"selected_units": ["A visitor waited outside the shop."]},
+                }
+                for i in range(3)
+            ]
+        )
+    )
+    output = tmp_path / "comparison.json"
+    assert editor.reviewer_model_probe(baseline, output, factual_probe=True) == 0
+    report = json.loads(output.read_text())
+    assert report["production_approved"] is False
+    assert report["probe_scope"] == "headline_facts_only"
+    assert report["model_repo"] == "bartowski/Qwen_Qwen3.5-9B-GGUF"
+    assert loads[0]["n_ctx"] == 2048 and loads[0]["n_batch"] == 128
+    assert len(loads) == len(generated) == len(report["cases"]) == 1
