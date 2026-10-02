@@ -1640,3 +1640,89 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert ("--reviewer-diagnostics-baseline" in args) == (mode == "disabled")
         assert ("--headline-factual-probe" in args) == (mode == "factual_9b")
         assert "scripts.tjr_semantic_editor" in args
+
+
+def test_workflow_validation_reuse_requires_complete_recent_exact_head_proof():
+    import copy
+    import datetime
+    import json
+    import subprocess
+    from pathlib import Path
+
+    import yaml
+
+    workflow = yaml.safe_load(Path(".github/workflows/tjr-weekly-hd.yml").read_text())
+    steps = workflow["jobs"]["tests"]["steps"]
+    script = next(step["with"]["script"] for step in steps if step.get("id") == "validation_cache")
+    required_names = [
+        'Run python -m pip install -e ".[dev]"',
+        "Run ruff check .",
+        "Run ruff format --check .",
+        "Run mypy",
+        "Install FFmpeg for media regression tests and HD canary",
+        "Run pytest",
+        "Validate campaign rules",
+        "Verify pinned PO-token provider readiness without downloading video",
+        "Render and inspect a synthetic HD FFmpeg canary",
+    ]
+    run = dict(
+        id=42,
+        head_sha="a" * 40,
+        status="completed",
+        conclusion="success",
+        event="push",
+        path=".github/workflows/tjr-weekly-hd.yml",
+        html_url="https://github.com/example/run/42",
+        created_at=datetime.datetime.now(datetime.UTC).isoformat(),
+    )
+    job = dict(
+        name="Validate source, policy and code",
+        status="completed",
+        conclusion="success",
+        labels=["ubuntu-24.04"],
+        steps=[
+            dict(name=name, status="completed", conclusion="success") for name in required_names
+        ],
+    )
+    scenarios = [(run, job, False, True)]
+    for changes in (
+        {"head_sha": "b" * 40},
+        {"conclusion": "failure"},
+        {"event": "workflow_dispatch"},
+        {"created_at": "2020-01-01T00:00:00Z"},
+        {"path": ".github/workflows/other.yml"},
+    ):
+        scenarios.append(({**run, **changes}, job, False, False))
+    for changes in (
+        {"status": "in_progress"},
+        {"labels": ["ubuntu-latest"]},
+        {"conclusion": "cancelled"},
+        {"steps": job["steps"][:-1]},
+    ):
+        scenarios.append((run, {**job, **changes}, False, False))
+    failed = copy.deepcopy(job)
+    next(s for s in failed["steps"] if s["name"] == "Run pytest")["conclusion"] = "failure"
+    scenarios.extend([(run, failed, False, False), (run, job, True, False)])
+    harness = """
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const outputs = {};
+const core = {setOutput: (k,v) => outputs[k]=v, info: () => {}, warning: () => {}};
+const context = {repo: {owner: 'owner', repo: 'repo'}, sha: 'a'.repeat(40)};
+const github = {rest: {actions: {
+ listWorkflowRuns: async () => {if(input.error)throw Error('API unavailable');
+   return {data: {workflow_runs: [input.run]}};},
+ listJobsForWorkflowRun: async () => ({data: {jobs: [input.job]}}),
+}}};
+(async () => { SCRIPT })().then(() => process.stdout.write(JSON.stringify(outputs)));
+""".replace("SCRIPT", script)
+    for candidate, validation, error, expected in scenarios:
+        result = subprocess.run(
+            ["node", "-e", harness],
+            input=json.dumps(dict(run=candidate, job=validation, error=error)),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        assert (json.loads(result.stdout)["reused"] == "true") is expected
+    inputs = next(s for s in steps if s.get("name", "").startswith("Validate production inputs"))
+    assert inputs["if"] == "github.event_name == 'workflow_dispatch'"

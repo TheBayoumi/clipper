@@ -102,6 +102,9 @@ jobs:
     name: Validate source, policy and code
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v5
         with:
@@ -168,21 +171,76 @@ jobs:
                   raise SystemExit('Verified mirror requires an exact video ID and source approval')
               print(f'Production inputs valid: {mode}, target channel {target_channel_id or "n/a"}')
           PY
-      - run: python -m pip install -e ".[dev]"
-      - run: ruff check .
-      - run: ruff format --check .
+      - name: Reuse recent exact-head validation
+        id: validation_cache
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.setOutput('reused', 'false');
+            const requiredSteps = [
+              'Run python -m pip install -e ".[dev]"',
+              'Run ruff check .', 'Run ruff format --check .', 'Run mypy',
+              'Install FFmpeg for media regression tests and HD canary',
+              'Run pytest', 'Validate campaign rules',
+              'Verify pinned PO-token provider readiness without downloading video',
+              'Render and inspect a synthetic HD FFmpeg canary',
+            ];
+            try {
+              const {data} = await github.rest.actions.listWorkflowRuns({
+                ...context.repo, workflow_id: 'tjr-weekly-hd.yml',
+                head_sha: context.sha, status: 'completed', per_page: 30,
+              });
+              const candidates = data.workflow_runs.filter(run =>
+                run.head_sha === context.sha && run.status === 'completed' &&
+                run.conclusion === 'success' && ['push', 'pull_request'].includes(run.event) &&
+                run.path === '.github/workflows/tjr-weekly-hd.yml' &&
+                Date.now() - Date.parse(run.created_at) >= 0 &&
+                Date.now() - Date.parse(run.created_at) < 24 * 60 * 60 * 1000
+              );
+              for (const run of candidates) {
+                const {data: result} = await github.rest.actions.listJobsForWorkflowRun({
+                  ...context.repo, run_id: run.id, per_page: 100,
+                });
+                const proof = result.jobs.find(job =>
+                  job.name === 'Validate source, policy and code' &&
+                  job.status === 'completed' && job.conclusion === 'success' &&
+                  job.labels.includes('ubuntu-24.04') &&
+                  requiredSteps.every(name => job.steps.some(step =>
+                    step.name === name && step.status === 'completed' && step.conclusion === 'success'
+                  ))
+                );
+                if (!proof) continue;
+                core.setOutput('reused', 'true');
+                core.setOutput('run_id', String(run.id));
+                core.info(`CODE_VALIDATION_CACHE_HIT sha=${context.sha} run=${run.html_url}`);
+                break;
+              }
+            } catch (error) {
+              core.warning('Validation proof unavailable; performing the required checks locally.');
+            }
+      - if: steps.validation_cache.outputs.reused != 'true'
+        run: python -m pip install -e ".[dev]"
+      - if: steps.validation_cache.outputs.reused != 'true'
+        run: ruff check .
+      - if: steps.validation_cache.outputs.reused != 'true'
+        run: ruff format --check .
       - name: Show precise formatting diff on failure
         if: failure()
         run: ruff format --diff .
-      - run: mypy
+      - if: steps.validation_cache.outputs.reused != 'true'
+        run: mypy
       - name: Install FFmpeg for media regression tests and HD canary
+        if: steps.validation_cache.outputs.reused != 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
           ffmpeg -version | head -n 1
           ffprobe -version | head -n 1
-      - run: pytest
+      - if: steps.validation_cache.outputs.reused != 'true'
+        run: pytest
       - name: Validate campaign rules
+        if: steps.validation_cache.outputs.reused != 'true'
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -197,6 +255,7 @@ jobs:
           print("Reach YouTube source policy: PASS")
           PY
       - name: Verify pinned PO-token provider readiness without downloading video
+        if: steps.validation_cache.outputs.reused != 'true'
         run: |
           set -euo pipefail
           docker run --name bgutil-canary -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider:2.0.0
@@ -210,6 +269,7 @@ jobs:
             exit 1
           fi
       - name: Render and inspect a synthetic HD FFmpeg canary
+        if: steps.validation_cache.outputs.reused != 'true'
         run: |
           set -euo pipefail
           mkdir -p /tmp/tjr-ffmpeg-canary
