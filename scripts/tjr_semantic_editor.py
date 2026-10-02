@@ -2001,6 +2001,201 @@ def _load_probe_peer(runtime: str | None) -> tuple[LocalContextualEditor, dict[s
         raise
 
 
+def _ablation_fixtures(saved: dict[str, Any]) -> list[dict[str, Any]]:
+    """Observed factual errors are diagnostic gold labels, never selection rules."""
+    observed_errors = {
+        (
+            "Speaker says 60 million Instagram views earn nothing while podcast drives revenue."
+        ): "quantities_outcomes",
+        "Bobby Green paces back and forth during live TV fighter meeting.": "setting_time",
+    }
+    if saved.get("experiment") == "source_presentation_x_verdict_schema":
+        fixtures = saved.get("annotated_fixtures", [])
+        if len(fixtures) != 8 or sum(f["expected_supported"] for f in fixtures) != 2:
+            raise ValueError("ablation checkpoint has invalid diagnostic fixtures")
+        return fixtures
+    fixtures = []
+    for collection in ("cases", "headline_checks"):
+        for row in saved.get(collection, []):
+            calls = row.get("peer_raw_calls", [])
+            if len(calls) != 1:
+                raise ValueError("ablation requires completed one-call peer audits")
+            request = calls[0]["request"]
+            payload = json.loads(request["messages"][1]["content"])
+            headline = payload["headline"]
+            if collection == "cases":
+                if headline not in observed_errors:
+                    raise ValueError("unannotated generated headline in ablation baseline")
+                expected, component = False, observed_errors[headline]
+            else:
+                expected = row["expected_supported"]
+                component = row.get("expected_unsupported_component")
+            fixtures.append(
+                dict(
+                    headline=headline,
+                    expected_supported=expected,
+                    expected_unsupported_component=component,
+                    request=request,
+                )
+            )
+    if len(fixtures) != 8 or sum(f["expected_supported"] for f in fixtures) != 2:
+        raise ValueError("ablation requires the annotated eight-claim baseline")
+    return fixtures
+
+
+def _ablation_result(
+    result: dict[str, Any],
+    fixture: dict[str, Any],
+    single_verdict: bool,
+) -> dict[str, Any]:
+    """Proof errors and rejection for the wrong claim never count as success."""
+    units = json.loads(fixture["request"]["messages"][1]["content"])["source_units"]
+    ids = result.get("evidence_unit_ids")
+    if (
+        not isinstance(ids, list)
+        or not 1 <= len(ids) <= 3
+        or any(type(i) is not int or not 0 <= i < len(units) for i in ids)
+        or len(set(ids)) != len(ids)
+    ):
+        raise RuntimeError("ablation returned invalid source references")
+    states = {"supported", "unsupported", "uncertain"}
+    if single_verdict:
+        verdict = result.get("verdict")
+        component = result.get("unsupported_component")
+        if (
+            verdict not in states
+            or component not in (*_HEADLINE_COMPONENTS, "none")
+            or (verdict == "supported") != (component == "none")
+        ):
+            raise RuntimeError("ablation returned inconsistent single verdict")
+        correct_component = component == fixture["expected_unsupported_component"]
+    else:
+        if any(result.get(key) not in states for key in _HEADLINE_COMPONENTS):
+            raise RuntimeError("ablation returned invalid component verdicts")
+        verdict = (
+            "unsupported"
+            if any(result[key] == "unsupported" for key in _HEADLINE_COMPONENTS)
+            else "uncertain"
+            if any(result[key] == "uncertain" for key in _HEADLINE_COMPONENTS)
+            else "supported"
+        )
+        component = fixture["expected_unsupported_component"]
+        correct_component = component is None or result[component] != "supported"
+    accepted = verdict == "supported"
+    passed = accepted == fixture["expected_supported"] and (accepted or correct_component)
+    return dict(
+        verdict=verdict, passed=passed, raw_verdict=result, source_evidence=[units[i] for i in ids]
+    )
+
+
+def reviewer_model_ablation(baseline_path: Path, output: Path) -> int:
+    """Controlled input/schema experiment; no selection, generation or media work."""
+    from importlib.metadata import version
+
+    saved = json.loads(baseline_path.read_text())
+    fixtures = _ablation_fixtures(saved)
+    editor, profile = _load_probe_peer(version("llama-cpp-python"))
+    report: dict[str, Any] = dict(
+        diagnostic_only=True,
+        production_approved=False,
+        experiment="source_presentation_x_verdict_schema",
+        model_profile=profile,
+        semantic_pass=False,
+        experiment_complete=False,
+        comparisons=[],
+        cache_hits=0,
+        baseline_sha256=hashlib.sha256(baseline_path.read_bytes()).hexdigest(),
+        annotated_fixtures=fixtures,
+    )
+    cache = {}
+    saved_profile = saved.get("model_profile", saved.get("peer_verifier", {}))
+    if all(saved_profile.get(k) == v for k, v in profile.items()):
+        for collection in ("cases", "headline_checks", "comparisons"):
+            for row in saved.get(collection, []):
+                if row.get("error") or row.get("peer_error"):
+                    continue
+                for call in row.get("peer_raw_calls", row.get("raw_calls", [])):
+                    if call["response"]["choices"][0]["finish_reason"] == "stop":
+                        cache[json.dumps(call["request"], sort_keys=True)] = call["response"]
+    previous = editor.model.create_chat_completion
+    traces: list[dict[str, Any]] = []
+
+    def completion(**request: Any) -> dict[str, Any]:
+        key = json.dumps(request, sort_keys=True)
+        hit = key in cache
+        response = cache[key] if hit else previous(**request)
+        report["cache_hits"] += int(hit)
+        traces.append(dict(request=request, response=response, cache_hit=hit))
+        if response["choices"][0]["finish_reason"] == "stop":
+            cache[key] = response
+        return response
+
+    editor.model.create_chat_completion = completion
+    try:
+        for paragraph, single in ((False, False), (False, True), (True, False), (True, True)):
+            variant = ("paragraph" if paragraph else "chunks") + (
+                "_single" if single else "_components"
+            )
+            for fixture in fixtures:
+                request = fixture["request"]
+                payload = json.loads(request["messages"][1]["content"])
+                payload.pop("output_schema")
+                properties = dict(request["response_format"]["schema"]["properties"])
+                if paragraph:
+                    # Add continuous speech without adding punctuation, labels or inferred actors.
+                    payload["continuous_source_text"] = " ".join(
+                        u["text"] for u in payload["source_units"]
+                    )
+                    payload["unit_boundaries_are_not_sentence_boundaries"] = True
+                if single:
+                    for key in _HEADLINE_COMPONENTS:
+                        properties.pop(key)
+                    properties["verdict"] = {
+                        "type": "string",
+                        "enum": ["supported", "unsupported", "uncertain"],
+                    }
+                    properties["unsupported_component"] = {
+                        "type": "string",
+                        "enum": [*_HEADLINE_COMPONENTS, "none"],
+                    }
+                began, offset = time.monotonic(), len(traces)
+                record = dict(
+                    variant=variant,
+                    headline=fixture["headline"],
+                    expected_supported=fixture["expected_supported"],
+                    expected_unsupported_component=fixture["expected_unsupported_component"],
+                )
+                try:
+                    result = editor._review_completion(
+                        request["messages"][0]["content"],
+                        payload,
+                        properties,
+                        request["max_tokens"],
+                    )
+                    record.update(_ablation_result(result, fixture, single))
+                except Exception as error:
+                    record.update(error=f"{type(error).__name__}: {error}", passed=False)
+                record.update(seconds=round(time.monotonic() - began, 3), raw_calls=traces[offset:])
+                report["comparisons"].append(record)
+                output.write_text(json.dumps(report, indent=2) + "\n")
+                print(
+                    json.dumps({"ablation": {k: v for k, v in record.items() if k != "raw_calls"}}),
+                    flush=True,
+                )
+        variants = sorted({r["variant"] for r in report["comparisons"]})
+        report["qualified_variants"] = [
+            v
+            for v in variants
+            if all(r["passed"] for r in report["comparisons"] if r["variant"] == v)
+        ]
+        report["experiment_complete"] = True
+        report["semantic_pass"] = bool(report["qualified_variants"])
+        output.write_text(json.dumps(report, indent=2) + "\n")
+        return 0 if report["semantic_pass"] else 1
+    finally:
+        editor.close()
+
+
 def reviewer_model_probe(
     baseline_path: Path,
     output: Path,
@@ -2535,8 +2730,13 @@ if __name__ == "__main__":
     parser.add_argument("--reviewer-model-probe-baseline", type=Path)
     parser.add_argument("--headline-factual-probe", action="store_true")
     parser.add_argument("--headline-consensus-probe", action="store_true")
+    parser.add_argument("--headline-ablation-probe", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.headline_ablation_probe:
+        if not args.reviewer_model_probe_baseline:
+            parser.error("ablation requires a completed consensus baseline")
+        raise SystemExit(reviewer_model_ablation(args.reviewer_model_probe_baseline, args.output))
     if args.reviewer_model_probe_baseline:
         raise SystemExit(
             reviewer_model_probe(

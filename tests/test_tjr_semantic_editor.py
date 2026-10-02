@@ -1614,7 +1614,13 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
     monkeypatch.setenv("PATH", f"{executable.parent}:{os.environ['PATH']}")
     capture = tmp_path / "args.txt"
     monkeypatch.setenv("PROBE_ARGUMENT_CAPTURE", str(capture))
-    for mode in ("disabled", "focused_4b", "factual_9b", "factual_consensus"):
+    for mode in (
+        "disabled",
+        "focused_4b",
+        "factual_9b",
+        "factual_consensus",
+        "factual_ablation_4b",
+    ):
         rendered = (
             script.replace("${{ inputs.reviewer_model_probe }}", mode)
             .replace(
@@ -1627,6 +1633,10 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
                 "true" if mode == "factual_consensus" else "false",
             )
         )
+        rendered = rendered.replace(
+            "${{ inputs.reviewer_model_probe == 'factual_ablation_4b' }}",
+            "true" if mode == "factual_ablation_4b" else "false",
+        )
         assert "${{" not in rendered
         subprocess.run(["bash", "-e", "-c", rendered], cwd=tmp_path, check=True)
         args = capture.read_text().splitlines()
@@ -1634,6 +1644,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert ("--reviewer-diagnostics-baseline" in args) == (mode == "disabled")
         assert ("--headline-factual-probe" in args) == (mode in {"factual_9b", "factual_consensus"})
         assert ("--headline-consensus-probe" in args) == (mode == "factual_consensus")
+        assert ("--headline-ablation-probe" in args) == (mode == "factual_ablation_4b")
         assert "scripts.tjr_semantic_editor" in args
 
 
@@ -1743,3 +1754,142 @@ def test_headline_consensus_vetoes_complementary_failures_and_requires_all_compo
         ]
     with pytest.raises(RuntimeError, match="complete component evidence"):
         _headline_consensus(supported, {"actor_action": "supported"})
+
+
+def test_ablation_does_not_count_wrong_reason_or_invalid_citation_as_success():
+    import json
+
+    import pytest
+
+    from scripts import tjr_semantic_editor as editor
+
+    fixture = dict(
+        expected_supported=False,
+        expected_unsupported_component="setting_time",
+        request={
+            "messages": [
+                {},
+                {
+                    "content": json.dumps(
+                        {"source_units": [{"id": 0, "text": "A quoted instruction."}]}
+                    )
+                },
+            ]
+        },
+    )
+    result = dict(
+        evidence_unit_ids=[0], verdict="unsupported", unsupported_component="actor_action"
+    )
+    assert not editor._ablation_result(result, fixture, True)["passed"]
+    result["unsupported_component"] = "setting_time"
+    assert editor._ablation_result(result, fixture, True)["passed"]
+    result["evidence_unit_ids"] = [True]
+    with pytest.raises(RuntimeError, match="source references"):
+        editor._ablation_result(result, fixture, True)
+    result["evidence_unit_ids"] = [0]
+    result["verdict"] = "supported"
+    with pytest.raises(RuntimeError, match="inconsistent"):
+        editor._ablation_result(result, fixture, True)
+
+
+def test_ablation_reuses_every_unchanged_request_and_invalidates_other_model(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from scripts import tjr_semantic_editor as editor
+
+    units = [{"id": 0, "text": "A speaker reports a quoted instruction."}]
+    fixtures = []
+    for i in range(8):
+        fixtures.append(
+            dict(
+                headline=f"Test claim {i}",
+                expected_supported=i < 2,
+                expected_unsupported_component=None if i < 2 else "setting_time",
+                request=dict(
+                    messages=[
+                        {"role": "system", "content": "Audit literal source."},
+                        {
+                            "role": "user",
+                            "content": json.dumps(
+                                dict(
+                                    source_units=units, headline=f"Test claim {i}", output_schema={}
+                                )
+                            ),
+                        },
+                    ],
+                    max_tokens=144,
+                    response_format={
+                        "schema": {
+                            "properties": {
+                                "evidence_unit_ids": {
+                                    "type": "array",
+                                    "items": {"type": "integer", "enum": [0]},
+                                },
+                                "reason": {"type": "string"},
+                                **{
+                                    k: {
+                                        "type": "string",
+                                        "enum": ["supported", "unsupported", "uncertain"],
+                                    }
+                                    for k in editor._HEADLINE_COMPONENTS
+                                },
+                            }
+                        }
+                    },
+                ),
+            )
+        )
+    source = tmp_path / "baseline.json"
+    source.write_text(
+        json.dumps(
+            dict(experiment="source_presentation_x_verdict_schema", annotated_fixtures=fixtures)
+        )
+    )
+    profile = {"model_sha256": "first-model", "context_tokens": 4096}
+    calls = []
+
+    def completion(**request):
+        calls.append(request)
+        payload = json.loads(request["messages"][1]["content"])
+        expected = int(payload["headline"].rsplit(" ", 1)[-1]) < 2
+        result = dict(evidence_unit_ids=[0], reason="Literal source check.")
+        if "verdict" in request["response_format"]["schema"]["properties"]:
+            result.update(
+                verdict="supported" if expected else "unsupported",
+                unsupported_component="none" if expected else "setting_time",
+            )
+        else:
+            result.update(
+                {
+                    k: "unsupported" if not expected and k == "setting_time" else "supported"
+                    for k in editor._HEADLINE_COMPONENTS
+                }
+            )
+        return {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(result)}}]}
+
+    def load(runtime):
+        instance = editor.LocalContextualEditor.__new__(editor.LocalContextualEditor)
+        instance.model = SimpleNamespace(create_chat_completion=completion, close=lambda: None)
+        return instance, dict(profile)
+
+    monkeypatch.setattr(editor, "_load_probe_peer", load)
+    monkeypatch.setattr("importlib.metadata.version", lambda _: "test-runtime")
+    first, second, third = [tmp_path / f"{i}.json" for i in range(3)]
+    assert editor.reviewer_model_ablation(source, first) == 0
+    assert len(calls) == 32
+    report = json.loads(first.read_text())
+    assert report["production_approved"] is False
+    assert report["experiment_complete"] is True
+    assert len(report["qualified_variants"]) == 4
+    for call in calls:
+        payload = json.loads(call["messages"][1]["content"])
+        assert payload["source_units"] == units
+        if "continuous_source_text" in payload:
+            assert payload["continuous_source_text"] == units[0]["text"]
+    assert editor.reviewer_model_ablation(first, second) == 0
+    assert len(calls) == 32
+    assert json.loads(second.read_text())["cache_hits"] == 32
+    profile["model_sha256"] = "changed-model"
+    assert editor.reviewer_model_ablation(second, third) == 0
+    assert len(calls) == 64
