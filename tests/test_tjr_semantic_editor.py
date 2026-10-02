@@ -1260,3 +1260,85 @@ def test_bounded_evidence_preserves_full_source_and_shared_contract():
     assert not _review_evidence_valid(
         {**review, "payoff_quote": "making billions of dollars"}, [source]
     )
+
+
+def test_intro_rejection_does_not_run_boundary_or_headline_inference():
+    from scripts.tjr_semantic_editor import _focused_span_review
+
+    context = {
+        "selected_units": ["This show is presented by the sponsor.", "I was telling him."],
+        "before": [],
+        "after": ["Here is what I said."],
+    }
+    replies = [
+        {
+            "reason": "Actual show introduction",
+            "ad_read_quote": "presented by the sponsor",
+            "show_intro_quote": "",
+        },
+        {
+            "reason": "Unfinished quoted speech",
+            "setup_quote": "I was telling him",
+            "resolution_quote": "",
+            "opening_independent": 0,
+            "last_thought_finished": 0,
+        },
+    ]
+
+    class Editor:
+        def _review_completion(self, *args):
+            assert replies, "Rejected intro must not trigger extra model calls"
+            return replies.pop(0)
+
+    review = _focused_span_review(Editor(), context)
+    assert review["contains_promotion_or_intro"] is True
+    assert review["ending_complete"] is False
+    assert review["continuation_review"] is None
+    assert review["headline"] == ""
+    assert not replies
+
+
+def test_opening_dependency_requires_source_evidence_without_prior_verdict():
+    from scripts.tjr_semantic_editor import _focused_span_review
+
+    context = {
+        "selected_units": [
+            "At my first performance the door staff stopped me.",
+            "The owner came out and let me inside.",
+        ],
+        "before": [],
+        "after": [],
+    }
+    replies = [
+        {"reason": "Conversation", "ad_read_quote": "", "show_intro_quote": ""},
+        {
+            "reason": "A complete incident",
+            "setup_quote": "the door staff stopped me",
+            "resolution_quote": "let me inside",
+            "opening_independent": 0,
+            "last_thought_finished": 1,
+        },
+        {
+            "subject_quote": "At my first performance",
+            "missing_context_quote": "",
+            "reason": "The speaker states the event and situation.",
+            "opening_standalone": 1,
+        },
+        {
+            "headline": "Door staff stopped the performer at his own show",
+            "reason": "The event resolves",
+            "headline_supported": 1,
+            "headline_self_contained": 1,
+        },
+    ]
+    payloads = []
+
+    class Editor:
+        def _review_completion(self, prompt, payload, *args):
+            payloads.append(payload)
+            return replies.pop(0)
+
+    review = _focused_span_review(Editor(), context)
+    assert review["opening_standalone"] is True
+    assert set(payloads[2]) == {"delivered_transcript", "opening_text"}
+    assert review["opening_review"]["subject_quote"] in context["selected_units"][0]

@@ -1664,7 +1664,7 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
         quote_ids[key] = span["first_unit"] if span else -1
     ending = story["last_thought_finished"] == 1
     continuation = None
-    if context.get("after"):
+    if ending and not promotion_ids and context.get("after"):
         # Judge the boundary from source speech, without the previous model's
         # proposed setup/resolution or completion verdict anchoring this decision.
         continuation = editor._review_completion(
@@ -1728,17 +1728,54 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
     payoff = quote_spans["resolution_quote"] is not None and ending
     setup_span = quote_spans["setup_quote"]
     payoff_span = quote_spans["resolution_quote"]
+    opening = story["opening_independent"] == 1
+    opening_review = None
+    if not opening and not promotion_ids and payoff and setup_span is not None:
+        opening_review = editor._review_completion(
+            "Check whether a new viewer can understand the opening of delivered_transcript. "
+            "Extract its explicit subject or situation using 3-12 exact words from "
+            "opening_text into subject_quote. First-person memories are self-contained "
+            "when the speaker states the event or situation; knowing their personal name "
+            "or an earlier interview question is not required. Informal phrasing, fillers "
+            "and ASR spelling are not missing context. Only reject if understanding the "
+            "opening actually requires absent information. If so copy the unresolved "
+            "reference from opening_text into missing_context_quote and identify the "
+            "specific absent information in reason. Otherwise leave missing_context_quote "
+            "empty. opening_standalone is 0 or 1. Return output_schema JSON.",
+            {"delivered_transcript": text, "opening_text": " ".join(selected[:2])},
+            {
+                "subject_quote": {"type": "string"},
+                "missing_context_quote": {"type": "string"},
+                "reason": {"type": "string"},
+                "opening_standalone": {"type": "integer", "enum": [0, 1]},
+            },
+            128,
+        )
+        verdict = opening_review.get("opening_standalone")
+        if type(verdict) is not int or verdict not in (0, 1):
+            raise RuntimeError("opening review returned an invalid verdict")
+        key = "subject_quote" if verdict else "missing_context_quote"
+        if (
+            not isinstance(opening_review.get(key), str)
+            or _source_quote_span(opening_review[key], selected[:2], max_words=64) is None
+        ):
+            raise RuntimeError("opening review omitted grounded context evidence")
+        opening = verdict == 1
+    reason = (continuation or story)["reason"]
+    if not opening and opening_review:
+        reason = opening_review["reason"]
     result = {
         "speech_purpose_review": purpose,
+        "opening_review": opening_review,
         "thought_completion_review": story,
         "speech_purpose_quote_spans": purpose_spans,
         "source_quote_spans": quote_spans,
         "continuation_review": continuation,
         "delivered_units": selected,
         "boundary_audit": {
-            "reason": story["reason"],
+            "reason": reason,
             "promotion_unit_ids": sorted(set(promotion_ids)),
-            "opening": "standalone" if story["opening_independent"] else "dependent",
+            "opening": "standalone" if opening else "dependent",
             "ending": "closed" if ending else "unresolved",
             "payoff_location": "selected" if payoff else "absent",
             "setup_unit_id": setup_span["first_unit"] if setup_span else -1,
@@ -1746,7 +1783,7 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
             "payoff_unit_id": payoff_span["first_unit"] if payoff else -1,
             "payoff_unit_last_id": payoff_span["last_unit"] if payoff else -1,
         },
-        "opening_standalone": story["opening_independent"] == 1,
+        "opening_standalone": opening,
         "ending_complete": ending,
         "exchange_has_payoff": quote_spans["resolution_quote"] is not None,
         "payoff_complete": payoff,
@@ -1756,7 +1793,7 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
         "payoff_quote": _evidence_excerpt(payoff_span["text"]) if payoff_span else "",
         "headline_supported": False,
         "headline_self_contained": False,
-        "reason": story["reason"],
+        "reason": reason,
     }
     if promotion_ids or not result["opening_standalone"] or not payoff or setup_span is None:
         return result
