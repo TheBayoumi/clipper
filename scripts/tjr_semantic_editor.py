@@ -22,6 +22,7 @@ from typing import Any
 
 from clipper.editorial_benchmark import load_heldout_claims
 from clipper.editorial_claims import audit_headline_claims
+from clipper.editorial_qa import audit_source_qa
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
 from clipper.tiktok import creative_hook_from_text, source_headline_candidates
 
@@ -3627,6 +3628,7 @@ def reviewer_evidence_qualification(
     replay_only: bool = False,
     claim_level_probe: bool = False,
     heldout_path: Path | None = None,
+    source_qa_probe: bool = False,
 ) -> int:
     """Qualify the exact production path and blind QA, without acquisition or rendering."""
     saved = json.loads(baseline_path.read_text())
@@ -3737,6 +3739,7 @@ def reviewer_evidence_qualification(
         "cases": [],
         "comparisons": [],
         "claim_comparisons": [],
+        "source_qa_comparisons": [],
         "heldout_comparisons": [],
         "heldout_annotation_status": (heldout[0].annotation_status if heldout else "not_requested"),
         "heldout_fixture_sha256": (
@@ -3914,6 +3917,32 @@ def reviewer_evidence_qualification(
                     f"ATOMIC_CLAIM {fixture['headline']} passed={claim_row['passed']}",
                     flush=True,
                 )
+            if source_qa_probe:
+                qa_row = {
+                    "headline": fixture["headline"],
+                    "expected_supported": fixture["expected_supported"],
+                }
+                try:
+                    qa_audit = audit_source_qa(cache, fixture["headline"], source_units)
+                    accepted = qa_audit["verdict"] == "supported"
+                    qa_row.update(
+                        review=qa_audit,
+                        contract_valid=True,
+                        actual_supported=accepted,
+                        passed=accepted is fixture["expected_supported"],
+                    )
+                except (RuntimeError, ValueError, KeyError) as error:
+                    qa_row.update(
+                        passed=False,
+                        contract_valid=False,
+                        error=f"{type(error).__name__}: {error}",
+                    )
+                report["source_qa_comparisons"].append(qa_row)
+                checkpoint()
+                print(
+                    f"SOURCE_QA_CLAIM {fixture['headline']} passed={qa_row['passed']}",
+                    flush=True,
+                )
         if heldout:
             for case in heldout:
                 source_units = list(case.source_units)
@@ -3927,10 +3956,13 @@ def reviewer_evidence_qualification(
                     "annotation_status": case.annotation_status,
                     "annotation_reason": case.annotation_reason,
                 }
-                for name, backend in (
+                backends = [
                     ("existing", _position_headline_audit),
                     ("experimental_claim_level", audit_headline_claims),
-                ):
+                ]
+                if source_qa_probe:
+                    backends.append(("source_first_qa", audit_source_qa))
+                for name, backend in backends:
                     try:
                         audit = backend(cache, case.headline, source_units)
                         accepted = audit["verdict"] == "supported"
@@ -3972,6 +4004,15 @@ def reviewer_evidence_qualification(
                 for row in report["claim_comparisons"]
             )
             report["claim_level_pass"] = all(row["passed"] for row in report["claim_comparisons"])
+        if source_qa_probe:
+            report["source_qa_contract_error_count"] = sum(
+                row.get("contract_valid") is not True for row in report["source_qa_comparisons"]
+            )
+            report["source_qa_semantic_error_count"] = sum(
+                row.get("contract_valid") is True and not row["passed"]
+                for row in report["source_qa_comparisons"]
+            )
+            report["source_qa_pass"] = all(row["passed"] for row in report["source_qa_comparisons"])
         if heldout_path is not None:
             report["heldout_scores"] = {
                 name: {
@@ -3989,7 +4030,11 @@ def reviewer_evidence_qualification(
                         for row in report["heldout_comparisons"]
                     ),
                 }
-                for name in ("existing", "experimental_claim_level")
+                for name in (
+                    "existing",
+                    "experimental_claim_level",
+                    *(("source_first_qa",) if source_qa_probe else ()),
+                )
             }
         report["qualification_rule"] = (
             "All 18 controls must be contract-valid and semantically correct. "
@@ -4053,6 +4098,7 @@ def reviewer_gpu_qualification(baseline: Path, transcript: Path, output: Path) -
         Path(__file__).read_bytes()
         + (Path(__file__).resolve().parents[1] / "src/clipper/editorial_claims.py").read_bytes()
         + (Path(__file__).resolve().parents[1] / "src/clipper/editorial_benchmark.py").read_bytes()
+        + (Path(__file__).resolve().parents[1] / "src/clipper/editorial_qa.py").read_bytes()
     ).hexdigest()
     packed = gzip.compress(json.dumps(inputs, sort_keys=True).encode(), mtime=0)
     report: dict[str, Any] = {
