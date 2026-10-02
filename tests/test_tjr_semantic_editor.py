@@ -2590,12 +2590,16 @@ def test_position_review_preserves_evidence_and_excluded_namespace(monkeypatch):
     units = ["I was stuck outside the building.", "The owner let me inside."]
     captured = []
     relation = {"value": "new_topic"}
+    promotion = {"value": False}
 
     class Model:
         def _review_completion(self, prompt, payload, properties, tokens):
             if "ad_read_span" in properties:
                 return dict(
-                    ad_read_span=dict(first_unit=-1, last_unit=-1),
+                    ad_read_span=dict(
+                        first_unit=0 if promotion["value"] else -1,
+                        last_unit=0 if promotion["value"] else -1,
+                    ),
                     show_intro_span=dict(first_unit=-1, last_unit=-1),
                     reason="An ordinary account.",
                 )
@@ -2639,6 +2643,24 @@ def test_position_review_preserves_evidence_and_excluded_namespace(monkeypatch):
     rejected = editor._source_position_review(Model(), context)
     assert rejected["payoff_complete"] is False
     assert rejected["ending_complete"] is False
+    assert "exchange_accepted" not in rejected
+    assert len(captured) == 1
+
+    # A purpose veto must not conceal a separate missing-payoff failure.
+    promotion["value"] = True
+    rejected = editor._source_position_review(Model(), context)
+    assert rejected["contains_promotion_or_intro"] is True
+    assert rejected["continuation_review"]["relation"] == "missing_answer"
+    assert rejected["payoff_complete"] is False
+    assert rejected["ending_complete"] is False
+    assert "exchange_accepted" not in rejected
+    assert len(captured) == 1
+
+    # Optional continuation leaves the ending complete even when purpose rejects it.
+    relation["value"] = "optional_elaboration"
+    rejected = editor._source_position_review(Model(), context)
+    assert rejected["payoff_complete"] is True
+    assert rejected["ending_complete"] is True
     assert "exchange_accepted" not in rejected
     assert len(captured) == 1
 

@@ -2439,7 +2439,9 @@ def _source_position_review(
     ending = story["last_thought_finished"] == 1
     continuation = None
     after = context.get("after", [])
-    if ending and not promotion_ids and after:
+    # Purpose and completion are independent judgments. A mistaken purpose veto
+    # must not hide whether the excluded continuation contains the real payoff.
+    if ending and after:
         continuation = editor._review_completion(
             "Judge the CUT after delivered_units. Identify the final substantive point, "
             "not an earlier completed premise. Classify its relation to excluded_after: "
