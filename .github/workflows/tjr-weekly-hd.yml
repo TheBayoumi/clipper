@@ -41,7 +41,7 @@ on:
         description: "Diagnostic model comparison only; factual_9b tests saved headline claims without selection or media."
         required: false
         type: choice
-        options: [disabled, focused_4b, factual_9b, factual_consensus, factual_ablation_4b, factual_nli]
+        options: [disabled, focused_4b, factual_9b, factual_consensus, factual_ablation_4b, factual_nli, evidence_qa]
         default: disabled
       editorial_preflight:
         description: "Run real-model reviewer regression on cached transcript only; no source acquisition."
@@ -463,7 +463,7 @@ jobs:
     needs: tests
     if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'validate_only' && inputs.editorial_preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
       actions: read
@@ -492,6 +492,11 @@ jobs:
       - name: Install pinned CPU reviewer
         if: inputs.reviewer_model_probe != 'factual_nli'
         run: CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e . "llama-cpp-python==0.3.35"
+      - uses: actions/cache@v4
+        if: inputs.reviewer_model_probe != 'factual_nli'
+        with:
+          path: ~/.cache/clipper/editor
+          key: reviewer-gguf-${{ runner.os }}-${{ inputs.reviewer_model_probe }}-v1
       - uses: actions/cache/save@v4
         if: steps.reviewer_cpu_cache.outputs.cache-hit != 'true'
         with:
@@ -525,6 +530,9 @@ jobs:
               if [[ '${{ inputs.reviewer_model_probe == 'factual_ablation_4b' }}' == 'true' ]]; then
                 PROBE_ARGUMENTS+=(--headline-ablation-probe)
               fi
+              if [[ '${{ inputs.reviewer_model_probe == 'evidence_qa' }}' == 'true' ]]; then
+                PROBE_ARGUMENTS+=(--evidence-qa-probe)
+              fi
               python -m scripts.tjr_semantic_editor --reviewer-model-probe-baseline "$BASELINE" --reviewer-preflight-transcript "$TRANSCRIPT" "${PROBE_ARGUMENTS[@]}" --output reviewer-preflight.json
               exit $?
             fi
@@ -538,7 +546,9 @@ jobs:
         if: always()
         with:
           name: reviewer-preflight-${{ github.run_id }}
-          path: reviewer-preflight.json
+          path: |
+            reviewer-preflight.json
+            review-request-cache.json
           if-no-files-found: warn
 
   youtube_modal_egress:

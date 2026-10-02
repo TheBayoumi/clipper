@@ -756,10 +756,10 @@ def test_editorial_checkpoint_resumes_completed_rejections_and_retains_failure(t
             start_unit=0,
             end_unit=0,
             hook_index=0,
-            opening=4,
+            opening=17,
             story=4,
             ending=4,
-            hook=17,
+            hook=4,
             reason="Invalid rating.",
         )
 
@@ -770,7 +770,7 @@ def test_editorial_checkpoint_resumes_completed_rejections_and_retains_failure(t
         )
     saved = json.loads(path.read_text())
     assert saved["complete"] is False and saved["processed_count"] == 1
-    assert saved["decisions"][1]["decision"]["hook"] == 17
+    assert saved["decisions"][1]["decision"]["opening"] == 17
 
     def repair(context):
         calls.append(context)
@@ -1108,6 +1108,84 @@ def test_stage_cache_reuses_selector_when_only_reviewer_changes(tmp_path, monkey
     assert calls == {"selector": 3, "reviewer": 5}
 
 
+def test_legacy_migration_preserves_positive_windows_but_rechecks_negative_headline_gates(tmp_path):
+    import json
+
+    from clipper.models import ClipCandidate
+    from scripts import tjr_semantic_editor as editor
+
+    segments = [
+        TranscriptSegment(0, 22, "Security stopped me but the owner finally let me into the show."),
+        TranscriptSegment(
+            30, 52, "Security stopped the guest but the owner finally opened the door."
+        ),
+    ]
+    proposals = [ClipCandidate("v", s.start, s.end, s.text, 10) for s in segments]
+    calls = []
+
+    def initial(context):
+        calls.append(context)
+        if context["proposed_start"] == 30:
+            return dict(keep=False, reason="No strong literal headline.")
+        return dict(
+            keep=True,
+            start_unit=0,
+            end_unit=0,
+            opening=4,
+            story=4,
+            ending=5,
+            hook_index=0,
+            hook=4,
+            reason="The owner resolved the security problem.",
+        )
+
+    path = tmp_path / "legacy.json"
+    editor.refine_contextual_candidates(
+        _brief(),
+        proposals,
+        segments,
+        source_sha256="a" * 64,
+        cache_path=path,
+        assessor=initial,
+        reviewer=_review,
+    )
+    saved = json.loads(path.read_text())
+    saved["identity"].pop("selector_sha256")
+    saved["identity"].pop("reviewer_sha256")
+    saved["identity"]["editor_code_sha256"] = (
+        "d977781963fc02015cfb58bd70dae33f161e6b3773da3dd6aa6fb228597dd371"
+    )
+    saved["identity"]["version"] = "podcast_structured_editor_v3"
+    path.write_text(json.dumps(saved))
+
+    def updated(context):
+        calls.append(context)
+        assert context["proposed_start"] == 30
+        return dict(
+            keep=True,
+            start_unit=1,
+            end_unit=1,
+            opening=4,
+            story=4,
+            ending=5,
+            selection_policy="exchange_only_v1",
+            reason="The owner opened the door.",
+        )
+
+    clips, audit = editor.refine_contextual_candidates(
+        _brief(),
+        proposals,
+        segments,
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "updated.json",
+        reuse_path=path,
+        assessor=updated,
+        reviewer=_review,
+    )
+    assert len(clips) == 2 and len(calls) == 3
+    assert audit["selector_cache_hits"] == 1 and audit["reviewer_cache_hits"] == 0
+
+
 def test_stage_ast_identity_ignores_version_optional_fields_but_keeps_semantics():
     import ast
     import copy
@@ -1188,7 +1266,7 @@ def test_preflight_rejects_wrong_reason_even_when_acceptance_matches(tmp_path, m
     )
 
     class FakeEditor:
-        def __init__(self):
+        def __init__(self, profile):
             self.index = 0
 
         def review(self, context):
@@ -1210,7 +1288,12 @@ def test_preflight_rejects_wrong_reason_even_when_acceptance_matches(tmp_path, m
         def close(self):
             pass
 
-    monkeypatch.setattr(editor, "LocalContextualEditor", FakeEditor)
+    monkeypatch.setattr(editor, "LocalSourceReviewer", FakeEditor)
+    monkeypatch.setattr(
+        editor,
+        "_focused_span_review",
+        lambda instance, context, **kwargs: instance.review(context),
+    )
     output = tmp_path / "review.json"
     assert editor.reviewer_preflight(transcript, output) == 1
     records = json.loads(output.read_text())
@@ -1617,6 +1700,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         "factual_consensus",
         "factual_ablation_4b",
         "factual_nli",
+        "evidence_qa",
     ):
         rendered = (
             script.replace("${{ inputs.reviewer_model_probe }}", mode)
@@ -1638,6 +1722,10 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
             "${{ inputs.reviewer_model_probe == 'factual_nli' }}",
             "true" if mode == "factual_nli" else "false",
         )
+        rendered = rendered.replace(
+            "${{ inputs.reviewer_model_probe == 'evidence_qa' }}",
+            "true" if mode == "evidence_qa" else "false",
+        )
         assert "${{" not in rendered
         subprocess.run(["bash", "-e", "-c", rendered], cwd=tmp_path, check=True)
         args = capture.read_text().splitlines()
@@ -1647,6 +1735,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert ("--headline-consensus-probe" in args) == (mode == "factual_consensus")
         assert ("--headline-ablation-probe" in args) == (mode == "factual_ablation_4b")
         assert ("--headline-nli-probe" in args) == (mode == "factual_nli")
+        assert ("--evidence-qa-probe" in args) == (mode == "evidence_qa")
         assert "scripts.tjr_semantic_editor" in args
 
 
@@ -1963,6 +2052,247 @@ def test_headline_rejects_forged_reviewed_spans_before_inference():
         )
 
 
+def test_production_calls_focused_review_with_exact_source_context(tmp_path, monkeypatch):
+    from clipper.models import ClipCandidate
+    from scripts import tjr_semantic_editor as editor
+
+    calls = []
+    segments = [
+        TranscriptSegment(0, 7, "How did security stop you at your own show?"),
+        TranscriptSegment(7, 14, "I had left my own access pass in the car."),
+        TranscriptSegment(14, 22, "The owner came outside and finally let me inside."),
+        TranscriptSegment(22, 29, "That is a different story for another day."),
+    ]
+
+    def initialize(self):
+        pass
+
+    def selection(self, prompt, payload, properties, tokens):
+        assert "headlines" not in payload
+        return dict(
+            keep=True,
+            window_index=0,
+            opening=4,
+            story=4,
+            ending=5,
+            reason="Missing pass; owner let him inside.",
+        )
+
+    def focused(instance, context, *, factual_audit):
+        calls.append(context)
+        assert isinstance(instance, editor.ReviewRequestCache)
+        assert factual_audit is editor._qa_headline_audit
+        return _review(context)
+
+    def legacy(self, context):
+        raise AssertionError("Production must not return to the legacy reviewer")
+
+    monkeypatch.setattr(editor.LocalContextualEditor, "__init__", initialize)
+    monkeypatch.setattr(editor.LocalContextualEditor, "_review_completion", selection)
+    monkeypatch.setattr(editor.LocalContextualEditor, "review", legacy)
+    monkeypatch.setattr(editor.LocalContextualEditor, "close", lambda self: None)
+    monkeypatch.setattr(editor, "_focused_span_review", focused)
+    proposal = ClipCandidate("v", 0, 22, " ".join(item.text for item in segments[:3]), 10)
+    clips, _ = editor.refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "editorial-cache.json",
+    )
+    assert len(clips) == 1
+    assert calls == [
+        {
+            "selected_units": [item.text for item in segments[:3]],
+            "before": [],
+            "after": [segments[3].text],
+        }
+    ]
+
+
+def test_exchange_selection_does_not_require_literal_headlines():
+    from scripts.tjr_semantic_editor import _select_exchange
+
+    calls = []
+
+    class Editor:
+        def _review_completion(self, prompt, payload, properties, tokens):
+            calls.append(payload)
+            assert "headlines" not in payload and "headline_quality" not in properties
+            return dict(
+                keep=True,
+                window_index=0,
+                opening=4,
+                story=4,
+                ending=5,
+                reason="The lost key is found at the end.",
+            )
+
+    result = _select_exchange(
+        Editor(),
+        {
+            "units": [
+                dict(
+                    id=0,
+                    start=0,
+                    end=22,
+                    text="The owner found the lost key and unlocked the door.",
+                )
+            ],
+            "headlines": [],
+            "min_seconds": 20,
+            "max_seconds": 60,
+        },
+    )
+    assert result["keep"] is True and result["selection_policy"] == "exchange_only_v1"
+    assert result["start_unit"] == result["end_unit"] == 0
+    assert len(calls) == 1
+
+
+def test_review_request_cache_skips_weights_and_invalidates_changed_or_corrupt_request(tmp_path):
+    import json
+
+    from scripts.tjr_semantic_editor import LocalContextualEditor, ReviewRequestCache
+
+    created = []
+
+    class Model:
+        def create_chat_completion(self, **request):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": json.dumps({"reason": "No source support"})},
+                    }
+                ]
+            }
+
+    def factory():
+        created.append(True)
+        instance = LocalContextualEditor.__new__(LocalContextualEditor)
+        instance.model = Model()
+        return instance
+
+    path = tmp_path / "review-request-cache.json"
+    identity = {"source": "original", "model": "pinned"}
+    first = ReviewRequestCache(path, factory, identity)
+    properties = {"reason": {"type": "string"}}
+    first._review_completion("Check source", {"source": "unchanged"}, properties, 64)
+    assert len(created) == 1 and first.metrics["model_calls"] == 1
+    assert first.calls[0]["raw_calls"][0]["request"]["temperature"] == 0
+    warm = ReviewRequestCache(path, factory, identity)
+    assert warm._review_completion("Check source", {"source": "unchanged"}, properties, 64) == {
+        "reason": "No source support"
+    }
+    assert len(created) == 1 and warm.metrics["cache_hits"] == 1
+    warm._review_completion("Check source", {"source": "changed"}, properties, 64)
+    assert len(created) == 2
+    saved = json.loads(path.read_text())
+    first_key = next(iter(saved["records"]))
+    saved["records"][first_key]["response"]["reason"] = "Corrupted approval"
+    path.write_text(json.dumps(saved))
+    corrupt = ReviewRequestCache(path, factory, identity)
+    assert corrupt._review_completion("Check source", {"source": "unchanged"}, properties, 64) == {
+        "reason": "No source support"
+    }
+    assert len(created) == 3
+    changed = ReviewRequestCache(path, factory, {**identity, "model": "different"})
+    changed._review_completion("Check source", {"source": "unchanged"}, properties, 64)
+    assert len(created) == 4
+
+
+def test_source_qa_is_blind_to_headline_and_requires_canonical_evidence(monkeypatch):
+    import pytest
+
+    from scripts import tjr_semantic_editor as editor
+
+    units = ["Sixty million views earned no money.", "Those views only drive podcast listeners."]
+    payloads = []
+    facts = {
+        key: dict(answer="Views bring listeners, not proven earnings.", quote=units[1])
+        for key in editor._HEADLINE_COMPONENTS
+    }
+    monkeypatch.setattr(
+        editor,
+        "_semantic_draft",
+        lambda instance, prompt, payload, tokens: (
+            payloads.append(payload) or "Source says views bring listeners."
+        ),
+    )
+
+    class Editor:
+        def _review_completion(self, prompt, payload, properties, tokens):
+            payloads.append(payload)
+            return facts
+
+    source = editor._source_fact_record(Editor(), units)
+    assert all("headline" not in payload for payload in payloads)
+    assert source["facts"]["quantities_outcomes"]["source_span"]["first_unit"] == 1
+    facts["actor_action"]["quote"] = "They already earned millions of dollars"
+    with pytest.raises(RuntimeError, match="canonical delivered"):
+        editor._source_fact_record(Editor(), units)
+    facts["actor_action"] = dict(answer="Actual earnings", quote="")
+    with pytest.raises(RuntimeError, match="must remain unknown"):
+        editor._source_fact_record(Editor(), units)
+
+
+def test_hook_revision_preserves_exchange_and_separates_factual_and_text_quality():
+    from scripts import tjr_semantic_editor as editor
+
+    units = [
+        "I have sixty million views and earn nothing.",
+        "Those views only drive listeners to the podcast.",
+    ]
+    spans = {
+        "setup_quote": editor._source_quote_span(units[0], units, max_words=64),
+        "resolution_quote": editor._source_quote_span(units[1], units, max_words=64),
+    }
+    calls = []
+    replies = iter(
+        [
+            "The podcast already earned millions from social views",
+            "Sixty million views bring listeners but no income",
+        ]
+    )
+
+    class Editor:
+        def _review_completion(self, prompt, payload, properties, tokens):
+            calls.append(payload)
+            return {"headline": next(replies)}
+
+    def audit(instance, headline, selected):
+        assert selected == units
+        valid = "already earned" not in headline
+        result = dict(
+            verdict="supported" if valid else "unsupported",
+            **{key: "supported" for key in editor._HEADLINE_COMPONENTS},
+            headline_self_contained=True,
+            central_highlight=True,
+        )
+        result["quantities_outcomes"] = "supported" if valid else "unsupported"
+        return result
+
+    result = editor._source_grounded_headline(
+        Editor(), units, exchange_spans=spans, factual_audit=audit
+    )
+    assert result["hook_status"] == "accepted" and len(result["headline_audits"]) == 2
+    assert calls[0]["source_passages"] == calls[1]["source_passages"]
+    assert result["headline_source_spans"] == spans
+    assert calls[1]["failed_dimensions"] == ["quantities_outcomes"]
+    replies = iter(["A perfectly factual but incomplete fragment"] * 2)
+    result = editor._source_grounded_headline(
+        Editor(),
+        units,
+        exchange_spans=spans,
+        factual_audit=lambda *args: dict(
+            verdict="supported", headline_self_contained=False, central_highlight=True
+        ),
+    )
+    assert result["headline_supported"] is True
+    assert result["headline_self_contained"] is False
+    assert result["hook_status"] == "blocked_after_bounded_revision"
+
+
 def test_nli_fixed_labels_and_invalid_probabilities():
     import pytest
 
@@ -2123,3 +2453,150 @@ def test_nli_adapter_reads_persisted_audit_request_and_preserves_full_source():
             _nli_request(bad)
     with pytest.raises(ValueError, match="invalid NLI"):
         _nli_request({**fixture, "headline": "A different unsupported claim"})
+
+
+def test_unstructured_source_reasoning_truncation_fails_and_retains_request(tmp_path):
+    import pytest
+
+    from scripts.tjr_semantic_editor import LocalContextualEditor, ReviewRequestCache
+
+    requests = []
+
+    class Model:
+        def create_chat_completion(self, **request):
+            requests.append(request)
+            return {"choices": [{"finish_reason": "length", "message": {"content": "Incomplete"}}]}
+
+    instance = LocalContextualEditor.__new__(LocalContextualEditor)
+    instance.model = Model()
+    cache = ReviewRequestCache(tmp_path / "requests.json", lambda: instance, {"source": "exact"})
+    with pytest.raises(RuntimeError, match="truncated evidence"):
+        cache.semantic_draft(
+            "Answer from source", {"source_units": ["An exact source passage."]}, 128
+        )
+    assert "response_format" not in requests[0]
+    assert requests[0]["seed"] == 0 and requests[0]["temperature"] == 0
+    assert cache.metrics["model_calls"] == 1 and cache.metrics["cache_hits"] == 0
+    assert len(cache.calls) == 1 and "error" in cache.calls[0]
+    assert cache.records == {}
+    assert cache.calls[0]["raw_calls"][0]["response"]["choices"][0]["finish_reason"] == "length"
+
+
+def test_qa_qualification_adapters_preserve_sources_before_model_loading(tmp_path, monkeypatch):
+    import hashlib
+    import json
+
+    from clipper.models import WordTiming
+    from scripts import tjr_semantic_editor as editor
+
+    text = "A preserved original source passage with a complete thought."
+    transcript = tmp_path / "transcript.json"
+    segment = TranscriptSegment(0, 22, text, (WordTiming(0, 1, "A"),))
+    transcript.write_text(json.dumps([segment.to_dict()]))
+    transcript_hash = hashlib.sha256(
+        json.dumps([segment.to_dict()], sort_keys=True).encode()
+    ).hexdigest()
+    provenance = tmp_path / "editorial-cache.json"
+    provenance.write_text(
+        json.dumps({"identity": dict(source_sha256="a" * 64, transcript_sha256=transcript_hash)})
+    )
+    fixture = dict(
+        headline="An original source highlight",
+        expected_supported=False,
+        expected_unsupported_component="actor_action",
+        request={
+            "messages": [
+                {"role": "system", "content": "saved control"},
+                {
+                    "role": "user",
+                    "content": json.dumps({"source_units": [{"id": 0, "text": text}]}),
+                },
+            ]
+        },
+    )
+    fixtures = [{**fixture, "expected_supported": index < 2} for index in range(8)]
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps(
+            dict(experiment="source_presentation_x_verdict_schema", annotated_fixtures=fixtures)
+        )
+    )
+    calls = []
+    monkeypatch.setattr(editor, "LocalSourceReviewer", lambda profile: calls.append(True))
+    import pytest
+
+    with pytest.raises(ValueError, match="missing qualification thought units"):
+        editor.reviewer_evidence_qualification(baseline, transcript, tmp_path / "proof.json")
+    assert calls == []
+    provenance.write_text(
+        json.dumps({"identity": dict(source_sha256="a" * 64, transcript_sha256="b" * 64)})
+    )
+    import pytest
+
+    with pytest.raises(ValueError, match="identity does not match"):
+        editor.reviewer_evidence_qualification(baseline, transcript, tmp_path / "proof.json")
+    assert calls == []
+    fixtures[0]["request"]["messages"][1]["content"] = json.dumps(
+        {"source_units": [{"id": 0, "text": "Substituted invented source words."}]}
+    )
+    baseline.write_text(
+        json.dumps(
+            dict(experiment="source_presentation_x_verdict_schema", annotated_fixtures=fixtures)
+        )
+    )
+    with pytest.raises(ValueError, match="do not match"):
+        editor.reviewer_evidence_qualification(baseline, transcript, tmp_path / "proof.json")
+    assert calls == []
+
+
+def test_reviewer_profile_change_preserves_selection_and_invalidates_completion(
+    tmp_path, monkeypatch
+):
+    from clipper.models import ClipCandidate
+    from scripts import tjr_modal_runner as runner
+    from scripts import tjr_semantic_editor as editor
+
+    segments = [
+        TranscriptSegment(0, 7, "How did security stop you at your own show?"),
+        TranscriptSegment(7, 14, "I had left my own access pass in the car."),
+        TranscriptSegment(14, 22, "The owner came outside and finally let me inside."),
+    ]
+    proposal = ClipCandidate("v", 0, 22, " ".join(s.text for s in segments), 10)
+    calls = {"selector": 0, "reviewer": 0}
+
+    def assess(context):
+        calls["selector"] += 1
+        return dict(
+            keep=True, start_unit=0, end_unit=2, opening=4, story=4, ending=5, reason="Pass found."
+        )
+
+    def review(context):
+        calls["reviewer"] += 1
+        return _review(context)
+
+    first = tmp_path / "first.json"
+    editor.refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=first,
+        assessor=assess,
+        reviewer=review,
+    )
+    completion = runner._pipeline_identity("a" * 64)
+    profile = editor._review_model_profile()
+    monkeypatch.setattr(editor, "_review_model_profile", lambda: dict(profile, context_tokens=2048))
+    _, audit = editor.refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "second.json",
+        reuse_path=first,
+        assessor=assess,
+        reviewer=review,
+    )
+    assert calls == {"selector": 1, "reviewer": 2}
+    assert audit["selector_cache_hits"] == 1 and audit["reviewer_cache_hits"] == 0
+    assert runner._pipeline_identity("a" * 64) != completion

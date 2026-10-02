@@ -697,6 +697,119 @@ def test_independent_v5_review_rejects_false_boundary_or_quote_provenance(tmp_pa
         assert not reviewed_summary_evidence(tmp_path, hook, text, 0, 24, "a" * 64)
 
 
+def test_independent_v6_requires_reviewed_spans_and_separate_qa_proof(tmp_path):
+    import copy
+    import json
+
+    from scripts.tjr_feedback_gate import reviewed_summary_evidence
+    from scripts.tjr_semantic_editor import _HEADLINE_COMPONENTS, _source_quote_span
+
+    units = ["Security stopped me outside.", "The owner finally let me inside."]
+    hook = "The owner rescued his guest from security"
+    spans = {
+        "setup_quote": _source_quote_span(units[0], units, max_words=64),
+        "resolution_quote": _source_quote_span(units[1], units, max_words=64),
+    }
+    review = dict(
+        headline=hook,
+        opening_standalone=True,
+        payoff_complete=True,
+        ending_complete=True,
+        headline_supported=True,
+        headline_self_contained=True,
+        contains_promotion_or_intro=False,
+        setup_quote=spans["setup_quote"]["text"],
+        payoff_quote=spans["resolution_quote"]["text"],
+        delivered_units=units,
+        exchange_accepted=True,
+        hook_status="accepted",
+        headline_source_spans=spans,
+        boundary_audit=dict(
+            promotion_unit_ids=[],
+            opening="standalone",
+            ending="closed",
+            payoff_location="selected",
+            setup_unit_id=0,
+            payoff_unit_id=1,
+        ),
+        headline_audits=[
+            dict(
+                headline=hook,
+                verdict="supported",
+                headline_self_contained=True,
+                central_highlight=True,
+                **{key: "supported" for key in _HEADLINE_COMPONENTS},
+                facts={
+                    key: dict(
+                        answer="The owner let the guest inside.",
+                        source_span=spans["resolution_quote"],
+                    )
+                    for key in _HEADLINE_COMPONENTS
+                },
+            )
+        ],
+    )
+    saved = dict(
+        complete=True,
+        identity=dict(version="podcast_structured_editor_v6", source_sha256="a" * 64),
+        audit=dict(assessments=[dict(reviewed_start=0, reviewed_end=24, exchange_review=review)]),
+    )
+    path = tmp_path / "editorial-cache.json"
+    path.write_text(json.dumps(saved))
+    assert reviewed_summary_evidence(tmp_path, hook, " ".join(units), 0, 24, "a" * 64)
+    for target, key, value in (
+        ("review", "exchange_accepted", False),
+        ("review", "hook_status", "blocked_after_bounded_revision"),
+        ("review", "headline_source_spans", None),
+        ("review", "headline_audits", []),
+        ("audit", "central_highlight", False),
+        ("audit", "headline_self_contained", False),
+        ("audit", "facts", {}),
+        ("audit", "actor_action", "uncertain"),
+    ):
+        changed = copy.deepcopy(saved)
+        item = changed["audit"]["assessments"][0]["exchange_review"]
+        (item if target == "review" else item["headline_audits"][-1])[key] = value
+        path.write_text(json.dumps(changed))
+        assert not reviewed_summary_evidence(tmp_path, hook, " ".join(units), 0, 24, "a" * 64)
+
+
+def test_delivery_required_cli_rejects_audited_zero_clips(tmp_path, monkeypatch):
+    import json
+    import sys
+
+    from scripts import tjr_feedback_gate as gate
+
+    report = dict(
+        status="AUDITED_ZERO_CLIPS",
+        technically_verified_mp4_count=0,
+        issues=[],
+        next_actions=[],
+        head_sha="head",
+        run_id="run",
+        audited_production_run_id="prior",
+    )
+    monkeypatch.setattr(gate, "review_run", lambda *args, **kwargs: report)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "gate",
+            "--expected-channels",
+            "1",
+            "--artifact-root",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "proof"),
+        ],
+    )
+    monkeypatch.setenv("TJR_REQUIRE_DELIVERY", "1")
+    assert gate.main() == 1
+    proof = json.loads((tmp_path / "proof/feedback-report.json").read_text())
+    assert proof["status"] == "BLOCKED"
+    assert "PRODUCTION_VERIFICATION_ZERO_DELIVERIES" in proof["issues"]
+
+
 def test_centered_black_ass_plate_audit_rejects_offset_or_tinted_plate(tmp_path):
     import pytest
 

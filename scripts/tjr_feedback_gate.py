@@ -95,6 +95,7 @@ def reviewed_summary_evidence(
             "podcast_structured_editor_v3",
             "podcast_structured_editor_v4",
             "podcast_structured_editor_v5",
+            "podcast_structured_editor_v6",
         }
         or identity.get("source_sha256") != source_hash
     ):
@@ -122,7 +123,7 @@ def reviewed_summary_evidence(
             or review.get("contains_promotion_or_intro") is not False
         ):
             continue
-        if identity["version"] == "podcast_structured_editor_v5":
+        if identity["version"] in {"podcast_structured_editor_v5", "podcast_structured_editor_v6"}:
             boundary = review.get("boundary_audit")
             units = review.get("delivered_units")
             if (
@@ -137,7 +138,70 @@ def reviewed_summary_evidence(
                 or boundary.get("payoff_location") != "selected"
             ):
                 continue
-            if any(
+            if identity["version"] == "podcast_structured_editor_v6":
+                from scripts.tjr_semantic_editor import _source_quote_span
+
+                spans = review.get("headline_source_spans", {})
+                audits = review.get("headline_audits", [])
+                if (
+                    review.get("exchange_accepted") is not True
+                    or review.get("hook_status") != "accepted"
+                    or not isinstance(spans, dict)
+                    or set(spans) != {"setup_quote", "resolution_quote"}
+                    or any(
+                        not isinstance(span, dict)
+                        or _source_quote_span(span.get("text", ""), units, max_words=64) != span
+                        for span in spans.values()
+                    )
+                    or not isinstance(audits, list)
+                    or not 1 <= len(audits) <= 2
+                ):
+                    continue
+                final = audits[-1]
+                if (
+                    not isinstance(final, dict)
+                    or str(final.get("headline", "")).casefold() != hook.casefold()
+                    or final.get("verdict") != "supported"
+                    or final.get("headline_self_contained") is not True
+                    or final.get("central_highlight") is not True
+                    or any(
+                        final.get(key) != "supported"
+                        for key in (
+                            "actor_action",
+                            "relationship_role",
+                            "setting_time",
+                            "quantities_outcomes",
+                        )
+                    )
+                ):
+                    continue
+                facts = final.get("facts", {})
+                if (
+                    not isinstance(facts, dict)
+                    or set(facts)
+                    != {"actor_action", "relationship_role", "setting_time", "quantities_outcomes"}
+                    or any(
+                        not isinstance(fact, dict)
+                        or not isinstance(fact.get("answer"), str)
+                        or (
+                            fact.get("source_span") is None
+                            and fact.get("answer", "").casefold() != "unknown"
+                        )
+                        or (
+                            fact.get("source_span") is not None
+                            and (
+                                not isinstance(fact["source_span"], dict)
+                                or _source_quote_span(
+                                    fact["source_span"].get("text", ""), units, max_words=64
+                                )
+                                != fact["source_span"]
+                            )
+                        )
+                        for fact in facts.values()
+                    )
+                ):
+                    continue
+            elif any(
                 type(boundary.get(index)) is not int
                 or not 0 <= boundary[index] < len(units)
                 or not isinstance(review.get(quote), str)

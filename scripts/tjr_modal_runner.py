@@ -35,6 +35,8 @@ def _load_staged_original(root: Path) -> dict[str, Any]:
 
 
 def _pipeline_identity(source_sha: str) -> str:
+    from scripts.tjr_semantic_editor import _review_model_profile
+
     project = Path(__file__).resolve().parents[1]
     files = [
         "scripts/tjr_modal_runner.py",
@@ -59,6 +61,7 @@ def _pipeline_identity(source_sha: str) -> str:
                 "video": os.getenv("TJR_SOURCE_VIDEO_ID", ""),
                 "channel": os.getenv("TJR_MODAL_CHANNEL_ID", ""),
                 "code": code,
+                "reviewer_profile": _review_model_profile(),
                 "settings": {
                     name: os.getenv(name, "")
                     for name in (
