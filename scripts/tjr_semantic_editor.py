@@ -1592,6 +1592,39 @@ def _review_evidence_valid(review: dict[str, Any], selected: list[str]) -> bool:
     )
 
 
+def _audit_headline(
+    editor: LocalContextualEditor, headline: str, units: list[str]
+) -> dict[str, Any]:
+    """Audit factual entailment without generator ratings or excluded speech."""
+    audit = editor._review_completion(
+        "Fact-check headline against source_transcript only. Check WHO did WHAT, the "
+        "setting/time, quantities and any stated relationship or role. A person's "
+        "presence in an event does not establish their role or relationship to another "
+        "person. A meeting, preparation and the event itself are distinct settings. "
+        "Do not infer absent relationships, transfer one person's action to another, "
+        "or turn a hypothetical outcome into a fact. verdict is supported only if every "
+        "headline claim follows from the transcript; otherwise unsupported or uncertain. "
+        "Copy 3-30 exact source words as source_quote supporting your explanation. "
+        "Always give a nonempty reason naming any unsupported claim (at most 30 words). "
+        "Return output_schema JSON.",
+        {"source_transcript": " ".join(units), "headline": headline},
+        {
+            "reason": {"type": "string", "minLength": 1, "maxLength": 240},
+            "source_quote": {"type": "string"},
+            "verdict": {"type": "string", "enum": ["supported", "unsupported", "uncertain"]},
+        },
+        160,
+    )
+    if audit.get("verdict") not in {"supported", "unsupported", "uncertain"}:
+        raise RuntimeError("headline audit returned an invalid verdict")
+    if (
+        not isinstance(audit.get("source_quote"), str)
+        or _source_quote_span(audit["source_quote"], units, max_words=64) is None
+    ):
+        raise RuntimeError("headline audit omitted exact source evidence")
+    return audit
+
+
 def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any]) -> dict[str, Any]:
     """Diagnostic alternative: delivered-only purpose/story plus a narrow continuation check."""
     selected = context["selected_units"]
@@ -1826,6 +1859,40 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
     if not 4 <= len(_WORD.findall(result["headline"])) <= 14:
         result["headline_supported"] = False
     result["headline_review"] = headline
+    result["headline_audits"] = []
+    if result["headline_supported"] and result["headline_self_contained"]:
+        for attempt in range(2):
+            audit = _audit_headline(editor, result["headline"], selected)
+            result["headline_audits"].append({"headline": result["headline"], **audit})
+            if audit["verdict"] == "supported":
+                break
+            result["headline_supported"] = False
+            if attempt:
+                break
+            repaired = editor._review_completion(
+                "Rewrite the rejected headline as a clear 4-14 word highlight of the "
+                "whole selected exchange. Correct the unsupported claim identified by "
+                "fact_check. Preserve who did what and the setting. Invent no roles, "
+                "relationships, quantities or outcomes. Use source_transcript only. "
+                "Always explain the correction in a nonempty reason (at most 20 words). "
+                "Return output_schema JSON.",
+                {
+                    "source_transcript": text,
+                    "rejected_headline": result["headline"],
+                    "fact_check": audit["reason"],
+                },
+                {
+                    "reason": {"type": "string", "minLength": 1, "maxLength": 180},
+                    "headline": {"type": "string"},
+                },
+                96,
+            )
+            candidate = repaired.get("headline")
+            if not isinstance(candidate, str) or not 4 <= len(_WORD.findall(candidate)) <= 14:
+                break
+            result["headline"] = candidate
+            result["headline_repair"] = repaired
+            result["headline_supported"] = True
     return result
 
 
@@ -1970,7 +2037,11 @@ def reviewer_model_probe(
 
         previous_calls = [
             call
-            for case in (saved.get("cases", []) if isinstance(saved, dict) else [])
+            for case in (
+                saved.get("cases", []) + saved.get("headline_checks", [])
+                if isinstance(saved, dict)
+                else []
+            )
             for call in case.get("raw_calls", [])
         ]
         compatible_model = isinstance(saved, dict) and all(
@@ -2060,6 +2131,32 @@ def reviewer_model_probe(
             )
             output.write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps(record), flush=True)
+        report["headline_checks"] = []
+        story_fixture = next(
+            (item for item in baseline if item["fixture"] == "fighter_meeting_complete"), None
+        )
+        if story_fixture is not None:
+            for headline, supported in (
+                ("Opponent is a crazy nut like me during first fight.", False),
+                ("Bobby Green paced during the fighter meeting", True),
+                ("Sean Shelby paced during the fighter meeting", False),
+            ):
+                raw_calls.clear()
+                check = {"headline": headline, "expected_supported": supported}
+                try:
+                    audit = _audit_headline(
+                        editor, headline, story_fixture["review_context"]["selected_units"]
+                    )
+                    check.update(audit=audit, passed=(audit["verdict"] == "supported") == supported)
+                except Exception as error:
+                    check.update(passed=False, error=f"{type(error).__name__}: {error}")
+                check["raw_calls"] = list(raw_calls)
+                report["headline_checks"].append(check)
+                print(json.dumps({"headline_check": check}), flush=True)
+            report["semantic_pass"] = report["semantic_pass"] and all(
+                check["passed"] for check in report["headline_checks"]
+            )
+        output.write_text(json.dumps(report, indent=2) + "\n")
     finally:
         editor.close()
     return int(not report["semantic_pass"])

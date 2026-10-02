@@ -288,6 +288,13 @@ def test_focused_review_separates_speech_purpose_and_excluded_payoff():
             "headline_self_contained": 1,
         },
     ]
+    replies.append(
+        {
+            "reason": "Views were not paid; they drove the podcast.",
+            "source_quote": "I used them to drive my podcast instead",
+            "verdict": "supported",
+        }
+    )
     calls = []
 
     class FakeEditor:
@@ -1331,6 +1338,13 @@ def test_opening_dependency_requires_source_evidence_without_prior_verdict():
             "headline_self_contained": 1,
         },
     ]
+    replies.append(
+        {
+            "reason": "The door staff stopped the performer.",
+            "source_quote": "the door staff stopped me",
+            "verdict": "supported",
+        }
+    )
     payloads = []
 
     class Editor:
@@ -1345,3 +1359,72 @@ def test_opening_dependency_requires_source_evidence_without_prior_verdict():
     assert review["opening_standalone"] is True
     assert set(payloads[2]) == {"delivered_transcript", "opening_text"}
     assert review["opening_review"]["subject_quote"] in context["selected_units"][0]
+
+
+def test_headline_audit_rejects_invented_roles_and_requires_source_quote():
+    import pytest
+
+    from scripts.tjr_semantic_editor import _audit_headline
+
+    units = ["A visitor waited while the owner unlocked the shop."]
+    response = {
+        "reason": "The visitor is not identified as the owner.",
+        "source_quote": "A visitor waited",
+        "verdict": "unsupported",
+    }
+
+    class Editor:
+        def _review_completion(self, prompt, payload, *args):
+            assert set(payload) == {"source_transcript", "headline"}
+            return response
+
+    assert (
+        _audit_headline(Editor(), "The owner waited outside his shop", units)["verdict"]
+        == "unsupported"
+    )
+    response["source_quote"] = "The visitor owned the shop"
+    with pytest.raises(RuntimeError, match="exact source evidence"):
+        _audit_headline(Editor(), "The owner waited outside his shop", units)
+
+
+def test_rewritten_headline_requires_new_audit_and_stops_after_one_repair():
+    from scripts.tjr_semantic_editor import _focused_span_review
+
+    units = ["A visitor waited outside the shop.", "The owner unlocked the shop and let him in."]
+    replies = [
+        {"reason": "Conversation", "ad_read_quote": "", "show_intro_quote": ""},
+        {
+            "reason": "The visitor got in",
+            "setup_quote": "A visitor waited outside",
+            "resolution_quote": "let him in",
+            "opening_independent": 1,
+            "last_thought_finished": 1,
+        },
+        {
+            "reason": "Generator claims support",
+            "headline": "The owner waited outside his shop",
+            "headline_supported": 1,
+            "headline_self_contained": 1,
+        },
+        {
+            "reason": "Visitor is not the owner",
+            "source_quote": "A visitor waited outside",
+            "verdict": "unsupported",
+        },
+        {"reason": "Attempted correction", "headline": "The visitor broke into the shop"},
+        {
+            "reason": "Owner let the visitor in; no break-in",
+            "source_quote": "The owner unlocked the shop and let him in",
+            "verdict": "unsupported",
+        },
+    ]
+
+    class Editor:
+        def _review_completion(self, *args):
+            assert replies
+            return replies.pop(0)
+
+    result = _focused_span_review(Editor(), {"selected_units": units, "before": [], "after": []})
+    assert result["headline_supported"] is False
+    assert len(result["headline_audits"]) == 2
+    assert not replies
