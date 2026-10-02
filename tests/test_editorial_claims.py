@@ -69,8 +69,9 @@ def test_uncertain_claim_prevents_approval():
 
 
 def test_quoted_instruction_cannot_support_actual_event():
-    claims = [{"text": "The meeting was on live TV", "start": 0, "end": 26,
-               "claim_scope": "actual"}]
+    claims = [
+        {"text": "The meeting was on live TV", "start": 0, "end": 26, "claim_scope": "actual"}
+    ]
     result = audit_headline_claims(
         Reviewer(claims, [judgment("supported", "quoted_instruction")]),
         "The meeting was on live TV",

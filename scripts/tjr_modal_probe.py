@@ -336,8 +336,11 @@ def qualify_source_reviewer_gpu(
         cold.mkdir(exist_ok=True)
         cold_output = cold / "proof.json"
         reviewer_evidence_qualification(
-            root / "baseline.json", root / "transcript.json", cold_output,
-            model_profile=profile, claim_level_probe=True,
+            root / "baseline.json",
+            root / "transcript.json",
+            cold_output,
+            model_profile=profile,
+            claim_level_probe=True,
         )
         proof = json.loads(cold_output.read_text())
         manifest.update(
@@ -363,8 +366,11 @@ def qualify_source_reviewer_gpu(
             replay = root / "replay"
             replay.mkdir(exist_ok=True)
             reviewer_evidence_qualification(
-                cold_output, root / "transcript.json", replay / "proof.json",
-                model_profile=profile, claim_level_probe=True,
+                cold_output,
+                root / "transcript.json",
+                replay / "proof.json",
+                model_profile=profile,
+                claim_level_probe=True,
             )
             warm = json.loads((replay / "proof.json").read_text())
             stable = all(

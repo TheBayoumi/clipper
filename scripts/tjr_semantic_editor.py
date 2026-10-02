@@ -3879,9 +3879,7 @@ def reviewer_evidence_qualification(
                     "expected_supported": fixture["expected_supported"],
                 }
                 try:
-                    claim_audit = audit_headline_claims(
-                        cache, fixture["headline"], source_units
-                    )
+                    claim_audit = audit_headline_claims(cache, fixture["headline"], source_units)
                     claim_row.update(
                         review=claim_audit,
                         contract_valid=True,
@@ -3920,9 +3918,7 @@ def reviewer_evidence_qualification(
                 row.get("contract_valid") is True and not row["passed"]
                 for row in report["claim_comparisons"]
             )
-            report["claim_level_pass"] = all(
-                row["passed"] for row in report["claim_comparisons"]
-            )
+            report["claim_level_pass"] = all(row["passed"] for row in report["claim_comparisons"])
         report["qualification_rule"] = (
             "All 18 controls must be contract-valid and semantically correct. "
             "Exceptions never count as rejection."
