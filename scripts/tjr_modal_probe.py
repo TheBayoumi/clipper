@@ -260,6 +260,7 @@ def qualify_source_reviewer_gpu(
 
     actual_code_hash = hashlib.sha256(
         Path("/app/scripts/tjr_semantic_editor.py").read_bytes()
+        + Path("/app/src/clipper/editorial_claims.py").read_bytes()
     ).hexdigest()
     expected_key = hashlib.sha256(
         packed + json.dumps(profile, sort_keys=True).encode() + code_hash.encode()
@@ -335,7 +336,8 @@ def qualify_source_reviewer_gpu(
         cold.mkdir(exist_ok=True)
         cold_output = cold / "proof.json"
         reviewer_evidence_qualification(
-            root / "baseline.json", root / "transcript.json", cold_output, model_profile=profile
+            root / "baseline.json", root / "transcript.json", cold_output,
+            model_profile=profile, claim_level_probe=True,
         )
         proof = json.loads(cold_output.read_text())
         manifest.update(
@@ -347,6 +349,9 @@ def qualify_source_reviewer_gpu(
                     "request_cache_metrics",
                     "seconds",
                     "semantic_pass",
+                    "claim_level_pass",
+                    "claim_level_contract_error_count",
+                    "claim_level_semantic_error_count",
                 )
             }
         )
@@ -358,7 +363,8 @@ def qualify_source_reviewer_gpu(
             replay = root / "replay"
             replay.mkdir(exist_ok=True)
             reviewer_evidence_qualification(
-                cold_output, root / "transcript.json", replay / "proof.json", model_profile=profile
+                cold_output, root / "transcript.json", replay / "proof.json",
+                model_profile=profile, claim_level_probe=True,
             )
             warm = json.loads((replay / "proof.json").read_text())
             stable = all(
@@ -370,7 +376,7 @@ def qualify_source_reviewer_gpu(
                     (row.get("actual_accept"), row.get("actual_supported"), row["passed"])
                     for row in warm[key]
                 ]
-                for key in ("cases", "comparisons")
+                for key in ("cases", "comparisons", "claim_comparisons")
             )
             manifest["warm_replay"] = {
                 "performed": True,

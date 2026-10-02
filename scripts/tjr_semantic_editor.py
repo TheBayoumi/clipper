@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from clipper.editorial_claims import audit_headline_claims
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
 from clipper.tiktok import creative_hook_from_text, source_headline_candidates
 
@@ -3623,6 +3624,7 @@ def reviewer_evidence_qualification(
     *,
     model_profile: dict[str, Any] | None = None,
     replay_only: bool = False,
+    claim_level_probe: bool = False,
 ) -> int:
     """Qualify the exact production path and blind QA, without acquisition or rendering."""
     saved = json.loads(baseline_path.read_text())
@@ -3727,6 +3729,7 @@ def reviewer_evidence_qualification(
         "annotated_fixtures": fixtures,
         "cases": [],
         "comparisons": [],
+        "claim_comparisons": [],
         "semantic_pass": False,
         "experiment_complete": False,
     }
@@ -3870,6 +3873,35 @@ def reviewer_evidence_qualification(
                 f"QA_CLAIM {fixture['headline']} passed={row['passed']} seconds={row['seconds']}",
                 flush=True,
             )
+            if claim_level_probe:
+                claim_row = {
+                    "headline": fixture["headline"],
+                    "expected_supported": fixture["expected_supported"],
+                }
+                try:
+                    claim_audit = audit_headline_claims(
+                        cache, fixture["headline"], source_units
+                    )
+                    claim_row.update(
+                        review=claim_audit,
+                        contract_valid=True,
+                        actual_supported=claim_audit["verdict"] == "supported",
+                    )
+                    claim_row["passed"] = (
+                        claim_row["actual_supported"] is fixture["expected_supported"]
+                    )
+                except (RuntimeError, ValueError, KeyError) as error:
+                    claim_row.update(
+                        passed=False,
+                        contract_valid=False,
+                        error=f"{type(error).__name__}: {error}",
+                    )
+                report["claim_comparisons"].append(claim_row)
+                checkpoint()
+                print(
+                    f"ATOMIC_CLAIM {fixture['headline']} passed={claim_row['passed']}",
+                    flush=True,
+                )
         report["experiment_complete"] = True
         report["semantic_pass"] = all(
             row["passed"] for row in (*report["cases"], *report["comparisons"])
@@ -3880,6 +3912,17 @@ def reviewer_evidence_qualification(
         report["semantic_error_count"] = sum(
             row.get("contract_valid") is True and not row["passed"] for row in rows
         )
+        if claim_level_probe:
+            report["claim_level_contract_error_count"] = sum(
+                row.get("contract_valid") is not True for row in report["claim_comparisons"]
+            )
+            report["claim_level_semantic_error_count"] = sum(
+                row.get("contract_valid") is True and not row["passed"]
+                for row in report["claim_comparisons"]
+            )
+            report["claim_level_pass"] = all(
+                row["passed"] for row in report["claim_comparisons"]
+            )
         report["qualification_rule"] = (
             "All 18 controls must be contract-valid and semantically correct. "
             "Exceptions never count as rejection."
@@ -3933,7 +3976,10 @@ def reviewer_gpu_qualification(baseline: Path, transcript: Path, output: Path) -
     source_hash = inputs["provenance"].get("identity", {}).get("source_sha256")
     if source_hash != "2a7e07b37074f3073d71b65e10a3efb4019b3cdd4277bc2d3770a99dcbc55e0a":
         raise ValueError("GPU regression qualification requires the pinned original source")
-    code_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    code_hash = hashlib.sha256(
+        Path(__file__).read_bytes()
+        + (Path(__file__).resolve().parents[1] / "src/clipper/editorial_claims.py").read_bytes()
+    ).hexdigest()
     packed = gzip.compress(json.dumps(inputs, sort_keys=True).encode(), mtime=0)
     report: dict[str, Any] = {
         "experiment": "source_position_gpu_qualification",
