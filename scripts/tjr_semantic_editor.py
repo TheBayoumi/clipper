@@ -2116,6 +2116,130 @@ def _ablation_result(
     )
 
 
+def _nli_verdict(probabilities: list[float]) -> str:
+    """Use fixed documented labels, never a fixture-tuned threshold."""
+    if (
+        len(probabilities) != 3
+        or any(not math.isfinite(p) or not 0 <= p <= 1 for p in probabilities)
+        or abs(sum(probabilities) - 1) > 1e-5
+    ):
+        raise RuntimeError("invalid NLI probabilities")
+    return ("contradiction", "entailment", "neutral")[max(range(3), key=probabilities.__getitem__)]
+
+
+def reviewer_nli_probe(baseline_path: Path, output: Path) -> int:
+    """Qualify a separate entailment classifier; never approve production."""
+    import importlib.metadata
+
+    fixtures = _ablation_fixtures(json.loads(baseline_path.read_text()))
+    profile = {
+        "model_repo": "cross-encoder/nli-deberta-v3-base",
+        "model_revision": "6c749ce3425cd33b46d187e45b92bbf96ee12ec7",
+        "model_sha256": "d8148c6d49e0a7925134294c56326c71fe0ab1dc390e37355e00c7efbb488afa",
+        "labels": ["contradiction", "entailment", "neutral"],
+        "max_tokens": 512,
+        "threads": 2,
+        "runtime": {
+            name: importlib.metadata.version(name)
+            for name in ("torch", "transformers", "tokenizers", "sentencepiece")
+        },
+    }
+    prior = json.loads(output.read_text()) if output.exists() else {}
+    cached = {
+        row["request_key"]: row
+        for row in prior.get("comparisons", [])
+        if "probabilities" in row and not row.get("error")
+    }
+    report: dict[str, Any] = {
+        "experiment": "source_claim_nli",
+        "diagnostic_only": True,
+        "production_approved": False,
+        "model_profile": profile,
+        "annotated_fixtures": fixtures,
+        "comparisons": [],
+        "cache_hits": 0,
+    }
+    model = tokenizer = torch = None
+    for fixture in fixtures:
+        request = {
+            "premise": " ".join(unit["text"] for unit in fixture["delivered_units"]),
+            "hypothesis": fixture["headline"],
+            "truncation": False,
+        }
+        identity = {"profile": profile, "request": request, "code": "nli-full-premise-v1"}
+        key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        row = {"fixture": fixture, "request": request, "request_key": key}
+        began = time.monotonic()
+        try:
+            old = cached.get(key)
+            if old:
+                probabilities = old["probabilities"]
+                _nli_verdict(probabilities)
+                report["cache_hits"] += 1
+                row["cache_hit"] = True
+            else:
+                if model is None:
+                    import torch as torch_runtime  # type: ignore[import-not-found]
+                    from huggingface_hub import snapshot_download  # type: ignore[import-not-found]
+                    from transformers import (  # type: ignore[import-not-found]
+                        AutoModelForSequenceClassification,
+                        AutoTokenizer,
+                    )
+
+                    torch = torch_runtime
+                    torch.set_num_threads(profile["threads"])
+                    root = Path(
+                        snapshot_download(
+                            profile["model_repo"],
+                            revision=profile["model_revision"],
+                            allow_patterns=["*.json", "spm.model", "model.safetensors"],
+                        )
+                    )
+                    digest = hashlib.sha256()
+                    with (root / "model.safetensors").open("rb") as weights:
+                        for chunk in iter(lambda: weights.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                    if digest.hexdigest() != profile["model_sha256"]:
+                        raise RuntimeError("NLI model checksum mismatch")
+                    tokenizer = AutoTokenizer.from_pretrained(root, trust_remote_code=False)
+                    model = AutoModelForSequenceClassification.from_pretrained(
+                        root, trust_remote_code=False, use_safetensors=True
+                    )
+                    if model.config.id2label != dict(enumerate(profile["labels"])):
+                        raise RuntimeError("NLI model label mapping mismatch")
+                    model.eval()
+                features = tokenizer(
+                    request["premise"],
+                    request["hypothesis"],
+                    truncation=False,
+                    return_tensors="pt",
+                )
+                row["input_tokens"] = int(features["input_ids"].shape[1])
+                if row["input_tokens"] > profile["max_tokens"]:
+                    raise RuntimeError("NLI source exceeds context; refusing silent truncation")
+                with torch.inference_mode():
+                    logits = model(**features).logits[0]
+                    probabilities = logits.softmax(dim=0).tolist()
+                    row["logits"] = logits.tolist()
+            verdict = _nli_verdict(probabilities)
+            row.update(
+                probabilities=probabilities,
+                verdict=verdict,
+                actual_supported=verdict == "entailment",
+                matches_expected=(verdict == "entailment") == fixture["expected_supported"],
+            )
+        except Exception as error:
+            row.update(error=f"{type(error).__name__}: {error}", matches_expected=False)
+        row["seconds"] = round(time.monotonic() - began, 3)
+        report["comparisons"].append(row)
+        output.write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps(row), flush=True)
+    report["experiment_complete"] = True
+    report["semantic_pass"] = all(row["matches_expected"] for row in report["comparisons"])
+    output.write_text(json.dumps(report, indent=2) + "\n")
+    return int(not report["semantic_pass"])
+
+
 def reviewer_model_ablation(baseline_path: Path, output: Path) -> int:
     """Controlled input/schema experiment; no selection, generation or media work."""
     from importlib.metadata import version
@@ -2759,8 +2883,13 @@ if __name__ == "__main__":
     parser.add_argument("--headline-factual-probe", action="store_true")
     parser.add_argument("--headline-consensus-probe", action="store_true")
     parser.add_argument("--headline-ablation-probe", action="store_true")
+    parser.add_argument("--headline-nli-probe", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.headline_nli_probe:
+        if not args.reviewer_model_probe_baseline:
+            parser.error("NLI qualification requires a completed factual baseline")
+        raise SystemExit(reviewer_nli_probe(args.reviewer_model_probe_baseline, args.output))
     if args.headline_ablation_probe:
         if not args.reviewer_model_probe_baseline:
             parser.error("ablation requires a completed consensus baseline")

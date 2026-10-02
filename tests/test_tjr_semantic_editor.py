@@ -1616,6 +1616,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         "factual_9b",
         "factual_consensus",
         "factual_ablation_4b",
+        "factual_nli",
     ):
         rendered = (
             script.replace("${{ inputs.reviewer_model_probe }}", mode)
@@ -1633,6 +1634,10 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
             "${{ inputs.reviewer_model_probe == 'factual_ablation_4b' }}",
             "true" if mode == "factual_ablation_4b" else "false",
         )
+        rendered = rendered.replace(
+            "${{ inputs.reviewer_model_probe == 'factual_nli' }}",
+            "true" if mode == "factual_nli" else "false",
+        )
         assert "${{" not in rendered
         subprocess.run(["bash", "-e", "-c", rendered], cwd=tmp_path, check=True)
         args = capture.read_text().splitlines()
@@ -1641,6 +1646,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert ("--headline-factual-probe" in args) == (mode in {"factual_9b", "factual_consensus"})
         assert ("--headline-consensus-probe" in args) == (mode == "factual_consensus")
         assert ("--headline-ablation-probe" in args) == (mode == "factual_ablation_4b")
+        assert ("--headline-nli-probe" in args) == (mode == "factual_nli")
         assert "scripts.tjr_semantic_editor" in args
 
 
@@ -1955,3 +1961,98 @@ def test_headline_rejects_forged_reviewed_spans_before_inference():
         _source_grounded_headline(
             Editor(), units, exchange_spans={"setup_quote": spans["setup_quote"]}
         )
+
+
+def test_nli_fixed_labels_and_invalid_probabilities():
+    import pytest
+
+    from scripts.tjr_semantic_editor import _nli_verdict
+
+    assert _nli_verdict([0.9, 0.05, 0.05]) == "contradiction"
+    assert _nli_verdict([0.05, 0.9, 0.05]) == "entailment"
+    assert _nli_verdict([0.05, 0.05, 0.9]) == "neutral"
+    for scores in ([], [1.0], [0.1, 0.1, 0.1], [-0.1, 1.1, 0], [float("nan"), 0, 1]):
+        with pytest.raises(RuntimeError, match="invalid NLI probabilities"):
+            _nli_verdict(scores)
+
+
+def test_nli_probe_reuses_exact_source_claim_proofs_without_loading_model(tmp_path, monkeypatch):
+    import builtins
+    import hashlib
+    import importlib.metadata
+    import json
+
+    from scripts.tjr_semantic_editor import reviewer_nli_probe
+
+    fixtures = [
+        {
+            "headline": f"Claim number {index} is stated here",
+            "delivered_units": [{"id": 0, "text": "Some unchanged exact source words."}],
+            "expected_supported": index < 2,
+        }
+        for index in range(8)
+    ]
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps(
+            {
+                "experiment": "source_presentation_x_verdict_schema",
+                "annotated_fixtures": fixtures,
+            }
+        )
+    )
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "pinned-runtime")
+    imports = []
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "torch":
+            imports.append(name)
+            raise ImportError("Diagnostic must not load models in this unit test")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    output = tmp_path / "nli.json"
+    # Missing proofs produce recorded failures; no fabricated model verdicts.
+    assert reviewer_nli_probe(baseline, output) == 1
+    report = json.loads(output.read_text())
+    assert len(imports) == 8 and report["cache_hits"] == 0
+    profile = report["model_profile"]
+    for row in report["comparisons"]:
+        row.pop("error")
+        row["probabilities"] = (
+            [0.05, 0.9, 0.05] if row["fixture"]["expected_supported"] else [0.05, 0.05, 0.9]
+        )
+    output.write_text(json.dumps(report))
+    imports.clear()
+    assert reviewer_nli_probe(baseline, output) == 0
+    report = json.loads(output.read_text())
+    assert not imports and report["cache_hits"] == 8
+    assert report["production_approved"] is False
+    assert all(row["request"]["truncation"] is False for row in report["comparisons"])
+    for row in report["comparisons"]:
+        assert (
+            row["request_key"]
+            == hashlib.sha256(
+                json.dumps(
+                    {
+                        "profile": profile,
+                        "request": row["request"],
+                        "code": "nli-full-premise-v1",
+                    },
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+        )
+    fixtures[0]["delivered_units"][0]["text"] += " Changed."
+    baseline.write_text(
+        json.dumps(
+            {
+                "experiment": "source_presentation_x_verdict_schema",
+                "annotated_fixtures": fixtures,
+            }
+        )
+    )
+    assert reviewer_nli_probe(baseline, output) == 1
+    assert len(imports) == 1
+    assert json.loads(output.read_text())["cache_hits"] == 7

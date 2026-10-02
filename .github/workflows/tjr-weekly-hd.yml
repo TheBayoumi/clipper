@@ -41,7 +41,7 @@ on:
         description: "Diagnostic model comparison only; factual_9b tests saved headline claims without selection or media."
         required: false
         type: choice
-        options: [disabled, focused_4b, factual_9b, factual_consensus, factual_ablation_4b]
+        options: [disabled, focused_4b, factual_9b, factual_consensus, factual_ablation_4b, factual_nli]
         default: disabled
       editorial_preflight:
         description: "Run real-model reviewer regression on cached transcript only; no source acquisition."
@@ -484,7 +484,13 @@ jobs:
         with:
           path: ~/.cache/pip
           key: reviewer-cpu-ubuntu24-${{ runner.arch }}-py312-llamacpp035-nativeoff-v1
+      - name: Install pinned CPU entailment classifier
+        if: inputs.reviewer_model_probe == 'factual_nli'
+        run: |
+          python -m pip install "torch==2.8.0" --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e . "transformers==4.55.4" "sentencepiece==0.2.1"
       - name: Install pinned CPU reviewer
+        if: inputs.reviewer_model_probe != 'factual_nli'
         run: CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e . "llama-cpp-python==0.3.35"
       - uses: actions/cache/save@v4
         if: steps.reviewer_cpu_cache.outputs.cache-hit != 'true'
@@ -512,6 +518,9 @@ jobs:
               fi
               if [[ '${{ inputs.reviewer_model_probe == 'factual_consensus' }}' == 'true' ]]; then
                 PROBE_ARGUMENTS+=(--headline-consensus-probe)
+              fi
+              if [[ '${{ inputs.reviewer_model_probe == 'factual_nli' }}' == 'true' ]]; then
+                PROBE_ARGUMENTS+=(--headline-nli-probe)
               fi
               if [[ '${{ inputs.reviewer_model_probe == 'factual_ablation_4b' }}' == 'true' ]]; then
                 PROBE_ARGUMENTS+=(--headline-ablation-probe)
