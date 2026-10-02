@@ -1625,6 +1625,56 @@ def _audit_headline(
     return audit
 
 
+def _source_grounded_headline(editor: LocalContextualEditor, units: list[str]) -> dict[str, Any]:
+    """Extract source passages before wording a hook; never consume critic prose."""
+    evidence = editor._review_completion(
+        "Select exact passages from delivered_units for the central highlight of the "
+        "whole exchange, not merely its opening. central_quote must include the explicit "
+        "subject and action or the central factual contrast. context_quote supplies any "
+        "needed setting or quantity; payoff_quote supplies the delivered consequence, "
+        "reaction or contrasting outcome. Copy continuous source words, not paraphrases, "
+        "and preserve negation and conditional language. Use the shortest passages that "
+        "retain who did what. Do not resolve ambiguous pronouns by guessing a person, "
+        "relationship or role. Each quote must contain 3-50 exact words. "
+        "Return output_schema JSON; no explanations or inferred facts.",
+        {"delivered_units": [{"id": i, "text": unit} for i, unit in enumerate(units)]},
+        {key: {"type": "string"} for key in ("central_quote", "context_quote", "payoff_quote")},
+        224,
+    )
+    spans = {}
+    for key in ("central_quote", "context_quote", "payoff_quote"):
+        quote = evidence.get(key)
+        span = _source_quote_span(quote, units, max_words=64) if isinstance(quote, str) else None
+        if span is None:
+            raise RuntimeError("headline evidence is not an exact delivered source passage")
+        spans[key] = span
+    headline = editor._review_completion(
+        "Write a clear 4-14 word on-screen hook expressing the central event or contrast "
+        "across these source_passages. Write one coherent highlight, not a keyword list "
+        "or an opening transcription. These are literal source passages, not model "
+        "interpretations. Preserve who acts, what happens and where it happens. Use an "
+        "explicit source name when available; do not invent an opponent, employer or "
+        "other relationship. Do not transfer actions between people or change a meeting "
+        "into the event itself. Do not invent motives or turn conditional earnings into "
+        "actual earnings. Avoid dangling pronouns. Use only facts in source_passages. "
+        "Return output_schema JSON.",
+        {"source_passages": {key: span["text"] for key, span in spans.items()}},
+        {"headline": {"type": "string"}},
+        64,
+    )
+    candidate = headline.get("headline")
+    if not isinstance(candidate, str) or not 4 <= len(_WORD.findall(candidate)) <= 14:
+        raise RuntimeError("source-grounded headline must contain 4-14 words")
+    audit = _audit_headline(editor, candidate, units)
+    return {
+        "headline": candidate,
+        "headline_source_spans": spans,
+        "headline_supported": audit["verdict"] == "supported",
+        "headline_self_contained": audit["verdict"] == "supported",
+        "headline_audits": [{"headline": candidate, **audit}],
+    }
+
+
 def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any]) -> dict[str, Any]:
     """Diagnostic alternative: delivered-only purpose/story plus a narrow continuation check."""
     selected = context["selected_units"]
@@ -1832,67 +1882,7 @@ def _focused_span_review(editor: LocalContextualEditor, context: dict[str, Any])
     }
     if promotion_ids or not result["opening_standalone"] or not payoff or setup_span is None:
         return result
-    headline = editor._review_completion(
-        "Write a 4-14 word headline for the central insight or contrast of clip_transcript. "
-        "Use only delivered facts; no keyword lists, invented outcomes or dangling pronouns. "
-        "Its promise must be supported by setup_quote and resolution_quote. "
-        "headline_supported and headline_self_contained are integers 0 or 1. "
-        "reason must be at most 15 words. Return JSON matching output_schema.",
-        {
-            "clip_transcript": text,
-            "setup_quote": result["setup_quote"],
-            "resolution_quote": result["payoff_quote"],
-        },
-        {
-            "reason": {"type": "string"},
-            "headline": {"type": "string"},
-            "headline_supported": {"type": "integer", "enum": [0, 1]},
-            "headline_self_contained": {"type": "integer", "enum": [0, 1]},
-        },
-        96,
-    )
-    for key in ("headline_supported", "headline_self_contained"):
-        if type(headline.get(key)) is not int or headline[key] not in (0, 1):
-            raise RuntimeError("headline reviewer returned invalid flags")
-        result[key] = headline[key] == 1
-    result["headline"] = headline["headline"]
-    if not 4 <= len(_WORD.findall(result["headline"])) <= 14:
-        result["headline_supported"] = False
-    result["headline_review"] = headline
-    result["headline_audits"] = []
-    if result["headline_supported"] and result["headline_self_contained"]:
-        for attempt in range(2):
-            audit = _audit_headline(editor, result["headline"], selected)
-            result["headline_audits"].append({"headline": result["headline"], **audit})
-            if audit["verdict"] == "supported":
-                break
-            result["headline_supported"] = False
-            if attempt:
-                break
-            repaired = editor._review_completion(
-                "Rewrite the rejected headline as a clear 4-14 word highlight of the "
-                "whole selected exchange. Correct the unsupported claim identified by "
-                "fact_check. Preserve who did what and the setting. Invent no roles, "
-                "relationships, quantities or outcomes. Use source_transcript only. "
-                "Always explain the correction in a nonempty reason (at most 20 words). "
-                "Return output_schema JSON.",
-                {
-                    "source_transcript": text,
-                    "rejected_headline": result["headline"],
-                    "fact_check": audit["reason"],
-                },
-                {
-                    "reason": {"type": "string", "minLength": 1, "maxLength": 180},
-                    "headline": {"type": "string"},
-                },
-                96,
-            )
-            candidate = repaired.get("headline")
-            if not isinstance(candidate, str) or not 4 <= len(_WORD.findall(candidate)) <= 14:
-                break
-            result["headline"] = candidate
-            result["headline_repair"] = repaired
-            result["headline_supported"] = True
+    result.update(_source_grounded_headline(editor, selected))
     return result
 
 

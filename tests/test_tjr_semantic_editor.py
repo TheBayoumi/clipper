@@ -282,11 +282,11 @@ def test_focused_review_separates_speech_purpose_and_excluded_payoff():
             "relation": "new_topic",
         },
         {
-            "reason": "The delivered exchange contrasts views with income.",
-            "headline": "Huge social views earned nothing but helped the podcast",
-            "headline_supported": 1,
-            "headline_self_contained": 1,
+            "central_quote": "I had huge views on my social account",
+            "context_quote": "But I did not earn any money from those views",
+            "payoff_quote": "I used them to drive my podcast instead",
         },
+        {"headline": "Huge social views earned nothing but helped the podcast"},
     ]
     replies.append(
         {
@@ -1332,11 +1332,11 @@ def test_opening_dependency_requires_source_evidence_without_prior_verdict():
             "opening_standalone": 1,
         },
         {
-            "headline": "Door staff stopped the performer at his own show",
-            "reason": "The event resolves",
-            "headline_supported": 1,
-            "headline_self_contained": 1,
+            "central_quote": "the door staff stopped me",
+            "context_quote": "At my first performance",
+            "payoff_quote": "The owner came out and let me inside",
         },
+        {"headline": "Door staff stopped the performer at his own show"},
     ]
     replies.append(
         {
@@ -1387,44 +1387,84 @@ def test_headline_audit_rejects_invented_roles_and_requires_source_quote():
         _audit_headline(Editor(), "The owner waited outside his shop", units)
 
 
-def test_rewritten_headline_requires_new_audit_and_stops_after_one_repair():
-    from scripts.tjr_semantic_editor import _focused_span_review
+def test_headline_critic_prose_never_becomes_generation_input():
+    from scripts.tjr_semantic_editor import _source_grounded_headline
 
     units = ["A visitor waited outside the shop.", "The owner unlocked the shop and let him in."]
     replies = [
-        {"reason": "Conversation", "ad_read_quote": "", "show_intro_quote": ""},
         {
-            "reason": "The visitor got in",
-            "setup_quote": "A visitor waited outside",
-            "resolution_quote": "let him in",
-            "opening_independent": 1,
-            "last_thought_finished": 1,
+            "central_quote": "A visitor waited outside the shop",
+            "context_quote": "The owner unlocked the shop",
+            "payoff_quote": "and let him in",
         },
+        {"headline": "The owner waited outside his shop"},
         {
-            "reason": "Generator claims support",
-            "headline": "The owner waited outside his shop",
-            "headline_supported": 1,
-            "headline_self_contained": 1,
-        },
-        {
-            "reason": "Visitor is not the owner",
+            # A correct negative verdict can still have a false explanation.
+            "reason": "The visitor broke into the shop instead",
             "source_quote": "A visitor waited outside",
             "verdict": "unsupported",
         },
-        {"reason": "Attempted correction", "headline": "The visitor broke into the shop"},
-        {
-            "reason": "Owner let the visitor in; no break-in",
-            "source_quote": "The owner unlocked the shop and let him in",
-            "verdict": "unsupported",
-        },
     ]
+    calls = []
 
     class Editor:
-        def _review_completion(self, *args):
+        def _review_completion(self, prompt, payload, *args):
+            calls.append(payload)
             assert replies
             return replies.pop(0)
 
-    result = _focused_span_review(Editor(), {"selected_units": units, "before": [], "after": []})
+    result = _source_grounded_headline(Editor(), units)
     assert result["headline_supported"] is False
-    assert len(result["headline_audits"]) == 2
-    assert not replies
+    assert len(result["headline_audits"]) == 1
+    assert len(calls) == 3 and not replies
+    assert set(calls[1]) == {"source_passages"}
+    assert "broke into" not in str(calls[1])
+    assert "fact_check" not in str(calls)
+    assert result["headline_source_spans"]["central_quote"]["first_unit"] == 0
+
+
+def test_headline_generation_requires_literal_evidence_and_preserves_conditions():
+    import pytest
+
+    from scripts.tjr_semantic_editor import _source_grounded_headline
+
+    units = [
+        "The analyst said the trial failed.",
+        "If the control worked, the researcher would repeat the trial.",
+        "The sponsor thanked the analyst for reporting the failure.",
+    ]
+    evidence = {
+        "central_quote": "The analyst said the trial failed",
+        "context_quote": "If the control worked, the researcher would repeat the trial",
+        "payoff_quote": "The sponsor thanked the analyst for reporting the failure",
+    }
+    replies = [
+        evidence,
+        {"headline": "Analyst reports failed trial and sponsor thanks them"},
+        {
+            "reason": "Reporting is explicit",
+            "source_quote": evidence["payoff_quote"],
+            "verdict": "supported",
+        },
+    ]
+    calls = []
+
+    class Editor:
+        def _review_completion(self, prompt, payload, *args):
+            calls.append(payload)
+            return replies.pop(0)
+
+    result = _source_grounded_headline(Editor(), units)
+    assert result["headline_supported"] is True
+    assert calls[1]["source_passages"]["context_quote"].startswith("If")
+    assert "reason" not in calls[1]["source_passages"]
+    # A copied model interpretation cannot be laundered into source evidence.
+    for bad in (
+        "The researcher said the trial failed",
+        "The control worked and the researcher repeated the trial",
+    ):
+        replies[:] = [{**evidence, "central_quote": bad}]
+        calls.clear()
+        with pytest.raises(RuntimeError, match="exact delivered source passage"):
+            _source_grounded_headline(Editor(), units)
+        assert len(calls) == 1
