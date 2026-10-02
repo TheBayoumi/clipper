@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from clipper.editorial import EditorialReview
 from clipper.models import ClipCandidate
-from scripts.tjr_editorial import EditorialReview
 
 
 def analyze_candidate_visuals(source: Path, candidate: ClipCandidate) -> EditorialReview:

@@ -42,7 +42,7 @@ def _pipeline_identity(source_sha: str) -> str:
         "scripts/tjr_modal_runner.py",
         "scripts/tjr_youtube_preview.py",
         "scripts/tjr_semantic_editor.py",
-        "scripts/tjr_editorial.py",
+        "src/clipper/editorial.py",
         "scripts/tjr_quality.py",
         "scripts/tjr_visual_analysis.py",
         "campaigns/reach-double-coverage-dedicated.yaml",

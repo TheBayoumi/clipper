@@ -26,18 +26,18 @@ from typing import Any
 import defusedxml.ElementTree as ET
 
 from clipper.brief import load_brief
+from clipper.editorial import (
+    MAX_RENDERABLE_CLIPS,
+    RUBRIC_VERSION,
+    WEIGHTS,
+    select_editorial_moments,
+)
 from clipper.models import ClipCandidate, TranscriptSegment, WordTiming
 from clipper.pipeline import _download_asset
 from clipper.render import FFmpegRenderer
 from clipper.source_fidelity import compare_audio_to_source, probe_source_profile
 from clipper.tiktok import audit_tiktok_ass
 from clipper.transcript import FasterWhisperTranscriber
-from scripts.tjr_editorial import (
-    MAX_RENDERABLE_CLIPS,
-    RUBRIC_VERSION,
-    WEIGHTS,
-    select_editorial_moments,
-)
 from scripts.tjr_quality import check_full_decode, probe_original, probe_video
 from scripts.tjr_semantic_editor import (
     build_semantic_editorial_candidates,

@@ -11,6 +11,7 @@ on:
       - "src/clipper/scoring.py"
       - "scripts/tjr_modal_probe.py"
       - "scripts/tjr_editorial.py"
+      - "src/clipper/editorial.py"
       - "scripts/tjr_browser_probe.py"
       - "scripts/tjr_modal_runner.py"
       - "scripts/tjr_*.py"

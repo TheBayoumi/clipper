@@ -12,6 +12,15 @@ from scripts.tjr_editorial import (
 )
 
 
+def test_packaged_editorial_is_the_production_implementation() -> None:
+    from clipper import editorial
+    from scripts import tjr_editorial
+
+    assert tjr_editorial.select_editorial_moments is editorial.select_editorial_moments
+    assert tjr_editorial.evaluate_candidate is editorial.evaluate_candidate
+    assert tjr_editorial.RUBRIC_VERSION == editorial.RUBRIC_VERSION
+
+
 def clip(start: float, text: str, score: float = 8) -> ClipCandidate:
     return ClipCandidate(
         "p2LU37eat70",
