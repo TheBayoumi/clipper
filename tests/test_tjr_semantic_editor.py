@@ -2596,10 +2596,12 @@ def test_position_review_preserves_evidence_and_excluded_namespace(monkeypatch):
         def _review_completion(self, prompt, payload, properties, tokens):
             if "ad_read_span" in properties:
                 return dict(
+                    ad_read_present=int(promotion["value"]),
                     ad_read_span=dict(
                         first_unit=0 if promotion["value"] else -1,
                         last_unit=0 if promotion["value"] else -1,
                     ),
+                    show_intro_present=0,
                     show_intro_span=dict(first_unit=-1, last_unit=-1),
                     reason="An ordinary account.",
                 )
@@ -2663,6 +2665,74 @@ def test_position_review_preserves_evidence_and_excluded_namespace(monkeypatch):
     assert rejected["ending_complete"] is True
     assert "exchange_accepted" not in rejected
     assert len(captured) == 1
+
+
+def test_position_purpose_rejects_label_without_matching_evidence():
+    import pytest
+
+    from scripts.tjr_semantic_editor import _source_position_review
+
+    class Model:
+        def _review_completion(self, prompt, payload, properties, tokens):
+            return dict(
+                ad_read_present=1,
+                ad_read_span=dict(first_unit=-1, last_unit=-1),
+                show_intro_present=0,
+                show_intro_span=dict(first_unit=-1, last_unit=-1),
+                reason="Claims an ad but supplies no delivered evidence.",
+            )
+
+    with pytest.raises(RuntimeError, match="label and evidence positions disagree"):
+        _source_position_review(Model(), dict(selected_units=["A complete exchange."], after=[]))
+
+
+def test_position_headline_unclaimed_dimensions_do_not_veto_supported_claim():
+    from scripts.tjr_semantic_editor import _qa_headline_audit
+
+    class Model:
+        def _review_completion(self, prompt, payload, properties, tokens):
+            assert "not_claimed" in properties["setting_time"]["enum"]
+            return dict(
+                actor_action="supported",
+                relationship_role="not_claimed",
+                setting_time="not_claimed",
+                quantities_outcomes="not_claimed",
+                headline_self_contained=1,
+                central_highlight=1,
+                reason="Actor and action are explicit.",
+            )
+
+    result = _qa_headline_audit(
+        Model(),
+        "Bobby Green paced during the meeting",
+        ["Bobby Green paced during the meeting."],
+        fact_backend=lambda editor, units: {"facts": {}},
+    )
+    assert result["verdict"] == "supported"
+
+
+def test_position_headline_cannot_pass_without_any_supported_claim():
+    from scripts.tjr_semantic_editor import _qa_headline_audit
+
+    class Model:
+        def _review_completion(self, prompt, payload, properties, tokens):
+            return {
+                **dict.fromkeys(
+                    ("actor_action", "relationship_role", "setting_time", "quantities_outcomes"),
+                    "not_claimed",
+                ),
+                "headline_self_contained": 1,
+                "central_highlight": 1,
+                "reason": "No factual claim identified.",
+            }
+
+    result = _qa_headline_audit(
+        Model(),
+        "An empty tease without a fact",
+        ["Bobby Green paced during the meeting."],
+        fact_backend=lambda editor, units: {"facts": {}},
+    )
+    assert result["verdict"] == "uncertain"
 
 
 def test_position_facts_are_blind_and_extract_source_text():

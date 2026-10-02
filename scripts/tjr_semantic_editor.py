@@ -2093,15 +2093,18 @@ def _qa_headline_audit(
     fact_backend: Callable[[Any, list[str]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     source = (fact_backend or _source_fact_record)(editor, units)
-    states = ["supported", "unsupported", "uncertain"]
+    states = ["not_claimed", "supported", "unsupported", "uncertain"]
     audit = editor._review_completion(
-        "Compare each actual claim in headline with independently answered source questions "
-        "and original source_units. These source answers were produced without the headline. "
+        "Compare each actual claim in headline with original source_units. Blind source_answers "
+        "are non-exhaustive notes, not a complete account; re-read source_units for every "
+        "claimed detail. For each dimension, use not_claimed when the headline makes no "
+        "claim about it; do not mark an absent claim uncertain. Use supported only when "
+        "the source establishes the claimed detail, unsupported for a contradiction, and "
+        "uncertain when evidence is insufficient. "
         "A quoted instruction is not evidence that the event occurred in that setting. "
         "Hypothetical earnings do not prove actual earnings. A mentioned person is not "
-        "necessarily the actor or opponent. A dimension not claimed is supported. "
-        "If the source does not establish a claimed detail, use uncertain; if it conflicts, "
-        "use unsupported. Source quotes outrank interpretations. "
+        "necessarily the actor or opponent. A conditional outcome is not an actual outcome, "
+        "and its condition must be preserved. Source quotes outrank interpretations. "
         "Separately assess headline_self_contained: a readable, coherent highlight without "
         "dangling references or a keyword list. central_highlight is 1 only if it expresses "
         "the central event/contrast across the selected exchange. Those two quality judgments "
@@ -2127,7 +2130,8 @@ def _qa_headline_audit(
         raise RuntimeError("question-answer audit returned invalid judgments")
     verdict = (
         "supported"
-        if all(audit[key] == "supported" for key in _HEADLINE_COMPONENTS)
+        if any(audit[key] == "supported" for key in _HEADLINE_COMPONENTS)
+        and all(audit[key] in {"not_claimed", "supported"} for key in _HEADLINE_COMPONENTS)
         else "unsupported"
         if any(audit[key] == "unsupported" for key in _HEADLINE_COMPONENTS)
         else "uncertain"
@@ -2254,7 +2258,9 @@ def _source_grounded_headline(
             **payload,
             "prior_headline": candidate,
             "failed_dimensions": [
-                key for key in _HEADLINE_COMPONENTS if audit.get(key) != "supported"
+                key
+                for key in _HEADLINE_COMPONENTS
+                if audit.get(key) not in {"supported", "not_claimed"}
             ],
             "quality_needs_revision": not readable or not central,
             "revision_rule": (
@@ -2386,23 +2392,37 @@ def _source_position_review(
     if not selected or any(not isinstance(unit, str) or not unit.strip() for unit in selected):
         raise ValueError("review requires nonempty delivered units")
     purpose = editor._review_completion(
-        "Identify an actual host ad read to the audience or show/guest introduction in "
-        "delivered_units. Discussion ABOUT sponsors, earnings or business is substantive "
-        "conversation. Select ad_read_span and show_intro_span as continuous delivered "
-        "unit positions. Both positions -1 means absent. Do not copy source text. "
+        "Classify the speech act performed in delivered_units, not its topic. "
+        "ad_read_present is 1 only when a host delivers a sponsor message to the audience; "
+        "conversation about sponsors, earnings or business is not an ad read. "
+        "show_intro_present is 1 only when a host introduces the show, episode, segment "
+        "or guest to the audience; a person being named in a story is not an introduction. "
+        "For each present act, select the shortest continuous delivered unit span that "
+        "actually performs it. For an absent act set both span positions to -1, even if "
+        "the topic resembles an ad or introduction. Do not copy source text. "
         "reason is at most 20 words. Return output_schema JSON.",
         {"delivered_units": _numbered_source(selected)},
         {
+            "ad_read_present": {"type": "integer", "enum": [0, 1]},
             "ad_read_span": _unit_span_schema(len(selected)),
+            "show_intro_present": {"type": "integer", "enum": [0, 1]},
             "show_intro_span": _unit_span_schema(len(selected)),
             "reason": {"type": "string"},
         },
-        128,
+        160,
     )
     purpose_spans = {
         key: _resolve_source_units(purpose.get(key), selected)
         for key in ("ad_read_span", "show_intro_span")
     }
+    for label, key in (
+        ("ad_read_present", "ad_read_span"),
+        ("show_intro_present", "show_intro_span"),
+    ):
+        if type(purpose.get(label)) is not int or purpose[label] not in (0, 1):
+            raise RuntimeError("speech-purpose review returned an invalid label")
+        if (purpose[label] == 1) != (purpose_spans[key] is not None):
+            raise RuntimeError("speech-purpose label and evidence positions disagree")
     promotion_ids = sorted(
         {
             i
