@@ -443,7 +443,7 @@ jobs:
           if [ -d reviewer-baseline ]; then
             BASELINE=$(find reviewer-baseline -name reviewer-preflight.json -print -quit)
             test -n "$BASELINE"
-            if [ '${{ inputs.reviewer_model_probe }}' = 'true' ]; then
+            if [ '${{ inputs.reviewer_model_probe }}' != 'disabled' ]; then
               TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
               test -n "$TRANSCRIPT"
               PROBE_ARGUMENTS=()

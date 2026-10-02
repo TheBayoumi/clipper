@@ -1600,3 +1600,41 @@ def test_factual_probe_uses_separate_model_with_bounded_memory_and_no_exchange_r
     assert report["model_repo"] == "bartowski/Qwen_Qwen3.5-9B-GGUF"
     assert loads[0]["n_ctx"] == 2048 and loads[0]["n_batch"] == 128
     assert len(loads) == len(generated) == len(report["cases"]) == 1
+
+
+def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypatch):
+    import os
+    import subprocess
+    from pathlib import Path
+
+    import yaml
+
+    workflow = yaml.safe_load(Path(".github/workflows/tjr-weekly-hd.yml").read_text())
+    script = next(
+        step["run"]
+        for step in workflow["jobs"]["editorial_preflight"]["steps"]
+        if step.get("name", "").startswith("Assess reviewer evidence")
+    )
+    (tmp_path / "reviewer-baseline").mkdir()
+    (tmp_path / "reviewer-baseline/reviewer-preflight.json").write_text("{}")
+    (tmp_path / "reviewer-input").mkdir()
+    (tmp_path / "reviewer-input/transcript.json").write_text("[]")
+    executable = tmp_path / "bin/python"
+    executable.parent.mkdir()
+    executable.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$PROBE_ARGUMENT_CAPTURE"\n')
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{executable.parent}:{os.environ['PATH']}")
+    capture = tmp_path / "args.txt"
+    monkeypatch.setenv("PROBE_ARGUMENT_CAPTURE", str(capture))
+    for mode in ("disabled", "focused_4b", "factual_9b"):
+        rendered = script.replace("${{ inputs.reviewer_model_probe }}", mode).replace(
+            "${{ inputs.reviewer_model_probe == 'factual_9b' }}",
+            "true" if mode == "factual_9b" else "false",
+        )
+        assert "${{" not in rendered
+        subprocess.run(["bash", "-e", "-c", rendered], cwd=tmp_path, check=True)
+        args = capture.read_text().splitlines()
+        assert ("--reviewer-model-probe-baseline" in args) == (mode != "disabled")
+        assert ("--reviewer-diagnostics-baseline" in args) == (mode == "disabled")
+        assert ("--headline-factual-probe" in args) == (mode == "factual_9b")
+        assert "scripts.tjr_semantic_editor" in args
