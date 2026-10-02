@@ -202,6 +202,200 @@ def _transport_error(output: str) -> str:
 
 volume = modal.Volume.from_name("clipper-tjr-source-transport", create_if_missing=True)
 
+# Private qualification worker in the existing app/volume; not an HTTP endpoint.
+_project_root = Path(__file__).resolve().parents[1]
+reviewer_gpu_image = (
+    modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.12")
+    .apt_install("build-essential", "cmake", "ca-certificates")
+    .env(
+        {
+            "CMAKE_ARGS": "-DGGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=89",
+            "CMAKE_BUILD_PARALLEL_LEVEL": "2",
+            "PYTHONPATH": "/app/src:/app",
+            "TJR_REVIEW_MODEL_CACHE": "/tjr-media/reviewer/weights",
+        }
+    )
+    .pip_install(
+        "llama-cpp-python==0.3.35",
+        "numpy==2.3.5",
+        "PyYAML==6.0.3",
+        "Pillow==11.3.0",
+        "gdown==6.4.1",
+        "defusedxml==0.7.1",
+    )
+    .add_local_dir(str(_project_root / "src"), remote_path="/app/src")
+    .add_local_dir(
+        str(_project_root / "scripts"), remote_path="/app/scripts", ignore=["__pycache__/"]
+    )
+)
+
+
+@app.function(
+    image=reviewer_gpu_image,
+    gpu="L40S",
+    cpu=4,
+    memory=32768,
+    timeout=1800,
+    max_containers=1,
+    retries=0,
+    volumes={"/tjr-media": volume},
+)
+def qualify_source_reviewer_gpu(
+    packed: bytes, profile: dict[str, Any], job_key: str, code_hash: str
+) -> dict[str, Any]:
+    """One candidate, exact production review code, durable raw proof and warm replay."""
+    import gzip
+    import hashlib
+    import subprocess
+    import threading
+    import time
+
+    from llama_cpp import llama_supports_gpu_offload
+
+    from scripts.tjr_semantic_editor import _gpu_review_profiles, reviewer_evidence_qualification
+
+    actual_code_hash = hashlib.sha256(
+        Path("/app/scripts/tjr_semantic_editor.py").read_bytes()
+    ).hexdigest()
+    expected_key = hashlib.sha256(
+        packed + json.dumps(profile, sort_keys=True).encode() + code_hash.encode()
+    ).hexdigest()
+    if (
+        actual_code_hash != code_hash
+        or job_key != expected_key
+        or profile not in _gpu_review_profiles()
+    ):
+        raise ValueError("GPU qualification code/profile/input identity mismatch")
+    if not llama_supports_gpu_offload() or profile.get("gpu_layers") != -1:
+        raise RuntimeError("GPU backend unavailable; CPU fallback is prohibited")
+    root = Path("/tjr-media/reviewer/qualification") / job_key
+    root.mkdir(parents=True, exist_ok=True)
+    manifest_path = root / "manifest.json"
+    if manifest_path.is_file():
+        saved = json.loads(manifest_path.read_text())
+        if all(
+            (root / name).is_file()
+            and hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
+            for name, digest in saved.get("file_hashes", {}).items()
+        ) and saved.get("file_hashes"):
+            return {**saved, "qualification_cache_hit": True}
+    inputs = json.loads(gzip.decompress(packed))
+    if inputs.get("worker_code_sha256") != hashlib.sha256(Path(__file__).read_bytes()).hexdigest():
+        raise ValueError("GPU worker code differs from the submitted qualification")
+    if (
+        inputs["provenance"].get("identity", {}).get("source_sha256")
+        != "2a7e07b37074f3073d71b65e10a3efb4019b3cdd4277bc2d3770a99dcbc55e0a"
+    ):
+        raise ValueError("qualification source differs from pinned original")
+    for name, value in (
+        ("baseline.json", inputs["baseline"]),
+        ("transcript.json", inputs["transcript"]),
+        ("editorial-cache.json", inputs["provenance"]),
+    ):
+        (root / name).write_text(json.dumps(value))
+    stop = threading.Event()
+    vram = {"peak_mib": 0}
+
+    def sample_vram() -> None:
+        while not stop.is_set():
+            try:
+                values = subprocess.check_output(
+                    ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                    text=True,
+                    timeout=5,
+                )
+                vram["peak_mib"] = max(
+                    vram["peak_mib"], *(int(value) for value in values.splitlines())
+                )
+            except (ValueError, OSError, subprocess.SubprocessError):
+                pass
+            stop.wait(1)
+
+    monitor = threading.Thread(target=sample_vram, daemon=True)
+    monitor.start()
+    began = time.monotonic()
+    manifest: dict[str, Any] = {
+        "profile": profile,
+        "job_key": job_key,
+        "passed": False,
+        "qualification_cache_hit": False,
+        "runtime": {"gpu_layers": -1, "gpu_offload_supported": True},
+    }
+    try:
+        manifest["runtime"]["gpu"] = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
+            text=True,
+            timeout=10,
+        ).strip()
+        cold = root / "cold"
+        cold.mkdir(exist_ok=True)
+        cold_output = cold / "proof.json"
+        reviewer_evidence_qualification(
+            root / "baseline.json", root / "transcript.json", cold_output, model_profile=profile
+        )
+        proof = json.loads(cold_output.read_text())
+        manifest.update(
+            {
+                key: proof[key]
+                for key in (
+                    "contract_error_count",
+                    "semantic_error_count",
+                    "request_cache_metrics",
+                    "seconds",
+                    "semantic_pass",
+                )
+            }
+        )
+        manifest["warm_replay"] = {
+            "performed": False,
+            "reason": "contract errors must be resolved before reuse qualification",
+        }
+        if proof["contract_error_count"] == 0:
+            replay = root / "replay"
+            replay.mkdir(exist_ok=True)
+            reviewer_evidence_qualification(
+                cold_output, root / "transcript.json", replay / "proof.json", model_profile=profile
+            )
+            warm = json.loads((replay / "proof.json").read_text())
+            stable = all(
+                [
+                    (row.get("actual_accept"), row.get("actual_supported"), row["passed"])
+                    for row in proof[key]
+                ]
+                == [
+                    (row.get("actual_accept"), row.get("actual_supported"), row["passed"])
+                    for row in warm[key]
+                ]
+                for key in ("cases", "comparisons")
+            )
+            manifest["warm_replay"] = {
+                "performed": True,
+                "same_verdicts": stable,
+                **warm["request_cache_metrics"],
+            }
+            manifest["passed"] = (
+                proof["semantic_pass"]
+                and stable
+                and warm["request_cache_metrics"]["model_calls"] == 0
+            )
+    except Exception as error:
+        manifest["error"] = f"{type(error).__name__}: {error}"
+    finally:
+        stop.set()
+        monitor.join(timeout=6)
+        manifest["passed"] = manifest["passed"] and vram["peak_mib"] >= 512
+        manifest["runtime"].update(
+            peak_sampled_vram_mib=vram["peak_mib"], wall_seconds=round(time.monotonic() - began, 3)
+        )
+        manifest["files"] = [str(path.relative_to(root)) for path in root.glob("*/*.json")]
+        manifest["file_hashes"] = {
+            name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+            for name in manifest["files"]
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+        volume.commit()
+    return manifest
+
 
 @app.function(image=image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=2048)
 def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = "") -> dict[str, Any]:

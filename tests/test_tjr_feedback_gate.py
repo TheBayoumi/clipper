@@ -773,6 +773,33 @@ def test_independent_v6_requires_reviewed_spans_and_separate_qa_proof(tmp_path):
         path.write_text(json.dumps(changed))
         assert not reviewed_summary_evidence(tmp_path, hook, " ".join(units), 0, 24, "a" * 64)
 
+    saved["identity"]["version"] = "podcast_structured_editor_v7"
+    from scripts.tjr_semantic_editor import _resolve_source_units
+
+    spans = {
+        key: _resolve_source_units(dict(first_unit=i, last_unit=i), units)
+        for i, key in enumerate(("setup_quote", "resolution_quote"))
+    }
+    review.update(
+        evidence_contract="source_unit_spans_v1",
+        source_quote_spans=spans,
+        headline_source_spans=spans,
+    )
+    for fact in review["headline_audits"][-1]["facts"].values():
+        fact["source_span"] = spans["resolution_quote"]
+    review["boundary_audit"].update(setup_unit_last_id=0, payoff_unit_last_id=1)
+    path.write_text(json.dumps(saved))
+    assert reviewed_summary_evidence(tmp_path, hook, " ".join(units), 0, 24, "a" * 64)
+    for field, value in (("evidence_contract", "unknown"), ("source_quote_spans", {})):
+        changed = copy.deepcopy(saved)
+        changed["audit"]["assessments"][0]["exchange_review"][field] = value
+        path.write_text(json.dumps(changed))
+        assert not reviewed_summary_evidence(tmp_path, hook, " ".join(units), 0, 24, "a" * 64)
+    changed = copy.deepcopy(saved)
+    changed["audit"]["assessments"][0]["exchange_review"]["boundary_audit"]["payoff_unit_id"] = 0
+    path.write_text(json.dumps(changed))
+    assert not reviewed_summary_evidence(tmp_path, hook, " ".join(units), 0, 24, "a" * 64)
+
 
 def test_delivery_required_cli_rejects_audited_zero_clips(tmp_path, monkeypatch):
     import json

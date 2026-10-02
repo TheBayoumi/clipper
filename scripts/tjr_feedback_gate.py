@@ -96,6 +96,7 @@ def reviewed_summary_evidence(
             "podcast_structured_editor_v4",
             "podcast_structured_editor_v5",
             "podcast_structured_editor_v6",
+            "podcast_structured_editor_v7",
         }
         or identity.get("source_sha256") != source_hash
     ):
@@ -123,7 +124,11 @@ def reviewed_summary_evidence(
             or review.get("contains_promotion_or_intro") is not False
         ):
             continue
-        if identity["version"] in {"podcast_structured_editor_v5", "podcast_structured_editor_v6"}:
+        if identity["version"] in {
+            "podcast_structured_editor_v5",
+            "podcast_structured_editor_v6",
+            "podcast_structured_editor_v7",
+        }:
             boundary = review.get("boundary_audit")
             units = review.get("delivered_units")
             if (
@@ -138,8 +143,27 @@ def reviewed_summary_evidence(
                 or boundary.get("payoff_location") != "selected"
             ):
                 continue
-            if identity["version"] == "podcast_structured_editor_v6":
-                from scripts.tjr_semantic_editor import _source_quote_span
+            if identity["version"] in {
+                "podcast_structured_editor_v6",
+                "podcast_structured_editor_v7",
+            }:
+                from scripts.tjr_semantic_editor import (
+                    SOURCE_EVIDENCE_VERSION,
+                    _source_quote_span,
+                    _unit_span_valid,
+                )
+
+                positional = identity["version"] == "podcast_structured_editor_v7"
+
+                def valid_span(
+                    span: Any, positional: bool = positional, units: list[str] = units
+                ) -> bool:
+                    if positional:
+                        return _unit_span_valid(span, units)
+                    return (
+                        isinstance(span, dict)
+                        and _source_quote_span(span.get("text", ""), units, max_words=64) == span
+                    )
 
                 spans = review.get("headline_source_spans", {})
                 audits = review.get("headline_audits", [])
@@ -148,10 +172,22 @@ def reviewed_summary_evidence(
                     or review.get("hook_status") != "accepted"
                     or not isinstance(spans, dict)
                     or set(spans) != {"setup_quote", "resolution_quote"}
-                    or any(
-                        not isinstance(span, dict)
-                        or _source_quote_span(span.get("text", ""), units, max_words=64) != span
-                        for span in spans.values()
+                    or any(not valid_span(span) for span in spans.values())
+                    or (
+                        positional
+                        and (
+                            review.get("evidence_contract") != SOURCE_EVIDENCE_VERSION
+                            or review.get("source_quote_spans") != spans
+                            or any(
+                                boundary.get(field) != spans[key][position]
+                                for field, key, position in (
+                                    ("setup_unit_id", "setup_quote", "first_unit"),
+                                    ("setup_unit_last_id", "setup_quote", "last_unit"),
+                                    ("payoff_unit_id", "resolution_quote", "first_unit"),
+                                    ("payoff_unit_last_id", "resolution_quote", "last_unit"),
+                                )
+                            )
+                        )
                     )
                     or not isinstance(audits, list)
                     or not 1 <= len(audits) <= 2
@@ -189,13 +225,7 @@ def reviewed_summary_evidence(
                         )
                         or (
                             fact.get("source_span") is not None
-                            and (
-                                not isinstance(fact["source_span"], dict)
-                                or _source_quote_span(
-                                    fact["source_span"].get("text", ""), units, max_words=64
-                                )
-                                != fact["source_span"]
-                            )
+                            and (not valid_span(fact["source_span"]))
                         )
                         for fact in facts.values()
                     )

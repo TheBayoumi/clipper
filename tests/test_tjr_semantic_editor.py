@@ -1701,6 +1701,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         "factual_ablation_4b",
         "factual_nli",
         "evidence_qa",
+        "evidence_gpu",
     ):
         rendered = (
             script.replace("${{ inputs.reviewer_model_probe }}", mode)
@@ -1726,6 +1727,10 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
             "${{ inputs.reviewer_model_probe == 'evidence_qa' }}",
             "true" if mode == "evidence_qa" else "false",
         )
+        rendered = rendered.replace(
+            "${{ inputs.reviewer_model_probe == 'evidence_gpu' }}",
+            "true" if mode == "evidence_gpu" else "false",
+        )
         assert "${{" not in rendered
         subprocess.run(["bash", "-e", "-c", rendered], cwd=tmp_path, check=True)
         args = capture.read_text().splitlines()
@@ -1736,6 +1741,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert ("--headline-ablation-probe" in args) == (mode == "factual_ablation_4b")
         assert ("--headline-nli-probe" in args) == (mode == "factual_nli")
         assert ("--evidence-qa-probe" in args) == (mode == "evidence_qa")
+        assert ("--evidence-gpu-probe" in args) == (mode == "evidence_gpu")
         assert "scripts.tjr_semantic_editor" in args
 
 
@@ -2052,7 +2058,7 @@ def test_headline_rejects_forged_reviewed_spans_before_inference():
         )
 
 
-def test_production_calls_focused_review_with_exact_source_context(tmp_path, monkeypatch):
+def test_production_calls_position_review_with_exact_source_context(tmp_path, monkeypatch):
     from clipper.models import ClipCandidate
     from scripts import tjr_semantic_editor as editor
 
@@ -2081,7 +2087,7 @@ def test_production_calls_focused_review_with_exact_source_context(tmp_path, mon
     def focused(instance, context, *, factual_audit):
         calls.append(context)
         assert isinstance(instance, editor.ReviewRequestCache)
-        assert factual_audit is editor._qa_headline_audit
+        assert factual_audit is editor._position_headline_audit
         return _review(context)
 
     def legacy(self, context):
@@ -2091,7 +2097,7 @@ def test_production_calls_focused_review_with_exact_source_context(tmp_path, mon
     monkeypatch.setattr(editor.LocalContextualEditor, "_review_completion", selection)
     monkeypatch.setattr(editor.LocalContextualEditor, "review", legacy)
     monkeypatch.setattr(editor.LocalContextualEditor, "close", lambda self: None)
-    monkeypatch.setattr(editor, "_focused_span_review", focused)
+    monkeypatch.setattr(editor, "_source_position_review", focused)
     proposal = ClipCandidate("v", 0, 22, " ".join(item.text for item in segments[:3]), 10)
     clips, _ = editor.refine_contextual_candidates(
         _brief(),
@@ -2547,6 +2553,125 @@ def test_qa_qualification_adapters_preserve_sources_before_model_loading(tmp_pat
     with pytest.raises(ValueError, match="do not match"):
         editor.reviewer_evidence_qualification(baseline, transcript, tmp_path / "proof.json")
     assert calls == []
+
+
+def test_source_unit_evidence_rejects_invalid_contracts_and_preserves_repeated_positions():
+    import pytest
+
+    from scripts.tjr_semantic_editor import _resolve_source_units, _unit_span_valid
+
+    units = [
+        "This exact sentence repeats.",
+        "Some other complete thought.",
+        "This exact sentence repeats.",
+    ]
+    span = _resolve_source_units(dict(first_unit=2, last_unit=2), units)
+    assert span == dict(text=units[2], first_unit=2, last_unit=2)
+    assert _unit_span_valid(span, units)
+    assert _resolve_source_units(dict(first_unit=-1, last_unit=-1), units) is None
+    assert _resolve_source_units(dict(first_unit=0, last_unit=2), units)["text"] == " ".join(units)
+    for pointer in (
+        dict(first_unit=True, last_unit=1),
+        dict(first_unit=-1, last_unit=0),
+        dict(first_unit=2, last_unit=1),
+        dict(first_unit=0, last_unit=3),
+        dict(first_unit=0, last_unit=0, text="A rewritten quotation"),
+        dict(first_unit=0),
+    ):
+        with pytest.raises(RuntimeError):
+            _resolve_source_units(pointer, units)
+    assert not _unit_span_valid(dict(text="A stitched quote", first_unit=0, last_unit=2), units)
+
+
+def test_position_review_preserves_evidence_and_excluded_namespace(monkeypatch):
+    from scripts import tjr_semantic_editor as editor
+
+    units = ["I was stuck outside the building.", "The owner let me inside."]
+    captured = []
+    relation = {"value": "new_topic"}
+
+    class Model:
+        def _review_completion(self, prompt, payload, properties, tokens):
+            if "ad_read_span" in properties:
+                return dict(
+                    ad_read_span=dict(first_unit=-1, last_unit=-1),
+                    show_intro_span=dict(first_unit=-1, last_unit=-1),
+                    reason="An ordinary account.",
+                )
+            if "setup_span" in properties:
+                assert "excluded_after" not in payload
+                return dict(
+                    setup_span=dict(first_unit=0, last_unit=0),
+                    resolution_span=dict(first_unit=1, last_unit=1),
+                    opening_independent=1,
+                    last_thought_finished=1,
+                    reason="Owner resolves exclusion.",
+                )
+            assert payload["excluded_after"] == [
+                dict(id=0, text="Then we discussed a different topic.")
+            ]
+            return dict(
+                final_span=dict(first_unit=1, last_unit=1),
+                continuation_span=dict(first_unit=0, last_unit=0),
+                relation=relation["value"],
+                reason="A separate topic follows.",
+            )
+
+    def generate(instance, delivered, *, exchange_spans, factual_audit):
+        captured.append(exchange_spans)
+        assert delivered == units
+        assert factual_audit is editor._position_headline_audit
+        return dict(
+            headline="The owner rescued his guest from security",
+            headline_supported=True,
+            headline_self_contained=True,
+        )
+
+    monkeypatch.setattr(editor, "_source_grounded_headline", generate)
+    context = dict(selected_units=units, before=[], after=["Then we discussed a different topic."])
+    review = editor._source_position_review(Model(), context)
+    assert review["exchange_accepted"] is True
+    assert captured == [review["source_quote_spans"]]
+    assert captured[0]["resolution_quote"]["text"] == units[1]
+    assert review["continuation_review"]["continuation_span_source"]["text"] == context["after"][0]
+    relation["value"] = "missing_answer"
+    rejected = editor._source_position_review(Model(), context)
+    assert rejected["payoff_complete"] is False
+    assert rejected["ending_complete"] is False
+    assert "exchange_accepted" not in rejected
+    assert len(captured) == 1
+
+
+def test_position_facts_are_blind_and_extract_source_text():
+    import pytest
+
+    from scripts import tjr_semantic_editor as editor
+
+    units = ["The guest waited outside.", "The owner opened the door."]
+    malformed = {"value": False}
+
+    class Model:
+        def _review_completion(self, prompt, payload, properties, tokens):
+            assert set(payload) == {"source_units"}
+            assert "headline" not in payload
+            answer = "An unstated relationship" if malformed["value"] else "unknown"
+            return {
+                key: dict(
+                    answer="The owner opened the door." if key == "actor_action" else answer,
+                    evidence=dict(
+                        first_unit=1 if key == "actor_action" else -1,
+                        last_unit=1 if key == "actor_action" else -1,
+                    ),
+                )
+                for key in editor._HEADLINE_COMPONENTS
+            }
+
+    facts = editor._source_position_facts(Model(), units)
+    assert facts["facts"]["actor_action"]["source_span"]["text"] == units[1]
+    assert facts["facts"]["relationship_role"]["source_span"] is None
+    malformed["value"] = True
+    with pytest.raises(RuntimeError, match="unknown"):
+        editor._source_position_facts(Model(), units)
 
 
 def test_reviewer_profile_change_preserves_selection_and_invalidates_completion(
