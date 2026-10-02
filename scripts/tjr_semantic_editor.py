@@ -1063,8 +1063,14 @@ class ReviewRequestCache:
         factory: Callable[[], Any],
         identity: dict[str, Any],
         reuse_path: Path | None = None,
+        *,
+        replay_only: bool = False,
+        recorded_runtime: str | None = None,
     ) -> None:
         from importlib.metadata import PackageNotFoundError, version
+
+        if (recorded_runtime is not None) != replay_only:
+            raise ValueError("a recorded runtime is permitted only for replay without inference")
 
         try:
             runtime = version("llama-cpp-python")
@@ -1072,7 +1078,13 @@ class ReviewRequestCache:
             runtime = "not-installed"
         self.path = path
         self.factory = factory
-        self.identity = {**identity, "runtime": runtime, "seed": 0, "temperature": 0}
+        self.replay_only = replay_only
+        self.identity = {
+            **identity,
+            "runtime": recorded_runtime if replay_only else runtime,
+            "seed": 0,
+            "temperature": 0,
+        }
         self.records: dict[str, Any] = {}
         self.calls: list[dict[str, Any]] = []
         self.metrics: dict[str, Any] = {"cache_hits": 0, "model_calls": 0, "model_seconds": 0.0}
@@ -1098,6 +1110,31 @@ class ReviewRequestCache:
         key = hashlib.sha256(serialized.encode()).hexdigest()
         saved = self.records.get(key, {})
         cached_response = json.dumps(saved.get("response"), sort_keys=True)
+        if (
+            saved.get("request") == request
+            and saved.get("response_sha256") != hashlib.sha256(cached_response.encode()).hexdigest()
+        ):
+            # Earlier consumers enriched the owned response. Recover only the original
+            # API content that matches the checksum saved before that enrichment.
+            for raw in saved.get("raw_calls", []):
+                try:
+                    choice = raw["response"]["choices"][0]
+                    if choice["finish_reason"] != "stop":
+                        continue
+                    content = choice["message"]["content"]
+                    recovered = content if method == "draft" else json.loads(content)
+                    serialized_response = json.dumps(recovered, sort_keys=True)
+                    if isinstance(recovered, str if method == "draft" else dict) and hashlib.sha256(
+                        serialized_response.encode()
+                    ).hexdigest() == saved.get("response_sha256"):
+                        saved["response"] = recovered
+                        cached_response = serialized_response
+                        self.metrics["recovered_responses"] = (
+                            self.metrics.get("recovered_responses", 0) + 1
+                        )
+                        break
+                except (KeyError, IndexError, TypeError, ValueError):
+                    continue
         hit = (
             saved.get("request") == request
             and saved.get("response_sha256") == hashlib.sha256(cached_response.encode()).hexdigest()
@@ -1108,6 +1145,10 @@ class ReviewRequestCache:
             self.metrics["cache_hits"] += 1
             response = json.loads(cached_response)
         else:
+            if self.replay_only:
+                raise RuntimeError(
+                    "recorded-response replay has a cache miss; inference is forbidden"
+                )
             editor = self.factory()
             raw_calls = []
             model = getattr(editor, "model", None)
@@ -1165,7 +1206,8 @@ class ReviewRequestCache:
             json.dumps({"identity": self.identity, "records": self.records}, indent=2) + "\n"
         )
         partial.replace(self.path)
-        return response
+        # Consumer annotations must never change persisted evidence or raw traces.
+        return json.loads(json.dumps(response))
 
     def _review_completion(
         self, prompt: str, payload: dict[str, Any], properties: dict[str, Any], tokens: int
@@ -3558,6 +3600,7 @@ def reviewer_evidence_qualification(
     output: Path,
     *,
     model_profile: dict[str, Any] | None = None,
+    replay_only: bool = False,
 ) -> int:
     """Qualify the exact production path and blind QA, without acquisition or rendering."""
     saved = json.loads(baseline_path.read_text())
@@ -3623,6 +3666,12 @@ def reviewer_evidence_qualification(
     local = None
 
     review_profile = model_profile or _review_model_profile()
+    recorded_runtime = None
+    if replay_only:
+        runtime_match = re.search(r"llama-cpp-python==([0-9.]+)", review_profile.get("runtime", ""))
+        if runtime_match is None:
+            raise ValueError("recorded-response replay requires a pinned inference runtime")
+        recorded_runtime = runtime_match.group(1)
 
     def factory() -> LocalSourceReviewer:
         nonlocal local
@@ -3640,9 +3689,12 @@ def reviewer_evidence_qualification(
             "reviewer_profile": review_profile,
         },
         baseline_path.with_name("review-request-cache.json"),
+        replay_only=replay_only,
+        recorded_runtime=recorded_runtime,
     )
     report: dict[str, Any] = {
         "experiment": "evidence_preserving_source_qa",
+        "execution_mode": "recorded_response_replay" if replay_only else "model_inference",
         "diagnostic_only": True,
         "production_approved": False,
         "scope": "single_source_regression_not_general_podcast_qualification",
@@ -3860,7 +3912,7 @@ def reviewer_gpu_qualification(baseline: Path, transcript: Path, output: Path) -
     if source_hash != "2a7e07b37074f3073d71b65e10a3efb4019b3cdd4277bc2d3770a99dcbc55e0a":
         raise ValueError("GPU regression qualification requires the pinned original source")
     code_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-    packed = gzip.compress(json.dumps(inputs, sort_keys=True).encode())
+    packed = gzip.compress(json.dumps(inputs, sort_keys=True).encode(), mtime=0)
     report: dict[str, Any] = {
         "experiment": "source_position_gpu_qualification",
         "diagnostic_only": True,

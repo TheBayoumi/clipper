@@ -2201,10 +2201,11 @@ def test_review_request_cache_skips_weights_and_invalidates_changed_or_corrupt_r
     assert corrupt._review_completion("Check source", {"source": "unchanged"}, properties, 64) == {
         "reason": "No source support"
     }
-    assert len(created) == 3
+    assert len(created) == 2
+    assert corrupt.metrics["recovered_responses"] == 1
     changed = ReviewRequestCache(path, factory, {**identity, "model": "different"})
     changed._review_completion("Check source", {"source": "unchanged"}, properties, 64)
-    assert len(created) == 4
+    assert len(created) == 3
 
 
 def test_source_qa_is_blind_to_headline_and_requires_canonical_evidence(monkeypatch):
@@ -2725,3 +2726,137 @@ def test_reviewer_profile_change_preserves_selection_and_invalidates_completion(
     assert calls == {"selector": 1, "reviewer": 2}
     assert audit["selector_cache_hits"] == 1 and audit["reviewer_cache_hits"] == 0
     assert runner._pipeline_identity("a" * 64) != completion
+
+
+def test_review_cache_owns_raw_evidence_and_replay_never_loads_weights(tmp_path):
+    import hashlib
+    import json
+
+    import pytest
+
+    from scripts.tjr_semantic_editor import LocalContextualEditor, ReviewRequestCache
+
+    class Model:
+        def create_chat_completion(self, **request):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": '{"reason":"Original source judgment"}'},
+                    }
+                ]
+            }
+
+    instance = LocalContextualEditor.__new__(LocalContextualEditor)
+    instance.model = Model()
+    path = tmp_path / "cache.json"
+    identity = {"source_sha256": "a" * 64, "model_sha256": "b" * 64}
+    cache = ReviewRequestCache(path, lambda: instance, identity)
+    properties = {"reason": {"type": "string"}}
+    received = cache._review_completion("Evidence", {"units": ["Exact source"]}, properties, 64)
+    received["source_span"] = {"first_unit": 0, "last_unit": 0}
+    record = next(iter(cache.records.values()))
+    assert "source_span" not in record["response"]
+    assert "source_span" not in cache.calls[0]["response"]
+    assert (
+        hashlib.sha256(json.dumps(record["response"], sort_keys=True).encode()).hexdigest()
+        == record["response_sha256"]
+    )
+
+    def forbidden():
+        raise AssertionError("Replay must not load weights")
+
+    warm = ReviewRequestCache(
+        path, forbidden, identity, replay_only=True, recorded_runtime=cache.identity["runtime"]
+    )
+    assert warm._review_completion("Evidence", {"units": ["Exact source"]}, properties, 64) == {
+        "reason": "Original source judgment"
+    }
+    assert warm.metrics["model_calls"] == 0 and warm.metrics["cache_hits"] == 1
+    with pytest.raises(RuntimeError, match="inference is forbidden"):
+        warm._review_completion("Changed request", {"units": ["Exact source"]}, properties, 64)
+    with pytest.raises(ValueError, match="permitted only"):
+        ReviewRequestCache(path, forbidden, identity, recorded_runtime="0.3.35")
+
+
+def test_review_cache_recovery_requires_original_api_checksum(tmp_path):
+    import json
+
+    import pytest
+
+    from scripts.tjr_semantic_editor import LocalContextualEditor, ReviewRequestCache
+
+    class Model:
+        def create_chat_completion(self, **request):
+            return {
+                "choices": [
+                    {"finish_reason": "stop", "message": {"content": '{"reason":"Original"}'}}
+                ]
+            }
+
+    instance = LocalContextualEditor.__new__(LocalContextualEditor)
+    instance.model = Model()
+    path = tmp_path / "cache.json"
+    identity = {"source_sha256": "a" * 64}
+    original = ReviewRequestCache(path, lambda: instance, identity)
+    properties = {"reason": {"type": "string"}}
+    original._review_completion("Evidence", {}, properties, 64)
+    saved = json.loads(path.read_text())
+    record = next(iter(saved["records"].values()))
+    record["response"]["reason"] = "Tampered"
+    record["raw_calls"][0]["response"]["choices"][0]["message"]["content"] = '{"reason":"Tampered"}'
+    path.write_text(json.dumps(saved))
+    replay = ReviewRequestCache(
+        path,
+        lambda: pytest.fail("No inference"),
+        identity,
+        replay_only=True,
+        recorded_runtime=original.identity["runtime"],
+    )
+    with pytest.raises(RuntimeError, match="inference is forbidden"):
+        replay._review_completion("Evidence", {}, properties, 64)
+    assert replay.metrics["model_calls"] == 0 and replay.metrics.get("recovered_responses", 0) == 0
+
+
+def test_gpu_qualification_cache_identity_ignores_packing_time(tmp_path, monkeypatch):
+    import gzip
+    import json
+    import sys
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from scripts import tjr_semantic_editor as editor
+
+    calls = []
+
+    def remote(packed, profile, key, code_hash):
+        calls.append((packed, profile, key, code_hash))
+        return {"files": [], "passed": False}
+
+    monkeypatch.setitem(sys.modules, "modal", SimpleNamespace(enable_output=nullcontext))
+    monkeypatch.setitem(
+        sys.modules,
+        "scripts.tjr_modal_probe",
+        SimpleNamespace(
+            app=SimpleNamespace(run=nullcontext),
+            qualify_source_reviewer_gpu=SimpleNamespace(remote=remote),
+            volume=None,
+        ),
+    )
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text("{}")
+    transcript = tmp_path / "transcript.json"
+    transcript.write_text("[]")
+    source_hash = "2a7e07b37074f3073d71b65e10a3efb4019b3cdd4277bc2d3770a99dcbc55e0a"
+    transcript.with_name("editorial-cache.json").write_text(
+        json.dumps({"identity": {"source_sha256": source_hash}})
+    )
+    monkeypatch.setattr(gzip.time, "time", lambda: 1)
+    editor.reviewer_gpu_qualification(baseline, transcript, tmp_path / "first.json")
+    first = list(calls)
+    calls.clear()
+    monkeypatch.setattr(gzip.time, "time", lambda: 10000)
+    editor.reviewer_gpu_qualification(baseline, transcript, tmp_path / "second.json")
+    assert calls == first
+    assert len(calls) == 2
+    assert json.loads(gzip.decompress(calls[0][0]))["transcript"] == []
