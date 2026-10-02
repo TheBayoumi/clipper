@@ -3844,6 +3844,8 @@ def reviewer_gpu_qualification(baseline: Path, transcript: Path, output: Path) -
     """GitHub orchestrates two bounded private GPU calls; no acquisition or rendering."""
     import gzip
 
+    import modal
+
     from scripts.tjr_modal_probe import app, qualify_source_reviewer_gpu, volume
 
     inputs = {
@@ -3871,7 +3873,8 @@ def reviewer_gpu_qualification(baseline: Path, transcript: Path, output: Path) -
     }
     directory = output.parent / "reviewer-gpu-evidence"
     directory.mkdir(parents=True, exist_ok=True)
-    with app.run():
+    output.write_text(json.dumps(report, indent=2) + "\n")
+    with modal.enable_output(), app.run():
         for profile in _gpu_review_profiles():
             key = hashlib.sha256(
                 packed + json.dumps(profile, sort_keys=True).encode() + code_hash.encode()
