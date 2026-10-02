@@ -1417,7 +1417,8 @@ def test_headline_critic_prose_never_becomes_generation_input():
     assert result["headline_supported"] is False
     assert len(result["headline_audits"]) == 1
     assert len(calls) == 3 and not replies
-    assert set(calls[1]) == {"source_passages"}
+    assert set(calls[1]) == {"source_passages", "source_context"}
+    assert [item["text"] for item in calls[1]["source_context"]] == units
     assert "broke into" not in str(calls[1])
     assert "fact_check" not in str(calls)
     assert result["headline_source_spans"]["central_quote"]["first_unit"] == 0
@@ -1457,6 +1458,7 @@ def test_headline_generation_requires_literal_evidence_and_preserves_conditions(
     result = _source_grounded_headline(Editor(), units)
     assert result["headline_supported"] is True
     assert calls[1]["source_passages"]["context_quote"].startswith("If")
+    assert [item["text"] for item in calls[1]["source_context"]] == units
     assert "reason" not in calls[1]["source_passages"]
     # A copied model interpretation cannot be laundered into source evidence.
     for bad in (

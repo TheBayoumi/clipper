@@ -1650,7 +1650,10 @@ def _source_grounded_headline(editor: LocalContextualEditor, units: list[str]) -
         spans[key] = span
     headline = editor._review_completion(
         "Write a clear 4-14 word on-screen hook expressing the central event or contrast "
-        "across these source_passages. Write one coherent highlight, not a keyword list "
+        "across these source_passages in their full source_context. A quoted rule, "
+        "instruction, hypothetical or reported statement is not an actual event merely "
+        "because its words occur in a passage. Retain the reporting scope and speaker "
+        "when reading the full context. Write one coherent highlight, not a keyword list "
         "or an opening transcription. These are literal source passages, not model "
         "interpretations. Preserve who acts, what happens and where it happens. Use an "
         "explicit source name when available; do not invent an opponent, employer or "
@@ -1658,7 +1661,10 @@ def _source_grounded_headline(editor: LocalContextualEditor, units: list[str]) -
         "into the event itself. Do not invent motives or turn conditional earnings into "
         "actual earnings. Avoid dangling pronouns. Use only facts in source_passages. "
         "Return output_schema JSON.",
-        {"source_passages": {key: span["text"] for key, span in spans.items()}},
+        {
+            "source_passages": {key: span["text"] for key, span in spans.items()},
+            "source_context": [{"id": i, "text": unit} for i, unit in enumerate(units)],
+        },
         {"headline": {"type": "string"}},
         64,
     )
