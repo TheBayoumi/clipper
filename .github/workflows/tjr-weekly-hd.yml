@@ -6,6 +6,8 @@ on:
     paths:
       - ".github/workflows/tjr-weekly-hd.yml"
       - "campaigns/reach-double-coverage-dedicated.yaml"
+      - "campaigns/reach-double-coverage-editorial.yaml"
+      - "src/clipper/**"
       - "scripts/tjr_quality.py"
       - "scripts/tjr_youtube_preview.py"
       - "src/clipper/scoring.py"

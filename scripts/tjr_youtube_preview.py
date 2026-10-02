@@ -27,11 +27,11 @@ import defusedxml.ElementTree as ET
 
 from clipper.brief import load_brief
 from clipper.editorial import (
-    MAX_RENDERABLE_CLIPS,
     RUBRIC_VERSION,
     WEIGHTS,
     select_editorial_moments,
 )
+from clipper.editorial_run import EditorialRunConfig
 from clipper.models import ClipCandidate, TranscriptSegment, WordTiming
 from clipper.pipeline import _download_asset
 from clipper.render import FFmpegRenderer
@@ -847,6 +847,7 @@ def _clip_render_identity(
     hook: str,
     segments: list[TranscriptSegment],
     watermark: Path,
+    caption_style: str | None = None,
 ) -> str:
     root = Path(__file__).resolve().parents[1]
     code = {
@@ -878,12 +879,13 @@ def _clip_render_identity(
                 "fonts": fonts,
                 "ffmpeg": runtime,
                 "settings": {
-                    name: os.getenv(name, "")
-                    for name in (
-                        "CLIPPER_RENDER_PRESET",
-                        "CLIPPER_RENDER_THREADS",
-                        "TJR_CAPTION_STYLE",
-                    )
+                    "CLIPPER_RENDER_PRESET": os.getenv("CLIPPER_RENDER_PRESET", ""),
+                    "CLIPPER_RENDER_THREADS": os.getenv("CLIPPER_RENDER_THREADS", ""),
+                    "TJR_CAPTION_STYLE": (
+                        caption_style
+                        if caption_style is not None
+                        else os.getenv("TJR_CAPTION_STYLE", "")
+                    ),
                 },
             },
             sort_keys=True,
@@ -943,7 +945,15 @@ def _save_clip_render(out: Path, identity: str) -> None:
     )
 
 
-def render_youtube_previews(root: Path, brief_path: Path) -> Path:
+def render_youtube_previews(
+    root: Path, brief_path: Path, *, run_config: EditorialRunConfig | None = None
+) -> Path:
+    if run_config is not None:
+        run_config.validate()
+        if root != run_config.artifact_root or brief_path != run_config.brief:
+            raise ValueError("editorial run paths differ from the validated config")
+    else:
+        run_config = EditorialRunConfig.from_legacy_environment(brief_path, root)
     brief = load_brief(brief_path)
     if (
         set(brief.source_channel_ids) != set(CHANNELS)
@@ -991,8 +1001,8 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         bot_challenges = 0
         # Put full videos before Shorts: a new 15-second hashtag Short is not
         # a suitable 20-42s clip source and must not consume the bot budget.
-        requested_id = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip()
-        target_channel_id = os.getenv("TJR_TARGET_CHANNEL_ID", "").strip() or None
+        requested_id = run_config.source_video_id
+        target_channel_id = run_config.target_channel_id or None
         official_candidates = constrain_official_sources(
             candidates,
             requested_id,
@@ -1001,13 +1011,11 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         )
         if requested_id:
             LOGGER.info("Using explicitly requested official YouTube video ID: %s", requested_id)
-        browser_capture_file = os.getenv("TJR_BROWSER_CAPTURE_FILE", "").strip()
+        browser_capture_file = run_config.browser_capture_file
         if browser_capture_file:
             step = "verified_browser_capture"
             try:
-                captured = load_verified_browser_original(
-                    Path(browser_capture_file), official_candidates
-                )
+                captured = load_verified_browser_original(browser_capture_file, official_candidates)
                 if captured is not None:
                     chosen_video, source, metadata = captured
                     LOGGER.info(
@@ -1015,12 +1023,12 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
                         chosen_video.video_id,
                     )
             except (ValueError, OSError, RuntimeError) as exc:
-                if os.getenv("TJR_REQUIRE_STAGED_ORIGINAL") == "1":
+                if run_config.require_staged_original:
                     raise RuntimeError(
                         "required approved staged original failed verification"
                     ) from exc
                 errors.append({"source": "verified source capture", "error": str(exc)[:650]})
-        if os.getenv("TJR_REQUIRE_STAGED_ORIGINAL") == "1" and source is None:
+        if run_config.require_staged_original and source is None:
             raise RuntimeError("required approved staged original was not available")
         for video in official_candidates[:8] if source is None else []:
             step = "official_metadata"
@@ -1045,14 +1053,14 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             raise RuntimeError("no recent approved-channel YouTube original could be downloaded")
         source_profile = probe_source_profile(source)
         step = "transcription"
-        cache_root = os.getenv("TJR_TRANSCRIPT_CACHE_ROOT", "").strip()
+        cache_root = run_config.transcript_cache_root
         if cache_root:
             try:
                 source_chunks, analyzed_seconds = load_verified_transcript_cache(
-                    source, chosen_video.video_id, Path(cache_root), run_dir
+                    source, chosen_video.video_id, cache_root, run_dir
                 )
             except (RuntimeError, OSError, ValueError):
-                if os.getenv("TJR_TRANSCRIPT_SOURCE_RUN_ID", "").strip():
+                if run_config.transcript_source_run_id:
                     raise
                 LOGGER.info(
                     "TRANSCRIPT_CACHE_MISS: incompatible automatic cache; transcribing source"
@@ -1092,13 +1100,11 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             json.dumps([s.to_dict() for s in segments], indent=2) + "\n",
             encoding="utf-8",
         )
-        render_safety_limit = int(os.getenv("TJR_RENDER_SAFETY_LIMIT", str(MAX_RENDERABLE_CLIPS)))
+        render_safety_limit = run_config.render_safety_limit
         with source.open("rb") as original:
             source_digest = hashlib.file_digest(original, "sha256").hexdigest()
-        proposal_root = os.getenv("TJR_EDITORIAL_CACHE_ROOT", "").strip() or cache_root
-        proposal_caches = (
-            list(Path(proposal_root).rglob("proposal-cache.json")) if proposal_root else []
-        )
+        proposal_root = run_config.editorial_cache_root or cache_root
+        proposal_caches = list(proposal_root.rglob("proposal-cache.json")) if proposal_root else []
         ranked, semantic_audit = build_semantic_editorial_candidates(
             brief,
             chosen_video.video_id,
@@ -1107,17 +1113,15 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             cache_path=run_dir / "proposal-cache.json",
             reuse_path=proposal_caches[0] if len(proposal_caches) == 1 else None,
         )
-        if cache_root and os.getenv("TJR_COMPARE_PRIOR_AUDIO") == "1":
+        if cache_root and run_config.compare_prior_audio:
             step = "previous_audio_comparison"
-            audit_cached_delivery_audio(source, Path(cache_root), run_dir)
+            audit_cached_delivery_audio(source, cache_root, run_dir)
         step = "structured_context_assessment"
         with source.open("rb") as original:
             source_digest = hashlib.file_digest(original, "sha256").hexdigest()
-        editorial_cache_root = os.getenv("TJR_EDITORIAL_CACHE_ROOT", "").strip() or cache_root
+        editorial_cache_root = run_config.editorial_cache_root or cache_root
         reuse = (
-            list(Path(editorial_cache_root).rglob("editorial-cache.json"))
-            if editorial_cache_root
-            else []
+            list(editorial_cache_root.rglob("editorial-cache.json")) if editorial_cache_root else []
         )
         if len(reuse) > 1:
             raise RuntimeError("editorial cache must contain one verified assessment")
@@ -1227,7 +1231,7 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
         )
         step = "render_and_decode"
         renderer = FFmpegRenderer()
-        caption_style = os.getenv("TJR_CAPTION_STYLE", "").strip().upper()
+        caption_style = run_config.caption_style
         if caption_style != "B2":
             raise RuntimeError(
                 "Double Coverage drafts require Style B2 captions and persistent hooks"
@@ -1238,11 +1242,11 @@ def render_youtube_previews(root: Path, brief_path: Path) -> Path:
             out = run_dir / "clips" / f"{number:02d}-double-coverage-{chosen_video.video_id}.mp4"
             layout = "default"
             render_identity = _clip_render_identity(
-                source_digest, clip, pick.hook, segments, watermark_path
+                source_digest, clip, pick.hook, segments, watermark_path, caption_style
             )
-            render_cache_root = os.getenv("TJR_RENDER_CACHE_ROOT", "").strip()
+            render_cache_root = run_config.render_cache_root
             render_reused = bool(render_cache_root) and _restore_clip_render(
-                Path(render_cache_root), out, render_identity
+                render_cache_root, out, render_identity
             )
             if render_reused:
                 renderer.quality_results[str(out.resolve())] = json.loads(

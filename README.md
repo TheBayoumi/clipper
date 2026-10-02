@@ -77,6 +77,20 @@ For transcript/timestamp planning without FFmpeg rendering:
 clipper run --brief campaign.yaml --artifact-root artifacts --no-render
 ```
 
+The existing Double Coverage contextual editor also accepts an explicit YAML/JSON
+run file. The campaign brief supplies rights and creative policy; the run file
+supplies source choice, cache provenance, caption style, and output paths:
+
+```bash
+clipper editorial --config campaigns/reach-double-coverage-editorial.yaml --check-config
+clipper editorial --config campaigns/reach-double-coverage-editorial.yaml
+```
+
+`--check-config` does not acquire media. The current contextual implementation
+still lives partly in `scripts/` and its GitHub workflow retains a legacy
+environment-variable adapter; the explicit config path is the migration route,
+not yet a claim that issue #8's factual gate is qualified.
+
 ## Output
 
 ```text

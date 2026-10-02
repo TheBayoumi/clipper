@@ -4,10 +4,12 @@ import argparse
 import json
 import logging
 import sys
-from dataclasses import replace
+from dataclasses import asdict, replace
+from importlib import import_module
 from pathlib import Path
 
 from .brief import load_brief
+from .editorial_run import load_editorial_run_config
 from .pipeline import PipelineSettings, run_pipeline
 from .rights import assert_campaign_authorized
 from .youtube import YouTubeClient
@@ -42,6 +44,13 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="stop after timestamped clip planning",
     )
+    editorial = subparsers.add_parser(
+        "editorial", help="run the contextual podcast editor from a YAML/JSON run config"
+    )
+    editorial.add_argument("--config", required=True, type=Path)
+    editorial.add_argument(
+        "--check-config", action="store_true", help="validate inputs without acquiring media"
+    )
     return parser
 
 
@@ -64,6 +73,16 @@ def main(argv: list[str] | None = None) -> int:
             settings = replace(PipelineSettings.from_env(), artifact_root=args.artifact_root)
             run_dir = run_pipeline(args.brief, settings=settings, render=not args.no_render)
             print(run_dir)
+            return 0
+        if args.command == "editorial":
+            config = load_editorial_run_config(args.config)
+            if args.check_config:
+                print(json.dumps(asdict(config), indent=2, default=str))
+                return 0
+            render_youtube_previews = import_module(
+                "scripts.tjr_youtube_preview"
+            ).render_youtube_previews
+            print(render_youtube_previews(config.artifact_root, config.brief, run_config=config))
             return 0
     except Exception as exc:
         logging.getLogger("clipper").error("%s", exc)
