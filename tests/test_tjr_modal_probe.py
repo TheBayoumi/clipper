@@ -351,3 +351,20 @@ def test_diagnostics_only_enable_verbosity_when_selected(monkeypatch: pytest.Mon
     assert "--verbose" not in command
     monkeypatch.setenv("TJR_ACQUISITION_DIAGNOSTICS", "1")
     assert "--verbose" in functions["_yt_command"]((), command[-1])
+
+
+def test_private_gpu_qualification_has_explicit_compilers_and_no_cpu_fallback():
+    from scripts.tjr_semantic_editor import _gpu_review_profiles
+
+    source = (Path(__file__).resolve().parents[1] / "scripts" / "tjr_modal_probe.py").read_text()
+    assert '"CC": "gcc"' in source
+    assert '"CXX": "g++"' in source
+    assert '"CUDAHOSTCXX": "g++"' in source
+    assert 'gpu="L40S"' in source and "timeout=1800" in source
+    assert "retries=0" in source and "max_containers=1" in source
+    profiles = _gpu_review_profiles()
+    assert len(profiles) == 2
+    assert all(profile["gpu_layers"] == -1 for profile in profiles)
+    assert all(profile["hardware"] == "Modal L40S" for profile in profiles)
+    assert all(profile["context_tokens"] == 4096 for profile in profiles)
+    assert len({profile["sha256"] for profile in profiles}) == 2

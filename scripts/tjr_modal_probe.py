@@ -211,10 +211,14 @@ reviewer_gpu_image = (
         {
             "CMAKE_ARGS": "-DGGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=89",
             "CMAKE_BUILD_PARALLEL_LEVEL": "2",
+            "CC": "gcc",
+            "CXX": "g++",
+            "CUDAHOSTCXX": "g++",
             "PYTHONPATH": "/app/src:/app",
             "TJR_REVIEW_MODEL_CACHE": "/tjr-media/reviewer/weights",
         }
     )
+    .run_commands("gcc --version", "g++ --version", "nvcc --version")
     .pip_install(
         "llama-cpp-python==0.3.35",
         "numpy==2.3.5",
