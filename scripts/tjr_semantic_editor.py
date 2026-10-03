@@ -22,6 +22,7 @@ from typing import Any
 
 from clipper.editorial_benchmark import load_heldout_claims, qualification_pass
 from clipper.editorial_claims import audit_headline_claims
+from clipper.editorial_headline import propose_source_headline
 from clipper.editorial_qa import audit_source_qa
 from clipper.editorial_review import create_claim_review_packet
 from clipper.editorial_structured_claims import audit_structured_claims
@@ -2421,11 +2422,36 @@ def _position_headline_audit(editor: Any, headline: str, units: list[str]) -> di
     return _qa_headline_audit(editor, headline, units, fact_backend=_source_position_facts)
 
 
+def _source_bound_headline_diagnostic(
+    editor: Any,
+    units: list[str],
+    *,
+    exchange_spans: dict[str, Any],
+    factual_audit: Callable[[Any, str, list[str]], dict[str, Any]],
+) -> dict[str, Any]:
+    """Exercise constrained generation without granting a production approval."""
+    candidate = propose_source_headline(units, exchange_spans, editor._review_completion)
+    audit = factual_audit(editor, candidate["headline"], units)
+    return {
+        "headline": candidate["headline"],
+        "headline_source_spans": exchange_spans,
+        "source_excerpts": candidate["source_excerpts"],
+        "source_bound": True,
+        "headline_audits": [{"headline": candidate["headline"], **audit}],
+        "candidate_model_audit": audit,
+        "headline_supported": False,
+        "headline_self_contained": False,
+        "production_approved": False,
+        "hook_status": "experimental_unqualified",
+    }
+
+
 def _source_position_review(
     editor: Any,
     context: dict[str, Any],
     *,
     factual_audit: Callable[[Any, str, list[str]], dict[str, Any]] | None = None,
+    headline_generator: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Review actual delivered speech; excluded evidence cannot become its resolution."""
     selected = context["selected_units"]
@@ -2591,7 +2617,7 @@ def _source_position_review(
         return result
     result["exchange_accepted"] = True
     result.update(
-        _source_grounded_headline(
+        (headline_generator or _source_grounded_headline)(
             editor,
             selected,
             exchange_spans=spans,
@@ -4421,6 +4447,110 @@ def reviewer_preflight(transcript_path: Path, output: Path) -> int:
     )
 
 
+def source_bound_headline_probe(transcript_path: Path, output: Path) -> int:
+    """Measure constrained headline generation on pinned real exchange windows.
+
+    This intentionally cannot qualify production: contextual truth and held-out
+    editorial quality are not established by quote provenance alone.
+    """
+    transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+    transcript_hash = hashlib.sha256(json.dumps(transcript, sort_keys=True).encode()).hexdigest()
+    fixture_path = (
+        Path(__file__).resolve().parents[1] / "tests/fixtures/issue8_frozen_relations.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    if transcript_hash != fixture["transcript_sha256"]:
+        raise ValueError("source-bound probe requires the pinned exact-source transcript")
+    provenance_path = transcript_path.with_name("transcript-cache-provenance.json")
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    if (
+        provenance.get("source_sha256") != fixture["source_sha256"]
+        or provenance.get("source_hash_verified") is not True
+        or provenance.get("full_source_analyzed") is not True
+    ):
+        raise ValueError("source-bound probe requires verified full-source provenance")
+    units = _thought_units(
+        [
+            TranscriptSegment(float(item["start"]), float(item["end"]), str(item["text"]))
+            for item in transcript
+        ]
+    )
+    profile = _review_model_profile()
+    reviewer: LocalSourceReviewer | None = None
+
+    def factory() -> LocalSourceReviewer:
+        nonlocal reviewer
+        if reviewer is None:
+            reviewer = LocalSourceReviewer(profile)
+        return reviewer
+
+    request_cache = ReviewRequestCache(
+        output.with_name("review-request-cache.json"),
+        factory,
+        {
+            "experiment": "source-bound-headline-v1",
+            "source_sha256": fixture["source_sha256"],
+            "transcript_sha256": transcript_hash,
+            "model_profile": profile,
+        },
+    )
+    report: dict[str, Any] = {
+        "experiment": "source_bound_headline_v1",
+        "diagnostic_only": True,
+        "production_approved": False,
+        "source_video_id": fixture["source_video_id"],
+        "source_sha256": fixture["source_sha256"],
+        "transcript_sha256": transcript_hash,
+        "model_profile": profile,
+        "cases": [],
+    }
+    windows = (
+        ("complete_business_exchange", 2308.64, 2328.88),
+        ("payoff_excluded", 2281.2, 2312.44),
+        ("intro_and_unfinished_thought", 8.28, 52.16),
+    )
+    try:
+        for name, start, end in windows:
+            selected_ids = [
+                index
+                for index, unit in enumerate(units)
+                if unit.start >= start - 0.01 and unit.end <= end + 0.01
+            ]
+            if not selected_ids:
+                raise RuntimeError(f"source-bound fixture has no thought units: {name}")
+            context = _review_context(units, selected_ids[0], selected_ids[-1])
+            case: dict[str, Any] = {
+                "fixture": name,
+                "review_context": context,
+                "diagnostic_only": True,
+                "production_approved": False,
+            }
+            began = time.monotonic()
+            try:
+                case["review"] = _source_position_review(
+                    request_cache,
+                    context,
+                    factual_audit=_position_headline_audit,
+                    headline_generator=_source_bound_headline_diagnostic,
+                )
+            except (RuntimeError, ValueError) as error:
+                case["error"] = f"{type(error).__name__}: {error}"
+            case["seconds"] = round(time.monotonic() - began, 3)
+            report["cases"].append(case)
+            output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    finally:
+        if reviewer is not None:
+            reviewer.close()
+    report["request_cache_metrics"] = request_cache.metrics
+    report["experiment_complete"] = True
+    report["qualification_rule"] = (
+        "Diagnostic only: source-bound generation must be followed by independent "
+        "contextual claim verification and held-out audio qualification."
+    )
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    return 1
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -4435,8 +4565,15 @@ if __name__ == "__main__":
     parser.add_argument("--evidence-qa-probe", action="store_true")
     parser.add_argument("--evidence-gpu-probe", action="store_true")
     parser.add_argument("--structured-claim-probe", action="store_true")
+    parser.add_argument("--source-bound-headline-probe", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.source_bound_headline_probe:
+        if not args.reviewer_preflight_transcript:
+            parser.error("source-bound probe requires a verified transcript")
+        raise SystemExit(
+            source_bound_headline_probe(args.reviewer_preflight_transcript, args.output)
+        )
     if args.evidence_gpu_probe:
         if not args.reviewer_model_probe_baseline or not args.reviewer_preflight_transcript:
             parser.error("GPU qualification requires a factual baseline and verified transcript")

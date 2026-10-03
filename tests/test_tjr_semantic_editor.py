@@ -1707,6 +1707,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         "factual_nli",
         "evidence_qa",
         "structured_claim",
+        "source_bound_headline",
         "evidence_gpu",
     ):
         rendered = (
@@ -1744,7 +1745,9 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert "${{" not in rendered
         subprocess.run(["bash", "-e", "-c", rendered], cwd=tmp_path, check=True)
         args = capture.read_text().splitlines()
-        assert ("--reviewer-model-probe-baseline" in args) == (mode != "disabled")
+        assert ("--reviewer-model-probe-baseline" in args) == (
+            mode not in {"disabled", "source_bound_headline"}
+        )
         if mode == "structured_claim":
             assert structured_proof.relative_to(tmp_path).as_posix() in args
         assert ("--reviewer-diagnostics-baseline" in args) == (mode == "disabled")
@@ -1754,6 +1757,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert ("--headline-nli-probe" in args) == (mode == "factual_nli")
         assert ("--evidence-qa-probe" in args) == (mode == "evidence_qa")
         assert ("--structured-claim-probe" in args) == (mode == "structured_claim")
+        assert ("--source-bound-headline-probe" in args) == (mode == "source_bound_headline")
         assert ("--evidence-gpu-probe" in args) == (mode == "evidence_gpu")
         assert "scripts.tjr_semantic_editor" in args
 
@@ -2870,6 +2874,57 @@ def test_position_review_preserves_evidence_and_excluded_namespace(monkeypatch):
     assert rejected["ending_complete"] is True
     assert "exchange_accepted" not in rejected
     assert len(captured) == 1
+
+
+def test_source_bound_diagnostic_cannot_approve_its_own_model_audit():
+    from scripts.tjr_semantic_editor import _source_bound_headline_diagnostic
+
+    units = [
+        "Because right now I got like 60 million views on my Instagram.",
+        "No, it just drives the podcast.",
+    ]
+    spans = {
+        "setup_quote": {"text": units[0], "first_unit": 0, "last_unit": 0},
+        "resolution_quote": {"text": units[1], "first_unit": 1, "last_unit": 1},
+    }
+
+    class Editor:
+        def _review_completion(self, prompt, payload, properties, tokens):
+            return {
+                "setup_quote": {"unit_id": 0, "text": "60 million views on my Instagram"},
+                "resolution_quote": {"unit_id": 1, "text": "No, it just drives the podcast."},
+            }
+
+    result = _source_bound_headline_diagnostic(
+        Editor(),
+        units,
+        exchange_spans=spans,
+        factual_audit=lambda *_: {
+            "verdict": "supported",
+            "headline_self_contained": True,
+            "central_highlight": True,
+        },
+    )
+    assert result["source_bound"] is True
+    assert result["candidate_model_audit"]["verdict"] == "supported"
+    assert result["headline_supported"] is False
+    assert result["production_approved"] is False
+
+
+def test_source_bound_probe_rejects_changed_transcript_before_model_loading(tmp_path, monkeypatch):
+    import pytest
+
+    from scripts import tjr_semantic_editor as editor
+
+    transcript = tmp_path / "transcript.json"
+    transcript.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(
+        editor,
+        "LocalSourceReviewer",
+        lambda *_: (_ for _ in ()).throw(AssertionError("model weights loaded")),
+    )
+    with pytest.raises(ValueError, match="pinned exact-source transcript"):
+        editor.source_bound_headline_probe(transcript, tmp_path / "probe.json")
 
 
 def test_position_purpose_rejects_label_without_matching_evidence():
