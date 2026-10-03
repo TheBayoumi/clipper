@@ -44,7 +44,7 @@ on:
         description: "Diagnostic model comparison only; factual_9b tests saved headline claims without selection or media."
         required: false
         type: choice
-        options: [disabled, focused_4b, factual_9b, factual_consensus, factual_ablation_4b, factual_nli, evidence_qa, evidence_gpu, gpu_build_logs]
+        options: [disabled, focused_4b, factual_9b, factual_consensus, factual_ablation_4b, factual_nli, evidence_qa, structured_claim, evidence_gpu, gpu_build_logs]
         default: disabled
       editorial_preflight:
         description: "Run real-model reviewer regression on cached transcript only; no source acquisition."
@@ -554,6 +554,9 @@ jobs:
         run: |
           if [ -d reviewer-baseline ]; then
             BASELINE=$(find reviewer-baseline -name reviewer-preflight.json -print -quit)
+            if [ '${{ inputs.reviewer_model_probe }}' = 'structured_claim' ]; then
+              BASELINE=$(find reviewer-baseline -path '*/baseline_4b/cold/proof.json' -print -quit)
+            fi
             test -n "$BASELINE"
             if [ '${{ inputs.reviewer_model_probe }}' != 'disabled' ]; then
               TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
@@ -573,6 +576,9 @@ jobs:
               fi
               if [[ '${{ inputs.reviewer_model_probe == 'evidence_qa' }}' == 'true' ]]; then
                 PROBE_ARGUMENTS+=(--evidence-qa-probe)
+              fi
+              if [[ '${{ inputs.reviewer_model_probe == 'structured_claim' }}' == 'true' ]]; then
+                PROBE_ARGUMENTS+=(--structured-claim-probe)
               fi
               if [[ '${{ inputs.reviewer_model_probe == 'evidence_gpu' }}' == 'true' ]]; then
                 PROBE_ARGUMENTS+=(--evidence-gpu-probe)

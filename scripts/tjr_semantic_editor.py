@@ -24,6 +24,7 @@ from clipper.editorial_benchmark import load_heldout_claims, qualification_pass
 from clipper.editorial_claims import audit_headline_claims
 from clipper.editorial_qa import audit_source_qa
 from clipper.editorial_review import create_claim_review_packet
+from clipper.editorial_structured_claims import audit_structured_claims
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
 from clipper.tiktok import creative_hook_from_text, source_headline_candidates
 
@@ -3665,6 +3666,7 @@ def reviewer_evidence_qualification(
     claim_level_probe: bool = False,
     heldout_path: Path | None = None,
     source_qa_probe: bool = False,
+    structured_claim_probe: bool = False,
 ) -> int:
     """Qualify the exact production path and blind QA, without acquisition or rendering."""
     saved = json.loads(baseline_path.read_text())
@@ -3732,6 +3734,28 @@ def reviewer_evidence_qualification(
         if heldout_path is not None
         else []
     )
+    if structured_claim_probe and heldout_path is None:
+        raise ValueError("structured claim qualification needs held-out controls")
+    source_video_id = (
+        json.loads(heldout_path.read_text())["source_video_id"] if heldout_path is not None else ""
+    )
+
+    def structured_backend(reviewer: Any, headline: str, source_units: list[str]) -> dict[str, Any]:
+        result = audit_structured_claims(
+            reviewer,
+            headline,
+            source_units,
+            source_video_id=source_video_id,
+            source_sha256=source_hash,
+            transcript_sha256=transcript_hash,
+        )
+        return {
+            **result,
+            "verdict": (
+                "supported" if result["validated"]["all_claims_supported"] else "uncertain"
+            ),
+        }
+
     local = None
 
     review_profile = model_profile or _review_model_profile()
@@ -3762,7 +3786,11 @@ def reviewer_evidence_qualification(
         recorded_runtime=recorded_runtime,
     )
     report: dict[str, Any] = {
-        "experiment": "evidence_preserving_source_qa",
+        "experiment": (
+            "structured_claim_review_diagnostic"
+            if structured_claim_probe
+            else "evidence_preserving_source_qa"
+        ),
         "execution_mode": "recorded_response_replay" if replay_only else "model_inference",
         "diagnostic_only": True,
         "production_approved": False,
@@ -3770,12 +3798,26 @@ def reviewer_evidence_qualification(
         "editor_version": STRUCTURED_EDITOR_VERSION,
         "model_profile": cache.identity,
         "transcript_sha256": transcript_hash,
-        "code_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "code_sha256": hashlib.sha256(
+            Path(__file__).read_bytes()
+            + (
+                (
+                    Path(__file__).resolve().parents[1]
+                    / "src/clipper/editorial_structured_claims.py"
+                ).read_bytes()
+                + (
+                    Path(__file__).resolve().parents[1] / "src/clipper/editorial_review.py"
+                ).read_bytes()
+                if structured_claim_probe
+                else b""
+            )
+        ).hexdigest(),
         "annotated_fixtures": fixtures,
         "cases": [],
         "comparisons": [],
         "claim_comparisons": [],
         "source_qa_comparisons": [],
+        "structured_claim_comparisons": [],
         "heldout_comparisons": [],
         "heldout_annotation_status": (heldout[0].annotation_status if heldout else "not_requested"),
         "heldout_fixture_sha256": (
@@ -3979,6 +4021,32 @@ def reviewer_evidence_qualification(
                     f"SOURCE_QA_CLAIM {fixture['headline']} passed={qa_row['passed']}",
                     flush=True,
                 )
+            if structured_claim_probe:
+                structured_row = {
+                    "headline": fixture["headline"],
+                    "expected_supported": fixture["expected_supported"],
+                }
+                try:
+                    structured_audit = structured_backend(cache, fixture["headline"], source_units)
+                    accepted = structured_audit["verdict"] == "supported"
+                    structured_row.update(
+                        review=structured_audit,
+                        contract_valid=True,
+                        actual_supported=accepted,
+                        passed=accepted is fixture["expected_supported"],
+                    )
+                except (RuntimeError, ValueError, KeyError) as error:
+                    structured_row.update(
+                        passed=False,
+                        contract_valid=False,
+                        error=f"{type(error).__name__}: {error}",
+                    )
+                report["structured_claim_comparisons"].append(structured_row)
+                checkpoint()
+                print(
+                    f"STRUCTURED_CLAIM {fixture['headline']} passed={structured_row['passed']}",
+                    flush=True,
+                )
         if heldout:
             for case in heldout:
                 source_units = list(case.source_units)
@@ -3998,6 +4066,8 @@ def reviewer_evidence_qualification(
                 ]
                 if source_qa_probe:
                     backends.append(("source_first_qa", audit_source_qa))
+                if structured_claim_probe:
+                    backends.append(("structured_claim_review", structured_backend))
                 for name, backend in backends:
                     try:
                         audit = backend(cache, case.headline, source_units)
@@ -4052,6 +4122,20 @@ def reviewer_evidence_qualification(
                 for row in report["source_qa_comparisons"]
             )
             report["source_qa_pass"] = all(row["passed"] for row in report["source_qa_comparisons"])
+        if structured_claim_probe:
+            report["structured_claim_contract_error_count"] = sum(
+                row.get("contract_valid") is not True
+                for row in report["structured_claim_comparisons"]
+            )
+            report["structured_claim_semantic_error_count"] = sum(
+                row.get("contract_valid") is True and not row["passed"]
+                for row in report["structured_claim_comparisons"]
+            )
+            report["structured_claim_pass"] = all(
+                row["passed"] for row in report["structured_claim_comparisons"]
+            ) and all(
+                row["structured_claim_review"]["passed"] for row in report["heldout_comparisons"]
+            )
         if heldout_path is not None:
             report["heldout_scores"] = {
                 name: {
@@ -4073,6 +4157,7 @@ def reviewer_evidence_qualification(
                     "existing",
                     "experimental_claim_level",
                     *(("source_first_qa",) if source_qa_probe else ()),
+                    *(("structured_claim_review",) if structured_claim_probe else ()),
                 )
             }
         report["qualification_rule"] = (
@@ -4291,6 +4376,7 @@ if __name__ == "__main__":
     parser.add_argument("--headline-nli-probe", action="store_true")
     parser.add_argument("--evidence-qa-probe", action="store_true")
     parser.add_argument("--evidence-gpu-probe", action="store_true")
+    parser.add_argument("--structured-claim-probe", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.evidence_gpu_probe:
@@ -4307,6 +4393,21 @@ if __name__ == "__main__":
         raise SystemExit(
             reviewer_evidence_qualification(
                 args.reviewer_model_probe_baseline, args.reviewer_preflight_transcript, args.output
+            )
+        )
+    if args.structured_claim_probe:
+        if not args.reviewer_model_probe_baseline or not args.reviewer_preflight_transcript:
+            parser.error("structured claim probe needs a factual baseline and verified transcript")
+        raise SystemExit(
+            reviewer_evidence_qualification(
+                args.reviewer_model_probe_baseline,
+                args.reviewer_preflight_transcript,
+                args.output,
+                structured_claim_probe=True,
+                heldout_path=(
+                    Path(__file__).resolve().parents[1]
+                    / "tests/fixtures/issue8_heldout_claims.json"
+                ),
             )
         )
     if args.headline_nli_probe:

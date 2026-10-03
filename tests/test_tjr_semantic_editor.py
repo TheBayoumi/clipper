@@ -1684,6 +1684,11 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
     )
     (tmp_path / "reviewer-baseline").mkdir()
     (tmp_path / "reviewer-baseline/reviewer-preflight.json").write_text("{}")
+    structured_proof = (
+        tmp_path / "reviewer-baseline/reviewer-gpu-evidence/baseline_4b/cold/proof.json"
+    )
+    structured_proof.parent.mkdir(parents=True)
+    structured_proof.write_text("{}")
     (tmp_path / "reviewer-input").mkdir()
     (tmp_path / "reviewer-input/transcript.json").write_text("[]")
     executable = tmp_path / "bin/python"
@@ -1701,6 +1706,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         "factual_ablation_4b",
         "factual_nli",
         "evidence_qa",
+        "structured_claim",
         "evidence_gpu",
     ):
         rendered = (
@@ -1731,16 +1737,23 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
             "${{ inputs.reviewer_model_probe == 'evidence_gpu' }}",
             "true" if mode == "evidence_gpu" else "false",
         )
+        rendered = rendered.replace(
+            "${{ inputs.reviewer_model_probe == 'structured_claim' }}",
+            "true" if mode == "structured_claim" else "false",
+        )
         assert "${{" not in rendered
         subprocess.run(["bash", "-e", "-c", rendered], cwd=tmp_path, check=True)
         args = capture.read_text().splitlines()
         assert ("--reviewer-model-probe-baseline" in args) == (mode != "disabled")
+        if mode == "structured_claim":
+            assert structured_proof.relative_to(tmp_path).as_posix() in args
         assert ("--reviewer-diagnostics-baseline" in args) == (mode == "disabled")
         assert ("--headline-factual-probe" in args) == (mode in {"factual_9b", "factual_consensus"})
         assert ("--headline-consensus-probe" in args) == (mode == "factual_consensus")
         assert ("--headline-ablation-probe" in args) == (mode == "factual_ablation_4b")
         assert ("--headline-nli-probe" in args) == (mode == "factual_nli")
         assert ("--evidence-qa-probe" in args) == (mode == "evidence_qa")
+        assert ("--structured-claim-probe" in args) == (mode == "structured_claim")
         assert ("--evidence-gpu-probe" in args) == (mode == "evidence_gpu")
         assert "scripts.tjr_semantic_editor" in args
 
