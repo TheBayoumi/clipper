@@ -57,6 +57,14 @@ def _parser() -> argparse.ArgumentParser:
     export.add_argument("--brief", required=True, type=Path)
     export.add_argument("--artifact-root", required=True, type=Path)
     export.add_argument("--output", required=True, type=Path)
+    relation = subparsers.add_parser(
+        "relation-benchmark", help="diagnose pinned source-to-relation entailment without media"
+    )
+    relation.add_argument("--fixture", required=True, type=Path)
+    relation.add_argument("--proof", required=True, type=Path)
+    relation.add_argument("--transcript", required=True, type=Path)
+    relation.add_argument("--provenance", required=True, type=Path)
+    relation.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -94,6 +102,16 @@ def main(argv: list[str] | None = None) -> int:
             config = EditorialRunConfig.from_legacy_environment(args.brief, args.artifact_root)
             print(write_editorial_run_config(config, args.output))
             return 0
+        if args.command == "relation-benchmark":
+            from .editorial_relation_probe import run_relation_probe
+
+            return run_relation_probe(
+                args.fixture,
+                args.proof,
+                args.transcript,
+                args.provenance,
+                args.output,
+            )
     except Exception as exc:
         logging.getLogger("clipper").error("%s", exc)
         return 1
