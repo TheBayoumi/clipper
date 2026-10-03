@@ -186,10 +186,18 @@ def test_review_handoff_binds_packet_to_independently_delivered_speech():
         ("source", "source identity"),
         ("span", "absent from cited"),
         ("approval", "cannot self-approve"),
+        ("extra_field", "missing or unknown fields"),
+        ("missing_delivered", "independently verified delivered speech"),
+        ("missing_headline", "exact draft headline"),
+        ("requirements", "invalid review requirement"),
+        ("excluded", "invalid excluded context"),
+        ("span_shape", "reviewed setup and resolution"),
+        ("span_fields", "invalid reviewed source span"),
     ],
 )
 def test_review_handoff_rejects_mutated_packet_or_record(change, error):
     draft, review = packet(), record()
+    delivered = UNITS
     if change == "speech":
         draft["selected_source_units"][1]["text"] = "A fabricated line."
     elif change == "headline":
@@ -198,13 +206,27 @@ def test_review_handoff_rejects_mutated_packet_or_record(change, error):
         draft["source_sha256"] = "c" * 64
     elif change == "span":
         draft["reviewed_spans"]["resolution_quote"]["text"] = "A fabricated payoff"
+    elif change == "extra_field":
+        draft["unexpected"] = True
+    elif change == "missing_delivered":
+        delivered = []
+    elif change == "missing_headline":
+        draft["headline"] = ""
+    elif change == "requirements":
+        draft["required_review"]["atomic_claims"] = "approved"
+    elif change == "excluded":
+        draft["excluded_before_context_only"] = [""]
+    elif change == "span_shape":
+        draft["reviewed_spans"].pop("resolution_quote")
+    elif change == "span_fields":
+        draft["reviewed_spans"]["setup_quote"]["unexpected"] = True
     else:
         draft["production_approved"] = True
     with pytest.raises(ValueError, match=error):
         validate_claim_review_for_packet(
             draft,
             review,
-            delivered_source_units=UNITS,
+            delivered_source_units=delivered,
             source_video_id=VIDEO,
             source_sha256=SOURCE,
             transcript_sha256=TRANSCRIPT,

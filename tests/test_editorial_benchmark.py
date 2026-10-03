@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -137,6 +138,59 @@ def test_relation_loader_binds_questions_to_exact_proof_and_source(tmp_path):
     fixture["cases"][0]["evidence"]["quote"] = "Fabricated quote"
     fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
     with pytest.raises(ValueError, match="quote is absent"):
+        load_frozen_relations(fixture_path, proof_path, transcript_path, provenance_path)
+
+    fixture["cases"][0]["evidence"]["quote"] = "Speaker talks."
+    valid_fixture, valid_proof = deepcopy(fixture), deepcopy(proof)
+
+    def rejected(change, expected):
+        changed_fixture, changed_proof = deepcopy(valid_fixture), deepcopy(valid_proof)
+        change(changed_fixture, changed_proof)
+        proof_path.write_text(json.dumps(changed_proof), encoding="utf-8")
+        changed_fixture["baseline_proof_sha256"] = hashlib.sha256(
+            proof_path.read_bytes()
+        ).hexdigest()
+        fixture_path.write_text(json.dumps(changed_fixture), encoding="utf-8")
+        with pytest.raises(ValueError, match=expected):
+            load_frozen_relations(fixture_path, proof_path, transcript_path, provenance_path)
+
+    rejected(lambda f, p: f.update(unexpected=True), "missing or unknown fields")
+    rejected(lambda f, p: f.update(annotation_status="unverified"), "annotation status")
+    rejected(lambda f, p: p.update(experiment_complete=False), "identity mismatch")
+    rejected(lambda f, p: p["annotated_fixtures"].pop(), "twelve original")
+    rejected(lambda f, p: p["annotated_fixtures"].__setitem__(0, None), "source units")
+    rejected(
+        lambda f, p: p["annotated_fixtures"][0]["request"]["messages"][1].update(
+            content=json.dumps({"source_units": []})
+        ),
+        "empty source units",
+    )
+    rejected(
+        lambda f, p: p["annotated_fixtures"][0]["request"]["messages"][1].update(
+            content=json.dumps({"source_units": [{"text": "Other speech."}]})
+        ),
+        "absent from the full transcript",
+    )
+    rejected(lambda f, p: f.update(cases=[]), "no cases")
+    rejected(lambda f, p: f["cases"][0].update(unexpected=True), "missing or unknown fields")
+    rejected(lambda f, p: f["cases"][0].update(fixture_index=True), "invalid annotation")
+    rejected(lambda f, p: f["cases"][0].update(evidence={}), "evidence is incomplete")
+    rejected(lambda f, p: f["cases"].pop(), "cover all twelve")
+
+    empty_transcript = []
+    empty_sha = hashlib.sha256(json.dumps(empty_transcript, sort_keys=True).encode()).hexdigest()
+    changed_fixture, changed_proof = deepcopy(valid_fixture), deepcopy(valid_proof)
+    changed_fixture["transcript_sha256"] = empty_sha
+    changed_proof["transcript_sha256"] = empty_sha
+    transcript_path.write_text(json.dumps(empty_transcript), encoding="utf-8")
+    provenance_path.write_text(
+        json.dumps({"identity": {"source_sha256": "a" * 64, "transcript_sha256": empty_sha}}),
+        encoding="utf-8",
+    )
+    proof_path.write_text(json.dumps(changed_proof), encoding="utf-8")
+    changed_fixture["baseline_proof_sha256"] = hashlib.sha256(proof_path.read_bytes()).hexdigest()
+    fixture_path.write_text(json.dumps(changed_fixture), encoding="utf-8")
+    with pytest.raises(ValueError, match="original full transcript"):
         load_frozen_relations(fixture_path, proof_path, transcript_path, provenance_path)
 
 
