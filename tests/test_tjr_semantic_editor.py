@@ -2641,6 +2641,126 @@ def test_qa_qualification_adapters_preserve_sources_before_model_loading(tmp_pat
     assert calls == []
 
 
+def test_structured_claim_probe_reuses_verified_baseline_without_rerunning_old_gates(
+    tmp_path, monkeypatch
+):
+    import hashlib
+    import json
+
+    from clipper.editorial_benchmark import HeldoutClaim
+    from scripts import tjr_semantic_editor as editor
+
+    transcript_data = [{"start": 0.0, "end": 1.0, "text": "Exact source speech."}]
+    transcript = tmp_path / "transcript.json"
+    transcript.write_text(json.dumps(transcript_data))
+    transcript_sha = hashlib.sha256(
+        json.dumps(transcript_data, sort_keys=True).encode()
+    ).hexdigest()
+    source_sha = "a" * 64
+    (tmp_path / "editorial-cache.json").write_text(
+        json.dumps({"identity": {"source_sha256": source_sha, "transcript_sha256": transcript_sha}})
+    )
+    fixtures = [
+        {
+            "headline": f"Case {index}",
+            "expected_supported": index % 2 == 0,
+            "expected_unsupported_component": None,
+            "request": {
+                "messages": [
+                    {"role": "system", "content": "saved"},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {"source_units": [{"id": 0, "text": "Exact source speech."}]}
+                        ),
+                    },
+                ]
+            },
+        }
+        for index in range(12)
+    ]
+    heldout_path = tmp_path / "heldout.json"
+    heldout_path.write_text(json.dumps({"source_video_id": "_kDrxucOx9g"}))
+    heldout_sha = hashlib.sha256(
+        json.dumps(json.loads(heldout_path.read_text()), sort_keys=True).encode()
+    ).hexdigest()
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps(
+            {
+                "experiment": "evidence_preserving_source_qa",
+                "experiment_complete": True,
+                "transcript_sha256": transcript_sha,
+                "model_profile": {
+                    "source_sha256": source_sha,
+                    "model_sha256": editor._review_model_profile()["sha256"],
+                },
+                "heldout_fixture_sha256": heldout_sha,
+                "annotated_fixtures": fixtures,
+                "comparisons": [{} for _ in range(12)],
+                "heldout_comparisons": [{} for _ in range(12)],
+            }
+        )
+    )
+    heldout = [
+        HeldoutClaim(
+            case_id=f"heldout_{index}",
+            headline=f"Heldout {index}",
+            expected_supported=index % 2 == 0,
+            annotation_reason="Synthetic routing test only.",
+            annotation_status="transcript_only_pending_audio_review",
+            source_start=0.0,
+            source_end=1.0,
+            source_clip="00-double-coverage-_kDrxucOx9g.mp4",
+            source_units=("Exact source speech.",),
+        )
+        for index in range(12)
+    ]
+    monkeypatch.setattr(editor, "load_heldout_claims", lambda *args: heldout)
+    monkeypatch.setattr(
+        editor,
+        "LocalSourceReviewer",
+        lambda *args: (_ for _ in ()).throw(AssertionError("old gate ran")),
+    )
+    monkeypatch.setattr(
+        editor,
+        "audit_structured_claims",
+        lambda _reviewer, headline, _units, **_kwargs: {
+            "validated": {"all_claims_supported": int(headline.split()[-1]) % 2 == 0}
+        },
+    )
+    output = tmp_path / "proof.json"
+    assert (
+        editor.reviewer_evidence_qualification(
+            baseline,
+            transcript,
+            output,
+            structured_claim_probe=True,
+            heldout_path=heldout_path,
+        )
+        == 0
+    )
+    report = json.loads(output.read_text())
+    assert report["structured_claim_scores"]["frozen_correct"] == 12
+    assert report["structured_claim_scores"]["heldout_correct"] == 12
+    assert report["baseline_reference"]["replayed_model_calls"] == 0
+    assert report["request_cache_metrics"]["model_calls"] == 0
+    assert report["production_approved"] is False
+    changed = json.loads(baseline.read_text())
+    changed["heldout_fixture_sha256"] = "0" * 64
+    baseline.write_text(json.dumps(changed))
+    import pytest
+
+    with pytest.raises(ValueError, match="complete exact-source proof"):
+        editor.reviewer_evidence_qualification(
+            baseline,
+            transcript,
+            tmp_path / "rejected.json",
+            structured_claim_probe=True,
+            heldout_path=heldout_path,
+        )
+
+
 def test_source_unit_evidence_rejects_invalid_contracts_and_preserves_repeated_positions():
     import pytest
 

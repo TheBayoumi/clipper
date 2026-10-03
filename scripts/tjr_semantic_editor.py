@@ -3837,6 +3837,107 @@ def reviewer_evidence_qualification(
     began = time.monotonic()
     checkpoint()
     try:
+        if structured_claim_probe:
+            baseline_profile = saved.get("model_profile")
+            normalized_heldout_hash = hashlib.sha256(
+                json.dumps(json.loads(heldout_path.read_text()), sort_keys=True).encode()
+            ).hexdigest()
+            if (
+                saved.get("experiment") != "evidence_preserving_source_qa"
+                or saved.get("experiment_complete") is not True
+                or saved.get("transcript_sha256") != transcript_hash
+                or not isinstance(baseline_profile, dict)
+                or baseline_profile.get("source_sha256") != source_hash
+                or baseline_profile.get("model_sha256") != review_profile["sha256"]
+                or saved.get("heldout_fixture_sha256") != normalized_heldout_hash
+                or len(saved.get("comparisons", [])) != 12
+                or len(saved.get("heldout_comparisons", [])) != 12
+                or len(heldout) != 12
+            ):
+                raise ValueError("structured claim baseline must be a complete exact-source proof")
+            report["baseline_reference"] = {
+                "proof_sha256": hashlib.sha256(baseline_path.read_bytes()).hexdigest(),
+                "model_profile": saved["model_profile"],
+                "heldout_scores": saved.get("heldout_scores"),
+                "replayed_model_calls": 0,
+            }
+
+            def check_structured(
+                headline: str, source_units: list[str], expected: bool
+            ) -> dict[str, Any]:
+                row: dict[str, Any] = {
+                    "headline": headline,
+                    "expected_supported": expected,
+                    "contract_valid": False,
+                    "passed": False,
+                }
+                try:
+                    audit = structured_backend(cache, headline, source_units)
+                    accepted = audit["verdict"] == "supported"
+                    row.update(
+                        review=audit,
+                        contract_valid=True,
+                        actual_supported=accepted,
+                        passed=accepted is expected,
+                    )
+                except (RuntimeError, ValueError, KeyError) as error:
+                    row["error"] = f"{type(error).__name__}: {error}"
+                return row
+
+            for fixture in fixtures:
+                payload = json.loads(fixture["request"]["messages"][1]["content"])
+                source_units = [unit["text"] for unit in payload["source_units"]]
+                row = check_structured(
+                    fixture["headline"], source_units, fixture["expected_supported"]
+                )
+                report["structured_claim_comparisons"].append(row)
+                checkpoint()
+                print(f"STRUCTURED_CLAIM {fixture['headline']} passed={row['passed']}", flush=True)
+            for case in heldout:
+                row = check_structured(
+                    case.headline, list(case.source_units), case.expected_supported
+                )
+                report["heldout_comparisons"].append(
+                    {
+                        "case_id": case.case_id,
+                        "headline": case.headline,
+                        "expected_supported": case.expected_supported,
+                        "annotation_status": case.annotation_status,
+                        "source_clip": case.source_clip,
+                        "structured_claim_review": row,
+                    }
+                )
+                checkpoint()
+                print(f"HELDOUT_STRUCTURED {case.case_id} passed={row['passed']}", flush=True)
+            frozen = report["structured_claim_comparisons"]
+            heldout_structured = [
+                row["structured_claim_review"] for row in report["heldout_comparisons"]
+            ]
+            all_rows = [*frozen, *heldout_structured]
+            report["structured_claim_scores"] = {
+                "frozen_correct": sum(row["passed"] for row in frozen),
+                "heldout_correct": sum(row["passed"] for row in heldout_structured),
+                "contract_errors": sum(row["contract_valid"] is not True for row in all_rows),
+                "false_approvals": sum(
+                    row.get("actual_supported") is True and not row["expected_supported"]
+                    for row in all_rows
+                ),
+                "false_rejections": sum(
+                    row.get("actual_supported") is False and row["expected_supported"]
+                    for row in all_rows
+                ),
+            }
+            report["experiment_complete"] = True
+            report["semantic_pass"] = all(row["passed"] for row in all_rows)
+            report["seconds"] = round(time.monotonic() - began, 3)
+            report["qualification_rule"] = (
+                "All twelve frozen and twelve provisional held-out claims must be "
+                "contract-valid and semantically correct under the new diagnostic. "
+                "A single-source diagnostic pass does not qualify production. "
+                "Unchanged baseline results are referenced by proof hash, not rerun."
+            )
+            checkpoint()
+            return int(not report["semantic_pass"])
         for name, start, end, expected, flags in (
             (
                 "complete_business_exchange",
@@ -4021,32 +4122,6 @@ def reviewer_evidence_qualification(
                     f"SOURCE_QA_CLAIM {fixture['headline']} passed={qa_row['passed']}",
                     flush=True,
                 )
-            if structured_claim_probe:
-                structured_row = {
-                    "headline": fixture["headline"],
-                    "expected_supported": fixture["expected_supported"],
-                }
-                try:
-                    structured_audit = structured_backend(cache, fixture["headline"], source_units)
-                    accepted = structured_audit["verdict"] == "supported"
-                    structured_row.update(
-                        review=structured_audit,
-                        contract_valid=True,
-                        actual_supported=accepted,
-                        passed=accepted is fixture["expected_supported"],
-                    )
-                except (RuntimeError, ValueError, KeyError) as error:
-                    structured_row.update(
-                        passed=False,
-                        contract_valid=False,
-                        error=f"{type(error).__name__}: {error}",
-                    )
-                report["structured_claim_comparisons"].append(structured_row)
-                checkpoint()
-                print(
-                    f"STRUCTURED_CLAIM {fixture['headline']} passed={structured_row['passed']}",
-                    flush=True,
-                )
         if heldout:
             for case in heldout:
                 source_units = list(case.source_units)
@@ -4066,8 +4141,6 @@ def reviewer_evidence_qualification(
                 ]
                 if source_qa_probe:
                     backends.append(("source_first_qa", audit_source_qa))
-                if structured_claim_probe:
-                    backends.append(("structured_claim_review", structured_backend))
                 for name, backend in backends:
                     try:
                         audit = backend(cache, case.headline, source_units)
@@ -4122,20 +4195,6 @@ def reviewer_evidence_qualification(
                 for row in report["source_qa_comparisons"]
             )
             report["source_qa_pass"] = all(row["passed"] for row in report["source_qa_comparisons"])
-        if structured_claim_probe:
-            report["structured_claim_contract_error_count"] = sum(
-                row.get("contract_valid") is not True
-                for row in report["structured_claim_comparisons"]
-            )
-            report["structured_claim_semantic_error_count"] = sum(
-                row.get("contract_valid") is True and not row["passed"]
-                for row in report["structured_claim_comparisons"]
-            )
-            report["structured_claim_pass"] = all(
-                row["passed"] for row in report["structured_claim_comparisons"]
-            ) and all(
-                row["structured_claim_review"]["passed"] for row in report["heldout_comparisons"]
-            )
         if heldout_path is not None:
             report["heldout_scores"] = {
                 name: {
@@ -4157,7 +4216,6 @@ def reviewer_evidence_qualification(
                     "existing",
                     "experimental_claim_level",
                     *(("source_first_qa",) if source_qa_probe else ()),
-                    *(("structured_claim_review",) if structured_claim_probe else ()),
                 )
             }
         report["qualification_rule"] = (
