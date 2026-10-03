@@ -5,6 +5,11 @@
   "source_sha256": "2a7e07b37074f3073d71b65e10a3efb4019b3cdd4277bc2d3770a99dcbc55e0a",
   "transcript_sha256": "1e71997293af767ff285f236f6be3af13e2c075abece593f295bae6bb0d9741b",
   "source_artifact_run_id": "36854533220",
+  "source_clip_sha256": {
+    "05-double-coverage-_kDrxucOx9g.mp4": "77ec8ea92da940aa48e5bd2c46d1baec3a5f7eb3eb2ed62cec5596bd76cc65ea",
+    "07-double-coverage-_kDrxucOx9g.mp4": "d525f3f5ef36029ff4fe2dd79b929ede41081b52a843880d6e33ed55664e2ed6",
+    "15-double-coverage-_kDrxucOx9g.mp4": "829ff0bd5038fe10865d051703c63a67733b28249fcb55bdc7613777a4d61ff4"
+  },
   "cases": [
     {
       "id": "training_advice_reported",

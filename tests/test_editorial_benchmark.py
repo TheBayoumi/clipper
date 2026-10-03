@@ -12,6 +12,7 @@ import pytest
 from clipper.editorial_benchmark import (
     load_frozen_relations,
     load_heldout_claims,
+    prepare_blind_audio_review,
     qualification_pass,
 )
 
@@ -50,6 +51,7 @@ def test_committed_heldout_controls_are_explicitly_provisional():
     assert sum(item["expected_supported"] for item in cases) == 6
     assert len({item["source_clip"] for item in cases}) == 3
     assert len({item["id"] for item in cases}) == len(cases)
+    assert set(saved["source_clip_sha256"]) == {item["source_clip"] for item in cases}
 
 
 def test_committed_relation_controls_are_provisional_and_cover_all_frozen_headlines():
@@ -238,3 +240,69 @@ def test_loader_binds_claims_to_exact_transcript_and_provenance(tmp_path):
     transcript_path.write_text(json.dumps([dict(transcript[0], text="Different speech")]))
     with pytest.raises(ValueError, match="provenance mismatch"):
         load_heldout_claims(fixture_path, transcript_path, provenance_path)
+
+
+def test_blind_audio_manifest_hides_provisional_answers_and_pins_actual_mp4(tmp_path):
+    clip_name = "05-double-coverage-_kDrxucOx9g.mp4"
+    clips_dir = tmp_path / "clips"
+    clips_dir.mkdir()
+    clip = clips_dir / clip_name
+    clip.write_bytes(b"test MP4 bytes")
+    transcript = [{"start": 10.0, "end": 12.0, "text": "The advice was to spar less."}]
+    transcript_sha = hashlib.sha256(json.dumps(transcript, sort_keys=True).encode()).hexdigest()
+    fixture = {
+        "schema": "clipper-heldout-headlines-v1",
+        "annotation_status": "transcript_only_pending_audio_review",
+        "source_video_id": "_kDrxucOx9g",
+        "source_sha256": "a" * 64,
+        "transcript_sha256": transcript_sha,
+        "source_artifact_run_id": "12345",
+        "source_clip_sha256": {clip_name: hashlib.sha256(clip.read_bytes()).hexdigest()},
+        "cases": [
+            {
+                "id": "answer_is_spar_less",
+                "source_start": 10.0,
+                "source_end": 12.0,
+                "source_clip": clip_name,
+                "headline": "The advice was to spar less",
+                "expected_supported": True,
+                "annotation_reason": "Provisional answer from transcript.",
+            }
+        ],
+    }
+    fixture_path, transcript_path, provenance_path = (
+        tmp_path / "claims.json",
+        tmp_path / "transcript.json",
+        tmp_path / "editorial-cache.json",
+    )
+    fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+    transcript_path.write_text(json.dumps(transcript), encoding="utf-8")
+    provenance_path.write_text(
+        json.dumps({"identity": {"source_sha256": "a" * 64, "transcript_sha256": transcript_sha}}),
+        encoding="utf-8",
+    )
+    output = tmp_path / "blind.json"
+    prepare_blind_audio_review(fixture_path, transcript_path, provenance_path, clips_dir, output)
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert manifest["annotation_status"] == "pending_independent_audio_review"
+    assert manifest["cases"][0]["audible_claim_verdict"] is None
+    assert manifest["cases"][0]["source_clip_sha256"] == fixture["source_clip_sha256"][clip_name]
+    assert "expected_supported" not in output.read_text(encoding="utf-8")
+    assert "annotation_reason" not in output.read_text(encoding="utf-8")
+    assert "answer_is_spar_less" not in output.read_text(encoding="utf-8")
+    clip.unlink()
+    with pytest.raises(ValueError, match="clip is missing"):
+        prepare_blind_audio_review(
+            fixture_path, transcript_path, provenance_path, clips_dir, output
+        )
+    clip.write_bytes(b"altered MP4")
+    with pytest.raises(ValueError, match="hash differs"):
+        prepare_blind_audio_review(
+            fixture_path, transcript_path, provenance_path, clips_dir, output
+        )
+    fixture["source_clip_sha256"] = {}
+    fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+    with pytest.raises(ValueError, match="pinned hashes"):
+        prepare_blind_audio_review(
+            fixture_path, transcript_path, provenance_path, clips_dir, output
+        )

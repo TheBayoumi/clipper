@@ -65,6 +65,15 @@ def _parser() -> argparse.ArgumentParser:
     relation.add_argument("--transcript", required=True, type=Path)
     relation.add_argument("--provenance", required=True, type=Path)
     relation.add_argument("--output", required=True, type=Path)
+    audio_review = subparsers.add_parser(
+        "audio-review-manifest",
+        help="prepare a blind, hash-verified held-out MP4 review without provisional labels",
+    )
+    audio_review.add_argument("--fixture", required=True, type=Path)
+    audio_review.add_argument("--transcript", required=True, type=Path)
+    audio_review.add_argument("--provenance", required=True, type=Path)
+    audio_review.add_argument("--clips-dir", required=True, type=Path)
+    audio_review.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -112,6 +121,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.provenance,
                 args.output,
             )
+        if args.command == "audio-review-manifest":
+            from .editorial_benchmark import prepare_blind_audio_review
+
+            print(
+                prepare_blind_audio_review(
+                    args.fixture,
+                    args.transcript,
+                    args.provenance,
+                    args.clips_dir,
+                    args.output,
+                )
+            )
+            return 0
     except Exception as exc:
         logging.getLogger("clipper").error("%s", exc)
         return 1

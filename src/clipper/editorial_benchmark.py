@@ -365,3 +365,81 @@ def load_heldout_claims(
         )
         seen.add(case_id)
     return cases
+
+
+def prepare_blind_audio_review(
+    fixture_path: Path,
+    transcript_path: Path,
+    provenance_path: Path,
+    clips_dir: Path,
+    output_path: Path,
+) -> Path:
+    """Prepare unlabelled, byte-pinned clips for independent human audio judgment.
+
+    Provisional transcript labels and reasons must never enter this manifest.
+    Merely preparing it does not make any claim audio-reviewed or qualified.
+    """
+    cases = load_heldout_claims(fixture_path, transcript_path, provenance_path)
+    fixture: Any = json.loads(fixture_path.read_text(encoding="utf-8"))
+    expected: Any = fixture.get("source_clip_sha256")
+    names = {case.source_clip for case in cases}
+    if (
+        not isinstance(expected, dict)
+        or set(expected) != names
+        or any(
+            not isinstance(value, str) or not _SHA256.fullmatch(value)
+            for value in expected.values()
+        )
+    ):
+        raise ValueError("blind audio review requires exact pinned hashes for every source clip")
+    clips: dict[str, dict[str, str]] = {}
+    for name in sorted(names):
+        target = clips_dir / name
+        if not target.is_file():
+            raise ValueError(f"blind audio review source clip is missing: {name}")
+        with target.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if digest != expected[name]:
+            raise ValueError(f"blind audio review source clip hash differs: {name}")
+        clips[name] = {"path": str(target.resolve()), "sha256": digest}
+    ordered = sorted(
+        cases,
+        key=lambda case: hashlib.sha256(
+            (fixture["source_sha256"] + ":" + case.case_id).encode()
+        ).hexdigest(),
+    )
+    manifest = {
+        "schema": "clipper-blind-audio-review-v1",
+        "annotation_status": "pending_independent_audio_review",
+        "source_video_id": fixture["source_video_id"],
+        "source_sha256": fixture["source_sha256"],
+        "transcript_sha256": fixture["transcript_sha256"],
+        "source_artifact_run_id": fixture["source_artifact_run_id"],
+        "fixture_sha256": hashlib.sha256(fixture_path.read_bytes()).hexdigest(),
+        "instructions": (
+            "Listen to the complete linked MP4 before deciding whether every factual "
+            "part of the headline is established by audible speech. Distinguish actors, "
+            "roles, reported or quoted speech, actual versus hypothetical outcomes, "
+            "conditions, negation and setting. Do not consult transcript-derived labels, "
+            "model scores or case IDs. Mark uncertain if the audio is insufficient. "
+            "This is factual review, not publication or creative-quality approval."
+        ),
+        "cases": [
+            {
+                "blind_id": f"A{index:03d}",
+                "headline": case.headline,
+                "source_clip": case.source_clip,
+                "source_clip_path": clips[case.source_clip]["path"],
+                "source_clip_sha256": clips[case.source_clip]["sha256"],
+                "source_start": case.source_start,
+                "source_end": case.source_end,
+                "audible_claim_verdict": None,
+                "reviewer_id": None,
+                "review_notes": None,
+            }
+            for index, case in enumerate(ordered, start=1)
+        ],
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return output_path
