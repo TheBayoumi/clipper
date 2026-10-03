@@ -1,0 +1,123 @@
+{
+  "schema": "clipper-heldout-headlines-v1",
+  "annotation_status": "transcript_only_pending_audio_review",
+  "source_video_id": "_kDrxucOx9g",
+  "source_sha256": "2a7e07b37074f3073d71b65e10a3efb4019b3cdd4277bc2d3770a99dcbc55e0a",
+  "transcript_sha256": "1e71997293af767ff285f236f6be3af13e2c075abece593f295bae6bb0d9741b",
+  "source_artifact_run_id": "36854533220",
+  "source_clip_sha256": {
+    "05-double-coverage-_kDrxucOx9g.mp4": "77ec8ea92da940aa48e5bd2c46d1baec3a5f7eb3eb2ed62cec5596bd76cc65ea",
+    "07-double-coverage-_kDrxucOx9g.mp4": "d525f3f5ef36029ff4fe2dd79b929ede41081b52a843880d6e33ed55664e2ed6",
+    "15-double-coverage-_kDrxucOx9g.mp4": "829ff0bd5038fe10865d051703c63a67733b28249fcb55bdc7613777a4d61ff4"
+  },
+  "cases": [
+    {
+      "id": "training_advice_reported",
+      "source_start": 1713.4,
+      "source_end": 1757.8,
+      "source_clip": "05-double-coverage-_kDrxucOx9g.mp4",
+      "headline": "Mighty Mouse told the speaker he spars too much",
+      "expected_supported": true,
+      "annotation_reason": "The speaker explicitly attributes the too-much-sparring advice to Mighty Mouse."
+    },
+    {
+      "id": "training_reassessment_future",
+      "source_start": 1713.4,
+      "source_end": 1757.8,
+      "source_clip": "05-double-coverage-_kDrxucOx9g.mp4",
+      "headline": "The speaker plans to reassess his training after Mighty Mouse's advice",
+      "expected_supported": true,
+      "annotation_reason": "The speaker says he will do some reassessing in the future after describing the advice."
+    },
+    {
+      "id": "training_advice_inverted",
+      "source_start": 1713.4,
+      "source_end": 1757.8,
+      "source_clip": "05-double-coverage-_kDrxucOx9g.mp4",
+      "headline": "Mighty Mouse told the speaker to spar more often",
+      "expected_supported": false,
+      "annotation_reason": "The advice says he spars too much, not too little."
+    },
+    {
+      "id": "training_future_upgraded",
+      "source_start": 1713.4,
+      "source_end": 1757.8,
+      "source_clip": "05-double-coverage-_kDrxucOx9g.mp4",
+      "headline": "The speaker already stopped sparring because of Mighty Mouse",
+      "expected_supported": false,
+      "annotation_reason": "A future reassessment does not establish that sparring has already stopped."
+    },
+    {
+      "id": "career_plan_reported",
+      "source_start": 1092.6,
+      "source_end": 1122.6,
+      "source_clip": "15-double-coverage-_kDrxucOx9g.mp4",
+      "headline": "The speaker recalls being told to make a realistic career plan",
+      "expected_supported": true,
+      "annotation_reason": "The speaker recalls being told he needed an actual career plan."
+    },
+    {
+      "id": "career_visibility_opinion",
+      "source_start": 1092.6,
+      "source_end": 1122.6,
+      "source_clip": "15-double-coverage-_kDrxucOx9g.mp4",
+      "headline": "The speaker thinks seeing veterans pursue fighting makes that path feel realistic",
+      "expected_supported": true,
+      "annotation_reason": "The speaker says seeing veterans do it makes the path realistic."
+    },
+    {
+      "id": "career_nfl_invented",
+      "source_start": 1092.6,
+      "source_end": 1122.6,
+      "source_clip": "15-double-coverage-_kDrxucOx9g.mp4",
+      "headline": "The speaker played in the NFL before joining the UFC",
+      "expected_supported": false,
+      "annotation_reason": "The NFL is mentioned as a quoted contrast about a sport the fighter could not play."
+    },
+    {
+      "id": "career_strickland_attribution",
+      "source_start": 1092.6,
+      "source_end": 1122.6,
+      "source_clip": "15-double-coverage-_kDrxucOx9g.mp4",
+      "headline": "Sean Strickland told the speaker to abandon his UFC career",
+      "expected_supported": false,
+      "annotation_reason": "A quoted Sean Strickland remark concerns NFL or NBA ability, not advice to quit UFC."
+    },
+    {
+      "id": "promotion_boring_rule",
+      "source_start": 1348.2,
+      "source_end": 1377.3,
+      "source_clip": "07-double-coverage-_kDrxucOx9g.mp4",
+      "headline": "The speaker says a great fighter can still be cut for being boring",
+      "expected_supported": true,
+      "annotation_reason": "The speaker presents this explicitly as a possible consequence, not a past event."
+    },
+    {
+      "id": "promotion_contractor_status",
+      "source_start": 1348.2,
+      "source_end": 1377.3,
+      "source_clip": "07-double-coverage-_kDrxucOx9g.mp4",
+      "headline": "The speaker calls UFC fighters independent contractors",
+      "expected_supported": true,
+      "annotation_reason": "The speaker directly says the fighters are independent contractors."
+    },
+    {
+      "id": "promotion_rule_as_event",
+      "source_start": 1348.2,
+      "source_end": 1377.3,
+      "source_clip": "07-double-coverage-_kDrxucOx9g.mp4",
+      "headline": "The speaker was cut by the UFC after winning six fights",
+      "expected_supported": false,
+      "annotation_reason": "The six-and-zero line is a hypothetical risk, not the speaker's actual record or firing."
+    },
+    {
+      "id": "promotion_employment_inversion",
+      "source_start": 1348.2,
+      "source_end": 1377.3,
+      "source_clip": "07-double-coverage-_kDrxucOx9g.mp4",
+      "headline": "The speaker says UFC fighters are salaried employees",
+      "expected_supported": false,
+      "annotation_reason": "The speaker instead calls fighters independent contractors."
+    }
+  ]
+}

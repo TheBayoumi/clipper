@@ -1,0 +1,482 @@
+"""Safe, full-duration editorial headlines and real word-aligned TikTok captions.
+
+Style B v2 creates a burn-in-ready ASS sidecar without inventing spoken-word
+boundaries, adding source logos, or making unverifiable claims.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from collections.abc import Collection, Sequence
+from functools import lru_cache
+from itertools import combinations, pairwise
+from pathlib import Path
+
+from PIL import ImageFont
+
+from .models import ClipCandidate, TranscriptSegment, WordTiming
+
+# Explicit bounding boxes in an exact 1080x1920 composition. All positions are
+# fixed in the libass design resolution; font measurements include headroom for
+# the active-word pop and the opaque background plate.
+_HOOK_SAFE_WIDTH = 800
+_CAPTION_SAFE_WIDTH = 780
+_FONT = "DejaVuSans-Bold.ttf"
+_WORD = re.compile(r"\S+")
+
+
+def _safe(text: str) -> str:
+    """Strip ASS override delimiters and line breaks from untrusted speech."""
+    return re.sub(r"\s+", " ", re.sub(r"[{}\\\r\n]", " ", text)).strip()
+
+
+def _ass_time(seconds: float) -> str:
+    ticks = max(0, round(seconds * 100))
+    hours, ticks = divmod(ticks, 360000)
+    minutes, ticks = divmod(ticks, 6000)
+    whole, centiseconds = divmod(ticks, 100)
+    return f"{hours}:{minutes:02d}:{whole:02d}.{centiseconds:02d}"
+
+
+_HEADLINE_FUNCTION_WORDS = frozenset(
+    [
+        "a",
+        "an",
+        "the",
+        "i",
+        "me",
+        "my",
+        "mine",
+        "you",
+        "your",
+        "yours",
+        "he",
+        "him",
+        "his",
+        "she",
+        "her",
+        "hers",
+        "it",
+        "its",
+        "we",
+        "us",
+        "our",
+        "they",
+        "them",
+        "their",
+        "theirs",
+        "and",
+        "or",
+        "but",
+        "so",
+        "then",
+        "well",
+        "yeah",
+        "yes",
+        "no",
+        "okay",
+        "like",
+        "just",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "do",
+        "does",
+        "did",
+        "have",
+        "has",
+        "had",
+        "to",
+        "of",
+        "in",
+        "on",
+        "at",
+        "for",
+        "with",
+        "from",
+        "by",
+        "as",
+        "that",
+        "this",
+        "these",
+        "those",
+        "what",
+        "who",
+        "when",
+        "where",
+        "why",
+        "how",
+        "can",
+        "could",
+        "would",
+        "will",
+        "should",
+        "know",
+        "knew",
+        "think",
+        "thing",
+        "things",
+    ]
+)
+
+
+def source_headline_candidates(text: str) -> list[str]:
+    """Rank intact source sentences; never invent a topic, outcome, or speaker.
+
+    These are extractive review headlines, not model-written paraphrases.
+    Complete sentences preserve negation and amounts. Oversized sentences are
+    rejected rather than truncated into a claim with missing context.
+    """
+    original = _safe(text)
+    if not original:
+        return []
+    sentences = re.findall(r".+?(?:[!?]+|\.(?!\d)|$)", original, flags=re.DOTALL)
+    choices: list[tuple[float, int, str]] = []
+    seen: set[str] = set()
+    for index, sentence in enumerate(sentences):
+        sentence = sentence.strip()
+        tokens = re.findall(r"[\w$%'-]+", sentence)
+        if not 4 <= len(tokens) <= 16:
+            continue
+        content = {token.casefold() for token in tokens} - _HEADLINE_FUNCTION_WORDS
+        if len(content) < 2:
+            continue
+        headline = sentence.upper()
+        key = headline.casefold()
+        if key in seen:
+            continue
+        try:
+            _fit_lines(headline, max_width=_HOOK_SAFE_WIDTH, max_size=70, max_lines=3)
+        except ValueError:
+            continue
+        seen.add(key)
+        diversity = len({token.casefold() for token in tokens}) / len(tokens)
+        score = diversity + float(sentence.endswith("?")) + min(len(tokens), 10) / 10
+        choices.append((-score, index, headline))
+    return [headline for _, _, headline in sorted(choices)]
+
+
+def creative_hook_from_text(text: str) -> str:
+    """Return the best fitting intact source sentence without campaign templates."""
+    choices = source_headline_candidates(text)
+    return choices[0] if choices else ""
+
+
+def distinct_hook_from_text(
+    text: str,
+    used_hooks: Collection[str] = (),
+    *,
+    allow_quote_fallback: bool = False,
+) -> str:
+    """Choose another intact source headline without padding an output quota.
+
+    The legacy keyword remains API-compatible; all candidates now have the
+    same source-grounding requirement regardless of its value.
+    """
+    used = {hook.casefold() for hook in used_hooks}
+    return next(
+        (
+            headline
+            for headline in source_headline_candidates(text)
+            if headline.casefold() not in used
+        ),
+        "",
+    )
+
+
+@lru_cache(maxsize=512)
+def _fit_lines(
+    text: str, *, max_width: int, max_size: int, min_size: int = 42, max_lines: int = 2
+) -> tuple[int, tuple[str, ...], float]:
+    """Measure glyph widths and fit within bounded horizontal and vertical safe areas.
+
+    libass is configured for the same font in the ASS style. A 12% pop/plate
+    allowance prevents transient animation from crossing the safe-area edge.
+    Fail closed on an unrenderable headline rather than clipping it.
+    """
+    words = _safe(text).upper().split()
+    if not words:
+        raise ValueError("empty headline cannot be laid out")
+    for size in range(max_size, min_size - 1, -2):
+        font = ImageFont.truetype(_FONT, size)
+        # Measure each word once to screen partitions cheaply; verify every
+        # chosen line with the actual glyph renderer before accepting it.
+        prefix = [0.0]
+        for word in words:
+            prefix.append(prefix[-1] + float(font.getlength(word)))
+        space_width = float(font.getlength(" "))
+        choices: list[tuple[float, tuple[str, ...]]] = []
+        for line_count in range(1, min(max_lines, len(words)) + 1):
+            for cuts in combinations(range(1, len(words)), line_count - 1):
+                boundaries = (0, *cuts, len(words))
+                lines = tuple(" ".join(words[left:right]) for left, right in pairwise(boundaries))
+                width = max(
+                    prefix[right] - prefix[left] + space_width * (right - left - 1)
+                    for left, right in pairwise(boundaries)
+                )
+                if width * 1.12 + 40 <= max_width and size * line_count * 1.2 + 36 <= 210:
+                    choices.append((width, lines))
+        for _, lines in sorted(
+            choices, key=lambda x: (max(len(y) for y in x[1]) - min(len(y) for y in x[1]), x[0])
+        ):
+            actual_width = max(float(font.getlength(line)) for line in lines)
+            if actual_width * 1.12 + 40 <= max_width:
+                return size, lines, actual_width
+    raise ValueError("headline exceeds portrait safe area; shorten editorial headline")
+
+
+def _ass_header() -> str:
+    return (
+        "[Script Info]\nTitle: Source-grounded Style B v2 review overlay\n"
+        "ScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n"
+        "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Hook,DejaVu Sans,70,&H00FFFFFF,&H00FFFFFF,&H00131620,&H54131620,"
+        "-1,0,0,0,100,100,0,0,1,0,0,8,120,120,185,1\n"
+        "Style: Caption,DejaVu Sans,64,&H00FFFFFF,&H00FFFFFF,&H00131620,&H58131620,"
+        "-1,0,0,0,100,100,0,0,1,0,0,2,120,120,375,1\n\n"
+        "Style: HookPlate,DejaVu Sans,1,&H00000000,&H00000000,&H00000000,&H00000000,"
+        "0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n"
+        "Style: CaptionPlate,DejaVu Sans,1,&H00000000,&H00000000,&H00000000,&H00000000,"
+        "0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, "
+        "MarginV, Effect, Text\n"
+    )
+
+
+def _timed_words(
+    segments: Sequence[TranscriptSegment], clip: ClipCandidate
+) -> tuple[list[WordTiming], list[TranscriptSegment]]:
+    aligned: list[WordTiming] = []
+    fallback: list[TranscriptSegment] = []
+    for segment in segments:
+        if segment.end <= clip.start or segment.start >= clip.end:
+            continue
+        if segment.words:
+            aligned.extend(
+                word
+                for word in segment.words
+                if word.end > clip.start and word.start < clip.end and _safe(word.text)
+            )
+        else:
+            fallback.append(segment)
+    return sorted(aligned, key=lambda word: (word.start, word.end)), fallback
+
+
+def _phrases(words: Sequence[WordTiming]) -> list[list[WordTiming]]:
+    phrases: list[list[WordTiming]] = []
+    phrase: list[WordTiming] = []
+    for word in words:
+        proposed = [*phrase, word]
+        # A phrase remains visible while each authentic word gets its own
+        # active frame interval. Preserve the original word timing untouched.
+        if phrase and (
+            len(proposed) > 5
+            or len(" ".join(_safe(w.text) for w in proposed)) > 28
+            or word.end - phrase[0].start > 2.1
+            or word.start - phrase[-1].end > 0.65
+            or phrase[-1].text.rstrip().endswith((".", "!", "?"))
+        ):
+            phrases.append(phrase)
+            phrase = [word]
+        else:
+            phrase = proposed
+    if phrase:
+        phrases.append(phrase)
+    return phrases
+
+
+def _caption_text(phrase: Sequence[WordTiming], active: int, size: int) -> str:
+    tokens: list[str] = []
+    for i, word in enumerate(phrase):
+        token = _safe(word.text).upper()
+        if i == active:
+            # Emphasis is determined exclusively by the original audio's
+            # measured timestamp, never by lexical/keyword scoring.
+            tokens.append(
+                f"{{\\c&H0059DEFF&\\b1\\fs{size}\\t(0,85,\\fscx106\\fscy106)}}"
+                + token
+                + f"{{\\rCaption\\fs{size}}}"
+            )
+        else:
+            tokens.append(token)
+    return " ".join(tokens)
+
+
+def _plate_event(
+    start: float, end: float, *, size: int, lines: Sequence[str], hook: bool = False
+) -> str:
+    """One fixed rectangle per text block, independent of text-run transforms."""
+    font = ImageFont.truetype(_FONT, size)
+    # libass normalizes Fontsize to the font ascender/descender height;
+    # Pillow measures at the em size. Convert before adding fixed padding.
+    ascent, descent = font.getmetrics()
+    scale = size / (ascent + descent)
+    width = math.ceil(max(float(font.getlength(line)) for line in lines) * scale * 1.06 + 36)
+    ink_height = max(font.getbbox(line)[3] - font.getbbox(line)[1] for line in lines)
+    height = math.ceil((len(lines) - 1) * size + ink_height * scale * 1.06 + 36)
+    x = (1080 - width) // 2
+    center_y = 260 if hook else 1460
+    y = center_y - height // 2
+    style = "HookPlate" if hook else "CaptionPlate"
+    layer = 4 if hook else 0
+    return (
+        f"Dialogue: {layer},{_ass_time(start)},{_ass_time(end)},{style},,0,0,0,,"
+        f"{{\\an7\\pos({x},{y})\\p1\\bord0\\shad0\\alpha&H00&}}"
+        f"m 0 0 l {width} 0 l {width} {height} l 0 {height}"
+    )
+
+
+def create_tiktok_ass(
+    clip: ClipCandidate,
+    segments: Sequence[TranscriptSegment],
+    output_path: str | Path,
+    *,
+    hook_text: str,
+) -> Path:
+    """Create persistent, safe creative hook and measured word-synced captions.
+
+    Unaligned Whisper fallback segments appear as *static* captions; guessing
+    intra-sentence times to simulate word synchronization is prohibited.
+    """
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    events: list[str] = []
+    hook = _safe(hook_text)
+    if hook and clip.duration >= 1:
+        size, lines, _ = _fit_lines(hook, max_width=_HOOK_SAFE_WIDTH, max_size=70, max_lines=3)
+        events.append(_plate_event(0, clip.duration, size=size, lines=lines, hook=True))
+        # No fade-out: the hook remains visible on the first and last frames.
+        events.append(
+            "Dialogue: 5,"
+            f"{_ass_time(0)},{_ass_time(clip.duration)},"
+            f"Hook,,0,0,0,,{{\\an5\\pos(540,260)\\fs{size}\\q2}}" + r"\N".join(lines)
+        )
+    words, unaligned = _timed_words(segments, clip)
+    phrases = _phrases(words)
+    for phrase_index, phrase in enumerate(phrases):
+        full_text = " ".join(_safe(word.text).upper() for word in phrase)
+        size, lines, _ = _fit_lines(
+            full_text, max_width=_CAPTION_SAFE_WIDTH, max_size=64, min_size=42
+        )
+        phrase_start = max(clip.start, phrase[0].start) - clip.start
+        phrase_end = min(clip.end, max(word.end for word in phrase)) - clip.start
+        if phrase_index + 1 < len(phrases):
+            phrase_end = min(phrase_end, phrases[phrase_index + 1][0].start - clip.start)
+        if phrase_end <= phrase_start:
+            continue
+        events.append(_plate_event(phrase_start, phrase_end, size=size, lines=lines))
+        # Display the neutral phrase through measured pauses, without inventing
+        # active-word timing. Later word starts arbitrate overlapping ASR words.
+        cursor = phrase_start
+        for index, word in enumerate(phrase):
+            word_start = max(phrase_start, word.start - clip.start)
+            word_end = min(phrase_end, word.end - clip.start)
+            if index + 1 < len(phrase):
+                word_end = min(word_end, phrase[index + 1].start - clip.start)
+            if word_start > cursor:
+                events.append(
+                    f"Dialogue: 1,{_ass_time(cursor)},{_ass_time(word_start)},"
+                    f"Caption,,0,0,0,,{{\\an5\\pos(540,1460)\\fs{size}\\q2}}" + r"\N".join(lines)
+                )
+            cursor = max(cursor, word_end)
+        if cursor < phrase_end:
+            events.append(
+                f"Dialogue: 1,{_ass_time(cursor)},{_ass_time(phrase_end)},"
+                f"Caption,,0,0,0,,{{\\an5\\pos(540,1460)\\fs{size}\\q2}}" + r"\N".join(lines)
+            )
+        # Preserve measured word boundaries when wrapping a phrase.
+        split = len(lines[0].split()) if len(lines) > 1 else len(phrase)
+        for index, word in enumerate(phrase):
+            start = max(word.start, clip.start) - clip.start
+            end = min(word.end - clip.start, phrase_end)
+            if index + 1 < len(phrase):
+                end = min(end, phrase[index + 1].start - clip.start)
+            if end - start < 0.04:
+                continue
+            first = (
+                _caption_text(phrase[:split], index, size)
+                if index < split
+                else _caption_text(phrase[:split], -1, size)
+            )
+            second = (
+                _caption_text(phrase[split:], index - split, size)
+                if index >= split
+                else _caption_text(phrase[split:], -1, size)
+            )
+            rendered = first + (r"\N" + second if second else "")
+            events.append(
+                "Dialogue: 2,"
+                f"{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,"
+                f"{{\\an5\\pos(540,1460)\\fs{size}\\q2}}{rendered}"
+            )
+    for segment in unaligned:
+        start = max(segment.start, clip.start) - clip.start
+        end = min(segment.end, clip.end) - clip.start
+        if end - start <= 0.1:
+            continue
+        # No invented active word for a segment without real word alignment.
+        fallback = " ".join(_WORD.findall(_safe(segment.text).upper())[:5])
+        if fallback:
+            size, lines, _ = _fit_lines(fallback, max_width=_CAPTION_SAFE_WIDTH, max_size=64)
+            events.append(_plate_event(start, end, size=size, lines=lines))
+            events.append(
+                "Dialogue: 1,"
+                f"{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,"
+                f"{{\\an5\\pos(540,1460)\\fs{size}}}" + r"\N".join(lines)
+            )
+    output.write_text(_ass_header() + "\n".join(events) + "\n", encoding="utf-8")
+    return output
+
+
+def audit_tiktok_ass(path: str | Path, *, clip_duration: float) -> dict[str, object]:
+    """Fail closed unless the actual ASS sidecar meets Style B v2 invariants."""
+    content = Path(path).read_text(encoding="utf-8")
+    hook_events = [line for line in content.splitlines() if line.startswith("Dialogue: 5,")]
+    spoken = [
+        line
+        for line in content.splitlines()
+        if line.startswith("Dialogue: 2,") and r"\c&H0059DEFF&" in line
+    ]
+    fallback = [line for line in content.splitlines() if line.startswith("Dialogue: 1,")]
+    if len(hook_events) != 1:
+        raise ValueError("Style B v2 requires one full-duration creative headline")
+    fields = hook_events[0].split(",", 9)
+    if fields[1:4] != [_ass_time(0), _ass_time(clip_duration), "Hook"]:
+        raise ValueError("creative headline must cover the entire clip")
+    if r"\an5\pos(540,260)" not in hook_events[0]:
+        raise ValueError("creative headline escaped the locked safe-area anchor")
+    if "Style: Hook," not in content or "Style: Caption," not in content:
+        raise ValueError("missing opaque hook or caption style")
+    if not spoken:
+        raise ValueError("no genuinely word-timed captions were rendered")
+    caption_style = (
+        next(line for line in content.splitlines() if line.startswith("Style: Caption,"))
+        .removeprefix("Style: ")
+        .split(",")
+    )
+    plates = [line for line in content.splitlines() if ",CaptionPlate," in line]
+    if caption_style[15:18] != ["1", "0", "0"] or not plates:
+        raise ValueError("captions require one stable independent background plate")
+    if any(r"\p1" not in line or r"\t(" in line for line in plates):
+        raise ValueError("caption plate must be fixed vector geometry")
+    return {
+        "style": "B2",
+        "background_mode": "centered_black_phrase_plate_v2",
+        "text_censorship": "source_transcript_verbatim_no_added_masking",
+        "caption_plate_events": len(plates),
+        "persistent_hook_seconds": clip_duration,
+        "spoken_word_highlight_events": len(spoken),
+        "unaligned_static_fallback_events": len(fallback),
+        "editorial_visual_approval": False,
+    }

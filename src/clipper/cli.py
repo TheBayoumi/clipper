@@ -4,10 +4,12 @@ import argparse
 import json
 import logging
 import sys
-from dataclasses import replace
+from dataclasses import asdict, replace
+from importlib import import_module
 from pathlib import Path
 
 from .brief import load_brief
+from .editorial_run import EditorialRunConfig, load_editorial_run_config, write_editorial_run_config
 from .pipeline import PipelineSettings, run_pipeline
 from .rights import assert_campaign_authorized
 from .youtube import YouTubeClient
@@ -42,6 +44,46 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="stop after timestamped clip planning",
     )
+    editorial = subparsers.add_parser(
+        "editorial", help="run the contextual podcast editor from a YAML/JSON run config"
+    )
+    editorial.add_argument("--config", required=True, type=Path)
+    editorial.add_argument(
+        "--check-config", action="store_true", help="validate inputs without acquiring media"
+    )
+    export = subparsers.add_parser(
+        "editorial-config", help="write validated workflow inputs to one editorial JSON run file"
+    )
+    export.add_argument("--brief", required=True, type=Path)
+    export.add_argument("--artifact-root", required=True, type=Path)
+    export.add_argument("--output", required=True, type=Path)
+    relation = subparsers.add_parser(
+        "relation-benchmark", help="diagnose pinned source-to-relation entailment without media"
+    )
+    relation.add_argument("--fixture", required=True, type=Path)
+    relation.add_argument("--proof", required=True, type=Path)
+    relation.add_argument("--transcript", required=True, type=Path)
+    relation.add_argument("--provenance", required=True, type=Path)
+    relation.add_argument("--output", required=True, type=Path)
+    audio_review = subparsers.add_parser(
+        "audio-review-manifest",
+        help="prepare a blind, hash-verified held-out MP4 review without provisional labels",
+    )
+    audio_review.add_argument("--fixture", required=True, type=Path)
+    audio_review.add_argument("--transcript", required=True, type=Path)
+    audio_review.add_argument("--provenance", required=True, type=Path)
+    audio_review.add_argument("--clips-dir", required=True, type=Path)
+    audio_review.add_argument("--output", required=True, type=Path)
+    audio_check = subparsers.add_parser(
+        "audio-review-check",
+        help="check a completed blind review against pinned MP4s without promoting it to gold",
+    )
+    audio_check.add_argument("--submitted", required=True, type=Path)
+    audio_check.add_argument("--fixture", required=True, type=Path)
+    audio_check.add_argument("--transcript", required=True, type=Path)
+    audio_check.add_argument("--provenance", required=True, type=Path)
+    audio_check.add_argument("--clips-dir", required=True, type=Path)
+    audio_check.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -64,6 +106,57 @@ def main(argv: list[str] | None = None) -> int:
             settings = replace(PipelineSettings.from_env(), artifact_root=args.artifact_root)
             run_dir = run_pipeline(args.brief, settings=settings, render=not args.no_render)
             print(run_dir)
+            return 0
+        if args.command == "editorial":
+            config = load_editorial_run_config(args.config)
+            if args.check_config:
+                print(json.dumps(asdict(config), indent=2, default=str))
+                return 0
+            render_youtube_previews = import_module(
+                "scripts.tjr_youtube_preview"
+            ).render_youtube_previews
+            print(render_youtube_previews(config.artifact_root, config.brief, run_config=config))
+            return 0
+        if args.command == "editorial-config":
+            config = EditorialRunConfig.from_legacy_environment(args.brief, args.artifact_root)
+            print(write_editorial_run_config(config, args.output))
+            return 0
+        if args.command == "relation-benchmark":
+            from .editorial_relation_probe import run_relation_probe
+
+            return run_relation_probe(
+                args.fixture,
+                args.proof,
+                args.transcript,
+                args.provenance,
+                args.output,
+            )
+        if args.command == "audio-review-manifest":
+            from .editorial_benchmark import prepare_blind_audio_review
+
+            print(
+                prepare_blind_audio_review(
+                    args.fixture,
+                    args.transcript,
+                    args.provenance,
+                    args.clips_dir,
+                    args.output,
+                )
+            )
+            return 0
+        if args.command == "audio-review-check":
+            from .editorial_benchmark import assess_completed_audio_review
+
+            result = assess_completed_audio_review(
+                args.submitted,
+                args.fixture,
+                args.transcript,
+                args.provenance,
+                args.clips_dir,
+            )
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            print(args.output)
             return 0
     except Exception as exc:
         logging.getLogger("clipper").error("%s", exc)

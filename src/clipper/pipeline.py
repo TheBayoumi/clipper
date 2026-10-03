@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -12,6 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 import gdown
+from PIL import Image
 
 from .brief import load_brief
 from .models import (
@@ -102,9 +105,7 @@ def _download_google_drive_media(url: str, output_path: Path, *, max_bytes: int)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(output_path.suffix + ".part")
     try:
-        downloaded = gdown.download(  # type: ignore[attr-defined]
-            url=url, output=str(temporary), quiet=True
-        )
+        downloaded = gdown.download(url=url, output=str(temporary), quiet=True)
         if not downloaded or not temporary.is_file():
             raise RuntimeError("Google Drive media download did not create a file")
         size = temporary.stat().st_size
@@ -119,6 +120,20 @@ def _download_google_drive_media(url: str, output_path: Path, *, max_bytes: int)
         raise
 
 
+def _verify_image_asset(path: Path, expected_sha256: str) -> None:
+    if len(expected_sha256) != 64 or any(c not in "0123456789abcdef" for c in expected_sha256):
+        raise RuntimeError("image asset requires a valid SHA-256")
+    with path.open("rb") as handle:
+        actual = hashlib.file_digest(handle, "sha256").hexdigest()
+    if actual != expected_sha256:
+        raise RuntimeError("image asset SHA-256 mismatch")
+    try:
+        with Image.open(path) as image:
+            image.verify()
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("approved asset is not a decodable image") from exc
+
+
 def _download_asset(
     url: str,
     output_path: Path,
@@ -126,6 +141,18 @@ def _download_asset(
     max_bytes: int = 10_000_000,
     expected_kind: str = "image",
 ) -> Path:
+    cache_manifest = os.getenv("CLIPPER_IMAGE_ASSET_CACHE_MANIFEST", "").strip()
+    if expected_kind == "image" and cache_manifest:
+        cached = json.loads(Path(cache_manifest).read_text(encoding="utf-8"))
+        if cached.get("source_url") != url:
+            raise RuntimeError("cached image does not match the campaign asset URL")
+        source = Path(cached["path"])
+        if source.stat().st_size > max_bytes:
+            raise RuntimeError("image asset exceeds size limit")
+        _verify_image_asset(source, str(cached.get("sha256") or ""))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, output_path)
+        return output_path
     if expected_kind == "media" and urlparse(url).netloc == "drive.google.com":
         return _download_google_drive_media(url, output_path, max_bytes=max_bytes)
     normalized = _normalize_asset_url(url)
