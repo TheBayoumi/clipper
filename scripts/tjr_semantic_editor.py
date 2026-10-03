@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from clipper.editorial_benchmark import load_heldout_claims, qualification_pass
+from clipper.editorial_boundary import propose_cut_obligation
 from clipper.editorial_claims import audit_headline_claims
 from clipper.editorial_headline import propose_source_headline
 from clipper.editorial_qa import audit_source_qa
@@ -4520,14 +4521,17 @@ def reviewer_preflight(transcript_path: Path, output: Path) -> int:
     )
 
 
-def source_bound_headline_probe(
-    transcript_path: Path, output: Path, reuse_path: Path | None = None
-) -> int:
-    """Measure constrained headline generation on pinned real exchange windows.
+_ISSUE8_WINDOWS = (
+    ("complete_business_exchange", 2308.64, 2328.88),
+    ("payoff_excluded", 2281.2, 2312.44),
+    ("intro_and_unfinished_thought", 8.28, 52.16),
+)
 
-    This intentionally cannot qualify production: contextual truth and held-out
-    editorial quality are not established by quote provenance alone.
-    """
+
+def _verified_issue8_probe_source(
+    transcript_path: Path,
+) -> tuple[list[SemanticUnit], dict[str, Any], str]:
+    """Bind diagnostic windows to the previously verified full-source bytes."""
     transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
     transcript_hash = hashlib.sha256(json.dumps(transcript, sort_keys=True).encode()).hexdigest()
     fixture_path = (
@@ -4550,6 +4554,18 @@ def source_bound_headline_probe(
             for item in transcript
         ]
     )
+    return units, fixture, transcript_hash
+
+
+def source_bound_headline_probe(
+    transcript_path: Path, output: Path, reuse_path: Path | None = None
+) -> int:
+    """Measure constrained headline generation on pinned real exchange windows.
+
+    This intentionally cannot qualify production: contextual truth and held-out
+    editorial quality are not established by quote provenance alone.
+    """
+    units, fixture, transcript_hash = _verified_issue8_probe_source(transcript_path)
     profile = _review_model_profile()
     reviewer: LocalSourceReviewer | None = None
 
@@ -4580,13 +4596,8 @@ def source_bound_headline_probe(
         "model_profile": profile,
         "cases": [],
     }
-    windows = (
-        ("complete_business_exchange", 2308.64, 2328.88),
-        ("payoff_excluded", 2281.2, 2312.44),
-        ("intro_and_unfinished_thought", 8.28, 52.16),
-    )
     try:
-        for name, start, end in windows:
+        for name, start, end in _ISSUE8_WINDOWS:
             selected_ids = [
                 index
                 for index, unit in enumerate(units)
@@ -4627,6 +4638,89 @@ def source_bound_headline_probe(
     return 1
 
 
+def cut_obligation_probe(transcript_path: Path, output: Path) -> int:
+    """Test explicit delivered obligations; never grant production approval."""
+    units, fixture, transcript_hash = _verified_issue8_probe_source(transcript_path)
+    profile = _review_model_profile()
+    reviewer: LocalSourceReviewer | None = None
+
+    def factory() -> LocalSourceReviewer:
+        nonlocal reviewer
+        if reviewer is None:
+            reviewer = LocalSourceReviewer(profile)
+        return reviewer
+
+    request_cache = ReviewRequestCache(
+        output.with_name("review-request-cache.json"),
+        factory,
+        {
+            "experiment": "cut-obligation-v1",
+            "source_sha256": fixture["source_sha256"],
+            "transcript_sha256": transcript_hash,
+            "model_profile": profile,
+        },
+    )
+    report: dict[str, Any] = {
+        "experiment": "cut_obligation_v1",
+        "diagnostic_only": True,
+        "production_approved": False,
+        "source_video_id": fixture["source_video_id"],
+        "source_sha256": fixture["source_sha256"],
+        "transcript_sha256": transcript_hash,
+        "model_profile": profile,
+        "cases": [],
+    }
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    try:
+        for name, start, end in _ISSUE8_WINDOWS:
+            selected_ids = [
+                index
+                for index, unit in enumerate(units)
+                if unit.start >= start - 0.01 and unit.end <= end + 0.01
+            ]
+            if not selected_ids:
+                raise RuntimeError(f"cut-obligation fixture has no thought units: {name}")
+            context = _review_context(units, selected_ids[0], selected_ids[-1])
+            final_id = _final_substantive_unit_id(context["selected_units"])
+            case: dict[str, Any] = {
+                "fixture": name,
+                "review_context": context,
+                "final_substantive_unit_id": final_id,
+                "diagnostic_only": True,
+                "production_approved": False,
+            }
+            began = time.monotonic()
+            try:
+                case["obligation"] = propose_cut_obligation(
+                    context["selected_units"],
+                    context["after"],
+                    final_id,
+                    request_cache._review_completion,
+                )
+            except Exception as error:
+                case["error"] = f"{type(error).__name__}: {error}"
+            case["seconds"] = round(time.monotonic() - began, 3)
+            report["cases"].append(case)
+            output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    finally:
+        if reviewer is not None:
+            reviewer.close()
+    kinds = {case["fixture"]: case.get("obligation", {}).get("kind") for case in report["cases"]}
+    report["three_window_semantic_pass"] = (
+        kinds.get("complete_business_exchange") == "none"
+        and kinds.get("payoff_excluded") in {"contrast", "question"}
+        and kinds.get("intro_and_unfinished_thought") == "clause"
+    )
+    report["request_cache_metrics"] = request_cache.metrics
+    report["experiment_complete"] = True
+    report["qualification_rule"] = (
+        "Three diagnostic windows only: successful obligation labels do not establish "
+        "headline factuality, held-out audio accuracy or production approval."
+    )
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    return 1
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -4642,8 +4736,13 @@ if __name__ == "__main__":
     parser.add_argument("--evidence-gpu-probe", action="store_true")
     parser.add_argument("--structured-claim-probe", action="store_true")
     parser.add_argument("--source-bound-headline-probe", action="store_true")
+    parser.add_argument("--cut-obligation-probe", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.cut_obligation_probe:
+        if not args.reviewer_preflight_transcript:
+            parser.error("cut-obligation probe requires a verified transcript")
+        raise SystemExit(cut_obligation_probe(args.reviewer_preflight_transcript, args.output))
     if args.source_bound_headline_probe:
         if not args.reviewer_preflight_transcript:
             parser.error("source-bound probe requires a verified transcript")

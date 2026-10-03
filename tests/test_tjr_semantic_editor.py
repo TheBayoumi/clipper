@@ -1710,6 +1710,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         "evidence_qa",
         "structured_claim",
         "source_bound_headline",
+        "cut_obligation",
         "evidence_gpu",
     ):
         rendered = (
@@ -1747,7 +1748,9 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert "${{" not in rendered
         subprocess.run(["bash", "-e", "-c", rendered], cwd=tmp_path, check=True)
         args = capture.read_text().splitlines()
-        assert ("--reviewer-model-probe-baseline" in args) == (mode != "disabled")
+        assert ("--reviewer-model-probe-baseline" in args) == (
+            mode not in {"disabled", "cut_obligation"}
+        )
         if mode == "source_bound_headline":
             assert source_bound_cache.relative_to(tmp_path).as_posix() in args
         if mode == "structured_claim":
@@ -1760,6 +1763,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert ("--evidence-qa-probe" in args) == (mode == "evidence_qa")
         assert ("--structured-claim-probe" in args) == (mode == "structured_claim")
         assert ("--source-bound-headline-probe" in args) == (mode == "source_bound_headline")
+        assert ("--cut-obligation-probe" in args) == (mode == "cut_obligation")
         assert ("--evidence-gpu-probe" in args) == (mode == "evidence_gpu")
         assert "scripts.tjr_semantic_editor" in args
 
@@ -3027,6 +3031,8 @@ def test_source_bound_probe_rejects_changed_transcript_before_model_loading(tmp_
     )
     with pytest.raises(ValueError, match="pinned exact-source transcript"):
         editor.source_bound_headline_probe(transcript, tmp_path / "probe.json")
+    with pytest.raises(ValueError, match="pinned exact-source transcript"):
+        editor.cut_obligation_probe(transcript, tmp_path / "cut-probe.json")
 
 
 def test_position_purpose_rejects_label_without_matching_evidence():
