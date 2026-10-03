@@ -1684,6 +1684,8 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
     )
     (tmp_path / "reviewer-baseline").mkdir()
     (tmp_path / "reviewer-baseline/reviewer-preflight.json").write_text("{}")
+    source_bound_cache = tmp_path / "reviewer-baseline/review-request-cache.json"
+    source_bound_cache.write_text("{}")
     structured_proof = (
         tmp_path / "reviewer-baseline/reviewer-gpu-evidence/baseline_4b/cold/proof.json"
     )
@@ -1745,9 +1747,9 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert "${{" not in rendered
         subprocess.run(["bash", "-e", "-c", rendered], cwd=tmp_path, check=True)
         args = capture.read_text().splitlines()
-        assert ("--reviewer-model-probe-baseline" in args) == (
-            mode not in {"disabled", "source_bound_headline"}
-        )
+        assert ("--reviewer-model-probe-baseline" in args) == (mode != "disabled")
+        if mode == "source_bound_headline":
+            assert source_bound_cache.relative_to(tmp_path).as_posix() in args
         if mode == "structured_claim":
             assert structured_proof.relative_to(tmp_path).as_posix() in args
         assert ("--reviewer-diagnostics-baseline" in args) == (mode == "disabled")
@@ -2915,6 +2917,100 @@ def test_position_reviewer_fingerprint_serializes_injected_headline_type():
     from scripts.tjr_semantic_editor import _source_position_review, _stage_fingerprint
 
     assert len(_stage_fingerprint(_source_position_review)) == 64
+
+
+def test_continuation_is_bound_to_last_substantive_business_point():
+    import pytest
+
+    from scripts.tjr_semantic_editor import _final_substantive_unit_id, _source_position_review
+
+    selected = [
+        "Because right now I got like 60 million views on my Instagram.",
+        "And like, my thing is going crazy.",
+        "I'm like not making a dime off of it.",
+        "Well, bro, if you had a podcast getting 60 million views, "
+        "you'd be making millions of dollars.",
+        "Yeah.",
+        "So that's the thing.",
+        "You got to transition to somewhere that's monetizable.",
+        "Yeah, for sure.",
+        "Yeah.",
+        "You don't make anything off Instagram.",
+        "Not really.",
+        "No, it just drives the podcast.",
+        "Yeah.",
+    ]
+    assert _final_substantive_unit_id(selected) == 11
+
+    class Model:
+        def __init__(self, wrong_final=False, wrong_resolution=False):
+            self.wrong_final = wrong_final
+            self.wrong_resolution = wrong_resolution
+
+        def _review_completion(self, prompt, payload, properties, tokens):
+            if "ad_read_span" in properties:
+                return dict(
+                    ad_read_present=0,
+                    ad_read_span=dict(first_unit=-1, last_unit=-1),
+                    show_intro_present=0,
+                    show_intro_span=dict(first_unit=-1, last_unit=-1),
+                    reason="Ordinary business discussion.",
+                )
+            if "setup_span" in properties:
+                assert payload["final_substantive_unit_id"] == 11
+                assert properties["resolution_span"]["properties"]["last_unit"]["enum"] == [
+                    -1,
+                    11,
+                ]
+                return dict(
+                    setup_span=dict(first_unit=0, last_unit=2),
+                    resolution_span=dict(
+                        first_unit=6, last_unit=6 if self.wrong_resolution else 11
+                    ),
+                    opening_independent=1,
+                    last_thought_finished=1,
+                    reason="The conversation has a delivered contrast.",
+                )
+            assert payload["final_substantive_unit_id"] == 11
+            assert payload["final_substantive_unit_text"] == selected[11]
+            assert properties["final_span"]["properties"]["first_unit"]["enum"] == [11]
+            return dict(
+                final_span=dict(
+                    first_unit=0 if self.wrong_final else 11,
+                    last_unit=0 if self.wrong_final else 11,
+                ),
+                continuation_span=dict(first_unit=0, last_unit=1),
+                relation="optional_elaboration",
+                reason="The tools list elaborates an already delivered contrast.",
+            )
+
+    review = _source_position_review(
+        Model(),
+        dict(
+            selected_units=selected,
+            before=[],
+            after=["It's like tools.", "Instagram, Facebook, TikTok."],
+        ),
+        headline_generator=lambda *args, **kwargs: dict(
+            headline="",
+            headline_supported=False,
+            headline_self_contained=False,
+        ),
+    )
+    assert review["payoff_complete"] is True
+    assert review["continuation_review"]["final_span_source"]["text"] == selected[11]
+    with pytest.raises(RuntimeError, match="resolution omitted the final substantive"):
+        _source_position_review(
+            Model(wrong_resolution=True),
+            dict(selected_units=selected, before=[], after=["It's like tools."]),
+            headline_generator=lambda *args, **kwargs: {},
+        )
+    with pytest.raises(RuntimeError, match="ignored the final substantive unit"):
+        _source_position_review(
+            Model(wrong_final=True),
+            dict(selected_units=selected, before=[], after=["It's like tools."]),
+            headline_generator=lambda *args, **kwargs: {},
+        )
 
 
 def test_source_bound_probe_rejects_changed_transcript_before_model_loading(tmp_path, monkeypatch):

@@ -560,8 +560,16 @@ jobs:
           if [ '${{ inputs.reviewer_model_probe }}' = 'source_bound_headline' ]; then
             TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
             test -n "$TRANSCRIPT"
+            PROBE_ARGUMENTS=()
+            if [ -d reviewer-baseline ]; then
+              CACHE=$(find reviewer-baseline -name review-request-cache.json -print -quit)
+              if [ -n "$CACHE" ]; then
+                PROBE_ARGUMENTS+=(--reviewer-model-probe-baseline "$CACHE")
+              fi
+            fi
             python -m scripts.tjr_semantic_editor --source-bound-headline-probe \
-              --reviewer-preflight-transcript "$TRANSCRIPT" --output reviewer-preflight.json
+              --reviewer-preflight-transcript "$TRANSCRIPT" \
+              "${PROBE_ARGUMENTS[@]}" --output reviewer-preflight.json
             exit $?
           fi
           if [ -d reviewer-baseline ]; then

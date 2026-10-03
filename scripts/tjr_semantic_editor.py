@@ -1356,6 +1356,8 @@ def refine_contextual_candidates(
         _resolve_source_units,
         _unit_span_valid,
         _numbered_source,
+        _final_substantive_unit_id,
+        sorted(_ACKNOWLEDGEMENTS),
         SOURCE_EVIDENCE_VERSION,
         _source_quote_span,
         _evidence_excerpt,
@@ -2373,6 +2375,34 @@ def _numbered_source(units: list[str]) -> list[dict[str, Any]]:
     return [{"id": i, "text": text} for i, text in enumerate(units)]
 
 
+_ACKNOWLEDGEMENTS = {
+    "yeah",
+    "yeah for sure",
+    "yes",
+    "yep",
+    "right",
+    "okay",
+    "ok",
+    "sure",
+    "for sure",
+    "uh huh",
+    "mm hmm",
+    "mhm",
+    "exactly",
+}
+
+
+def _final_substantive_unit_id(units: list[str]) -> int:
+    """Ignore trailing backchannels, never an earlier developed point."""
+    if not units:
+        raise ValueError("final substantive unit needs delivered speech")
+    for index in range(len(units) - 1, -1, -1):
+        words = " ".join(re.findall(r"[A-Za-z]+", units[index].casefold()))
+        if words not in _ACKNOWLEDGEMENTS:
+            return index
+    return len(units) - 1
+
+
 def _source_position_facts(editor: Any, units: list[str]) -> dict[str, Any]:
     """Blind source answers with Python-owned evidence, independent of the headline."""
     facts = editor._review_completion(
@@ -2508,20 +2538,34 @@ def _source_position_review(
             for i in range(span["first_unit"], span["last_unit"] + 1)
         }
     )
+    final_id = _final_substantive_unit_id(selected)
     story = editor._review_completion(
         "Assess ONLY delivered_units as the finished clip. Select its central setup_span "
         "and delivered resolution_span as continuous unit positions. A resolution can be "
         "an answer, consequence, contrast, reaction or punchline. Both resolution positions "
-        "-1 means absent. Do not substitute an earlier answer for a new unfinished final "
-        "premise. opening_independent is 1 when a new viewer understands the subject; "
+        "-1 means absent. A delivered resolution must reach final_substantive_unit_id; "
+        "do not substitute an earlier answer for a new unfinished final premise. "
+        "opening_independent is 1 when a new viewer understands the subject; "
         "a first-person story need not name its visible speaker. last_thought_finished is "
         "1 only when the final substantive thought has delivered its point. Punctuation "
         "alone is not proof. Select positions, never rewrite evidence. reason is at most "
         "25 words. Return output_schema JSON.",
-        {"delivered_units": _numbered_source(selected)},
+        {
+            "delivered_units": _numbered_source(selected),
+            "final_substantive_unit_id": final_id,
+            "final_substantive_unit_text": selected[final_id],
+        },
         {
             "setup_span": _unit_span_schema(len(selected)),
-            "resolution_span": _unit_span_schema(len(selected)),
+            "resolution_span": {
+                "type": "object",
+                "properties": {
+                    "first_unit": {"type": "integer", "enum": [-1, *range(len(selected))]},
+                    "last_unit": {"type": "integer", "enum": [-1, final_id]},
+                },
+                "required": ["first_unit", "last_unit"],
+                "additionalProperties": False,
+            },
             "opening_independent": {"type": "integer", "enum": [0, 1]},
             "last_thought_finished": {"type": "integer", "enum": [0, 1]},
             "reason": {"type": "string"},
@@ -2533,6 +2577,8 @@ def _source_position_review(
             raise RuntimeError("thought reviewer returned an invalid verdict")
     setup = _resolve_source_units(story.get("setup_span"), selected)
     resolution = _resolve_source_units(story.get("resolution_span"), selected)
+    if resolution is not None and resolution["last_unit"] != final_id:
+        raise RuntimeError("delivered resolution omitted the final substantive unit")
     ending = story["last_thought_finished"] == 1
     continuation = None
     after = context.get("after", [])
@@ -2540,20 +2586,32 @@ def _source_position_review(
     # must not hide whether the excluded continuation contains the real payoff.
     if ending and after:
         continuation = editor._review_completion(
-            "Judge the CUT after delivered_units. Identify the final substantive point, "
-            "not an earlier completed premise. Classify its relation to excluded_after: "
+            "Judge the CUT after delivered_units. Python has identified the final "
+            "substantive delivered unit; judge excluded_after against that point in "
+            "the full delivered context, not against an earlier completed premise. "
+            "Classify its relation to excluded_after: "
             "missing_answer, missing_contrast, unfinished_clause, optional_elaboration, "
             "new_topic or uncertain. A related example after a delivered resolution is "
-            "optional. Evidence final_span uses delivered_units IDs; continuation_span "
+            "optional. final_span must equal final_substantive_unit_id; continuation_span "
             "uses excluded_after IDs. These are separate namespaces. Both spans must "
             "exist. Excluded speech can reveal a missing resolution but cannot count as "
             "delivered payoff. reason is at most 25 words. Return output_schema JSON.",
             {
                 "delivered_units": _numbered_source(selected),
+                "final_substantive_unit_id": final_id,
+                "final_substantive_unit_text": selected[final_id],
                 "excluded_after": _numbered_source(after),
             },
             {
-                "final_span": _unit_span_schema(len(selected)),
+                "final_span": {
+                    "type": "object",
+                    "properties": {
+                        key: {"type": "integer", "enum": [final_id]}
+                        for key in ("first_unit", "last_unit")
+                    },
+                    "required": ["first_unit", "last_unit"],
+                    "additionalProperties": False,
+                },
                 "continuation_span": _unit_span_schema(len(after)),
                 "relation": {
                     "type": "string",
@@ -2574,6 +2632,10 @@ def _source_position_review(
             span = _resolve_source_units(continuation.get(key), region)
             if span is None:
                 raise RuntimeError("continuation review requires evidence in both namespaces")
+            if key == "final_span" and (
+                span["first_unit"] != final_id or span["last_unit"] != final_id
+            ):
+                raise RuntimeError("continuation review ignored the final substantive unit")
             continuation[key + "_source"] = span
         if continuation.get("relation") not in {
             "missing_answer",
@@ -4458,7 +4520,9 @@ def reviewer_preflight(transcript_path: Path, output: Path) -> int:
     )
 
 
-def source_bound_headline_probe(transcript_path: Path, output: Path) -> int:
+def source_bound_headline_probe(
+    transcript_path: Path, output: Path, reuse_path: Path | None = None
+) -> int:
     """Measure constrained headline generation on pinned real exchange windows.
 
     This intentionally cannot qualify production: contextual truth and held-out
@@ -4504,6 +4568,7 @@ def source_bound_headline_probe(transcript_path: Path, output: Path) -> int:
             "transcript_sha256": transcript_hash,
             "model_profile": profile,
         },
+        reuse_path=reuse_path,
     )
     report: dict[str, Any] = {
         "experiment": "source_bound_headline_v1",
@@ -4583,7 +4648,11 @@ if __name__ == "__main__":
         if not args.reviewer_preflight_transcript:
             parser.error("source-bound probe requires a verified transcript")
         raise SystemExit(
-            source_bound_headline_probe(args.reviewer_preflight_transcript, args.output)
+            source_bound_headline_probe(
+                args.reviewer_preflight_transcript,
+                args.output,
+                reuse_path=args.reviewer_model_probe_baseline,
+            )
         )
     if args.evidence_gpu_probe:
         if not args.reviewer_model_probe_baseline or not args.reviewer_preflight_transcript:
