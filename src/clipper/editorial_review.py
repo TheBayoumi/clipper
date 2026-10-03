@@ -205,7 +205,12 @@ def validate_claim_review(
         if value["verdict"] == "supported" and (
             value["source_reporting_status"] != value["claimed_reporting_status"]
             or value["source_event_status"] != value["claimed_event_status"]
-            or value["source_event_status"] == "not_applicable"
+            or (
+                # A reported state/opinion need not describe an event; an
+                # unreported non-event cannot attest to a factual claim.
+                value["source_event_status"] == "not_applicable"
+                and value["source_reporting_status"] == "no_report"
+            )
         ):
             raise ValueError("supported claim has mismatched reporting or event status")
         context_first, context_last = max(0, first - 2), min(len(source_units) - 1, last + 2)

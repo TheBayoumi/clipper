@@ -206,6 +206,31 @@ def test_reporting_act_and_embedded_possibility_are_independent():
         validate(value)
 
 
+def test_reported_state_has_no_embedded_event_but_requires_real_reporting_act():
+    value = record()
+    value["headline"] = "The speaker calls UFC fighters independent contractors"
+    value["whole_headline"] = assessment(
+        "not_applicable", first=0, last=0, reporting="actual_report"
+    )
+    value["claims"] = [
+        {
+            "kind": "attribution",
+            "first_char": 0,
+            "last_char": len(value["headline"]),
+            "assessment": assessment("not_applicable", first=0, last=0, reporting="actual_report"),
+        }
+    ]
+    source_units = ["You guys are independent contractors."]
+    assert validate(value, source_units=source_units)["all_claims_supported"]
+    value["whole_headline"]["source_reporting_status"] = "no_report"
+    with pytest.raises(ValueError, match="mismatched"):
+        validate(value, source_units=source_units)
+    value["whole_headline"]["source_reporting_status"] = "actual_report"
+    value["whole_headline"]["claimed_reporting_status"] = "no_report"
+    with pytest.raises(ValueError, match="mismatched"):
+        validate(value, source_units=source_units)
+
+
 def test_missing_attribution_or_condition_words_prevents_attestation():
     value = record()
     value["claims"] = [
