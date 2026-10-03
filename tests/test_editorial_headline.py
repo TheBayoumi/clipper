@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import pytest
 
 from clipper.editorial_headline import materialize_source_headline, propose_source_headline
@@ -126,3 +128,56 @@ def test_model_cannot_approve_fabricated_or_extra_response_fields():
 
     with pytest.raises(ValueError, match="omitted a reviewed role"):
         propose_source_headline(UNITS, SPANS, extra)
+
+
+@pytest.mark.parametrize(
+    "change,error",
+    [
+        ("empty_excerpt", "nonempty"),
+        ("partial_word", "word boundaries"),
+        ("no_units", "delivered units"),
+        ("changed_span", "canonical speech"),
+        ("extra_excerpt_field", "invalid fields"),
+        ("short_excerpt", "3-11 source words"),
+    ],
+)
+def test_source_materializer_rejects_malformed_proposals(change, error):
+    units, spans, parts = list(UNITS), deepcopy(SPANS), deepcopy(PARTS)
+    if change == "empty_excerpt":
+        parts[0]["text"] = ""
+    elif change == "partial_word":
+        parts[0]["text"] = "60 million views on my Inst"
+    elif change == "no_units":
+        units = []
+    elif change == "changed_span":
+        spans["setup_quote"]["text"] = "Invented source speech."
+    elif change == "extra_excerpt_field":
+        parts[0]["approved"] = True
+    else:
+        parts[0]["text"] = "60 million"
+    with pytest.raises(ValueError, match=error):
+        materialize_source_headline(units, spans, parts)
+
+
+def test_source_materializer_rejects_reversed_roles_and_oversized_hook():
+    spans = {
+        "setup_quote": {"text": UNITS[2], "first_unit": 2, "last_unit": 2},
+        "resolution_quote": {"text": UNITS[0], "first_unit": 0, "last_unit": 0},
+    }
+    with pytest.raises(ValueError, match="reverses"):
+        materialize_source_headline(UNITS, spans, [PARTS[1], PARTS[0]])
+
+    units = [
+        "Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda.",
+        "Mu nu xi omicron pi rho sigma tau.",
+    ]
+    spans = {
+        "setup_quote": {"text": units[0], "first_unit": 0, "last_unit": 0},
+        "resolution_quote": {"text": units[1], "first_unit": 1, "last_unit": 1},
+    }
+    with pytest.raises(ValueError, match="4-14 word"):
+        materialize_source_headline(
+            units,
+            spans,
+            [{"unit_id": 0, "text": units[0]}, {"unit_id": 1, "text": units[1]}],
+        )

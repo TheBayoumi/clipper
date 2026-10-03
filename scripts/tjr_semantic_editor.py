@@ -18,7 +18,7 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from clipper.editorial_benchmark import load_heldout_claims, qualification_pass
 from clipper.editorial_claims import audit_headline_claims
@@ -2446,12 +2446,23 @@ def _source_bound_headline_diagnostic(
     }
 
 
+class HeadlineGenerator(Protocol):
+    def __call__(
+        self,
+        editor: Any,
+        units: list[str],
+        *,
+        exchange_spans: dict[str, Any],
+        factual_audit: Callable[[Any, str, list[str]], dict[str, Any]],
+    ) -> dict[str, Any]: ...
+
+
 def _source_position_review(
     editor: Any,
     context: dict[str, Any],
     *,
     factual_audit: Callable[[Any, str, list[str]], dict[str, Any]] | None = None,
-    headline_generator: Callable[..., dict[str, Any]] | None = None,
+    headline_generator: HeadlineGenerator | None = None,
 ) -> dict[str, Any]:
     """Review actual delivered speech; excluded evidence cannot become its resolution."""
     selected = context["selected_units"]

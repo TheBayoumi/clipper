@@ -2911,6 +2911,12 @@ def test_source_bound_diagnostic_cannot_approve_its_own_model_audit():
     assert result["production_approved"] is False
 
 
+def test_position_reviewer_fingerprint_serializes_injected_headline_type():
+    from scripts.tjr_semantic_editor import _source_position_review, _stage_fingerprint
+
+    assert len(_stage_fingerprint(_source_position_review)) == 64
+
+
 def test_source_bound_probe_rejects_changed_transcript_before_model_loading(tmp_path, monkeypatch):
     import pytest
 
