@@ -31,6 +31,196 @@ class HeldoutClaim:
     source_units: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class FrozenRelation:
+    case_id: str
+    fixture_index: int
+    headline: str
+    dimension: str
+    question: str
+    answer: str
+    expected_supported: bool
+    annotation_reason: str
+    evidence_first_unit: int
+    evidence_last_unit: int
+    evidence_quote: str
+    source_units: tuple[str, ...]
+
+
+def load_frozen_relations(
+    fixture_path: Path, proof_path: Path, transcript_path: Path, provenance_path: Path
+) -> list[FrozenRelation]:
+    """Bind relation-level diagnostics to the frozen proof and original transcript.
+
+    Labels are derived from the existing transcript controls, not independent
+    audio-reviewed gold. Neither a valid fixture nor a high score qualifies a
+    production reviewer.
+    """
+    fixture: Any = json.loads(fixture_path.read_text(encoding="utf-8"))
+    proof: Any = json.loads(proof_path.read_text(encoding="utf-8"))
+    transcript: Any = json.loads(transcript_path.read_text(encoding="utf-8"))
+    provenance: Any = json.loads(provenance_path.read_text(encoding="utf-8"))
+    if not isinstance(fixture, dict) or set(fixture) != {
+        "schema",
+        "annotation_status",
+        "source_video_id",
+        "source_sha256",
+        "transcript_sha256",
+        "baseline_proof_sha256",
+        "cases",
+    }:
+        raise ValueError("frozen relation fixture has missing or unknown fields")
+    if (
+        fixture["schema"] != "clipper-frozen-relations-v1"
+        or fixture["annotation_status"]
+        != "derived_from_frozen_transcript_controls_not_independent_audio_gold"
+        or not isinstance(fixture["source_video_id"], str)
+        or not _VIDEO_ID.fullmatch(fixture["source_video_id"])
+        or not isinstance(fixture["source_sha256"], str)
+        or not _SHA256.fullmatch(fixture["source_sha256"])
+        or not isinstance(fixture["transcript_sha256"], str)
+        or not _SHA256.fullmatch(fixture["transcript_sha256"])
+        or not isinstance(fixture["baseline_proof_sha256"], str)
+        or not _SHA256.fullmatch(fixture["baseline_proof_sha256"])
+    ):
+        raise ValueError("frozen relation identity or annotation status is invalid")
+    proof_hash = hashlib.sha256(proof_path.read_bytes()).hexdigest()
+    transcript_hash = hashlib.sha256(json.dumps(transcript, sort_keys=True).encode()).hexdigest()
+    identity = provenance.get("identity") if isinstance(provenance, dict) else None
+    if (
+        proof_hash != fixture["baseline_proof_sha256"]
+        or not isinstance(proof, dict)
+        or proof.get("experiment") != "evidence_preserving_source_qa"
+        or proof.get("experiment_complete") is not True
+        or proof.get("transcript_sha256") != fixture["transcript_sha256"]
+        or not isinstance(proof.get("model_profile"), dict)
+        or proof["model_profile"].get("source_sha256") != fixture["source_sha256"]
+        or not isinstance(identity, dict)
+        or identity.get("source_sha256") != fixture["source_sha256"]
+        or identity.get("transcript_sha256") != fixture["transcript_sha256"]
+        or transcript_hash != fixture["transcript_sha256"]
+    ):
+        raise ValueError("frozen relation proof/source/transcript identity mismatch")
+    frozen = proof.get("annotated_fixtures")
+    if not isinstance(frozen, list) or len(frozen) != 12:
+        raise ValueError("frozen relations require twelve original headline controls")
+    if (
+        not isinstance(transcript, list)
+        or not transcript
+        or any(
+            not isinstance(segment, dict) or not isinstance(segment.get("text"), str)
+            for segment in transcript
+        )
+    ):
+        raise ValueError("frozen relations require the original full transcript")
+    full_text = " ".join(" ".join(segment["text"] for segment in transcript).split()).casefold()
+    sources: list[tuple[str, ...]] = []
+    for item in frozen:
+        try:
+            if not isinstance(item, dict):
+                raise ValueError("frozen relation proof has invalid fixture")
+            payload = json.loads(item["request"]["messages"][1]["content"])
+            units = tuple(unit["text"] for unit in payload["source_units"])
+        except (AttributeError, KeyError, IndexError, TypeError, ValueError) as error:
+            raise ValueError("frozen relation proof has invalid source units") from error
+        if not units or any(not isinstance(unit, str) or not unit.strip() for unit in units):
+            raise ValueError("frozen relation proof has empty source units")
+        if " ".join(" ".join(units).split()).casefold() not in full_text:
+            raise ValueError("frozen relation source units are absent from the full transcript")
+        sources.append(units)
+    raw_cases = fixture["cases"]
+    if not isinstance(raw_cases, list) or not raw_cases:
+        raise ValueError("frozen relation fixture has no cases")
+    seen: set[str] = set()
+    covered: set[int] = set()
+    result: list[FrozenRelation] = []
+    for raw in raw_cases:
+        if not isinstance(raw, dict) or set(raw) != {
+            "id",
+            "fixture_index",
+            "dimension",
+            "question",
+            "answer",
+            "expected_supported",
+            "evidence",
+            "annotation_reason",
+        }:
+            raise ValueError("frozen relation case has missing or unknown fields")
+        index, case_id = raw["fixture_index"], raw["id"]
+        if (
+            type(index) is not int
+            or not 0 <= index < 12
+            or not isinstance(case_id, str)
+            or not re.fullmatch(r"[a-z][a-z0-9_]{2,80}", case_id)
+            or case_id in seen
+            or not isinstance(raw["dimension"], str)
+            or raw["dimension"]
+            not in {
+                "actor_action",
+                "attribution",
+                "event_modality",
+                "condition",
+                "relationship_role",
+                "quantity_outcome",
+                "setting_time",
+            }
+            or not isinstance(raw["question"], str)
+            or not raw["question"].strip().endswith("?")
+            or not isinstance(raw["answer"], str)
+            or not raw["answer"].strip()
+            or type(raw["expected_supported"]) is not bool
+            or not isinstance(raw["annotation_reason"], str)
+            or not raw["annotation_reason"].strip()
+        ):
+            raise ValueError("frozen relation case has invalid annotation")
+        headline = frozen[index].get("headline")
+        if not isinstance(headline, str) or raw["answer"].casefold() not in headline.casefold():
+            raise ValueError("frozen relation answer is absent from its original headline")
+        evidence = raw["evidence"]
+        if not isinstance(evidence, dict) or set(evidence) != {
+            "first_unit",
+            "last_unit",
+            "quote",
+        }:
+            raise ValueError("frozen relation evidence is incomplete")
+        first, last, quote = (
+            evidence["first_unit"],
+            evidence["last_unit"],
+            evidence["quote"],
+        )
+        units = sources[index]
+        if (
+            type(first) is not int
+            or type(last) is not int
+            or not 0 <= first <= last < len(units)
+            or not isinstance(quote, str)
+            or not quote.strip()
+            or quote not in " ".join(units[first : last + 1])
+        ):
+            raise ValueError("frozen relation quote is absent from cited source units")
+        result.append(
+            FrozenRelation(
+                case_id=case_id,
+                fixture_index=index,
+                headline=headline,
+                dimension=raw["dimension"],
+                question=raw["question"],
+                answer=raw["answer"],
+                expected_supported=raw["expected_supported"],
+                annotation_reason=raw["annotation_reason"],
+                evidence_first_unit=first,
+                evidence_last_unit=last,
+                evidence_quote=quote,
+                source_units=units,
+            )
+        )
+        seen.add(case_id)
+        covered.add(index)
+    if covered != set(range(12)):
+        raise ValueError("frozen relations must cover all twelve original controls")
+    return result
+
+
 def qualification_pass(
     exchange_rows: list[dict[str, Any]],
     factual_rows: list[dict[str, Any]],
