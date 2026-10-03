@@ -3035,6 +3035,75 @@ def test_source_bound_probe_rejects_changed_transcript_before_model_loading(tmp_
         editor.cut_obligation_probe(transcript, tmp_path / "cut-probe.json")
 
 
+def test_cut_obligation_probe_scores_three_windows_without_approving(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+
+    from scripts import tjr_semantic_editor as editor
+
+    units = [
+        editor.SemanticUnit(8.28, 10.0, "Welcome to the show."),
+        editor.SemanticUnit(50.0, 52.16, "I have a video where I'm like telling him."),
+        editor.SemanticUnit(2281.2, 2285.0, "How do you get paid?"),
+        editor.SemanticUnit(2308.64, 2311.0, "I got 60 million views on Instagram."),
+        editor.SemanticUnit(2311.48, 2312.44, "My thing is going crazy."),
+        editor.SemanticUnit(2312.54, 2314.02, "I'm not making a dime off of it."),
+        editor.SemanticUnit(2327.08, 2328.44, "No, it just drives the podcast."),
+        editor.SemanticUnit(2329.0, 2330.0, "It's like tools."),
+    ]
+    monkeypatch.setattr(
+        editor,
+        "_verified_issue8_probe_source",
+        lambda *_: (units, {"source_video_id": "_kDrxucOx9g", "source_sha256": "a" * 64}, "b" * 64),
+    )
+    monkeypatch.setattr(editor, "_review_model_profile", lambda: {"sha256": "c" * 64})
+    monkeypatch.setattr(
+        editor,
+        "LocalSourceReviewer",
+        lambda *_: (_ for _ in ()).throw(AssertionError("model weights loaded")),
+    )
+
+    class Cache:
+        def __init__(self, *args, **kwargs):
+            self.metrics = {"cache_hits": 0, "model_calls": 3}
+
+        def _review_completion(self, prompt, payload, properties, tokens):
+            first = payload["delivered_units"][0]["text"]
+            absent = dict(first_unit=-1, last_unit=-1)
+            if first.startswith("Welcome"):
+                return dict(
+                    kind="clause",
+                    pending=dict(first_unit=1, last_unit=1),
+                    fulfillment=dict(first_unit=0, last_unit=0),
+                    reason="The speaker has not said what he told him.",
+                )
+            if first.startswith("How"):
+                return dict(
+                    kind="contrast",
+                    pending=dict(first_unit=2, last_unit=2),
+                    fulfillment=dict(first_unit=0, last_unit=0),
+                    reason="The excluded denial changes the earnings premise.",
+                )
+            return dict(
+                kind="none",
+                pending=absent,
+                fulfillment=absent,
+                reason="The tools list is optional elaboration.",
+            )
+
+    monkeypatch.setattr(editor, "ReviewRequestCache", Cache)
+    output = tmp_path / "cut-obligations.json"
+    assert editor.cut_obligation_probe(Path("unused"), output) == 1
+    report = json.loads(output.read_text())
+    assert report["three_window_semantic_pass"] is True
+    assert [case["obligation"]["kind"] for case in report["cases"]] == [
+        "none",
+        "contrast",
+        "clause",
+    ]
+    assert report["production_approved"] is False
+
+
 def test_position_purpose_rejects_label_without_matching_evidence():
     import pytest
 
