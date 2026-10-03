@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -147,3 +150,86 @@ def test_workflow_relation_mode_uses_pinned_cpu_model_and_saved_evidence():
     assert "--fixture tests/fixtures/issue8_frozen_relations.json" in assess
     assert '--provenance "$PROVENANCE"' in assess
     assert "--output reviewer-preflight.json" in assess
+
+
+def test_pinned_minicheck_adapter_scores_without_truncation(tmp_path, monkeypatch):
+    weights = tmp_path / "pytorch_model.bin"
+    weights.write_bytes(b"pinned test weights")
+    monkeypatch.setattr(
+        probe, "MODEL_WEIGHTS_SHA256", hashlib.sha256(weights.read_bytes()).hexdigest()
+    )
+    calls = []
+
+    class FakeTensor:
+        shape = (1, 8)
+
+    class FakeTokenizer:
+        eos_token_id = 1
+        eos_token = "</s>"  # noqa: S105 - T5 end-of-sequence token, not a secret
+
+        def __call__(self, prompt, **kwargs):
+            calls.append((prompt, kwargs))
+            return {"input_ids": FakeTensor()}
+
+    class FakeProbability:
+        def __init__(self, value):
+            self.value = value
+
+        def item(self):
+            return self.value
+
+    class FakeLogits:
+        def __getitem__(self, key):
+            assert key == (0, 0, [3, 209])
+            return [0.0, 1.0]
+
+    class FakeModel:
+        config = SimpleNamespace(decoder_start_token_id=0)
+
+        def eval(self):
+            calls.append("eval")
+
+        def __call__(self, **kwargs):
+            assert kwargs["decoder_input_ids"] == "decoder"
+            return SimpleNamespace(logits=FakeLogits())
+
+    tokenizer = FakeTokenizer()
+    model = FakeModel()
+    modules = {
+        "torch": SimpleNamespace(
+            set_num_threads=lambda count: calls.append(("threads", count)),
+            zeros=lambda shape, dtype: "decoder",
+            long="long",
+            inference_mode=nullcontext,
+            softmax=lambda logits, dim: [FakeProbability(0.1), FakeProbability(0.9)],
+        ),
+        "huggingface_hub": SimpleNamespace(
+            snapshot_download=lambda **kwargs: tmp_path,
+        ),
+        "transformers": SimpleNamespace(
+            AutoTokenizer=SimpleNamespace(from_pretrained=lambda *args, **kwargs: tokenizer),
+            AutoModelForSeq2SeqLM=SimpleNamespace(from_pretrained=lambda *args, **kwargs: model),
+        ),
+    }
+    monkeypatch.setattr(probe, "import_module", modules.__getitem__)
+    scorer = probe.MiniCheckCpuScorer()
+    assert scorer.score("Speaker talks.", "Who talks? Speaker") == (0.9, 8)
+    assert calls[0] == ("threads", 2)
+    assert calls[-1] == (
+        "predict: Speaker talks.</s>Who talks? Speaker",
+        {"return_tensors": "pt", "truncation": False},
+    )
+    with pytest.raises(RuntimeError, match="500-word"):
+        scorer.score("word " * 501, "claim")
+
+
+def test_pinned_minicheck_adapter_rejects_wrong_weights(tmp_path, monkeypatch):
+    (tmp_path / "pytorch_model.bin").write_bytes(b"wrong weights")
+    modules = {
+        "torch": SimpleNamespace(set_num_threads=lambda count: None),
+        "huggingface_hub": SimpleNamespace(snapshot_download=lambda **kwargs: tmp_path),
+        "transformers": SimpleNamespace(AutoModelForSeq2SeqLM=object(), AutoTokenizer=object()),
+    }
+    monkeypatch.setattr(probe, "import_module", modules.__getitem__)
+    with pytest.raises(RuntimeError, match="weights differ"):
+        probe.MiniCheckCpuScorer()
