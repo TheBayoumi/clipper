@@ -8,9 +8,32 @@ from pathlib import Path
 
 import pytest
 
-from clipper.editorial_benchmark import load_heldout_claims
+from clipper.editorial_benchmark import load_heldout_claims, qualification_pass
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures/issue8_heldout_claims.json"
+
+
+def test_qualification_includes_requested_heldout_production_gate_results():
+    exchanges = [{"contract_valid": True, "passed": True} for _ in range(6)]
+    facts = [{"contract_valid": True, "passed": True} for _ in range(12)]
+    heldout = [
+        {
+            "existing": {"contract_valid": True, "passed": True},
+            "experimental_claim_level": {"contract_valid": False, "passed": False},
+        }
+        for _ in range(12)
+    ]
+    assert qualification_pass(exchanges, facts, heldout, expected_heldout=12)
+    for failed in (
+        {"contract_valid": True, "passed": False},
+        {"contract_valid": False, "passed": False},
+    ):
+        changed = [*heldout]
+        changed[0] = {**heldout[0], "existing": failed}
+        assert not qualification_pass(exchanges, facts, changed, expected_heldout=12)
+    assert not qualification_pass(exchanges, facts, heldout[:-1], expected_heldout=12)
+    assert not qualification_pass(exchanges[:-1], facts, heldout, expected_heldout=12)
+    assert qualification_pass(exchanges, facts, [], expected_heldout=0)
 
 
 def test_committed_heldout_controls_are_explicitly_provisional():

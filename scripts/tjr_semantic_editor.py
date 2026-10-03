@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from clipper.editorial_benchmark import load_heldout_claims
+from clipper.editorial_benchmark import load_heldout_claims, qualification_pass
 from clipper.editorial_claims import audit_headline_claims
 from clipper.editorial_qa import audit_source_qa
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
@@ -3986,8 +3986,11 @@ def reviewer_evidence_qualification(
                     flush=True,
                 )
         report["experiment_complete"] = True
-        report["semantic_pass"] = all(
-            row["passed"] for row in (*report["cases"], *report["comparisons"])
+        report["semantic_pass"] = qualification_pass(
+            report["cases"],
+            report["comparisons"],
+            report["heldout_comparisons"],
+            expected_heldout=len(heldout),
         )
         report["seconds"] = round(time.monotonic() - began, 3)
         rows = [*report["cases"], *report["comparisons"]]
@@ -4037,8 +4040,10 @@ def reviewer_evidence_qualification(
                 )
             }
         report["qualification_rule"] = (
-            "All 18 controls must be contract-valid and semantically correct. "
-            "Exceptions never count as rejection."
+            "All six exchange and twelve frozen factual controls, plus every requested "
+            "held-out factual control, must be contract-valid and semantically correct "
+            "under the unchanged production gate. Experimental backends are diagnostic. "
+            "Provisional held-out labels do not establish production qualification."
         )
         checkpoint()
     finally:

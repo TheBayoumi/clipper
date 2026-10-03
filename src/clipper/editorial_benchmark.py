@@ -31,6 +31,34 @@ class HeldoutClaim:
     source_units: tuple[str, ...]
 
 
+def qualification_pass(
+    exchange_rows: list[dict[str, Any]],
+    factual_rows: list[dict[str, Any]],
+    heldout_rows: list[dict[str, Any]],
+    *,
+    expected_heldout: int,
+) -> bool:
+    """Fail closed over both frozen controls and the unmodified factual gate.
+
+    Experimental backends are scored separately and must never make the
+    production reviewer appear qualified. A held-out mismatch is a failed
+    qualification, including a false rejection or a contract error.
+    """
+    if len(exchange_rows) != 6 or len(factual_rows) != 12 or len(heldout_rows) != expected_heldout:
+        return False
+    if not all(
+        row.get("contract_valid") is True and row.get("passed") is True
+        for row in (*exchange_rows, *factual_rows)
+    ):
+        return False
+    return all(
+        isinstance(row.get("existing"), dict)
+        and row["existing"].get("contract_valid") is True
+        and row["existing"].get("passed") is True
+        for row in heldout_rows
+    )
+
+
 def load_heldout_claims(
     fixture_path: Path, transcript_path: Path, provenance_path: Path
 ) -> list[HeldoutClaim]:
