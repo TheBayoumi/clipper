@@ -7,6 +7,8 @@ attestation is recorded separately from technical or publication approval.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import Any
 
@@ -284,4 +286,99 @@ def validate_claim_review(
             else "needs_human_review"
         ),
         "production_approved": False,
+    }
+
+
+def validate_claim_review_for_packet(
+    packet: dict[str, Any],
+    record: dict[str, Any],
+    *,
+    delivered_source_units: list[str],
+    source_video_id: str,
+    source_sha256: str,
+    transcript_sha256: str,
+) -> dict[str, Any]:
+    """Bind a review to a draft and independently supplied delivered speech.
+
+    The caller must derive ``delivered_source_units`` from the pinned transcript;
+    packet text is not trusted as the source of truth. This verifies the handoff,
+    not the reviewer's semantic judgment or identity.
+    """
+    if not isinstance(packet, dict) or set(packet) != {
+        "schema",
+        "source_video_id",
+        "source_sha256",
+        "transcript_sha256",
+        "headline",
+        "selected_source_units",
+        "excluded_before_context_only",
+        "excluded_after_context_only",
+        "reviewed_spans",
+        "required_review",
+        "production_approved",
+    }:
+        raise ValueError("claim packet has missing or unknown fields")
+    if packet["schema"] != "clipper-headline-claim-packet-v1" or any(
+        packet[key] != expected
+        for key, expected in (
+            ("source_video_id", source_video_id),
+            ("source_sha256", source_sha256),
+            ("transcript_sha256", transcript_sha256),
+        )
+    ):
+        raise ValueError("claim packet source identity does not match")
+    if packet["production_approved"] is not False:
+        raise ValueError("claim packet cannot self-approve production")
+    if (
+        not isinstance(delivered_source_units, list)
+        or not delivered_source_units
+        or any(not isinstance(unit, str) or not unit.strip() for unit in delivered_source_units)
+    ):
+        raise ValueError("claim packet needs independently verified delivered speech")
+    if packet["selected_source_units"] != [
+        {"id": index, "text": text} for index, text in enumerate(delivered_source_units)
+    ]:
+        raise ValueError("claim packet delivered speech differs from the pinned transcript")
+    if not isinstance(packet["headline"], str) or not packet["headline"].strip():
+        raise ValueError("claim packet needs the exact draft headline")
+    if packet["required_review"] != {
+        "whole_headline": "unreviewed",
+        "atomic_claims": "unreviewed",
+        "attribution_and_modality": "unreviewed",
+        "conditions_and_roles": "unreviewed",
+    }:
+        raise ValueError("claim packet has an invalid review requirement")
+    for name in ("excluded_before_context_only", "excluded_after_context_only"):
+        values = packet[name]
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) or not value.strip() for value in values
+        ):
+            raise ValueError("claim packet has invalid excluded context")
+    spans = packet["reviewed_spans"]
+    if not isinstance(spans, dict) or set(spans) != {"setup_quote", "resolution_quote"}:
+        raise ValueError("claim packet needs reviewed setup and resolution")
+    for span in spans.values():
+        if not isinstance(span, dict) or set(span) != {"text", "first_unit", "last_unit"}:
+            raise ValueError("claim packet has an invalid reviewed source span")
+        _, _, cited = _source_range(
+            delivered_source_units,
+            {"first_unit": span["first_unit"], "last_unit": span["last_unit"]},
+        )
+        if (
+            not isinstance(span["text"], str)
+            or not span["text"].strip()
+            or span["text"] not in cited
+        ):
+            raise ValueError("claim packet reviewed quote is absent from cited source units")
+    validated = validate_claim_review(
+        record,
+        source_units=delivered_source_units,
+        source_video_id=source_video_id,
+        source_sha256=source_sha256,
+        transcript_sha256=transcript_sha256,
+        expected_headline=packet["headline"],
+    )
+    return {
+        **validated,
+        "packet_sha256": hashlib.sha256(json.dumps(packet, sort_keys=True).encode()).hexdigest(),
     }

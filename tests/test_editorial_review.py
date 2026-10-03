@@ -6,7 +6,11 @@ from copy import deepcopy
 
 import pytest
 
-from clipper.editorial_review import create_claim_review_packet, validate_claim_review
+from clipper.editorial_review import (
+    create_claim_review_packet,
+    validate_claim_review,
+    validate_claim_review_for_packet,
+)
 
 VIDEO = "_kDrxucOx9g"
 SOURCE = "a" * 64
@@ -157,6 +161,54 @@ def test_packet_fails_closed_on_missing_source_or_context(changes, error):
 def test_packet_rejects_incomplete_reviewed_spans(spans, error):
     with pytest.raises(ValueError, match=error):
         packet(spans)
+
+
+def test_review_handoff_binds_packet_to_independently_delivered_speech():
+    result = validate_claim_review_for_packet(
+        packet(),
+        record("automated"),
+        delivered_source_units=UNITS,
+        source_video_id=VIDEO,
+        source_sha256=SOURCE,
+        transcript_sha256=TRANSCRIPT,
+    )
+    assert len(result["packet_sha256"]) == 64
+    assert result["all_claims_supported"] is True
+    assert result["review_status"] == "needs_human_review"
+    assert result["production_approved"] is False
+
+
+@pytest.mark.parametrize(
+    "change,error",
+    [
+        ("speech", "delivered speech differs"),
+        ("headline", "differs from the draft"),
+        ("source", "source identity"),
+        ("span", "absent from cited"),
+        ("approval", "cannot self-approve"),
+    ],
+)
+def test_review_handoff_rejects_mutated_packet_or_record(change, error):
+    draft, review = packet(), record()
+    if change == "speech":
+        draft["selected_source_units"][1]["text"] = "A fabricated line."
+    elif change == "headline":
+        review["headline"] = "A different headline"
+    elif change == "source":
+        draft["source_sha256"] = "c" * 64
+    elif change == "span":
+        draft["reviewed_spans"]["resolution_quote"]["text"] = "A fabricated payoff"
+    else:
+        draft["production_approved"] = True
+    with pytest.raises(ValueError, match=error):
+        validate_claim_review_for_packet(
+            draft,
+            review,
+            delivered_source_units=UNITS,
+            source_video_id=VIDEO,
+            source_sha256=SOURCE,
+            transcript_sha256=TRANSCRIPT,
+        )
 
 
 def test_human_attestation_cites_python_owned_context_without_publication_approval():
