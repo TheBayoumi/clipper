@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from clipper.editorial_benchmark import (
+    assess_completed_audio_review,
     load_frozen_relations,
     load_heldout_claims,
     prepare_blind_audio_review,
@@ -290,6 +291,48 @@ def test_blind_audio_manifest_hides_provisional_answers_and_pins_actual_mp4(tmp_
     assert "expected_supported" not in output.read_text(encoding="utf-8")
     assert "annotation_reason" not in output.read_text(encoding="utf-8")
     assert "answer_is_spar_less" not in output.read_text(encoding="utf-8")
+    submitted = tmp_path / "submitted.json"
+    manifest["cases"][0].update(
+        audible_claim_verdict="supported",
+        reviewer_id="listener-1",
+        review_notes="I heard the speaker explicitly describe the advice.",
+    )
+    submitted.write_text(json.dumps(manifest), encoding="utf-8")
+    assessment = assess_completed_audio_review(
+        submitted, fixture_path, transcript_path, provenance_path, clips_dir
+    )
+    assert assessment["total"] == 1
+    assert assessment["provisional_label_disagreements"] == 0
+    assert assessment["reviewer_identity_verified"] is False
+    assert assessment["audio_gold_qualified"] is False
+    assert assessment["production_approved"] is False
+    assert assessment["comparisons"][0]["matches_provisional_label"] is True
+    manifest["cases"][0]["headline"] = "Altered headline"
+    submitted.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="pinned clip or headline"):
+        assess_completed_audio_review(
+            submitted, fixture_path, transcript_path, provenance_path, clips_dir
+        )
+    manifest["cases"][0]["headline"] = "The advice was to spar less"
+    manifest["cases"][0]["audible_claim_verdict"] = None
+    submitted.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid verdict"):
+        assess_completed_audio_review(
+            submitted, fixture_path, transcript_path, provenance_path, clips_dir
+        )
+    manifest["cases"][0]["audible_claim_verdict"] = "uncertain"
+    manifest["cases"][0]["review_notes"] = ""
+    submitted.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="identity and notes"):
+        assess_completed_audio_review(
+            submitted, fixture_path, transcript_path, provenance_path, clips_dir
+        )
+    manifest["cases"][0]["review_notes"] = "Audio is unclear around the advice."
+    submitted.write_text(json.dumps(manifest), encoding="utf-8")
+    uncertain = assess_completed_audio_review(
+        submitted, fixture_path, transcript_path, provenance_path, clips_dir
+    )
+    assert uncertain["provisional_label_disagreements"] == 1
     clip.unlink()
     with pytest.raises(ValueError, match="clip is missing"):
         prepare_blind_audio_review(

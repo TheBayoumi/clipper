@@ -74,6 +74,16 @@ def _parser() -> argparse.ArgumentParser:
     audio_review.add_argument("--provenance", required=True, type=Path)
     audio_review.add_argument("--clips-dir", required=True, type=Path)
     audio_review.add_argument("--output", required=True, type=Path)
+    audio_check = subparsers.add_parser(
+        "audio-review-check",
+        help="check a completed blind review against pinned MP4s without promoting it to gold",
+    )
+    audio_check.add_argument("--submitted", required=True, type=Path)
+    audio_check.add_argument("--fixture", required=True, type=Path)
+    audio_check.add_argument("--transcript", required=True, type=Path)
+    audio_check.add_argument("--provenance", required=True, type=Path)
+    audio_check.add_argument("--clips-dir", required=True, type=Path)
+    audio_check.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -133,6 +143,20 @@ def main(argv: list[str] | None = None) -> int:
                     args.output,
                 )
             )
+            return 0
+        if args.command == "audio-review-check":
+            from .editorial_benchmark import assess_completed_audio_review
+
+            result = assess_completed_audio_review(
+                args.submitted,
+                args.fixture,
+                args.transcript,
+                args.provenance,
+                args.clips_dir,
+            )
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            print(args.output)
             return 0
     except Exception as exc:
         logging.getLogger("clipper").error("%s", exc)

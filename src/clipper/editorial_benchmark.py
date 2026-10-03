@@ -367,17 +367,15 @@ def load_heldout_claims(
     return cases
 
 
-def prepare_blind_audio_review(
+def _blind_audio_review_payload(
     fixture_path: Path,
     transcript_path: Path,
     provenance_path: Path,
     clips_dir: Path,
-    output_path: Path,
-) -> Path:
-    """Prepare unlabelled, byte-pinned clips for independent human audio judgment.
+) -> dict[str, Any]:
+    """Reconstruct a blind review from pinned transcript and actual MP4 bytes.
 
     Provisional transcript labels and reasons must never enter this manifest.
-    Merely preparing it does not make any claim audio-reviewed or qualified.
     """
     cases = load_heldout_claims(fixture_path, transcript_path, provenance_path)
     fixture: Any = json.loads(fixture_path.read_text(encoding="utf-8"))
@@ -408,7 +406,7 @@ def prepare_blind_audio_review(
             (fixture["source_sha256"] + ":" + case.case_id).encode()
         ).hexdigest(),
     )
-    manifest = {
+    return {
         "schema": "clipper-blind-audio-review-v1",
         "annotation_status": "pending_independent_audio_review",
         "source_video_id": fixture["source_video_id"],
@@ -440,6 +438,98 @@ def prepare_blind_audio_review(
             for index, case in enumerate(ordered, start=1)
         ],
     }
+
+
+def prepare_blind_audio_review(
+    fixture_path: Path,
+    transcript_path: Path,
+    provenance_path: Path,
+    clips_dir: Path,
+    output_path: Path,
+) -> Path:
+    """Write the unlabelled audio manifest, not a review result or qualification."""
+    manifest = _blind_audio_review_payload(
+        fixture_path, transcript_path, provenance_path, clips_dir
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return output_path
+
+
+def assess_completed_audio_review(
+    submitted_path: Path,
+    fixture_path: Path,
+    transcript_path: Path,
+    provenance_path: Path,
+    clips_dir: Path,
+) -> dict[str, Any]:
+    """Compare a complete audio attestation to provisional transcript labels.
+
+    A self-reported reviewer name cannot authenticate a human or promote labels
+    to gold. This check only proves the submitted fields are complete and the
+    immutable MP4/source/headline payload has not changed.
+    """
+    canonical = _blind_audio_review_payload(
+        fixture_path, transcript_path, provenance_path, clips_dir
+    )
+    submitted: Any = json.loads(submitted_path.read_text(encoding="utf-8"))
+    if not isinstance(submitted, dict) or set(submitted) != set(canonical):
+        raise ValueError("submitted audio review has missing or unknown fields")
+    immutable = set(canonical) - {"cases"}
+    if any(submitted[key] != canonical[key] for key in immutable):
+        raise ValueError("submitted audio review changed pinned source or instructions")
+    rows = submitted["cases"]
+    expected_rows = canonical["cases"]
+    if not isinstance(rows, list) or len(rows) != len(expected_rows):
+        raise ValueError("submitted audio review omitted or added cases")
+    editable = {"audible_claim_verdict", "reviewer_id", "review_notes"}
+    reviewer_ids: set[str] = set()
+    for row, original in zip(rows, expected_rows, strict=True):
+        if not isinstance(row, dict) or set(row) != set(original):
+            raise ValueError("submitted audio review changed case fields")
+        if any(row[key] != original[key] for key in set(original) - editable):
+            raise ValueError("submitted audio review changed pinned clip or headline")
+        if not isinstance(row["audible_claim_verdict"], str) or row[
+            "audible_claim_verdict"
+        ] not in {"supported", "unsupported", "uncertain", "inaudible"}:
+            raise ValueError("submitted audio review has a missing or invalid verdict")
+        for key in ("reviewer_id", "review_notes"):
+            if not isinstance(row[key], str) or not row[key].strip():
+                raise ValueError("submitted audio review needs reviewer identity and notes")
+        reviewer_ids.add(row["reviewer_id"].strip())
+    if len(reviewer_ids) != 1:
+        raise ValueError("submitted audio review requires one consistent reviewer identity")
+    claims = sorted(
+        load_heldout_claims(fixture_path, transcript_path, provenance_path),
+        key=lambda case: hashlib.sha256(
+            (canonical["source_sha256"] + ":" + case.case_id).encode()
+        ).hexdigest(),
+    )
+    comparisons = [
+        {
+            "blind_id": row["blind_id"],
+            "audible_claim_verdict": row["audible_claim_verdict"],
+            "provisional_transcript_label": claim.expected_supported,
+            "matches_provisional_label": (
+                row["audible_claim_verdict"] == "supported"
+                if claim.expected_supported
+                else row["audible_claim_verdict"] == "unsupported"
+            ),
+        }
+        for row, claim in zip(rows, claims, strict=True)
+    ]
+    return {
+        "schema": "clipper-audio-review-assessment-v1",
+        "submitted_review_sha256": hashlib.sha256(submitted_path.read_bytes()).hexdigest(),
+        "fixture_sha256": canonical["fixture_sha256"],
+        "source_sha256": canonical["source_sha256"],
+        "reviewer_id_self_reported": next(iter(reviewer_ids)),
+        "reviewer_identity_verified": False,
+        "audio_gold_qualified": False,
+        "production_approved": False,
+        "total": len(comparisons),
+        "provisional_label_disagreements": sum(
+            not row["matches_provisional_label"] for row in comparisons
+        ),
+        "comparisons": comparisons,
+    }
