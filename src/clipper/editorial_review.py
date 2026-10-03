@@ -2,7 +2,8 @@
 
 This module validates provenance and coverage, not natural-language entailment.
 An automated model's labels are proposals until independently qualified. Human
-attestation is recorded separately from technical or publication approval.
+attestation is recorded separately from technical or publication approval;
+production factual approval does not require a human reviewer.
 """
 
 from __future__ import annotations
@@ -125,6 +126,8 @@ def validate_claim_review(
     check guards relations omitted by decomposition. Context is expanded by
     Python around each citation so a model cannot hide adjacent qualifications.
     Even a structurally complete automated record never authorizes production.
+    An unqualified automated record needs a qualified automatic decision, not
+    a human sign-off.
     """
     if (
         not isinstance(source_units, list)
@@ -283,7 +286,9 @@ def validate_claim_review(
         "review_status": (
             "human_attested_not_publication_approved"
             if all_supported and reviewer["kind"] == "human"
-            else "needs_human_review"
+            else "automated_unqualified"
+            if reviewer["kind"] == "automated"
+            else "human_review_incomplete"
         ),
         "production_approved": False,
     }

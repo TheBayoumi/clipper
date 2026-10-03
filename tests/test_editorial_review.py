@@ -174,7 +174,7 @@ def test_review_handoff_binds_packet_to_independently_delivered_speech():
     )
     assert len(result["packet_sha256"]) == 64
     assert result["all_claims_supported"] is True
-    assert result["review_status"] == "needs_human_review"
+    assert result["review_status"] == "automated_unqualified"
     assert result["production_approved"] is False
 
 
@@ -245,7 +245,7 @@ def test_human_attestation_cites_python_owned_context_without_publication_approv
 def test_automated_labels_cannot_attest_even_when_every_claim_says_supported():
     result = validate(record("automated"))
     assert result["all_claims_supported"] is True
-    assert result["review_status"] == "needs_human_review"
+    assert result["review_status"] == "automated_unqualified"
     assert result["production_approved"] is False
 
 
@@ -316,7 +316,7 @@ def test_missing_attribution_or_condition_words_prevents_attestation():
         }
     ]
     result = validate(value)
-    assert result["review_status"] == "needs_human_review"
+    assert result["review_status"] == "human_review_incomplete"
     assert "Mighty" in result["uncovered_headline_words"]
 
 
