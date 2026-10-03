@@ -595,10 +595,13 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
             },
         ),
     ):
-        render_youtube_previews(
+        run_dir = render_youtube_previews(
             tmp_path / "renders", Path("campaigns/reach-double-coverage-dedicated.yaml")
         )
     assert scored and all(items == [first, second] for items in scored)
+    packets = json.loads((run_dir / "claim-review-packets.json").read_text())
+    assert packets["packets"] == []
+    assert packets["production_approved"] is False
 
 
 def test_campaign_source_cutoff_rejects_old_and_unknown_uploads() -> None:

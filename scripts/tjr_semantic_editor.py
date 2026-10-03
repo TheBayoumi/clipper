@@ -23,6 +23,7 @@ from typing import Any
 from clipper.editorial_benchmark import load_heldout_claims, qualification_pass
 from clipper.editorial_claims import audit_headline_claims
 from clipper.editorial_qa import audit_source_qa
+from clipper.editorial_review import create_claim_review_packet
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
 from clipper.tiktok import creative_hook_from_text, source_headline_candidates
 
@@ -1622,6 +1623,41 @@ def refine_contextual_candidates(
                 and isinstance(cached.get("exchange_review"), dict)
             )
             evidence["exchange_review"] = review
+            if (
+                isinstance(review.get("headline"), str)
+                and review["headline"].strip()
+                and re.fullmatch(r"[A-Za-z0-9_-]{11}", candidate.video_id)
+            ):
+                spans = review.get("headline_source_spans")
+                if not isinstance(spans, dict):
+                    spans = {
+                        "setup_quote": _source_quote_span(
+                            review.get("setup_quote", ""),
+                            review_context["selected_units"],
+                            max_words=64,
+                        ),
+                        "resolution_quote": _source_quote_span(
+                            review.get("payoff_quote", ""),
+                            review_context["selected_units"],
+                            max_words=64,
+                        ),
+                    }
+                try:
+                    evidence["claim_review_packet"] = create_claim_review_packet(
+                        headline=review["headline"],
+                        selected_units=review_context["selected_units"],
+                        excluded_before=review_context["before"],
+                        excluded_after=review_context["after"],
+                        reviewed_spans=spans,
+                        source_video_id=candidate.video_id,
+                        source_sha256=source_sha256,
+                        transcript_sha256=transcript_hash,
+                    )
+                except ValueError as error:
+                    evidence["rejection"] = "INVALID_CLAIM_REVIEW_PACKET"
+                    evidence["claim_review_packet_error"] = str(error)
+                    checkpoint(number + 1)
+                    continue
             evidence["exchange_accepted"] = (
                 all(
                     review.get(key) is True

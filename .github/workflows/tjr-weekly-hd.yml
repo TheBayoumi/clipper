@@ -452,6 +452,7 @@ jobs:
             tjr-youtube-artifacts/**/ranked-candidates.json
             tjr-youtube-artifacts/**/editorial-candidate-audit.json
             tjr-youtube-artifacts/**/editorial-cache.json
+            tjr-youtube-artifacts/**/claim-review-packets.json
             tjr-youtube-artifacts/**/prior-audio-comparison.json
             tjr-youtube-artifacts/**/source-analysis-coverage.json
           retention-days: 14
@@ -732,6 +733,7 @@ jobs:
             tjr-modal-artifacts/**/clips/*-contact.png
             tjr-modal-artifacts/**/editorial-candidate-audit.json
             tjr-modal-artifacts/**/editorial-cache.json
+            tjr-modal-artifacts/**/claim-review-packets.json
             tjr-modal-artifacts/**/proposal-cache.json
             tjr-modal-artifacts/**/pipeline-state.json
             tjr-modal-artifacts/**/pipeline-completion.json
@@ -962,6 +964,7 @@ jobs:
             tjr-mirror-artifacts/**/tjr-youtube-qa-report.json
             tjr-mirror-artifacts/**/editorial-candidate-audit.json
             tjr-mirror-artifacts/**/editorial-cache.json
+            tjr-mirror-artifacts/**/claim-review-packets.json
             tjr-mirror-artifacts/**/prior-audio-comparison.json
             tjr-mirror-artifacts/**/ranked-candidates.json
             tjr-mirror-artifacts/**/source-acquisition-errors.json

@@ -2098,8 +2098,9 @@ def test_production_calls_position_review_with_exact_source_context(tmp_path, mo
     monkeypatch.setattr(editor.LocalContextualEditor, "review", legacy)
     monkeypatch.setattr(editor.LocalContextualEditor, "close", lambda self: None)
     monkeypatch.setattr(editor, "_source_position_review", focused)
-    proposal = ClipCandidate("v", 0, 22, " ".join(item.text for item in segments[:3]), 10)
-    clips, _ = editor.refine_contextual_candidates(
+    monkeypatch.setattr(editor, "source_headline_candidates", lambda _: [])
+    proposal = ClipCandidate("_kDrxucOx9g", 0, 22, " ".join(item.text for item in segments[:3]), 10)
+    clips, audit = editor.refine_contextual_candidates(
         _brief(),
         [proposal],
         segments,
@@ -2114,6 +2115,77 @@ def test_production_calls_position_review_with_exact_source_context(tmp_path, mo
             "after": [segments[3].text],
         }
     ]
+    packet = audit["assessments"][0]["claim_review_packet"]
+    assert packet["source_video_id"] == "_kDrxucOx9g"
+    assert packet["production_approved"] is False
+    assert packet["reviewed_spans"]["setup_quote"]["text"] in segments[0].text
+    assert packet["reviewed_spans"]["resolution_quote"]["text"] in segments[2].text
+    replayed, replay_audit = editor.refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "replayed-editorial-cache.json",
+        reuse_path=tmp_path / "editorial-cache.json",
+    )
+    assert replayed == clips
+    assert replay_audit["cache_reused"] is True
+    assert replay_audit["assessments"][0]["claim_review_packet"] == packet
+    assert len(calls) == 1
+
+
+def test_invalid_claim_packet_rejects_one_window_without_aborting_editor(tmp_path, monkeypatch):
+    from clipper.models import ClipCandidate
+    from scripts import tjr_semantic_editor as editor
+
+    segments = [
+        TranscriptSegment(0, 7, "How did security stop you at your own show?"),
+        TranscriptSegment(7, 14, "I left my access pass in the car."),
+        TranscriptSegment(14, 22, "The owner finally let me inside."),
+    ]
+    proposal = ClipCandidate("_kDrxucOx9g", 0, 22, " ".join(s.text for s in segments), 10)
+    monkeypatch.setattr(editor, "source_headline_candidates", lambda _: [])
+
+    def select(_context):
+        return dict(
+            keep=True,
+            start_unit=0,
+            end_unit=2,
+            opening=4,
+            story=4,
+            ending=5,
+            reason="The owner let him inside after the lost pass.",
+        )
+
+    def review(context):
+        return {
+            **_review(context),
+            "headline_source_spans": {
+                "setup_quote": {
+                    "text": "fabricated setup",
+                    "first_unit": 0,
+                    "last_unit": 0,
+                },
+                "resolution_quote": {
+                    "text": "finally let me inside",
+                    "first_unit": 2,
+                    "last_unit": 2,
+                },
+            },
+        }
+
+    clips, audit = editor.refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "editorial-cache.json",
+        assessor=select,
+        reviewer=review,
+    )
+    assert clips == []
+    assert audit["assessments"][0]["rejection"] == "INVALID_CLAIM_REVIEW_PACKET"
+    assert "claim_review_packet" not in audit["assessments"][0]
 
 
 def test_exchange_selection_does_not_require_literal_headlines():

@@ -1133,6 +1133,30 @@ def render_youtube_previews(
             cache_path=run_dir / "editorial-cache.json",
             reuse_path=reuse[0] if reuse else None,
         )
+        review_packets = [
+            {
+                "proposal_start": item["proposal_start"],
+                "proposal_end": item["proposal_end"],
+                "reviewed_start": item.get("reviewed_start"),
+                "reviewed_end": item.get("reviewed_end"),
+                "packet": item["claim_review_packet"],
+            }
+            for item in structured_audit.get("assessments", [])
+            if isinstance(item.get("claim_review_packet"), dict)
+        ]
+        (run_dir / "claim-review-packets.json").write_text(
+            json.dumps(
+                {
+                    "schema": "clipper-headline-claim-packets-v1",
+                    "source_sha256": source_digest,
+                    "packets": review_packets,
+                    "production_approved": False,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         pipeline_state = {
             "source_sha256": source_digest,
             "video_id": chosen_video.video_id,
