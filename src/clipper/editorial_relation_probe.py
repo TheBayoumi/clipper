@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import time
+from importlib import import_module
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Protocol
@@ -32,9 +33,11 @@ class MiniCheckCpuScorer:
     """Reproduce the official Flan-T5 binary scoring path with pinned files."""
 
     def __init__(self) -> None:
-        import torch
-        from huggingface_hub import snapshot_download
-        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+        torch = import_module("torch")
+        snapshot_download = import_module("huggingface_hub").snapshot_download
+        transformers = import_module("transformers")
+        AutoModelForSeq2SeqLM = transformers.AutoModelForSeq2SeqLM
+        AutoTokenizer = transformers.AutoTokenizer
 
         torch.set_num_threads(2)
         snapshot = Path(
