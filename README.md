@@ -91,6 +91,13 @@ still lives partly in `scripts/` and its GitHub workflow retains a legacy
 environment-variable adapter; the explicit config path is the migration route,
 not yet a claim that issue #8's factual gate is qualified.
 
+For the Modal workflow, `clipper editorial-config --brief ... --artifact-root ...
+--output ...` converts its existing environment inputs into a validated JSON
+run file before editorial/render. `scripts.tjr_modal_runner --config ...` pins
+that file to the verified staged source and records the effective config beside
+the attempt artifacts. Source acquisition and cache discovery still use their
+existing workflow adapter; this change does not authorize a production retry.
+
 ## Output
 
 ```text

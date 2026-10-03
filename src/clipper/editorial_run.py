@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -45,11 +45,16 @@ class EditorialRunConfig:
             value = os.getenv(name, "").strip()
             return Path(value) if value else None
 
+        direct_channel = os.getenv("TJR_TARGET_CHANNEL_ID", "").strip()
+        modal_channel = os.getenv("TJR_MODAL_CHANNEL_ID", "").strip()
+        if direct_channel and modal_channel and direct_channel != modal_channel:
+            raise ValueError("conflicting legacy target channel IDs")
+
         return cls(
             brief=brief,
             artifact_root=artifact_root,
             source_video_id=os.getenv("TJR_SOURCE_VIDEO_ID", "").strip(),
-            target_channel_id=os.getenv("TJR_TARGET_CHANNEL_ID", "").strip(),
+            target_channel_id=direct_channel or modal_channel,
             browser_capture_file=path("TJR_BROWSER_CAPTURE_FILE"),
             require_staged_original=os.getenv("TJR_REQUIRE_STAGED_ORIGINAL") == "1",
             transcript_cache_root=path("TJR_TRANSCRIPT_CACHE_ROOT"),
@@ -159,3 +164,37 @@ def load_editorial_run_config(path: str | Path) -> EditorialRunConfig:
     )
     config.validate()
     return config
+
+
+def write_editorial_run_config(config: EditorialRunConfig, path: str | Path) -> Path:
+    """Materialize validated run settings so production consumes one JSON file.
+
+    Resolve paths before writing: a workflow's generated file may live in a
+    different directory from the environment's original working directory.
+    """
+    config.validate()
+    destination = Path(path)
+    payload = {
+        key: str(value.resolve()) if isinstance(value, Path) else value
+        for key, value in asdict(config).items()
+        if value is not None
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    loaded = load_editorial_run_config(destination)
+
+    def resolved(value: Path | None) -> Path | None:
+        return value.resolve() if value is not None else None
+
+    expected = replace(
+        config,
+        brief=config.brief.resolve(),
+        artifact_root=config.artifact_root.resolve(),
+        browser_capture_file=resolved(config.browser_capture_file),
+        transcript_cache_root=resolved(config.transcript_cache_root),
+        editorial_cache_root=resolved(config.editorial_cache_root),
+        render_cache_root=resolved(config.render_cache_root),
+    )
+    if loaded != expected:
+        raise RuntimeError("serialized editorial run differs from validated inputs")
+    return destination

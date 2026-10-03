@@ -707,7 +707,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
           CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e ".[asr]"
-          python -m scripts.tjr_modal_runner
+          python -m clipper.cli editorial-config \
+            --brief campaigns/reach-double-coverage-dedicated.yaml \
+            --artifact-root tjr-modal-artifacts \
+            --output tjr-modal-probe/editorial-run.json
+          python -m scripts.tjr_modal_runner --config tjr-modal-probe/editorial-run.json
       - name: Upload actual YouTube MP4s, SRT captions, source provenance and QA
         if: always()
         uses: actions/upload-artifact@v4
@@ -717,9 +721,11 @@ jobs:
             tjr-modal-probe/verified-original-egress.json
             tjr-modal-probe/staged-original.json
             tjr-modal-probe/pipeline-source-state.json
+            tjr-modal-probe/editorial-run.json
             tjr-modal-probe/approved-watermark.json
             tjr-modal-probe/acquisition-attempt-*.json
             tjr-modal-artifacts/**/source-roundtrip.json
+            tjr-modal-artifacts/**/editorial-run.json
             tjr-modal-artifacts/**/verified-original-egress.json
             tjr-modal-artifacts/**/editorial-failure.json
             tjr-modal-artifacts/**/remote-cleanup-error.json

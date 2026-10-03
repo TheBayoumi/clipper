@@ -7,16 +7,22 @@ silent switch to an older video. Zero creator-grade clips is a valid no-op.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
-import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from clipper.editorial_run import (
+    EditorialRunConfig,
+    load_editorial_run_config,
+    write_editorial_run_config,
+)
 from scripts.tjr_quality import probe_original
 from scripts.tjr_youtube_preview import render_youtube_previews
 
@@ -363,10 +369,20 @@ def _purge_remote(staging: dict[str, Any], diagnostic: Path | None = None) -> No
 
 def run_modal_production(
     *,
-    root: Path = Path("tjr-modal-artifacts"),
-    brief: Path = Path("campaigns/reach-double-coverage-dedicated.yaml"),
+    root: Path | None = None,
+    brief: Path | None = None,
     probe_root: Path = Path("tjr-modal-probe"),
+    run_config: EditorialRunConfig | None = None,
 ) -> Path:
+    if run_config is not None:
+        run_config.validate()
+        if root is not None and root.resolve() != run_config.artifact_root.resolve():
+            raise ValueError("Modal artifact root differs from the validated run config")
+        if brief is not None and brief.resolve() != run_config.brief.resolve():
+            raise ValueError("Modal brief differs from the validated run config")
+        root, brief = run_config.artifact_root, run_config.brief
+    root = root or Path("tjr-modal-artifacts")
+    brief = brief or Path("campaigns/reach-double-coverage-dedicated.yaml")
     root.mkdir(parents=True, exist_ok=True)
     attempt_root = root / "attempt-1"
     attempt_root.mkdir(parents=True, exist_ok=True)
@@ -422,6 +438,25 @@ def run_modal_production(
         os.environ["TJR_BROWSER_CAPTURE_FILE"] = env_manifest
         os.environ["TJR_REQUIRE_STAGED_ORIGINAL"] = "1"
         os.environ["TJR_SOURCE_VIDEO_ID"] = str(staging["video_id"])
+        selected_config = None
+        if run_config is not None:
+            if run_config.source_video_id and run_config.source_video_id != staging["video_id"]:
+                raise RuntimeError("configured source differs from verified staged original")
+            if (
+                run_config.target_channel_id
+                and run_config.target_channel_id != staging["channel_id"]
+            ):
+                raise RuntimeError("configured channel differs from verified staged original")
+            selected_config = replace(
+                run_config,
+                artifact_root=attempt_root,
+                source_video_id=str(staging["video_id"]),
+                target_channel_id=str(staging["channel_id"]),
+                browser_capture_file=Path(env_manifest),
+                require_staged_original=True,
+            )
+            selected_config.validate()
+            write_editorial_run_config(selected_config, attempt_root / "editorial-run.json")
         probe_root.mkdir(parents=True, exist_ok=True)
         (probe_root / "pipeline-source-state.json").write_text(
             json.dumps(
@@ -435,7 +470,7 @@ def run_modal_production(
             )
             + "\n"
         )
-        result = render_youtube_previews(attempt_root, brief)
+        result: Path = render_youtube_previews(attempt_root, brief, run_config=selected_config)
         _save_pipeline_completion(result, staging["source_sha256"])
         print("REAL_VERIFIED_TJR_RENDER_ARTIFACTS:", result, flush=True)
         return result
@@ -508,14 +543,22 @@ def prepare_watermark_cache(brief_path: Path, manifest_path: Path) -> None:
     print("APPROVED_WATERMARK_VERIFIED:", expected, flush=True)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument("--prepare-watermark", action="store_true")
+    actions.add_argument("--acquire-original", action="store_true")
+    parser.add_argument("--config", type=Path)
+    args = parser.parse_args(argv)
     try:
-        if sys.argv[1:] == ["--prepare-watermark"]:
+        if args.config is not None and (args.prepare_watermark or args.acquire_original):
+            raise ValueError("--config applies to the editorial/render stage only")
+        if args.prepare_watermark:
             prepare_watermark_cache(
                 Path("campaigns/reach-double-coverage-dedicated.yaml"),
                 Path(os.environ["CLIPPER_IMAGE_ASSET_CACHE_MANIFEST"]),
             )
-        elif sys.argv[1:] == ["--acquire-original"]:
+        elif args.acquire_original:
             reused = _restore_completed_pipeline(Path("tjr-modal-artifacts"))
             output = os.getenv("GITHUB_OUTPUT", "")
             if output:
@@ -524,7 +567,8 @@ def main() -> int:
             if not reused:
                 _acquire_original(set(), Path("tjr-modal-probe"))
         else:
-            run_modal_production()
+            config = load_editorial_run_config(args.config) if args.config is not None else None
+            run_modal_production(run_config=config)
     except (ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as exc:
         print(f"TJR_MODAL_PRODUCTION_FAILED: {exc}", flush=True)
         return 1

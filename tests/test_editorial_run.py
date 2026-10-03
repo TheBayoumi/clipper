@@ -9,7 +9,11 @@ from unittest.mock import patch
 import pytest
 
 from clipper.cli import main
-from clipper.editorial_run import EditorialRunConfig, load_editorial_run_config
+from clipper.editorial_run import (
+    EditorialRunConfig,
+    load_editorial_run_config,
+    write_editorial_run_config,
+)
 
 BRIEF = Path(__file__).resolve().parents[1] / "campaigns/reach-double-coverage-dedicated.yaml"
 CHANNEL = "UCf1q6dhccWr6eQEcFFnJSbA"
@@ -71,6 +75,46 @@ def test_json_run_does_not_inherit_legacy_editorial_environment(tmp_path, monkey
     )
     loaded = load_editorial_run_config(config_file)
     assert loaded.source_video_id == "" and loaded.caption_style == "B2"
+
+
+def test_workflow_exports_one_validated_config_with_absolute_cache_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "_kDrxucOx9g")
+    monkeypatch.setenv("TJR_MODAL_CHANNEL_ID", CHANNEL)
+    monkeypatch.setenv("TJR_CAPTION_STYLE", "B2")
+    monkeypatch.setenv("TJR_EDITORIAL_CACHE_ROOT", "existing-editorial-cache")
+    monkeypatch.setenv("TJR_TRANSCRIPT_CACHE_ROOT", "existing-transcript-cache")
+    monkeypatch.setenv("TJR_RENDER_SAFETY_LIMIT", "20")
+    config = EditorialRunConfig.from_legacy_environment(BRIEF, tmp_path / "drafts")
+    output = tmp_path / "probe" / "run.json"
+    write_editorial_run_config(config, output)
+    loaded = load_editorial_run_config(output)
+    assert loaded.source_video_id == "_kDrxucOx9g"
+    assert loaded.target_channel_id == CHANNEL
+    assert loaded.artifact_root == (tmp_path / "drafts").resolve()
+    assert loaded.editorial_cache_root == Path("existing-editorial-cache").resolve()
+    assert loaded.transcript_cache_root == Path("existing-transcript-cache").resolve()
+    assert (
+        main(
+            [
+                "editorial-config",
+                "--brief",
+                str(BRIEF),
+                "--artifact-root",
+                str(tmp_path / "drafts"),
+                "--output",
+                str(tmp_path / "cli-run.json"),
+            ]
+        )
+        == 0
+    )
+    assert load_editorial_run_config(tmp_path / "cli-run.json") == loaded
+
+
+def test_legacy_channel_alias_fails_on_conflict(tmp_path, monkeypatch):
+    monkeypatch.setenv("TJR_TARGET_CHANNEL_ID", CHANNEL)
+    monkeypatch.setenv("TJR_MODAL_CHANNEL_ID", "UCf1q6dhccWr6eQEcFFnJSbB")
+    with pytest.raises(ValueError, match="conflicting"):
+        EditorialRunConfig.from_legacy_environment(BRIEF, tmp_path)
 
 
 def test_tracked_run_file_validates_without_media_acquisition(capsys):

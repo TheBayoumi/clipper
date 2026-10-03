@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from clipper.editorial_run import EditorialRunConfig, load_editorial_run_config
 from scripts.tjr_modal_runner import (
     _purge_remote,
     _transfer_verified_original,
@@ -15,6 +16,7 @@ from scripts.tjr_modal_runner import (
 from scripts.tjr_youtube_preview import NoEditorialMoments
 
 CHANNEL = "UCf1q6dhccWr6eQEcFFnJSbA"
+BRIEF = Path(__file__).resolve().parents[1] / "campaigns/reach-double-coverage-dedicated.yaml"
 
 
 def _staged(video_id: str) -> dict[str, object]:
@@ -79,6 +81,67 @@ def test_pinned_source_never_switches_original_on_editorial_failure(
     ):
         run_modal_production(root=tmp_path / "artifacts")
     assert acquire.call_count == 1
+
+
+def test_modal_editor_uses_config_and_preserves_cache_roots(tmp_path: Path, monkeypatch):
+    import scripts.tjr_modal_runner as runner
+
+    monkeypatch.setenv("TJR_PERSIST_SOURCE", "0")
+    config = EditorialRunConfig(
+        brief=BRIEF,
+        artifact_root=tmp_path / "artifacts",
+        source_video_id="X7msxvyQd_U",
+        target_channel_id=CHANNEL,
+        editorial_cache_root=tmp_path / "editorial-cache",
+        transcript_cache_root=tmp_path / "transcript-cache",
+        render_cache_root=tmp_path / "render-cache",
+    )
+    seen = []
+
+    def render(root, brief, *, run_config):
+        seen.append((root, brief, run_config))
+        return root / "complete"
+
+    with (
+        patch.object(runner, "_acquire_original", return_value=_staged("X7msxvyQd_U")),
+        patch.object(runner, "_transfer_verified_original", return_value=None),
+        patch.object(runner, "_purge_remote"),
+        patch.object(runner, "_save_pipeline_completion"),
+        patch.object(runner, "render_youtube_previews", side_effect=render),
+    ):
+        result = run_modal_production(probe_root=tmp_path / "probe", run_config=config)
+    assert result == config.artifact_root / "attempt-1" / "complete"
+    root, brief, selected = seen[0]
+    assert root == config.artifact_root / "attempt-1" and brief == BRIEF
+    assert selected.source_video_id == config.source_video_id
+    assert selected.target_channel_id == config.target_channel_id
+    assert selected.require_staged_original is True
+    assert selected.browser_capture_file == (root / "source.json").resolve()
+    assert selected.editorial_cache_root == config.editorial_cache_root
+    assert selected.transcript_cache_root == config.transcript_cache_root
+    assert selected.render_cache_root == config.render_cache_root
+    assert load_editorial_run_config(root / "editorial-run.json") == selected
+
+
+def test_modal_config_cannot_switch_verified_original(tmp_path: Path, monkeypatch):
+    import scripts.tjr_modal_runner as runner
+
+    monkeypatch.setenv("TJR_PERSIST_SOURCE", "0")
+    config = EditorialRunConfig(
+        brief=BRIEF,
+        artifact_root=tmp_path / "artifacts",
+        source_video_id="_kDrxucOx9g",
+        target_channel_id=CHANNEL,
+    )
+    with (
+        patch.object(runner, "_acquire_original", return_value=_staged("X7msxvyQd_U")),
+        patch.object(runner, "_transfer_verified_original", return_value=None),
+        patch.object(runner, "_purge_remote"),
+        patch.object(runner, "render_youtube_previews") as render,
+        pytest.raises(RuntimeError, match="configured source differs"),
+    ):
+        run_modal_production(probe_root=tmp_path / "probe", run_config=config)
+    render.assert_not_called()
 
 
 def test_transfer_rejects_wrong_sha_and_removes_unverified_original(tmp_path: Path) -> None:

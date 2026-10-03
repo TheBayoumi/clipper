@@ -9,7 +9,7 @@ from importlib import import_module
 from pathlib import Path
 
 from .brief import load_brief
-from .editorial_run import load_editorial_run_config
+from .editorial_run import EditorialRunConfig, load_editorial_run_config, write_editorial_run_config
 from .pipeline import PipelineSettings, run_pipeline
 from .rights import assert_campaign_authorized
 from .youtube import YouTubeClient
@@ -51,6 +51,12 @@ def _parser() -> argparse.ArgumentParser:
     editorial.add_argument(
         "--check-config", action="store_true", help="validate inputs without acquiring media"
     )
+    export = subparsers.add_parser(
+        "editorial-config", help="write validated workflow inputs to one editorial JSON run file"
+    )
+    export.add_argument("--brief", required=True, type=Path)
+    export.add_argument("--artifact-root", required=True, type=Path)
+    export.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -83,6 +89,10 @@ def main(argv: list[str] | None = None) -> int:
                 "scripts.tjr_youtube_preview"
             ).render_youtube_previews
             print(render_youtube_previews(config.artifact_root, config.brief, run_config=config))
+            return 0
+        if args.command == "editorial-config":
+            config = EditorialRunConfig.from_legacy_environment(args.brief, args.artifact_root)
+            print(write_editorial_run_config(config, args.output))
             return 0
     except Exception as exc:
         logging.getLogger("clipper").error("%s", exc)
