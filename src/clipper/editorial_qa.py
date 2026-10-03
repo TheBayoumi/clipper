@@ -1,7 +1,7 @@
 """Experimental source-first QA audit for complete headline propositions.
 
 The source-answer call never receives the headline or its claimed answer. Python
-checks exact text provenance, coverage and modality before aggregating. Model
+extracts cited source text, checks coverage and event status before aggregating. Model
 judgments are still fallible and are not a publication approval.
 """
 
@@ -11,7 +11,13 @@ import re
 from typing import Any, Protocol
 
 _WORD = re.compile(r"\w+", re.UNICODE)
-_SCOPES = ("actual_event", "future_plan", "hypothetical", "reported_speech", "unknown")
+_EVENT_STATUSES = (
+    "actual_event",
+    "future_plan",
+    "hypothetical",
+    "quoted_instruction",
+    "unknown",
+)
 _COMPARISONS = ("equivalent", "different", "uncertain")
 
 
@@ -19,10 +25,6 @@ class QAReviewer(Protocol):
     def _review_completion(
         self, prompt: str, payload: dict[str, Any], properties: dict[str, Any], tokens: int
     ) -> dict[str, Any]: ...
-
-
-def _normalized(text: str) -> str:
-    return " ".join(text.split()).casefold()
 
 
 def audit_source_qa(reviewer: QAReviewer, headline: str, source_units: list[str]) -> dict[str, Any]:
@@ -36,7 +38,9 @@ def audit_source_qa(reviewer: QAReviewer, headline: str, source_units: list[str]
         "Each claim_text must be an exact contiguous substring of the headline, and "
         "claimed_answer must be an exact substring of claim_text. A question must ask "
         "for the relation without supplying the claimed answer. Classify whether the "
-        "claim describes an actual event, future plan, hypothetical, or reported speech. "
+        "described event actually happened, is a future plan, is hypothetical, or is a "
+        "quoted instruction. Attribution to a speaker is separate from event status: "
+        "'the speaker says X' does not make a hypothetical X actual. "
         "Do not inspect source speech. Return output_schema JSON.",
         {"headline": headline},
         {
@@ -50,13 +54,16 @@ def audit_source_qa(reviewer: QAReviewer, headline: str, source_units: list[str]
                         "claim_text": {"type": "string"},
                         "question": {"type": "string"},
                         "claimed_answer": {"type": "string"},
-                        "claimed_scope": {"type": "string", "enum": list(_SCOPES[:-1])},
+                        "claimed_event_status": {
+                            "type": "string",
+                            "enum": list(_EVENT_STATUSES[:-1]),
+                        },
                     },
                     "required": [
                         "claim_text",
                         "question",
                         "claimed_answer",
-                        "claimed_scope",
+                        "claimed_event_status",
                     ],
                     "additionalProperties": False,
                 },
@@ -73,7 +80,7 @@ def audit_source_qa(reviewer: QAReviewer, headline: str, source_units: list[str]
             "claim_text",
             "question",
             "claimed_answer",
-            "claimed_scope",
+            "claimed_event_status",
         }:
             raise RuntimeError("source QA extracted an invalid proposition")
         claim = item["claim_text"]
@@ -88,7 +95,7 @@ def audit_source_qa(reviewer: QAReviewer, headline: str, source_units: list[str]
             or "?" not in question
             or claim not in headline
             or answer not in claim
-            or item["claimed_scope"] not in _SCOPES[:-1]
+            or item["claimed_event_status"] not in _EVENT_STATUSES[:-1]
         ):
             raise RuntimeError("source QA proposition is not grounded in headline text")
         start = headline.index(claim)
@@ -105,52 +112,56 @@ def audit_source_qa(reviewer: QAReviewer, headline: str, source_units: list[str]
     for item in checked:
         source_answer = reviewer._review_completion(
             "Answer the neutral question from delivered source_units only. You have not "
-            "seen the headline or its proposed answer. Copy the shortest exact source "
-            "words that answer it, including any 'if', 'can', future-plan or quoted-speech "
-            "scope needed for interpretation. Cite one contiguous unit range. If speech "
-            "does not establish an answer, return unknown and positions -1/-1. Do not "
-            "infer that a rule or possible outcome actually happened. Return output_schema JSON.",
+            "seen the headline or its proposed answer. Cite the smallest contiguous "
+            "unit range that answers it; Python will extract the original words. Mark "
+            "answerable 0 and positions -1/-1 when speech does not establish an answer. "
+            "Classify the described event as actual, future plan, hypothetical, quoted "
+            "instruction, or unknown. A speaker reporting a possibility does not make "
+            "that possibility an actual event. Do not infer the answer from the question. "
+            "Return output_schema JSON.",
             {"question": item["question"], "source_units": source},
             {
-                "answer_quote": {"type": "string"},
-                "source_scope": {"type": "string", "enum": list(_SCOPES)},
+                "answerable": {"type": "integer", "enum": [0, 1]},
+                "source_event_status": {"type": "string", "enum": list(_EVENT_STATUSES)},
                 "first_unit": {"type": "integer", "minimum": -1},
                 "last_unit": {"type": "integer", "minimum": -1},
             },
             256,
         )
-        if set(source_answer) != {"answer_quote", "source_scope", "first_unit", "last_unit"}:
+        if set(source_answer) != {"answerable", "source_event_status", "first_unit", "last_unit"}:
             raise RuntimeError("source QA answer has invalid fields")
-        quote = source_answer["answer_quote"]
-        scope = source_answer["source_scope"]
+        answerable = source_answer["answerable"]
+        event_status = source_answer["source_event_status"]
         first, last = source_answer["first_unit"], source_answer["last_unit"]
         if (
-            not isinstance(quote, str)
-            or scope not in _SCOPES
+            type(answerable) is not int
+            or answerable not in (0, 1)
+            or event_status not in _EVENT_STATUSES
             or type(first) is not int
             or type(last) is not int
             or not (first == last == -1 or 0 <= first <= last < len(source_units))
         ):
             raise RuntimeError("source QA answer has invalid evidence positions")
-        if (first == -1) != (scope == "unknown"):
-            raise RuntimeError("unknown source answer and absent evidence must agree")
+        if (first == -1 and (answerable != 0 or event_status != "unknown")) or (
+            first >= 0 and (answerable != 1 or event_status == "unknown")
+        ):
+            raise RuntimeError("source answerability, event status and evidence disagree")
+        if first >= 0 and last - first > 11:
+            raise RuntimeError("source answer cited an unfocused unit range")
         cited = " ".join(source_units[first : last + 1]) if first >= 0 else ""
-        if first >= 0 and (not quote.strip() or _normalized(quote) not in _normalized(cited)):
-            raise RuntimeError("source QA answer is not an exact cited source passage")
-        if first == -1 and quote.strip().casefold() != "unknown":
-            raise RuntimeError("absent source answer must be unknown")
         comparison: dict[str, Any] = {"relation": "uncertain", "reason": "No source answer."}
-        if first >= 0 and scope == item["claimed_scope"]:
+        if first >= 0 and event_status == item["claimed_event_status"]:
             comparison = reviewer._review_completion(
-                "Compare these two short answers to the same neutral question. Mark "
+                "Compare the claimed answer to the cited original source speech for "
+                "the same neutral question. Mark "
                 "equivalent only when they assert the same actors, roles, action, polarity, "
                 "amount and temporal/conditional meaning. Mark different for a conflict "
-                "and uncertain for insufficient detail. The cited source answer, not the "
-                "claimed answer, is authoritative. Return output_schema JSON.",
+                "and uncertain for insufficient detail. Source speech, not the claimed "
+                "answer, is authoritative. Return output_schema JSON.",
                 {
                     "question": item["question"],
                     "claimed_answer": answer,
-                    "source_answer": quote,
+                    "source_evidence": cited,
                 },
                 {
                     "relation": {"type": "string", "enum": list(_COMPARISONS)},
@@ -168,8 +179,7 @@ def audit_source_qa(reviewer: QAReviewer, headline: str, source_units: list[str]
         results.append(
             {
                 **item,
-                "source_answer": quote,
-                "source_scope": scope,
+                "source_event_status": event_status,
                 "source_span": {"first_unit": first, "last_unit": last, "text": cited}
                 if first >= 0
                 else None,
