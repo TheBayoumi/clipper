@@ -3065,18 +3065,14 @@ def test_cut_obligation_probe_scores_three_windows_without_approving(tmp_path, m
 
     class Cache:
         def __init__(self, *args, **kwargs):
-            self.metrics = {"cache_hits": 0, "model_calls": 3}
+            self.metrics = {"cache_hits": 0, "model_calls": 0}
 
         def _review_completion(self, prompt, payload, properties, tokens):
+            self.metrics["model_calls"] += 1
             first = payload["delivered_units"][0]["text"]
             absent = dict(first_unit=-1, last_unit=-1)
             if first.startswith("Welcome"):
-                return dict(
-                    kind="clause",
-                    pending=dict(first_unit=1, last_unit=1),
-                    fulfillment=dict(first_unit=0, last_unit=0),
-                    reason="The speaker has not said what he told him.",
-                )
+                raise AssertionError("dangling clause should bypass model inference")
             if first.startswith("How"):
                 return dict(
                     kind="contrast",
@@ -3101,6 +3097,8 @@ def test_cut_obligation_probe_scores_three_windows_without_approving(tmp_path, m
         "contrast",
         "clause",
     ]
+    assert report["cases"][2]["obligation"]["decision_origin"] == "python_syntax_v1"
+    assert report["request_cache_metrics"]["model_calls"] == 2
     assert report["production_approved"] is False
 
 

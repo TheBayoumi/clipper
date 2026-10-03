@@ -4654,14 +4654,14 @@ def cut_obligation_probe(transcript_path: Path, output: Path) -> int:
         output.with_name("review-request-cache.json"),
         factory,
         {
-            "experiment": "cut-obligation-v1",
+            "experiment": "cut-obligation-v2",
             "source_sha256": fixture["source_sha256"],
             "transcript_sha256": transcript_hash,
             "model_profile": profile,
         },
     )
     report: dict[str, Any] = {
-        "experiment": "cut_obligation_v1",
+        "experiment": "cut_obligation_v2",
         "diagnostic_only": True,
         "production_approved": False,
         "source_video_id": fixture["source_video_id"],

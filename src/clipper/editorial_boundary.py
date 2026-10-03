@@ -108,6 +108,30 @@ def propose_cut_obligation(
     completion: Completion,
 ) -> dict[str, Any]:
     """Ask for a concrete unfinished obligation, never a free-form veto."""
+    if (
+        not delivered_units
+        or not excluded_after
+        or any(not isinstance(text, str) or not text.strip() for text in delivered_units)
+        or any(not isinstance(text, str) or not text.strip() for text in excluded_after)
+        or type(final_unit_id) is not int
+        or not 0 <= final_unit_id < len(delivered_units)
+    ):
+        raise ValueError("cut obligation needs exact delivered and excluded speech")
+    if _dangling_clause(delivered_units[final_unit_id]):
+        return {
+            "kind": "clause",
+            "pending_source": {
+                "first_unit": final_unit_id,
+                "last_unit": final_unit_id,
+                "text": delivered_units[final_unit_id],
+            },
+            "fulfillment_source": None,
+            "reason": "Delivered final clause is syntactically unfinished.",
+            "cut_complete": False,
+            "decision_origin": "python_syntax_v1",
+            "diagnostic_only": True,
+            "production_approved": False,
+        }
 
     def pointer(count: int) -> dict[str, Any]:
         return {
@@ -122,13 +146,13 @@ def propose_cut_obligation(
 
     proposal = completion(
         "Inspect the delivered clip and the excluded continuation. A missing payoff "
-        "requires an explicit still-open delivered question, a syntactically unfinished "
-        "final clause, or a contrast that the excluded speech actually supplies. "
-        "Topic similarity or optional elaboration is not a missing payoff. Use none "
-        "when the delivered final point is complete and excluded speech only elaborates; "
-        "use uncertain rather than invent an obligation. For a missing obligation cite "
-        "the delivered pending range and excluded fulfilling range. For none or uncertain "
-        "set both ranges to -1. Use source unit IDs, never copied or rewritten text. "
+        "requires an explicit still-open delivered question or a contrast that excluded "
+        "speech actually supplies. Python has already checked for a syntactically "
+        "unfinished final clause. Topic similarity or optional elaboration is not a "
+        "missing payoff. Choose none when there is no concrete open obligation; do not "
+        "treat ordinary uncertainty as an invented obligation. For a missing obligation "
+        "cite the delivered pending range and excluded fulfilling range. For none set "
+        "both ranges to -1. Use source unit IDs, never rewritten text. "
         "Return output_schema JSON.",
         {
             "delivered_units": [
@@ -141,11 +165,22 @@ def propose_cut_obligation(
             "final_substantive_unit_text": delivered_units[final_unit_id],
         },
         {
-            "kind": {"type": "string", "enum": sorted(_KINDS)},
+            "kind": {"type": "string", "enum": ["none", "question", "contrast"]},
             "pending": pointer(len(delivered_units)),
             "fulfillment": pointer(len(excluded_after)),
             "reason": {"type": "string"},
         },
         192,
     )
+    if (
+        not isinstance(proposal, dict)
+        or not isinstance(proposal.get("kind"), str)
+        or proposal["kind"]
+        not in {
+            "none",
+            "question",
+            "contrast",
+        }
+    ):
+        raise ValueError("model proposed a cut kind outside the constrained contract")
     return validate_cut_obligation(delivered_units, excluded_after, final_unit_id, proposal)

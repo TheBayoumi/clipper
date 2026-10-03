@@ -112,7 +112,7 @@ def test_invalid_obligations_fail_closed(bad, error):
         )
 
 
-def test_uncertain_abstains_and_model_cannot_approve():
+def test_model_cannot_use_uncertain_as_an_unsupported_complete_verdict():
     delivered = ["No, it just drives the podcast."]
     after = ["It's like tools."]
 
@@ -120,10 +120,29 @@ def test_uncertain_abstains_and_model_cannot_approve():
         assert "Topic similarity" in prompt
         assert payload["final_substantive_unit_id"] == 0
         assert schema["fulfillment"]["properties"]["first_unit"]["enum"] == [-1, 0]
+        assert schema["kind"]["enum"] == ["none", "question", "contrast"]
         assert tokens == 192
         return proposal("uncertain")
 
-    result = propose_cut_obligation(delivered, after, 0, completion)
+    with pytest.raises(ValueError, match="outside the constrained contract"):
+        propose_cut_obligation(delivered, after, 0, completion)
+    result = validate_cut_obligation(delivered, after, 0, proposal("uncertain"))
+    assert result["cut_complete"] is False
+    assert result["production_approved"] is False
+
+
+def test_dangling_final_clause_is_a_deterministic_veto_without_model_call():
+    delivered = ["I have a video where I'm like telling him."]
+    after = ["Like, hey, you can see me on the podcast."]
+
+    def forbidden(*_):
+        raise AssertionError("model inference was unnecessary")
+
+    result = propose_cut_obligation(delivered, after, 0, forbidden)
+    assert result["kind"] == "clause"
+    assert result["pending_source"]["text"] == delivered[0]
+    assert result["fulfillment_source"] is None
+    assert result["decision_origin"] == "python_syntax_v1"
     assert result["cut_complete"] is False
     assert result["production_approved"] is False
 
@@ -131,3 +150,16 @@ def test_uncertain_abstains_and_model_cannot_approve():
 def test_cut_obligation_rejects_missing_source_context():
     with pytest.raises(ValueError, match="exact delivered and excluded speech"):
         validate_cut_obligation([], ["A continuation."], 0, proposal("none"))
+    with pytest.raises(ValueError, match="exact delivered and excluded speech"):
+        propose_cut_obligation([], ["A continuation."], 0, lambda *_: proposal("none"))
+
+
+def test_constrained_model_can_choose_none_without_becoming_production_approval():
+    result = propose_cut_obligation(
+        ["No, it just drives the podcast."],
+        ["It's like tools."],
+        0,
+        lambda *_: proposal("none"),
+    )
+    assert result["cut_complete"] is True
+    assert result["production_approved"] is False
