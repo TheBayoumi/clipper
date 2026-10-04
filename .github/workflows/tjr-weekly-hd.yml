@@ -44,7 +44,7 @@ on:
         description: "Diagnostic model comparison only; factual_9b tests saved headline claims without selection or media."
         required: false
         type: choice
-        options: [disabled, focused_4b, factual_9b, factual_consensus, factual_ablation_4b, factual_nli, evidence_qa, structured_claim, source_bound_headline, headline_materializer, cut_obligation, question_state, source_answer, source_scope, claim_inventory, syntax_inventory, relation_minicheck, evidence_gpu, gpu_build_logs]
+        options: [disabled, focused_4b, factual_9b, factual_consensus, factual_ablation_4b, factual_nli, evidence_qa, structured_claim, source_bound_headline, headline_materializer, cut_obligation, question_state, source_answer, source_scope, answer_comparison, claim_inventory, syntax_inventory, relation_minicheck, evidence_gpu, gpu_build_logs]
         default: disabled
       editorial_preflight:
         description: "Run real-model reviewer regression on cached transcript only; no source acquisition."
@@ -88,7 +88,7 @@ on:
         type: string
         default: ""
       diagnostic_source_run_id:
-        description: "Completed source-answer diagnostic run to classify; exact pinned source and case identities are checked."
+        description: "Completed source-answer or source-scope diagnostic run; pinned source and cases are checked."
         required: false
         type: string
         default: ""
@@ -536,7 +536,7 @@ jobs:
           pattern: reviewer-preflight-*
           path: reviewer-baseline
       - uses: actions/download-artifact@v4
-        if: inputs.reviewer_model_probe == 'source_scope' && inputs.diagnostic_source_run_id != ''
+        if: (inputs.reviewer_model_probe == 'source_scope' || inputs.reviewer_model_probe == 'answer_comparison') && inputs.diagnostic_source_run_id != ''
         with:
           run-id: ${{ inputs.diagnostic_source_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -610,7 +610,7 @@ jobs:
               --reviewer-preflight-transcript "$TRANSCRIPT" --output reviewer-preflight.json
             exit $?
           fi
-          if [ '${{ inputs.reviewer_model_probe }}' = 'source_answer' ] || [ '${{ inputs.reviewer_model_probe }}' = 'source_scope' ] || [ '${{ inputs.reviewer_model_probe }}' = 'claim_inventory' ]; then
+          if [ '${{ inputs.reviewer_model_probe }}' = 'source_answer' ] || [ '${{ inputs.reviewer_model_probe }}' = 'source_scope' ] || [ '${{ inputs.reviewer_model_probe }}' = 'answer_comparison' ] || [ '${{ inputs.reviewer_model_probe }}' = 'claim_inventory' ]; then
             TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
             test -n "$TRANSCRIPT"
             PROVENANCE=$(dirname "$TRANSCRIPT")/editorial-cache.json
@@ -627,6 +627,12 @@ jobs:
               SOURCE_ANSWER=$(find reviewer-source-answer -name reviewer-preflight.json -print -quit)
               test -n "$SOURCE_ANSWER"
               EXTRA_ARGUMENTS+=(--source-answer-report "$SOURCE_ANSWER")
+            fi
+            if [ '${{ inputs.reviewer_model_probe }}' = 'answer_comparison' ]; then
+              MODE_FLAG=--answer-comparison-probe
+              SOURCE_SCOPE=$(find reviewer-source-answer -name reviewer-preflight.json -print -quit)
+              test -n "$SOURCE_SCOPE"
+              EXTRA_ARGUMENTS+=(--source-scope-report "$SOURCE_SCOPE")
             fi
             python -m scripts.tjr_semantic_editor "$MODE_FLAG" \
               --reviewer-preflight-transcript "$TRANSCRIPT" \

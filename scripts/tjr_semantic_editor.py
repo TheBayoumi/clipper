@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from clipper.editorial_answer_comparison_probe import run_answer_comparison_probe
 from clipper.editorial_benchmark import (
     load_frozen_relations,
     load_heldout_claims,
@@ -4888,6 +4889,56 @@ def source_scope_probe(
             reviewer.close()
 
 
+def answer_comparison_probe(
+    fixture_path: Path,
+    proof_path: Path,
+    transcript_path: Path,
+    provenance_path: Path,
+    scope_report_path: Path,
+    output: Path,
+) -> int:
+    """Test the complete saved source-first relation path, never production approval."""
+    profile = _review_model_profile()
+    reviewer: LocalSourceReviewer | None = None
+
+    def factory() -> LocalSourceReviewer:
+        nonlocal reviewer
+        if reviewer is None:
+            reviewer = LocalSourceReviewer(profile)
+        return reviewer
+
+    request_cache = ReviewRequestCache(
+        output.with_name("review-request-cache.json"),
+        factory,
+        {
+            "experiment": "source-first-answer-comparison-v1",
+            "fixture_sha256": hashlib.sha256(fixture_path.read_bytes()).hexdigest(),
+            "baseline_proof_sha256": hashlib.sha256(proof_path.read_bytes()).hexdigest(),
+            "source_scope_report_sha256": hashlib.sha256(
+                scope_report_path.read_bytes()
+            ).hexdigest(),
+            "model_profile": profile,
+        },
+    )
+    try:
+        return run_answer_comparison_probe(
+            fixture_path,
+            proof_path,
+            transcript_path,
+            provenance_path,
+            scope_report_path,
+            output,
+            completion=request_cache._review_completion,
+            comparison_model_profile=profile,
+            request_metrics=lambda: request_cache.metrics,
+            scope_gold_path=Path(__file__).resolve().parents[1]
+            / "tests/fixtures/issue8_source_answer_scope_gold.json",
+        )
+    finally:
+        if reviewer is not None:
+            reviewer.close()
+
+
 def claim_inventory_probe(
     fixture_path: Path,
     proof_path: Path,
@@ -5012,12 +5063,37 @@ if __name__ == "__main__":
     parser.add_argument("--question-state-probe", action="store_true")
     parser.add_argument("--source-answer-probe", action="store_true")
     parser.add_argument("--source-scope-probe", action="store_true")
+    parser.add_argument("--answer-comparison-probe", action="store_true")
     parser.add_argument("--source-answer-report", type=Path)
+    parser.add_argument("--source-scope-report", type=Path)
     parser.add_argument("--claim-inventory-probe", action="store_true")
     parser.add_argument("--frozen-relation-proof", type=Path)
     parser.add_argument("--frozen-relation-provenance", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.answer_comparison_probe:
+        if not all(
+            (
+                args.reviewer_preflight_transcript,
+                args.frozen_relation_proof,
+                args.frozen_relation_provenance,
+                args.source_scope_report,
+            )
+        ):
+            parser.error(
+                "answer-comparison probe requires transcript, proof, provenance and "
+                "source-scope report"
+            )
+        raise SystemExit(
+            answer_comparison_probe(
+                Path(__file__).resolve().parents[1] / "tests/fixtures/issue8_frozen_relations.json",
+                args.frozen_relation_proof,
+                args.reviewer_preflight_transcript,
+                args.frozen_relation_provenance,
+                args.source_scope_report,
+                args.output,
+            )
+        )
     if args.source_scope_probe:
         if not all(
             (
