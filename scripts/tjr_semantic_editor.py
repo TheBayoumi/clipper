@@ -34,6 +34,7 @@ from clipper.editorial_question_state import audit_explicit_question_state
 from clipper.editorial_request_cache import EditorialRequestCache
 from clipper.editorial_review import create_claim_review_packet
 from clipper.editorial_source_answer import answer_source_question
+from clipper.editorial_source_scope_probe import run_source_scope_probe
 from clipper.editorial_structured_claims import audit_structured_claims
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
 from clipper.tiktok import creative_hook_from_text, source_headline_candidates
@@ -4835,6 +4836,54 @@ def source_answer_probe(
     return 1
 
 
+def source_scope_probe(
+    fixture_path: Path,
+    proof_path: Path,
+    transcript_path: Path,
+    provenance_path: Path,
+    source_answer_report_path: Path,
+    output: Path,
+) -> int:
+    """Classify saved blind-answer scope; never authorize factual approval."""
+    profile = _review_model_profile()
+    reviewer: LocalSourceReviewer | None = None
+
+    def factory() -> LocalSourceReviewer:
+        nonlocal reviewer
+        if reviewer is None:
+            reviewer = LocalSourceReviewer(profile)
+        return reviewer
+
+    request_cache = ReviewRequestCache(
+        output.with_name("review-request-cache.json"),
+        factory,
+        {
+            "experiment": "source-answer-scope-v1",
+            "fixture_sha256": hashlib.sha256(fixture_path.read_bytes()).hexdigest(),
+            "baseline_proof_sha256": hashlib.sha256(proof_path.read_bytes()).hexdigest(),
+            "source_answer_report_sha256": hashlib.sha256(
+                source_answer_report_path.read_bytes()
+            ).hexdigest(),
+            "model_profile": profile,
+        },
+    )
+    try:
+        return run_source_scope_probe(
+            fixture_path,
+            proof_path,
+            transcript_path,
+            provenance_path,
+            source_answer_report_path,
+            output,
+            completion=request_cache._review_completion,
+            scope_model_profile=profile,
+            request_metrics=lambda: request_cache.metrics,
+        )
+    finally:
+        if reviewer is not None:
+            reviewer.close()
+
+
 def claim_inventory_probe(
     fixture_path: Path,
     proof_path: Path,
@@ -4958,11 +5007,35 @@ if __name__ == "__main__":
     parser.add_argument("--cut-obligation-probe", action="store_true")
     parser.add_argument("--question-state-probe", action="store_true")
     parser.add_argument("--source-answer-probe", action="store_true")
+    parser.add_argument("--source-scope-probe", action="store_true")
+    parser.add_argument("--source-answer-report", type=Path)
     parser.add_argument("--claim-inventory-probe", action="store_true")
     parser.add_argument("--frozen-relation-proof", type=Path)
     parser.add_argument("--frozen-relation-provenance", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.source_scope_probe:
+        if not all(
+            (
+                args.reviewer_preflight_transcript,
+                args.frozen_relation_proof,
+                args.frozen_relation_provenance,
+                args.source_answer_report,
+            )
+        ):
+            parser.error(
+                "source-scope probe requires transcript, proof, provenance and source-answer report"
+            )
+        raise SystemExit(
+            source_scope_probe(
+                Path(__file__).resolve().parents[1] / "tests/fixtures/issue8_frozen_relations.json",
+                args.frozen_relation_proof,
+                args.reviewer_preflight_transcript,
+                args.frozen_relation_provenance,
+                args.source_answer_report,
+                args.output,
+            )
+        )
     if args.claim_inventory_probe:
         if not all(
             (

@@ -1694,6 +1694,9 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
     (tmp_path / "reviewer-input").mkdir()
     (tmp_path / "reviewer-input/transcript.json").write_text("[]")
     (tmp_path / "reviewer-input/editorial-cache.json").write_text("{}")
+    (tmp_path / "reviewer-source-answer").mkdir()
+    source_answer_report = tmp_path / "reviewer-source-answer/reviewer-preflight.json"
+    source_answer_report.write_text("{}")
     executable = tmp_path / "bin/python"
     executable.parent.mkdir()
     executable.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$PROBE_ARGUMENT_CAPTURE"\n')
@@ -1715,6 +1718,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         "cut_obligation",
         "question_state",
         "source_answer",
+        "source_scope",
         "claim_inventory",
         "syntax_inventory",
         "evidence_gpu",
@@ -1762,6 +1766,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
                 "cut_obligation",
                 "question_state",
                 "source_answer",
+                "source_scope",
                 "claim_inventory",
                 "syntax_inventory",
             }
@@ -1782,10 +1787,14 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert ("--cut-obligation-probe" in args) == (mode == "cut_obligation")
         assert ("--question-state-probe" in args) == (mode == "question_state")
         assert ("--source-answer-probe" in args) == (mode == "source_answer")
+        assert ("--source-scope-probe" in args) == (mode == "source_scope")
         assert ("--claim-inventory-probe" in args) == (mode == "claim_inventory")
-        if mode in {"source_answer", "claim_inventory"}:
+        if mode in {"source_answer", "source_scope", "claim_inventory"}:
             assert structured_proof.relative_to(tmp_path).as_posix() in args
             assert "--frozen-relation-provenance" in args
+        if mode == "source_scope":
+            assert "--source-answer-report" in args
+            assert source_answer_report.relative_to(tmp_path).as_posix() in args
         assert ("--evidence-gpu-probe" in args) == (mode == "evidence_gpu")
         if mode == "syntax_inventory":
             assert "clipper.cli" in args
