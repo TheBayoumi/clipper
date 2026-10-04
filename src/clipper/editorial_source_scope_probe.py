@@ -60,9 +60,21 @@ def _score_scope_cases(
     cases: list[dict[str, Any]], labels: dict[str, dict[str, str]]
 ) -> dict[str, Any]:
     failures = []
+    answered = []
+    abstained = []
+    false_responsive = []
     for case in cases:
         expected = labels[case["case_id"]]
         actual = case.get("scope_review", {})
+        if case["source_answer"]["status"] == "answered":
+            answered.append(case["case_id"])
+        else:
+            abstained.append(case["case_id"])
+        if (
+            expected["responsiveness"] == "does_not_answer"
+            and actual.get("responsiveness") == "answers_question"
+        ):
+            false_responsive.append(case["case_id"])
         if (
             actual.get("responsiveness") != expected["responsiveness"]
             or actual.get("scope") != expected["scope"]
@@ -84,6 +96,11 @@ def _score_scope_cases(
         "annotation_status": "transcript_derived_not_independent_audio_gold",
         "exact_pair_matches": len(cases) - len(failures),
         "total": len(cases),
+        "answered_exact_pair_matches": len(answered)
+        - sum(item["case_id"] in answered for item in failures),
+        "answered_total": len(answered),
+        "source_answer_abstentions": len(abstained),
+        "false_responsive_case_ids": false_responsive,
         "failures": failures,
         "qualified_for_production": False,
     }

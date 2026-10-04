@@ -214,8 +214,51 @@ def test_scope_probe_scores_sealed_labels_after_inference(tmp_path, monkeypatch)
     score = report["scope_benchmark"]
     assert len(payloads) == 15
     assert score["exact_pair_matches"] == 14
+    assert score["answered_exact_pair_matches"] == 14
+    assert score["answered_total"] == 15
+    assert score["source_answer_abstentions"] == 0
+    assert score["false_responsive_case_ids"] == ["case_0"]
     assert score["failures"][0]["case_id"] == "case_0"
     assert score["qualified_for_production"] is False
+
+
+def test_scope_score_separates_model_judgments_from_source_abstentions(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe, "load_frozen_relations", lambda *_: [relation(i) for i in range(15)])
+    args = inputs(tmp_path)
+    saved = json.loads(args[4].read_text())
+    saved["cases"][0]["source_answer"] = {
+        "question": QUESTION,
+        "status": "unknown",
+        "answer_quote": "",
+        "citation": None,
+    }
+    args[4].write_text(json.dumps(saved))
+    path = gold_for(args)
+    gold = json.loads(path.read_text())
+    gold["cases"][0].update(responsiveness="uncertain", scope="unknown")
+    path.write_text(json.dumps(gold))
+    calls = []
+
+    def completion(prompt, payload, schema, tokens):
+        calls.append(payload)
+        return {"responsiveness": "answers_question", "scope": "actual_event_or_state"}
+
+    assert (
+        probe.run_source_scope_probe(
+            *args,
+            completion=completion,
+            scope_model_profile={},
+            request_metrics=lambda: {},
+            scope_gold_path=path,
+        )
+        == 1
+    )
+    score = json.loads(args[-1].read_text())["scope_benchmark"]
+    assert len(calls) == 14
+    assert score["exact_pair_matches"] == 15
+    assert score["answered_exact_pair_matches"] == 14
+    assert score["answered_total"] == 14
+    assert score["source_answer_abstentions"] == 1
 
 
 def test_scope_probe_rejects_gold_bound_to_another_report(tmp_path, monkeypatch):
