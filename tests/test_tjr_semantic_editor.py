@@ -1715,6 +1715,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         "cut_obligation",
         "question_state",
         "source_answer",
+        "claim_inventory",
         "evidence_gpu",
     ):
         rendered = (
@@ -1760,6 +1761,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
                 "cut_obligation",
                 "question_state",
                 "source_answer",
+                "claim_inventory",
             }
         )
         if mode == "source_bound_headline":
@@ -1778,9 +1780,10 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert ("--cut-obligation-probe" in args) == (mode == "cut_obligation")
         assert ("--question-state-probe" in args) == (mode == "question_state")
         assert ("--source-answer-probe" in args) == (mode == "source_answer")
-        if mode == "source_answer":
+        assert ("--claim-inventory-probe" in args) == (mode == "claim_inventory")
+        if mode in {"source_answer", "claim_inventory"}:
             assert structured_proof.relative_to(tmp_path).as_posix() in args
-            assert "--source-answer-provenance" in args
+            assert "--frozen-relation-provenance" in args
         assert ("--evidence-gpu-probe" in args) == (mode == "evidence_gpu")
         assert "scripts.tjr_semantic_editor" in args
 

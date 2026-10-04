@@ -26,6 +26,7 @@ from clipper.editorial_benchmark import (
     qualification_pass,
 )
 from clipper.editorial_boundary import propose_cut_obligation
+from clipper.editorial_claim_inventory import inventory_headline_relations
 from clipper.editorial_claims import audit_headline_claims
 from clipper.editorial_headline import propose_source_headline
 from clipper.editorial_qa import audit_source_qa
@@ -4834,6 +4835,110 @@ def source_answer_probe(
     return 1
 
 
+def claim_inventory_probe(
+    fixture_path: Path,
+    proof_path: Path,
+    transcript_path: Path,
+    provenance_path: Path,
+    output: Path,
+) -> int:
+    """Measure headline-only relation recall without considering source truth."""
+    relations = load_frozen_relations(fixture_path, proof_path, transcript_path, provenance_path)
+    if len(relations) != 15 or len({row.fixture_index for row in relations}) != 12:
+        raise ValueError("claim inventory probe requires all frozen relation controls")
+    fixture_identity = json.loads(fixture_path.read_text(encoding="utf-8"))
+    profile = _review_model_profile()
+    reviewer: LocalSourceReviewer | None = None
+
+    def factory() -> LocalSourceReviewer:
+        nonlocal reviewer
+        if reviewer is None:
+            reviewer = LocalSourceReviewer(profile)
+        return reviewer
+
+    request_cache = ReviewRequestCache(
+        output.with_name("review-request-cache.json"),
+        factory,
+        {
+            "experiment": "headline-claim-inventory-v1",
+            "fixture_sha256": hashlib.sha256(fixture_path.read_bytes()).hexdigest(),
+            "baseline_proof_sha256": hashlib.sha256(proof_path.read_bytes()).hexdigest(),
+            "source_sha256": fixture_identity["source_sha256"],
+            "transcript_sha256": fixture_identity["transcript_sha256"],
+            "model_profile": profile,
+        },
+    )
+    by_index: dict[int, list[Any]] = {}
+    for relation in relations:
+        by_index.setdefault(relation.fixture_index, []).append(relation)
+    report: dict[str, Any] = {
+        "experiment": "headline_claim_inventory_v1",
+        "diagnostic_only": True,
+        "production_approved": False,
+        "experiment_complete": False,
+        "annotation_status": fixture_identity["annotation_status"],
+        "source_sha256": fixture_identity["source_sha256"],
+        "transcript_sha256": fixture_identity["transcript_sha256"],
+        "model_profile": profile,
+        "cases": [],
+    }
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    try:
+        for index, gold in sorted(by_index.items()):
+            case: dict[str, Any] = {
+                "fixture_index": index,
+                "headline": gold[0].headline,
+                "expected_relation_anchors": [
+                    {"case_id": row.case_id, "dimension": row.dimension, "answer": row.answer}
+                    for row in gold
+                ],
+            }
+            began = time.monotonic()
+            try:
+                inventory = inventory_headline_relations(
+                    gold[0].headline, request_cache._review_completion
+                )
+                case["inventory"] = inventory
+                case["anchor_checks"] = [
+                    {
+                        "case_id": row.case_id,
+                        "anchor_found": any(
+                            item["kind"] == row.dimension
+                            and row.answer.casefold() in item["answer"].casefold()
+                            for item in inventory["relations"]
+                        ),
+                    }
+                    for row in gold
+                ]
+            except (RuntimeError, ValueError) as error:
+                case["error"] = f"{type(error).__name__}: {error}"
+            case["seconds"] = round(time.monotonic() - began, 3)
+            report["cases"].append(case)
+            output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            print(
+                f"CLAIM_INVENTORY {index}: {case.get('anchor_checks', case.get('error'))}",
+                flush=True,
+            )
+    finally:
+        if reviewer is not None:
+            reviewer.close()
+    checks = [check for case in report["cases"] for check in case.get("anchor_checks", [])]
+    report["anchor_recall"] = {
+        "found": sum(check["anchor_found"] for check in checks),
+        "total": len(relations),
+    }
+    report["request_cache_metrics"] = request_cache.metrics
+    report["experiment_complete"] = True
+    report["inventory_semantically_qualified"] = False
+    report["qualification_rule"] = (
+        "Anchor recall only checks answer words and relation kind; it cannot prove "
+        "the question represents the asserted relation. Source truth, held-out "
+        "coverage, and integrated automated factual approval remain unqualified."
+    )
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    return 1
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -4853,25 +4958,44 @@ if __name__ == "__main__":
     parser.add_argument("--cut-obligation-probe", action="store_true")
     parser.add_argument("--question-state-probe", action="store_true")
     parser.add_argument("--source-answer-probe", action="store_true")
-    parser.add_argument("--source-answer-proof", type=Path)
-    parser.add_argument("--source-answer-provenance", type=Path)
+    parser.add_argument("--claim-inventory-probe", action="store_true")
+    parser.add_argument("--frozen-relation-proof", type=Path)
+    parser.add_argument("--frozen-relation-provenance", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.claim_inventory_probe:
+        if not all(
+            (
+                args.reviewer_preflight_transcript,
+                args.frozen_relation_proof,
+                args.frozen_relation_provenance,
+            )
+        ):
+            parser.error("claim-inventory probe requires transcript, proof and provenance")
+        raise SystemExit(
+            claim_inventory_probe(
+                Path(__file__).resolve().parents[1] / "tests/fixtures/issue8_frozen_relations.json",
+                args.frozen_relation_proof,
+                args.reviewer_preflight_transcript,
+                args.frozen_relation_provenance,
+                args.output,
+            )
+        )
     if args.source_answer_probe:
         if not all(
             (
                 args.reviewer_preflight_transcript,
-                args.source_answer_proof,
-                args.source_answer_provenance,
+                args.frozen_relation_proof,
+                args.frozen_relation_provenance,
             )
         ):
             parser.error("source-answer probe requires transcript, proof and provenance")
         raise SystemExit(
             source_answer_probe(
                 Path(__file__).resolve().parents[1] / "tests/fixtures/issue8_frozen_relations.json",
-                args.source_answer_proof,
+                args.frozen_relation_proof,
                 args.reviewer_preflight_transcript,
-                args.source_answer_provenance,
+                args.frozen_relation_provenance,
                 args.output,
             )
         )
