@@ -4784,16 +4784,15 @@ def question_state_probe(transcript_path: Path, output: Path) -> int:
     finally:
         if reviewer is not None:
             reviewer.close()
-    cases = {case["fixture"]: case for case in report["cases"]}
-    complete = cases.get("complete_business_exchange", {}).get("question_state", {})
-    missing = cases.get("payoff_excluded", {}).get("question_state", {})
-    report["two_window_question_signal_pass"] = complete.get(
-        "missing_answer_question_ids"
-    ) == [] and bool(missing.get("missing_answer_question_ids"))
+    report["explicit_missing_answer_signals_by_fixture"] = {
+        case["fixture"]: case.get("question_state", {}).get("missing_answer_question_ids")
+        for case in report["cases"]
+    }
+    report["question_state_semantically_qualified"] = False
     report["request_cache_metrics"] = request_cache.metrics
     report["experiment_complete"] = True
     report["qualification_rule"] = (
-        "Question signals do not establish cut completeness, implied contrasts, "
+        "Unverified question signals do not establish cut completeness, implied contrasts, "
         "headline factuality, held-out accuracy or production approval."
     )
     output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

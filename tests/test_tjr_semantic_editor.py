@@ -3142,7 +3142,11 @@ def test_question_state_probe_records_explicit_unanswered_question(tmp_path, mon
     output = tmp_path / "question-state.json"
     assert editor.question_state_probe(Path("unused"), output) == 1
     report = json.loads(output.read_text())
-    assert report["two_window_question_signal_pass"] is True
+    assert report["explicit_missing_answer_signals_by_fixture"] == {
+        "complete_business_exchange": [],
+        "payoff_excluded": [0],
+    }
+    assert report["question_state_semantically_qualified"] is False
     assert report["cases"][0]["question_state"]["question_inventory"] == []
     assert report["cases"][1]["question_state"]["missing_answer_question_ids"] == [0]
     assert report["request_cache_metrics"]["model_calls"] == 2
