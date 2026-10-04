@@ -118,3 +118,53 @@ def test_syntax_inventory_rejects_missing_or_changed_parse():
         inventory_headline_syntax(
             "Bobby was the speaker's opponent", lambda _: Doc("changed", [], False)
         )
+
+
+def test_syntax_inventory_covers_prepositions_qualifiers_and_embedded_clauses():
+    doc = parsed_opponent_headline()
+    root = doc.tokens[1]
+    doc.tokens[2].dep_ = "advmod"
+    doc.tokens[3].dep_ = "prep"
+    doc.tokens[4].dep_ = "ccomp"
+    doc.tokens[4].children = []
+    ignored = Token("?", 5, 32, "punct", "PUNCT")
+    root.children = [doc.tokens[0], doc.tokens[2], doc.tokens[3], doc.tokens[4], ignored]
+    doc.tokens.append(ignored)
+    result = inventory_headline_syntax(doc.text, lambda _: doc)
+    assert [role["role"] for role in result["frames"][0]["roles"]] == [
+        "subject",
+        "qualifier",
+        "prepositional_argument",
+        "embedded_clause",
+    ]
+
+
+def test_syntax_inventory_flags_multiple_objects_and_missing_subject():
+    doc = parsed_opponent_headline()
+    root = doc.tokens[1]
+    doc.tokens[3].dep_ = "dobj"
+    doc.tokens[4].dep_ = "dobj"
+    doc.tokens[4].children = []
+    root.children = [doc.tokens[3], doc.tokens[4]]
+    result = inventory_headline_syntax(doc.text, lambda _: doc)
+    assert result["parse_warnings"] == [
+        {"predicate_token": 1, "reason": "multiple_direct_objects"},
+        {"predicate_token": 1, "reason": "subject_not_explicit_in_clause"},
+    ]
+
+
+def test_syntax_inventory_rejects_invalid_parser_subtrees():
+    doc = parsed_opponent_headline()
+    doc.tokens[0].idx = len(doc.text) + 10
+    with pytest.raises(ValueError, match="invalid source span"):
+        inventory_headline_syntax(doc.text, lambda _: doc)
+
+    class EmptyToken(Token):
+        @property
+        def subtree(self):
+            return []
+
+    doc = parsed_opponent_headline()
+    doc.tokens[1].children[0] = EmptyToken("Bobby", 0, 0, "nsubj", "PROPN")
+    with pytest.raises(ValueError, match="empty subtree"):
+        inventory_headline_syntax(doc.text, lambda _: doc)
