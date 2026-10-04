@@ -2773,7 +2773,9 @@ def test_structured_claim_probe_reuses_verified_baseline_without_rerunning_old_g
         editor,
         "audit_structured_claims",
         lambda _reviewer, headline, _units, **_kwargs: {
-            "validated": {"all_claims_supported": int(headline.split()[-1]) % 2 == 0}
+            "validated": {
+                "all_recorded_claims_labeled_supported": int(headline.split()[-1]) % 2 == 0
+            }
         },
     )
     output = tmp_path / "proof.json"

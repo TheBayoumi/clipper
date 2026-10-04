@@ -3726,7 +3726,9 @@ def reviewer_evidence_qualification(
         return {
             **result,
             "verdict": (
-                "supported" if result["validated"]["all_claims_supported"] else "uncertain"
+                "supported"
+                if result["validated"]["all_recorded_claims_labeled_supported"]
+                else "uncertain"
             ),
         }
 

@@ -295,7 +295,7 @@ def validate_claim_review(
         for match in _WORD.finditer(headline)
         if not all(coverage[match.start() : match.end()])
     ]
-    all_supported = (
+    all_recorded_claims_labeled_supported = (
         not uncovered
         and whole["verdict"] == "supported"
         and all(claim["assessment"]["verdict"] == "supported" for claim in claims)
@@ -308,10 +308,12 @@ def validate_claim_review(
         "whole_headline": whole,
         "claims": claims,
         "uncovered_headline_words": uncovered,
-        "all_claims_supported": all_supported,
+        "all_recorded_claims_labeled_supported": all_recorded_claims_labeled_supported,
+        "claim_inventory_semantically_qualified": False,
+        "source_entailment_qualified": False,
         "review_status": (
             "human_attested_not_publication_approved"
-            if all_supported and reviewer["kind"] == "human"
+            if all_recorded_claims_labeled_supported and reviewer["kind"] == "human"
             else "automated_unqualified"
             if reviewer["kind"] == "automated"
             else "human_review_incomplete"

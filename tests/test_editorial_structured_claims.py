@@ -59,7 +59,7 @@ def audit(reviewer: Reviewer, **changes):
 def test_structured_review_preserves_whole_claim_and_blind_source_scope():
     reviewer = Reviewer()
     result = audit(reviewer)
-    assert result["validated"]["all_claims_supported"] is True
+    assert result["validated"]["all_recorded_claims_labeled_supported"] is True
     assert result["validated"]["production_approved"] is False
     assert result["validated"]["whole_headline"]["source_text"] == " ".join(UNITS)
     assert ["claim" in payload for _, payload, _ in reviewer.calls] == [

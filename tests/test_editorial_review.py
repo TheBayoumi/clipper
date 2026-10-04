@@ -189,7 +189,7 @@ def test_review_handoff_binds_packet_to_independently_delivered_speech():
         transcript_sha256=TRANSCRIPT,
     )
     assert len(result["packet_sha256"]) == 64
-    assert result["all_claims_supported"] is True
+    assert result["all_recorded_claims_labeled_supported"] is True
     assert result["review_status"] == "automated_unqualified"
     assert result["production_approved"] is False
 
@@ -251,7 +251,9 @@ def test_review_handoff_rejects_mutated_packet_or_record(change, error):
 
 def test_human_attestation_cites_python_owned_context_without_publication_approval():
     result = validate(record())
-    assert result["all_claims_supported"] is True
+    assert result["all_recorded_claims_labeled_supported"] is True
+    assert result["claim_inventory_semantically_qualified"] is False
+    assert result["source_entailment_qualified"] is False
     assert result["review_status"] == "human_attested_not_publication_approved"
     assert result["production_approved"] is False
     assert result["claims"][1]["assessment"]["source_text"] == " ".join(UNITS[:2])
@@ -260,7 +262,7 @@ def test_human_attestation_cites_python_owned_context_without_publication_approv
 
 def test_automated_labels_cannot_attest_even_when_every_claim_says_supported():
     result = validate(record("automated"))
-    assert result["all_claims_supported"] is True
+    assert result["all_recorded_claims_labeled_supported"] is True
     assert result["review_status"] == "automated_unqualified"
     assert result["production_approved"] is False
 
@@ -290,7 +292,7 @@ def test_reporting_act_and_embedded_possibility_are_independent():
             "assessment": assessment("actual_event", reporting="actual_report"),
         },
     ]
-    assert validate(value)["all_claims_supported"]
+    assert validate(value)["all_recorded_claims_labeled_supported"]
     value["whole_headline"]["source_reporting_status"] = "no_report"
     with pytest.raises(ValueError, match="reporting"):
         validate(value)
@@ -311,7 +313,11 @@ def test_reported_state_has_no_embedded_event_but_requires_real_reporting_act():
         }
     ]
     source_units = ["You guys are independent contractors."]
-    assert validate(value, source_units=source_units)["all_claims_supported"]
+    recorded = validate(value, source_units=source_units)
+    assert recorded["all_recorded_claims_labeled_supported"]
+    assert recorded["claim_inventory_semantically_qualified"] is False
+    assert recorded["source_entailment_qualified"] is False
+    assert recorded["production_approved"] is False
     value["whole_headline"]["source_reporting_status"] = "no_report"
     with pytest.raises(ValueError, match="mismatched"):
         validate(value, source_units=source_units)
@@ -364,10 +370,10 @@ def test_attestation_cannot_approve_a_different_rendered_headline():
 def test_whole_headline_veto_and_claim_veto_both_prevent_attestation():
     value = record()
     value["whole_headline"]["verdict"] = "uncertain"
-    assert not validate(value)["all_claims_supported"]
+    assert not validate(value)["all_recorded_claims_labeled_supported"]
     value = record()
     value["claims"][1]["assessment"]["verdict"] = "unsupported"
-    assert not validate(value)["all_claims_supported"]
+    assert not validate(value)["all_recorded_claims_labeled_supported"]
 
 
 def test_review_record_requires_authoritative_source_and_complete_shape():
