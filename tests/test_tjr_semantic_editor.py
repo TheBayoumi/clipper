@@ -1710,6 +1710,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         "evidence_qa",
         "structured_claim",
         "source_bound_headline",
+        "headline_materializer",
         "cut_obligation",
         "question_state",
         "evidence_gpu",
@@ -1750,7 +1751,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         subprocess.run(["bash", "-e", "-c", rendered], cwd=tmp_path, check=True)
         args = capture.read_text().splitlines()
         assert ("--reviewer-model-probe-baseline" in args) == (
-            mode not in {"disabled", "cut_obligation", "question_state"}
+            mode not in {"disabled", "headline_materializer", "cut_obligation", "question_state"}
         )
         if mode == "source_bound_headline":
             assert source_bound_cache.relative_to(tmp_path).as_posix() in args
@@ -1764,6 +1765,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert ("--evidence-qa-probe" in args) == (mode == "evidence_qa")
         assert ("--structured-claim-probe" in args) == (mode == "structured_claim")
         assert ("--source-bound-headline-probe" in args) == (mode == "source_bound_headline")
+        assert ("--headline-materializer-probe" in args) == (mode == "headline_materializer")
         assert ("--cut-obligation-probe" in args) == (mode == "cut_obligation")
         assert ("--question-state-probe" in args) == (mode == "question_state")
         assert ("--evidence-gpu-probe" in args) == (mode == "evidence_gpu")
@@ -3035,6 +3037,10 @@ def test_source_bound_probe_rejects_changed_transcript_before_model_loading(tmp_
         editor.source_bound_headline_probe(transcript, tmp_path / "probe.json")
     with pytest.raises(ValueError, match="pinned exact-source transcript"):
         editor.cut_obligation_probe(transcript, tmp_path / "cut-probe.json")
+    with pytest.raises(ValueError, match="pinned exact-source transcript"):
+        editor.question_state_probe(transcript, tmp_path / "question-probe.json")
+    with pytest.raises(ValueError, match="pinned exact-source transcript"):
+        editor.headline_materializer_probe(transcript, tmp_path / "headline-probe.json")
 
 
 def test_cut_obligation_probe_scores_three_windows_without_approving(tmp_path, monkeypatch):
@@ -3151,6 +3157,58 @@ def test_question_state_probe_records_explicit_unanswered_question(tmp_path, mon
     assert report["cases"][1]["question_state"]["missing_answer_question_ids"] == [0]
     assert report["request_cache_metrics"]["model_calls"] == 2
     assert report["production_approved"] is False
+
+
+def test_isolated_headline_materializer_records_candidate_without_approving(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+
+    from scripts import tjr_semantic_editor as editor
+
+    units = [
+        editor.SemanticUnit(2308.64 + index, 2309.14 + index, f"Source unit {index}.")
+        for index in range(13)
+    ]
+    units[-1] = editor.SemanticUnit(2327.0, 2328.0, "Yeah.")
+    units[-2] = editor.SemanticUnit(2326.0, 2326.5, "No, it drives the podcast.")
+    monkeypatch.setattr(
+        editor,
+        "_verified_issue8_probe_source",
+        lambda *_: (units, {"source_video_id": "_kDrxucOx9g", "source_sha256": "a" * 64}, "b" * 64),
+    )
+    monkeypatch.setattr(editor, "_review_model_profile", lambda: {"sha256": "c" * 64})
+    monkeypatch.setattr(
+        editor,
+        "LocalSourceReviewer",
+        lambda *_: (_ for _ in ()).throw(AssertionError("model weights loaded")),
+    )
+
+    class Cache:
+        def __init__(self, *args, **kwargs):
+            self.metrics = {"cache_hits": 0, "model_calls": 0}
+
+        def _review_completion(self, *args):
+            raise AssertionError("fake source-bound generator owns this test")
+
+    def materialize(selected, spans, completion):
+        assert spans["setup_quote"]["text"] == "Source unit 0. Source unit 1. Source unit 2."
+        assert spans["resolution_quote"]["text"] == "No, it drives the podcast."
+        return {"headline": "Source unit zero drives the podcast", "source_bound": True}
+
+    monkeypatch.setattr(editor, "ReviewRequestCache", Cache)
+    monkeypatch.setattr(editor, "propose_source_headline", materialize)
+    monkeypatch.setattr(
+        editor,
+        "_position_headline_audit",
+        lambda *_: {"verdict": "uncertain", "reason": "Model audit is not a certificate"},
+    )
+    output = tmp_path / "materializer.json"
+    assert editor.headline_materializer_probe(Path("unused"), output) == 1
+    report = json.loads(output.read_text())
+    assert report["candidate"]["source_bound"] is True
+    assert report["legacy_model_audit"]["verdict"] == "uncertain"
+    assert report["production_approved"] is False
+    assert report["experiment_complete"] is True
 
 
 def test_position_purpose_rejects_label_without_matching_evidence():

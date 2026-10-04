@@ -4639,6 +4639,86 @@ def source_bound_headline_probe(
     return 1
 
 
+def headline_materializer_probe(transcript_path: Path, output: Path) -> int:
+    """Isolate the package headline constructor from the unqualified cut reviewer.
+
+    The setup/payoff positions are benchmark annotations for this exact source,
+    not production selection rules or a factual approval certificate.
+    """
+    units, fixture, transcript_hash = _verified_issue8_probe_source(transcript_path)
+    profile = _review_model_profile()
+    reviewer: LocalSourceReviewer | None = None
+
+    def factory() -> LocalSourceReviewer:
+        nonlocal reviewer
+        if reviewer is None:
+            reviewer = LocalSourceReviewer(profile)
+        return reviewer
+
+    request_cache = ReviewRequestCache(
+        output.with_name("review-request-cache.json"),
+        factory,
+        {
+            "experiment": "headline-materializer-v1",
+            "source_sha256": fixture["source_sha256"],
+            "transcript_sha256": transcript_hash,
+            "model_profile": profile,
+        },
+    )
+    name, start, end = _ISSUE8_WINDOWS[0]
+    selected_ids = [
+        index
+        for index, unit in enumerate(units)
+        if unit.start >= start - 0.01 and unit.end <= end + 0.01
+    ]
+    if not selected_ids:
+        raise RuntimeError("headline materializer has no complete business exchange")
+    context = _review_context(units, selected_ids[0], selected_ids[-1])
+    selected = context["selected_units"]
+    if len(selected) != 13 or _final_substantive_unit_id(selected) != 11:
+        raise ValueError("headline materializer benchmark positions do not match source")
+    spans = {
+        "setup_quote": _resolve_source_units({"first_unit": 0, "last_unit": 2}, selected),
+        "resolution_quote": _resolve_source_units({"first_unit": 11, "last_unit": 11}, selected),
+    }
+    report: dict[str, Any] = {
+        "experiment": "headline_materializer_v1",
+        "diagnostic_only": True,
+        "production_approved": False,
+        "source_video_id": fixture["source_video_id"],
+        "source_sha256": fixture["source_sha256"],
+        "transcript_sha256": transcript_hash,
+        "model_profile": profile,
+        "fixture": name,
+        "selected_units": selected,
+        "benchmark_reviewed_spans": spans,
+    }
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    began = time.monotonic()
+    try:
+        try:
+            report["candidate"] = propose_source_headline(
+                selected, spans, request_cache._review_completion
+            )
+            report["legacy_model_audit"] = _position_headline_audit(
+                request_cache, report["candidate"]["headline"], selected
+            )
+        except Exception as error:
+            report["error"] = f"{type(error).__name__}: {error}"
+    finally:
+        if reviewer is not None:
+            reviewer.close()
+    report["seconds"] = round(time.monotonic() - began, 3)
+    report["request_cache_metrics"] = request_cache.metrics
+    report["experiment_complete"] = True
+    report["qualification_rule"] = (
+        "A benchmark-positioned literal headline and the legacy model audit cannot "
+        "establish contextual entailment, editorial quality or production approval."
+    )
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    return 1
+
+
 def cut_obligation_probe(transcript_path: Path, output: Path) -> int:
     """Test explicit delivered obligations; never grant production approval."""
     units, fixture, transcript_hash = _verified_issue8_probe_source(transcript_path)
@@ -4814,10 +4894,17 @@ if __name__ == "__main__":
     parser.add_argument("--evidence-gpu-probe", action="store_true")
     parser.add_argument("--structured-claim-probe", action="store_true")
     parser.add_argument("--source-bound-headline-probe", action="store_true")
+    parser.add_argument("--headline-materializer-probe", action="store_true")
     parser.add_argument("--cut-obligation-probe", action="store_true")
     parser.add_argument("--question-state-probe", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.headline_materializer_probe:
+        if not args.reviewer_preflight_transcript:
+            parser.error("headline materializer probe requires a verified transcript")
+        raise SystemExit(
+            headline_materializer_probe(args.reviewer_preflight_transcript, args.output)
+        )
     if args.question_state_probe:
         if not args.reviewer_preflight_transcript:
             parser.error("question-state probe requires a verified transcript")
