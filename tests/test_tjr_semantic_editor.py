@@ -1693,6 +1693,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
     structured_proof.write_text("{}")
     (tmp_path / "reviewer-input").mkdir()
     (tmp_path / "reviewer-input/transcript.json").write_text("[]")
+    (tmp_path / "reviewer-input/editorial-cache.json").write_text("{}")
     executable = tmp_path / "bin/python"
     executable.parent.mkdir()
     executable.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$PROBE_ARGUMENT_CAPTURE"\n')
@@ -1713,6 +1714,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         "headline_materializer",
         "cut_obligation",
         "question_state",
+        "source_answer",
         "evidence_gpu",
     ):
         rendered = (
@@ -1751,7 +1753,14 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         subprocess.run(["bash", "-e", "-c", rendered], cwd=tmp_path, check=True)
         args = capture.read_text().splitlines()
         assert ("--reviewer-model-probe-baseline" in args) == (
-            mode not in {"disabled", "headline_materializer", "cut_obligation", "question_state"}
+            mode
+            not in {
+                "disabled",
+                "headline_materializer",
+                "cut_obligation",
+                "question_state",
+                "source_answer",
+            }
         )
         if mode == "source_bound_headline":
             assert source_bound_cache.relative_to(tmp_path).as_posix() in args
@@ -1768,6 +1777,10 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert ("--headline-materializer-probe" in args) == (mode == "headline_materializer")
         assert ("--cut-obligation-probe" in args) == (mode == "cut_obligation")
         assert ("--question-state-probe" in args) == (mode == "question_state")
+        assert ("--source-answer-probe" in args) == (mode == "source_answer")
+        if mode == "source_answer":
+            assert structured_proof.relative_to(tmp_path).as_posix() in args
+            assert "--source-answer-provenance" in args
         assert ("--evidence-gpu-probe" in args) == (mode == "evidence_gpu")
         assert "scripts.tjr_semantic_editor" in args
 

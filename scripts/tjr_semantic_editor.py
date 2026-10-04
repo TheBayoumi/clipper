@@ -20,7 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from clipper.editorial_benchmark import load_heldout_claims, qualification_pass
+from clipper.editorial_benchmark import (
+    load_frozen_relations,
+    load_heldout_claims,
+    qualification_pass,
+)
 from clipper.editorial_boundary import propose_cut_obligation
 from clipper.editorial_claims import audit_headline_claims
 from clipper.editorial_headline import propose_source_headline
@@ -28,6 +32,7 @@ from clipper.editorial_qa import audit_source_qa
 from clipper.editorial_question_state import audit_explicit_question_state
 from clipper.editorial_request_cache import EditorialRequestCache
 from clipper.editorial_review import create_claim_review_packet
+from clipper.editorial_source_answer import answer_source_question
 from clipper.editorial_structured_claims import audit_structured_claims
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
 from clipper.tiktok import creative_hook_from_text, source_headline_candidates
@@ -4745,6 +4750,90 @@ def question_state_probe(transcript_path: Path, output: Path) -> int:
     return 1
 
 
+def source_answer_probe(
+    fixture_path: Path,
+    proof_path: Path,
+    transcript_path: Path,
+    provenance_path: Path,
+    output: Path,
+) -> int:
+    """Test claim-blind source answers on pinned relation controls; never approve."""
+    relations = load_frozen_relations(fixture_path, proof_path, transcript_path, provenance_path)
+    if len(relations) != 15 or len({row.fixture_index for row in relations}) != 12:
+        raise ValueError("source-answer probe requires all frozen relation controls")
+    fixture_identity = json.loads(fixture_path.read_text(encoding="utf-8"))
+    profile = _review_model_profile()
+    reviewer: LocalSourceReviewer | None = None
+
+    def factory() -> LocalSourceReviewer:
+        nonlocal reviewer
+        if reviewer is None:
+            reviewer = LocalSourceReviewer(profile)
+        return reviewer
+
+    request_cache = ReviewRequestCache(
+        output.with_name("review-request-cache.json"),
+        factory,
+        {
+            "experiment": "claim-blind-source-answer-v1",
+            "fixture_sha256": hashlib.sha256(fixture_path.read_bytes()).hexdigest(),
+            "baseline_proof_sha256": hashlib.sha256(proof_path.read_bytes()).hexdigest(),
+            "source_sha256": fixture_identity["source_sha256"],
+            "transcript_sha256": fixture_identity["transcript_sha256"],
+            "model_profile": profile,
+        },
+    )
+    report: dict[str, Any] = {
+        "experiment": "claim_blind_source_answer_v1",
+        "diagnostic_only": True,
+        "production_approved": False,
+        "experiment_complete": False,
+        "annotation_status": "derived_from_frozen_transcript_controls_not_independent_audio_gold",
+        "source_sha256": fixture_identity["source_sha256"],
+        "transcript_sha256": fixture_identity["transcript_sha256"],
+        "model_profile": profile,
+        "cases": [],
+    }
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    try:
+        for relation in relations:
+            case: dict[str, Any] = {
+                "case_id": relation.case_id,
+                "question": relation.question,
+                "expected_answer": relation.answer,
+                "expected_supported": relation.expected_supported,
+                "source_units": relation.source_units,
+            }
+            began = time.monotonic()
+            try:
+                case["source_answer"] = answer_source_question(
+                    relation.question,
+                    relation.source_units,
+                    request_cache._review_completion,
+                )
+            except (RuntimeError, ValueError) as error:
+                case["error"] = f"{type(error).__name__}: {error}"
+            case["seconds"] = round(time.monotonic() - began, 3)
+            report["cases"].append(case)
+            output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            print(
+                f"SOURCE_ANSWER {relation.case_id}: {case.get('source_answer', case.get('error'))}",
+                flush=True,
+            )
+    finally:
+        if reviewer is not None:
+            reviewer.close()
+    report["request_cache_metrics"] = request_cache.metrics
+    report["experiment_complete"] = True
+    report["qualification_rule"] = (
+        "Exact source quotations are not semantic entailment. Evaluate blind answers "
+        "against pinned labels; integrate an independent claim inventory and qualify "
+        "on audio-reviewed held-out cases before fully automated production approval."
+    )
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    return 1
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -4763,8 +4852,29 @@ if __name__ == "__main__":
     parser.add_argument("--headline-materializer-probe", action="store_true")
     parser.add_argument("--cut-obligation-probe", action="store_true")
     parser.add_argument("--question-state-probe", action="store_true")
+    parser.add_argument("--source-answer-probe", action="store_true")
+    parser.add_argument("--source-answer-proof", type=Path)
+    parser.add_argument("--source-answer-provenance", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.source_answer_probe:
+        if not all(
+            (
+                args.reviewer_preflight_transcript,
+                args.source_answer_proof,
+                args.source_answer_provenance,
+            )
+        ):
+            parser.error("source-answer probe requires transcript, proof and provenance")
+        raise SystemExit(
+            source_answer_probe(
+                Path(__file__).resolve().parents[1] / "tests/fixtures/issue8_frozen_relations.json",
+                args.source_answer_proof,
+                args.reviewer_preflight_transcript,
+                args.source_answer_provenance,
+                args.output,
+            )
+        )
     if args.headline_materializer_probe:
         if not args.reviewer_preflight_transcript:
             parser.error("headline materializer probe requires a verified transcript")

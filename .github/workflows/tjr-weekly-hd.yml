@@ -44,7 +44,7 @@ on:
         description: "Diagnostic model comparison only; factual_9b tests saved headline claims without selection or media."
         required: false
         type: choice
-        options: [disabled, focused_4b, factual_9b, factual_consensus, factual_ablation_4b, factual_nli, evidence_qa, structured_claim, source_bound_headline, headline_materializer, cut_obligation, question_state, relation_minicheck, evidence_gpu, gpu_build_logs]
+        options: [disabled, focused_4b, factual_9b, factual_consensus, factual_ablation_4b, factual_nli, evidence_qa, structured_claim, source_bound_headline, headline_materializer, cut_obligation, question_state, source_answer, relation_minicheck, evidence_gpu, gpu_build_logs]
         default: disabled
       editorial_preflight:
         description: "Run real-model reviewer regression on cached transcript only; no source acquisition."
@@ -591,6 +591,20 @@ jobs:
             test -n "$TRANSCRIPT"
             python -m scripts.tjr_semantic_editor --question-state-probe \
               --reviewer-preflight-transcript "$TRANSCRIPT" --output reviewer-preflight.json
+            exit $?
+          fi
+          if [ '${{ inputs.reviewer_model_probe }}' = 'source_answer' ]; then
+            TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
+            test -n "$TRANSCRIPT"
+            PROVENANCE=$(dirname "$TRANSCRIPT")/editorial-cache.json
+            test -f "$PROVENANCE"
+            BASELINE=$(find reviewer-baseline -path '*/baseline_4b/cold/proof.json' -print -quit)
+            test -n "$BASELINE"
+            python -m scripts.tjr_semantic_editor --source-answer-probe \
+              --reviewer-preflight-transcript "$TRANSCRIPT" \
+              --source-answer-proof "$BASELINE" \
+              --source-answer-provenance "$PROVENANCE" \
+              --output reviewer-preflight.json
             exit $?
           fi
           if [ -d reviewer-baseline ]; then
