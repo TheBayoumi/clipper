@@ -1711,6 +1711,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         "structured_claim",
         "source_bound_headline",
         "cut_obligation",
+        "question_state",
         "evidence_gpu",
     ):
         rendered = (
@@ -1749,7 +1750,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         subprocess.run(["bash", "-e", "-c", rendered], cwd=tmp_path, check=True)
         args = capture.read_text().splitlines()
         assert ("--reviewer-model-probe-baseline" in args) == (
-            mode not in {"disabled", "cut_obligation"}
+            mode not in {"disabled", "cut_obligation", "question_state"}
         )
         if mode == "source_bound_headline":
             assert source_bound_cache.relative_to(tmp_path).as_posix() in args
@@ -1764,6 +1765,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         assert ("--structured-claim-probe" in args) == (mode == "structured_claim")
         assert ("--source-bound-headline-probe" in args) == (mode == "source_bound_headline")
         assert ("--cut-obligation-probe" in args) == (mode == "cut_obligation")
+        assert ("--question-state-probe" in args) == (mode == "question_state")
         assert ("--evidence-gpu-probe" in args) == (mode == "evidence_gpu")
         assert "scripts.tjr_semantic_editor" in args
 
@@ -3096,6 +3098,53 @@ def test_cut_obligation_probe_scores_three_windows_without_approving(tmp_path, m
         "clause",
     ]
     assert report["cases"][2]["obligation"]["decision_origin"] == "python_syntax_v1"
+    assert report["request_cache_metrics"]["model_calls"] == 2
+    assert report["production_approved"] is False
+
+
+def test_question_state_probe_records_explicit_unanswered_question(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+
+    from scripts import tjr_semantic_editor as editor
+
+    units = [
+        editor.SemanticUnit(2281.2, 2285.0, "Do you get paid for views?"),
+        editor.SemanticUnit(2308.64, 2311.0, "I got 60 million views."),
+        editor.SemanticUnit(2311.48, 2312.44, "My thing is going crazy."),
+        editor.SemanticUnit(2312.54, 2314.02, "I'm not making a dime off it."),
+        editor.SemanticUnit(2327.08, 2328.44, "No, it drives the podcast."),
+        editor.SemanticUnit(2329.0, 2330.0, "It's like tools."),
+    ]
+    monkeypatch.setattr(
+        editor,
+        "_verified_issue8_probe_source",
+        lambda *_: (units, {"source_video_id": "_kDrxucOx9g", "source_sha256": "a" * 64}, "b" * 64),
+    )
+    monkeypatch.setattr(editor, "_review_model_profile", lambda: {"sha256": "c" * 64})
+    monkeypatch.setattr(
+        editor,
+        "LocalSourceReviewer",
+        lambda *_: (_ for _ in ()).throw(AssertionError("model weights loaded")),
+    )
+
+    class Cache:
+        def __init__(self, *args, **kwargs):
+            self.metrics = {"cache_hits": 0, "model_calls": 0}
+
+        def _review_completion(self, prompt, payload, properties, tokens):
+            self.metrics["model_calls"] += 1
+            if payload["candidate_region"] == "delivered":
+                return {"status": "unanswered", "first_unit": -1, "last_unit": -1}
+            return {"status": "answered", "first_unit": 0, "last_unit": 0}
+
+    monkeypatch.setattr(editor, "ReviewRequestCache", Cache)
+    output = tmp_path / "question-state.json"
+    assert editor.question_state_probe(Path("unused"), output) == 1
+    report = json.loads(output.read_text())
+    assert report["two_window_question_signal_pass"] is True
+    assert report["cases"][0]["question_state"]["question_inventory"] == []
+    assert report["cases"][1]["question_state"]["missing_answer_question_ids"] == [0]
     assert report["request_cache_metrics"]["model_calls"] == 2
     assert report["production_approved"] is False
 

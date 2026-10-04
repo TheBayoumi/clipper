@@ -25,6 +25,7 @@ from clipper.editorial_boundary import propose_cut_obligation
 from clipper.editorial_claims import audit_headline_claims
 from clipper.editorial_headline import propose_source_headline
 from clipper.editorial_qa import audit_source_qa
+from clipper.editorial_question_state import audit_explicit_question_state
 from clipper.editorial_review import create_claim_review_packet
 from clipper.editorial_structured_claims import audit_structured_claims
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
@@ -4721,6 +4722,84 @@ def cut_obligation_probe(transcript_path: Path, output: Path) -> int:
     return 1
 
 
+def question_state_probe(transcript_path: Path, output: Path) -> int:
+    """Inspect explicit question/answer state, without deciding cut approval."""
+    units, fixture, transcript_hash = _verified_issue8_probe_source(transcript_path)
+    profile = _review_model_profile()
+    reviewer: LocalSourceReviewer | None = None
+
+    def factory() -> LocalSourceReviewer:
+        nonlocal reviewer
+        if reviewer is None:
+            reviewer = LocalSourceReviewer(profile)
+        return reviewer
+
+    request_cache = ReviewRequestCache(
+        output.with_name("review-request-cache.json"),
+        factory,
+        {
+            "experiment": "explicit-question-state-v1",
+            "source_sha256": fixture["source_sha256"],
+            "transcript_sha256": transcript_hash,
+            "model_profile": profile,
+        },
+    )
+    report: dict[str, Any] = {
+        "experiment": "explicit_question_state_v1",
+        "diagnostic_only": True,
+        "production_approved": False,
+        "source_video_id": fixture["source_video_id"],
+        "source_sha256": fixture["source_sha256"],
+        "transcript_sha256": transcript_hash,
+        "model_profile": profile,
+        "cases": [],
+    }
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    try:
+        for name, start, end in _ISSUE8_WINDOWS[:2]:
+            selected_ids = [
+                index
+                for index, unit in enumerate(units)
+                if unit.start >= start - 0.01 and unit.end <= end + 0.01
+            ]
+            if not selected_ids:
+                raise RuntimeError(f"question-state fixture has no thought units: {name}")
+            context = _review_context(units, selected_ids[0], selected_ids[-1])
+            case: dict[str, Any] = {
+                "fixture": name,
+                "review_context": context,
+                "diagnostic_only": True,
+                "production_approved": False,
+            }
+            began = time.monotonic()
+            try:
+                case["question_state"] = audit_explicit_question_state(
+                    context["selected_units"], context["after"], request_cache._review_completion
+                )
+            except Exception as error:
+                case["error"] = f"{type(error).__name__}: {error}"
+            case["seconds"] = round(time.monotonic() - began, 3)
+            report["cases"].append(case)
+            output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    finally:
+        if reviewer is not None:
+            reviewer.close()
+    cases = {case["fixture"]: case for case in report["cases"]}
+    complete = cases.get("complete_business_exchange", {}).get("question_state", {})
+    missing = cases.get("payoff_excluded", {}).get("question_state", {})
+    report["two_window_question_signal_pass"] = complete.get(
+        "missing_answer_question_ids"
+    ) == [] and bool(missing.get("missing_answer_question_ids"))
+    report["request_cache_metrics"] = request_cache.metrics
+    report["experiment_complete"] = True
+    report["qualification_rule"] = (
+        "Question signals do not establish cut completeness, implied contrasts, "
+        "headline factuality, held-out accuracy or production approval."
+    )
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    return 1
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -4737,8 +4816,13 @@ if __name__ == "__main__":
     parser.add_argument("--structured-claim-probe", action="store_true")
     parser.add_argument("--source-bound-headline-probe", action="store_true")
     parser.add_argument("--cut-obligation-probe", action="store_true")
+    parser.add_argument("--question-state-probe", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.question_state_probe:
+        if not args.reviewer_preflight_transcript:
+            parser.error("question-state probe requires a verified transcript")
+        raise SystemExit(question_state_probe(args.reviewer_preflight_transcript, args.output))
     if args.cut_obligation_probe:
         if not args.reviewer_preflight_transcript:
             parser.error("cut-obligation probe requires a verified transcript")
