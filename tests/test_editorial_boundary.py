@@ -121,8 +121,9 @@ def test_model_cannot_use_uncertain_as_an_unsupported_complete_verdict():
         assert payload["final_substantive_unit_id"] == 0
         assert schema["fulfillment"]["properties"]["first_unit"]["enum"] == [-1, 0]
         assert schema["kind"]["enum"] == ["none", "question", "contrast"]
-        assert tokens == 192
-        return proposal("uncertain")
+        assert "reason" not in schema
+        assert tokens == 80
+        return {key: value for key, value in proposal("uncertain").items() if key != "reason"}
 
     with pytest.raises(ValueError, match="outside the constrained contract"):
         propose_cut_obligation(delivered, after, 0, completion)
@@ -159,7 +160,8 @@ def test_constrained_model_can_choose_none_without_becoming_production_approval(
         ["No, it just drives the podcast."],
         ["It's like tools."],
         0,
-        lambda *_: proposal("none"),
+        lambda *_: {key: value for key, value in proposal("none").items() if key != "reason"},
     )
     assert result["cut_complete"] is True
+    assert result["decision_origin"] == "model_positions_python_contract_v3"
     assert result["production_approved"] is False

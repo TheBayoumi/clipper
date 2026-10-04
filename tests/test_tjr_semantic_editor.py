@@ -3078,13 +3078,11 @@ def test_cut_obligation_probe_scores_three_windows_without_approving(tmp_path, m
                     kind="contrast",
                     pending=dict(first_unit=2, last_unit=2),
                     fulfillment=dict(first_unit=0, last_unit=0),
-                    reason="The excluded denial changes the earnings premise.",
                 )
             return dict(
                 kind="none",
                 pending=absent,
                 fulfillment=absent,
-                reason="The tools list is optional elaboration.",
             )
 
     monkeypatch.setattr(editor, "ReviewRequestCache", Cache)

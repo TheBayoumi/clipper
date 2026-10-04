@@ -152,7 +152,8 @@ def propose_cut_obligation(
         "missing payoff. Choose none when there is no concrete open obligation; do not "
         "treat ordinary uncertainty as an invented obligation. For a missing obligation "
         "cite the delivered pending range and excluded fulfilling range. For none set "
-        "both ranges to -1. Use source unit IDs, never rewritten text. "
+        "both ranges to -1. Use source unit IDs, never rewritten text or "
+        "an explanatory essay. Python will describe the cited decision. "
         "Return output_schema JSON.",
         {
             "delivered_units": [
@@ -168,13 +169,13 @@ def propose_cut_obligation(
             "kind": {"type": "string", "enum": ["none", "question", "contrast"]},
             "pending": pointer(len(delivered_units)),
             "fulfillment": pointer(len(excluded_after)),
-            "reason": {"type": "string"},
         },
-        192,
+        80,
     )
     if (
         not isinstance(proposal, dict)
         or not isinstance(proposal.get("kind"), str)
+        or set(proposal) != {"kind", "pending", "fulfillment"}
         or proposal["kind"]
         not in {
             "none",
@@ -183,4 +184,13 @@ def propose_cut_obligation(
         }
     ):
         raise ValueError("model proposed a cut kind outside the constrained contract")
-    return validate_cut_obligation(delivered_units, excluded_after, final_unit_id, proposal)
+    reviewed = validate_cut_obligation(
+        delivered_units,
+        excluded_after,
+        final_unit_id,
+        {
+            **proposal,
+            "reason": "Model selected positions; Python checked the cited cut contract.",
+        },
+    )
+    return {**reviewed, "decision_origin": "model_positions_python_contract_v3"}
