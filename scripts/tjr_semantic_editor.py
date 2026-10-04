@@ -4878,6 +4878,8 @@ def source_scope_probe(
             completion=request_cache._review_completion,
             scope_model_profile=profile,
             request_metrics=lambda: request_cache.metrics,
+            scope_gold_path=Path(__file__).resolve().parents[1]
+            / "tests/fixtures/issue8_source_answer_scope_gold.json",
         )
     finally:
         if reviewer is not None:
