@@ -31,6 +31,7 @@ from clipper.editorial import (
     WEIGHTS,
     select_editorial_moments,
 )
+from clipper.editorial_review import require_automated_factual_approval_for_render
 from clipper.editorial_run import EditorialRunConfig
 from clipper.models import ClipCandidate, TranscriptSegment, WordTiming
 from clipper.pipeline import _download_asset
@@ -1144,18 +1145,14 @@ def render_youtube_previews(
             for item in structured_audit.get("assessments", [])
             if isinstance(item.get("claim_review_packet"), dict)
         ]
+        claim_packet_manifest = {
+            "schema": "clipper-headline-claim-packets-v1",
+            "source_sha256": source_digest,
+            "packets": review_packets,
+            "production_approved": False,
+        }
         (run_dir / "claim-review-packets.json").write_text(
-            json.dumps(
-                {
-                    "schema": "clipper-headline-claim-packets-v1",
-                    "source_sha256": source_digest,
-                    "packets": review_packets,
-                    "production_approved": False,
-                },
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
+            json.dumps(claim_packet_manifest, indent=2) + "\n", encoding="utf-8"
         )
         pipeline_state = {
             "source_sha256": source_digest,
@@ -1247,6 +1244,16 @@ def render_youtube_previews(
                 len(ranked),
             )
             return run_dir
+        try:
+            require_automated_factual_approval_for_render(
+                selected_count=len(picks), claim_packet_manifest=claim_packet_manifest
+            )
+        except RuntimeError:
+            pipeline_state["factual_approval"] = "blocked_unqualified"
+            (run_dir / "pipeline-state.json").write_text(
+                json.dumps(pipeline_state, indent=2) + "\n", encoding="utf-8"
+            )
+            raise
         LOGGER.info(
             "EDITORIAL_PROVISIONAL_SCREEN_PASSED=%d rubric=%s screening=%s",
             len(picks),

@@ -603,6 +603,34 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
     assert packets["packets"] == []
     assert packets["production_approved"] is False
 
+    with (
+        patch.dict(
+            render_youtube_previews.__globals__,
+            {
+                "discover_official_uploads": lambda: ([original], []),
+                "_download_asset": lambda _url, path, **_kwargs: path,
+                "load_verified_browser_original": lambda *_: (
+                    original,
+                    source,
+                    {"title": original.title, "duration": 900},
+                ),
+                "probe_source_profile": lambda *_: Mock(as_dict=lambda: {"fps": "60/1"}),
+                "probe_original": lambda *_: {"width": 1920, "height": 1080},
+                "transcribe_source_chunks": lambda *_a, **_kw: ([[first], [second]], 900.0),
+                "build_semantic_editorial_candidates": inspect_candidates,
+                "select_editorial_moments": lambda *_a, **_kw: ([Mock(to_dict=lambda: {})], []),
+                "FFmpegRenderer": Mock(side_effect=AssertionError("render must not start")),
+            },
+        ),
+        pytest.raises(RuntimeError, match="AUTOMATED_FACTUAL_APPROVAL_REQUIRED"),
+    ):
+        render_youtube_previews(
+            tmp_path / "blocked", Path("campaigns/reach-double-coverage-dedicated.yaml")
+        )
+    state_files = list((tmp_path / "blocked").rglob("pipeline-state.json"))
+    assert len(state_files) == 1
+    assert json.loads(state_files[0].read_text())["factual_approval"] == "blocked_unqualified"
+
 
 def test_campaign_source_cutoff_rejects_old_and_unknown_uploads() -> None:
     channel = "UCf1q6dhccWr6eQEcFFnJSbA"

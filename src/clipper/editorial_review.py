@@ -30,6 +30,32 @@ _REPORTING_STATUSES = {"actual_report", "future_report", "hypothetical_report", 
 _VERDICTS = {"supported", "unsupported", "uncertain"}
 
 
+def require_automated_factual_approval_for_render(
+    *, selected_count: int, claim_packet_manifest: dict[str, Any]
+) -> None:
+    """Keep diagnostic claim packets from authorizing rendered production drafts.
+
+    The current packet format deliberately carries no qualified automated
+    verdict. A later verifier must provide a distinct, source-bound approval
+    contract before this boundary can admit a selected clip.
+    """
+    if type(selected_count) is not int or selected_count < 0:
+        raise ValueError("selected clip count must be a nonnegative integer")
+    if selected_count == 0:
+        return
+    if not isinstance(claim_packet_manifest, dict):
+        raise ValueError("claim packet manifest is missing")
+    if claim_packet_manifest.get("schema") == "clipper-headline-claim-packets-v1":
+        raise RuntimeError(
+            "AUTOMATED_FACTUAL_APPROVAL_REQUIRED: diagnostic claim packets cannot "
+            "authorize a rendered clip"
+        )
+    raise RuntimeError(
+        "AUTOMATED_FACTUAL_APPROVAL_REQUIRED: no qualified claim-level verifier "
+        "approved the selected clips"
+    )
+
+
 def create_claim_review_packet(
     *,
     headline: str,

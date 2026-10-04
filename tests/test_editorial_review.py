@@ -8,6 +8,7 @@ import pytest
 
 from clipper.editorial_review import (
     create_claim_review_packet,
+    require_automated_factual_approval_for_render,
     validate_claim_review,
     validate_claim_review_for_packet,
 )
@@ -21,6 +22,21 @@ UNITS = [
     "I am going to reassess in the future.",
 ]
 HEADLINE = "The speaker plans to reassess training after Mighty Mouse's advice"
+
+
+def test_diagnostic_claim_packets_cannot_authorize_render_even_if_flag_is_forged():
+    manifest = {"schema": "clipper-headline-claim-packets-v1", "production_approved": False}
+    require_automated_factual_approval_for_render(selected_count=0, claim_packet_manifest=manifest)
+    for approved in (False, True):
+        manifest["production_approved"] = approved
+        with pytest.raises(RuntimeError, match="diagnostic claim packets cannot"):
+            require_automated_factual_approval_for_render(
+                selected_count=1, claim_packet_manifest=manifest
+            )
+    with pytest.raises(RuntimeError, match="no qualified claim-level verifier"):
+        require_automated_factual_approval_for_render(
+            selected_count=1, claim_packet_manifest={"schema": "unknown"}
+        )
 
 
 def assessment(status="future_plan", verdict="supported", first=0, last=2, reporting="no_report"):
