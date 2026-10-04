@@ -26,6 +26,7 @@ from clipper.editorial_claims import audit_headline_claims
 from clipper.editorial_headline import propose_source_headline
 from clipper.editorial_qa import audit_source_qa
 from clipper.editorial_question_state import audit_explicit_question_state
+from clipper.editorial_request_cache import EditorialRequestCache
 from clipper.editorial_review import create_claim_review_packet
 from clipper.editorial_structured_claims import audit_structured_claims
 from clipper.models import CampaignBrief, ClipCandidate, TranscriptSegment
@@ -1062,8 +1063,8 @@ def _semantic_draft(editor: Any, prompt: str, payload: dict[str, Any], tokens: i
     return text
 
 
-class ReviewRequestCache:
-    """Resume exact review calls, including valid negative evidence, without loading weights."""
+class ReviewRequestCache(EditorialRequestCache):
+    """Compatibility constructor; the package owns the cache implementation."""
 
     def __init__(
         self,
@@ -1075,155 +1076,17 @@ class ReviewRequestCache:
         replay_only: bool = False,
         recorded_runtime: str | None = None,
     ) -> None:
-        from importlib.metadata import PackageNotFoundError, version
-
-        if (recorded_runtime is not None) != replay_only:
-            raise ValueError("a recorded runtime is permitted only for replay without inference")
-
-        try:
-            runtime = version("llama-cpp-python")
-        except PackageNotFoundError:
-            runtime = "not-installed"
-        self.path = path
-        self.factory = factory
-        self.replay_only = replay_only
-        self.identity = {
-            **identity,
-            "runtime": recorded_runtime if replay_only else runtime,
-            "seed": 0,
-            "temperature": 0,
-        }
-        self.records: dict[str, Any] = {}
-        self.calls: list[dict[str, Any]] = []
-        self.metrics: dict[str, Any] = {"cache_hits": 0, "model_calls": 0, "model_seconds": 0.0}
-        source = reuse_path if reuse_path and reuse_path.is_file() else path
-        if source.is_file():
-            saved = json.loads(source.read_text())
-            if saved.get("identity") == self.identity and isinstance(saved.get("records"), dict):
-                self.records = saved["records"]
-
-    def _invoke(
-        self, method: str, prompt: str, payload: dict[str, Any], properties: Any, tokens: int
-    ) -> Any:
-        request = dict(
-            method=method, prompt=prompt, payload=payload, properties=properties, tokens=tokens
+        super().__init__(
+            path,
+            factory,
+            identity,
+            draft_completion=_semantic_draft,
+            json_implementation=LocalContextualEditor._review_completion,
+            stage_fingerprint=_stage_fingerprint,
+            reuse_path=reuse_path,
+            replay_only=replay_only,
+            recorded_runtime=recorded_runtime,
         )
-        implementation = _stage_fingerprint(
-            _semantic_draft if method == "draft" else LocalContextualEditor._review_completion
-        )
-        serialized = json.dumps(
-            {"identity": self.identity, "implementation": implementation, "request": request},
-            sort_keys=True,
-        )
-        key = hashlib.sha256(serialized.encode()).hexdigest()
-        saved = self.records.get(key, {})
-        cached_response = json.dumps(saved.get("response"), sort_keys=True)
-        if (
-            saved.get("request") == request
-            and saved.get("response_sha256") != hashlib.sha256(cached_response.encode()).hexdigest()
-        ):
-            # Earlier consumers enriched the owned response. Recover only the original
-            # API content that matches the checksum saved before that enrichment.
-            for raw in saved.get("raw_calls", []):
-                try:
-                    choice = raw["response"]["choices"][0]
-                    if choice["finish_reason"] != "stop":
-                        continue
-                    content = choice["message"]["content"]
-                    recovered = content if method == "draft" else json.loads(content)
-                    serialized_response = json.dumps(recovered, sort_keys=True)
-                    if isinstance(recovered, str if method == "draft" else dict) and hashlib.sha256(
-                        serialized_response.encode()
-                    ).hexdigest() == saved.get("response_sha256"):
-                        saved["response"] = recovered
-                        cached_response = serialized_response
-                        self.metrics["recovered_responses"] = (
-                            self.metrics.get("recovered_responses", 0) + 1
-                        )
-                        break
-                except (KeyError, IndexError, TypeError, ValueError):
-                    continue
-        hit = (
-            saved.get("request") == request
-            and saved.get("response_sha256") == hashlib.sha256(cached_response.encode()).hexdigest()
-            and isinstance(saved.get("response"), str if method == "draft" else dict)
-        )
-        began = time.monotonic()
-        if hit:
-            self.metrics["cache_hits"] += 1
-            response = json.loads(cached_response)
-        else:
-            if self.replay_only:
-                raise RuntimeError(
-                    "recorded-response replay has a cache miss; inference is forbidden"
-                )
-            editor = self.factory()
-            raw_calls = []
-            model = getattr(editor, "model", None)
-            original = getattr(model, "create_chat_completion", None)
-
-            def traced(**kwargs: Any) -> Any:
-                result = original(**kwargs)
-                raw_calls.append({"request": kwargs, "response": result})
-                return result
-
-            if original is not None:
-                model.create_chat_completion = traced
-            self.metrics["model_calls"] += 1
-            try:
-                response = (
-                    _semantic_draft(editor, prompt, payload, tokens)
-                    if method == "draft"
-                    else editor._review_completion(prompt, payload, properties, tokens)
-                )
-            except Exception as error:
-                self.calls.append(
-                    {
-                        "request": request,
-                        "error": f"{type(error).__name__}: {error}",
-                        "cache_hit": False,
-                        "raw_calls": raw_calls,
-                        "seconds": round(time.monotonic() - began, 3),
-                    }
-                )
-                raise
-            finally:
-                self.metrics["model_seconds"] += time.monotonic() - began
-                if original is not None:
-                    model.create_chat_completion = original
-            self.records[key] = {
-                "request": request,
-                "response": response,
-                "raw_calls": raw_calls,
-                "response_sha256": hashlib.sha256(
-                    json.dumps(response, sort_keys=True).encode()
-                ).hexdigest(),
-            }
-        self.calls.append(
-            {
-                "request": request,
-                "response": response,
-                "cache_hit": hit,
-                "raw_calls": self.records[key].get("raw_calls", []),
-                "seconds": round(time.monotonic() - began, 3),
-            }
-        )
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        partial = self.path.with_suffix(".partial")
-        partial.write_text(
-            json.dumps({"identity": self.identity, "records": self.records}, indent=2) + "\n"
-        )
-        partial.replace(self.path)
-        # Consumer annotations must never change persisted evidence or raw traces.
-        return json.loads(json.dumps(response))
-
-    def _review_completion(
-        self, prompt: str, payload: dict[str, Any], properties: dict[str, Any], tokens: int
-    ) -> dict[str, Any]:
-        return self._invoke("json", prompt, payload, properties, tokens)
-
-    def semantic_draft(self, prompt: str, payload: dict[str, Any], tokens: int) -> str:
-        return self._invoke("draft", prompt, payload, None, tokens)
 
 
 def _review_context(units: Sequence[SemanticUnit], first: int, last: int) -> dict[str, Any]:
@@ -1239,6 +1102,8 @@ def _review_context(units: Sequence[SemanticUnit], first: int, last: int) -> dic
 
 def _canonical_ast(node: object) -> object:
     """Normalize semantic AST fields across supported Python versions."""
+    if node is Ellipsis:
+        return "Ellipsis"
     if isinstance(node, ast.AST):
         return {
             "node": type(node).__name__,
@@ -1366,6 +1231,7 @@ def refine_contextual_candidates(
         _source_grounded_headline,
         _source_fact_record,
         _qa_headline_audit,
+        EditorialRequestCache,
         ReviewRequestCache,
         _semantic_draft,
         EXCHANGE_REVIEW_PROMPT,
