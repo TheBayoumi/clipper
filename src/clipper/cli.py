@@ -65,6 +65,16 @@ def _parser() -> argparse.ArgumentParser:
     relation.add_argument("--transcript", required=True, type=Path)
     relation.add_argument("--provenance", required=True, type=Path)
     relation.add_argument("--output", required=True, type=Path)
+    syntax = subparsers.add_parser(
+        "syntax-inventory-benchmark",
+        help="diagnose parser-owned headline obligations on pinned controls without media",
+    )
+    syntax.add_argument("--fixture", required=True, type=Path)
+    syntax.add_argument("--proof", required=True, type=Path)
+    syntax.add_argument("--transcript", required=True, type=Path)
+    syntax.add_argument("--provenance", required=True, type=Path)
+    syntax.add_argument("--heldout", required=True, type=Path)
+    syntax.add_argument("--output", required=True, type=Path)
     audio_review = subparsers.add_parser(
         "audio-review-manifest",
         help="prepare a blind, hash-verified held-out MP4 review without provisional labels",
@@ -129,6 +139,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.proof,
                 args.transcript,
                 args.provenance,
+                args.output,
+            )
+        if args.command == "syntax-inventory-benchmark":
+            from .editorial_syntax_probe import run_syntax_inventory_probe
+
+            return run_syntax_inventory_probe(
+                args.fixture,
+                args.proof,
+                args.transcript,
+                args.provenance,
+                args.heldout,
                 args.output,
             )
         if args.command == "audio-review-manifest":

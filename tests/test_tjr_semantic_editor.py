@@ -1716,6 +1716,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         "question_state",
         "source_answer",
         "claim_inventory",
+        "syntax_inventory",
         "evidence_gpu",
     ):
         rendered = (
@@ -1762,6 +1763,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
                 "question_state",
                 "source_answer",
                 "claim_inventory",
+                "syntax_inventory",
             }
         )
         if mode == "source_bound_headline":
@@ -1785,7 +1787,13 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
             assert structured_proof.relative_to(tmp_path).as_posix() in args
             assert "--frozen-relation-provenance" in args
         assert ("--evidence-gpu-probe" in args) == (mode == "evidence_gpu")
-        assert "scripts.tjr_semantic_editor" in args
+        if mode == "syntax_inventory":
+            assert "clipper.cli" in args
+            assert "syntax-inventory-benchmark" in args
+            assert structured_proof.relative_to(tmp_path).as_posix() in args
+            assert "--heldout" in args
+        else:
+            assert "scripts.tjr_semantic_editor" in args
 
 
 def test_workflow_validation_reuse_requires_complete_recent_exact_head_proof():
