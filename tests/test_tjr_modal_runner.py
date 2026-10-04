@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -81,17 +82,24 @@ def test_pinned_source_never_switches_original_on_editorial_failure(
     ):
         run_modal_production(root=tmp_path / "artifacts")
     assert acquire.call_count == 1
+    assert os.environ["TJR_SOURCE_VIDEO_ID"] == "X7msxvyQd_U"
 
 
-def test_modal_editor_uses_config_and_preserves_cache_roots(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("configured_channel", [CHANNEL, ""])
+def test_modal_editor_uses_config_and_preserves_cache_roots(
+    tmp_path: Path, monkeypatch, configured_channel
+):
     import scripts.tjr_modal_runner as runner
 
     monkeypatch.setenv("TJR_PERSIST_SOURCE", "0")
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "wronglegacy")
+    monkeypatch.setenv("TJR_MODAL_CHANNEL_ID", "wronglegacy")
+    monkeypatch.setenv("TJR_BROWSER_CAPTURE_FILE", "legacy-manifest.json")
     config = EditorialRunConfig(
         brief=BRIEF,
         artifact_root=tmp_path / "artifacts",
         source_video_id="X7msxvyQd_U",
-        target_channel_id=CHANNEL,
+        target_channel_id=configured_channel,
         editorial_cache_root=tmp_path / "editorial-cache",
         transcript_cache_root=tmp_path / "transcript-cache",
         render_cache_root=tmp_path / "render-cache",
@@ -103,7 +111,7 @@ def test_modal_editor_uses_config_and_preserves_cache_roots(tmp_path: Path, monk
         return root / "complete"
 
     with (
-        patch.object(runner, "_acquire_original", return_value=_staged("X7msxvyQd_U")),
+        patch.object(runner, "_acquire_original", return_value=_staged("X7msxvyQd_U")) as acquire,
         patch.object(runner, "_transfer_verified_original", return_value=None),
         patch.object(runner, "_purge_remote"),
         patch.object(runner, "_save_pipeline_completion"),
@@ -114,13 +122,46 @@ def test_modal_editor_uses_config_and_preserves_cache_roots(tmp_path: Path, monk
     root, brief, selected = seen[0]
     assert root == config.artifact_root / "attempt-1" and brief == BRIEF
     assert selected.source_video_id == config.source_video_id
-    assert selected.target_channel_id == config.target_channel_id
+    assert selected.target_channel_id == CHANNEL
     assert selected.require_staged_original is True
     assert selected.browser_capture_file == (root / "source.json").resolve()
     assert selected.editorial_cache_root == config.editorial_cache_root
     assert selected.transcript_cache_root == config.transcript_cache_root
     assert selected.render_cache_root == config.render_cache_root
     assert load_editorial_run_config(root / "editorial-run.json") == selected
+    assert acquire.call_args.kwargs["env_overrides"] == {
+        "TJR_SOURCE_VIDEO_ID": "X7msxvyQd_U",
+        "TJR_MODAL_CHANNEL_ID": CHANNEL,
+    }
+    assert os.environ["TJR_SOURCE_VIDEO_ID"] == "wronglegacy"
+    assert os.environ["TJR_MODAL_CHANNEL_ID"] == "wronglegacy"
+    assert os.environ["TJR_BROWSER_CAPTURE_FILE"] == "legacy-manifest.json"
+
+
+def test_configured_completion_identity_ignores_legacy_source_environment(
+    tmp_path: Path, monkeypatch
+):
+    import scripts.tjr_modal_runner as runner
+
+    config = EditorialRunConfig(
+        brief=BRIEF,
+        artifact_root=tmp_path,
+        source_video_id="X7msxvyQd_U",
+        target_channel_id=CHANNEL,
+        caption_style="B2",
+        render_safety_limit=2,
+    )
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "different")
+    monkeypatch.setenv("TJR_MODAL_CHANNEL_ID", "different")
+    monkeypatch.setenv("TJR_CAPTION_STYLE", "different")
+    monkeypatch.setenv("TJR_RENDER_SAFETY_LIMIT", "8")
+    first = runner._pipeline_identity("a" * 64, run_config=config)
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "another")
+    monkeypatch.setenv("TJR_MODAL_CHANNEL_ID", "another")
+    monkeypatch.setenv("TJR_CAPTION_STYLE", "another")
+    monkeypatch.setenv("TJR_RENDER_SAFETY_LIMIT", "9")
+    assert runner._pipeline_identity("a" * 64, run_config=config) == first
+    assert runner._pipeline_identity("a" * 64) != first
 
 
 def test_modal_config_cannot_switch_verified_original(tmp_path: Path, monkeypatch):
@@ -310,6 +351,36 @@ def test_exact_source_challenge_retries_same_modal_route(
     assert calls[0] == calls[1] == ["modal", "run", "-m", "scripts.tjr_modal_probe"]
     assert (tmp_path / "acquisition-attempt-1.json").is_file()
     assert (tmp_path / "acquisition-attempt-2.json").is_file()
+
+
+def test_acquisition_overrides_are_private_to_configured_subprocess(tmp_path, monkeypatch):
+    import json
+
+    from scripts.tjr_modal_runner import _acquire_original
+
+    monkeypatch.delenv("TJR_MODAL_USE_STAGED", raising=False)
+    monkeypatch.delenv("TJR_SOURCE_CACHE_ROOT", raising=False)
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "legacywrong")
+    monkeypatch.setenv("TJR_MODAL_CHANNEL_ID", "legacywrong")
+
+    def acquire(command, *, env, **kwargs):
+        assert env["TJR_SOURCE_VIDEO_ID"] == "_kDrxucOx9g"
+        assert env["TJR_MODAL_CHANNEL_ID"] == CHANNEL
+        assert os.environ["TJR_SOURCE_VIDEO_ID"] == "legacywrong"
+        assert os.environ["TJR_MODAL_CHANNEL_ID"] == "legacywrong"
+        (tmp_path / "staged-original.json").write_text(json.dumps(_staged("_kDrxucOx9g")))
+        return Mock(returncode=0)
+
+    with patch("scripts.tjr_modal_runner.subprocess.run", side_effect=acquire):
+        staged = _acquire_original(
+            set(),
+            tmp_path,
+            env_overrides={
+                "TJR_SOURCE_VIDEO_ID": "_kDrxucOx9g",
+                "TJR_MODAL_CHANNEL_ID": CHANNEL,
+            },
+        )
+    assert staged["video_id"] == "_kDrxucOx9g"
 
 
 def test_acquisition_does_not_retry_other_failure_or_change_source(

@@ -18,6 +18,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from clipper.brief import load_brief
 from clipper.editorial_run import (
     EditorialRunConfig,
     load_editorial_run_config,
@@ -40,7 +41,7 @@ def _load_staged_original(root: Path) -> dict[str, Any]:
     return data
 
 
-def _pipeline_identity(source_sha: str) -> str:
+def _pipeline_identity(source_sha: str, *, run_config: EditorialRunConfig | None = None) -> str:
     from scripts.tjr_semantic_editor import _review_model_profile
 
     project = Path(__file__).resolve().parents[1]
@@ -59,32 +60,46 @@ def _pipeline_identity(source_sha: str) -> str:
         ],
     ]
     code = {name: hashlib.sha256((project / name).read_bytes()).hexdigest() for name in files}
+    settings = {
+        name: os.getenv(name, "")
+        for name in (
+            "CLIPPER_RENDER_PRESET",
+            "CLIPPER_RENDER_THREADS",
+            "TJR_CAPTION_STYLE",
+            "TJR_RENDER_SAFETY_LIMIT",
+            "CLIPPER_APPROVED_ASSET_SHA256",
+        )
+    }
+    if run_config is not None:
+        settings["TJR_CAPTION_STYLE"] = run_config.caption_style
+        settings["TJR_RENDER_SAFETY_LIMIT"] = str(run_config.render_safety_limit)
     return hashlib.sha256(
         json.dumps(
             {
                 "version": "integrated-pipeline-completion-v1",
                 "source": source_sha,
-                "video": os.getenv("TJR_SOURCE_VIDEO_ID", ""),
-                "channel": os.getenv("TJR_MODAL_CHANNEL_ID", ""),
+                "video": (
+                    run_config.source_video_id
+                    if run_config is not None
+                    else os.getenv("TJR_SOURCE_VIDEO_ID", "")
+                ),
+                "channel": (
+                    run_config.target_channel_id
+                    if run_config is not None
+                    else os.getenv("TJR_MODAL_CHANNEL_ID", "")
+                ),
                 "code": code,
                 "reviewer_profile": _review_model_profile(),
-                "settings": {
-                    name: os.getenv(name, "")
-                    for name in (
-                        "CLIPPER_RENDER_PRESET",
-                        "CLIPPER_RENDER_THREADS",
-                        "TJR_CAPTION_STYLE",
-                        "TJR_RENDER_SAFETY_LIMIT",
-                        "CLIPPER_APPROVED_ASSET_SHA256",
-                    )
-                },
+                "settings": settings,
             },
             sort_keys=True,
         ).encode()
     ).hexdigest()
 
 
-def _save_pipeline_completion(result: Path, source_sha: str) -> None:
+def _save_pipeline_completion(
+    result: Path, source_sha: str, *, run_config: EditorialRunConfig | None = None
+) -> None:
     report = result / "tjr-youtube-qa-report.json"
     if not report.is_file() or json.loads(report.read_text()).get("selected_clip_count", 0) <= 0:
         return
@@ -101,7 +116,7 @@ def _save_pipeline_completion(result: Path, source_sha: str) -> None:
     (result / "pipeline-completion.json").write_text(
         json.dumps(
             {
-                "identity": _pipeline_identity(source_sha),
+                "identity": _pipeline_identity(source_sha, run_config=run_config),
                 "source_sha256": source_sha,
                 "complete": True,
                 "files": files,
@@ -167,15 +182,18 @@ def _restore_completed_pipeline(root: Path) -> bool:
     return False
 
 
-def _restore_source_cache(root: Path) -> dict[str, Any] | None:
-    cache_root = os.getenv("TJR_SOURCE_CACHE_ROOT", "").strip()
-    requested = os.getenv("TJR_SOURCE_VIDEO_ID", "").strip()
+def _restore_source_cache(
+    root: Path, *, env: dict[str, str] | None = None
+) -> dict[str, Any] | None:
+    settings = os.environ if env is None else env
+    cache_root = settings.get("TJR_SOURCE_CACHE_ROOT", "").strip()
+    requested = settings.get("TJR_SOURCE_VIDEO_ID", "").strip()
     if not requested:
         return None
     manifests = list(Path(cache_root).rglob("staged-original.json")) if cache_root else []
-    channel = os.getenv("TJR_MODAL_CHANNEL_ID", "")
+    channel = settings.get("TJR_MODAL_CHANNEL_ID", "")
     if (
-        os.getenv("TJR_PERSIST_SOURCE") == "1"
+        settings.get("TJR_PERSIST_SOURCE") == "1"
         and re.fullmatch(r"[A-Za-z0-9_-]{11}", requested)
         and re.fullmatch(r"UC[A-Za-z0-9_-]{22}", channel)
     ):
@@ -204,9 +222,7 @@ def _restore_source_cache(root: Path) -> dict[str, Any] | None:
             continue
         if not isinstance(cached, dict):
             continue
-        if cached.get("video_id") != requested or cached.get("channel_id") != os.getenv(
-            "TJR_MODAL_CHANNEL_ID"
-        ):
+        if cached.get("video_id") != requested or cached.get("channel_id") != channel:
             continue
         cached.pop("source_cache_local_path", None)
         try:
@@ -225,17 +241,17 @@ def _restore_source_cache(root: Path) -> dict[str, Any] | None:
     return None
 
 
-def _acquire_original(excluded: set[str], root: Path) -> dict[str, Any]:
-    if os.getenv("TJR_MODAL_USE_STAGED") == "1":
+def _acquire_original(
+    excluded: set[str], root: Path, *, env_overrides: dict[str, str] | None = None
+) -> dict[str, Any]:
+    env = {**os.environ, **(env_overrides or {})}
+    if env.get("TJR_MODAL_USE_STAGED") == "1":
         return _load_staged_original(root)
-    cached = _restore_source_cache(root)
+    cached = _restore_source_cache(root, env=env)
     if cached is not None:
         return cached
-    env = {
-        **os.environ,
-        "TJR_MODAL_STAGE_ORIGINAL": "1",
-        "TJR_MODAL_EXCLUDE_VIDEO_IDS": ",".join(sorted(excluded)),
-    }
+    env["TJR_MODAL_STAGE_ORIGINAL"] = "1"
+    env["TJR_MODAL_EXCLUDE_VIDEO_IDS"] = ",".join(sorted(excluded))
     stage = root / "staged-original.json"
     report_path = root / "verified-original-egress.json"
     requested = env.get("TJR_SOURCE_VIDEO_ID", "").strip()
@@ -376,6 +392,14 @@ def run_modal_production(
 ) -> Path:
     if run_config is not None:
         run_config.validate()
+        configured_channel = run_config.target_channel_id
+        if not configured_channel:
+            channels = load_brief(run_config.brief).source_channel_ids
+            if len(channels) != 1:
+                raise ValueError(
+                    "configured Modal run needs target_channel_id when brief has multiple channels"
+                )
+            configured_channel = channels[0]
         if root is not None and root.resolve() != run_config.artifact_root.resolve():
             raise ValueError("Modal artifact root differs from the validated run config")
         if brief is not None and brief.resolve() != run_config.brief.resolve():
@@ -388,8 +412,28 @@ def run_modal_production(
     attempt_root.mkdir(parents=True, exist_ok=True)
     staging: dict[str, Any] | None = None
     original: Path | None = None
+    legacy_source_environment = (
+        {
+            name: os.environ.get(name)
+            for name in (
+                "TJR_BROWSER_CAPTURE_FILE",
+                "TJR_REQUIRE_STAGED_ORIGINAL",
+                "TJR_SOURCE_VIDEO_ID",
+            )
+        }
+        if run_config is None
+        else None
+    )
     try:
-        staging = _acquire_original(set(), probe_root)
+        acquisition_overrides = (
+            {
+                "TJR_SOURCE_VIDEO_ID": run_config.source_video_id,
+                "TJR_MODAL_CHANNEL_ID": configured_channel,
+            }
+            if run_config is not None
+            else None
+        )
+        staging = _acquire_original(set(), probe_root, env_overrides=acquisition_overrides)
         egress_report = probe_root / "verified-original-egress.json"
         if egress_report.is_file():
             (attempt_root / "verified-original-egress.json").write_text(
@@ -435,17 +479,15 @@ def run_modal_production(
         env_manifest = str((attempt_root / "source.json").resolve())
         # This exact source is authoritative after verification. Editorial weakness
         # must produce an audited zero-clip result, never a different source.
-        os.environ["TJR_BROWSER_CAPTURE_FILE"] = env_manifest
-        os.environ["TJR_REQUIRE_STAGED_ORIGINAL"] = "1"
-        os.environ["TJR_SOURCE_VIDEO_ID"] = str(staging["video_id"])
+        if run_config is None:
+            os.environ["TJR_BROWSER_CAPTURE_FILE"] = env_manifest
+            os.environ["TJR_REQUIRE_STAGED_ORIGINAL"] = "1"
+            os.environ["TJR_SOURCE_VIDEO_ID"] = str(staging["video_id"])
         selected_config = None
         if run_config is not None:
             if run_config.source_video_id and run_config.source_video_id != staging["video_id"]:
                 raise RuntimeError("configured source differs from verified staged original")
-            if (
-                run_config.target_channel_id
-                and run_config.target_channel_id != staging["channel_id"]
-            ):
+            if configured_channel != staging["channel_id"]:
                 raise RuntimeError("configured channel differs from verified staged original")
             selected_config = replace(
                 run_config,
@@ -471,7 +513,7 @@ def run_modal_production(
             + "\n"
         )
         result: Path = render_youtube_previews(attempt_root, brief, run_config=selected_config)
-        _save_pipeline_completion(result, staging["source_sha256"])
+        _save_pipeline_completion(result, staging["source_sha256"], run_config=selected_config)
         print("REAL_VERIFIED_TJR_RENDER_ARTIFACTS:", result, flush=True)
         return result
     finally:
@@ -482,9 +524,12 @@ def run_modal_production(
             if original is not None:
                 original.unlink(missing_ok=True)
             (attempt_root / "source.json").unlink(missing_ok=True)
-            os.environ.pop("TJR_BROWSER_CAPTURE_FILE", None)
-            os.environ.pop("TJR_REQUIRE_STAGED_ORIGINAL", None)
-            os.environ.pop("TJR_SOURCE_VIDEO_ID", None)
+            if legacy_source_environment is not None:
+                for name, value in legacy_source_environment.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
 
 
 def prepare_watermark_cache(brief_path: Path, manifest_path: Path) -> None:
