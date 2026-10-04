@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from clipper.editorial_benchmark import load_frozen_relations, load_heldout_claims
+from clipper.editorial_obligations import build_syntax_obligations
 from clipper.editorial_syntax_inventory import inventory_headline_syntax
 
 SPACY_VERSION = "3.8.7"
@@ -70,12 +71,14 @@ def run_syntax_inventory_probe(
     began = time.monotonic()
     for index, gold in sorted(by_index.items()):
         inventory = inventory_headline_syntax(gold[0].headline, parser)
+        obligations = build_syntax_obligations(inventory)
         roles = [role for frame in inventory["frames"] for role in frame["roles"]]
         report["frozen"].append(
             {
                 "fixture_index": index,
                 "headline": gold[0].headline,
                 "inventory": inventory,
+                "obligations": obligations,
                 "anchor_checks": [
                     {
                         "case_id": row.case_id,
@@ -90,12 +93,14 @@ def run_syntax_inventory_probe(
         )
         checkpoint()
     for case in heldout:
+        inventory = inventory_headline_syntax(case.headline, parser)
         report["heldout"].append(
             {
                 "case_id": case.case_id,
                 "headline": case.headline,
                 "provisional_expected_supported": case.expected_supported,
-                "inventory": inventory_headline_syntax(case.headline, parser),
+                "inventory": inventory,
+                "obligations": build_syntax_obligations(inventory),
             }
         )
         checkpoint()
@@ -107,6 +112,16 @@ def run_syntax_inventory_probe(
     report["parse_warning_count"] = sum(
         len(row["inventory"]["parse_warnings"]) for row in (*report["frozen"], *report["heldout"])
     )
+    report["syntax_obligation_summary"] = {
+        group: {
+            "headlines": len(report[group]),
+            "ready_for_source_review": sum(
+                row["obligations"]["ready_for_source_review"] for row in report[group]
+            ),
+            "obligations": sum(len(row["obligations"]["obligations"]) for row in report[group]),
+        }
+        for group in ("frozen", "heldout")
+    }
     report["seconds"] = round(time.monotonic() - began, 3)
     report["experiment_complete"] = True
     report["qualification_rule"] = (

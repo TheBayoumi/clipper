@@ -53,6 +53,12 @@ def inventory_headline_syntax(headline: str, parser: Callable[[str], Any]) -> di
     for token in doc:
         if token.pos_ not in _LEXICAL_POS or token.dep_ not in _CLAUSE_DEPS:
             continue
+        if (
+            type(token.idx) is not int
+            or not 0 <= token.idx < token.idx + len(token.text) <= len(headline)
+            or headline[token.idx : token.idx + len(token.text)] != token.text
+        ):
+            raise ValueError("syntax parser returned an invalid predicate span")
         covered.add(token.i)
         roles: list[dict[str, Any]] = []
         for child in token.children:
@@ -79,6 +85,8 @@ def inventory_headline_syntax(headline: str, parser: Callable[[str], Any]) -> di
             {
                 "predicate_token": token.i,
                 "predicate": token.text,
+                "predicate_first_char": token.idx,
+                "predicate_last_char": token.idx + len(token.text),
                 "dependency": token.dep_,
                 "subject_explicit": any(role["role"] == "subject" for role in roles),
                 "roles": roles,

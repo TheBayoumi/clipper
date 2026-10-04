@@ -64,6 +64,7 @@ def test_syntax_inventory_owns_subject_and_role_without_a_model_question():
     assert len(result["frames"]) == 1
     frame = result["frames"][0]
     assert frame["predicate"] == "was"
+    assert (frame["predicate_first_char"], frame["predicate_last_char"]) == (6, 9)
     assert [(role["role"], role["text"]) for role in frame["roles"]] == [
         ("subject", "Bobby"),
         ("argument", "the speaker's opponent"),
@@ -167,4 +168,11 @@ def test_syntax_inventory_rejects_invalid_parser_subtrees():
     doc = parsed_opponent_headline()
     doc.tokens[1].children[0] = EmptyToken("Bobby", 0, 0, "nsubj", "PROPN")
     with pytest.raises(ValueError, match="empty subtree"):
+        inventory_headline_syntax(doc.text, lambda _: doc)
+
+
+def test_syntax_inventory_rejects_predicate_position_not_in_exact_headline():
+    doc = parsed_opponent_headline()
+    doc.tokens[1].idx = 0
+    with pytest.raises(ValueError, match="invalid predicate span"):
         inventory_headline_syntax(doc.text, lambda _: doc)

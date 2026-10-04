@@ -78,8 +78,27 @@ def test_syntax_probe_checkpoints_frozen_and_heldout_without_approval(tmp_path, 
     def inventory(headline, parser):
         seen.append((headline, parser))
         return {
-            "frames": [{"roles": [{"text": "Bobby"}]}],
+            "headline": headline,
+            "frames": [
+                {
+                    "predicate_token": 1,
+                    "predicate": "was",
+                    "predicate_first_char": 6,
+                    "predicate_last_char": 9,
+                    "roles": [
+                        {
+                            "role": "subject",
+                            "head_token": 0,
+                            "first_char": 0,
+                            "last_char": 5,
+                            "text": "Bobby",
+                        }
+                    ],
+                }
+            ],
             "parse_warnings": [{"reason": "unresolved"}],
+            "uncovered_content_tokens": [],
+            "source_entailment_checked": False,
             "production_approved": False,
         }
 
@@ -92,6 +111,11 @@ def test_syntax_probe_checkpoints_frozen_and_heldout_without_approval(tmp_path, 
     assert report["syntax_anchor_presence"] == {"found": 15, "total": 15}
     assert report["parse_warning_count"] == 24
     assert len(report["frozen"]) == len(report["heldout"]) == 12
+    assert report["syntax_obligation_summary"]["frozen"] == {
+        "headlines": 12,
+        "ready_for_source_review": 0,
+        "obligations": 24,
+    }
     assert len(seen) == 24
 
 
