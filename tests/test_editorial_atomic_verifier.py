@@ -24,11 +24,7 @@ def scope(prompt, payload, schema, tokens):
 
 
 def relation(prompt, payload, schema, tokens):
-    return {
-        "responsiveness": "answers_question",
-        "source_scope": "actual_event_or_state",
-        "relation": "equivalent",
-    }
+    return {"relation": "equivalent"}
 
 
 def test_atomic_relation_withholds_candidate_until_source_is_scoped():
@@ -111,11 +107,7 @@ def test_atomic_relation_does_not_promote_different_or_uncertain_answer(comparis
         delivered_units=UNITS,
         source_completion=answer,
         scope_completion=scope,
-        comparison_completion=lambda *_: {
-            "responsiveness": "answers_question",
-            "source_scope": "actual_event_or_state",
-            "relation": comparison_label,
-        },
+        comparison_completion=lambda *_: {"relation": comparison_label},
     )
     assert result["verdict"] == expected
     assert result["production_approved"] is False
