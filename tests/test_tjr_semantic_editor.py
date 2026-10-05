@@ -1289,11 +1289,20 @@ def test_preflight_rejects_wrong_reason_even_when_acceptance_matches(tmp_path, m
             pass
 
     monkeypatch.setattr(editor, "LocalSourceReviewer", FakeEditor)
+
+    def production_review(instance, context, *, factual_audit):
+        assert factual_audit is editor._position_headline_audit
+        return instance.review(context)
+
+    def obsolete_review(*args, **kwargs):
+        raise AssertionError("preflight must exercise the production reviewer")
+
     monkeypatch.setattr(
         editor,
         "_focused_span_review",
-        lambda instance, context, **kwargs: instance.review(context),
+        obsolete_review,
     )
+    monkeypatch.setattr(editor, "_source_position_review", production_review)
     output = tmp_path / "review.json"
     assert editor.reviewer_preflight(transcript, output) == 1
     records = json.loads(output.read_text())

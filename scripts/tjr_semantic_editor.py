@@ -4350,7 +4350,9 @@ def reviewer_preflight(transcript_path: Path, output: Path) -> int:
             context = _review_context(units, selected_ids[0], selected_ids[-1])
             selected = context["selected_units"]
             began = time.monotonic()
-            review = _focused_span_review(editor, context, factual_audit=_qa_headline_audit)
+            review = _source_position_review(
+                editor, context, factual_audit=_position_headline_audit
+            )
             passed = (
                 all(
                     review[key]
