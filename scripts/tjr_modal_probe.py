@@ -256,14 +256,10 @@ def qualify_source_reviewer_gpu(
 
     from llama_cpp import llama_supports_gpu_offload
 
+    from clipper.editorial_code_identity import qualification_code_hash
     from scripts.tjr_semantic_editor import _gpu_review_profiles, reviewer_evidence_qualification
 
-    actual_code_hash = hashlib.sha256(
-        Path("/app/scripts/tjr_semantic_editor.py").read_bytes()
-        + Path("/app/src/clipper/editorial_claims.py").read_bytes()
-        + Path("/app/src/clipper/editorial_benchmark.py").read_bytes()
-        + Path("/app/src/clipper/editorial_qa.py").read_bytes()
-    ).hexdigest()
+    actual_code_hash = qualification_code_hash(Path("/app"))
     expected_key = hashlib.sha256(
         packed + json.dumps(profile, sort_keys=True).encode() + code_hash.encode()
     ).hexdigest()

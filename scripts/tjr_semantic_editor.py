@@ -29,6 +29,7 @@ from clipper.editorial_benchmark import (
 from clipper.editorial_boundary import propose_cut_obligation
 from clipper.editorial_claim_inventory import inventory_headline_relations
 from clipper.editorial_claims import audit_headline_claims
+from clipper.editorial_code_identity import qualification_code_hash
 from clipper.editorial_engine import (
     _ACKNOWLEDGEMENTS,
     SOURCE_EVIDENCE_VERSION,
@@ -3980,12 +3981,7 @@ def reviewer_gpu_qualification(baseline: Path, transcript: Path, output: Path) -
     source_hash = inputs["provenance"].get("identity", {}).get("source_sha256")
     if source_hash != "2a7e07b37074f3073d71b65e10a3efb4019b3cdd4277bc2d3770a99dcbc55e0a":
         raise ValueError("GPU regression qualification requires the pinned original source")
-    code_hash = hashlib.sha256(
-        Path(__file__).read_bytes()
-        + (Path(__file__).resolve().parents[1] / "src/clipper/editorial_claims.py").read_bytes()
-        + (Path(__file__).resolve().parents[1] / "src/clipper/editorial_benchmark.py").read_bytes()
-        + (Path(__file__).resolve().parents[1] / "src/clipper/editorial_qa.py").read_bytes()
-    ).hexdigest()
+    code_hash = qualification_code_hash(Path(__file__).resolve().parents[1])
     packed = gzip.compress(json.dumps(inputs, sort_keys=True).encode(), mtime=0)
     report: dict[str, Any] = {
         "experiment": "source_position_gpu_qualification",
