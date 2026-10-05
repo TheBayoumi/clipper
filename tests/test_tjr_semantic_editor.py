@@ -3540,3 +3540,9 @@ def test_gpu_qualification_cache_identity_ignores_packing_time(tmp_path, monkeyp
     assert calls == first
     assert len(calls) == 2
     assert json.loads(gzip.decompress(calls[0][0]))["transcript"] == []
+    calls.clear()
+    editor.reviewer_gpu_qualification(
+        baseline, transcript, tmp_path / "thinking.json", reasoning_only=True
+    )
+    assert len(calls) == 1
+    assert calls[0][1] == editor._thinking_review_profile()

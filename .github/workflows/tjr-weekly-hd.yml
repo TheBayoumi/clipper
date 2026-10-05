@@ -44,7 +44,7 @@ on:
         description: "Diagnostic model comparison only; factual_9b tests saved headline claims without selection or media."
         required: false
         type: choice
-        options: [disabled, focused_4b, factual_9b, factual_consensus, factual_ablation_4b, factual_nli, evidence_qa, structured_claim, source_bound_headline, headline_materializer, cut_obligation, question_state, source_answer, source_scope, answer_comparison, claim_inventory, syntax_inventory, relation_minicheck, evidence_gpu, gpu_build_logs]
+        options: [disabled, focused_4b, factual_9b, factual_consensus, factual_ablation_4b, factual_nli, evidence_qa, structured_claim, source_bound_headline, headline_materializer, cut_obligation, question_state, source_answer, source_scope, answer_comparison, claim_inventory, syntax_inventory, relation_minicheck, evidence_gpu, reasoning_gpu, gpu_build_logs]
         default: disabled
       editorial_preflight:
         description: "Run real-model reviewer regression on cached transcript only; no source acquisition."
@@ -513,13 +513,13 @@ jobs:
           python -m pip install -e . "spacy==3.8.7" "click==8.3.1" \
             "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl#sha256=1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85"
       - name: Install pinned CPU reviewer
-        if: inputs.reviewer_model_probe != 'factual_nli' && inputs.reviewer_model_probe != 'relation_minicheck' && inputs.reviewer_model_probe != 'syntax_inventory' && inputs.reviewer_model_probe != 'evidence_gpu' && inputs.reviewer_model_probe != 'gpu_build_logs'
+        if: inputs.reviewer_model_probe != 'factual_nli' && inputs.reviewer_model_probe != 'relation_minicheck' && inputs.reviewer_model_probe != 'syntax_inventory' && inputs.reviewer_model_probe != 'evidence_gpu' && inputs.reviewer_model_probe != 'reasoning_gpu' && inputs.reviewer_model_probe != 'gpu_build_logs'
         run: CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e . "llama-cpp-python==0.3.35"
       - name: Install private GPU orchestration client
-        if: inputs.reviewer_model_probe == 'evidence_gpu' || inputs.reviewer_model_probe == 'gpu_build_logs'
+        if: inputs.reviewer_model_probe == 'evidence_gpu' || inputs.reviewer_model_probe == 'reasoning_gpu' || inputs.reviewer_model_probe == 'gpu_build_logs'
         run: python -m pip install -e . "modal==1.6.0"
       - uses: actions/cache@v4
-        if: inputs.reviewer_model_probe != 'factual_nli' && inputs.reviewer_model_probe != 'relation_minicheck' && inputs.reviewer_model_probe != 'syntax_inventory' && inputs.reviewer_model_probe != 'evidence_gpu' && inputs.reviewer_model_probe != 'gpu_build_logs'
+        if: inputs.reviewer_model_probe != 'factual_nli' && inputs.reviewer_model_probe != 'relation_minicheck' && inputs.reviewer_model_probe != 'syntax_inventory' && inputs.reviewer_model_probe != 'evidence_gpu' && inputs.reviewer_model_probe != 'reasoning_gpu' && inputs.reviewer_model_probe != 'gpu_build_logs'
         with:
           path: ~/.cache/clipper/editor
           key: reviewer-gguf-${{ runner.os }}-${{ inputs.reviewer_model_probe }}-v1
@@ -698,6 +698,9 @@ jobs:
               fi
               if [[ '${{ inputs.reviewer_model_probe == 'evidence_gpu' }}' == 'true' ]]; then
                 PROBE_ARGUMENTS+=(--evidence-gpu-probe)
+              fi
+              if [[ '${{ inputs.reviewer_model_probe == 'reasoning_gpu' }}' == 'true' ]]; then
+                PROBE_ARGUMENTS+=(--reasoning-gpu-probe)
               fi
               python -m scripts.tjr_semantic_editor --reviewer-model-probe-baseline "$BASELINE" --reviewer-preflight-transcript "$TRANSCRIPT" "${PROBE_ARGUMENTS[@]}" --output reviewer-preflight.json
               exit $?

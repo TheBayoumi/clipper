@@ -31,6 +31,7 @@ class EditorialRequestCache:
         reuse_path: Path | None = None,
         replay_only: bool = False,
         recorded_runtime: str | None = None,
+        sampling_parameters: dict[str, Any] | None = None,
     ) -> None:
         if (recorded_runtime is not None) != replay_only:
             raise ValueError("a recorded runtime is permitted only for replay without inference")
@@ -49,6 +50,7 @@ class EditorialRequestCache:
             "runtime": recorded_runtime if replay_only else runtime,
             "seed": 0,
             "temperature": 0,
+            **(sampling_parameters or {}),
         }
         self.records: dict[str, Any] = {}
         self.calls: list[dict[str, Any]] = []

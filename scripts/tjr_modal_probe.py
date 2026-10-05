@@ -257,7 +257,11 @@ def qualify_source_reviewer_gpu(
     from llama_cpp import llama_supports_gpu_offload
 
     from clipper.editorial_code_identity import qualification_code_hash
-    from scripts.tjr_semantic_editor import _gpu_review_profiles, reviewer_evidence_qualification
+    from scripts.tjr_semantic_editor import (
+        _gpu_review_profiles,
+        _thinking_review_profile,
+        reviewer_evidence_qualification,
+    )
 
     actual_code_hash = qualification_code_hash(Path("/app"))
     expected_key = hashlib.sha256(
@@ -266,7 +270,7 @@ def qualify_source_reviewer_gpu(
     if (
         actual_code_hash != code_hash
         or job_key != expected_key
-        or profile not in _gpu_review_profiles()
+        or profile not in [*_gpu_review_profiles(), _thinking_review_profile()]
     ):
         raise ValueError("GPU qualification code/profile/input identity mismatch")
     if not llama_supports_gpu_offload() or profile.get("gpu_layers") != -1:
@@ -341,7 +345,7 @@ def qualify_source_reviewer_gpu(
             model_profile=profile,
             claim_level_probe=True,
             heldout_path=root / "heldout.json",
-            source_qa_probe=True,
+            source_qa_probe=profile["candidate"] != "reasoning_30b_a3b",
         )
         proof = json.loads(cold_output.read_text())
         manifest.update(
@@ -361,6 +365,7 @@ def qualify_source_reviewer_gpu(
                     "source_qa_contract_error_count",
                     "source_qa_semantic_error_count",
                 )
+                if key in proof
             }
         )
         manifest["warm_replay"] = {
@@ -377,7 +382,7 @@ def qualify_source_reviewer_gpu(
                 model_profile=profile,
                 claim_level_probe=True,
                 heldout_path=root / "heldout.json",
-                source_qa_probe=True,
+                source_qa_probe=profile["candidate"] != "reasoning_30b_a3b",
             )
             warm = json.loads((replay / "proof.json").read_text())
             stable = all(
@@ -394,7 +399,11 @@ def qualify_source_reviewer_gpu(
             stable = stable and all(
                 [row[name].get("actual_supported") for row in proof["heldout_comparisons"]]
                 == [row[name].get("actual_supported") for row in warm["heldout_comparisons"]]
-                for name in ("existing", "experimental_claim_level", "source_first_qa")
+                for name in (
+                    "existing",
+                    "experimental_claim_level",
+                    *(("source_first_qa",) if profile["candidate"] != "reasoning_30b_a3b" else ()),
+                )
             )
             manifest["warm_replay"] = {
                 "performed": True,
@@ -403,6 +412,20 @@ def qualify_source_reviewer_gpu(
             }
             manifest["passed"] = (
                 proof["semantic_pass"]
+                and proof["claim_level_pass"]
+                and all(
+                    row["experimental_claim_level"]["passed"]
+                    for row in proof["heldout_comparisons"]
+                )
+                and (
+                    profile["candidate"] == "reasoning_30b_a3b"
+                    or (
+                        proof["source_qa_pass"]
+                        and all(
+                            row["source_first_qa"]["passed"] for row in proof["heldout_comparisons"]
+                        )
+                    )
+                )
                 and stable
                 and warm["request_cache_metrics"]["model_calls"] == 0
             )

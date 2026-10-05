@@ -45,6 +45,16 @@ from clipper.editorial_engine import (
 from clipper.editorial_headline import propose_source_headline
 from clipper.editorial_qa import audit_source_qa
 from clipper.editorial_question_state import audit_explicit_question_state
+from clipper.editorial_reasoning import (
+    MODEL_IDENTITY as THINKING_MODEL_IDENTITY,
+)
+from clipper.editorial_reasoning import (
+    SAMPLING as THINKING_SAMPLING,
+)
+from clipper.editorial_reasoning import (
+    configure_native_thinking,
+    reasoning_completion,
+)
 from clipper.editorial_request_cache import EditorialRequestCache
 from clipper.editorial_review import create_claim_review_packet
 from clipper.editorial_source_answer import answer_source_question
@@ -1015,6 +1025,30 @@ class LocalSourceReviewer(LocalContextualEditor):
         )
 
 
+class LocalReasoningReviewer(LocalSourceReviewer):
+    """Qualification-only native thinking backend; never selected by production."""
+
+    def __init__(self, profile: dict[str, Any]) -> None:
+        from llama_cpp import llama_chat_format  # type: ignore[import-not-found]
+
+        if profile != _thinking_review_profile():
+            raise ValueError("reasoning qualification requires the pinned diagnostic profile")
+        super().__init__(profile)
+        self.reasoning_tokens = profile["max_output_tokens"]
+        try:
+            configure_native_thinking(self.model, llama_chat_format.Jinja2ChatFormatter)
+        except Exception:
+            self.close()
+            raise
+
+    def _review_completion(
+        self, prompt: str, payload: dict[str, Any], properties: dict[str, Any], tokens: int
+    ) -> dict[str, Any]:
+        return reasoning_completion(
+            self.model, prompt, payload, properties, max_tokens=self.reasoning_tokens
+        )
+
+
 def _select_exchange(editor: Any, context: dict[str, Any]) -> dict[str, Any]:
     """Select a complete exchange without a headline or creative-text eligibility gate."""
     units = context["units"]
@@ -1095,17 +1129,21 @@ class ReviewRequestCache(EditorialRequestCache):
         *,
         replay_only: bool = False,
         recorded_runtime: str | None = None,
+        reasoning: bool = False,
     ) -> None:
         super().__init__(
             path,
             factory,
             identity,
             draft_completion=_semantic_draft,
-            json_implementation=LocalContextualEditor._review_completion,
+            json_implementation=LocalReasoningReviewer._review_completion
+            if reasoning
+            else LocalContextualEditor._review_completion,
             stage_fingerprint=_stage_fingerprint,
             reuse_path=reuse_path,
             replay_only=replay_only,
             recorded_runtime=recorded_runtime,
+            sampling_parameters=THINKING_SAMPLING if reasoning else None,
         )
 
 
@@ -3462,6 +3500,7 @@ def reviewer_evidence_qualification(
     local = None
 
     review_profile = model_profile or _review_model_profile()
+    reasoning = review_profile.get("candidate") == "reasoning_30b_a3b"
     recorded_runtime = None
     if replay_only:
         runtime_match = re.search(r"llama-cpp-python==([0-9.]+)", review_profile.get("runtime", ""))
@@ -3472,7 +3511,11 @@ def reviewer_evidence_qualification(
     def factory() -> LocalSourceReviewer:
         nonlocal local
         if local is None:
-            local = LocalSourceReviewer(review_profile)
+            local = (
+                LocalReasoningReviewer(review_profile)
+                if reasoning
+                else LocalSourceReviewer(review_profile)
+            )
         return local
 
     cache = ReviewRequestCache(
@@ -3487,6 +3530,7 @@ def reviewer_evidence_qualification(
         baseline_path.with_name("review-request-cache.json"),
         replay_only=replay_only,
         recorded_runtime=recorded_runtime,
+        reasoning=reasoning,
     )
     report: dict[str, Any] = {
         "experiment": (
@@ -3957,7 +4001,26 @@ def _gpu_review_profiles() -> list[dict[str, Any]]:
     ]
 
 
-def reviewer_gpu_qualification(baseline: Path, transcript: Path, output: Path) -> int:
+def _thinking_review_profile() -> dict[str, Any]:
+    """Bounded native-reasoning candidate, explicitly separate from production."""
+    return {
+        **_gpu_review_profiles()[0],
+        **THINKING_MODEL_IDENTITY,
+        "candidate": "reasoning_30b_a3b",
+        "context_tokens": 40960,
+        "max_output_tokens": 32768,
+        "sampling": THINKING_SAMPLING,
+        "transport_sha256": hashlib.sha256(
+            (
+                Path(__file__).resolve().parents[1] / "src/clipper/editorial_reasoning.py"
+            ).read_bytes()
+        ).hexdigest(),
+    }
+
+
+def reviewer_gpu_qualification(
+    baseline: Path, transcript: Path, output: Path, *, reasoning_only: bool = False
+) -> int:
     """GitHub orchestrates two bounded private GPU calls; no acquisition or rendering."""
     import gzip
 
@@ -3997,7 +4060,7 @@ def reviewer_gpu_qualification(baseline: Path, transcript: Path, output: Path) -
     directory.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2) + "\n")
     with modal.enable_output(), app.run():
-        for profile in _gpu_review_profiles():
+        for profile in [_thinking_review_profile()] if reasoning_only else _gpu_review_profiles():
             key = hashlib.sha256(
                 packed + json.dumps(profile, sort_keys=True).encode() + code_hash.encode()
             ).hexdigest()
@@ -4779,6 +4842,7 @@ if __name__ == "__main__":
     parser.add_argument("--headline-nli-probe", action="store_true")
     parser.add_argument("--evidence-qa-probe", action="store_true")
     parser.add_argument("--evidence-gpu-probe", action="store_true")
+    parser.add_argument("--reasoning-gpu-probe", action="store_true")
     parser.add_argument("--structured-claim-probe", action="store_true")
     parser.add_argument("--source-bound-headline-probe", action="store_true")
     parser.add_argument("--headline-materializer-probe", action="store_true")
@@ -4899,12 +4963,15 @@ if __name__ == "__main__":
                 reuse_path=args.reviewer_model_probe_baseline,
             )
         )
-    if args.evidence_gpu_probe:
+    if args.evidence_gpu_probe or args.reasoning_gpu_probe:
         if not args.reviewer_model_probe_baseline or not args.reviewer_preflight_transcript:
             parser.error("GPU qualification requires a factual baseline and verified transcript")
         raise SystemExit(
             reviewer_gpu_qualification(
-                args.reviewer_model_probe_baseline, args.reviewer_preflight_transcript, args.output
+                args.reviewer_model_probe_baseline,
+                args.reviewer_preflight_transcript,
+                args.output,
+                reasoning_only=args.reasoning_gpu_probe,
             )
         )
     if args.evidence_qa_probe:
