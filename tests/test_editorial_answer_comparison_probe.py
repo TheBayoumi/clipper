@@ -144,7 +144,11 @@ def test_scores_complete_pipeline_and_never_approves(tmp_path, monkeypatch):
         calls.append(payload)
         assert "proposed_answer" in payload
         assert payload["source_units"][0]["text"] == UNITS[0]
-        return {"relation": "equivalent"}
+        return {
+            "responsiveness": "answers_question",
+            "source_scope": "actual_event_or_state",
+            "relation": "equivalent",
+        }
 
     assert run(args, completion) == 1
     report = json.loads(args[5].read_text(encoding="utf-8"))

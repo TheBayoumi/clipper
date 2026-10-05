@@ -41,7 +41,11 @@ def compare(**changes):
         "source_answer": source_answer(),
         "scope_review": scope_review(),
         "delivered_units": UNITS,
-        "completion": lambda *_: {"relation": "different"},
+        "completion": lambda *_: {
+            "responsiveness": "answers_question",
+            "source_scope": "actual_event_or_state",
+            "relation": "different",
+        },
         **changes,
     }
     return compare_claim_answer(**args)
@@ -54,15 +58,43 @@ def test_comparison_preserves_role_difference_and_never_approves():
         seen.append(payload)
         assert "actual-versus-conditional" in prompt
         assert schema["relation"]["enum"] == ["equivalent", "different", "uncertain"]
-        assert tokens == 64
-        return {"relation": "different"}
+        assert "responsiveness" in schema
+        assert "source_scope" in schema
+        assert tokens == 96
+        return {
+            "responsiveness": "answers_question",
+            "source_scope": "actual_event_or_state",
+            "relation": "different",
+        }
 
     result = compare(completion=completion)
     assert seen[0]["proposed_answer"] == "Sean Shelby"
     assert seen[0]["source_answer_quote"] == "Bobby Green"
+    assert "source_scope" not in seen[0]
     assert len(seen[0]["source_units"]) == 2
     assert result["relation"] == "different"
     assert result["production_approved"] is False
+
+
+@pytest.mark.parametrize(
+    "responsiveness,source_scope",
+    [
+        ("does_not_answer", "actual_event_or_state"),
+        ("answers_question", "quoted_instruction"),
+        ("uncertain", "unknown"),
+    ],
+)
+def test_independent_scope_disagreement_vetoes_equivalent_label(responsiveness, source_scope):
+    result = compare(
+        completion=lambda *_: {
+            "responsiveness": responsiveness,
+            "source_scope": source_scope,
+            "relation": "equivalent",
+        }
+    )
+    assert result["raw_relation"] == "equivalent"
+    assert result["relation"] == "uncertain"
+    assert result["independent_scope_agrees"] is False
 
 
 @pytest.mark.parametrize(
@@ -111,7 +143,17 @@ def test_comparison_rejects_empty_answer_quote_after_scope_match():
         compare(source_answer=answer, scope_review=scope)
 
 
-@pytest.mark.parametrize("proposal", [{}, {"relation": "same"}])
+@pytest.mark.parametrize(
+    "proposal",
+    [
+        {},
+        {
+            "responsiveness": "answers_question",
+            "source_scope": "actual_event_or_state",
+            "relation": "same",
+        },
+    ],
+)
 def test_comparison_rejects_invalid_model_contract(proposal):
     with pytest.raises(ValueError, match=r"missing or unknown|invalid relation"):
         compare(completion=lambda *_: proposal)
