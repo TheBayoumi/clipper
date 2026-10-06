@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 def recover_gpu_evidence(report: dict[str, Any], output: Path, volume: Any) -> dict[str, Any]:
@@ -27,8 +27,7 @@ def recover_gpu_evidence(report: dict[str, Any], output: Path, volume: Any) -> d
         "inference_started": False,
         "jobs": [],
     }
-    for key in keys:
-        assert isinstance(key, str)  # Validated before any remote access.
+    for key in cast(list[str], keys):
         row: dict[str, Any] = {"job_key": key, "files": [], "errors": []}
         for name in ("cold/proof.json", "cold/review-request-cache.json", "manifest.json"):
             target = output.parent / "reviewer-gpu-evidence" / "recovered" / key / name
