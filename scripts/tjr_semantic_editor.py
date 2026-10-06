@@ -4831,6 +4831,7 @@ if __name__ == "__main__":
     parser.add_argument("--evidence-qa-probe", action="store_true")
     parser.add_argument("--evidence-gpu-probe", action="store_true")
     parser.add_argument("--reasoning-gpu-probe", action="store_true")
+    parser.add_argument("--recover-gpu-evidence", type=Path)
     parser.add_argument("--structured-claim-probe", action="store_true")
     parser.add_argument("--source-bound-headline-probe", action="store_true")
     parser.add_argument("--headline-materializer-probe", action="store_true")
@@ -4846,6 +4847,17 @@ if __name__ == "__main__":
     parser.add_argument("--frozen-relation-provenance", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.recover_gpu_evidence:
+        import modal
+
+        from clipper.editorial_recovery import recover_gpu_evidence
+
+        recover_gpu_evidence(
+            json.loads(args.recover_gpu_evidence.read_text()),
+            args.output,
+            modal.Volume.from_name("clipper-tjr-source-transport", create_if_missing=False),
+        )
+        raise SystemExit(0)
     if args.answer_comparison_probe:
         if not all(
             (
