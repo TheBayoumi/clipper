@@ -1731,6 +1731,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         "claim_inventory",
         "syntax_inventory",
         "evidence_gpu",
+        "reasoning_gpu",
     ):
         rendered = (
             script.replace("${{ inputs.reviewer_model_probe }}", mode)
@@ -1761,6 +1762,10 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
             "true" if mode == "evidence_gpu" else "false",
         )
         rendered = rendered.replace(
+            "${{ inputs.reviewer_model_probe == 'reasoning_gpu' }}",
+            "true" if mode == "reasoning_gpu" else "false",
+        )
+        rendered = rendered.replace(
             "${{ inputs.reviewer_model_probe == 'structured_claim' }}",
             "true" if mode == "structured_claim" else "false",
         )
@@ -1782,7 +1787,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
         )
         if mode == "source_bound_headline":
             assert source_bound_cache.relative_to(tmp_path).as_posix() in args
-        if mode == "structured_claim":
+        if mode in {"structured_claim", "reasoning_gpu"}:
             assert structured_proof.relative_to(tmp_path).as_posix() in args
         assert ("--reviewer-diagnostics-baseline" in args) == (mode == "disabled")
         assert ("--headline-factual-probe" in args) == (mode in {"factual_9b", "factual_consensus"})
@@ -1805,6 +1810,7 @@ def test_workflow_routes_named_probe_modes_to_the_actual_cli(tmp_path, monkeypat
             assert "--source-answer-report" in args
             assert source_answer_report.relative_to(tmp_path).as_posix() in args
         assert ("--evidence-gpu-probe" in args) == (mode == "evidence_gpu")
+        assert ("--reasoning-gpu-probe" in args) == (mode == "reasoning_gpu")
         if mode == "syntax_inventory":
             assert "clipper.cli" in args
             assert "syntax-inventory-benchmark" in args

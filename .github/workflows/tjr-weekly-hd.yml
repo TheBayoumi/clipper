@@ -659,7 +659,7 @@ jobs:
           fi
           if [ -d reviewer-baseline ]; then
             BASELINE=$(find reviewer-baseline -name reviewer-preflight.json -print -quit)
-            if [ '${{ inputs.reviewer_model_probe }}' = 'structured_claim' ] || [ '${{ inputs.reviewer_model_probe }}' = 'relation_minicheck' ]; then
+            if [ '${{ inputs.reviewer_model_probe }}' = 'structured_claim' ] || [ '${{ inputs.reviewer_model_probe }}' = 'relation_minicheck' ] || [ '${{ inputs.reviewer_model_probe }}' = 'reasoning_gpu' ]; then
               BASELINE=$(find reviewer-baseline -path '*/baseline_4b/cold/proof.json' -print -quit)
             fi
             test -n "$BASELINE"

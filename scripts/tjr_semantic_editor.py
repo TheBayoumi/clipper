@@ -3545,20 +3545,7 @@ def reviewer_evidence_qualification(
         "editor_version": STRUCTURED_EDITOR_VERSION,
         "model_profile": cache.identity,
         "transcript_sha256": transcript_hash,
-        "code_sha256": hashlib.sha256(
-            Path(__file__).read_bytes()
-            + (
-                (
-                    Path(__file__).resolve().parents[1]
-                    / "src/clipper/editorial_structured_claims.py"
-                ).read_bytes()
-                + (
-                    Path(__file__).resolve().parents[1] / "src/clipper/editorial_review.py"
-                ).read_bytes()
-                if structured_claim_probe
-                else b""
-            )
-        ).hexdigest(),
+        "code_sha256": qualification_code_hash(Path(__file__).resolve().parents[1]),
         "annotated_fixtures": fixtures,
         "cases": [],
         "comparisons": [],
