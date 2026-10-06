@@ -85,3 +85,40 @@ def test_quoted_instruction_cannot_support_actual_event():
         ["They told us, 'We are on live TV.'"],
     )
     assert result["verdict"] == "uncertain"
+
+
+def test_whole_headline_yes_cannot_override_incomplete_claim_coverage():
+    reviewer = Reviewer(
+        [{"text": "Host", "claim_scope": "actual"}],
+        [judgment(), judgment()],
+    )
+    result = audit_headline_claims(reviewer, "Host earned millions", ["Host spoke."])
+    assert result["verdict"] == "uncertain"
+    assert result["claim_text_coverage_complete"] is False
+    assert [word["text"] for word in result["uncovered_headline_words"]] == ["earned", "millions"]
+    assert result["production_approved"] is False
+
+
+def test_fragment_judgment_retains_reporting_and_negation_context():
+    headline = "Guest denies that the host earned millions"
+    reviewer = Reviewer(
+        [
+            {"text": "Guest denies that", "claim_scope": "actual"},
+            {"text": "the host earned millions", "claim_scope": "reported"},
+        ],
+        [judgment(), judgment(), judgment(scope="reported")],
+    )
+    result = audit_headline_claims(reviewer, headline, ["I deny that the host earned millions."])
+    for payload in reviewer.payloads[1:]:
+        assert payload["headline_context"] == headline
+        span = payload["headline_span"]
+        assert headline[span["first_char"] : span["last_char"]] == payload["claim"]
+    assert result["claim_text_coverage_complete"] is True
+    assert result["claim_inventory_semantically_qualified"] is False
+
+
+def test_repeated_fragment_cannot_silently_bind_to_first_occurrence():
+    reviewer = Reviewer([{"text": "Host", "claim_scope": "actual"}], [])
+    with pytest.raises(RuntimeError, match="ambiguous repeated"):
+        audit_headline_claims(reviewer, "Host disputes what Host said", ["A disputed statement."])
+    assert len(reviewer.payloads) == 1

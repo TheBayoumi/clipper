@@ -61,7 +61,14 @@ def audit_headline_claims(
     if not isinstance(claims_result, list) or not 1 <= len(claims_result) <= 8:
         raise RuntimeError("claim extraction returned an invalid claim count")
     coverage = [False] * len(headline)
-    claims: list[dict[str, str]] = [{"text": headline, "claim_scope": "whole_headline"}]
+    claims: list[dict[str, Any]] = [
+        {
+            "text": headline,
+            "claim_scope": "whole_headline",
+            "first_char": 0,
+            "last_char": len(headline),
+        }
+    ]
     for item in claims_result:
         if not isinstance(item, dict) or set(item) != {"text", "claim_scope"}:
             raise RuntimeError("claim extraction returned an invalid span")
@@ -74,10 +81,19 @@ def audit_headline_claims(
         ):
             raise RuntimeError("claim extraction did not copy a headline span")
         start = headline.index(value)
+        if headline.find(value, start + 1) != -1:
+            raise RuntimeError("claim extraction has an ambiguous repeated headline span")
         for index in range(start, start + len(value)):
             coverage[index] = True
         if value != headline:
-            claims.append(item)
+            claims.append({**item, "first_char": start, "last_char": start + len(value)})
+
+    words = list(_WORD.finditer(headline))
+    uncovered_words = [
+        {"text": match.group(), "first_char": match.start(), "last_char": match.end()}
+        for match in words
+        if not all(coverage[match.start() : match.end()])
+    ]
 
     reviews = []
     numbered_source = [{"id": index, "text": unit} for index, unit in enumerate(source_units)]
@@ -85,6 +101,10 @@ def audit_headline_claims(
         claim = extracted["text"]
         judgment = reviewer._review_completion(
             "Assess this one headline claim against the delivered source speech. "
+            "Use headline_context to preserve the target span's governing subject, "
+            "attribution, conditions and negation. Headline context is the assertion "
+            "being tested, never source evidence. Do not turn a fragment into an "
+            "independent assertion by dropping that context. "
             "The cited source range is evidence to interpret, not proof of entailment. "
             "Distinguish what happened from a quoted instruction, reported assertion, "
             "hypothetical possibility, or negated outcome. A source mention of a person "
@@ -95,6 +115,11 @@ def audit_headline_claims(
             "Return output_schema JSON.",
             {
                 "claim": claim,
+                "headline_context": headline,
+                "headline_span": {
+                    "first_char": extracted["first_char"],
+                    "last_char": extracted["last_char"],
+                },
                 "claimed_scope": extracted["claim_scope"],
                 "source_units": numbered_source,
             },
@@ -136,6 +161,10 @@ def audit_headline_claims(
                 "verdict": verdict,
                 "claimed_scope": extracted["claim_scope"],
                 "source_text": " ".join(source_units[first : last + 1]) if first >= 0 else "",
+                "headline_span": {
+                    "first_char": extracted["first_char"],
+                    "last_char": extracted["last_char"],
+                },
             }
         )
     verdict = (
@@ -145,12 +174,15 @@ def audit_headline_claims(
         if any(item["verdict"] == "unsupported" for item in reviews)
         else "uncertain"
     )
-    covered_words = sum(
-        all(coverage[match.start() : match.end()]) for match in _WORD.finditer(headline)
-    )
+    if verdict == "supported" and uncovered_words:
+        verdict = "uncertain"
     return {
         "verdict": verdict,
         "claims": reviews,
-        "subclaim_word_coverage": covered_words / len(_WORD.findall(headline)),
+        "subclaim_word_coverage": (len(words) - len(uncovered_words)) / len(words),
+        "uncovered_headline_words": uncovered_words,
+        "claim_text_coverage_complete": not uncovered_words,
+        "claim_inventory_semantically_qualified": False,
+        "production_approved": False,
         "experimental": True,
     }
