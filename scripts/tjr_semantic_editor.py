@@ -3406,6 +3406,7 @@ def reviewer_evidence_qualification(
     heldout_path: Path | None = None,
     source_qa_probe: bool = False,
     structured_claim_probe: bool = False,
+    qualification_root: Path | None = None,
 ) -> int:
     """Qualify the exact production path and blind QA, without acquisition or rendering."""
     saved = json.loads(baseline_path.read_text())
@@ -3545,7 +3546,9 @@ def reviewer_evidence_qualification(
         "editor_version": STRUCTURED_EDITOR_VERSION,
         "model_profile": cache.identity,
         "transcript_sha256": transcript_hash,
-        "code_sha256": qualification_code_hash(Path(__file__).resolve().parents[1]),
+        "code_sha256": qualification_code_hash(
+            qualification_root or Path(__file__).resolve().parents[1]
+        ),
         "annotated_fixtures": fixtures,
         "cases": [],
         "comparisons": [],
@@ -3998,9 +4001,7 @@ def _thinking_review_profile() -> dict[str, Any]:
         "max_output_tokens": 32768,
         "sampling": THINKING_SAMPLING,
         "transport_sha256": hashlib.sha256(
-            (
-                Path(__file__).resolve().parents[1] / "src/clipper/editorial_reasoning.py"
-            ).read_bytes()
+            Path(inspect.getfile(reasoning_completion)).read_bytes()
         ).hexdigest(),
     }
 

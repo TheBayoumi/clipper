@@ -40,6 +40,14 @@ def test_reasoning_request_cache_records_real_sampling_and_distinct_implementati
     assert all(thinking.identity[key] == value for key, value in SAMPLING.items())
 
 
+def test_reasoning_profile_survives_modal_script_relocation(monkeypatch, tmp_path):
+    from scripts import tjr_semantic_editor as editor
+
+    expected = editor._thinking_review_profile()
+    monkeypatch.setattr(editor, "__file__", str(tmp_path / "root/scripts/tjr_semantic_editor.py"))
+    assert editor._thinking_review_profile() == expected
+
+
 def test_workflow_reasoning_mode_routes_only_to_gpu_probe():
     from pathlib import Path
 
