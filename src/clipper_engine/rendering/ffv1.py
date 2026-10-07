@@ -622,9 +622,7 @@ def _render_delivery_composition_master(
         )
         == (width, height),
         "source_foreground_full_frame": bool(composition["source_foreground_full_frame"]),
-        "source_foreground_not_cropped": not bool(
-            composition["source_foreground_crop_used"]
-        ),
+        "source_foreground_not_cropped": not bool(composition["source_foreground_crop_used"]),
         "intentional_spatial_composition": True,
         **architecture["checks"],
     }

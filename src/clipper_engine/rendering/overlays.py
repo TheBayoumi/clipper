@@ -120,11 +120,14 @@ def render_text_overlay_master(
     if not font_path.is_file():
         raise RuntimeError(f"configured text overlay font is unavailable: {font_path}")
 
-    if portrait_layout.resolve(
-        config,
-        int(source_profile["width"]),
-        int(source_profile["height"]),
-    ) is not None:
+    if (
+        portrait_layout.resolve(
+            config,
+            int(source_profile["width"]),
+            int(source_profile["height"]),
+        )
+        is not None
+    ):
         filter_graph, layout_info = _portrait_filter(
             plan.headline.strip(),
             target,
@@ -218,9 +221,7 @@ def render_text_overlay_master(
         "transport_architecture_qa": architecture,
         "source_contract_metadata_authority": "original_input_probe",
         "nut_color_metadata_authoritative": False,
-        "nut_non_authoritative_metadata_fields": list(
-            ffv1.NUT_NON_AUTHORITATIVE_VIDEO_METADATA
-        ),
+        "nut_non_authoritative_metadata_fields": list(ffv1.NUT_NON_AUTHORITATIVE_VIDEO_METADATA),
         "source_profile": source_profile,
         "video_operations": "declared title-safe text overlay only",
     }

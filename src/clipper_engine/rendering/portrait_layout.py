@@ -71,8 +71,7 @@ def _partitions(words: list[str], count: int) -> list[list[str]]:
         return [[" ".join(words)]]
     if count == 2:
         return [
-            [" ".join(words[:index]), " ".join(words[index:])]
-            for index in range(1, len(words))
+            [" ".join(words[:index]), " ".join(words[index:])] for index in range(1, len(words))
         ]
     if count == 3:
         return [
@@ -91,9 +90,7 @@ def title_lines(text: str, font_path: Path, layout: dict[str, Any]) -> list[dict
     words = text.strip().split()
     if not words:
         raise RuntimeError("portrait title is empty")
-    safe_width = int(
-        int(layout["width"]) * float(layout.get("title_max_width_fraction", 0.88))
-    )
+    safe_width = int(int(layout["width"]) * float(layout.get("title_max_width_fraction", 0.88)))
     positions = dict(layout["title_y_positions"])
     font_sizes = dict(layout["title_font_sizes"])
 
