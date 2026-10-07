@@ -262,7 +262,16 @@ def test_spoken_semantic_discovery_records_no_admissible_topic() -> None:
         patch(
             "clipper_engine.spoken_semantics.discover_windows",
             return_value=(
-                [_window(0.0, 12.0, "A complete but unrelated source moment.", 6.0, "story_experience", 0.8)],
+                [
+                    _window(
+                        0.0,
+                        12.0,
+                        "A complete but unrelated source moment.",
+                        6.0,
+                        "story_experience",
+                        0.8,
+                    )
+                ],
                 {"candidate_count": 1},
             ),
         ),
