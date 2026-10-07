@@ -868,6 +868,7 @@ def _source_fidelity_qa(
         ),
     }
 
+
 def _self_test_case(root: Path, name: str, spec: dict[str, Any]) -> dict[str, Any]:
     original_source = root / f"{name}_source.mov"
     source._synthetic_source(original_source, **spec)
