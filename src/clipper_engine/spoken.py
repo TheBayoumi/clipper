@@ -1,129 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from . import speech
+from . import speech, spoken_semantics
 from .gameplay import contract, semantics
-
-_WORD_RE = re.compile(r"[a-z0-9]+")
-
-
-def _normalize(text: str) -> str:
-    return " ".join(_WORD_RE.findall(text.lower()))
-
-
-def _tokens(text: str) -> set[str]:
-    return set(_WORD_RE.findall(text.lower()))
-
-
-def _query_score(text: str, queries: list[str]) -> float:
-    normalized = _normalize(text)
-    haystack = _tokens(text)
-    best = 0.0
-    for query in queries:
-        query_norm = _normalize(query)
-        wanted = _tokens(query)
-        if not wanted:
-            continue
-        if query_norm and query_norm in normalized:
-            best = max(best, 1.0)
-            continue
-        best = max(best, len(haystack & wanted) / len(wanted))
-    return best
-
-
-def _transcript_text(
-    segments: tuple[speech.TranscriptSegment, ...], start: float, end: float
-) -> str:
-    return " ".join(
-        item.text.strip()
-        for item in segments
-        if item.end > start and item.start < end and item.text.strip()
-    ).strip()
-
-
-def _mean_word_probability(
-    segments: tuple[speech.TranscriptSegment, ...], start: float, end: float
-) -> float:
-    values = [
-        word.probability
-        for item in segments
-        if item.end > start and item.start < end
-        for word in item.words
-        if word.end > start and word.start < end
-    ]
-    return sum(values) / len(values) if values else 0.75
-
-
-def _window_variants(
-    transcript: speech.Transcript,
-    anchor_index: int,
-    config: dict[str, Any],
-) -> list[tuple[float, float, str, float]]:
-    editor = config["semantic_editor"]
-    minimum = float(editor.get("minimum_output_seconds", 10.0))
-    maximum = float(editor.get("maximum_output_seconds", 12.0))
-    preferred = float(editor.get("preferred_output_seconds", 11.0))
-    segments = transcript.segments
-    variants: dict[tuple[float, float], tuple[float, float, str, float]] = {}
-
-    def add_variant(start: float, end: float, text: str) -> None:
-        duration = end - start
-        if duration < minimum - 1e-3 or duration > maximum + 1e-3:
-            return
-        if not text.strip():
-            return
-        boundary = max(
-            0.0,
-            1.0 - abs(duration - preferred) / max(1.0, maximum - minimum),
-        )
-        probability = _mean_word_probability(transcript.segments, start, end)
-        score = 0.65 * boundary + 0.35 * probability
-        key = (round(start, 3), round(end, 3))
-        candidate = (key[0], key[1], text.strip(), score)
-        prior = variants.get(key)
-        if prior is None or candidate[3] > prior[3]:
-            variants[key] = candidate
-
-    # First search the native Whisper segment boundaries. These are cheap and stable.
-    left_floor = max(0, anchor_index - 5)
-    right_ceiling = min(len(segments) - 1, anchor_index + 5)
-    for left in range(left_floor, anchor_index + 1):
-        for right in range(anchor_index, right_ceiling + 1):
-            start = float(segments[left].start)
-            end = float(segments[right].end)
-            add_variant(start, end, _transcript_text(segments, start, end))
-
-    # Whisper segments can contain multiple sentences. Search punctuation-aware word
-    # boundaries too so a complete thought can be framed inside 10-12 seconds without
-    # cutting through a sentence simply to satisfy duration.
-    statements = speech.statement_segments(transcript)
-    anchor_segment = segments[anchor_index]
-    statement_anchors = [
-        index
-        for index, item in enumerate(statements)
-        if item.end > anchor_segment.start and item.start < anchor_segment.end
-    ]
-    if statement_anchors:
-        first_anchor = min(statement_anchors)
-        last_anchor = max(statement_anchors)
-        left_floor = max(0, first_anchor - 5)
-        right_ceiling = min(len(statements) - 1, last_anchor + 5)
-        anchors = set(statement_anchors)
-        for left in range(left_floor, last_anchor + 1):
-            for right in range(max(left, first_anchor), right_ceiling + 1):
-                if not any(left <= anchor <= right for anchor in anchors):
-                    continue
-                start = float(statements[left].start)
-                end = float(statements[right].end)
-                text = " ".join(item.text.strip() for item in statements[left : right + 1])
-                add_variant(start, end, text)
-
-    return sorted(variants.values(), key=lambda item: (-item[3], item[0], item[1]))
 
 
 def _caption(topic: dict[str, Any], config: dict[str, Any]) -> str:
@@ -155,171 +38,161 @@ def _topics(config: dict[str, Any], content_type: str) -> list[dict[str, Any]]:
     return topics
 
 
-def _anchor_matches(
-    transcript: speech.Transcript,
-    topic: dict[str, Any],
-    config: dict[str, Any],
-) -> list[tuple[int, float]]:
-    queries = [str(item) for item in topic.get("queries") or [] if str(item).strip()]
-    if not queries:
-        raise RuntimeError(f"spoken topic {topic.get('id')} has no queries")
-    minimum = float(config.get("spoken_content", {}).get("minimum_query_score", 0.60))
-    matches: list[tuple[int, float]] = []
-    for index, segment in enumerate(transcript.segments):
-        direct_score = _query_score(segment.text, queries)
-        if direct_score >= minimum:
-            matches.append((index, direct_score))
-            continue
-
-        left = max(0, index - 1)
-        right = min(len(transcript.segments), index + 2)
-        context = " ".join(item.text for item in transcript.segments[left:right])
-        context_score = _query_score(context, queries)
-        if context_score >= minimum and direct_score >= minimum * 0.5:
-            matches.append((index, (context_score + direct_score) / 2.0))
-    return sorted(matches, key=lambda item: (-item[1], item[0]))
+def _mean_word_probability(
+    segments: tuple[speech.TranscriptSegment, ...],
+    start: float,
+    end: float,
+) -> float:
+    values = [
+        word.probability
+        for item in segments
+        if item.end > start and item.start < end
+        for word in item.words
+        if word.end > start and word.start < end
+    ]
+    return sum(values) / len(values) if values else 0.75
 
 
 def build_candidate_plans(
     transcript: speech.Transcript,
     source_key: str,
     config: dict[str, Any],
+    *,
+    embedder: spoken_semantics.EmbeddingFn | None = None,
 ) -> tuple[list[semantics.SemanticPlan], list[dict[str, Any]], dict[str, Any]]:
     content_type = _content_type(config, source_key)
     topics = _topics(config, content_type)
-    max_variants = int(config.get("spoken_content", {}).get("variants_per_topic", 4))
-    plans: list[semantics.SemanticPlan] = []
-    required: list[dict[str, Any]] = []
-    diagnostics: dict[str, Any] = {"content_type": content_type, "topics": []}
+    semantic_cfg = dict(config.get("spoken_content", {}).get("semantic") or {})
+    backend = embedder or spoken_semantics.FastEmbedder(
+        str(semantic_cfg.get("model") or spoken_semantics.DEFAULT_SEMANTIC_MODEL)
+    )
+    windows, discovery = spoken_semantics.discover_windows(transcript, config, backend)
+    coverage, topic_summary = spoken_semantics.topic_coverage(
+        windows,
+        topics,
+        backend,
+        config,
+    )
+    topics_by_id = {str(item["id"]): item for item in topics}
 
+    plans: list[semantics.SemanticPlan] = []
+    for window, window_coverage in zip(windows, coverage, strict=True):
+        if not window_coverage:
+            continue
+        primary_topic_id, primary_similarity = max(
+            window_coverage.items(),
+            key=lambda item: (item[1], item[0]),
+        )
+        topic = topics_by_id[primary_topic_id]
+        covered_ids = tuple(
+            f"{content_type}:{topic_id}" for topic_id in sorted(window_coverage)
+        )
+        probability = _mean_word_probability(transcript.segments, window.start, window.end)
+        topic_quality = max(0.0, min(1.0, primary_similarity))
+        score = max(0.0, min(1.0, 0.80 * window.score + 0.20 * topic_quality))
+        weakest = min(window.opening_quality, window.story_quality, window.ending_quality)
+        plans.append(
+            semantics.SemanticPlan(
+                start=window.start,
+                end=window.end,
+                raw_duration=round(window.duration, 6),
+                output_duration=round(window.duration, 6),
+                score=round(score, 6),
+                retention_quality=round(
+                    (window.ending_quality + window.coherence) / 2.0,
+                    6,
+                ),
+                payoff_quality=round(
+                    min(1.0, (window.event_similarity + window.ending_quality) / 2.0),
+                    6,
+                ),
+                opening_quality=window.opening_quality,
+                ending_quality=window.ending_quality,
+                story_coherence=window.story_quality,
+                weakest_quarter_interest=round(weakest, 6),
+                low_interest_fraction=0.0 if weakest >= 0.55 else 0.10,
+                max_unexplained_low_interest_run_seconds=0.0,
+                story_type=f"{content_type}_semantic_moment",
+                effect_profile="spoken_content_text_overlay",
+                segments=(
+                    semantics.EditSegment(
+                        window.start,
+                        window.end,
+                        1.0,
+                        f"semantic_event:{window.event_label}",
+                    ),
+                ),
+                effect_events=(),
+                engagements=(),
+                finishing_move=None,
+                editorial_reasons=(
+                    "candidate_origin=embedding_semantic_discovery",
+                    f"semantic_event={window.event_label}",
+                    f"event_similarity={window.event_similarity:.6f}",
+                    f"topic_similarity={primary_similarity:.6f}",
+                    f"asr_word_probability={probability:.4f}",
+                    "campaign_keyword_gate=false",
+                    "story_admissibility=opening_story_ending_complete",
+                ),
+                proposal_anchor_time=window.anchor_time,
+                quality_diagnostics={
+                    "spoken": {
+                        "event_similarity": window.event_similarity,
+                        "topic_similarity": round(primary_similarity, 6),
+                        "opening_quality": window.opening_quality,
+                        "story_quality": window.story_quality,
+                        "ending_quality": window.ending_quality,
+                        "coherence": window.coherence,
+                        "asr_word_probability": round(probability, 6),
+                    }
+                },
+                content_type=content_type,
+                topic_id=primary_topic_id,
+                headline=str(topic["headline"]).strip(),
+                caption=_caption(topic, config),
+                transcript_text=window.text,
+                covered_semantic_anchor_ids=covered_ids,
+            )
+        )
+
+    required: list[dict[str, Any]] = []
     for topic in topics:
         topic_id = str(topic["id"])
         anchor_id = f"{content_type}:{topic_id}"
-        headline = str(topic.get("headline") or "").strip()
-        if not headline:
-            raise RuntimeError(f"spoken topic {anchor_id} has no headline")
-        matches = _anchor_matches(transcript, topic, config)
-        topic_diag: dict[str, Any] = {
-            "anchor_id": anchor_id,
-            "query_count": len(topic.get("queries") or []),
-            "matches": [],
-            "candidate_count": 0,
-        }
-        if not matches:
-            topic_diag["disposition"] = "no_transcript_match"
-            diagnostics["topics"].append(topic_diag)
-            required.append(
-                {
-                    "id": anchor_id,
-                    "content_type": content_type,
-                    "topic_id": topic_id,
-                    "headline": headline,
-                    "anchor_time": None,
-                    "disposition": "no_transcript_match",
-                }
-            )
-            continue
-
-        best_anchor_index, _best_query_score = matches[0]
-        best_anchor = transcript.segments[best_anchor_index]
-        anchor_time = round((best_anchor.start + best_anchor.end) / 2.0, 3)
+        matching = [
+            plan for plan in plans if anchor_id in plan.covered_semantic_anchor_ids
+        ]
+        summary = dict(topic_summary.get(topic_id) or {})
+        best_plan = max(matching, key=lambda plan: plan.score, default=None)
         required.append(
             {
                 "id": anchor_id,
                 "content_type": content_type,
                 "topic_id": topic_id,
-                "headline": headline,
-                "anchor_time": anchor_time,
-                "disposition": "search_required",
+                "headline": str(topic["headline"]).strip(),
+                "anchor_time": best_plan.proposal_anchor_time if best_plan else None,
+                "disposition": "search_required" if best_plan else "no_admissible_candidate",
+                "coverage_mode": "post_discovery_semantic_classification",
+                "best_similarity": summary.get("best_similarity"),
+                "minimum_similarity": summary.get("minimum_similarity"),
+                "legal_candidate_count": len(matching),
             }
         )
 
-        emitted: set[tuple[float, float]] = set()
-        for anchor_index, query_score in matches[:3]:
-            for start, end, text, boundary_score in _window_variants(
-                transcript, anchor_index, config
-            ):
-                if len(emitted) >= max_variants:
-                    break
-                key = (start, end)
-                if key in emitted:
-                    continue
-                emitted.add(key)
-                probability = _mean_word_probability(transcript.segments, start, end)
-                word_count = max(1, len(_WORD_RE.findall(text)))
-                density = min(1.0, word_count / max(1.0, (end - start) * 2.0))
-                semantic_score = max(
-                    0.0, min(1.0, 0.55 * query_score + 0.25 * boundary_score + 0.20 * probability)
-                )
-                plan = semantics.SemanticPlan(
-                    start=start,
-                    end=end,
-                    raw_duration=round(end - start, 6),
-                    output_duration=round(end - start, 6),
-                    score=round(semantic_score, 6),
-                    retention_quality=round(max(0.45, 0.65 * density + 0.25), 6),
-                    payoff_quality=round(max(0.45, query_score), 6),
-                    opening_quality=round(max(0.45, boundary_score), 6),
-                    ending_quality=round(max(0.45, boundary_score), 6),
-                    story_coherence=round(max(0.60, query_score), 6),
-                    weakest_quarter_interest=0.55,
-                    low_interest_fraction=0.10,
-                    max_unexplained_low_interest_run_seconds=0.0,
-                    story_type=f"{content_type}_statement",
-                    effect_profile="spoken_content_text_overlay",
-                    segments=(semantics.EditSegment(start, end, 1.0, f"spoken_topic:{topic_id}"),),
-                    effect_events=(),
-                    engagements=(),
-                    finishing_move=None,
-                    editorial_reasons=(
-                        f"semantic_anchor={anchor_id}",
-                        f"query_score={query_score:.4f}",
-                        f"asr_word_probability={probability:.4f}",
-                    ),
-                    proposal_anchor_time=anchor_time,
-                    quality_diagnostics={
-                        "spoken": {
-                            "query_score": round(query_score, 6),
-                            "boundary_score": round(boundary_score, 6),
-                            "asr_word_probability": round(probability, 6),
-                        }
-                    },
-                    content_type=content_type,
-                    topic_id=topic_id,
-                    headline=headline,
-                    caption=_caption(topic, config),
-                    transcript_text=text,
-                    covered_semantic_anchor_ids=(anchor_id,),
-                )
-                plans.append(plan)
-                topic_diag["matches"].append(
-                    {
-                        "anchor_time": round(
-                            (
-                                transcript.segments[anchor_index].start
-                                + transcript.segments[anchor_index].end
-                            )
-                            / 2.0,
-                            3,
-                        ),
-                        "query_score": round(query_score, 6),
-                        "candidate_start": start,
-                        "candidate_end": end,
-                    }
-                )
-            if len(emitted) >= max_variants:
-                break
-        topic_diag["candidate_count"] = len(emitted)
-        topic_diag["disposition"] = "candidates_emitted" if emitted else "no_legal_window"
-        diagnostics["topics"].append(topic_diag)
-
+    diagnostics: dict[str, Any] = {
+        "content_type": content_type,
+        "discovery": discovery,
+        "topic_coverage": topic_summary,
+        "candidate_count_after_topic_coverage": len(plans),
+        "campaign_queries_used_as_primary_detector": False,
+    }
     plans.sort(
         key=lambda item: (
-            item.content_type,
-            item.topic_id,
+            -len(item.covered_semantic_anchor_ids),
             -item.score,
             item.start,
             item.end,
+            item.topic_id,
         )
     )
     return plans, required, diagnostics
@@ -337,12 +210,14 @@ def analyze_source_file(
     plans, required, diagnostics = build_candidate_plans(transcript, source_key, config)
     strategy = dict(config.get("content_strategy") or {})
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "mode": "analysis",
         "source_key": source_key,
-        "semantic_engine": str(strategy.get("semantic_engine") or "transcript-semantic"),
-        "editorial_planner": str(strategy.get("editorial_planner") or "spoken-statement-editor"),
-        "candidate_mode": str(strategy.get("candidate_mode") or "spoken_topic_coverage"),
+        "semantic_engine": str(strategy.get("semantic_engine") or "embedding-semantic"),
+        "editorial_planner": str(strategy.get("editorial_planner") or "spoken-context-editor"),
+        "candidate_mode": str(
+            strategy.get("candidate_mode") or "semantic-moment-topic-coverage"
+        ),
         "content_type": _content_type(config, source_key),
         "transcription": {
             "language": transcript.language,
@@ -378,6 +253,7 @@ def analyze_source_file(
                 "content_type": payload["content_type"],
                 "required_semantic_anchors": len(required),
                 "candidates": len(plans),
+                "semantic_engine": payload["semantic_engine"],
             }
         )
     )
@@ -403,9 +279,8 @@ def validate_configuration(config: dict[str, Any]) -> None:
 
 
 def self_test() -> None:
-    sample = "Everything you have can be taken out and lost."
-    if _query_score(sample, ["everything persistent", "taken out and lost"]) < 0.99:
-        raise AssertionError("spoken query matcher failed exact phrase coverage")
-    if _query_score(sample, ["persistent weather"]) >= 0.60:
-        raise AssertionError("spoken query matcher accepted unrelated query")
-    print("spoken-content semantic matcher self-test: PASS")
+    if spoken_semantics.cosine([1.0, 0.0], [1.0, 0.0]) < 0.999:
+        raise AssertionError("spoken semantic cosine self-test failed identical vectors")
+    if abs(spoken_semantics.cosine([1.0, 0.0], [0.0, 1.0])) > 1e-6:
+        raise AssertionError("spoken semantic cosine self-test failed orthogonal vectors")
+    print("spoken-content semantic discovery self-test: PASS")

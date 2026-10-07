@@ -270,25 +270,39 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         required = set(_required_anchors(manifest))
         union = set().union(*(_candidate_coverage(plan) for plan in valid)) if valid else set()
         is_spoken = bool(manifest.get("required_semantic_anchors"))
+        semantic_details = {
+            str(item.get("id")): dict(item)
+            for item in (manifest.get("required_semantic_anchors") or [])
+            if item.get("id")
+        }
         if is_spoken:
-            missing_required = sorted(required - union, key=str)
-            if missing_required:
+            qualified: set[Anchor] = set()
+            unresolved_semantic: list[Anchor] = []
+            for anchor in sorted(required, key=str):
+                detail = semantic_details.get(str(anchor))
+                if detail is None:
+                    unresolved_semantic.append(anchor)
+                    continue
+                disposition = str(detail.get("disposition") or "")
+                if disposition == "search_required":
+                    if anchor not in union:
+                        raise AssertionError(
+                            f"{source}: qualified semantic anchor has no legal candidate: {anchor}"
+                        )
+                    qualified.add(anchor)
+                elif disposition != "no_admissible_candidate":
+                    unresolved_semantic.append(anchor)
+            if unresolved_semantic:
                 raise AssertionError(
-                    f"{source}: required semantic anchors have no legal candidates: "
-                    f"{missing_required}"
+                    f"{source}: semantic anchors lack explicit discovery disposition: "
+                    f"{unresolved_semantic}"
                 )
-            qualified = set(required)
         else:
             qualified = required & union
 
         dispositions: list[dict[str, Any]] = []
         unresolved: list[Anchor] = []
         diagnostics = _anchor_diagnostics(manifest) if not is_spoken else {}
-        semantic_details = {
-            str(item.get("id")): dict(item)
-            for item in (manifest.get("required_semantic_anchors") or [])
-            if item.get("id")
-        }
         for anchor in sorted(required, key=str):
             if anchor in qualified:
                 dispositions.append({"anchor": anchor, "disposition": "qualified_for_allocation"})

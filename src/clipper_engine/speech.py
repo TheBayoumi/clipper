@@ -100,14 +100,15 @@ def _decode_audio(source: Path, start: float, duration: float, sample_rate: int)
 
 def transcribe(source: Path, config: dict[str, Any]) -> Transcript:
     cfg = dict(config.get("spoken_content", {}).get("asr") or {})
-    model_name = str(cfg.get("model", "base.en"))
+    model_name = str(cfg.get("model", "distil-large-v3"))
     device = str(cfg.get("device", "cpu"))
     compute_type = str(cfg.get("compute_type", "int8"))
     cpu_threads = int(cfg.get("cpu_threads", 2))
-    beam_size = int(cfg.get("beam_size", 3))
+    beam_size = int(cfg.get("beam_size", 5))
     language = str(cfg.get("language", "en"))
     sample_rate = int(cfg.get("sample_rate", 16000))
     chunk_seconds = float(cfg.get("chunk_seconds", 180.0))
+    vad_min_silence_ms = int(cfg.get("vad_min_silence_ms", 500))
     if chunk_seconds < 30.0 or chunk_seconds > 600.0:
         raise RuntimeError("spoken_content.asr.chunk_seconds must be between 30 and 600")
     if sample_rate != 16000:
@@ -142,6 +143,7 @@ def transcribe(source: Path, config: dict[str, Any]) -> Transcript:
             language=language,
             beam_size=beam_size,
             vad_filter=bool(cfg.get("vad_filter", True)),
+            vad_parameters={"min_silence_duration_ms": vad_min_silence_ms},
             word_timestamps=True,
             condition_on_previous_text=False,
         )
@@ -179,6 +181,7 @@ def transcribe(source: Path, config: dict[str, Any]) -> Transcript:
         "sample_rate": sample_rate,
         "chunk_seconds": chunk_seconds,
         "vad_filter": bool(cfg.get("vad_filter", True)),
+        "vad_min_silence_ms": vad_min_silence_ms,
         "condition_on_previous_text": False,
         "word_timestamps": True,
     }
