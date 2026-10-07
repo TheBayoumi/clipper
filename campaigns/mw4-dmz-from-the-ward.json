@@ -59,8 +59,8 @@
     "notes": "Clipper allocates explicit DMZ topic-anchor coverage before rendering. Each configured topic gets an independent 10-12 second legal-window search; source overlap/conflicts prevent duplicate framings."
   },
   "output": {
-    "width": "source",
-    "height": "source",
+    "width": 1080,
+    "height": 1920,
     "full_source_frame": true,
     "fps": "source",
     "codec": "libx264",
@@ -87,10 +87,10 @@
   "text_overlay": {
     "enabled": true,
     "font_path": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "font_size_fraction": 0.05,
-    "horizontal_margin_fraction": 0.04,
-    "box_height_fraction": 0.14,
-    "box_opacity": 0.72
+    "font_size_fraction": 0.032,
+    "horizontal_margin_fraction": 0.06,
+    "box_height_fraction": 0.085,
+    "box_opacity": 0.28
   },
   "publishing": {
     "platforms": [
@@ -132,7 +132,7 @@
             "play with a whole bunch of toys",
             "way you want to play"
           ],
-          "headline": "DMZ Gives Players More Freedom",
+          "headline": "DMZ lets you play your own way",
           "caption": "Infinity Ward explains how DMZ gives players more freedom to approach the experience their way."
         },
         {
@@ -142,7 +142,7 @@
             "taken out and lost",
             "not just money everything"
           ],
-          "headline": "DMZ Is Taking Persistence Further",
+          "headline": "In DMZ, what you extract actually matters",
           "caption": "Infinity Ward discusses persistent progression as a major step beyond the original DMZ Beta."
         },
         {
@@ -152,7 +152,7 @@
             "dying in dmz is a different impact",
             "should i engage this person"
           ],
-          "headline": "Every Fight in DMZ Has Higher Stakes",
+          "headline": "Every fight in DMZ can cost you",
           "caption": "In DMZ, the risk of losing your gear changes how you decide when to fight. Infinity Ward explains the difference."
         }
       ],
@@ -164,7 +164,7 @@
             "protected by specialized units",
             "lieutenant targets"
           ],
-          "headline": "DMZ Lieutenants Have Specialized Guards",
+          "headline": "These DMZ targets do not travel alone",
           "caption": "Lieutenant targets in DMZ can be protected by specialized units. A look at the stakes in Dynamic Ops."
         },
         {
@@ -174,7 +174,7 @@
             "valuable to every rival squad",
             "carrying them makes you valuable"
           ],
-          "headline": "In DMZ, Dog Tags Make You a Target",
+          "headline": "Grab the dog tags and everyone wants you",
           "caption": "Taking down a lieutenant is only part of the mission. Carrying their dog tags puts your squad in the spotlight."
         },
         {
@@ -184,7 +184,7 @@
             "advance their intel",
             "build the next lead"
           ],
-          "headline": "Extracting Intel Opens the Next Lead",
+          "headline": "Extract the intel or lose the lead",
           "caption": "In DMZ Dynamic Ops, extracting recovered intel can help advance the next lead."
         }
       ],
@@ -196,7 +196,7 @@
             "radiation throughout the region",
             "dangerous winds"
           ],
-          "headline": "The Events Behind Hajin's Fallout",
+          "headline": "Hajin was ruined long before you arrived",
           "caption": "Hajin has a dangerous backstory. The Worldbuilder footage explains how a meltdown changed the region."
         },
         {
@@ -206,7 +206,7 @@
             "some are paid",
             "others are out for themselves"
           ],
-          "headline": "Rogue Operators Are Active in Hajin",
+          "headline": "Not every operator in Hajin is on your side",
           "caption": "The situation in Hajin involves rogue Operators with competing agendas. Here is how the DMZ story sets that up."
         },
         {
@@ -216,7 +216,7 @@
             "whatever resources you need",
             "find yourself"
           ],
-          "headline": "An Off-the-Books Mission in DMZ",
+          "headline": "This DMZ mission is completely off the books",
           "caption": "Uncover enemy operations and find the resources to complete your mission. A closer look at the DMZ story."
         }
       ]
