@@ -236,8 +236,7 @@ def test_spoken_search_uses_sentence_boundaries_inside_whisper_segments() -> Non
     assert rogue
     assert all(10.0 <= plan.output_duration <= 12.0 for plan in rogue)
     assert any(
-        plan.start == pytest.approx(77.72) and plan.end == pytest.approx(88.91)
-        for plan in rogue
+        plan.start == pytest.approx(77.72) and plan.end == pytest.approx(88.91) for plan in rogue
     )
 
 
