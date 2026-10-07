@@ -470,7 +470,6 @@ def merge_x264_params(args: list[str], extra_params: list[str]) -> list[str]:
     return result
 
 
-
 def validate_delivery_compatibility(contract: SourceMediaContract, config: dict[str, Any]) -> None:
     settings = config.get("output", {})
     failures: list[str] = []
@@ -508,6 +507,7 @@ def validate_delivery_compatibility(contract: SourceMediaContract, config: dict[
 
     if failures:
         raise RuntimeError("delivery contract is incompatible: " + "; ".join(failures))
+
 
 def frame_hashes(
     path: Path,

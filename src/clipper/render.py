@@ -70,8 +70,7 @@ def build_ffmpeg_command(
         output_label="framed",
     )
     base_filter = (
-        layout_filter
-        + f";[framed]subtitles='{escaped_subtitles}':"
+        layout_filter + f";[framed]subtitles='{escaped_subtitles}':"
         "force_style='FontName=DejaVu Sans,FontSize=10,Alignment=2,"
         "MarginV=28,MarginL=24,MarginR=24,Outline=2,Shadow=0,"
         "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000',fps=30[captioned]"

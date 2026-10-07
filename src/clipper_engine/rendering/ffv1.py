@@ -545,7 +545,6 @@ def _render_canonical_lossless_master(
     }
 
 
-
 def _render_delivery_composition_master(
     canonical_source_master: Path,
     config: dict[str, Any],
@@ -662,7 +661,6 @@ def _render_delivery_composition_master(
     }
 
 
-
 def _source_fidelity_qa(
     source_profile: dict[str, Any],
     staging_fidelity: list[dict[str, Any]],
@@ -734,12 +732,8 @@ def _source_fidelity_qa(
             output_profile["height"],
         )
         == delivery_geometry,
-        "source_native_transport_is_ffv1_nut_pcm": all(
-            native_transport["checks"].values()
-        ),
-        "delivery_transport_is_ffv1_nut_pcm": all(
-            reference_transport["checks"].values()
-        ),
+        "source_native_transport_is_ffv1_nut_pcm": all(native_transport["checks"].values()),
+        "delivery_transport_is_ffv1_nut_pcm": all(reference_transport["checks"].values()),
         "output_time_base_matches_source": output_timing["checks"]["time_base_matches_source"],
         "output_r_fps_matches_source": output_timing["checks"]["r_frame_rate_matches_source"],
         "output_strict_cfr_timestamps": output_timing["checks"]["packet_pts_strictly_cfr"],
@@ -763,19 +757,15 @@ def _source_fidelity_qa(
         == source._audio_channels(source_profile),
         "output_audio_sample_rate_matches_delivery": output_audio["sample_rate"]
         == expected_audio_rate,
-        "output_audio_channels_match_delivery": output_audio["channels"]
-        == expected_audio_channels,
-        "delivery_composition_matches_geometry_change": composition_applied
-        == geometry_changed,
+        "output_audio_channels_match_delivery": output_audio["channels"] == expected_audio_channels,
+        "delivery_composition_matches_geometry_change": composition_applied == geometry_changed,
         "source_foreground_full_frame_preserved": (
             bool(composition.get("source_foreground_full_frame", False))
             if geometry_changed
             else True
         ),
         "source_foreground_crop_not_used": (
-            composition.get("source_foreground_crop_used") is False
-            if geometry_changed
-            else True
+            composition.get("source_foreground_crop_used") is False if geometry_changed else True
         ),
     }
 
@@ -785,9 +775,7 @@ def _source_fidelity_qa(
         prefix="output",
     )
     checks.update(final_metadata_checks)
-    checks["source_media_contract_reapplied_to_final_h264"] = all(
-        final_metadata_checks.values()
-    )
+    checks["source_media_contract_reapplied_to_final_h264"] = all(final_metadata_checks.values())
     if not all(checks.values()):
         raise RuntimeError(
             "source-fidelity/delivery contract mismatch before SSIM/PSNR: "
@@ -807,8 +795,7 @@ def _source_fidelity_qa(
             "-i",
             str(output),
             "-filter_complex",
-            "[0:v]setpts=PTS-STARTPTS[ref];"
-            "[1:v]setpts=PTS-STARTPTS[enc];[ref][enc]ssim[metric]",
+            "[0:v]setpts=PTS-STARTPTS[ref];[1:v]setpts=PTS-STARTPTS[enc];[ref][enc]ssim[metric]",
             "-map",
             "[metric]",
             "-an",
@@ -828,8 +815,7 @@ def _source_fidelity_qa(
             "-i",
             str(output),
             "-filter_complex",
-            "[0:v]setpts=PTS-STARTPTS[ref];"
-            "[1:v]setpts=PTS-STARTPTS[enc];[ref][enc]psnr[metric]",
+            "[0:v]setpts=PTS-STARTPTS[ref];[1:v]setpts=PTS-STARTPTS[enc];[ref][enc]psnr[metric]",
             "-map",
             "[metric]",
             "-an",
