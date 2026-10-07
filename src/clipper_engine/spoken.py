@@ -84,9 +84,7 @@ def build_candidate_plans(
             key=lambda item: (item[1], item[0]),
         )
         topic = topics_by_id[primary_topic_id]
-        covered_ids = tuple(
-            f"{content_type}:{topic_id}" for topic_id in sorted(window_coverage)
-        )
+        covered_ids = tuple(f"{content_type}:{topic_id}" for topic_id in sorted(window_coverage))
         probability = _mean_word_probability(transcript.segments, window.start, window.end)
         topic_quality = max(0.0, min(1.0, primary_similarity))
         score = max(0.0, min(1.0, 0.80 * window.score + 0.20 * topic_quality))
@@ -159,9 +157,7 @@ def build_candidate_plans(
     for topic in topics:
         topic_id = str(topic["id"])
         anchor_id = f"{content_type}:{topic_id}"
-        matching = [
-            plan for plan in plans if anchor_id in plan.covered_semantic_anchor_ids
-        ]
+        matching = [plan for plan in plans if anchor_id in plan.covered_semantic_anchor_ids]
         summary = dict(topic_summary.get(topic_id) or {})
         best_plan = max(matching, key=lambda plan: plan.score, default=None)
         required.append(
@@ -215,9 +211,7 @@ def analyze_source_file(
         "source_key": source_key,
         "semantic_engine": str(strategy.get("semantic_engine") or "embedding-semantic"),
         "editorial_planner": str(strategy.get("editorial_planner") or "spoken-context-editor"),
-        "candidate_mode": str(
-            strategy.get("candidate_mode") or "semantic-moment-topic-coverage"
-        ),
+        "candidate_mode": str(strategy.get("candidate_mode") or "semantic-moment-topic-coverage"),
         "content_type": _content_type(config, source_key),
         "transcription": {
             "language": transcript.language,

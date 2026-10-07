@@ -346,9 +346,7 @@ def discover_windows(
             rejected += 1
             continue
         anchor = bounds_to_anchor[(left, right)]
-        pairwise = [
-            cosine(vectors[item - 1], vectors[item]) for item in range(left + 1, right + 1)
-        ]
+        pairwise = [cosine(vectors[item - 1], vectors[item]) for item in range(left + 1, right + 1)]
         coherence = sum(pairwise) / len(pairwise) if pairwise else 1.0
         opening = _quality(margins["opening"])
         story = _quality(margins["story"])
@@ -407,11 +405,7 @@ def topic_coverage(
         topic_id = str(topic["id"])
         values = [
             str(item).strip()
-            for item in (
-                topic.get("coverage_descriptions")
-                or topic.get("queries")
-                or []
-            )
+            for item in (topic.get("coverage_descriptions") or topic.get("queries") or [])
             if str(item).strip()
         ]
         headline = str(topic.get("headline") or "").strip()
@@ -463,9 +457,7 @@ def topic_coverage(
         item: dict[str, float] = {}
         for topic in topics:
             topic_id = str(topic["id"])
-            similarity = max(
-                cosine(vector, descriptor) for descriptor in topic_vectors[topic_id]
-            )
+            similarity = max(cosine(vector, descriptor) for descriptor in topic_vectors[topic_id])
             if similarity >= threshold:
                 item[topic_id] = round(similarity, 6)
         coverage.append(item)

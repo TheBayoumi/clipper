@@ -141,7 +141,6 @@ def test_delivery_profile_allows_vertical_full_frame_composition() -> None:
     assert "overlay=(W-w)/2:(H-h)/2" in graph
 
 
-
 def test_portrait_delivery_uses_calibrated_matte_without_cropping() -> None:
     source_profile = {
         "width": 3840,
