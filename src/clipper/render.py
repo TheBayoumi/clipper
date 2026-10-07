@@ -6,6 +6,8 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
+from clipper_engine.rendering import delivery
+
 from .models import ClipCandidate, TranscriptSegment
 
 
@@ -62,15 +64,14 @@ def build_ffmpeg_command(
     height: int = 1920,
 ) -> list[str]:
     escaped_subtitles = _escape_filter_path(Path(subtitle_path))
-    blur_width = max(180, width // 3)
-    blur_height = max(320, height // 3)
+    layout_filter = delivery.full_frame_filter(
+        width,
+        height,
+        output_label="framed",
+    )
     base_filter = (
-        f"[0:v]split=2[bg][fg];"
-        f"[bg]scale={blur_width}:{blur_height}:force_original_aspect_ratio=increase,"
-        f"crop={blur_width}:{blur_height},gblur=sigma=18,scale={width}:{height}[bg2];"
-        f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
-        f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,"
-        f"subtitles='{escaped_subtitles}':"
+        layout_filter
+        + f";[framed]subtitles='{escaped_subtitles}':"
         "force_style='FontName=DejaVu Sans,FontSize=10,Alignment=2,"
         "MarginV=28,MarginL=24,MarginR=24,Outline=2,Shadow=0,"
         "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000',fps=30[captioned]"

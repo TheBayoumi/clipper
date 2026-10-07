@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..gameplay import candidates, contract
-from . import ffv1, helpers, overlays, source_fidelity
+from . import delivery, ffv1, helpers, overlays, source_fidelity
 
 
 def _write(path: Path, payload: dict[str, Any]) -> None:
@@ -63,23 +63,43 @@ def render_one(
             source_profile,
             source_native_master,
         )
+        delivery_profile = delivery.profile_for_output(source_profile, config)
+        composition_info: dict[str, Any] = {
+            "applied": False,
+            "mode": "source_native",
+            "width": int(source_profile["width"]),
+            "height": int(source_profile["height"]),
+            "source_foreground_full_frame": True,
+            "source_foreground_crop_used": False,
+            "spatial_transform_used": False,
+        }
+        delivery_master = source_native_master
+        if delivery.composition_required(source_profile, config):
+            delivery_master = workspace / "canonical_delivery_master.nut"
+            delivery_profile, composition_info = ffv1._render_delivery_composition_master(
+                source_native_master,
+                config,
+                source_profile,
+                delivery_master,
+            )
+
         overlay_info: dict[str, Any] = {"applied": False}
-        canonical_master = source_native_master
-        canonical_info = source_native_info
+        canonical_master = delivery_master
+        canonical_info = composition_info if composition_info["applied"] else source_native_info
         if overlays.enabled(config, plan):
             canonical_master = workspace / "canonical_editorial_master.nut"
             overlay_info = overlays.render_text_overlay_master(
-                source_native_master,
+                delivery_master,
                 local_plan,
                 config,
-                source_profile,
+                delivery_profile,
                 canonical_master,
             )
             canonical_info = overlay_info
         source_fidelity._encode_from_canonical_master(
             canonical_master,
             config,
-            source_profile,
+            delivery_profile,
             target,
             mode=mode,
         )
@@ -89,6 +109,9 @@ def render_one(
             canonical_master,
             target,
             config,
+            source_native_master=source_native_master,
+            delivery_profile=delivery_profile,
+            composition_info=composition_info,
         )
 
     qa = helpers.validate_output(target, config, mode=mode, source_profile=source_profile)
@@ -113,6 +136,7 @@ def render_one(
         "canonical_master": canonical_info,
         "source_native_master": source_native_info,
         "text_overlay": overlay_info,
+        "delivery_composition": composition_info,
         "headline": plan.headline,
         "caption": plan.caption,
         "content_type": plan.content_type,
@@ -132,8 +156,12 @@ def render_one(
         "bounded_lossless_segment_staging": True,
         "exact_source_to_stage_frame_hash_qa": True,
         "source_color_metadata_preserved": True,
-        "spatial_crop_upscale_used": False,
+        "spatial_crop_upscale_used": bool(composition_info.get("applied", False)),
+        "delivery_spatial_composition_used": bool(composition_info.get("applied", False)),
         "source_native_full_frame": True,
+        "delivery_full_source_frame": bool(
+            composition_info.get("source_foreground_full_frame", True)
+        ),
         "single_canonical_visual_timeline": True,
         "single_clip_workspace": True,
         "status": "PASS",
@@ -156,7 +184,10 @@ def render_one(
                 "source_profile": source_profile,
                 "source_to_stage_hashes_exact": True,
                 "source_color_metadata_preserved": True,
-                "spatial_crop_upscale_used": False,
+                "spatial_crop_upscale_used": bool(composition_info.get("applied", False)),
+                "delivery_full_source_frame": bool(
+                    composition_info.get("source_foreground_full_frame", True)
+                ),
                 "single_canonical_visual_timeline": True,
                 "bounded_lossless_segment_staging": True,
             }

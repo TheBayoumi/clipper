@@ -81,6 +81,21 @@ def _clip_ffv1_nut_contract_failures(item: dict[str, Any]) -> list[str]:
         failures.append("final H.264 SSIM fidelity gate did not pass")
     if not bool(fidelity_checks.get("psnr_encoder_fidelity")):
         failures.append("final H.264 PSNR fidelity gate did not pass")
+    if not bool(fidelity_checks.get("all_source_to_stage_frame_hashes_exact")):
+        failures.append("source-to-stage exact frame-hash proof is missing or failed")
+    if not bool(fidelity_checks.get("source_native_reference_geometry_matches_source")):
+        failures.append("source-native canonical geometry no longer matches the original source")
+    if not bool(fidelity_checks.get("source_to_delivery_frame_count_match")):
+        failures.append("delivery composition changed source-native frame cardinality")
+
+    composition = item.get("delivery_composition") or {}
+    if composition.get("applied"):
+        if composition.get("source_foreground_full_frame") is not True:
+            failures.append("delivery composition did not preserve the full source foreground")
+        if composition.get("source_foreground_crop_used") is not False:
+            failures.append("delivery composition cropped the source foreground")
+        if composition.get("input_frame_count") != composition.get("output_frame_count"):
+            failures.append("delivery composition changed canonical frame count")
     return failures
 
 

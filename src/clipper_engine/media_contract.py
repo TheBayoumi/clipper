@@ -470,21 +470,27 @@ def merge_x264_params(args: list[str], extra_params: list[str]) -> list[str]:
     return result
 
 
+
 def validate_delivery_compatibility(contract: SourceMediaContract, config: dict[str, Any]) -> None:
     settings = config.get("output", {})
     failures: list[str] = []
     if settings.get("full_source_frame") is not True:
-        failures.append("output.full_source_frame must be true in source-native mode")
-    width = settings.get("width")
-    height = settings.get("height")
-    if width not in (None, "source", "auto") and int(width) != contract.video.width:
-        failures.append(
-            f"delivery width={width} conflicts with source width={contract.video.width}"
-        )
-    if height not in (None, "source", "auto") and int(height) != contract.video.height:
-        failures.append(
-            f"delivery height={height} conflicts with source height={contract.video.height}"
-        )
+        failures.append("output.full_source_frame must be true")
+
+    for key in ("width", "height"):
+        value = settings.get(key)
+        if value in (None, "source", "auto"):
+            continue
+        try:
+            resolved = int(value)
+        except (TypeError, ValueError):
+            failures.append(f"output.{key} is not a valid integer dimension: {value!r}")
+            continue
+        if resolved <= 0:
+            failures.append(f"output.{key} must be positive")
+        elif resolved % 2:
+            failures.append(f"output.{key} must be even for yuv420p delivery")
+
     configured_fps = settings.get("fps")
     if configured_fps not in (None, "source", "auto"):
         try:
@@ -495,15 +501,13 @@ def validate_delivery_compatibility(contract: SourceMediaContract, config: dict[
             ) from exc
         if wanted != contract.video.timing.nominal_rate:
             failures.append(
-                "delivery fps conflicts with source-native timing: "
+                "delivery fps conflicts with source timing: "
                 f"delivery={configured_fps} "
                 f"source={fraction_text(contract.video.timing.nominal_rate)}"
             )
-    if failures:
-        raise RuntimeError(
-            "source-native delivery contract is incompatible: " + "; ".join(failures)
-        )
 
+    if failures:
+        raise RuntimeError("delivery contract is incompatible: " + "; ".join(failures))
 
 def frame_hashes(
     path: Path,

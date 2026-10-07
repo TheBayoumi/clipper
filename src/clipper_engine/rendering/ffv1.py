@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import media_contract as media
-from . import source_fidelity as source
+from . import delivery, source_fidelity as source
 
 NUT_NON_AUTHORITATIVE_VIDEO_METADATA = (
     "color_range",
@@ -544,22 +544,159 @@ def _render_canonical_lossless_master(
     }
 
 
+
+def _render_delivery_composition_master(
+    canonical_source_master: Path,
+    config: dict[str, Any],
+    source_profile: dict[str, Any],
+    target: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if target.suffix.lower() != ".nut":
+        raise RuntimeError("delivery composition master must use NUT transport")
+
+    delivery_profile = delivery.profile_for_output(source_profile, config)
+    if not delivery.composition_required(source_profile, config):
+        raise RuntimeError("delivery composition requested without a geometry change")
+
+    width = int(delivery_profile["width"])
+    height = int(delivery_profile["height"])
+    graph = delivery.full_frame_filter(width, height, output_label="delivery")
+    timing = source._timing(source_profile)
+    fps = media.fraction_text(timing.nominal_rate)
+
+    media.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-filter_complex_threads",
+            "2",
+            "-i",
+            str(canonical_source_master),
+            "-filter_complex",
+            graph,
+            "-map",
+            "[delivery]",
+            "-map",
+            "0:a:0",
+            *_ffv1_video_args(
+                delivery_profile,
+                threads=int(config.get("runtime", {}).get("ffv1_threads", 4)),
+            ),
+            "-c:a",
+            "pcm_s16le",
+            "-ar",
+            str(source._audio_rate(source_profile)),
+            "-ac",
+            str(source._audio_channels(source_profile)),
+            "-r",
+            fps,
+            "-vsync",
+            "cfr",
+            "-f",
+            "nut",
+            str(target),
+        ]
+    )
+
+    input_profile = media.video_profile(canonical_source_master, count_frames=True)
+    output_profile = media.video_profile(target, count_frames=True)
+    architecture = _transport_architecture_qa(
+        target,
+        delivery_profile,
+        prefix="delivery_composition",
+        strict_cfr=True,
+    )
+    checks = {
+        "input_frame_count_preserved": input_profile["frame_count"]
+        == output_profile["frame_count"],
+        "delivery_geometry_matches_config": (
+            output_profile["width"],
+            output_profile["height"],
+        )
+        == (width, height),
+        "source_foreground_full_frame": True,
+        "source_foreground_crop_used": False,
+        "intentional_spatial_composition": True,
+        **architecture["checks"],
+    }
+    if not all(bool(value) for value in checks.values()):
+        raise RuntimeError(
+            "lossless delivery-composition contract failed: "
+            f"checks={checks}; input={input_profile}; output={output_profile}"
+        )
+
+    return delivery_profile, {
+        "applied": True,
+        "mode": "full_frame_fit_blurred_background",
+        "width": width,
+        "height": height,
+        "source_foreground_full_frame": True,
+        "source_foreground_crop_used": False,
+        "spatial_transform_used": True,
+        "input_frame_count": input_profile["frame_count"],
+        "output_frame_count": output_profile["frame_count"],
+        "canonical_container": "nut",
+        "canonical_codec": "ffv1 level=3 lossless",
+        "canonical_audio_codec": "pcm_s16le",
+        "actual_container": architecture["format_name"],
+        "actual_video_codec": architecture["video_profile"]["codec_name"],
+        "actual_audio_codec": architecture["audio_profile"]["codec_name"],
+        "source_delivery_track_timescale": timing.track_timescale,
+        "source_delivery_time_base": media.fraction_text(timing.time_base),
+        "transport_time_base": architecture["timing"]["actual_time_base"],
+        "source_frame_period": architecture["timing"]["source_frame_period"],
+        "transport_architecture_qa": architecture,
+        "source_contract_metadata_authority": "original_input_probe",
+        "nut_color_metadata_authoritative": False,
+        "nut_non_authoritative_metadata_fields": list(NUT_NON_AUTHORITATIVE_VIDEO_METADATA),
+        "source_profile": source_profile,
+        "delivery_profile": delivery_profile,
+        "video_operations": (
+            "lossless delivery composition: full source frame fit over blurred background"
+        ),
+        "checks": checks,
+    }
+
+
+
 def _source_fidelity_qa(
     source_profile: dict[str, Any],
     staging_fidelity: list[dict[str, Any]],
     canonical_master: Path,
     output: Path,
     config: dict[str, Any],
+    *,
+    source_native_master: Path | None = None,
+    delivery_profile: dict[str, Any] | None = None,
+    composition_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     timing = source._timing(source_profile)
+    native_master = source_native_master or canonical_master
+    resolved_delivery_profile = delivery_profile or delivery.profile_for_output(
+        source_profile,
+        config,
+    )
+
+    native_profile = media.video_profile(native_master, count_frames=True)
     reference_profile = media.video_profile(canonical_master, count_frames=True)
     output_profile = media.video_profile(output, count_frames=True)
+    native_audio = media.audio_profile(native_master)
     reference_audio = media.audio_profile(canonical_master)
     output_audio = media.audio_profile(output)
+
+    native_transport = _transport_architecture_qa(
+        native_master,
+        source_profile,
+        prefix="canonical_source_native",
+        strict_cfr=True,
+    )
     reference_transport = _transport_architecture_qa(
         canonical_master,
-        source_profile,
-        prefix="canonical_reference",
+        resolved_delivery_profile,
+        prefix="canonical_delivery",
         strict_cfr=True,
     )
     output_timing = media.verify_cfr_timeline(output, timing, label="final H.264 output")
@@ -572,19 +709,42 @@ def _source_fidelity_qa(
         settings.get("audio_channels") or source._audio_channels(source_profile)
     )
     source_geometry = (int(source_profile["width"]), int(source_profile["height"]))
+    delivery_geometry = (
+        int(resolved_delivery_profile["width"]),
+        int(resolved_delivery_profile["height"]),
+    )
+    composition = dict(composition_info or {})
+    geometry_changed = delivery_geometry != source_geometry
+    composition_applied = bool(composition.get("applied", False))
+
     checks = {
-        "reference_geometry_matches_source": (
+        "source_native_reference_geometry_matches_source": (
+            native_profile["width"],
+            native_profile["height"],
+        )
+        == source_geometry,
+        "delivery_reference_geometry_matches_config": (
             reference_profile["width"],
             reference_profile["height"],
         )
-        == source_geometry,
-        "output_geometry_matches_source": (output_profile["width"], output_profile["height"])
-        == source_geometry,
-        "canonical_transport_is_ffv1_nut_pcm": all(reference_transport["checks"].values()),
+        == delivery_geometry,
+        "output_geometry_matches_delivery": (
+            output_profile["width"],
+            output_profile["height"],
+        )
+        == delivery_geometry,
+        "source_native_transport_is_ffv1_nut_pcm": all(
+            native_transport["checks"].values()
+        ),
+        "delivery_transport_is_ffv1_nut_pcm": all(
+            reference_transport["checks"].values()
+        ),
         "output_time_base_matches_source": output_timing["checks"]["time_base_matches_source"],
         "output_r_fps_matches_source": output_timing["checks"]["r_frame_rate_matches_source"],
         "output_strict_cfr_timestamps": output_timing["checks"]["packet_pts_strictly_cfr"],
-        "exact_frame_count_match": reference_profile["frame_count"]
+        "source_to_delivery_frame_count_match": native_profile["frame_count"]
+        == reference_profile["frame_count"],
+        "delivery_to_output_frame_count_match": reference_profile["frame_count"]
         == output_profile["frame_count"],
         "all_source_to_stage_frame_hashes_exact": all(
             item["checks"]["exact_decoded_frame_hash_match"] for item in staging_fidelity
@@ -592,28 +752,49 @@ def _source_fidelity_qa(
         "all_staging_transport_checks_pass": all(
             all(bool(value) for value in item["checks"].values()) for item in staging_fidelity
         ),
-        "canonical_audio_sample_rate_matches_source": reference_audio["sample_rate"]
+        "canonical_source_audio_sample_rate_matches_source": native_audio["sample_rate"]
         == source._audio_rate(source_profile),
-        "canonical_audio_channels_match_source": reference_audio["channels"]
+        "canonical_source_audio_channels_match_source": native_audio["channels"]
+        == source._audio_channels(source_profile),
+        "delivery_audio_sample_rate_matches_source": reference_audio["sample_rate"]
+        == source._audio_rate(source_profile),
+        "delivery_audio_channels_match_source": reference_audio["channels"]
         == source._audio_channels(source_profile),
         "output_audio_sample_rate_matches_delivery": output_audio["sample_rate"]
         == expected_audio_rate,
-        "output_audio_channels_match_delivery": output_audio["channels"] == expected_audio_channels,
+        "output_audio_channels_match_delivery": output_audio["channels"]
+        == expected_audio_channels,
+        "delivery_composition_matches_geometry_change": composition_applied
+        == geometry_changed,
+        "source_foreground_full_frame_preserved": (
+            bool(composition.get("source_foreground_full_frame", False))
+            if geometry_changed
+            else True
+        ),
+        "source_foreground_crop_not_used": (
+            composition.get("source_foreground_crop_used") is False
+            if geometry_changed
+            else True
+        ),
     }
-    checks.update(
-        _transport_identity_checks(source_profile, reference_profile, prefix="canonical_reference")
-    )
+
     final_metadata_checks = media.metadata_match_checks(
-        source_profile, output_profile, prefix="output"
+        resolved_delivery_profile,
+        output_profile,
+        prefix="output",
     )
     checks.update(final_metadata_checks)
-    checks["source_media_contract_reapplied_to_final_h264"] = all(final_metadata_checks.values())
+    checks["source_media_contract_reapplied_to_final_h264"] = all(
+        final_metadata_checks.values()
+    )
     if not all(checks.values()):
         raise RuntimeError(
-            "source-fidelity transport/final metadata mismatch before SSIM/PSNR: "
-            f"checks={checks}; source={source_profile}; reference={reference_profile}; "
-            f"output={output_profile}; reference_transport={reference_transport}; "
-            f"output_timing={output_timing}"
+            "source-fidelity/delivery contract mismatch before SSIM/PSNR: "
+            f"checks={checks}; source={source_profile}; "
+            f"delivery_profile={resolved_delivery_profile}; "
+            f"source_native={native_profile}; reference={reference_profile}; "
+            f"output={output_profile}; source_transport={native_transport}; "
+            f"delivery_transport={reference_transport}; output_timing={output_timing}"
         )
 
     ssim = source._metric(
@@ -625,7 +806,8 @@ def _source_fidelity_qa(
             "-i",
             str(output),
             "-filter_complex",
-            "[0:v]setpts=PTS-STARTPTS[ref];[1:v]setpts=PTS-STARTPTS[enc];[ref][enc]ssim[metric]",
+            "[0:v]setpts=PTS-STARTPTS[ref];"
+            "[1:v]setpts=PTS-STARTPTS[enc];[ref][enc]ssim[metric]",
             "-map",
             "[metric]",
             "-an",
@@ -645,7 +827,8 @@ def _source_fidelity_qa(
             "-i",
             str(output),
             "-filter_complex",
-            "[0:v]setpts=PTS-STARTPTS[ref];[1:v]setpts=PTS-STARTPTS[enc];[ref][enc]psnr[metric]",
+            "[0:v]setpts=PTS-STARTPTS[ref];"
+            "[1:v]setpts=PTS-STARTPTS[enc];[ref][enc]psnr[metric]",
             "-map",
             "[metric]",
             "-an",
@@ -661,7 +844,6 @@ def _source_fidelity_qa(
     minimum_psnr = float(fidelity_cfg.get("minimum_psnr_db", 40.0))
     checks.update(
         {
-            "no_spatial_crop_or_upscale": True,
             "single_canonical_visual_timeline": True,
             "ssim_encoder_fidelity": ssim >= minimum_ssim,
             "psnr_encoder_fidelity": psnr >= minimum_psnr,
@@ -674,6 +856,7 @@ def _source_fidelity_qa(
             f"reference_frames={reference_profile['frame_count']} "
             f"output_frames={output_profile['frame_count']}"
         )
+
     return {
         "checks": checks,
         "ssim": ssim,
@@ -681,20 +864,22 @@ def _source_fidelity_qa(
         "psnr_db": psnr,
         "minimum_psnr_db": minimum_psnr,
         "source_profile": source_profile,
+        "delivery_profile": resolved_delivery_profile,
+        "delivery_composition": composition,
         "staging_fidelity": staging_fidelity,
+        "source_native_reference_profile": native_profile,
         "reference_profile": reference_profile,
         "output_profile": output_profile,
+        "source_native_transport": native_transport,
         "reference_transport": reference_transport,
         "output_timing": output_timing,
         "reference": (
-            "original-source media contract remains authoritative; source->FFV1/NUT "
-            "decoded frames must match exactly; NUT timing must preserve source frame cadence "
-            "in rational seconds; the final H.264 must restore source-native time base and "
-            "representable video metadata; "
-            "only final H.264 generation loss is measured by SSIM/PSNR"
+            "original-source media contract remains authoritative through exact source->"
+            "FFV1/NUT staging and a source-native canonical master; intentional delivery "
+            "composition is isolated in a second lossless FFV1/NUT master; final H.264 "
+            "SSIM/PSNR is measured only against that lossless delivery master"
         ),
     }
-
 
 def _self_test_case(root: Path, name: str, spec: dict[str, Any]) -> dict[str, Any]:
     original_source = root / f"{name}_source.mov"

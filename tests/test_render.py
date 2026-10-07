@@ -6,6 +6,7 @@ import pytest
 
 from clipper.models import ClipCandidate, TranscriptSegment
 from clipper.render import FFmpegRenderer, RenderError, build_ffmpeg_command, create_srt
+from clipper_engine.rendering import delivery
 
 
 def test_create_srt_rebases_and_clamps_segments(tmp_path: Path) -> None:
@@ -111,3 +112,30 @@ def test_create_srt_strips_youtube_speaker_marker(tmp_path: Path) -> None:
     content = path.read_text(encoding="utf-8")
     assert ">>" not in content
     assert "Speaker turn starts here." in content
+
+
+def test_delivery_profile_allows_vertical_full_frame_composition() -> None:
+    source_profile = {
+        "width": 3840,
+        "height": 2160,
+        "sample_aspect_ratio": "1:1",
+        "display_aspect_ratio": "16:9",
+    }
+    config = {
+        "output": {
+            "width": 1080,
+            "height": 1920,
+            "full_source_frame": True,
+        }
+    }
+    profile = delivery.profile_for_output(source_profile, config)
+    graph = delivery.full_frame_filter(1080, 1920)
+
+    assert profile["width"] == 1080
+    assert profile["height"] == 1920
+    assert profile["display_aspect_ratio"] == "9:16"
+    assert delivery.composition_required(source_profile, config) is True
+    assert "force_original_aspect_ratio=decrease" in graph
+    assert "flags=lanczos" in graph
+    assert "crop=360:640" in graph
+    assert "overlay=(W-w)/2:(H-h)/2" in graph

@@ -36,7 +36,9 @@ def test_campaign_override_deep_merges_canonical_mw4_profile() -> None:
     assert profile.config["semantic_editor"]["minimum_output_seconds"] == 10
     assert profile.config["semantic_editor"]["maximum_output_seconds"] == 12
     assert profile.config["duplicate_policy"]["finishing_move_exclusive"] is True
-    assert profile.config["output"]["width"] == "source"
+    assert profile.config["output"]["width"] == 1080
+    assert profile.config["output"]["height"] == 1920
+    assert profile.config["output"]["full_source_frame"] is True
     assert profile.config["output"]["fps"] == "source"
 
 
