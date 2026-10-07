@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from .. import media_contract as media
-from . import delivery, source_fidelity as source
+from . import delivery
+from . import source_fidelity as source
 
 NUT_NON_AUTHORITATIVE_VIDEO_METADATA = (
     "color_range",
