@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from . import analysis, features, interaction
+from . import analysis, contract, features, interaction
 
 ENGINE = "deterministic-gameplay"
 EDITOR = "semantic-editor"
@@ -14,30 +13,7 @@ CANDIDATE_MODE = "engagement_driven_hardened_source_integrity"
 
 
 def _plan_key_from_dict(plan: dict[str, Any]) -> str:
-    finishing = plan.get("finishing_move")
-    payload = {
-        "story_type": str(plan.get("story_type", "")),
-        "effect_profile": str(plan.get("effect_profile", "")),
-        "segments": [
-            [
-                round(float(segment["start"]), 3),
-                round(float(segment["end"]), 3),
-                round(float(segment.get("speed", 1.0)), 3),
-                str(segment.get("reason", "")),
-            ]
-            for segment in (plan.get("segments") or [])
-        ],
-        "finishing_move": None
-        if finishing is None
-        else [
-            round(float(finishing["start"]), 3),
-            round(float(finishing["payoff"]), 3),
-            round(float(finishing["end"]), 3),
-        ],
-    }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()[:24]
+    return contract.plan_key(plan)
 
 
 def plan_key(plan: analysis.SemanticPlan) -> str:
@@ -115,8 +91,8 @@ def _covered_verified_anchor_times(
 
 def _candidate_dict(
     plan: analysis.SemanticPlan,
-    timeline: analysis.SemanticTimeline,
-    config: dict[str, Any],
+    timeline: analysis.SemanticTimeline | None = None,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = asdict(plan)
     payload["plan_key"] = _plan_key_from_dict(payload)
@@ -126,18 +102,23 @@ def _candidate_dict(
     payload["proposal_anchor_time"] = (
         round(float(anchor_time), 3) if anchor_time is not None else None
     )
-    payload["covered_outcome_anchor_times"] = _covered_verified_anchor_times(
-        plan,
-        timeline,
-        config,
-        {"outcome_like"},
-    )
-    payload["covered_payoff_anchor_times"] = _covered_verified_anchor_times(
-        plan,
-        timeline,
-        config,
-        {"outcome_like", "impact"},
-    )
+    if timeline is not None and config is not None:
+        payload["covered_outcome_anchor_times"] = _covered_verified_anchor_times(
+            plan,
+            timeline,
+            config,
+            {"outcome_like"},
+        )
+        payload["covered_payoff_anchor_times"] = _covered_verified_anchor_times(
+            plan,
+            timeline,
+            config,
+            {"outcome_like", "impact"},
+        )
+    else:
+        payload.setdefault("covered_outcome_anchor_times", [])
+        payload.setdefault("covered_payoff_anchor_times", [])
+    payload["covered_semantic_anchor_ids"] = list(plan.covered_semantic_anchor_ids)
     return payload
 
 
@@ -228,6 +209,14 @@ def _plan_from_dict(payload: dict[str, Any]) -> analysis.SemanticPlan:
             if payload.get("quality_diagnostics") is not None
             else None
         ),
+        content_type=str(payload.get("content_type") or ""),
+        topic_id=str(payload.get("topic_id") or ""),
+        headline=str(payload.get("headline") or ""),
+        caption=str(payload.get("caption") or ""),
+        transcript_text=str(payload.get("transcript_text") or ""),
+        covered_semantic_anchor_ids=tuple(
+            str(item) for item in (payload.get("covered_semantic_anchor_ids") or [])
+        ),
     )
 
 
@@ -263,6 +252,11 @@ def analyze_source_file(
     config: dict[str, Any],
     output_dir: Path,
 ) -> dict[str, Any]:
+    if str(config.get("content_strategy", {}).get("mode") or "") == "spoken_content":
+        from .. import spoken
+
+        return spoken.analyze_source_file(source_key, source, config, output_dir)
+
     excluded = config.get("excluded_windows", {}).get(source_key, [])
     output_dir.mkdir(parents=True, exist_ok=True)
     timeline = analysis.analyze_source(source, config)

@@ -56,7 +56,11 @@ def validate_batch(
         source_allocation = dict(allocation.get("source_allocations", {}).get(source) or {})
         if int(source_allocation.get("selected_pair_conflict_count", -1)) != 0:
             failures.append(f"{source}: allocation reports selected candidate conflicts")
-        dispositions = list(source_allocation.get("outcome_dispositions") or [])
+        dispositions = list(
+            source_allocation.get("anchor_dispositions")
+            or source_allocation.get("outcome_dispositions")
+            or []
+        )
         unresolved = [
             entry
             for entry in dispositions
@@ -67,7 +71,7 @@ def validate_batch(
             }
         ]
         if unresolved:
-            failures.append(f"{source}: unresolved outcome dispositions: {unresolved}")
+            failures.append(f"{source}: unresolved semantic-anchor dispositions: {unresolved}")
 
         total_selected += selected
         total_rendered += rendered

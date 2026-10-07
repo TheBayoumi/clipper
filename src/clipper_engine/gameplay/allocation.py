@@ -6,6 +6,8 @@ from typing import Any
 
 from . import contract
 
+Anchor = float | str
+
 
 def _load(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -32,7 +34,21 @@ def _required_outcome_anchors(manifest: dict[str, Any]) -> tuple[float, ...]:
     return tuple(sorted(anchors))
 
 
-def _candidate_coverage(plan: dict[str, Any]) -> frozenset[float]:
+def _required_anchors(manifest: dict[str, Any]) -> tuple[Anchor, ...]:
+    semantic = list(manifest.get("required_semantic_anchors") or [])
+    if semantic:
+        ids = [str(item.get("id") or "") for item in semantic]
+        if any(not item for item in ids) or len(set(ids)) != len(ids):
+            raise AssertionError("required_semantic_anchors require unique non-empty ids")
+        return tuple(sorted(ids))
+    return _required_outcome_anchors(manifest)
+
+
+def _candidate_coverage(plan: dict[str, Any]) -> frozenset[Anchor]:
+    semantic = [str(item) for item in (plan.get("covered_semantic_anchor_ids") or []) if str(item)]
+    if semantic:
+        return frozenset(semantic)
+
     explicit = plan.get("covered_outcome_anchor_times") or []
     if explicit:
         return frozenset(round(float(item), 3) for item in explicit)
@@ -76,20 +92,20 @@ def _selection_objective(
 def _solve_source(
     source: str,
     candidates: list[dict[str, Any]],
-    required_outcomes: set[float],
+    required_outcomes: set[Anchor],
     require_finishing_move: bool,
     config: dict[str, Any],
 ) -> list[dict[str, Any]]:
     coverage = [_candidate_coverage(plan) for plan in candidates]
     finishing = [plan.get("finishing_move") is not None for plan in candidates]
 
-    outcome_union: set[float] = set()
+    coverage_union: set[Anchor] = set()
     for item in coverage:
-        outcome_union.update(item)
-    missing = sorted(required_outcomes - outcome_union)
+        coverage_union.update(item)
+    missing = sorted(required_outcomes - coverage_union, key=str)
     if missing:
         raise AssertionError(
-            f"{source}: qualified allocation input cannot cover outcome anchors {missing}"
+            f"{source}: qualified allocation input cannot cover semantic anchors {missing}"
         )
     if require_finishing_move and not any(finishing):
         raise AssertionError(f"{source}: verified Finishing Move has no valid candidate")
@@ -102,9 +118,9 @@ def _solve_source(
         for left in range(len(candidates))
     ]
 
-    token_options: dict[tuple[str, float | str], tuple[int, ...]] = {}
-    for anchor in sorted(required_outcomes):
-        token_options[("outcome", anchor)] = tuple(
+    token_options: dict[tuple[str, Anchor], tuple[int, ...]] = {}
+    for anchor in sorted(required_outcomes, key=str):
+        token_options[("anchor", anchor)] = tuple(
             index for index, item in enumerate(coverage) if anchor in item
         )
     if require_finishing_move:
@@ -113,10 +129,10 @@ def _solve_source(
         )
 
     required_tokens = frozenset(token_options)
-    candidate_tokens: list[frozenset[tuple[str, float | str]]] = []
+    candidate_tokens: list[frozenset[tuple[str, Anchor]]] = []
     for index in range(len(candidates)):
-        tokens: set[tuple[str, float | str]] = {
-            ("outcome", anchor) for anchor in coverage[index] if anchor in required_outcomes
+        tokens: set[tuple[str, Anchor]] = {
+            ("anchor", anchor) for anchor in coverage[index] if anchor in required_outcomes
         }
         if require_finishing_move and finishing[index]:
             tokens.add(("finishing", source))
@@ -126,7 +142,7 @@ def _solve_source(
     best_objective: tuple[int, float, float, tuple[str, ...]] | None = None
     visited: set[frozenset[int]] = set()
 
-    def search(selected: frozenset[int], covered: frozenset[tuple[str, float | str]]) -> None:
+    def search(selected: frozenset[int], covered: frozenset[tuple[str, Anchor]]) -> None:
         nonlocal best, best_objective
         if selected in visited:
             return
@@ -144,7 +160,7 @@ def _solve_source(
             return
 
         uncovered = required_tokens - covered
-        viable: list[tuple[int, tuple[str, float | str], tuple[int, ...]]] = []
+        viable: list[tuple[int, tuple[str, Anchor], tuple[int, ...]]] = []
         for token in uncovered:
             options = tuple(
                 index
@@ -165,10 +181,7 @@ def _solve_source(
                 str(candidates[item].get("plan_key", "")),
             ),
         ):
-            search(
-                selected | {index},
-                covered | candidate_tokens[index],
-            )
+            search(selected | {index}, covered | candidate_tokens[index])
 
     search(frozenset(), frozenset())
     if best is None:
@@ -181,8 +194,8 @@ def _solve_source(
             for index in range(len(candidates))
         }
         raise AssertionError(
-            f"{source}: no conflict-free allocation covers all qualified outcomes; "
-            f"required={sorted(required_outcomes)} conflicts={conflict_summary}"
+            f"{source}: no conflict-free allocation covers all qualified semantic anchors; "
+            f"required={sorted(required_outcomes, key=str)} conflicts={conflict_summary}"
         )
 
     return [candidates[index] for index in best]
@@ -193,19 +206,23 @@ def allocation_rejection_diagnostics(root: Path) -> dict[str, Any]:
     by_source = {
         str(item.get("source_key", "")): item for item in manifests if item.get("source_key")
     }
-    return {
-        "schema_version": 1,
-        "status": "REJECTED",
-        "sources": {
-            source: {
+    sources: dict[str, Any] = {}
+    for source, manifest in by_source.items():
+        if manifest.get("required_semantic_anchors"):
+            sources[source] = {
+                "required_semantic_anchors": list(manifest.get("required_semantic_anchors") or []),
+                "spoken_content_diagnostics": dict(
+                    (manifest.get("diagnostics") or {}).get("spoken_content") or {}
+                ),
+            }
+        else:
+            sources[source] = {
                 "required_outcome_anchors": list(_required_outcome_anchors(manifest)),
                 "proposal_diagnostics": dict(
                     (manifest.get("diagnostics") or {}).get("proposal_diagnostics") or {}
                 ),
             }
-            for source, manifest in by_source.items()
-        },
-    }
+    return {"schema_version": 2, "status": "REJECTED", "sources": sources}
 
 
 def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
@@ -224,14 +241,17 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
     total_selected = 0
     total_verified_finishers = 0
     total_selected_finishers = 0
+    expected_engine = contract.expected_semantic_engine(config)
+    expected_editor = contract.expected_editorial_planner(config)
+    expected_mode = contract.expected_candidate_mode(config)
 
     for source in source_order:
         manifest = by_source[source]
-        if manifest.get("semantic_engine") != contract.EXPECTED_ENGINE:
+        if manifest.get("semantic_engine") != expected_engine:
             raise AssertionError(f"{source}: wrong semantic engine in analysis")
-        if manifest.get("editorial_planner") != contract.EXPECTED_EDITOR:
+        if manifest.get("editorial_planner") != expected_editor:
             raise AssertionError(f"{source}: wrong editorial planner in analysis")
-        if manifest.get("candidate_mode") != contract.EXPECTED_MODE:
+        if manifest.get("candidate_mode") != expected_mode:
             raise AssertionError(f"{source}: wrong candidate mode in analysis")
         if manifest.get("failure"):
             raise AssertionError(f"{source}: analysis failure: {manifest['failure']}")
@@ -247,27 +267,52 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
                 continue
             valid.append(plan)
 
-        required = set(_required_outcome_anchors(manifest))
+        required = set(_required_anchors(manifest))
         union = set().union(*(_candidate_coverage(plan) for plan in valid)) if valid else set()
-        qualified = required & union
-        diagnostics = _anchor_diagnostics(manifest)
+        is_spoken = bool(manifest.get("required_semantic_anchors"))
+        if is_spoken:
+            missing_required = sorted(required - union, key=str)
+            if missing_required:
+                raise AssertionError(
+                    f"{source}: required semantic anchors have no legal candidates: "
+                    f"{missing_required}"
+                )
+            qualified = set(required)
+        else:
+            qualified = required & union
+
         dispositions: list[dict[str, Any]] = []
-        unresolved: list[float] = []
-        for anchor in sorted(required):
+        unresolved: list[Anchor] = []
+        diagnostics = _anchor_diagnostics(manifest) if not is_spoken else {}
+        semantic_details = {
+            str(item.get("id")): dict(item)
+            for item in (manifest.get("required_semantic_anchors") or [])
+            if item.get("id")
+        }
+        for anchor in sorted(required, key=str):
             if anchor in qualified:
+                dispositions.append({"anchor": anchor, "disposition": "qualified_for_allocation"})
+                continue
+            if is_spoken:
+                detail = semantic_details.get(str(anchor))
+                if detail is None:
+                    unresolved.append(anchor)
+                    continue
                 dispositions.append(
                     {
-                        "anchor_time": anchor,
-                        "disposition": "qualified_for_allocation",
+                        "anchor": anchor,
+                        "disposition": "no_admissible_candidate",
+                        "detail": detail,
                     }
                 )
                 continue
-            detail = diagnostics.get(anchor)
+            detail = diagnostics.get(float(anchor))
             if detail is None:
                 unresolved.append(anchor)
                 continue
             dispositions.append(
                 {
+                    "anchor": anchor,
                     "anchor_time": anchor,
                     "disposition": "no_admissible_candidate",
                     "attempted_variant_count": int(detail.get("attempted_variant_count", 0)),
@@ -276,12 +321,13 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
             )
         if unresolved:
             raise AssertionError(
-                f"{source}: verified outcomes lack proposal disposition: {unresolved}"
+                f"{source}: semantic anchors lack proposal disposition: {unresolved}"
             )
 
         verified_finishers = int(manifest.get("verified_finishing_move_count", 0))
         require_finisher = bool(
-            verified_finishers
+            not is_spoken
+            and verified_finishers
             and config.get("batch_selection", {}).get(
                 "require_verified_finishing_move_when_available", True
             )
@@ -290,10 +336,11 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         selected_coverage = (
             set().union(*(_candidate_coverage(plan) for plan in selected)) if selected else set()
         )
-        uncovered_qualified = sorted(qualified - selected_coverage)
+        uncovered_qualified = sorted(qualified - selected_coverage, key=str)
         if uncovered_qualified:
             raise AssertionError(
-                f"{source}: allocation left qualified outcomes uncovered: {uncovered_qualified}"
+                f"{source}: allocation left qualified semantic anchors uncovered: "
+                f"{uncovered_qualified}"
             )
 
         for item in dispositions:
@@ -302,7 +349,7 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
                 item["selected_plan_keys"] = [
                     str(plan["plan_key"])
                     for plan in selected
-                    if float(item["anchor_time"]) in _candidate_coverage(plan)
+                    if item["anchor"] in _candidate_coverage(plan)
                 ]
 
         pair_conflicts = [
@@ -317,14 +364,16 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         selected_finishers = sum(1 for plan in selected if plan.get("finishing_move") is not None)
         allocations[source] = {
             "count": len(selected),
+            "content_type": manifest.get("content_type"),
             "plan_keys": [str(plan["plan_key"]) for plan in selected],
             "plans": selected,
             "qualified_candidate_count": len(valid),
             "rejected_by_contract": rejected_by_contract,
-            "required_outcome_anchor_count": len(required),
-            "qualified_outcome_anchor_count": len(qualified),
-            "covered_qualified_outcome_anchor_count": len(qualified),
-            "outcome_dispositions": dispositions,
+            "required_anchor_count": len(required),
+            "qualified_anchor_count": len(qualified),
+            "covered_qualified_anchor_count": len(qualified),
+            "anchor_dispositions": dispositions,
+            "outcome_dispositions": dispositions if not is_spoken else [],
             "selected_pair_conflict_count": 0,
         }
         total_selected += len(selected)
@@ -335,14 +384,14 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         raise AssertionError("verified Finishing Move exists but allocation selected none")
 
     return {
-        "schema_version": 1,
-        "semantic_engine": contract.EXPECTED_ENGINE,
-        "editorial_planner": contract.EXPECTED_EDITOR,
-        "candidate_mode": contract.EXPECTED_MODE,
+        "schema_version": 2,
+        "semantic_engine": expected_engine,
+        "editorial_planner": expected_editor,
+        "candidate_mode": expected_mode,
         "allocation_mode": "coverage_conflict_before_render",
         "selection_basis": (
-            "cover every qualified verified outcome, minimize clip count and source overlap, "
-            "then maximize editorial quality deterministically"
+            "cover every qualified required semantic anchor, avoid source conflicts, "
+            "minimize redundant clips, then maximize editorial quality deterministically"
         ),
         "source_order": list(source_order),
         "target_count": total_selected,
@@ -360,13 +409,7 @@ def self_test() -> None:
     manifest = {
         "diagnostics": {
             "local_interaction_verifier": {
-                "events": [
-                    {
-                        "time": 1.0,
-                        "kinds": ["outcome_like"],
-                        "confirmed": True,
-                    }
-                ],
+                "events": [{"time": 1.0, "kinds": ["outcome_like"], "confirmed": True}],
                 "verified_hostile_event_assignment": [
                     {
                         "time": 2.0,
@@ -387,4 +430,15 @@ def self_test() -> None:
         raise AssertionError(
             "allocation required outcomes are not sourced from canonical hostile verification"
         )
-    print("gameplay required-outcome authority self-test: PASS")
+    spoken_manifest = {
+        "required_semantic_anchors": [
+            {"id": "developer:freedom"},
+            {"id": "developer:persistence"},
+        ]
+    }
+    if _required_anchors(spoken_manifest) != (
+        "developer:freedom",
+        "developer:persistence",
+    ):
+        raise AssertionError("allocation did not preserve declarative semantic anchors")
+    print("gameplay required-anchor authority self-test: PASS")

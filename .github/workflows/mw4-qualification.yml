@@ -2,6 +2,20 @@ name: MW4 production qualification
 
 on:
   workflow_dispatch:
+    inputs:
+      config_path:
+        description: Optional MW4 campaign/profile override committed in this repository
+        required: false
+        default: ""
+        type: string
+      render_mode:
+        description: Qualification render mode
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+          - shadow
   push:
     branches:
       - feat/mw4-fullframe-retention-v3-1
@@ -9,16 +23,21 @@ on:
       - .github/workflows/mw4-qualification.yml
       - .github/mw4-production-trigger
       - pyproject.toml
+      - campaigns/mw4-*.json
       - src/clipper_engine/profiles/mw4.json
       - src/clipper/cli.py
       - src/clipper_engine/**/*.py
 
 concurrency:
-  group: mw4-production-${{ github.ref }}
+  group: mw4-qualification-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.render_mode || 'production' }}
   cancel-in-progress: true
 
 permissions:
   contents: read
+
+env:
+  MW4_CONFIG_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.config_path || '' }}
+  MW4_RENDER_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.render_mode || 'production' }}
 
 jobs:
   discover-sources:
@@ -41,14 +60,30 @@ jobs:
       - name: Verify canonical MW4 CLI architecture
         run: |
           set -euo pipefail
-          clipper mw4 self-test
-      - name: Discover every original video master through Clipper CLI
+          CONFIG_ARGS=()
+          if [[ -n "$MW4_CONFIG_PATH" ]]; then
+            CONFIG_ARGS+=(--config "$MW4_CONFIG_PATH")
+          fi
+          clipper mw4 self-test "${CONFIG_ARGS[@]}"
+      - name: Discover every configured MediaSilo video asset through Clipper CLI
         id: catalog
         run: |
           set -euo pipefail
+          CONFIG_ARGS=()
+          if [[ -n "$MW4_CONFIG_PATH" ]]; then
+            CONFIG_ARGS+=(--config "$MW4_CONFIG_PATH")
+          fi
           clipper mw4 discover \
+            "${CONFIG_ARGS[@]}" \
             --output /tmp/source_catalog.json \
-            --github-output "$GITHUB_OUTPUT" \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Upload source catalog
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-qualification-source-catalog
+          path: /tmp/source_catalog.json
+          retention-days: 3
+          if-no-files-found: error
 
   analyze:
     name: analyze-${{ matrix.source }}
@@ -64,6 +99,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Cache speech models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: mw4-faster-whisper-${{ runner.os }}-base-en-v1
       - name: Install Clipper MW4 CLI analysis runtime
         run: |
           python -m pip install --upgrade pip
@@ -72,7 +112,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
       - name: Resolve, certify, analyze, and diagnose source through Clipper CLI
-        timeout-minutes: 30
+        timeout-minutes: 35
         env:
           SOURCE_KEY: ${{ matrix.source }}
           OMP_NUM_THREADS: '2'
@@ -82,30 +122,35 @@ jobs:
           MALLOC_ARENA_MAX: '2'
         run: |
           set -euo pipefail
+          CONFIG_ARGS=()
+          if [[ -n "$MW4_CONFIG_PATH" ]]; then
+            CONFIG_ARGS+=(--config "$MW4_CONFIG_PATH")
+          fi
           nice -n 5 clipper mw4 analyze \
+            "${CONFIG_ARGS[@]}" \
             --source-key "$SOURCE_KEY" \
             --source-dir raw_sources \
             --output-dir "analysis/$SOURCE_KEY"
-      - name: Upload verified source reel for isolated render workspaces
+      - name: Upload certified analysis source for isolated render workspaces
         uses: actions/upload-artifact@v4
         with:
-          name: MW4-production-source-${{ matrix.source }}
+          name: MW4-qualification-source-${{ matrix.source }}
           path: |
             raw_sources/${{ matrix.source }}.mp4
             raw_sources/${{ matrix.source }}.source_qa.json
           retention-days: 1
           compression-level: 0
           if-no-files-found: error
-      - name: Upload analysis manifest
+      - name: Upload analysis and transcript manifests
         uses: actions/upload-artifact@v4
         with:
-          name: MW4-production-analysis-${{ matrix.source }}
-          path: analysis/${{ matrix.source }}/${{ matrix.source }}_analysis.json
+          name: MW4-qualification-analysis-${{ matrix.source }}
+          path: analysis/${{ matrix.source }}/*.json
           retention-days: 3
           if-no-files-found: error
 
   allocate:
-    name: orchestrator-derived-clip-cardinality
+    name: coverage-conflict-allocation
     needs: analyze
     runs-on: ubuntu-24.04
     outputs:
@@ -124,15 +169,20 @@ jobs:
       - name: Download all analysis manifests
         uses: actions/download-artifact@v4
         with:
-          pattern: MW4-production-analysis-*
+          pattern: MW4-qualification-analysis-*
           path: analysis-manifests
           merge-multiple: true
       - name: Derive clip cardinality and render matrix through Clipper CLI
         id: allocate
         run: |
           set -euo pipefail
+          CONFIG_ARGS=()
+          if [[ -n "$MW4_CONFIG_PATH" ]]; then
+            CONFIG_ARGS+=(--config "$MW4_CONFIG_PATH")
+          fi
           mkdir -p allocation
           clipper mw4 allocate \
+            "${CONFIG_ARGS[@]}" \
             --analysis-root analysis-manifests \
             --allocation-out allocation/mw4_allocation.json \
             --rejection-out allocation/mw4_allocation_rejection.json \
@@ -141,20 +191,20 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: MW4-production-allocation-rejection
+          name: MW4-qualification-allocation-rejection
           path: allocation/mw4_allocation_rejection.json
           retention-days: 3
           if-no-files-found: error
       - name: Upload approved global allocation
         uses: actions/upload-artifact@v4
         with:
-          name: MW4-production-allocation
+          name: MW4-qualification-allocation
           path: allocation/mw4_allocation.json
           retention-days: 3
           if-no-files-found: error
 
   render-one:
-    name: complete-${{ matrix.clip_id }}
+    name: ${{ inputs.render_mode || 'production' }}-${{ matrix.clip_id }}
     needs: allocate
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
@@ -172,18 +222,18 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[mw4]"
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
       - name: Download approved allocation
         uses: actions/download-artifact@v4
         with:
-          name: MW4-production-allocation
+          name: MW4-qualification-allocation
           path: allocation
-      - name: Download already-certified source reel
+      - name: Download already-certified analysis source
         uses: actions/download-artifact@v4
         with:
-          name: MW4-production-source-${{ matrix.source }}
+          name: MW4-qualification-source-${{ matrix.source }}
           path: raw_sources
-      - name: Verify, render, and QA clip through Clipper CLI
+      - name: Verify source, render, and QA clip through Clipper CLI
         timeout-minutes: 65
         env:
           SOURCE_KEY: ${{ matrix.source }}
@@ -194,18 +244,23 @@ jobs:
           MALLOC_ARENA_MAX: '2'
         run: |
           set -euo pipefail
+          CONFIG_ARGS=()
+          if [[ -n "$MW4_CONFIG_PATH" ]]; then
+            CONFIG_ARGS+=(--config "$MW4_CONFIG_PATH")
+          fi
           nice -n 5 clipper mw4 render-one \
+            "${CONFIG_ARGS[@]}" \
             --source-key "$SOURCE_KEY" \
             --source-dir raw_sources \
             --allocation allocation/mw4_allocation.json \
             --plan-key "${{ matrix.plan_key }}" \
             --ordinal "${{ matrix.ordinal }}" \
             --output-dir one \
-            --mode production
+            --mode "$MW4_RENDER_MODE"
       - name: Upload qualification video
         uses: actions/upload-artifact@v4
         with:
-          name: MW4-production-video-${{ matrix.clip_id }}
+          name: MW4-qualification-video-${{ matrix.clip_id }}
           path: one/*.mp4
           retention-days: 3
           compression-level: 0
@@ -213,7 +268,7 @@ jobs:
       - name: Upload clip QA metadata
         uses: actions/upload-artifact@v4
         with:
-          name: MW4-production-meta-${{ matrix.clip_id }}
+          name: MW4-qualification-meta-${{ matrix.clip_id }}
           path: |
             one/*_clip_result.json
             one/contact_sheets/*.jpg
@@ -238,25 +293,30 @@ jobs:
       - name: Download approved allocation
         uses: actions/download-artifact@v4
         with:
-          name: MW4-production-allocation
+          name: MW4-qualification-allocation
           path: allocation
       - name: Download clip metadata only
         uses: actions/download-artifact@v4
         with:
-          pattern: MW4-production-meta-*
+          pattern: MW4-qualification-meta-*
           path: clip-meta
           merge-multiple: true
       - name: Enforce complete adaptive batch contract through Clipper CLI
         run: |
           set -euo pipefail
+          CONFIG_ARGS=()
+          if [[ -n "$MW4_CONFIG_PATH" ]]; then
+            CONFIG_ARGS+=(--config "$MW4_CONFIG_PATH")
+          fi
           clipper mw4 batch-contract \
+            "${CONFIG_ARGS[@]}" \
             --allocation allocation/mw4_allocation.json \
             --clip-meta clip-meta \
             --output-dir batch
       - name: Upload batch contract
         uses: actions/upload-artifact@v4
         with:
-          name: MW4-production-batch-contract
+          name: MW4-qualification-batch-contract
           path: batch/*.json
           retention-days: 3
           if-no-files-found: error

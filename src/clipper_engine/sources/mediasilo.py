@@ -149,17 +149,88 @@ def _quicklink_is_expired(expires_ms: Any, now_ms: int | None = None) -> bool:
     return expires <= current
 
 
+def _spotlight_identifier(url: str) -> str | None:
+    parts = [part for part in urllib.parse.urlparse(url).path.split("/") if part]
+    try:
+        index = parts.index("spotlight")
+        return parts[index + 1]
+    except (ValueError, IndexError):
+        return None
+
+
+def _spotlight_template_assets(html: str, presentation_id: str) -> list[dict[str, Any]]:
+    marker = "window.template ="
+    start = html.find(marker)
+    if start < 0:
+        raise RuntimeError("MediaSilo Spotlight page did not expose window.template payload")
+    payload_text = html[start + len(marker) :].lstrip()
+    try:
+        template, _ = json.JSONDecoder().raw_decode(payload_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("MediaSilo Spotlight template payload is invalid JSON") from exc
+    if not isinstance(template, dict):
+        raise RuntimeError("MediaSilo Spotlight template payload is not an object")
+
+    captured: dict[str, dict[str, Any]] = {}
+    for element in template.get("elements") or []:
+        if not isinstance(element, dict):
+            continue
+        provided = element.get("providedData")
+        if not isinstance(provided, dict):
+            continue
+        playlist_id = str(provided.get("playlistId") or element.get("playlistId") or "")
+        for raw_asset in provided.get("assets") or []:
+            if not isinstance(raw_asset, dict) or not _is_asset_payload(raw_asset):
+                continue
+            asset = dict(raw_asset)
+            asset["_presentation_id"] = presentation_id
+            asset["_playlist_id"] = playlist_id
+            captured[_asset_identity(asset)] = asset
+    if not captured:
+        raise RuntimeError("MediaSilo Spotlight template contains no asset payloads")
+    return list(captured.values())
+
+
+def _capture_spotlight_assets(
+    spotlight_url: str,
+    expected_count: int | None = None,
+) -> list[dict[str, Any]]:
+    presentation_id = _spotlight_identifier(spotlight_url)
+    if not presentation_id:
+        raise RuntimeError(f"invalid MediaSilo Spotlight URL: {spotlight_url}")
+    request = urllib.request.Request(  # noqa: S310 - HTTPS validated below.
+        spotlight_url,
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    parsed = urllib.parse.urlparse(spotlight_url)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise RuntimeError("refusing non-HTTPS MediaSilo Spotlight URL")
+    with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+        html = response.read().decode("utf-8", errors="replace")
+    assets = _spotlight_template_assets(html, presentation_id)
+    if expected_count is not None and len(assets) < expected_count:
+        raise RuntimeError(
+            "MediaSilo Spotlight exposed an incomplete asset set; "
+            f"captured={len(assets)} expected_at_least={expected_count}"
+        )
+    print(f"MediaSilo Spotlight assets resolved count={len(assets)}")
+    return assets
+
+
 def capture_assets(
     review_url: str,
     expected_count: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Capture source-catalog assets from the public MediaSilo review session.
+    """Capture source-catalog assets from a public MediaSilo share.
 
-    MediaSilo review pages have used both folder-assets and QuickLink-assets REST
-    routes. Both are provider-native representations of the same review asset set.
-    The response is accepted only when it contains real asset objects with derivative
-    metadata; downstream selection still requires an original type=source derivative.
+    Spotlight pages expose a server-rendered asset payload and do not need browser
+    automation. Legacy Review/QuickLink pages retain the provider-native browser
+    capture route below. Downstream source policy still decides which derivative
+    type is admissible.
     """
+    if _spotlight_identifier(review_url):
+        return _capture_spotlight_assets(review_url, expected_count)
+
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -418,8 +489,9 @@ def resolve(source_key: str, review_url: str, output: Path) -> dict[str, Any]:
 
 def download(resolved_path: Path, target: Path) -> None:
     selected = json.loads(resolved_path.read_text(encoding="utf-8"))
-    if str(selected.get("derivative_type") or "").lower() != "source":
-        raise RuntimeError("refusing non-source MediaSilo derivative before download")
+    derivative_type = str(selected.get("derivative_type") or "").lower()
+    if derivative_type not in {"source", "proxy"}:
+        raise RuntimeError(f"unsupported MediaSilo derivative before download: {derivative_type!r}")
     url = str(selected.get("url") or "")
     if not url:
         raise RuntimeError("resolved MediaSilo source URL is missing")
@@ -443,7 +515,7 @@ def download(resolved_path: Path, target: Path) -> None:
             output.write(block)
     if target.stat().st_size <= 0:
         raise RuntimeError(f"downloaded MediaSilo source is empty: {target}")
-    print(f"downloaded original source bytes={target.stat().st_size}")
+    print(f"downloaded MediaSilo {derivative_type} bytes={target.stat().st_size}")
 
 
 def self_test() -> None:

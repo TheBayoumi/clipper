@@ -164,8 +164,17 @@ def _encode_from_canonical_master(
 ) -> None:
     timing = _timing(source_profile)
     encoder_args = renderer._encode_args(config, mode)
-    if str(config.get("output", {}).get("codec", "")).lower() == "libx264" or mode == "shadow":
+    uses_x264 = (
+        str(config.get("output", {}).get("codec", "")).lower() == "libx264" or mode == "shadow"
+    )
+    if uses_x264:
+        # x264 VUI parameters restore source color metadata without asking FFmpeg's
+        # colorspace option to transform pixels whose NUT metadata is intentionally
+        # non-authoritative. The latter silently changes decoded pixels.
         encoder_args = media.merge_x264_params(encoder_args, media.x264_vui_params(source_profile))
+        profile_args = ["-pix_fmt", str(source_profile["pix_fmt"])]
+    else:
+        profile_args = media.profile_output_args(source_profile)
     media.run(
         [
             "ffmpeg",
@@ -180,11 +189,11 @@ def _encode_from_canonical_master(
             "-map",
             "0:a:0",
             *encoder_args,
-            *media.profile_output_args(source_profile),
+            *profile_args,
             "-video_track_timescale",
             str(timing.track_timescale),
             "-threads:v",
-            "4",
+            str(int(config.get("runtime", {}).get("encoder_threads", 4))),
             "-vsync",
             "0",
             "-movflags",

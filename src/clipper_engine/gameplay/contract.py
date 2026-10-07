@@ -20,6 +20,18 @@ def _write(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def expected_semantic_engine(config: dict[str, Any]) -> str:
+    return str(config.get("content_strategy", {}).get("semantic_engine") or EXPECTED_ENGINE)
+
+
+def expected_editorial_planner(config: dict[str, Any]) -> str:
+    return str(config.get("content_strategy", {}).get("editorial_planner") or EXPECTED_EDITOR)
+
+
+def expected_candidate_mode(config: dict[str, Any]) -> str:
+    return str(config.get("content_strategy", {}).get("candidate_mode") or EXPECTED_MODE)
+
+
 def validate_configuration(config: dict[str, Any]) -> None:
     errors: list[str] = []
     if "fallback_policy" in config:
@@ -45,53 +57,64 @@ def validate_configuration(config: dict[str, Any]) -> None:
     maximum_output = float(semantic_editor.get("maximum_output_seconds", 12.0))
     preferred_output = float(semantic_editor.get("preferred_output_seconds", 11.0))
     if abs(minimum_output - 10.0) > _EPS or abs(maximum_output - 12.0) > _EPS:
-        errors.append("gameplay clip duration contract must be exactly 10-12 seconds")
+        errors.append("clip duration contract must be exactly 10-12 seconds")
     if not minimum_output - _EPS <= preferred_output <= maximum_output + _EPS:
         errors.append("preferred_output_seconds must remain inside the 10-12 second contract")
 
-    editorial = config.get("editorial", {})
-    for key in (
-        "finishing_move_allow_semantic_montage_continuation",
-        "finishing_move_allow_verified_combat_island_continuation",
-        "finishing_move_montage_max_output_seconds",
-    ):
-        if key in editorial:
-            errors.append(f"obsolete editorial key must be removed: {key}")
-    first_gap = float(editorial.get("finishing_move_max_continuation_gap_seconds", 0.0))
-    body_gap = float(editorial.get("finishing_move_body_hard_cut_max_source_gap_seconds", 0.0))
-    if first_gap <= 0.0:
-        errors.append("finishing_move_max_continuation_gap_seconds must be positive")
-    if body_gap <= 0.0 or body_gap > first_gap + _EPS:
-        errors.append(
-            "finishing_move_body_hard_cut_max_source_gap_seconds must be positive "
-            "and <= first continuation reach"
-        )
+    strategy_mode = str(config.get("content_strategy", {}).get("mode") or "gameplay")
+    if strategy_mode == "spoken_content":
+        capability = config.get("capabilities", {}).get("spoken_content_detection", {})
+        if capability.get("enabled") is not True:
+            errors.append("spoken_content strategy requires spoken_content_detection capability")
+        publishing = dict(config.get("publishing") or {})
+        if publishing.get("on_screen_text_required") is not True:
+            errors.append("spoken_content strategy requires on-screen text")
+        if not config.get("spoken_content", {}).get("source_roles"):
+            errors.append("spoken_content strategy requires source_roles")
+        if not config.get("spoken_content", {}).get("topics"):
+            errors.append("spoken_content strategy requires topics")
+    else:
+        editorial = config.get("editorial", {})
+        for key in (
+            "finishing_move_allow_semantic_montage_continuation",
+            "finishing_move_allow_verified_combat_island_continuation",
+            "finishing_move_montage_max_output_seconds",
+        ):
+            if key in editorial:
+                errors.append(f"obsolete editorial key must be removed: {key}")
+        first_gap = float(editorial.get("finishing_move_max_continuation_gap_seconds", 0.0))
+        body_gap = float(editorial.get("finishing_move_body_hard_cut_max_source_gap_seconds", 0.0))
+        if first_gap <= 0.0:
+            errors.append("finishing_move_max_continuation_gap_seconds must be positive")
+        if body_gap <= 0.0 or body_gap > first_gap + _EPS:
+            errors.append(
+                "finishing_move_body_hard_cut_max_source_gap_seconds must be positive "
+                "and <= first continuation reach"
+            )
 
-    if "allow_planned_transition_for_semantic_montage" in config.get("source_integrity", {}):
-        errors.append("obsolete semantic-montage source transition key must be removed")
-    if "allow_unverified_automatic" in config.get("finishing_move_detector", {}):
-        errors.append("automatic Finishing Move acceptance switch must be removed")
+        if "allow_planned_transition_for_semantic_montage" in config.get("source_integrity", {}):
+            errors.append("obsolete semantic-montage source transition key must be removed")
+        if "allow_unverified_automatic" in config.get("finishing_move_detector", {}):
+            errors.append("automatic Finishing Move acceptance switch must be removed")
 
-    verifier = config.get("combat_state_verifier", {})
-    local = verifier.get("local_interaction_verifier", {})
-    if verifier.get("enabled") is not True:
-        errors.append("combat_state_verifier.enabled must be true")
-    if local.get("enabled") is not True:
-        errors.append("local_interaction_verifier.enabled must be true")
-    continuation = verifier.get("finishing_continuation", {})
-    if continuation.get("require_verified_payoff") is not True:
-        errors.append("Finishing Move continuation must require verified payoff")
-    for key in (
-        "minimum_verified_hostile_anchors_without_payoff",
-        "minimum_retention_without_payoff",
-    ):
-        if key in continuation:
-            errors.append(f"obsolete no-payoff continuation key must be removed: {key}")
+        verifier = config.get("combat_state_verifier", {})
+        local = verifier.get("local_interaction_verifier", {})
+        if verifier.get("enabled") is not True:
+            errors.append("combat_state_verifier.enabled must be true")
+        if local.get("enabled") is not True:
+            errors.append("local_interaction_verifier.enabled must be true")
+        continuation = verifier.get("finishing_continuation", {})
+        if continuation.get("require_verified_payoff") is not True:
+            errors.append("Finishing Move continuation must require verified payoff")
+        for key in (
+            "minimum_verified_hostile_anchors_without_payoff",
+            "minimum_retention_without_payoff",
+        ):
+            if key in continuation:
+                errors.append(f"obsolete no-payoff continuation key must be removed: {key}")
 
     if errors:
-        raise AssertionError(
-            "MW4 V3.1 canonical contract configuration violation: " + "; ".join(errors)
-        )
+        raise AssertionError("Clipper gameplay-profile contract violation: " + "; ".join(errors))
 
 
 def plan_key(plan: dict[str, Any]) -> str:
@@ -99,6 +122,9 @@ def plan_key(plan: dict[str, Any]) -> str:
     payload = {
         "story_type": str(plan.get("story_type", "")),
         "effect_profile": str(plan.get("effect_profile", "")),
+        "content_type": str(plan.get("content_type", "")),
+        "topic_id": str(plan.get("topic_id", "")),
+        "headline": str(plan.get("headline", "")),
         "segments": [
             [
                 round(float(segment["start"]), 3),
@@ -359,7 +385,19 @@ def validate_plan(
     if residual < 0.0:
         failures.append(f"{source} clip {index}: negative unexplained low-interest run")
 
-    failures.extend(_finishing_plan_failures(source, index, plan, config))
+    if str(config.get("content_strategy", {}).get("mode") or "") == "spoken_content":
+        if not str(plan.get("content_type") or ""):
+            failures.append(f"{source} clip {index}: spoken plan has no content_type")
+        if not str(plan.get("topic_id") or ""):
+            failures.append(f"{source} clip {index}: spoken plan has no topic_id")
+        if not str(plan.get("headline") or "").strip():
+            failures.append(f"{source} clip {index}: spoken plan has no on-screen headline")
+        if not str(plan.get("transcript_text") or "").strip():
+            failures.append(f"{source} clip {index}: spoken plan has no transcript evidence")
+        if not (plan.get("covered_semantic_anchor_ids") or []):
+            failures.append(f"{source} clip {index}: spoken plan covers no semantic anchor")
+    else:
+        failures.extend(_finishing_plan_failures(source, index, plan, config))
     return list(dict.fromkeys(failures))
 
 

@@ -62,11 +62,14 @@ def _encode_args(config: dict[str, Any], mode: str) -> list[str]:
             "-ac",
             str(settings["audio_channels"]),
         ]
+    shadow_bitrate = int(settings.get("shadow_video_bitrate_kbps", 8000))
+    shadow_maxrate = int(settings.get("shadow_maxrate_kbps", round(shadow_bitrate * 1.25)))
+    shadow_bufsize = int(settings.get("shadow_bufsize_kbps", shadow_bitrate * 2))
     return [
         "-c:v",
         "libx264",
         "-preset",
-        "superfast",
+        str(settings.get("shadow_preset", "superfast")),
         "-profile:v",
         "high",
         "-level:v",
@@ -74,24 +77,28 @@ def _encode_args(config: dict[str, Any], mode: str) -> list[str]:
         "-pix_fmt",
         "yuv420p",
         "-b:v",
-        "8M",
+        f"{shadow_bitrate}k",
         "-maxrate",
-        "10M",
+        f"{shadow_maxrate}k",
         "-bufsize",
-        "20M",
+        f"{shadow_bufsize}k",
         "-c:a",
-        "aac",
+        str(settings.get("audio_codec", "aac")),
         "-b:a",
-        "192k",
+        f"{int(settings.get('audio_bitrate_kbps', 192))}k",
         "-ar",
-        "48000",
+        str(settings.get("audio_sample_rate", 48000)),
         "-ac",
-        "2",
+        str(settings.get("audio_channels", 2)),
     ]
 
 
 def validate_output(
-    path: Path, config: dict[str, Any], *, mode: str = "production"
+    path: Path,
+    config: dict[str, Any],
+    *,
+    mode: str = "production",
+    source_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     data = probe(path)
     video = next(item for item in data["streams"] if item["codec_type"] == "video")
@@ -100,28 +107,46 @@ def validate_output(
     settings = config["output"]
     duration = float(fmt["duration"])
     bitrate = int(fmt.get("bit_rate") or video.get("bit_rate") or 0)
+
+    width_setting = settings.get("width")
+    height_setting = settings.get("height")
+    fps_setting = settings.get("fps")
+    if width_setting in (None, "source", "auto"):
+        expected_width = int((source_profile or {}).get("width") or video["width"])
+    else:
+        expected_width = int(width_setting)
+    if height_setting in (None, "source", "auto"):
+        expected_height = int((source_profile or {}).get("height") or video["height"])
+    else:
+        expected_height = int(height_setting)
+    if fps_setting in (None, "source", "auto"):
+        expected_fps = str((source_profile or {}).get("avg_frame_rate") or video["avg_frame_rate"])
+    else:
+        expected_fps = str(fps_setting)
+
     checks = {
         "duration_10_to_12s": (
             float(config["semantic_editor"].get("minimum_output_seconds", 10.0))
             <= duration
             <= float(config["semantic_editor"].get("maximum_output_seconds", 12.0))
         ),
-        "full_frame_1920x1080": (video["width"], video["height"]) == (1920, 1080),
+        "full_frame_source_geometry": (video["width"], video["height"])
+        == (expected_width, expected_height),
         "codec_h264": video["codec_name"] == "h264",
         "profile_high": str(video.get("profile", "")).lower() == "high",
-        "r_frame_rate": video["r_frame_rate"] == settings["fps"],
-        "avg_frame_rate": video["avg_frame_rate"] == settings["fps"],
-        "audio_48khz": audio["sample_rate"] == "48000",
-        "audio_stereo": audio["channels"] == 2,
+        "r_frame_rate": video["r_frame_rate"] == expected_fps,
+        "avg_frame_rate": video["avg_frame_rate"] == expected_fps,
+        "audio_48khz": audio["sample_rate"] == str(settings.get("audio_sample_rate", 48000)),
+        "audio_stereo": audio["channels"] == int(settings.get("audio_channels", 2)),
     }
     if mode == "production":
         expected = int(settings["video_bitrate_kbps"]) * 1000
-        checks["high_bitrate_near_250mbps"] = bitrate >= int(expected * 0.94)
+        checks["high_bitrate_near_target"] = bitrate >= int(expected * 0.94)
     run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"])
     if not all(checks.values()):
         raise RuntimeError(
             f"QA failed for {path.name}: {checks}; actual_r_frame_rate={video.get('r_frame_rate')} "
-            f"actual_avg_frame_rate={video.get('avg_frame_rate')}"
+            f"actual_avg_frame_rate={video.get('avg_frame_rate')} expected_fps={expected_fps}"
         )
     return {"checks": checks, "probe": data}
 

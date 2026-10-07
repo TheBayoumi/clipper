@@ -44,10 +44,12 @@ def _is_nut(path: Path) -> bool:
     return "nut" in names
 
 
-def _ffv1_video_args(source_profile: dict[str, Any]) -> list[str]:
+def _ffv1_video_args(source_profile: dict[str, Any], *, threads: int = 4) -> list[str]:
     pix_fmt = str(source_profile.get("pix_fmt") or "")
     if not pix_fmt:
         raise RuntimeError("source pixel format is unavailable for FFV1 transport")
+    if not 1 <= threads <= 8:
+        raise RuntimeError(f"FFV1 thread count must be between 1 and 8, got {threads}")
     return [
         "-c:v",
         "ffv1",
@@ -56,7 +58,7 @@ def _ffv1_video_args(source_profile: dict[str, Any]) -> list[str]:
         "-pix_fmt",
         pix_fmt,
         "-threads:v",
-        "4",
+        str(threads),
     ]
 
 
@@ -325,7 +327,10 @@ def _stage_plan_source(
                 "0:v:0",
                 "-map",
                 "0:a:0",
-                *_ffv1_video_args(source_profile),
+                *_ffv1_video_args(
+                    source_profile,
+                    threads=int(config.get("runtime", {}).get("ffv1_threads", 4)),
+                ),
                 "-vsync",
                 "0",
                 "-c:a",
@@ -463,7 +468,10 @@ def _render_canonical_lossless_master(
             "[outv]",
             "-map",
             "[aout]",
-            *_ffv1_video_args(source_profile),
+            *_ffv1_video_args(
+                source_profile,
+                threads=int(config.get("runtime", {}).get("ffv1_threads", 4)),
+            ),
             "-c:a",
             "pcm_s16le",
             "-ar",
@@ -710,7 +718,7 @@ def _self_test_case(root: Path, name: str, spec: dict[str, Any]) -> dict[str, An
             "fps": spec["fps"],
             "codec": "libx264",
             "profile": "high",
-            "preset": "ultrafast",
+            "preset": "medium",
             "video_bitrate_kbps": 12000,
             "audio_codec": "aac",
             "audio_bitrate_kbps": 192,
@@ -718,6 +726,11 @@ def _self_test_case(root: Path, name: str, spec: dict[str, Any]) -> dict[str, An
             "audio_channels": spec["channels"],
         },
         "source_fidelity": {"minimum_ssim": 0.99, "minimum_psnr_db": 40.0},
+        "semantic_editor": {
+            "minimum_output_seconds": 10.0,
+            "maximum_output_seconds": 12.0,
+            "preferred_output_seconds": 11.0,
+        },
     }
     plan = source._test_plan()
     workspace = root / f"{name}_work"

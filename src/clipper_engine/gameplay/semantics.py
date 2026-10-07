@@ -77,6 +77,12 @@ class SemanticPlan:
     editorial_reasons: tuple[str, ...]
     proposal_anchor_time: float | None = None
     quality_diagnostics: dict[str, dict[str, float | bool]] | None = None
+    content_type: str = ""
+    topic_id: str = ""
+    headline: str = ""
+    caption: str = ""
+    transcript_text: str = ""
+    covered_semantic_anchor_ids: tuple[str, ...] = ()
 
 
 @dataclass
