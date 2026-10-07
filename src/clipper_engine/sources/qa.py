@@ -46,11 +46,7 @@ def _duration_seconds(source: Path) -> float:
 
 
 def _nominal_rate(manifest: dict[str, Any]) -> Fraction:
-    timing = (
-        manifest.get("media_contract", {})
-        .get("video", {})
-        .get("timing", {})
-    )
+    timing = manifest.get("media_contract", {}).get("video", {}).get("timing", {})
     value = str(timing.get("nominal_rate") or "")
     try:
         rate = Fraction(value)
@@ -85,9 +81,7 @@ def certify_analysis_alignment(
     analysis_declared = int(analysis.get("declared_duration_ms") or 0)
     original_declared = int(original.get("declared_duration_ms") or 0)
     checks["same_provider_declared_duration"] = (
-        analysis_declared > 0
-        and original_declared > 0
-        and analysis_declared == original_declared
+        analysis_declared > 0 and original_declared > 0 and analysis_declared == original_declared
     )
 
     analysis_duration = float(analysis.get("duration_seconds") or 0.0)
