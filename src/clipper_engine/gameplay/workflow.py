@@ -11,7 +11,7 @@ from ..profiles import GameplayProfile, load_profile
 from ..rendering import worker
 from ..sources import catalog, mediasilo
 from ..sources import qa as source_qa
-from . import allocation, analysis, candidates, planning, workflow_support
+from . import allocation, analysis, candidates, contract, planning, workflow_support
 
 
 def _profile_from_args(args: argparse.Namespace) -> GameplayProfile:
@@ -23,10 +23,10 @@ def _source_settings(
     profile: GameplayProfile,
     args: argparse.Namespace,
 ) -> tuple[str, int]:
-    review_url = str(getattr(args, "review_url", None) or profile.source_review_url)
+    review_url = str(getattr(args, "review_url", None) or profile.source_url)
     expected_count = int(getattr(args, "expected_count", None) or profile.expected_source_count)
     if not review_url:
-        raise RuntimeError("MW4 profile has no MediaSilo review URL")
+        raise RuntimeError("MW4 profile has no MediaSilo source URL")
     if expected_count <= 0:
         raise RuntimeError("MW4 profile has no positive expected source count")
     return review_url, expected_count
@@ -39,6 +39,7 @@ def discover(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, An
         args.output,
         getattr(args, "github_output", None),
         expected_count,
+        dict(profile.config.get("source_profile") or {}),
     )
 
 
@@ -53,10 +54,17 @@ def analyze(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, Any
         root = Path(temp_dir)
         catalog_path = root / "source_catalog.json"
         resolved_path = root / "resolved_source.json"
-        catalog.discover(review_url, catalog_path, None, expected_count)
+        source_profile = dict(profile.config.get("source_profile") or {})
+        catalog.discover(review_url, catalog_path, None, expected_count, source_profile)
         catalog.select(catalog_path, args.source_key, resolved_path)
         mediasilo.download(resolved_path, source_path)
-        source_qa.certify(source_path, args.source_key, resolved_path, qa_path)
+        source_qa.certify(
+            source_path,
+            args.source_key,
+            resolved_path,
+            qa_path,
+            allow_proxy=bool(source_profile.get("allow_proxy_for_analysis", False)),
+        )
 
     return candidates.analyze_source_file(
         args.source_key,
@@ -90,10 +98,102 @@ def allocate(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, An
     return result
 
 
+def _promote_analysis_source_for_production(
+    profile: GameplayProfile,
+    *,
+    source_key: str,
+    source_path: Path,
+    qa_path: Path,
+    alignment_path: Path,
+) -> dict[str, Any]:
+    analysis_manifest = source_qa.verify(
+        source_path,
+        qa_path,
+        require_original=False,
+    )
+    if analysis_manifest.get("derivative_type") == "source":
+        return source_qa.verify(source_path, qa_path, require_original=True)
+
+    if analysis_manifest.get("derivative_type") != "proxy":
+        raise RuntimeError(
+            f"{source_key}: unsupported analysis derivative "
+            f"{analysis_manifest.get('derivative_type')!r}"
+        )
+
+    review_url = profile.source_url
+    expected_count = profile.expected_source_count
+    if not review_url or expected_count <= 0:
+        raise RuntimeError(f"{source_key}: profile cannot resolve production source")
+
+    source_profile = dict(profile.config.get("source_profile") or {})
+    if str(source_profile.get("analysis_derivative") or "source").lower() != "proxy":
+        raise RuntimeError(
+            f"{source_key}: proxy analysis artifact is inconsistent with source profile"
+        )
+
+    original_profile = dict(source_profile)
+    original_profile["analysis_derivative"] = "source"
+    with tempfile.TemporaryDirectory(prefix="clipper-production-source-") as temp_dir:
+        root = Path(temp_dir)
+        catalog_path = root / "source_catalog.json"
+        resolved_path = root / "resolved_source.json"
+        downloaded_path = root / f"{source_key}.mp4"
+        original_qa_path = root / f"{source_key}.source_qa.json"
+
+        catalog.discover(
+            review_url,
+            catalog_path,
+            None,
+            expected_count,
+            original_profile,
+        )
+        catalog.select(catalog_path, source_key, resolved_path)
+        mediasilo.download(resolved_path, downloaded_path)
+        source_qa.certify(
+            downloaded_path,
+            source_key,
+            resolved_path,
+            original_qa_path,
+            allow_proxy=False,
+        )
+        source_qa.certify_analysis_alignment(
+            qa_path,
+            original_qa_path,
+            alignment_path,
+        )
+
+        downloaded_path.replace(source_path)
+        original_qa_path.replace(qa_path)
+
+    return source_qa.verify(
+        source_path,
+        qa_path,
+        require_original=True,
+        require_analysis_alignment=True,
+    )
+
+
 def render_one(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, Any]:
     source_path = args.source_dir / f"{args.source_key}.mp4"
     qa_path = args.source_dir / f"{args.source_key}.source_qa.json"
-    source_qa.verify(source_path, qa_path)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    alignment_path = args.output_dir / f"{args.source_key}_analysis_alignment.json"
+
+    if args.mode == "production":
+        source_manifest = _promote_analysis_source_for_production(
+            profile,
+            source_key=args.source_key,
+            source_path=source_path,
+            qa_path=qa_path,
+            alignment_path=alignment_path,
+        )
+    else:
+        source_manifest = source_qa.verify(
+            source_path,
+            qa_path,
+            require_original=False,
+        )
+
     return worker.render_one(
         source_key=args.source_key,
         source=source_path,
@@ -103,6 +203,7 @@ def render_one(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, 
         ordinal=args.ordinal,
         output_dir=args.output_dir,
         mode=args.mode,
+        source_manifest=source_manifest,
     )
 
 
@@ -124,7 +225,14 @@ def batch_contract(profile: GameplayProfile, args: argparse.Namespace) -> dict[s
 
 
 def self_test(profile: GameplayProfile) -> None:
-    analysis.validate_configuration(profile.config)
+    contract.validate_configuration(profile.config)
+    if str(profile.config.get("content_strategy", {}).get("mode") or "") == "spoken_content":
+        from .. import spoken
+
+        spoken.validate_configuration(profile.config)
+        spoken.self_test()
+    else:
+        analysis.validate_configuration(profile.config)
     analysis.self_test()
     planning.self_test()
     candidates.self_test()

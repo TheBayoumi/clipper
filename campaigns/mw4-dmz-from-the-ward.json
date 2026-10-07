@@ -1,0 +1,229 @@
+{
+  "profile": "mw4",
+  "campaign": "Call of Duty - Modern Warfare 4 DMZ From the Ward Clipping",
+  "source_profile": {
+    "provider": "mediasilo",
+    "presentation_url": "https://app.mediasilo.com/spotlight/aab332d7-ae82-4825-a88b-dec831ecc327",
+    "expected_count": 3,
+    "analysis_derivative": "proxy",
+    "allow_proxy_for_analysis": true,
+    "assets": [
+      {
+        "title": "MW4_DMZ_DYNAMIC-OPS_FULL_COD_Channel_ESRB_16x9_4K.mp4",
+        "source_key": "mw4_dmz_dynamic_ops_full_cod_channel_esrb_16x9_4k",
+        "content_type": "dynamic_ops"
+      },
+      {
+        "title": "FROM THE WARD - DMZ Final_H264_UHD_16x9.mp4",
+        "source_key": "from_the_ward_dmz_final_h264_uhd_16x9",
+        "content_type": "developer"
+      },
+      {
+        "title": "MW4_DMZ_WORLDBUILDER_FULL_COD_Channel_ESRB_16x9_4K.mp4",
+        "source_key": "mw4_dmz_worldbuilder_full_cod_channel_esrb_16x9_4k",
+        "content_type": "worldbuilder"
+      }
+    ]
+  },
+  "content_strategy": {
+    "mode": "spoken_content",
+    "semantic_engine": "transcript-semantic",
+    "editorial_planner": "spoken-statement-editor",
+    "candidate_mode": "spoken_topic_coverage"
+  },
+  "capabilities": {
+    "spoken_content_detection": {
+      "enabled": true,
+      "mode": "word_timestamp_semantic_windows"
+    },
+    "direct_interaction_detection": {
+      "enabled": false
+    },
+    "combat_outcome_detection": {
+      "enabled": false
+    },
+    "traversal_recovery_detection": {
+      "enabled": false
+    },
+    "player_death_detection": {
+      "enabled": false
+    },
+    "finishing_move_detection": {
+      "enabled": false
+    }
+  },
+  "batch_selection": {
+    "allocation_mode": "coverage_conflict_before_render",
+    "require_allocation_before_render": true,
+    "require_verified_finishing_move_when_available": false,
+    "notes": "Clipper allocates explicit DMZ topic-anchor coverage before rendering. Each configured topic gets an independent 10-12 second legal-window search; source overlap/conflicts prevent duplicate framings."
+  },
+  "output": {
+    "width": "source",
+    "height": "source",
+    "full_source_frame": true,
+    "fps": "source",
+    "codec": "libx264",
+    "profile": "high",
+    "format": "mp4",
+    "preset": "medium",
+    "video_bitrate_kbps": 250000,
+    "rate_control": "CBR",
+    "audio_codec": "aac",
+    "audio_bitrate_kbps": 320,
+    "audio_sample_rate": 48000,
+    "audio_channels": 2,
+    "shadow_video_bitrate_kbps": 50000,
+    "shadow_maxrate_kbps": 60000,
+    "shadow_bufsize_kbps": 100000,
+    "shadow_preset": "medium"
+  },
+  "editorial": {
+    "hook_text": true,
+    "campaign_text": false,
+    "campaign_logo": false,
+    "source_audio_only": true
+  },
+  "text_overlay": {
+    "enabled": true,
+    "font_path": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "font_size_fraction": 0.05,
+    "horizontal_margin_fraction": 0.04,
+    "box_height_fraction": 0.14,
+    "box_opacity": 0.72
+  },
+  "publishing": {
+    "platforms": [
+      "tiktok",
+      "instagram_reels"
+    ],
+    "language": "en",
+    "on_screen_text_required": true,
+    "disclosure": "#Ad",
+    "account_tag": "@callofduty",
+    "hashtags": [],
+    "source_audio_only": true
+  },
+  "spoken_content": {
+    "minimum_query_score": 0.6,
+    "variants_per_topic": 4,
+    "asr": {
+      "model": "base.en",
+      "device": "cpu",
+      "compute_type": "int8",
+      "cpu_threads": 1,
+      "beam_size": 3,
+      "language": "en",
+      "sample_rate": 16000,
+      "chunk_seconds": 60,
+      "vad_filter": true
+    },
+    "source_roles": {
+      "from_the_ward_dmz_final_h264_uhd_16x9": "developer",
+      "mw4_dmz_dynamic_ops_full_cod_channel_esrb_16x9_4k": "dynamic_ops",
+      "mw4_dmz_worldbuilder_full_cod_channel_esrb_16x9_4k": "worldbuilder"
+    },
+    "topics": {
+      "developer": [
+        {
+          "id": "player_freedom",
+          "queries": [
+            "different experience",
+            "play with a whole bunch of toys",
+            "way you want to play"
+          ],
+          "headline": "DMZ Gives Players More Freedom",
+          "caption": "Infinity Ward explains how DMZ gives players more freedom to approach the experience their way."
+        },
+        {
+          "id": "persistent_progression",
+          "queries": [
+            "everything is persistent",
+            "taken out and lost",
+            "not just money everything"
+          ],
+          "headline": "DMZ Is Taking Persistence Further",
+          "caption": "Infinity Ward discusses persistent progression as a major step beyond the original DMZ Beta."
+        },
+        {
+          "id": "higher_stakes",
+          "queries": [
+            "there's stakes",
+            "dying in dmz is a different impact",
+            "should i engage this person"
+          ],
+          "headline": "Every Fight in DMZ Has Higher Stakes",
+          "caption": "In DMZ, the risk of losing your gear changes how you decide when to fight. Infinity Ward explains the difference."
+        }
+      ],
+      "dynamic_ops": [
+        {
+          "id": "lieutenant_guards",
+          "queries": [
+            "lieutenant targets are protected by specialized units",
+            "protected by specialized units",
+            "lieutenant targets"
+          ],
+          "headline": "DMZ Lieutenants Have Specialized Guards",
+          "caption": "Lieutenant targets in DMZ can be protected by specialized units. A look at the stakes in Dynamic Ops."
+        },
+        {
+          "id": "dog_tag_risk",
+          "queries": [
+            "secure their dog tags",
+            "valuable to every rival squad",
+            "carrying them makes you valuable"
+          ],
+          "headline": "In DMZ, Dog Tags Make You a Target",
+          "caption": "Taking down a lieutenant is only part of the mission. Carrying their dog tags puts your squad in the spotlight."
+        },
+        {
+          "id": "intel_extraction",
+          "queries": [
+            "extract them intact",
+            "advance their intel",
+            "build the next lead"
+          ],
+          "headline": "Extracting Intel Opens the Next Lead",
+          "caption": "In DMZ Dynamic Ops, extracting recovered intel can help advance the next lead."
+        }
+      ],
+      "worldbuilder": [
+        {
+          "id": "hajin_fallout",
+          "queries": [
+            "nuclear meltdown",
+            "radiation throughout the region",
+            "dangerous winds"
+          ],
+          "headline": "The Events Behind Hajin's Fallout",
+          "caption": "Hajin has a dangerous backstory. The Worldbuilder footage explains how a meltdown changed the region."
+        },
+        {
+          "id": "rogue_operators",
+          "queries": [
+            "rogue operators are active",
+            "some are paid",
+            "others are out for themselves"
+          ],
+          "headline": "Rogue Operators Are Active in Hajin",
+          "caption": "The situation in Hajin involves rogue Operators with competing agendas. Here is how the DMZ story sets that up."
+        },
+        {
+          "id": "off_books_operation",
+          "queries": [
+            "operation is off the books",
+            "whatever resources you need",
+            "find yourself"
+          ],
+          "headline": "An Off-the-Books Mission in DMZ",
+          "caption": "Uncover enemy operations and find the resources to complete your mission. A closer look at the DMZ story."
+        }
+      ]
+    }
+  },
+  "runtime": {
+    "ffv1_threads": 1,
+    "encoder_threads": 2
+  }
+}

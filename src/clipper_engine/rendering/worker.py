@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..gameplay import candidates, contract
-from . import ffv1, helpers, source_fidelity
+from . import ffv1, helpers, overlays, source_fidelity
 
 
 def _write(path: Path, payload: dict[str, Any]) -> None:
@@ -26,6 +26,7 @@ def render_one(
     ordinal: int,
     output_dir: Path,
     mode: str,
+    source_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     selected, allocation = candidates._select_from_allocation(source_key, allocation_path)
     matches = [plan for plan in selected if candidates.plan_key(plan) == plan_key]
@@ -43,7 +44,8 @@ def render_one(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     suffix = "250M" if mode == "production" else "SHADOW"
-    filename = f"MW4_{source_key}_{ordinal:02d}_{plan.story_type}_source_native_{suffix}.mp4"
+    editorial_suffix = "text_overlay" if overlays.enabled(config, plan) else "source_native"
+    filename = f"MW4_{source_key}_{ordinal:02d}_{plan.story_type}_{editorial_suffix}_{suffix}.mp4"
     target = output_dir / filename
 
     ffv1.preflight()
@@ -53,14 +55,27 @@ def render_one(
             source, plan, workspace, config
         )
         fidelity_plan = replace(local_plan, effect_profile="source_native_full_frame")
-        canonical_master = workspace / "canonical_lossless_edited_master.nut"
-        canonical_info = ffv1._render_canonical_lossless_master(
+        source_native_master = workspace / "canonical_source_native_master.nut"
+        source_native_info = ffv1._render_canonical_lossless_master(
             staged_source,
             fidelity_plan,
             config,
             source_profile,
-            canonical_master,
+            source_native_master,
         )
+        overlay_info: dict[str, Any] = {"applied": False}
+        canonical_master = source_native_master
+        canonical_info = source_native_info
+        if overlays.enabled(config, plan):
+            canonical_master = workspace / "canonical_editorial_master.nut"
+            overlay_info = overlays.render_text_overlay_master(
+                source_native_master,
+                local_plan,
+                config,
+                source_profile,
+                canonical_master,
+            )
+            canonical_info = overlay_info
         source_fidelity._encode_from_canonical_master(
             canonical_master,
             config,
@@ -76,7 +91,7 @@ def render_one(
             config,
         )
 
-    qa = helpers.validate_output(target, config, mode=mode)
+    qa = helpers.validate_output(target, config, mode=mode, source_profile=source_profile)
     helpers.create_contact_sheets(target, output_dir / "contact_sheets")
 
     result = {
@@ -89,13 +104,25 @@ def render_one(
         "allocation_selected_count": allocation.get("selected_count"),
         "story_type": plan.story_type,
         "planned_effect_profile": plan.effect_profile,
-        "rendered_effect_profile": "source_native_full_frame",
+        "rendered_effect_profile": editorial_suffix,
         "finishing_move": plan.finishing_move is not None,
         "unplanned_source_cut_count": 0,
         "technical_qa_passed": all(bool(value) for value in qa["checks"].values()),
         "source_fidelity_qa_passed": all(bool(value) for value in fidelity_qa["checks"].values()),
         "source_fidelity": fidelity_qa,
         "canonical_master": canonical_info,
+        "source_native_master": source_native_info,
+        "text_overlay": overlay_info,
+        "headline": plan.headline,
+        "caption": plan.caption,
+        "content_type": plan.content_type,
+        "topic_id": plan.topic_id,
+        "source_derivative_type": (source_manifest or {}).get("derivative_type"),
+        "source_certified_sha256": (source_manifest or {}).get("sha256"),
+        "analysis_alignment": dict((source_manifest or {}).get("analysis_alignment") or {}),
+        "production_original_source_verified": bool(
+            mode == "production" and (source_manifest or {}).get("derivative_type") == "source"
+        ),
         "file": filename,
         "sha256": helpers.sha256(target),
         "editorial_plan": payload,

@@ -144,10 +144,13 @@ def render_matrix(allocation_path: Path, github_output: Path) -> list[dict[str, 
 
 
 def batch_summaries(
-    allocation_path: Path, config_path: Path, clip_meta: Path, output_dir: Path
+    allocation_path: Path,
+    config_path: Path | dict[str, Any],
+    clip_meta: Path,
+    output_dir: Path,
 ) -> None:
     allocation = _read(allocation_path)
-    config = _read(config_path)
+    config = dict(config_path) if isinstance(config_path, dict) else _read(config_path)
     results = [_read(path) for path in clip_meta.rglob("*_clip_result.json")]
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -171,11 +174,80 @@ def batch_summaries(
             )
         if any(item.get("status") != "PASS" for item in actual):
             failures.append(f"{source}: one or more clip results did not pass")
+        publishing = dict(config.get("publishing") or {})
+        require_text = bool(publishing.get("on_screen_text_required", False))
+        source_profile = dict(config.get("source_profile") or {})
+        require_analysis_alignment = (
+            str(source_profile.get("analysis_derivative") or "source").lower() == "proxy"
+        )
+        disclosure = str(publishing.get("disclosure") or "").strip()
+        account_tag = str(publishing.get("account_tag") or "").strip()
+        modes = {str(item.get("mode") or "") for item in actual if item.get("mode")}
+        if len(modes) > 1:
+            failures.append(f"{source}: rendered clips mix qualification modes: {sorted(modes)}")
+        summary_mode = next(iter(modes), "unknown")
+
         for item in actual:
             clip_failures = _clip_ffv1_nut_contract_failures(item)
             architecture_failures.extend(
                 f"{source} clip {item.get('ordinal', '?')}: {failure}" for failure in clip_failures
             )
+            overlay = dict(item.get("text_overlay") or {})
+            source_native = dict(item.get("source_native_master") or {})
+            if overlay.get("applied"):
+                if overlay.get("spatial_transform_used") is not False:
+                    failures.append(
+                        f"{source} clip {item.get('ordinal', '?')}: overlay used spatial transform"
+                    )
+                if overlay.get("input_frame_count") != overlay.get("output_frame_count"):
+                    failures.append(
+                        f"{source} clip {item.get('ordinal', '?')}: overlay changed frame count"
+                    )
+                if source_native.get("exact_filtered_frame_hash_match") is not True:
+                    failures.append(
+                        f"{source} clip {item.get('ordinal', '?')}: "
+                        "source-native canonical hash proof is missing"
+                    )
+            if require_text:
+                if (
+                    overlay.get("applied") is not True
+                    or not str(item.get("headline") or "").strip()
+                ):
+                    failures.append(
+                        f"{source} clip {item.get('ordinal', '?')}: "
+                        "mandatory on-screen text missing"
+                    )
+                lines = [line.strip() for line in str(item.get("caption") or "").splitlines()]
+                if not lines or not lines[0]:
+                    failures.append(
+                        f"{source} clip {item.get('ordinal', '?')}: campaign caption body missing"
+                    )
+                if disclosure and (len(lines) < 2 or lines[1] != disclosure):
+                    failures.append(
+                        f"{source} clip {item.get('ordinal', '?')}: disclosure is not immediately "
+                        "after caption body"
+                    )
+                if account_tag and account_tag not in lines[2:]:
+                    failures.append(
+                        f"{source} clip {item.get('ordinal', '?')}: required account tag missing"
+                    )
+            if summary_mode == "production" and item.get("source_derivative_type") != "source":
+                failures.append(
+                    f"{source} clip {item.get('ordinal', '?')}: "
+                    "production did not use original source"
+                )
+            if summary_mode == "production" and require_analysis_alignment:
+                alignment = dict(item.get("analysis_alignment") or {})
+                alignment_checks = dict(alignment.get("checks") or {})
+                if (
+                    alignment.get("status") != "PASS"
+                    or not alignment_checks
+                    or not all(bool(value) for value in alignment_checks.values())
+                ):
+                    failures.append(
+                        f"{source} clip {item.get('ordinal', '?')}: "
+                        "analysis proxy/original source alignment proof missing or failed"
+                    )
         failures.extend(architecture_failures)
         architecture_passed = (
             bool(actual or not expected)
@@ -183,12 +255,37 @@ def batch_summaries(
             and len(actual) == len(expected)
         )
         summary = {
-            "mode": "shadow",
+            "mode": summary_mode,
             "source_key": source,
             "selected_count": len(actual),
             "rendered_count": len(actual),
             "selected_plan_keys": actual_keys,
             "stories": [str(item.get("story_type")) for item in actual],
+            "content_types": sorted(
+                {str(item.get("content_type")) for item in actual if item.get("content_type")}
+            ),
+            "headlines": [str(item.get("headline")) for item in actual if item.get("headline")],
+            "source_derivative_types": sorted(
+                {
+                    str(item.get("source_derivative_type"))
+                    for item in actual
+                    if item.get("source_derivative_type")
+                }
+            ),
+            "analysis_alignment_verified": (
+                not require_analysis_alignment
+                or all(
+                    bool((item.get("analysis_alignment") or {}).get("status") == "PASS")
+                    and bool((item.get("analysis_alignment") or {}).get("checks"))
+                    and all(
+                        bool(value)
+                        for value in (item.get("analysis_alignment") or {})
+                        .get("checks", {})
+                        .values()
+                    )
+                    for item in actual
+                )
+            ),
             "verified_finishing_move_count": len(
                 config.get("finishing_move_detector", {}).get("verified_spans", {}).get(source, [])
             ),
