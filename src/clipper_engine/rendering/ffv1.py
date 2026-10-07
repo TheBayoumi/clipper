@@ -618,7 +618,7 @@ def _render_delivery_composition_master(
         )
         == (width, height),
         "source_foreground_full_frame": True,
-        "source_foreground_crop_used": False,
+        "source_foreground_not_cropped": True,
         "intentional_spatial_composition": True,
         **architecture["checks"],
     }
