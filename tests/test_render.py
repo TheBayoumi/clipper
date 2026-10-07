@@ -139,3 +139,41 @@ def test_delivery_profile_allows_vertical_full_frame_composition() -> None:
     assert "flags=lanczos" in graph
     assert "crop=360:640" in graph
     assert "overlay=(W-w)/2:(H-h)/2" in graph
+
+
+
+def test_portrait_delivery_uses_calibrated_matte_without_cropping() -> None:
+    source_profile = {
+        "width": 3840,
+        "height": 2160,
+        "sample_aspect_ratio": "1:1",
+        "display_aspect_ratio": "16:9",
+    }
+    config = {
+        "output": {
+            "width": 1080,
+            "height": 1920,
+            "portrait_layout": {
+                "enabled": True,
+                "width": 1080,
+                "height": 1920,
+                "background_hex": "#0F1115",
+                "visual_left": 0,
+                "visual_top": 656,
+                "visual_width": 1080,
+                "visual_height": 608,
+                "title_top_height": 656,
+                "title_y_positions": {"1": [330], "2": [275, 385], "3": [236, 352, 438]},
+                "title_font_sizes": {"1": [66], "2": [62, 58], "3": [60, 56, 52]},
+            },
+        }
+    }
+
+    graph, metadata = delivery.composition_filter(source_profile, config)
+
+    assert "scale=1080:608:force_original_aspect_ratio=decrease:flags=lanczos" in graph
+    assert "pad=1080:1920:0:656:color=0x0F1115" in graph
+    assert "crop=" not in graph
+    assert metadata["mode"] == "portrait_matte_full_frame"
+    assert metadata["source_foreground_full_frame"] is True
+    assert metadata["source_foreground_crop_used"] is False

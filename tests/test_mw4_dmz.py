@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from clipper_engine import speech, spoken
+from clipper_engine import speech, spoken, spoken_semantics
 from clipper_engine.gameplay import allocation, contract
 from clipper_engine.profiles import load_profile
 from clipper_engine.sources import catalog, mediasilo
@@ -40,6 +40,9 @@ def test_campaign_override_deep_merges_canonical_mw4_profile() -> None:
     assert profile.config["output"]["height"] == 1920
     assert profile.config["output"]["full_source_frame"] is True
     assert profile.config["output"]["fps"] == "source"
+    assert profile.config["spoken_content"]["asr"]["model"] == "distil-large-v3"
+    assert profile.config["spoken_content"]["semantic"]["model"] == "BAAI/bge-small-en-v1.5"
+    assert profile.config["output"]["portrait_layout"]["enabled"] is True
 
 
 def test_spotlight_template_parser_extracts_provider_context() -> None:
@@ -134,47 +137,99 @@ def test_production_verification_rejects_certified_proxy(tmp_path: Path) -> None
         source_qa.verify(source, manifest, require_original=True)
 
 
-def test_spoken_topic_search_emits_legal_windows_and_explicit_coverage() -> None:
+def _window(
+    start: float,
+    end: float,
+    text: str,
+    anchor: float,
+    event: str,
+    score: float,
+) -> spoken_semantics.SemanticWindow:
+    return spoken_semantics.SemanticWindow(
+        start=start,
+        end=end,
+        text=text,
+        anchor_time=anchor,
+        event_label=event,
+        event_similarity=score,
+        opening_quality=0.8,
+        story_quality=0.85,
+        ending_quality=0.9,
+        coherence=0.88,
+        score=score,
+        vector=(score, 1.0 - score),
+    )
+
+
+def test_spoken_semantic_discovery_emits_legal_topic_coverage() -> None:
     transcript = speech.Transcript(
         language="en",
         duration=40.0,
         model="synthetic",
         settings={},
-        segments=tuple(
-            _segment(float(index * 2), float(index * 2 + 2), text)
-            for index, text in enumerate(
-                [
-                    "setup one",
-                    "setup two",
-                    "DMZ gives a different experience",
-                    "you can play with a whole bunch of toys",
-                    "the way you want to play",
-                    "complete thought",
-                    "spacing one",
-                    "spacing two",
-                    "everything is persistent",
-                    "everything can be taken out and lost",
-                    "more persistence",
-                    "complete thought two",
-                    "spacing three",
-                    "spacing four",
-                    "there are stakes",
-                    "should I engage this person",
-                    "dying has a different impact",
-                    "complete thought three",
-                    "tail one",
-                    "tail two",
-                ]
-            )
+        segments=(
+            _segment(0.0, 12.0, "Freedom changes how you play."),
+            _segment(14.0, 26.0, "Persistent extraction changes the next run."),
+            _segment(28.0, 40.0, "The stakes change every fight."),
         ),
     )
+    windows = [
+        _window(0.0, 12.0, "Freedom changes how you play.", 6.0, "lesson_explanation", 0.82),
+        _window(
+            14.0,
+            26.0,
+            "Persistent extraction changes the next run.",
+            20.0,
+            "reveal_payoff",
+            0.84,
+        ),
+        _window(28.0, 40.0, "The stakes change every fight.", 34.0, "conflict_stakes", 0.86),
+    ]
+    coverage = [
+        {"player_freedom": 0.81},
+        {"persistent_progression": 0.83},
+        {"higher_stakes": 0.85},
+    ]
+    topic_summary = {
+        "player_freedom": {
+            "best_similarity": 0.81,
+            "minimum_similarity": 0.42,
+            "candidate_count": 1,
+        },
+        "persistent_progression": {
+            "best_similarity": 0.83,
+            "minimum_similarity": 0.42,
+            "candidate_count": 1,
+        },
+        "higher_stakes": {
+            "best_similarity": 0.85,
+            "minimum_similarity": 0.42,
+            "candidate_count": 1,
+        },
+    }
     profile = load_profile("mw4", CAMPAIGN)
     config = dict(profile.config)
     config["spoken_content"] = dict(config["spoken_content"])
     config["spoken_content"]["source_roles"] = {"synthetic": "developer"}
-    plans, required, diagnostics = spoken.build_candidate_plans(transcript, "synthetic", config)
-    required_ids = {item["id"] for item in required}
-    assert required_ids == {
+
+    with (
+        patch(
+            "clipper_engine.spoken_semantics.discover_windows",
+            return_value=(windows, {"candidate_count": 3}),
+        ),
+        patch(
+            "clipper_engine.spoken_semantics.topic_coverage",
+            return_value=(coverage, topic_summary),
+        ),
+    ):
+        plans, required, diagnostics = spoken.build_candidate_plans(
+            transcript,
+            "synthetic",
+            config,
+            embedder=lambda texts: [[1.0, 0.0] for _ in texts],
+        )
+
+    assert {item["id"] for item in required} == {
         "developer:player_freedom",
         "developer:persistent_progression",
         "developer:higher_stakes",
@@ -185,61 +240,65 @@ def test_spoken_topic_search_emits_legal_windows_and_explicit_coverage() -> None
         "higher_stakes",
     }
     assert all(10.0 <= plan.output_duration <= 12.0 for plan in plans)
-    assert all(len(plan.covered_semantic_anchor_ids) == 1 for plan in plans)
-    assert all(plan.headline for plan in plans)
-    assert diagnostics["content_type"] == "developer"
+    assert all(plan.covered_semantic_anchor_ids for plan in plans)
+    assert all(item["disposition"] == "search_required" for item in required)
+    assert diagnostics["campaign_queries_used_as_primary_detector"] is False
 
 
-def test_spoken_search_uses_sentence_boundaries_inside_whisper_segments() -> None:
+def test_spoken_semantic_discovery_records_no_admissible_topic() -> None:
     transcript = speech.Transcript(
         language="en",
-        duration=100.0,
+        duration=12.0,
         model="synthetic",
         settings={},
-        segments=(
-            speech.TranscriptSegment(
-                start=77.72,
-                end=84.63,
-                text=(
-                    "Rogue operators are active in the DMC. "
-                    "Some are paid for, others are out for themselves."
-                ),
-                words=(
-                    _word(77.72, 79.60, " Rogue operators are active in the DMC."),
-                    _word(82.31, 84.63, " Some are paid for, others are out for themselves."),
-                ),
-            ),
-            speech.TranscriptSegment(
-                start=87.33,
-                end=93.03,
-                text=(
-                    "This is bigger than Hajin. "
-                    "If they find what they're looking for, the threat won't stop here."
-                ),
-                words=(
-                    _word(87.33, 88.91, " This is bigger than Hajin."),
-                    _word(
-                        89.57,
-                        93.03,
-                        " If they find what they're looking for, the threat won't stop here.",
-                    ),
-                ),
-            ),
-        ),
+        segments=(_segment(0.0, 12.0, "A complete but unrelated source moment."),),
     )
     profile = load_profile("mw4", CAMPAIGN)
     config = dict(profile.config)
     config["spoken_content"] = dict(config["spoken_content"])
     config["spoken_content"]["source_roles"] = {"synthetic": "worldbuilder"}
 
-    plans, _, _ = spoken.build_candidate_plans(transcript, "synthetic", config)
-    rogue = [plan for plan in plans if plan.topic_id == "rogue_operators"]
+    with (
+        patch(
+            "clipper_engine.spoken_semantics.discover_windows",
+            return_value=(
+                [_window(0.0, 12.0, "A complete but unrelated source moment.", 6.0, "story_experience", 0.8)],
+                {"candidate_count": 1},
+            ),
+        ),
+        patch(
+            "clipper_engine.spoken_semantics.topic_coverage",
+            return_value=(
+                [{}],
+                {
+                    "hajin_fallout": {
+                        "best_similarity": 0.2,
+                        "minimum_similarity": 0.42,
+                        "candidate_count": 0,
+                    },
+                    "rogue_operators": {
+                        "best_similarity": 0.2,
+                        "minimum_similarity": 0.42,
+                        "candidate_count": 0,
+                    },
+                    "off_books_operation": {
+                        "best_similarity": 0.2,
+                        "minimum_similarity": 0.42,
+                        "candidate_count": 0,
+                    },
+                },
+            ),
+        ),
+    ):
+        plans, required, _ = spoken.build_candidate_plans(
+            transcript,
+            "synthetic",
+            config,
+            embedder=lambda texts: [[1.0, 0.0] for _ in texts],
+        )
 
-    assert rogue
-    assert all(10.0 <= plan.output_duration <= 12.0 for plan in rogue)
-    assert any(
-        plan.start == pytest.approx(77.72) and plan.end == pytest.approx(88.91) for plan in rogue
-    )
+    assert plans == []
+    assert {item["disposition"] for item in required} == {"no_admissible_candidate"}
 
 
 def test_allocator_covers_string_semantic_anchors_without_redundant_clips() -> None:

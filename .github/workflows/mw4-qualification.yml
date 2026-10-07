@@ -103,8 +103,10 @@ jobs:
       - name: Cache speech models
         uses: actions/cache@v4
         with:
-          path: ~/.cache/huggingface/hub
-          key: mw4-faster-whisper-${{ runner.os }}-base-en-v1
+          path: |
+            ~/.cache/huggingface/hub
+            ~/.cache/fastembed
+          key: mw4-spoken-models-${{ runner.os }}-distil-large-v3-bge-small-v1
       - name: Install Clipper MW4 CLI analysis runtime
         run: |
           python -m pip install --upgrade pip

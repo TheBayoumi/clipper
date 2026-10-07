@@ -27,14 +27,14 @@
   },
   "content_strategy": {
     "mode": "spoken_content",
-    "semantic_engine": "transcript-semantic",
-    "editorial_planner": "spoken-statement-editor",
-    "candidate_mode": "spoken_topic_coverage"
+    "semantic_engine": "embedding-semantic-v1",
+    "editorial_planner": "spoken-context-editor",
+    "candidate_mode": "semantic-moment-topic-coverage"
   },
   "capabilities": {
     "spoken_content_detection": {
       "enabled": true,
-      "mode": "word_timestamp_semantic_windows"
+      "mode": "embedding_semantic_moments"
     },
     "direct_interaction_detection": {
       "enabled": false
@@ -76,7 +76,52 @@
     "shadow_video_bitrate_kbps": 50000,
     "shadow_maxrate_kbps": 60000,
     "shadow_bufsize_kbps": 100000,
-    "shadow_preset": "medium"
+    "shadow_preset": "medium",
+    "portrait_layout": {
+      "enabled": true,
+      "width": 1080,
+      "height": 1920,
+      "background_hex": "#0F1115",
+      "text_hex": "#FAFAFA",
+      "accent_hex": "#FFD848",
+      "visual_left": 0,
+      "visual_top": 656,
+      "visual_width": 1080,
+      "visual_height": 608,
+      "title_top_height": 656,
+      "title_y_positions": {
+        "1": [
+          330
+        ],
+        "2": [
+          275,
+          385
+        ],
+        "3": [
+          236,
+          352,
+          438
+        ]
+      },
+      "title_font_sizes": {
+        "1": [
+          66
+        ],
+        "2": [
+          62,
+          58
+        ],
+        "3": [
+          60,
+          56,
+          52
+        ]
+      },
+      "title_max_width_fraction": 0.88,
+      "title_bar_y": 548,
+      "title_bar_width_fraction": 0.18,
+      "title_bar_height": 5
+    }
   },
   "editorial": {
     "hook_text": true,
@@ -86,11 +131,8 @@
   },
   "text_overlay": {
     "enabled": true,
-    "font_path": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "font_size_fraction": 0.032,
-    "horizontal_margin_fraction": 0.06,
-    "box_height_fraction": 0.085,
-    "box_opacity": 0.28
+    "mode": "portrait_title_safe",
+    "font_path": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
   },
   "publishing": {
     "platforms": [
@@ -105,18 +147,17 @@
     "source_audio_only": true
   },
   "spoken_content": {
-    "minimum_query_score": 0.6,
-    "variants_per_topic": 4,
     "asr": {
-      "model": "base.en",
+      "model": "distil-large-v3",
       "device": "cpu",
       "compute_type": "int8",
-      "cpu_threads": 1,
-      "beam_size": 3,
+      "cpu_threads": 2,
+      "beam_size": 5,
       "language": "en",
       "sample_rate": 16000,
-      "chunk_seconds": 60,
-      "vad_filter": true
+      "chunk_seconds": 180,
+      "vad_filter": true,
+      "vad_min_silence_ms": 500
     },
     "source_roles": {
       "from_the_ward_dmz_final_h264_uhd_16x9": "developer",
@@ -127,99 +168,105 @@
       "developer": [
         {
           "id": "player_freedom",
-          "queries": [
+          "headline": "DMZ lets you play your own way",
+          "caption": "Infinity Ward explains how DMZ gives players more freedom to approach the experience their way.",
+          "coverage_descriptions": [
             "different experience",
             "play with a whole bunch of toys",
             "way you want to play"
-          ],
-          "headline": "DMZ lets you play your own way",
-          "caption": "Infinity Ward explains how DMZ gives players more freedom to approach the experience their way."
+          ]
         },
         {
           "id": "persistent_progression",
-          "queries": [
+          "headline": "In DMZ, what you extract actually matters",
+          "caption": "Infinity Ward discusses persistent progression as a major step beyond the original DMZ Beta.",
+          "coverage_descriptions": [
             "everything is persistent",
             "taken out and lost",
             "not just money everything"
-          ],
-          "headline": "In DMZ, what you extract actually matters",
-          "caption": "Infinity Ward discusses persistent progression as a major step beyond the original DMZ Beta."
+          ]
         },
         {
           "id": "higher_stakes",
-          "queries": [
+          "headline": "Every fight in DMZ can cost you",
+          "caption": "In DMZ, the risk of losing your gear changes how you decide when to fight. Infinity Ward explains the difference.",
+          "coverage_descriptions": [
             "there's stakes",
             "dying in dmz is a different impact",
             "should i engage this person"
-          ],
-          "headline": "Every fight in DMZ can cost you",
-          "caption": "In DMZ, the risk of losing your gear changes how you decide when to fight. Infinity Ward explains the difference."
+          ]
         }
       ],
       "dynamic_ops": [
         {
           "id": "lieutenant_guards",
-          "queries": [
+          "headline": "These DMZ targets do not travel alone",
+          "caption": "Lieutenant targets in DMZ can be protected by specialized units. A look at the stakes in Dynamic Ops.",
+          "coverage_descriptions": [
             "lieutenant targets are protected by specialized units",
             "protected by specialized units",
             "lieutenant targets"
-          ],
-          "headline": "These DMZ targets do not travel alone",
-          "caption": "Lieutenant targets in DMZ can be protected by specialized units. A look at the stakes in Dynamic Ops."
+          ]
         },
         {
           "id": "dog_tag_risk",
-          "queries": [
+          "headline": "Grab the dog tags and everyone wants you",
+          "caption": "Taking down a lieutenant is only part of the mission. Carrying their dog tags puts your squad in the spotlight.",
+          "coverage_descriptions": [
             "secure their dog tags",
             "valuable to every rival squad",
             "carrying them makes you valuable"
-          ],
-          "headline": "Grab the dog tags and everyone wants you",
-          "caption": "Taking down a lieutenant is only part of the mission. Carrying their dog tags puts your squad in the spotlight."
+          ]
         },
         {
           "id": "intel_extraction",
-          "queries": [
+          "headline": "Extract the intel or lose the lead",
+          "caption": "In DMZ Dynamic Ops, extracting recovered intel can help advance the next lead.",
+          "coverage_descriptions": [
             "extract them intact",
             "advance their intel",
             "build the next lead"
-          ],
-          "headline": "Extract the intel or lose the lead",
-          "caption": "In DMZ Dynamic Ops, extracting recovered intel can help advance the next lead."
+          ]
         }
       ],
       "worldbuilder": [
         {
           "id": "hajin_fallout",
-          "queries": [
+          "headline": "Hajin was ruined long before you arrived",
+          "caption": "Hajin has a dangerous backstory. The Worldbuilder footage explains how a meltdown changed the region.",
+          "coverage_descriptions": [
             "nuclear meltdown",
             "radiation throughout the region",
             "dangerous winds"
-          ],
-          "headline": "Hajin was ruined long before you arrived",
-          "caption": "Hajin has a dangerous backstory. The Worldbuilder footage explains how a meltdown changed the region."
+          ]
         },
         {
           "id": "rogue_operators",
-          "queries": [
+          "headline": "Not every operator in Hajin is on your side",
+          "caption": "The situation in Hajin involves rogue Operators with competing agendas. Here is how the DMZ story sets that up.",
+          "coverage_descriptions": [
             "rogue operators are active",
             "some are paid",
             "others are out for themselves"
-          ],
-          "headline": "Not every operator in Hajin is on your side",
-          "caption": "The situation in Hajin involves rogue Operators with competing agendas. Here is how the DMZ story sets that up."
+          ]
         },
         {
           "id": "off_books_operation",
-          "queries": [
+          "headline": "This DMZ mission is completely off the books",
+          "caption": "Uncover enemy operations and find the resources to complete your mission. A closer look at the DMZ story.",
+          "coverage_descriptions": [
             "operation is off the books",
             "whatever resources you need",
             "find yourself"
-          ],
-          "headline": "This DMZ mission is completely off the books",
-          "caption": "Uncover enemy operations and find the resources to complete your mission. A closer look at the DMZ story."
+          ]
         }
       ]
+    },
+    "semantic": {
+      "model": "BAAI/bge-small-en-v1.5",
+      "minimum_event_similarity": 0.34,
+      "minimum_context_margin": 0,
+      "minimum_topic_similarity": 0.42
     }
   },
   "runtime": {
