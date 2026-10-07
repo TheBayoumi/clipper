@@ -560,7 +560,11 @@ def _render_delivery_composition_master(
 
     width = int(delivery_profile["width"])
     height = int(delivery_profile["height"])
-    graph = delivery.full_frame_filter(width, height, output_label="delivery")
+    graph, composition = delivery.composition_filter(
+        source_profile,
+        config,
+        output_label="delivery",
+    )
     timing = source._timing(source_profile)
     fps = media.fraction_text(timing.nominal_rate)
 
@@ -617,8 +621,10 @@ def _render_delivery_composition_master(
             output_profile["height"],
         )
         == (width, height),
-        "source_foreground_full_frame": True,
-        "source_foreground_not_cropped": True,
+        "source_foreground_full_frame": bool(composition["source_foreground_full_frame"]),
+        "source_foreground_not_cropped": not bool(
+            composition["source_foreground_crop_used"]
+        ),
         "intentional_spatial_composition": True,
         **architecture["checks"],
     }
@@ -630,11 +636,9 @@ def _render_delivery_composition_master(
 
     return delivery_profile, {
         "applied": True,
-        "mode": "full_frame_fit_blurred_background",
+        **composition,
         "width": width,
         "height": height,
-        "source_foreground_full_frame": True,
-        "source_foreground_crop_used": False,
         "spatial_transform_used": True,
         "input_frame_count": input_profile["frame_count"],
         "output_frame_count": output_profile["frame_count"],
@@ -655,7 +659,7 @@ def _render_delivery_composition_master(
         "source_profile": source_profile,
         "delivery_profile": delivery_profile,
         "video_operations": (
-            "lossless delivery composition: full source frame fit over blurred background"
+            "lossless delivery composition after source-native FFV1/NUT certification"
         ),
         "checks": checks,
     }

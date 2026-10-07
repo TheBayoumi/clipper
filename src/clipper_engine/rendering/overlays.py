@@ -5,13 +5,100 @@ from typing import Any
 
 from .. import media_contract as media
 from ..gameplay import analysis as semantic
-from . import ffv1
+from . import ffv1, portrait_layout
 from . import source_fidelity as source
 
 
 def enabled(config: dict[str, Any], plan: semantic.SemanticPlan) -> bool:
     overlay = dict(config.get("text_overlay") or {})
     return bool(overlay.get("enabled") and plan.headline.strip())
+
+
+def _escape_filter_path(path: Path) -> str:
+    return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+
+def _portrait_filter(
+    headline: str,
+    target: Path,
+    config: dict[str, Any],
+    source_profile: dict[str, Any],
+    font_path: Path,
+) -> tuple[str, dict[str, Any]]:
+    width = int(source_profile["width"])
+    height = int(source_profile["height"])
+    layout = portrait_layout.resolve(config, width, height)
+    if layout is None:
+        raise RuntimeError("portrait overlay requested without a portrait layout")
+    rows = portrait_layout.title_lines(headline, font_path, layout)
+    text_color = str(layout.get("text_hex") or "#FAFAFA").lstrip("#")
+    accent = str(layout.get("accent_hex") or "#FFD848").lstrip("#")
+    bar_width = round(width * float(layout.get("title_bar_width_fraction", 0.18)))
+    bar_height = int(layout.get("title_bar_height", 5))
+    bar_y = int(layout.get("title_bar_y", int(layout["title_top_height"]) - 90))
+    filters = [
+        f"drawbox=x=(iw-{bar_width})/2:y={bar_y}:w={bar_width}:h={bar_height}:"
+        f"color=0x{accent}:t=fill"
+    ]
+    line_files: list[str] = []
+    for index, row in enumerate(rows):
+        line_path = target.with_name(f"{target.stem}_headline_{index}.txt")
+        line_path.write_text(str(row["text"]), encoding="utf-8")
+        line_files.append(str(line_path))
+        filters.append(
+            "drawtext="
+            f"fontfile='{_escape_filter_path(font_path)}':"
+            f"textfile='{_escape_filter_path(line_path)}':"
+            f"fontcolor=0x{text_color}:fontsize={int(row['font_size'])}:"
+            f"x=(w-text_w)/2:y={int(row['y'])}:"
+            "shadowcolor=black@0.35:shadowx=1:shadowy=2:fix_bounds=1"
+        )
+    return ",".join(filters), {
+        "layout_mode": "portrait_title_safe",
+        "title_lines": rows,
+        "title_text_files": line_files,
+        "title_top_height": int(layout["title_top_height"]),
+        "visual_top": int(layout["visual_top"]),
+        "visual_height": int(layout["visual_height"]),
+    }
+
+
+def _legacy_filter(
+    headline: str,
+    target: Path,
+    config: dict[str, Any],
+    source_profile: dict[str, Any],
+    font_path: Path,
+) -> tuple[str, dict[str, Any]]:
+    overlay = dict(config.get("text_overlay") or {})
+    width = int(source_profile["width"])
+    height = int(source_profile["height"])
+    font_size = max(24, round(height * float(overlay.get("font_size_fraction", 0.05))))
+    margin_x = max(24, round(width * float(overlay.get("horizontal_margin_fraction", 0.04))))
+    box_height = max(
+        font_size + 28,
+        round(height * float(overlay.get("box_height_fraction", 0.14))),
+    )
+    text_y = max(8, round((box_height - font_size) / 2.0))
+    opacity = float(overlay.get("box_opacity", 0.72))
+    if not 0.0 <= opacity <= 1.0:
+        raise RuntimeError("text_overlay.box_opacity must be in 0..1")
+    headline_path = target.with_name(target.stem + "_headline.txt")
+    headline_path.write_text(headline, encoding="utf-8")
+    graph = (
+        f"drawbox=x=0:y=0:w=iw:h={box_height}:color=black@{opacity:.4f}:t=fill,"
+        "drawtext="
+        f"fontfile='{_escape_filter_path(font_path)}':"
+        f"textfile='{_escape_filter_path(headline_path)}':fontcolor=white:"
+        f"fontsize={font_size}:x={margin_x}:y={text_y}:"
+        "shadowcolor=black@0.8:shadowx=2:shadowy=2:fix_bounds=1"
+    )
+    return graph, {
+        "layout_mode": "legacy_top_banner",
+        "font_size": font_size,
+        "box_height": box_height,
+        "box_opacity": opacity,
+    }
 
 
 def render_text_overlay_master(
@@ -27,33 +114,32 @@ def render_text_overlay_master(
         raise RuntimeError("editorial canonical master must use NUT transport")
 
     overlay = dict(config.get("text_overlay") or {})
-    width = int(source_profile["width"])
-    height = int(source_profile["height"])
     font_path = Path(
         str(overlay.get("font_path") or "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
     )
     if not font_path.is_file():
         raise RuntimeError(f"configured text overlay font is unavailable: {font_path}")
 
-    font_size = max(24, round(height * float(overlay.get("font_size_fraction", 0.05))))
-    margin_x = max(24, round(width * float(overlay.get("horizontal_margin_fraction", 0.04))))
-    box_height = max(
-        font_size + 28,
-        round(height * float(overlay.get("box_height_fraction", 0.14))),
-    )
-    text_y = max(8, round((box_height - font_size) / 2.0))
-    opacity = float(overlay.get("box_opacity", 0.72))
-    if not 0.0 <= opacity <= 1.0:
-        raise RuntimeError("text_overlay.box_opacity must be in 0..1")
-
-    headline_path = target.with_name(target.stem + "_headline.txt")
-    headline_path.write_text(plan.headline.strip(), encoding="utf-8")
-    filter_graph = (
-        f"drawbox=x=0:y=0:w=iw:h={box_height}:color=black@{opacity:.4f}:t=fill,"
-        f"drawtext=fontfile={font_path}:textfile={headline_path}:fontcolor=white:"
-        f"fontsize={font_size}:x={margin_x}:y={text_y}:"
-        "shadowcolor=black@0.8:shadowx=2:shadowy=2:fix_bounds=1"
-    )
+    if portrait_layout.resolve(
+        config,
+        int(source_profile["width"]),
+        int(source_profile["height"]),
+    ) is not None:
+        filter_graph, layout_info = _portrait_filter(
+            plan.headline.strip(),
+            target,
+            config,
+            source_profile,
+            font_path,
+        )
+    else:
+        filter_graph, layout_info = _legacy_filter(
+            plan.headline.strip(),
+            target,
+            config,
+            source_profile,
+            font_path,
+        )
     forbidden = ("scale=", "crop=", "zscale=", "zoompan=", "perspective=", "rotate=")
     if any(item in filter_graph.lower() for item in forbidden):
         raise RuntimeError("editorial overlay graph contains a forbidden spatial transform")
@@ -115,9 +201,7 @@ def render_text_overlay_master(
         "applied": True,
         "headline": plan.headline,
         "font_path": str(font_path),
-        "font_size": font_size,
-        "box_height": box_height,
-        "box_opacity": opacity,
+        **layout_info,
         "spatial_transform_used": False,
         "input_frame_count": original_profile["frame_count"],
         "output_frame_count": overlay_profile["frame_count"],
@@ -134,7 +218,9 @@ def render_text_overlay_master(
         "transport_architecture_qa": architecture,
         "source_contract_metadata_authority": "original_input_probe",
         "nut_color_metadata_authoritative": False,
-        "nut_non_authoritative_metadata_fields": list(ffv1.NUT_NON_AUTHORITATIVE_VIDEO_METADATA),
+        "nut_non_authoritative_metadata_fields": list(
+            ffv1.NUT_NON_AUTHORITATIVE_VIDEO_METADATA
+        ),
         "source_profile": source_profile,
-        "video_operations": "source-native edit + declared text overlay only",
+        "video_operations": "declared title-safe text overlay only",
     }

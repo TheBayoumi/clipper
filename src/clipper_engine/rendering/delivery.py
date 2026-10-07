@@ -3,6 +3,8 @@ from __future__ import annotations
 from fractions import Fraction
 from typing import Any
 
+from . import portrait_layout
+
 _SOURCE_DIMENSIONS = {None, "source", "auto"}
 
 
@@ -71,3 +73,45 @@ def full_frame_filter(
         "[delivery_bg2][delivery_fg2]"
         f"overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1[{output_label}]"
     )
+
+
+def composition_filter(
+    source_profile: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    input_label: str = "0:v",
+    output_label: str = "delivery",
+) -> tuple[str, dict[str, Any]]:
+    profile = profile_for_output(source_profile, config)
+    width = int(profile["width"])
+    height = int(profile["height"])
+    layout = portrait_layout.resolve(config, width, height)
+    if layout is None:
+        return full_frame_filter(
+            width,
+            height,
+            input_label=input_label,
+            output_label=output_label,
+        ), {
+            "mode": "full_frame_fit_blurred_background",
+            "source_foreground_full_frame": True,
+            "source_foreground_crop_used": False,
+        }
+
+    visual_width = int(layout["visual_width"])
+    visual_height = int(layout["visual_height"])
+    visual_left = int(layout["visual_left"])
+    visual_top = int(layout["visual_top"])
+    background = str(layout.get("background_hex") or "#0F1115").lstrip("#")
+    graph = (
+        f"[{input_label}]scale={visual_width}:{visual_height}:"
+        "force_original_aspect_ratio=decrease:flags=lanczos,"
+        f"pad={width}:{height}:{visual_left}:{visual_top}:"
+        f"color=0x{background},setsar=1[{output_label}]"
+    )
+    return graph, {
+        "mode": "portrait_matte_full_frame",
+        "source_foreground_full_frame": True,
+        "source_foreground_crop_used": False,
+        "portrait_layout": layout,
+    }
