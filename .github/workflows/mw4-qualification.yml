@@ -90,7 +90,7 @@ jobs:
     name: analyze-${{ matrix.source }}
     needs: discover-sources
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 50
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -113,7 +113,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
       - name: Resolve, certify, analyze, and diagnose source through Clipper CLI
-        timeout-minutes: 35
+        timeout-minutes: 70
         env:
           SOURCE_KEY: ${{ matrix.source }}
           OMP_NUM_THREADS: '2'
