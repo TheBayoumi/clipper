@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 import math
 import subprocess
@@ -163,7 +164,11 @@ def transcribe(source: Path, config: dict[str, Any]) -> Transcript:
                     words=words,
                 )
             )
+        del waveform, raw_segments
+        gc.collect()
 
+    del model
+    gc.collect()
     settings = {
         "model": model_name,
         "device": device,

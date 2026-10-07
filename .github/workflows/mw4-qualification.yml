@@ -19,6 +19,7 @@ on:
   push:
     branches:
       - feat/mw4-fullframe-retention-v3-1
+      - feat/mw4-dmz-from-the-ward
     paths:
       - .github/workflows/mw4-qualification.yml
       - .github/mw4-production-trigger
@@ -36,7 +37,7 @@ permissions:
   contents: read
 
 env:
-  MW4_CONFIG_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.config_path || '' }}
+  MW4_CONFIG_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.config_path != '' && inputs.config_path || github.ref_name == 'feat/mw4-dmz-from-the-ward' && 'campaigns/mw4-dmz-from-the-ward.json' || '' }}
   MW4_RENDER_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.render_mode || 'production' }}
 
 jobs:

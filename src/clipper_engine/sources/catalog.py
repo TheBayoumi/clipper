@@ -30,6 +30,8 @@ def _derivative(asset: dict[str, Any], derivative_type: str) -> tuple[dict[str, 
         if str(item.get("type") or "").lower() != derivative_type:
             continue
         url = item.get("url") or (item.get("properties") or {}).get("url")
+        if not url and derivative_type == "source":
+            url = mediasilo.presentation_asset_download_endpoint(asset)
         if not url:
             continue
         try:
@@ -145,6 +147,12 @@ def discover(
                 "title": title,
                 "file_name": asset.get("fileName"),
                 "url": url,
+                "url_mode": (
+                    "provider_download_api"
+                    if derivative_type == "source"
+                    and url == mediasilo.presentation_asset_download_endpoint(asset)
+                    else "direct"
+                ),
                 "derivative_type": derivative_type,
                 "file_size": derivative.get("fileSize"),
                 "width": derivative.get("width"),

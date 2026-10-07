@@ -176,6 +176,10 @@ def batch_summaries(
             failures.append(f"{source}: one or more clip results did not pass")
         publishing = dict(config.get("publishing") or {})
         require_text = bool(publishing.get("on_screen_text_required", False))
+        source_profile = dict(config.get("source_profile") or {})
+        require_analysis_alignment = (
+            str(source_profile.get("analysis_derivative") or "source").lower() == "proxy"
+        )
         disclosure = str(publishing.get("disclosure") or "").strip()
         account_tag = str(publishing.get("account_tag") or "").strip()
         modes = {str(item.get("mode") or "") for item in actual if item.get("mode")}
@@ -232,6 +236,18 @@ def batch_summaries(
                     f"{source} clip {item.get('ordinal', '?')}: "
                     "production did not use original source"
                 )
+            if summary_mode == "production" and require_analysis_alignment:
+                alignment = dict(item.get("analysis_alignment") or {})
+                alignment_checks = dict(alignment.get("checks") or {})
+                if (
+                    alignment.get("status") != "PASS"
+                    or not alignment_checks
+                    or not all(bool(value) for value in alignment_checks.values())
+                ):
+                    failures.append(
+                        f"{source} clip {item.get('ordinal', '?')}: "
+                        "analysis proxy/original source alignment proof missing or failed"
+                    )
         failures.extend(architecture_failures)
         architecture_passed = (
             bool(actual or not expected)
@@ -255,6 +271,20 @@ def batch_summaries(
                     for item in actual
                     if item.get("source_derivative_type")
                 }
+            ),
+            "analysis_alignment_verified": (
+                not require_analysis_alignment
+                or all(
+                    bool((item.get("analysis_alignment") or {}).get("status") == "PASS")
+                    and bool((item.get("analysis_alignment") or {}).get("checks"))
+                    and all(
+                        bool(value)
+                        for value in (item.get("analysis_alignment") or {})
+                        .get("checks", {})
+                        .values()
+                    )
+                    for item in actual
+                )
             ),
             "verified_finishing_move_count": len(
                 config.get("finishing_move_detector", {}).get("verified_spans", {}).get(source, [])

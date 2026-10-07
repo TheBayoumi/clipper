@@ -158,6 +158,47 @@ def _spotlight_identifier(url: str) -> str | None:
         return None
 
 
+def presentation_asset_download_endpoint(asset: dict[str, Any]) -> str | None:
+    presentation_id = str(asset.get("_presentation_id") or "")
+    playlist_id = str(asset.get("_playlist_id") or "")
+    asset_id = str(asset.get("id") or asset.get("assetId") or "")
+    if not presentation_id or not playlist_id or not asset_id:
+        return None
+    return (
+        "https://api.mediasilo.com/v3/presentations/"
+        f"{urllib.parse.quote(presentation_id, safe='')}/playlists/"
+        f"{urllib.parse.quote(playlist_id, safe='')}/assets/"
+        f"{urllib.parse.quote(asset_id, safe='')}/download"
+    )
+
+
+def _download_url_from_api(endpoint: str) -> str:
+    parsed = urllib.parse.urlparse(endpoint)
+    if (
+        parsed.scheme.lower() != "https"
+        or (parsed.hostname or "").lower() != "api.mediasilo.com"
+        or not parsed.path.endswith("/download")
+    ):
+        raise RuntimeError("refusing invalid MediaSilo presentation download endpoint")
+    request = urllib.request.Request(  # noqa: S310 - validated MediaSilo HTTPS endpoint.
+        endpoint,
+        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(
+            "MediaSilo original-source download descriptor request failed: "
+            f"route={_sanitized_route(endpoint)}"
+        ) from exc
+    download_url = str(payload.get("downloadUrl") or "") if isinstance(payload, dict) else ""
+    target = urllib.parse.urlparse(download_url)
+    if target.scheme.lower() != "https" or not target.hostname:
+        raise RuntimeError("MediaSilo original-source download descriptor has no HTTPS target")
+    return download_url
+
+
 def _spotlight_template_assets(html: str, presentation_id: str) -> list[dict[str, Any]]:
     marker = "window.template ="
     start = html.find(marker)
@@ -492,27 +533,44 @@ def download(resolved_path: Path, target: Path) -> None:
     derivative_type = str(selected.get("derivative_type") or "").lower()
     if derivative_type not in {"source", "proxy"}:
         raise RuntimeError(f"unsupported MediaSilo derivative before download: {derivative_type!r}")
+
     url = str(selected.get("url") or "")
+    url_mode = str(selected.get("url_mode") or "direct")
+    if url_mode == "provider_download_api":
+        if derivative_type != "source":
+            raise RuntimeError("provider download API is only valid for original source masters")
+        url = _download_url_from_api(url)
+    elif url_mode != "direct":
+        raise RuntimeError(f"unsupported MediaSilo URL mode: {url_mode!r}")
+
     if not url:
         raise RuntimeError("resolved MediaSilo source URL is missing")
     parsed_url = urllib.parse.urlparse(url)
     if parsed_url.scheme.lower() != "https" or not parsed_url.hostname:
         raise RuntimeError("refusing non-HTTPS MediaSilo source URL")
+
     target.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(  # noqa: S310 - HTTPS validated above.
         url, headers={"User-Agent": "Mozilla/5.0"}
     )
-    with (
-        urllib.request.urlopen(  # noqa: S310 - HTTPS validated above.
-            request, timeout=300
-        ) as source,
-        target.open("wb") as output,
-    ):
-        while True:
-            block = source.read(8 * 1024 * 1024)
-            if not block:
-                break
-            output.write(block)
+    try:
+        with (
+            urllib.request.urlopen(  # noqa: S310 - HTTPS validated above.
+                request, timeout=300
+            ) as source,
+            target.open("wb") as output,
+        ):
+            while True:
+                block = source.read(8 * 1024 * 1024)
+                if not block:
+                    break
+                output.write(block)
+    except Exception as exc:
+        target.unlink(missing_ok=True)
+        label = "original source master" if derivative_type == "source" else "analysis proxy"
+        raise RuntimeError(
+            f"MediaSilo {label} download failed; proxy fallback is forbidden for production"
+        ) from exc
     if target.stat().st_size <= 0:
         raise RuntimeError(f"downloaded MediaSilo source is empty: {target}")
     print(f"downloaded MediaSilo {derivative_type} bytes={target.stat().st_size}")

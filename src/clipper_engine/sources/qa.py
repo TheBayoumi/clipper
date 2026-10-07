@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,110 @@ def _declared_size_bounds(resolved: dict[str, Any]) -> tuple[int, int] | None:
         return None
     floor = declared_kib * 1024
     return floor, floor + 1024
+
+
+def _duration_seconds(source: Path) -> float:
+    completed = media.run_capture(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=nw=1:nk=1",
+            str(source),
+        ]
+    )
+    duration = float(completed.stdout.strip())
+    if duration <= 0.0:
+        raise RuntimeError(f"source duration is invalid: {source}")
+    return duration
+
+
+def _nominal_rate(manifest: dict[str, Any]) -> Fraction:
+    timing = (
+        manifest.get("media_contract", {})
+        .get("video", {})
+        .get("timing", {})
+    )
+    value = str(timing.get("nominal_rate") or "")
+    try:
+        rate = Fraction(value)
+    except (ValueError, ZeroDivisionError) as exc:
+        raise RuntimeError(f"source QA manifest has invalid nominal_rate={value!r}") from exc
+    if rate <= 0:
+        raise RuntimeError(f"source QA manifest has non-positive nominal_rate={value!r}")
+    return rate
+
+
+def certify_analysis_alignment(
+    analysis_manifest_path: Path,
+    original_manifest_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    analysis = json.loads(analysis_manifest_path.read_text(encoding="utf-8"))
+    original = json.loads(original_manifest_path.read_text(encoding="utf-8"))
+    checks = {
+        "analysis_is_proxy": analysis.get("derivative_type") == "proxy",
+        "production_is_original_source": original.get("derivative_type") == "source",
+        "same_source_key": analysis.get("source_key") == original.get("source_key"),
+        "same_title": analysis.get("title") == original.get("title"),
+        "same_file_name": analysis.get("file_name") == original.get("file_name"),
+        "same_provider_asset": bool(analysis.get("provider_asset_id"))
+        and analysis.get("provider_asset_id") == original.get("provider_asset_id"),
+        "same_provider_presentation": bool(analysis.get("provider_presentation_id"))
+        and analysis.get("provider_presentation_id") == original.get("provider_presentation_id"),
+        "same_provider_playlist": bool(analysis.get("provider_playlist_id"))
+        and analysis.get("provider_playlist_id") == original.get("provider_playlist_id"),
+    }
+
+    analysis_declared = int(analysis.get("declared_duration_ms") or 0)
+    original_declared = int(original.get("declared_duration_ms") or 0)
+    checks["same_provider_declared_duration"] = (
+        analysis_declared > 0
+        and original_declared > 0
+        and analysis_declared == original_declared
+    )
+
+    analysis_duration = float(analysis.get("duration_seconds") or 0.0)
+    original_duration = float(original.get("duration_seconds") or 0.0)
+    slower_rate = min(_nominal_rate(analysis), _nominal_rate(original))
+    maximum_delta = max(0.05, 2.0 / float(slower_rate))
+    duration_delta = abs(analysis_duration - original_duration)
+    checks["duration_alignment_within_two_frames"] = (
+        analysis_duration > 0.0
+        and original_duration > 0.0
+        and duration_delta <= maximum_delta + 1e-9
+    )
+
+    payload = {
+        "schema_version": 1,
+        "analysis_derivative": "proxy",
+        "production_derivative": "source",
+        "provider_asset_id": original.get("provider_asset_id"),
+        "analysis_sha256": analysis.get("sha256"),
+        "production_sha256": original.get("sha256"),
+        "analysis_duration_seconds": analysis_duration,
+        "production_duration_seconds": original_duration,
+        "duration_delta_seconds": round(duration_delta, 9),
+        "maximum_duration_delta_seconds": round(maximum_delta, 9),
+        "checks": checks,
+        "status": "PASS" if all(checks.values()) else "FAIL",
+    }
+    if not all(checks.values()):
+        raise RuntimeError(f"analysis proxy/original source temporal alignment failed: {payload}")
+
+    original["analysis_alignment"] = payload
+    original_manifest_path.write_text(json.dumps(original, indent=2), encoding="utf-8")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(
+        "ANALYSIS PROXY -> ORIGINAL SOURCE ALIGNMENT VERIFIED "
+        f"asset={payload['provider_asset_id']} delta={duration_delta:.6f}s "
+        f"limit={maximum_delta:.6f}s"
+    )
+    return payload
 
 
 def certify(
@@ -77,6 +182,8 @@ def certify(
         "downloaded_bytes": actual_size,
         "declared_source_size_kib": int(resolved.get("file_size") or 0) or None,
         "declared_source_floor_bytes": bounds[0] if bounds else None,
+        "declared_duration_ms": int(resolved.get("duration_ms") or 0) or None,
+        "duration_seconds": round(_duration_seconds(source), 9),
         "sha256": _sha256(source),
         "media_contract": contract.to_json(),
         "video_profile": media.video_profile(source),
@@ -109,6 +216,7 @@ def verify(
     manifest_path: Path,
     *,
     require_original: bool = True,
+    require_analysis_alignment: bool = False,
 ) -> dict[str, Any]:
     if not source.is_file():
         raise RuntimeError(f"staged source artifact missing: {source}")
@@ -123,6 +231,13 @@ def verify(
         )
     if derivative_type not in {"source", "proxy"}:
         raise RuntimeError(f"staged reel has unsupported derivative type={derivative_type!r}")
+    if require_analysis_alignment:
+        alignment = dict(manifest.get("analysis_alignment") or {})
+        checks = dict(alignment.get("checks") or {})
+        if alignment.get("status") != "PASS" or not checks or not all(checks.values()):
+            raise RuntimeError(
+                "production source is missing verified analysis-proxy/original temporal alignment"
+            )
     if source.stat().st_size != int(manifest.get("downloaded_bytes") or 0):
         raise RuntimeError("staged source byte-size differs from source QA manifest")
     digest = _sha256(source)

@@ -49,29 +49,77 @@ def analyze(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, Any
     args.output_dir.mkdir(parents=True, exist_ok=True)
     source_path = args.source_dir / f"{args.source_key}.mp4"
     qa_path = args.source_dir / f"{args.source_key}.source_qa.json"
+    source_profile = dict(profile.config.get("source_profile") or {})
+    analysis_derivative = str(source_profile.get("analysis_derivative") or "source").lower()
+    use_proxy_for_analysis = analysis_derivative == "proxy"
+
+    analysis_source_path = (
+        args.source_dir / f"{args.source_key}.analysis_proxy.mp4"
+        if use_proxy_for_analysis
+        else source_path
+    )
+    analysis_qa_path = (
+        args.output_dir / f"{args.source_key}_analysis_source_qa.json"
+        if use_proxy_for_analysis
+        else qa_path
+    )
 
     with tempfile.TemporaryDirectory(prefix="clipper-source-") as temp_dir:
         root = Path(temp_dir)
         catalog_path = root / "source_catalog.json"
         resolved_path = root / "resolved_source.json"
-        source_profile = dict(profile.config.get("source_profile") or {})
-        catalog.discover(review_url, catalog_path, None, expected_count, source_profile)
+        catalog.discover(
+            review_url,
+            catalog_path,
+            None,
+            expected_count,
+            source_profile,
+        )
         catalog.select(catalog_path, args.source_key, resolved_path)
-        mediasilo.download(resolved_path, source_path)
+        mediasilo.download(resolved_path, analysis_source_path)
         source_qa.certify(
-            source_path,
+            analysis_source_path,
             args.source_key,
             resolved_path,
-            qa_path,
+            analysis_qa_path,
             allow_proxy=bool(source_profile.get("allow_proxy_for_analysis", False)),
         )
 
-    return candidates.analyze_source_file(
-        args.source_key,
-        source_path,
-        profile.config,
-        args.output_dir,
-    )
+        result = candidates.analyze_source_file(
+            args.source_key,
+            analysis_source_path,
+            profile.config,
+            args.output_dir,
+        )
+
+        if use_proxy_for_analysis:
+            original_profile = dict(source_profile)
+            original_profile["analysis_derivative"] = "source"
+            original_catalog = root / "original_source_catalog.json"
+            original_resolved = root / "original_resolved_source.json"
+            catalog.discover(
+                review_url,
+                original_catalog,
+                None,
+                expected_count,
+                original_profile,
+            )
+            catalog.select(original_catalog, args.source_key, original_resolved)
+            mediasilo.download(original_resolved, source_path)
+            source_qa.certify(
+                source_path,
+                args.source_key,
+                original_resolved,
+                qa_path,
+                allow_proxy=False,
+            )
+            alignment_path = args.output_dir / f"{args.source_key}_source_alignment.json"
+            source_qa.certify_analysis_alignment(
+                analysis_qa_path,
+                qa_path,
+                alignment_path,
+            )
+        return result
 
 
 def allocate(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, Any]:
@@ -101,8 +149,16 @@ def allocate(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, An
 def render_one(profile: GameplayProfile, args: argparse.Namespace) -> dict[str, Any]:
     source_path = args.source_dir / f"{args.source_key}.mp4"
     qa_path = args.source_dir / f"{args.source_key}.source_qa.json"
+    source_profile = dict(profile.config.get("source_profile") or {})
+    require_alignment = (
+        args.mode == "production"
+        and str(source_profile.get("analysis_derivative") or "source").lower() == "proxy"
+    )
     source_manifest = source_qa.verify(
-        source_path, qa_path, require_original=args.mode == "production"
+        source_path,
+        qa_path,
+        require_original=args.mode == "production",
+        require_analysis_alignment=require_alignment,
     )
     return worker.render_one(
         source_key=args.source_key,

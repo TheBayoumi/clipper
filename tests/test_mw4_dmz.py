@@ -258,3 +258,148 @@ def test_plan_key_binds_editorial_headline() -> None:
     changed = dict(base)
     changed["headline"] = "Headline B"
     assert contract.plan_key(base) != contract.plan_key(changed)
+
+
+def test_catalog_resolves_spotlight_original_through_provider_download_api(
+    tmp_path: Path,
+) -> None:
+    asset = {
+        "id": "asset-1",
+        "title": "DMZ.mp4",
+        "fileName": "DMZ.mp4",
+        "duration": 12_000,
+        "derivatives": [
+            {
+                "type": "source",
+                "fileSize": 500_000,
+                "width": 3840,
+                "height": 2160,
+                "duration": 12_000,
+            },
+            {
+                "type": "proxy",
+                "url": "https://example.test/proxy.mp4",
+                "fileSize": 10_000,
+                "width": 1280,
+                "height": 720,
+                "duration": 12_000,
+            },
+        ],
+        "_presentation_id": "presentation-1",
+        "_playlist_id": "playlist-1",
+    }
+    source_profile = {
+        "analysis_derivative": "source",
+        "assets": [{"title": "DMZ.mp4", "source_key": "dmz"}],
+    }
+    output = tmp_path / "catalog.json"
+    with patch("clipper_engine.sources.catalog._capture_assets", return_value=[asset]):
+        result = catalog.discover(
+            "https://app.mediasilo.com/spotlight/presentation-1",
+            output,
+            None,
+            1,
+            source_profile,
+        )
+
+    selected = result["sources"][0]
+    assert selected["derivative_type"] == "source"
+    assert selected["url_mode"] == "provider_download_api"
+    assert selected["url"] == (
+        "https://api.mediasilo.com/v3/presentations/presentation-1/"
+        "playlists/playlist-1/assets/asset-1/download"
+    )
+
+
+def test_proxy_original_alignment_requires_same_provider_asset_and_timing(
+    tmp_path: Path,
+) -> None:
+    common = {
+        "source_key": "dmz",
+        "title": "DMZ.mp4",
+        "file_name": "DMZ.mp4",
+        "provider_asset_id": "asset-1",
+        "provider_presentation_id": "presentation-1",
+        "provider_playlist_id": "playlist-1",
+        "declared_duration_ms": 12_000,
+    }
+    analysis = {
+        **common,
+        "derivative_type": "proxy",
+        "duration_seconds": 12.01,
+        "sha256": "proxy-sha",
+        "media_contract": {
+            "video": {"timing": {"nominal_rate": "60/1"}},
+        },
+    }
+    original = {
+        **common,
+        "derivative_type": "source",
+        "duration_seconds": 12.0,
+        "sha256": "source-sha",
+        "media_contract": {
+            "video": {"timing": {"nominal_rate": "60/1"}},
+        },
+    }
+    analysis_path = tmp_path / "analysis.json"
+    original_path = tmp_path / "original.json"
+    alignment_path = tmp_path / "alignment.json"
+    analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+    original_path.write_text(json.dumps(original), encoding="utf-8")
+
+    result = source_qa.certify_analysis_alignment(
+        analysis_path,
+        original_path,
+        alignment_path,
+    )
+
+    assert result["status"] == "PASS"
+    assert all(result["checks"].values())
+    updated = json.loads(original_path.read_text(encoding="utf-8"))
+    assert updated["analysis_alignment"]["production_sha256"] == "source-sha"
+
+
+def test_proxy_original_alignment_rejects_different_provider_asset(tmp_path: Path) -> None:
+    base = {
+        "source_key": "dmz",
+        "title": "DMZ.mp4",
+        "file_name": "DMZ.mp4",
+        "provider_presentation_id": "presentation-1",
+        "provider_playlist_id": "playlist-1",
+        "declared_duration_ms": 12_000,
+        "duration_seconds": 12.0,
+        "media_contract": {
+            "video": {"timing": {"nominal_rate": "60/1"}},
+        },
+    }
+    analysis_path = tmp_path / "analysis.json"
+    original_path = tmp_path / "original.json"
+    analysis_path.write_text(
+        json.dumps(
+            {
+                **base,
+                "provider_asset_id": "asset-proxy",
+                "derivative_type": "proxy",
+                "sha256": "proxy-sha",
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_path.write_text(
+        json.dumps(
+            {
+                **base,
+                "provider_asset_id": "asset-source",
+                "derivative_type": "source",
+                "sha256": "source-sha",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="temporal alignment failed"):
+        source_qa.certify_analysis_alignment(
+            analysis_path,
+            original_path,
+            tmp_path / "alignment.json",
+        )

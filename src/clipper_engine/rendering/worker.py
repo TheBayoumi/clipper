@@ -119,6 +119,7 @@ def render_one(
         "topic_id": plan.topic_id,
         "source_derivative_type": (source_manifest or {}).get("derivative_type"),
         "source_certified_sha256": (source_manifest or {}).get("sha256"),
+        "analysis_alignment": dict((source_manifest or {}).get("analysis_alignment") or {}),
         "production_original_source_verified": bool(
             mode == "production" and (source_manifest or {}).get("derivative_type") == "source"
         ),
