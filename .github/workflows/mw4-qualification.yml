@@ -27,6 +27,7 @@ on:
       - src/clipper_engine/profiles/mw4.json
       - src/clipper/cli.py
       - src/clipper_engine/**/*.py
+      - tests/test_mw4_dmz.py
 
 concurrency:
   group: mw4-qualification-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.render_mode || 'production' }}
