@@ -7,6 +7,7 @@ on:
     branches:
       - main
       - feat/mw4-fullframe-retention-v3-1
+      - feat/mw4-dmz-from-the-ward
 
 permissions:
   contents: read
