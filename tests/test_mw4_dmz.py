@@ -629,7 +629,6 @@ def test_proxy_original_alignment_rejects_different_provider_asset(tmp_path: Pat
         )
 
 
-
 def test_topic_specificity_dominates_editorial_window_quality() -> None:
     transcript = speech.Transcript(
         language="en",
@@ -668,9 +667,7 @@ def test_topic_specificity_dominates_editorial_window_quality() -> None:
     summary = {
         topic_id: {
             "best_similarity": (items[0].similarity if items else None),
-            "best_runner_up_similarity": (
-                items[0].runner_up_similarity if items else None
-            ),
+            "best_runner_up_similarity": (items[0].runner_up_similarity if items else None),
             "best_margin": (items[0].margin if items else None),
             "minimum_similarity": 0.52,
             "minimum_topic_margin": 0.05,
@@ -701,9 +698,7 @@ def test_topic_specificity_dominates_editorial_window_quality() -> None:
             embedder=lambda texts: [[1.0, 0.0] for _ in texts],
         )
 
-    persistent = [
-        plan for plan in plans if plan.topic_id == "persistent_progression"
-    ]
+    persistent = [plan for plan in plans if plan.topic_id == "persistent_progression"]
     persistent.sort(key=lambda plan: -plan.score)
     assert persistent[0].transcript_text == specific.text
     assert persistent[0].score > persistent[1].score

@@ -626,23 +626,15 @@ def topic_matches(
         raw_best_index = max(range(len(all_scores)), key=all_scores.__getitem__)
         raw_best_similarity = all_scores[raw_best_index]
         raw_best_runner_up = max(
-            (
-                similarities[other][raw_best_index]
-                for other in topic_ids
-                if other != topic_id
-            ),
+            (similarities[other][raw_best_index] for other in topic_ids if other != topic_id),
             default=0.0,
         )
         best_qualified = selected[0] if selected else None
         matches[topic_id] = selected
         summary[topic_id] = {
-            "best_similarity": (
-                best_qualified.similarity if best_qualified is not None else None
-            ),
+            "best_similarity": (best_qualified.similarity if best_qualified is not None else None),
             "best_runner_up_similarity": (
-                best_qualified.runner_up_similarity
-                if best_qualified is not None
-                else None
+                best_qualified.runner_up_similarity if best_qualified is not None else None
             ),
             "best_margin": best_qualified.margin if best_qualified is not None else None,
             "best_raw_similarity": round(raw_best_similarity, 6),
