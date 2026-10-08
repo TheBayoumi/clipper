@@ -92,6 +92,16 @@ class SemanticWindow:
         return self.end - self.start
 
 
+@dataclass(frozen=True)
+class TopicMatch:
+    topic_id: str
+    window_index: int
+    similarity: float
+    runner_up_similarity: float
+    margin: float
+    score: float
+
+
 EmbeddingFn = Callable[[Sequence[str]], list[list[float]]]
 
 
@@ -198,31 +208,78 @@ def _region_ids(units: Sequence[SemanticUnit], vectors: Sequence[Sequence[float]
     return result
 
 
+def _fit_minimum_duration(
+    left: int,
+    right: int,
+    units: Sequence[SemanticUnit],
+    minimum: float,
+    maximum: float,
+    transcript_duration: float,
+) -> tuple[float, float] | None:
+    start = units[left].start
+    end = units[right].end
+    duration = end - start
+    if duration > maximum + 1e-3:
+        return None
+    if duration >= minimum - 1e-3:
+        return start, end
+
+    previous_end = units[left - 1].end if left > 0 else 0.0
+    next_start = units[right + 1].start if right + 1 < len(units) else transcript_duration
+    left_slack = max(0.0, start - previous_end)
+    right_slack = max(0.0, next_start - end)
+    deficit = minimum - duration
+
+    left_padding = min(left_slack, deficit / 2.0)
+    right_padding = min(right_slack, deficit - left_padding)
+    remaining = deficit - left_padding - right_padding
+    if remaining > 1e-3:
+        extra_left = min(left_slack - left_padding, remaining)
+        left_padding += extra_left
+        remaining -= extra_left
+    if remaining > 1e-3:
+        extra_right = min(right_slack - right_padding, remaining)
+        right_padding += extra_right
+        remaining -= extra_right
+    if remaining > 1e-3:
+        return None
+
+    fitted_start = max(0.0, start - left_padding)
+    fitted_end = min(transcript_duration, end + right_padding)
+    if fitted_end - fitted_start > maximum + 1e-3:
+        return None
+    return fitted_start, fitted_end
+
+
 def _window_bounds(
     anchor: int,
     units: Sequence[SemanticUnit],
-    regions: Sequence[int],
     minimum: float,
     maximum: float,
-) -> list[tuple[int, int]]:
-    region = regions[anchor]
+    transcript_duration: float,
+    maximum_internal_pause: float,
+) -> list[tuple[int, int, float, float]]:
     left_floor = anchor
-    while left_floor > 0 and regions[left_floor - 1] == region:
+    while left_floor > 0:
+        gap = units[left_floor].start - units[left_floor - 1].end
+        if gap > maximum_internal_pause:
+            break
         if units[anchor].end - units[left_floor - 1].start > maximum:
             break
         left_floor -= 1
+
     right_ceiling = anchor
-    while right_ceiling + 1 < len(units) and regions[right_ceiling + 1] == region:
+    while right_ceiling + 1 < len(units):
+        gap = units[right_ceiling + 1].start - units[right_ceiling].end
+        if gap > maximum_internal_pause:
+            break
         if units[right_ceiling + 1].end - units[anchor].start > maximum:
             break
         right_ceiling += 1
 
-    result: list[tuple[int, int]] = []
+    result: list[tuple[int, int, float, float]] = []
     for left in range(left_floor, anchor + 1):
         for right in range(anchor, right_ceiling + 1):
-            duration = units[right].end - units[left].start
-            if duration < minimum - 1e-3 or duration > maximum + 1e-3:
-                continue
             if not _closed_ending(units[right].text):
                 continue
             question_indexes = [
@@ -230,12 +287,28 @@ def _window_bounds(
             ]
             if question_indexes and question_indexes[-1] == right:
                 continue
-            result.append((left, right))
+            fitted = _fit_minimum_duration(
+                left,
+                right,
+                units,
+                minimum,
+                maximum,
+                transcript_duration,
+            )
+            if fitted is None:
+                continue
+            result.append((left, right, fitted[0], fitted[1]))
     return result
 
 
 def _quality(margin: float) -> float:
     return max(0.0, min(1.0, 0.5 + 1.5 * margin))
+
+
+def _overlap(left: SemanticWindow, right: SemanticWindow) -> float:
+    intersection = max(0.0, min(left.end, right.end) - max(left.start, right.start))
+    union = max(left.end, right.end) - min(left.start, right.start)
+    return intersection / union if union > 0 else 0.0
 
 
 def discover_windows(
@@ -249,6 +322,9 @@ def discover_windows(
     maximum = float(editor.get("maximum_output_seconds", 12.0))
     event_threshold = float(semantic_cfg.get("minimum_event_similarity", 0.34))
     minimum_context_margin = float(semantic_cfg.get("minimum_context_margin", 0.0))
+    maximum_internal_pause = float(
+        semantic_cfg.get("maximum_internal_pause_seconds", 4.5)
+    )
 
     units = thought_units(transcript)
     diagnostics: dict[str, Any] = {
@@ -260,6 +336,8 @@ def discover_windows(
         "candidate_count": 0,
         "campaign_keyword_gate": False,
         "fixed_candidate_quota": False,
+        "semantic_regions_are_hard_window_boundaries": False,
+        "maximum_internal_pause_seconds": maximum_internal_pause,
     }
     if not units:
         return [], diagnostics
@@ -268,11 +346,16 @@ def discover_windows(
     configured_events = semantic_cfg.get("event_descriptions")
     if isinstance(configured_events, dict) and configured_events:
         event_descriptions = {
-            str(key): str(value) for key, value in configured_events.items() if str(value).strip()
+            str(key): str(value)
+            for key, value in configured_events.items()
+            if str(value).strip()
         }
     off_topic = [
         str(item)
-        for item in semantic_cfg.get("off_topic_descriptions", DEFAULT_OFF_TOPIC_DESCRIPTIONS)
+        for item in semantic_cfg.get(
+            "off_topic_descriptions",
+            DEFAULT_OFF_TOPIC_DESCRIPTIONS,
+        )
         if str(item).strip()
     ]
     texts = [unit.text for unit in units]
@@ -304,23 +387,35 @@ def discover_windows(
     diagnostics["event_anchor_count"] = len(anchors)
     diagnostics["semantic_region_count"] = len(set(regions))
     diagnostics["event_distribution"] = {
-        name: sum(1 for index in anchors if labels[index] == name) for name in event_names
+        name: sum(1 for index in anchors if labels[index] == name)
+        for name in event_names
     }
 
-    bounds_to_anchor: dict[tuple[int, int], int] = {}
+    bounds_to_anchor: dict[tuple[int, int, float, float], int] = {}
     for anchor in anchors:
-        for bounds in _window_bounds(anchor, units, regions, minimum, maximum):
+        for bounds in _window_bounds(
+            anchor,
+            units,
+            minimum,
+            maximum,
+            transcript.duration,
+            maximum_internal_pause,
+        ):
             previous = bounds_to_anchor.get(bounds)
             if previous is None or strengths[anchor] > strengths[previous]:
                 bounds_to_anchor[bounds] = anchor
+
     bounds = sorted(bounds_to_anchor)
     diagnostics["boundary_variants_assessed"] = len(bounds)
+    diagnostics["cross_region_variant_count"] = sum(
+        regions[left] != regions[right] for left, right, _, _ in bounds
+    )
     if not bounds:
         return [], diagnostics
 
     rubric_texts = [text for pair in DEFAULT_CONTEXT_RUBRIC.values() for text in pair]
     assessment_texts: list[str] = []
-    for left, right in bounds:
+    for left, right, _, _ in bounds:
         assessment_texts.extend(
             [
                 " ".join(unit.text for unit in units[left : right + 1]),
@@ -336,17 +431,27 @@ def discover_windows(
     rubric_vectors = assessed[len(assessment_texts) :]
     windows: list[SemanticWindow] = []
     rejected = 0
-    for index, (left, right) in enumerate(bounds):
+    for index, (left, right, fitted_start, fitted_end) in enumerate(bounds):
         margins = {
-            name: cosine(assessed[index * 3 + dimension], rubric_vectors[dimension * 2])
-            - cosine(assessed[index * 3 + dimension], rubric_vectors[dimension * 2 + 1])
+            name: cosine(
+                assessed[index * 3 + dimension],
+                rubric_vectors[dimension * 2],
+            )
+            - cosine(
+                assessed[index * 3 + dimension],
+                rubric_vectors[dimension * 2 + 1],
+            )
             for dimension, name in enumerate(DEFAULT_CONTEXT_RUBRIC)
         }
         if any(value <= minimum_context_margin for value in margins.values()):
             rejected += 1
             continue
-        anchor = bounds_to_anchor[(left, right)]
-        pairwise = [cosine(vectors[item - 1], vectors[item]) for item in range(left + 1, right + 1)]
+
+        anchor = bounds_to_anchor[(left, right, fitted_start, fitted_end)]
+        pairwise = [
+            cosine(vectors[item - 1], vectors[item])
+            for item in range(left + 1, right + 1)
+        ]
         coherence = sum(pairwise) / len(pairwise) if pairwise else 1.0
         opening = _quality(margins["opening"])
         story = _quality(margins["story"])
@@ -365,10 +470,13 @@ def discover_windows(
         )
         windows.append(
             SemanticWindow(
-                start=round(units[left].start, 3),
-                end=round(units[right].end, 3),
+                start=round(fitted_start, 3),
+                end=round(fitted_end, 3),
                 text=" ".join(unit.text for unit in units[left : right + 1]).strip(),
-                anchor_time=round((units[anchor].start + units[anchor].end) / 2.0, 3),
+                anchor_time=round(
+                    (units[anchor].start + units[anchor].end) / 2.0,
+                    3,
+                ),
                 event_label=labels[anchor],
                 event_similarity=round(strengths[anchor], 6),
                 opening_quality=round(opening, 6),
@@ -379,53 +487,84 @@ def discover_windows(
                 vector=tuple(float(value) for value in assessed[index * 3]),
             )
         )
+
+    unique_windows: list[SemanticWindow] = []
+    for window in sorted(windows, key=lambda item: (-item.score, item.start, item.end)):
+        if any(
+            abs(window.start - other.start) < 1e-3
+            and abs(window.end - other.end) < 1e-3
+            and window.text == other.text
+            for other in unique_windows
+        ):
+            continue
+        unique_windows.append(window)
+
     diagnostics["context_rejected_variants"] = rejected
-    diagnostics["candidate_count"] = len(windows)
+    diagnostics["candidate_count"] = len(unique_windows)
     diagnostics["story_admissibility"] = {
         "opening_complete": True,
         "story_complete": True,
         "ending_complete": True,
         "closed_ending_required": True,
         "question_without_answer_rejected": True,
+        "silence_padding_allowed_to_meet_minimum_duration": True,
     }
-    return sorted(windows, key=lambda item: (-item.score, item.start, item.end)), diagnostics
+    return unique_windows, diagnostics
 
 
-def topic_coverage(
+def topic_matches(
     windows: Sequence[SemanticWindow],
     topics: Sequence[dict[str, Any]],
     backend: EmbeddingFn,
     config: dict[str, Any],
-) -> tuple[list[dict[str, float]], dict[str, dict[str, Any]]]:
+) -> tuple[dict[str, list[TopicMatch]], dict[str, dict[str, Any]]]:
     semantic_cfg = dict(config.get("spoken_content", {}).get("semantic") or {})
-    threshold = float(semantic_cfg.get("minimum_topic_similarity", 0.42))
+    threshold = float(semantic_cfg.get("minimum_topic_similarity", 0.52))
+    maximum_runner_up_gap = float(
+        semantic_cfg.get("maximum_runner_up_gap", 0.08)
+    )
+    variants_per_topic = int(semantic_cfg.get("variants_per_topic", 5))
+    maximum_variant_overlap = float(
+        semantic_cfg.get("maximum_variant_overlap", 0.85)
+    )
+
     descriptors: list[str] = []
     descriptor_topics: list[str] = []
     for topic in topics:
         topic_id = str(topic["id"])
         values = [
             str(item).strip()
-            for item in (topic.get("coverage_descriptions") or topic.get("queries") or [])
+            for item in (
+                topic.get("coverage_descriptions")
+                or topic.get("queries")
+                or []
+            )
             if str(item).strip()
         ]
         headline = str(topic.get("headline") or "").strip()
         if headline:
             values.append(headline)
         if not values:
-            raise RuntimeError(f"spoken topic {topic_id} has no semantic coverage descriptions")
+            raise RuntimeError(
+                f"spoken topic {topic_id} has no semantic coverage descriptions"
+            )
         for value in values:
             descriptors.append(value)
             descriptor_topics.append(topic_id)
 
-    if not windows:
-        return [], {
-            str(topic["id"]): {
-                "best_similarity": None,
-                "minimum_similarity": threshold,
-                "candidate_count": 0,
-            }
-            for topic in topics
+    empty_summary = {
+        str(topic["id"]): {
+            "best_similarity": None,
+            "best_runner_up_similarity": None,
+            "best_margin": None,
+            "minimum_similarity": threshold,
+            "maximum_runner_up_gap": maximum_runner_up_gap,
+            "candidate_count": 0,
         }
+        for topic in topics
+    }
+    if not windows:
+        return {str(topic["id"]): [] for topic in topics}, empty_summary
 
     embedded = _embedding_batch(
         backend,
@@ -438,27 +577,103 @@ def topic_coverage(
     for topic_id, vector in zip(descriptor_topics, descriptor_vectors, strict=True):
         topic_vectors.setdefault(topic_id, []).append(vector)
 
-    coverage: list[dict[str, float]] = []
-    topic_summary: dict[str, dict[str, Any]] = {}
+    similarities: dict[str, list[float]] = {}
     for topic in topics:
         topic_id = str(topic["id"])
-        scores = [
-            max(cosine(vector, descriptor) for descriptor in topic_vectors[topic_id])
+        similarities[topic_id] = [
+            max(
+                cosine(vector, descriptor)
+                for descriptor in topic_vectors[topic_id]
+            )
             for vector in window_vectors
         ]
-        best = max(scores) if scores else None
-        topic_summary[topic_id] = {
-            "best_similarity": round(best, 6) if best is not None else None,
+
+    matches: dict[str, list[TopicMatch]] = {}
+    summary: dict[str, dict[str, Any]] = {}
+    topic_ids = [str(topic["id"]) for topic in topics]
+    for topic_id in topic_ids:
+        ranked: list[TopicMatch] = []
+        for window_index, similarity in enumerate(similarities[topic_id]):
+            runner_up = max(
+                (
+                    similarities[other][window_index]
+                    for other in topic_ids
+                    if other != topic_id
+                ),
+                default=0.0,
+            )
+            margin = similarity - runner_up
+            if similarity < threshold or margin < -maximum_runner_up_gap:
+                continue
+            discriminative = max(
+                0.0,
+                min(
+                    1.0,
+                    (margin + maximum_runner_up_gap)
+                    / max(0.001, maximum_runner_up_gap + 0.20),
+                ),
+            )
+            score = max(
+                0.0,
+                min(
+                    1.0,
+                    0.65 * similarity
+                    + 0.25 * windows[window_index].score
+                    + 0.10 * discriminative,
+                ),
+            )
+            ranked.append(
+                TopicMatch(
+                    topic_id=topic_id,
+                    window_index=window_index,
+                    similarity=round(similarity, 6),
+                    runner_up_similarity=round(runner_up, 6),
+                    margin=round(margin, 6),
+                    score=round(score, 6),
+                )
+            )
+
+        ranked.sort(
+            key=lambda item: (
+                -item.score,
+                -item.similarity,
+                -item.margin,
+                windows[item.window_index].start,
+            )
+        )
+        selected: list[TopicMatch] = []
+        for match in ranked:
+            window = windows[match.window_index]
+            if any(
+                _overlap(window, windows[item.window_index])
+                > maximum_variant_overlap
+                for item in selected
+            ):
+                continue
+            selected.append(match)
+            if len(selected) >= variants_per_topic:
+                break
+
+        all_scores = similarities[topic_id]
+        best_index = max(range(len(all_scores)), key=all_scores.__getitem__)
+        best_similarity = all_scores[best_index]
+        best_runner_up = max(
+            (
+                similarities[other][best_index]
+                for other in topic_ids
+                if other != topic_id
+            ),
+            default=0.0,
+        )
+        matches[topic_id] = selected
+        summary[topic_id] = {
+            "best_similarity": round(best_similarity, 6),
+            "best_runner_up_similarity": round(best_runner_up, 6),
+            "best_margin": round(best_similarity - best_runner_up, 6),
             "minimum_similarity": threshold,
-            "candidate_count": sum(score >= threshold for score in scores),
+            "maximum_runner_up_gap": maximum_runner_up_gap,
+            "candidate_count": len(selected),
+            "independent_search": True,
         }
 
-    for vector in window_vectors:
-        item: dict[str, float] = {}
-        for topic in topics:
-            topic_id = str(topic["id"])
-            similarity = max(cosine(vector, descriptor) for descriptor in topic_vectors[topic_id])
-            if similarity >= threshold:
-                item[topic_id] = round(similarity, 6)
-        coverage.append(item)
-    return coverage, topic_summary
+    return matches, summary

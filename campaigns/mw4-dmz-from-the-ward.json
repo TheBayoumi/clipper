@@ -56,7 +56,7 @@
     "allocation_mode": "coverage_conflict_before_render",
     "require_allocation_before_render": true,
     "require_verified_finishing_move_when_available": false,
-    "notes": "Clipper allocates explicit DMZ topic-anchor coverage before rendering. Each configured topic gets an independent 10-12 second legal-window search; source overlap/conflicts prevent duplicate framings."
+    "notes": "Clipper performs an independent 10-12 second legal-window search for every configured DMZ topic after topic-independent semantic discovery. Each candidate claims one campaign topic; allocation uses explicit coverage plus source overlap to select distinct non-redundant clips."
   },
   "output": {
     "width": 1080,
@@ -120,7 +120,9 @@
       "title_max_width_fraction": 0.88,
       "title_bar_y": 548,
       "title_bar_width_fraction": 0.18,
-      "title_bar_height": 5
+      "title_bar_height": 5,
+      "background_mode": "blurred_source",
+      "background_blur_sigma": 18
     }
   },
   "editorial": {
@@ -266,7 +268,11 @@
       "model": "BAAI/bge-small-en-v1.5",
       "minimum_event_similarity": 0.34,
       "minimum_context_margin": 0,
-      "minimum_topic_similarity": 0.42
+      "minimum_topic_similarity": 0.52,
+      "maximum_runner_up_gap": 0.08,
+      "variants_per_topic": 5,
+      "maximum_variant_overlap": 0.85,
+      "maximum_internal_pause_seconds": 4.5
     }
   },
   "runtime": {

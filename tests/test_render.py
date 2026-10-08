@@ -141,7 +141,7 @@ def test_delivery_profile_allows_vertical_full_frame_composition() -> None:
     assert "overlay=(W-w)/2:(H-h)/2" in graph
 
 
-def test_portrait_delivery_uses_calibrated_matte_without_cropping() -> None:
+def test_portrait_delivery_uses_configurable_blurred_source_background() -> None:
     source_profile = {
         "width": 3840,
         "height": 2160,
@@ -156,7 +156,8 @@ def test_portrait_delivery_uses_calibrated_matte_without_cropping() -> None:
                 "enabled": True,
                 "width": 1080,
                 "height": 1920,
-                "background_hex": "#0F1115",
+                "background_mode": "blurred_source",
+                "background_blur_sigma": 22,
                 "visual_left": 0,
                 "visual_top": 656,
                 "visual_width": 1080,
@@ -170,9 +171,47 @@ def test_portrait_delivery_uses_calibrated_matte_without_cropping() -> None:
 
     graph, metadata = delivery.composition_filter(source_profile, config)
 
+    assert "[0:v]split=2[portrait_bg][portrait_fg]" in graph
+    assert "gblur=sigma=22" in graph
     assert "scale=1080:608:force_original_aspect_ratio=decrease:flags=lanczos" in graph
-    assert "pad=1080:1920:0:656:color=0x0F1115" in graph
-    assert "crop=" not in graph
+    assert "overlay=0:656:shortest=1" in graph
     assert metadata["mode"] == "portrait_matte_full_frame"
+    assert metadata["background_mode"] == "blurred_source"
+    assert metadata["background_blur_sigma"] == 22
     assert metadata["source_foreground_full_frame"] is True
     assert metadata["source_foreground_crop_used"] is False
+
+
+def test_portrait_delivery_can_still_use_configured_solid_background() -> None:
+    source_profile = {
+        "width": 3840,
+        "height": 2160,
+        "sample_aspect_ratio": "1:1",
+        "display_aspect_ratio": "16:9",
+    }
+    config = {
+        "output": {
+            "width": 1080,
+            "height": 1920,
+            "portrait_layout": {
+                "enabled": True,
+                "width": 1080,
+                "height": 1920,
+                "background_mode": "solid",
+                "background_hex": "#101216",
+                "visual_left": 0,
+                "visual_top": 656,
+                "visual_width": 1080,
+                "visual_height": 608,
+                "title_top_height": 656,
+                "title_y_positions": {"1": [330], "2": [275, 385], "3": [236, 352, 438]},
+                "title_font_sizes": {"1": [66], "2": [62, 58], "3": [60, 56, 52]},
+            },
+        }
+    }
+
+    graph, metadata = delivery.composition_filter(source_profile, config)
+
+    assert "pad=1080:1920:0:656:color=0x101216" in graph
+    assert metadata["background_mode"] == "solid"
+    assert metadata["background_hex"] == "#101216"

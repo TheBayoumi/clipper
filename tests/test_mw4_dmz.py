@@ -42,7 +42,11 @@ def test_campaign_override_deep_merges_canonical_mw4_profile() -> None:
     assert profile.config["output"]["fps"] == "source"
     assert profile.config["spoken_content"]["asr"]["model"] == "distil-large-v3"
     assert profile.config["spoken_content"]["semantic"]["model"] == "BAAI/bge-small-en-v1.5"
+    assert profile.config["spoken_content"]["semantic"]["minimum_topic_similarity"] == 0.52
+    assert profile.config["spoken_content"]["semantic"]["variants_per_topic"] == 5
     assert profile.config["output"]["portrait_layout"]["enabled"] is True
+    assert profile.config["output"]["portrait_layout"]["background_mode"] == "blurred_source"
+    assert profile.config["output"]["portrait_layout"]["background_blur_sigma"] == 18
 
 
 def test_spotlight_template_parser_extracts_provider_context() -> None:
@@ -161,7 +165,24 @@ def _window(
     )
 
 
-def test_spoken_semantic_discovery_emits_legal_topic_coverage() -> None:
+def _match(
+    topic_id: str,
+    window_index: int,
+    similarity: float,
+    runner_up: float,
+    score: float,
+) -> spoken_semantics.TopicMatch:
+    return spoken_semantics.TopicMatch(
+        topic_id=topic_id,
+        window_index=window_index,
+        similarity=similarity,
+        runner_up_similarity=runner_up,
+        margin=similarity - runner_up,
+        score=score,
+    )
+
+
+def test_spoken_semantic_discovery_runs_independent_topic_searches() -> None:
     transcript = speech.Transcript(
         language="en",
         duration=40.0,
@@ -185,27 +206,24 @@ def test_spoken_semantic_discovery_emits_legal_topic_coverage() -> None:
         ),
         _window(28.0, 40.0, "The stakes change every fight.", 34.0, "conflict_stakes", 0.86),
     ]
-    coverage = [
-        {"player_freedom": 0.81},
-        {"persistent_progression": 0.83},
-        {"higher_stakes": 0.85},
-    ]
+    matches = {
+        "player_freedom": [_match("player_freedom", 0, 0.81, 0.55, 0.83)],
+        "persistent_progression": [
+            _match("persistent_progression", 1, 0.83, 0.54, 0.85)
+        ],
+        "higher_stakes": [_match("higher_stakes", 2, 0.85, 0.52, 0.87)],
+    }
     topic_summary = {
-        "player_freedom": {
-            "best_similarity": 0.81,
-            "minimum_similarity": 0.42,
+        topic_id: {
+            "best_similarity": items[0].similarity,
+            "best_runner_up_similarity": items[0].runner_up_similarity,
+            "best_margin": items[0].margin,
+            "minimum_similarity": 0.52,
+            "maximum_runner_up_gap": 0.08,
             "candidate_count": 1,
-        },
-        "persistent_progression": {
-            "best_similarity": 0.83,
-            "minimum_similarity": 0.42,
-            "candidate_count": 1,
-        },
-        "higher_stakes": {
-            "best_similarity": 0.85,
-            "minimum_similarity": 0.42,
-            "candidate_count": 1,
-        },
+            "independent_search": True,
+        }
+        for topic_id, items in matches.items()
     }
     profile = load_profile("mw4", CAMPAIGN)
     config = dict(profile.config)
@@ -218,8 +236,8 @@ def test_spoken_semantic_discovery_emits_legal_topic_coverage() -> None:
             return_value=(windows, {"candidate_count": 3}),
         ),
         patch(
-            "clipper_engine.spoken_semantics.topic_coverage",
-            return_value=(coverage, topic_summary),
+            "clipper_engine.spoken_semantics.topic_matches",
+            return_value=(matches, topic_summary),
         ),
     ):
         plans, required, diagnostics = spoken.build_candidate_plans(
@@ -234,15 +252,12 @@ def test_spoken_semantic_discovery_emits_legal_topic_coverage() -> None:
         "developer:persistent_progression",
         "developer:higher_stakes",
     }
-    assert {plan.topic_id for plan in plans} == {
-        "player_freedom",
-        "persistent_progression",
-        "higher_stakes",
-    }
+    assert len(plans) == 3
     assert all(10.0 <= plan.output_duration <= 12.0 for plan in plans)
-    assert all(plan.covered_semantic_anchor_ids for plan in plans)
+    assert all(len(plan.covered_semantic_anchor_ids) == 1 for plan in plans)
     assert all(item["disposition"] == "search_required" for item in required)
-    assert diagnostics["campaign_queries_used_as_primary_detector"] is False
+    assert diagnostics["independent_topic_search"] is True
+    assert diagnostics["maximum_topics_per_clip"] == 1
 
 
 def test_spoken_semantic_discovery_records_no_admissible_topic() -> None:
@@ -257,6 +272,23 @@ def test_spoken_semantic_discovery_records_no_admissible_topic() -> None:
     config = dict(profile.config)
     config["spoken_content"] = dict(config["spoken_content"])
     config["spoken_content"]["source_roles"] = {"synthetic": "worldbuilder"}
+    empty_matches = {
+        "hajin_fallout": [],
+        "rogue_operators": [],
+        "off_books_operation": [],
+    }
+    summary = {
+        topic_id: {
+            "best_similarity": 0.2,
+            "best_runner_up_similarity": 0.19,
+            "best_margin": 0.01,
+            "minimum_similarity": 0.52,
+            "maximum_runner_up_gap": 0.08,
+            "candidate_count": 0,
+            "independent_search": True,
+        }
+        for topic_id in empty_matches
+    }
 
     with (
         patch(
@@ -276,27 +308,8 @@ def test_spoken_semantic_discovery_records_no_admissible_topic() -> None:
             ),
         ),
         patch(
-            "clipper_engine.spoken_semantics.topic_coverage",
-            return_value=(
-                [{}],
-                {
-                    "hajin_fallout": {
-                        "best_similarity": 0.2,
-                        "minimum_similarity": 0.42,
-                        "candidate_count": 0,
-                    },
-                    "rogue_operators": {
-                        "best_similarity": 0.2,
-                        "minimum_similarity": 0.42,
-                        "candidate_count": 0,
-                    },
-                    "off_books_operation": {
-                        "best_similarity": 0.2,
-                        "minimum_similarity": 0.42,
-                        "candidate_count": 0,
-                    },
-                },
-            ),
+            "clipper_engine.spoken_semantics.topic_matches",
+            return_value=(empty_matches, summary),
         ),
     ):
         plans, required, _ = spoken.build_candidate_plans(
@@ -307,7 +320,100 @@ def test_spoken_semantic_discovery_records_no_admissible_topic() -> None:
         )
 
     assert plans == []
-    assert {item["disposition"] for item in required} == {"no_admissible_candidate"}
+    assert {item["disposition"] for item in required} == {
+        "no_admissible_candidate"
+    }
+
+
+def test_window_search_uses_soft_regions_and_silence_padding() -> None:
+    units = [
+        spoken_semantics.SemanticUnit(
+            40.32,
+            43.26,
+            "The nuclear meltdown spread radiation throughout the region.",
+        ),
+        spoken_semantics.SemanticUnit(
+            45.02,
+            50.06,
+            "Dangerous winds made the surrounding region uninhabitable.",
+        ),
+    ]
+
+    bounds = spoken_semantics._window_bounds(
+        0,
+        units,
+        10.0,
+        12.0,
+        60.0,
+        4.5,
+    )
+
+    assert bounds
+    assert any(
+        10.0 <= fitted_end - fitted_start <= 12.0
+        for _, _, fitted_start, fitted_end in bounds
+    )
+
+
+def test_topic_matches_rejects_broad_sibling_similarity() -> None:
+    windows = [
+        _window(
+            0.0,
+            11.0,
+            "Taking down the lieutenant is only half the job. Secure the dog tags.",
+            5.5,
+            "conflict_stakes",
+            0.8,
+        ),
+        _window(
+            20.0,
+            31.0,
+            "Extract them intact. They advance our intel and build the next lead.",
+            25.5,
+            "reveal_payoff",
+            0.8,
+        ),
+    ]
+    topics = [
+        {
+            "id": "lieutenant",
+            "coverage_descriptions": ["lieutenant target"],
+        },
+        {
+            "id": "intel",
+            "coverage_descriptions": ["extract intel"],
+        },
+    ]
+
+    def embed(texts: list[str]) -> list[list[float]]:
+        values: list[list[float]] = []
+        for text in texts:
+            lowered = text.casefold()
+            if "advance our intel" in lowered or "extract intel" in lowered:
+                values.append([0.1, 1.0])
+            elif "lieutenant" in lowered:
+                values.append([1.0, 0.45])
+            else:
+                values.append([0.5, 0.5])
+        return values
+
+    matches, _ = spoken_semantics.topic_matches(
+        windows,
+        topics,
+        embed,
+        {
+            "spoken_content": {
+                "semantic": {
+                    "minimum_topic_similarity": 0.52,
+                    "maximum_runner_up_gap": 0.08,
+                    "variants_per_topic": 5,
+                }
+            }
+        },
+    )
+
+    assert [item.window_index for item in matches["lieutenant"]] == [0]
+    assert [item.window_index for item in matches["intel"]] == [1]
 
 
 def test_allocator_covers_string_semantic_anchors_without_redundant_clips() -> None:
