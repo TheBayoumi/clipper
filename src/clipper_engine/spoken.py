@@ -93,7 +93,7 @@ def build_candidate_plans(
                 0.0,
                 min(
                     1.0,
-                    0.75 * window.score + 0.25 * topic_quality,
+                    0.75 * topic_quality + 0.25 * window.score,
                 ),
             )
             weakest = min(
@@ -215,6 +215,7 @@ def build_candidate_plans(
         "campaign_queries_used_as_primary_detector": False,
         "independent_topic_search": True,
         "maximum_topics_per_clip": 1,
+        "ranking_priority": "topic_specificity_then_editorial_quality",
     }
     plans.sort(
         key=lambda item: (

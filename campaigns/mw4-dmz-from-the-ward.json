@@ -269,10 +269,10 @@
       "minimum_event_similarity": 0.34,
       "minimum_context_margin": 0,
       "minimum_topic_similarity": 0.52,
-      "maximum_runner_up_gap": 0.08,
       "variants_per_topic": 5,
       "maximum_variant_overlap": 0.85,
-      "maximum_internal_pause_seconds": 4.5
+      "maximum_internal_pause_seconds": 4.5,
+      "minimum_topic_margin": 0.05
     }
   },
   "runtime": {

@@ -512,7 +512,7 @@ def topic_matches(
 ) -> tuple[dict[str, list[TopicMatch]], dict[str, dict[str, Any]]]:
     semantic_cfg = dict(config.get("spoken_content", {}).get("semantic") or {})
     threshold = float(semantic_cfg.get("minimum_topic_similarity", 0.52))
-    maximum_runner_up_gap = float(semantic_cfg.get("maximum_runner_up_gap", 0.08))
+    minimum_topic_margin = float(semantic_cfg.get("minimum_topic_margin", 0.05))
     variants_per_topic = int(semantic_cfg.get("variants_per_topic", 5))
     maximum_variant_overlap = float(semantic_cfg.get("maximum_variant_overlap", 0.85))
 
@@ -540,7 +540,7 @@ def topic_matches(
             "best_runner_up_similarity": None,
             "best_margin": None,
             "minimum_similarity": threshold,
-            "maximum_runner_up_gap": maximum_runner_up_gap,
+            "minimum_topic_margin": minimum_topic_margin,
             "candidate_count": 0,
         }
         for topic in topics
@@ -578,20 +578,17 @@ def topic_matches(
                 default=0.0,
             )
             margin = similarity - runner_up
-            if similarity < threshold or margin < -maximum_runner_up_gap:
+            if similarity < threshold or margin < minimum_topic_margin:
                 continue
             discriminative = max(
                 0.0,
-                min(
-                    1.0,
-                    (margin + maximum_runner_up_gap) / max(0.001, maximum_runner_up_gap + 0.20),
-                ),
+                min(1.0, margin / max(0.001, minimum_topic_margin + 0.20)),
             )
             score = max(
                 0.0,
                 min(
                     1.0,
-                    0.65 * similarity + 0.25 * windows[window_index].score + 0.10 * discriminative,
+                    0.70 * similarity + 0.20 * discriminative + 0.10 * windows[window_index].score,
                 ),
             )
             ranked.append(
@@ -626,19 +623,33 @@ def topic_matches(
                 break
 
         all_scores = similarities[topic_id]
-        best_index = max(range(len(all_scores)), key=all_scores.__getitem__)
-        best_similarity = all_scores[best_index]
-        best_runner_up = max(
-            (similarities[other][best_index] for other in topic_ids if other != topic_id),
+        raw_best_index = max(range(len(all_scores)), key=all_scores.__getitem__)
+        raw_best_similarity = all_scores[raw_best_index]
+        raw_best_runner_up = max(
+            (
+                similarities[other][raw_best_index]
+                for other in topic_ids
+                if other != topic_id
+            ),
             default=0.0,
         )
+        best_qualified = selected[0] if selected else None
         matches[topic_id] = selected
         summary[topic_id] = {
-            "best_similarity": round(best_similarity, 6),
-            "best_runner_up_similarity": round(best_runner_up, 6),
-            "best_margin": round(best_similarity - best_runner_up, 6),
+            "best_similarity": (
+                best_qualified.similarity if best_qualified is not None else None
+            ),
+            "best_runner_up_similarity": (
+                best_qualified.runner_up_similarity
+                if best_qualified is not None
+                else None
+            ),
+            "best_margin": best_qualified.margin if best_qualified is not None else None,
+            "best_raw_similarity": round(raw_best_similarity, 6),
+            "best_raw_runner_up_similarity": round(raw_best_runner_up, 6),
+            "best_raw_margin": round(raw_best_similarity - raw_best_runner_up, 6),
             "minimum_similarity": threshold,
-            "maximum_runner_up_gap": maximum_runner_up_gap,
+            "minimum_topic_margin": minimum_topic_margin,
             "candidate_count": len(selected),
             "independent_search": True,
         }

@@ -44,6 +44,7 @@ def test_campaign_override_deep_merges_canonical_mw4_profile() -> None:
     assert profile.config["spoken_content"]["semantic"]["model"] == "BAAI/bge-small-en-v1.5"
     assert profile.config["spoken_content"]["semantic"]["minimum_topic_similarity"] == 0.52
     assert profile.config["spoken_content"]["semantic"]["variants_per_topic"] == 5
+    assert profile.config["spoken_content"]["semantic"]["minimum_topic_margin"] == 0.05
     assert profile.config["output"]["portrait_layout"]["enabled"] is True
     assert profile.config["output"]["portrait_layout"]["background_mode"] == "blurred_source"
     assert profile.config["output"]["portrait_layout"]["background_blur_sigma"] == 18
@@ -217,7 +218,7 @@ def test_spoken_semantic_discovery_runs_independent_topic_searches() -> None:
             "best_runner_up_similarity": items[0].runner_up_similarity,
             "best_margin": items[0].margin,
             "minimum_similarity": 0.52,
-            "maximum_runner_up_gap": 0.08,
+            "minimum_topic_margin": 0.05,
             "candidate_count": 1,
             "independent_search": True,
         }
@@ -281,7 +282,7 @@ def test_spoken_semantic_discovery_records_no_admissible_topic() -> None:
             "best_runner_up_similarity": 0.19,
             "best_margin": 0.01,
             "minimum_similarity": 0.52,
-            "maximum_runner_up_gap": 0.08,
+            "minimum_topic_margin": 0.05,
             "candidate_count": 0,
             "independent_search": True,
         }
@@ -400,7 +401,7 @@ def test_topic_matches_rejects_broad_sibling_similarity() -> None:
             "spoken_content": {
                 "semantic": {
                     "minimum_topic_similarity": 0.52,
-                    "maximum_runner_up_gap": 0.08,
+                    "minimum_topic_margin": 0.05,
                     "variants_per_topic": 5,
                 }
             }
@@ -626,3 +627,83 @@ def test_proxy_original_alignment_rejects_different_provider_asset(tmp_path: Pat
             original_path,
             tmp_path / "alignment.json",
         )
+
+
+
+def test_topic_specificity_dominates_editorial_window_quality() -> None:
+    transcript = speech.Transcript(
+        language="en",
+        duration=30.0,
+        model="synthetic",
+        settings={},
+        segments=(
+            _segment(0.0, 11.0, "Generic polished statement."),
+            _segment(15.0, 26.0, "Everything extracted is persistent and can be lost."),
+        ),
+    )
+    generic = _window(
+        0.0,
+        11.0,
+        "Generic polished statement.",
+        5.5,
+        "memorable_quote_opinion",
+        0.98,
+    )
+    specific = _window(
+        15.0,
+        26.0,
+        "Everything extracted is persistent and can be lost.",
+        20.5,
+        "lesson_explanation",
+        0.60,
+    )
+    matches = {
+        "player_freedom": [],
+        "persistent_progression": [
+            _match("persistent_progression", 0, 0.60, 0.54, 0.55),
+            _match("persistent_progression", 1, 0.72, 0.60, 0.78),
+        ],
+        "higher_stakes": [],
+    }
+    summary = {
+        topic_id: {
+            "best_similarity": (items[0].similarity if items else None),
+            "best_runner_up_similarity": (
+                items[0].runner_up_similarity if items else None
+            ),
+            "best_margin": (items[0].margin if items else None),
+            "minimum_similarity": 0.52,
+            "minimum_topic_margin": 0.05,
+            "candidate_count": len(items),
+            "independent_search": True,
+        }
+        for topic_id, items in matches.items()
+    }
+    profile = load_profile("mw4", CAMPAIGN)
+    config = dict(profile.config)
+    config["spoken_content"] = dict(config["spoken_content"])
+    config["spoken_content"]["source_roles"] = {"synthetic": "developer"}
+
+    with (
+        patch(
+            "clipper_engine.spoken_semantics.discover_windows",
+            return_value=([generic, specific], {"candidate_count": 2}),
+        ),
+        patch(
+            "clipper_engine.spoken_semantics.topic_matches",
+            return_value=(matches, summary),
+        ),
+    ):
+        plans, _, _ = spoken.build_candidate_plans(
+            transcript,
+            "synthetic",
+            config,
+            embedder=lambda texts: [[1.0, 0.0] for _ in texts],
+        )
+
+    persistent = [
+        plan for plan in plans if plan.topic_id == "persistent_progression"
+    ]
+    persistent.sort(key=lambda plan: -plan.score)
+    assert persistent[0].transcript_text == specific.text
+    assert persistent[0].score > persistent[1].score
