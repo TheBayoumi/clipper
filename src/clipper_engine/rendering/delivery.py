@@ -66,9 +66,7 @@ def full_frame_filter(
     output_label: str = "delivery",
 ) -> str:
     if width <= 0 or height <= 0 or width % 2 or height % 2:
-        raise RuntimeError(
-            "delivery geometry must use positive even dimensions"
-        )
+        raise RuntimeError("delivery geometry must use positive even dimensions")
 
     blur_width = max(180, (width // 3) // 2 * 2)
     blur_height = max(320, (height // 3) // 2 * 2)
@@ -99,9 +97,7 @@ def _portrait_blurred_filter(
     blur_sigma: float,
 ) -> str:
     if blur_sigma <= 0:
-        raise RuntimeError(
-            "portrait_layout.background_blur_sigma must be positive"
-        )
+        raise RuntimeError("portrait_layout.background_blur_sigma must be positive")
     blur_width = max(180, (width // 3) // 2 * 2)
     blur_height = max(320, (height // 3) // 2 * 2)
     return (
@@ -148,15 +144,10 @@ def composition_filter(
     visual_height = int(layout["visual_height"])
     visual_left = int(layout["visual_left"])
     visual_top = int(layout["visual_top"])
-    background_mode = str(
-        layout.get("background_mode")
-        or "solid"
-    )
+    background_mode = str(layout.get("background_mode") or "solid")
 
     if background_mode == "blurred_source":
-        blur_sigma = float(
-            layout.get("background_blur_sigma", 18.0)
-        )
+        blur_sigma = float(layout.get("background_blur_sigma", 18.0))
         graph = _portrait_blurred_filter(
             input_label=input_label,
             output_label=output_label,
@@ -178,15 +169,9 @@ def composition_filter(
         }
 
     if background_mode != "solid":
-        raise RuntimeError(
-            "portrait_layout.background_mode must be "
-            "'solid' or 'blurred_source'"
-        )
+        raise RuntimeError("portrait_layout.background_mode must be 'solid' or 'blurred_source'")
 
-    background = str(
-        layout.get("background_hex")
-        or "#0F1115"
-    ).lstrip("#")
+    background = str(layout.get("background_hex") or "#0F1115").lstrip("#")
     graph = (
         f"[{input_label}]scale={visual_width}:{visual_height}:"
         "force_original_aspect_ratio=decrease:flags=lanczos,"

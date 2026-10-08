@@ -322,9 +322,7 @@ def discover_windows(
     maximum = float(editor.get("maximum_output_seconds", 12.0))
     event_threshold = float(semantic_cfg.get("minimum_event_similarity", 0.34))
     minimum_context_margin = float(semantic_cfg.get("minimum_context_margin", 0.0))
-    maximum_internal_pause = float(
-        semantic_cfg.get("maximum_internal_pause_seconds", 4.5)
-    )
+    maximum_internal_pause = float(semantic_cfg.get("maximum_internal_pause_seconds", 4.5))
 
     units = thought_units(transcript)
     diagnostics: dict[str, Any] = {
@@ -346,9 +344,7 @@ def discover_windows(
     configured_events = semantic_cfg.get("event_descriptions")
     if isinstance(configured_events, dict) and configured_events:
         event_descriptions = {
-            str(key): str(value)
-            for key, value in configured_events.items()
-            if str(value).strip()
+            str(key): str(value) for key, value in configured_events.items() if str(value).strip()
         }
     off_topic = [
         str(item)
@@ -387,8 +383,7 @@ def discover_windows(
     diagnostics["event_anchor_count"] = len(anchors)
     diagnostics["semantic_region_count"] = len(set(regions))
     diagnostics["event_distribution"] = {
-        name: sum(1 for index in anchors if labels[index] == name)
-        for name in event_names
+        name: sum(1 for index in anchors if labels[index] == name) for name in event_names
     }
 
     bounds_to_anchor: dict[tuple[int, int, float, float], int] = {}
@@ -448,10 +443,7 @@ def discover_windows(
             continue
 
         anchor = bounds_to_anchor[(left, right, fitted_start, fitted_end)]
-        pairwise = [
-            cosine(vectors[item - 1], vectors[item])
-            for item in range(left + 1, right + 1)
-        ]
+        pairwise = [cosine(vectors[item - 1], vectors[item]) for item in range(left + 1, right + 1)]
         coherence = sum(pairwise) / len(pairwise) if pairwise else 1.0
         opening = _quality(margins["opening"])
         story = _quality(margins["story"])
@@ -520,13 +512,9 @@ def topic_matches(
 ) -> tuple[dict[str, list[TopicMatch]], dict[str, dict[str, Any]]]:
     semantic_cfg = dict(config.get("spoken_content", {}).get("semantic") or {})
     threshold = float(semantic_cfg.get("minimum_topic_similarity", 0.52))
-    maximum_runner_up_gap = float(
-        semantic_cfg.get("maximum_runner_up_gap", 0.08)
-    )
+    maximum_runner_up_gap = float(semantic_cfg.get("maximum_runner_up_gap", 0.08))
     variants_per_topic = int(semantic_cfg.get("variants_per_topic", 5))
-    maximum_variant_overlap = float(
-        semantic_cfg.get("maximum_variant_overlap", 0.85)
-    )
+    maximum_variant_overlap = float(semantic_cfg.get("maximum_variant_overlap", 0.85))
 
     descriptors: list[str] = []
     descriptor_topics: list[str] = []
@@ -534,20 +522,14 @@ def topic_matches(
         topic_id = str(topic["id"])
         values = [
             str(item).strip()
-            for item in (
-                topic.get("coverage_descriptions")
-                or topic.get("queries")
-                or []
-            )
+            for item in (topic.get("coverage_descriptions") or topic.get("queries") or [])
             if str(item).strip()
         ]
         headline = str(topic.get("headline") or "").strip()
         if headline:
             values.append(headline)
         if not values:
-            raise RuntimeError(
-                f"spoken topic {topic_id} has no semantic coverage descriptions"
-            )
+            raise RuntimeError(f"spoken topic {topic_id} has no semantic coverage descriptions")
         for value in values:
             descriptors.append(value)
             descriptor_topics.append(topic_id)
@@ -581,10 +563,7 @@ def topic_matches(
     for topic in topics:
         topic_id = str(topic["id"])
         similarities[topic_id] = [
-            max(
-                cosine(vector, descriptor)
-                for descriptor in topic_vectors[topic_id]
-            )
+            max(cosine(vector, descriptor) for descriptor in topic_vectors[topic_id])
             for vector in window_vectors
         ]
 
@@ -595,11 +574,7 @@ def topic_matches(
         ranked: list[TopicMatch] = []
         for window_index, similarity in enumerate(similarities[topic_id]):
             runner_up = max(
-                (
-                    similarities[other][window_index]
-                    for other in topic_ids
-                    if other != topic_id
-                ),
+                (similarities[other][window_index] for other in topic_ids if other != topic_id),
                 default=0.0,
             )
             margin = similarity - runner_up
@@ -609,17 +584,14 @@ def topic_matches(
                 0.0,
                 min(
                     1.0,
-                    (margin + maximum_runner_up_gap)
-                    / max(0.001, maximum_runner_up_gap + 0.20),
+                    (margin + maximum_runner_up_gap) / max(0.001, maximum_runner_up_gap + 0.20),
                 ),
             )
             score = max(
                 0.0,
                 min(
                     1.0,
-                    0.65 * similarity
-                    + 0.25 * windows[window_index].score
-                    + 0.10 * discriminative,
+                    0.65 * similarity + 0.25 * windows[window_index].score + 0.10 * discriminative,
                 ),
             )
             ranked.append(

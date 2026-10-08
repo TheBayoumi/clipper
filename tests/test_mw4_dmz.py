@@ -208,9 +208,7 @@ def test_spoken_semantic_discovery_runs_independent_topic_searches() -> None:
     ]
     matches = {
         "player_freedom": [_match("player_freedom", 0, 0.81, 0.55, 0.83)],
-        "persistent_progression": [
-            _match("persistent_progression", 1, 0.83, 0.54, 0.85)
-        ],
+        "persistent_progression": [_match("persistent_progression", 1, 0.83, 0.54, 0.85)],
         "higher_stakes": [_match("higher_stakes", 2, 0.85, 0.52, 0.87)],
     }
     topic_summary = {
@@ -320,9 +318,7 @@ def test_spoken_semantic_discovery_records_no_admissible_topic() -> None:
         )
 
     assert plans == []
-    assert {item["disposition"] for item in required} == {
-        "no_admissible_candidate"
-    }
+    assert {item["disposition"] for item in required} == {"no_admissible_candidate"}
 
 
 def test_window_search_uses_soft_regions_and_silence_padding() -> None:
@@ -350,8 +346,7 @@ def test_window_search_uses_soft_regions_and_silence_padding() -> None:
 
     assert bounds
     assert any(
-        10.0 <= fitted_end - fitted_start <= 12.0
-        for _, _, fitted_start, fitted_end in bounds
+        10.0 <= fitted_end - fitted_start <= 12.0 for _, _, fitted_start, fitted_end in bounds
     )
 
 
