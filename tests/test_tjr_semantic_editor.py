@@ -3057,6 +3057,25 @@ def test_continuation_is_bound_to_last_substantive_business_point():
     )
     assert review["payoff_complete"] is True
     assert review["continuation_review"]["final_span_source"]["text"] == selected[11]
+    # A headline generator cannot rewrite reviewed speech or grant publication.
+    for fake_result in (
+        {"contains_promotion_or_intro": False},
+        {"source_quote_spans": {}},
+        {"exchange_accepted": False},
+        {"production_approved": True},
+        {"headline_supported": 1},
+        {"headline_self_contained": "yes"},
+    ):
+        with pytest.raises(RuntimeError, match=r"headline generator|headline .* verdict"):
+            _source_position_review(
+                Model(),
+                dict(
+                    selected_units=selected,
+                    before=[],
+                    after=["It's like tools.", "Instagram, Facebook, TikTok."],
+                ),
+                headline_generator=lambda *args, fake_result=fake_result, **kwargs: fake_result,
+            )
     with pytest.raises(RuntimeError, match="resolution omitted the final substantive"):
         _source_position_review(
             Model(wrong_resolution=True),

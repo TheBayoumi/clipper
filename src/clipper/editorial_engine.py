@@ -307,13 +307,39 @@ def review_source_positions(
     }
     if promotion_ids or not opening or not payoff or setup is None:
         return result
-    result["exchange_accepted"] = True
-    result.update(
-        headline_generator(
-            editor,
-            selected,
-            exchange_spans=spans,
-            factual_audit=factual_audit,
-        )
+    generated = headline_generator(
+        editor,
+        selected,
+        exchange_spans=spans,
+        factual_audit=factual_audit,
     )
+    if not isinstance(generated, dict):
+        raise RuntimeError("headline generator must return a structured result")
+    # The headline stage must never overwrite the immutable source review or
+    # grant publication approval. Only headline-owned review outputs may change.
+    headline_fields = {
+        "headline",
+        "headline_source_spans",
+        "headline_supported",
+        "headline_self_contained",
+        "headline_audits",
+        "hook_status",
+        "source_excerpts",
+        "source_bound",
+        "candidate_model_audit",
+        "production_approved",
+    }
+    if generated.keys() - headline_fields or generated.get("production_approved") is True:
+        raise RuntimeError(
+            "headline generator attempted to override editorial evidence or approval"
+        )
+    if "headline_supported" in generated and type(generated["headline_supported"]) is not bool:
+        raise RuntimeError("headline supported verdict must be boolean")
+    if (
+        "headline_self_contained" in generated
+        and type(generated["headline_self_contained"]) is not bool
+    ):
+        raise RuntimeError("headline readability verdict must be boolean")
+    result["exchange_accepted"] = True
+    result.update(generated)
     return result
