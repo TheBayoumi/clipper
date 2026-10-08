@@ -1,17 +1,106 @@
 from __future__ import annotations
 
+import json
+from decimal import ROUND_FLOOR, Decimal
 from pathlib import Path
 from typing import Any
 
 from .. import media_contract as media
 from ..gameplay import analysis as semantic
-from . import ffv1, portrait_layout
+from . import ffv1, helpers, portrait_layout
 from . import source_fidelity as source
 
 
-def enabled(config: dict[str, Any], plan: semantic.SemanticPlan) -> bool:
+def delivery_mode(config: dict[str, Any]) -> str:
     overlay = dict(config.get("text_overlay") or {})
-    return bool(overlay.get("enabled") and plan.headline.strip())
+    if not overlay.get("enabled", False):
+        return "off"
+    mode = str(overlay.get("delivery_mode") or "burned")
+    if mode not in {"burned", "sidecar"}:
+        raise RuntimeError("text_overlay.delivery_mode must be 'burned' or 'sidecar'")
+    return mode
+
+
+def enabled(config: dict[str, Any], plan: semantic.SemanticPlan) -> bool:
+    return delivery_mode(config) == "burned" and bool(plan.headline.strip())
+
+
+def sidecar_enabled(config: dict[str, Any], plan: semantic.SemanticPlan) -> bool:
+    return delivery_mode(config) == "sidecar" and bool(plan.headline.strip())
+
+
+def _srt_timestamp(milliseconds: int) -> str:
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    seconds, millis = divmod(remainder, 1_000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
+
+def export_text_sidecars(
+    video: Path,
+    headline: str,
+    config: dict[str, Any],
+    *,
+    duration_seconds: float,
+) -> dict[str, Any]:
+    text = headline.strip()
+    if not text:
+        raise RuntimeError("editable hook text is required for text sidecar delivery")
+    if not Decimal(str(duration_seconds)).is_finite() or duration_seconds <= 0:
+        raise RuntimeError("encoded video duration is invalid for text sidecars")
+    end_ms = int(
+        (Decimal(str(duration_seconds)) * Decimal(1000)).to_integral_value(
+            rounding=ROUND_FLOOR
+        )
+    )
+    if end_ms <= 0:
+        raise RuntimeError("encoded video is too short for text sidecars")
+
+    hook_txt = video.with_name(f"{video.stem}.hook.txt")
+    hook_srt = video.with_name(f"{video.stem}.hook.srt")
+    hook_json = video.with_name(f"{video.stem}.hook.json")
+    hook_txt.write_text(text + "\n", encoding="utf-8")
+    hook_srt.write_text(
+        f"1\n00:00:00,000 --> {_srt_timestamp(end_ms)}\n{text}\n",
+        encoding="utf-8",
+    )
+    hook_json.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "video": video.name,
+                "text": text,
+                "start_ms": 0,
+                "end_ms": end_ms,
+                "burned_in_video": False,
+                "editable": True,
+                "recommended_style": {
+                    "portrait_layout": config.get("output", {}).get("portrait_layout", {}),
+                    "text_overlay": config.get("text_overlay", {}),
+                },
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "generated": True,
+        "burned_in_video": False,
+        "source_video": video.name,
+        "headline": text,
+        "start_ms": 0,
+        "end_ms": end_ms,
+        "files": {
+            suffix: {"name": path.name, "sha256": helpers.sha256(path)}
+            for suffix, path in (
+                ("txt", hook_txt),
+                ("srt", hook_srt),
+                ("json", hook_json),
+            )
+        },
+    }
 
 
 def _escape_filter_path(path: Path) -> str:

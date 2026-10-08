@@ -44,7 +44,12 @@ def render_one(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     suffix = "250M" if mode == "production" else "SHADOW"
-    editorial_suffix = "text_overlay" if overlays.enabled(config, plan) else "source_native"
+    if overlays.sidecar_enabled(config, plan):
+        editorial_suffix = "text_sidecar"
+    elif overlays.enabled(config, plan):
+        editorial_suffix = "text_overlay"
+    else:
+        editorial_suffix = "source_native"
     filename = f"MW4_{source_key}_{ordinal:02d}_{plan.story_type}_{editorial_suffix}_{suffix}.mp4"
     target = output_dir / filename
 
@@ -83,7 +88,10 @@ def render_one(
                 delivery_master,
             )
 
-        overlay_info: dict[str, Any] = {"applied": False}
+        overlay_info: dict[str, Any] = {
+            "applied": False,
+            "delivery_mode": overlays.delivery_mode(config),
+        }
         canonical_master = delivery_master
         canonical_info = composition_info if composition_info["applied"] else source_native_info
         if overlays.enabled(config, plan):
@@ -115,6 +123,14 @@ def render_one(
         )
 
     qa = helpers.validate_output(target, config, mode=mode, source_profile=source_profile)
+    text_sidecar: dict[str, Any] = {"generated": False, "burned_in_video": False}
+    if overlays.sidecar_enabled(config, plan):
+        text_sidecar = overlays.export_text_sidecars(
+            target,
+            plan.headline,
+            config,
+            duration_seconds=float(qa["probe"]["format"]["duration"]),
+        )
     helpers.create_contact_sheets(target, output_dir / "contact_sheets")
 
     result = {
@@ -136,6 +152,7 @@ def render_one(
         "canonical_master": canonical_info,
         "source_native_master": source_native_info,
         "text_overlay": overlay_info,
+        "text_sidecar": text_sidecar,
         "delivery_composition": composition_info,
         "headline": plan.headline,
         "caption": plan.caption,

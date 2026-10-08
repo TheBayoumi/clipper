@@ -50,6 +50,7 @@ def test_campaign_override_deep_merges_canonical_mw4_profile() -> None:
     assert profile.config["output"]["portrait_layout"]["background_mode"] == "blurred_source"
     assert profile.config["output"]["portrait_layout"]["background_blur_sigma"] == 18
     assert profile.config["output"]["portrait_layout"]["title_bar_enabled"] is False
+    assert profile.config["text_overlay"]["delivery_mode"] == "sidecar"
     assert profile.config["text_overlay"]["title_background_mode"] == "text_box"
     assert profile.config["text_overlay"]["title_background_hex"] == "#000000"
     assert profile.config["text_overlay"]["title_background_opacity"] == 1.0
@@ -732,3 +733,63 @@ def test_mw4_title_has_no_accent_line_but_keeps_headline(tmp_path: Path) -> None
     assert "drawtext=" in filter_graph
     assert "fontcolor=0xFAFAFA" in filter_graph
     assert info["title_lines"][0]["text"] == "TEST HOOK"
+
+
+def test_editable_hook_sidecars_do_not_require_video_burn_in(tmp_path: Path) -> None:
+    profile = load_profile("mw4", CAMPAIGN)
+    config = profile.config
+    plan = type("TextPlan", (), {"headline": "WHY DOES EXTRACTION MATTER?"})()
+    assert overlays.enabled(config, plan) is False
+    assert overlays.sidecar_enabled(config, plan) is True
+
+    video = tmp_path / "MW4_sample_text_sidecar_250M.mp4"
+    video.write_bytes(b"clean-video-placeholder")
+    result = overlays.export_text_sidecars(
+        video,
+        plan.headline,
+        config,
+        duration_seconds=10.744,
+    )
+
+    assert result["generated"] is True
+    assert result["burned_in_video"] is False
+    assert result["end_ms"] == 10744
+    assert result["source_video"] == video.name
+    assert video.read_bytes() == b"clean-video-placeholder"
+    assert (tmp_path / f"{video.stem}.hook.txt").read_text(encoding="utf-8") == (
+        "WHY DOES EXTRACTION MATTER?\n"
+    )
+    assert (tmp_path / f"{video.stem}.hook.srt").read_text(encoding="utf-8") == (
+        "1\n00:00:00,000 --> 00:00:10,744\nWHY DOES EXTRACTION MATTER?\n"
+    )
+    metadata = json.loads(
+        (tmp_path / f"{video.stem}.hook.json").read_text(encoding="utf-8")
+    )
+    assert metadata["text"] == plan.headline
+    assert metadata["burned_in_video"] is False
+    assert metadata["recommended_style"]["portrait_layout"]["background_mode"] == (
+        "blurred_source"
+    )
+
+
+def test_batch_proves_editable_hook_sidecar_asset_integrity(tmp_path: Path) -> None:
+    from clipper_engine.gameplay.workflow_support import _text_sidecar_contract_failures
+
+    config = load_profile("mw4", CAMPAIGN).config
+    video = tmp_path / "MW4_sample_text_sidecar_250M.mp4"
+    video.write_bytes(b"clean-video-placeholder")
+    headline = "A DEFINITIVE DMZ MOMENT"
+    sidecar = overlays.export_text_sidecars(
+        video,
+        headline,
+        config,
+        duration_seconds=11.25,
+    )
+    result = {"file": video.name, "headline": headline, "text_sidecar": sidecar}
+    assert _text_sidecar_contract_failures(result, tmp_path) == []
+    (tmp_path / f"{video.stem}.hook.txt").write_text("corrupted title", encoding="utf-8")
+    assert any(
+        "hash mismatch" in failure
+        for failure in _text_sidecar_contract_failures(result, tmp_path)
+    )
+

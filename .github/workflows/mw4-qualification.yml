@@ -260,11 +260,15 @@ jobs:
             --ordinal "${{ matrix.ordinal }}" \
             --output-dir one \
             --mode "$MW4_RENDER_MODE"
-      - name: Upload qualification video
+      - name: Upload qualification video with editable text
         uses: actions/upload-artifact@v4
         with:
           name: MW4-qualification-video-${{ matrix.clip_id }}
-          path: one/*.mp4
+          path: |
+            one/*.mp4
+            one/*.hook.txt
+            one/*.hook.srt
+            one/*.hook.json
           retention-days: 3
           compression-level: 0
           if-no-files-found: error
@@ -275,6 +279,9 @@ jobs:
           path: |
             one/*_clip_result.json
             one/*_analysis_alignment.json
+            one/*.hook.txt
+            one/*.hook.srt
+            one/*.hook.json
             one/contact_sheets/*.jpg
           retention-days: 3
           compression-level: 0

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,60 @@ from typing import Any
 
 def _read(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _text_sidecar_contract_failures(
+    item: dict[str, Any],
+    artifact_dir: Path,
+) -> list[str]:
+    sidecar = dict(item.get("text_sidecar") or {})
+    failures: list[str] = []
+    if sidecar.get("generated") is not True or sidecar.get("burned_in_video") is not False:
+        return ["editable text sidecars are missing or marked as burned into the video"]
+    if str(sidecar.get("source_video") or "") != str(item.get("file") or ""):
+        failures.append("text sidecars do not identify the rendered video")
+    if str(sidecar.get("headline") or "") != str(item.get("headline") or "").strip():
+        failures.append("editable hook text differs from the selected headline")
+
+    files = dict(sidecar.get("files") or {})
+    paths: dict[str, Path] = {}
+    for extension in ("txt", "srt", "json"):
+        spec = dict(files.get(extension) or {})
+        filename = str(spec.get("name") or "")
+        if (
+            not filename
+            or Path(filename).name != filename
+            or not filename.endswith(f".hook.{extension}")
+        ):
+            failures.append(f"invalid editable hook {extension} filename")
+            continue
+        path = artifact_dir / filename
+        if not path.is_file():
+            failures.append(f"editable hook {extension} missing from QA artifact")
+            continue
+        if hashlib.sha256(path.read_bytes()).hexdigest() != str(spec.get("sha256") or ""):
+            failures.append(f"editable hook {extension} hash mismatch")
+        paths[extension] = path
+
+    if "txt" in paths and paths["txt"].read_text(encoding="utf-8").strip() != str(
+        item.get("headline") or ""
+    ).strip():
+        failures.append("editable hook txt content differs from selected headline")
+    if "json" in paths:
+        payload = _read(paths["json"])
+        if (
+            payload.get("video") != item.get("file")
+            or payload.get("burned_in_video") is not False
+            or payload.get("text") != str(item.get("headline") or "").strip()
+            or payload.get("start_ms") != 0
+            or payload.get("end_ms") != sidecar.get("end_ms")
+        ):
+            failures.append("editable hook JSON timing or content mismatch")
+    if "srt" in paths:
+        srt = paths["srt"].read_text(encoding="utf-8")
+        if str(item.get("headline") or "").strip() not in srt or "-->" not in srt:
+            failures.append("editable hook SRT content or timing missing")
+    return failures
 
 
 def _runner(source: str) -> str:
@@ -191,6 +246,7 @@ def batch_summaries(
             failures.append(f"{source}: one or more clip results did not pass")
         publishing = dict(config.get("publishing") or {})
         require_text = bool(publishing.get("on_screen_text_required", False))
+        text_delivery_mode = str((config.get("text_overlay") or {}).get("delivery_mode") or "burned")
         source_profile = dict(config.get("source_profile") or {})
         require_analysis_alignment = (
             str(source_profile.get("analysis_derivative") or "source").lower() == "proxy"
@@ -224,10 +280,19 @@ def batch_summaries(
                         "source-native canonical hash proof is missing"
                     )
             if require_text:
-                if (
-                    overlay.get("applied") is not True
-                    or not str(item.get("headline") or "").strip()
-                ):
+                if text_delivery_mode == "sidecar":
+                    if overlay.get("applied") is not False:
+                        failures.append(
+                            f"{source} clip {item.get('ordinal', '?')}: "
+                            "text was burned into a sidecar-delivery video"
+                        )
+                    failures.extend(
+                        f"{source} clip {item.get('ordinal', '?')}: {failure}"
+                        for failure in _text_sidecar_contract_failures(item, clip_meta)
+                    )
+                elif overlay.get("applied") is not True or not str(
+                    item.get("headline") or ""
+                ).strip():
                     failures.append(
                         f"{source} clip {item.get('ordinal', '?')}: "
                         "mandatory on-screen text missing"
