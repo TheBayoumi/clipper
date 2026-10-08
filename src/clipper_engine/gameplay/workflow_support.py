@@ -246,7 +246,9 @@ def batch_summaries(
             failures.append(f"{source}: one or more clip results did not pass")
         publishing = dict(config.get("publishing") or {})
         require_text = bool(publishing.get("on_screen_text_required", False))
-        text_delivery_mode = str((config.get("text_overlay") or {}).get("delivery_mode") or "burned")
+        text_delivery_mode = str(
+            (config.get("text_overlay") or {}).get("delivery_mode") or "burned"
+        )
         source_profile = dict(config.get("source_profile") or {})
         require_analysis_alignment = (
             str(source_profile.get("analysis_derivative") or "source").lower() == "proxy"
