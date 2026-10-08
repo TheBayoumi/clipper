@@ -360,7 +360,7 @@ def test_private_gpu_qualification_has_explicit_compilers_and_no_cpu_fallback():
     assert '"CC": "gcc"' in source
     assert '"CXX": "g++"' in source
     assert '"CUDAHOSTCXX": "g++"' in source
-    assert 'gpu="L40S"' in source and "timeout=1800" in source
+    assert 'gpu="L40S"' in source and "timeout=86400" in source
     assert "retries=0" in source and "max_containers=1" in source
     profiles = _gpu_review_profiles()
     assert len(profiles) == 2
@@ -368,3 +368,14 @@ def test_private_gpu_qualification_has_explicit_compilers_and_no_cpu_fallback():
     assert all(profile["hardware"] == "Modal L40S" for profile in profiles)
     assert all(profile["context_tokens"] == 4096 for profile in profiles)
     assert len({profile["sha256"] for profile in profiles}) == 2
+
+
+def test_gpu_assessment_has_maximum_platform_timeout_and_durable_checkpoints():
+    root = Path(__file__).resolve().parents[1]
+    worker = (root / "scripts/tjr_modal_probe.py").read_text(encoding="utf-8")
+    workflow = (root / ".github/workflows/tjr-weekly-hd.yml").read_text(encoding="utf-8")
+    assert "timeout=86400" in worker
+    assert worker.count("checkpoint_callback=volume.commit") == 2
+    assert 'saved.get("qualification_complete") is True' in worker
+    assert "timeout-minutes: 360" in workflow
+    assert "timeout-minutes: 75" not in workflow

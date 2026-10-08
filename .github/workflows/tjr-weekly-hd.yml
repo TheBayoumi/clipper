@@ -472,7 +472,8 @@ jobs:
     needs: tests
     if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'validate_only' && inputs.editorial_preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    # GitHub-hosted hard maximum; avoid the previous artificial 75-minute cutoff.
+    timeout-minutes: 360
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}

@@ -112,3 +112,36 @@ def test_compatibility_constructor_keeps_old_exact_request_key(tmp_path):
         request["prompt"], request["payload"], request["properties"], request["tokens"]
     ) == {"verdict": "uncertain"}
     assert old_key in cache.records
+
+
+def test_resuming_request_cache_prefers_current_checkpoint_over_older_baseline(tmp_path):
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+
+    class Editor:
+        def __init__(self, value):
+            self.value = value
+
+        def draft(self, prompt, payload, tokens):
+            return self.value
+
+    prior = make_cache(baseline, lambda: Editor("prior evidence"))
+    assert prior.semantic_draft("Check", {"source": "same"}, 32) == "prior evidence"
+    newer = make_cache(current, lambda: Editor("resumed evidence"))
+    assert newer.semantic_draft("Check", {"source": "same"}, 32) == "resumed evidence"
+    resumed = EditorialRequestCache(
+        current,
+        lambda: pytest.fail("existing checkpoint must not load the model"),
+        {"source_sha256": "a" * 64},
+        draft_completion=lambda editor, prompt, payload, tokens: editor.draft(
+            prompt, payload, tokens
+        ),
+        json_implementation=lambda *_: None,
+        stage_fingerprint=lambda *_: "unchanged-stage",
+        reuse_path=baseline,
+        replay_only=True,
+        recorded_runtime=newer.identity["runtime"],
+    )
+    assert resumed.semantic_draft("Check", {"source": "same"}, 32) == "resumed evidence"
+    assert resumed.metrics["cache_hits"] == 1
+    assert resumed.metrics["model_calls"] == 0

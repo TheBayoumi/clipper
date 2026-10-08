@@ -2794,6 +2794,14 @@ def test_structured_claim_probe_reuses_verified_baseline_without_rerunning_old_g
         },
     )
     output = tmp_path / "proof.json"
+    checkpoints = []
+
+    def durable_checkpoint():
+        report = json.loads(output.read_text())
+        checkpoints.append(
+            (len(report["structured_claim_comparisons"]), len(report["heldout_comparisons"]))
+        )
+
     assert (
         editor.reviewer_evidence_qualification(
             baseline,
@@ -2801,9 +2809,13 @@ def test_structured_claim_probe_reuses_verified_baseline_without_rerunning_old_g
             output,
             structured_claim_probe=True,
             heldout_path=heldout_path,
+            checkpoint_callback=durable_checkpoint,
         )
         == 0
     )
+    assert checkpoints[0] == (0, 0)
+    assert checkpoints[-1] == (12, 12)
+    assert len(checkpoints) == 26
     report = json.loads(output.read_text())
     assert report["structured_claim_scores"]["frozen_correct"] == 12
     assert report["structured_claim_scores"]["heldout_correct"] == 12

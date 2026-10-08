@@ -239,7 +239,8 @@ reviewer_gpu_image = (
     gpu="L40S",
     cpu=4,
     memory=32768,
-    timeout=1800,
+    # Modal hard maximum: no shorter application-level GPU assessment deadline.
+    timeout=86400,
     max_containers=1,
     retries=0,
     volumes={"/tjr-media": volume},
@@ -280,11 +281,15 @@ def qualify_source_reviewer_gpu(
     manifest_path = root / "manifest.json"
     if manifest_path.is_file():
         saved = json.loads(manifest_path.read_text())
-        if all(
-            (root / name).is_file()
-            and hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
-            for name, digest in saved.get("file_hashes", {}).items()
-        ) and saved.get("file_hashes"):
+        if (
+            saved.get("qualification_complete") is True
+            and all(
+                (root / name).is_file()
+                and hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
+                for name, digest in saved.get("file_hashes", {}).items()
+            )
+            and saved.get("file_hashes")
+        ):
             return {**saved, "qualification_cache_hit": True}
     inputs = json.loads(gzip.decompress(packed))
     if inputs.get("worker_code_sha256") != hashlib.sha256(Path(__file__).read_bytes()).hexdigest():
@@ -347,6 +352,7 @@ def qualify_source_reviewer_gpu(
             claim_level_probe=True,
             heldout_path=root / "heldout.json",
             source_qa_probe=profile["candidate"] != "reasoning_30b_a3b",
+            checkpoint_callback=volume.commit,
         )
         proof = json.loads(cold_output.read_text())
         manifest.update(
@@ -385,6 +391,7 @@ def qualify_source_reviewer_gpu(
                 claim_level_probe=True,
                 heldout_path=root / "heldout.json",
                 source_qa_probe=profile["candidate"] != "reasoning_30b_a3b",
+                checkpoint_callback=volume.commit,
             )
             warm = json.loads((replay / "proof.json").read_text())
             stable = all(
@@ -431,6 +438,13 @@ def qualify_source_reviewer_gpu(
                 and stable
                 and warm["request_cache_metrics"]["model_calls"] == 0
             )
+            manifest["qualification_complete"] = (
+                proof.get("experiment_complete") is True and warm.get("experiment_complete") is True
+            )
+        else:
+            # A contract-invalid but completed diagnostic is still a complete
+            # negative result; incomplete or errored runs are always resumable.
+            manifest["qualification_complete"] = proof.get("experiment_complete") is True
     except Exception as error:
         manifest["error"] = f"{type(error).__name__}: {error}"
     finally:

@@ -55,11 +55,15 @@ class EditorialRequestCache:
         self.records: dict[str, Any] = {}
         self.calls: list[dict[str, Any]] = []
         self.metrics: dict[str, Any] = {"cache_hits": 0, "model_calls": 0, "model_seconds": 0.0}
-        source = reuse_path if reuse_path and reuse_path.is_file() else path
-        if source.is_file():
+        # A resumed run must own its latest checkpoint. An optional baseline is
+        # only a fallback, never a reason to discard newer exact responses.
+        for source in (path, reuse_path):
+            if source is None or not source.is_file():
+                continue
             saved = json.loads(source.read_text())
             if saved.get("identity") == self.identity and isinstance(saved.get("records"), dict):
                 self.records = saved["records"]
+                break
 
     def _invoke(
         self, method: str, prompt: str, payload: dict[str, Any], properties: Any, tokens: int

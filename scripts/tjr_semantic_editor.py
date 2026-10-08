@@ -3407,6 +3407,7 @@ def reviewer_evidence_qualification(
     source_qa_probe: bool = False,
     structured_claim_probe: bool = False,
     qualification_root: Path | None = None,
+    checkpoint_callback: Callable[[], None] | None = None,
 ) -> int:
     """Qualify the exact production path and blind QA, without acquisition or rendering."""
     saved = json.loads(baseline_path.read_text())
@@ -3570,6 +3571,10 @@ def reviewer_evidence_qualification(
         report["request_cache_metrics"] = cache.metrics
         report["raw_calls"] = cache.calls
         output.write_text(json.dumps(report, indent=2) + "\n")
+        # Commit the complete report and exact request cache to the mounted
+        # Modal Volume before another potentially long model inference.
+        if checkpoint_callback is not None:
+            checkpoint_callback()
 
     began = time.monotonic()
     checkpoint()
