@@ -724,9 +724,7 @@ def test_mw4_title_has_no_accent_line_but_keeps_headline(tmp_path: Path) -> None
             Path("/unused-font-path.ttf"),
         )
 
-    assert filter_graph.startswith(
-        "drawbox=x=0:y=0:w=iw:h=656:color=0x000000@1.0000:t=fill,"
-    )
+    assert filter_graph.startswith("drawbox=x=0:y=0:w=iw:h=656:color=0x000000@1.0000:t=fill,")
     assert filter_graph.count("drawbox=") == 1
     assert "color=0xFFD848" not in filter_graph
     assert "drawtext=" in filter_graph

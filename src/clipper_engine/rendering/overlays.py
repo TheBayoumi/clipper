@@ -40,9 +40,7 @@ def _portrait_filter(
     overlay_config = dict(config.get("text_overlay") or {})
     title_background_mode = str(overlay_config.get("title_background_mode") or "none")
     if title_background_mode == "solid":
-        background_hex = str(
-            overlay_config.get("title_background_hex") or "#000000"
-        ).lstrip("#")
+        background_hex = str(overlay_config.get("title_background_hex") or "#000000").lstrip("#")
         if len(background_hex) != 6 or any(
             char not in "0123456789abcdefABCDEF" for char in background_hex
         ):
