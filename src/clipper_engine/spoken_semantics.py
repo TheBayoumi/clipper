@@ -617,8 +617,7 @@ def topic_matches(
         for match in ranked:
             window = windows[match.window_index]
             if any(
-                _overlap(window, windows[item.window_index])
-                > maximum_variant_overlap
+                _overlap(window, windows[item.window_index]) > maximum_variant_overlap
                 for item in selected
             ):
                 continue
@@ -630,11 +629,7 @@ def topic_matches(
         best_index = max(range(len(all_scores)), key=all_scores.__getitem__)
         best_similarity = all_scores[best_index]
         best_runner_up = max(
-            (
-                similarities[other][best_index]
-                for other in topic_ids
-                if other != topic_id
-            ),
+            (similarities[other][best_index] for other in topic_ids if other != topic_id),
             default=0.0,
         )
         matches[topic_id] = selected
