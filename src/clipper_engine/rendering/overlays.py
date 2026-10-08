@@ -37,6 +37,26 @@ def _portrait_filter(
     bar_height = int(layout.get("title_bar_height", 5))
     bar_y = int(layout.get("title_bar_y", int(layout["title_top_height"]) - 90))
     filters: list[str] = []
+    overlay_config = dict(config.get("text_overlay") or {})
+    title_background_mode = str(overlay_config.get("title_background_mode") or "none")
+    if title_background_mode == "solid":
+        background_hex = str(
+            overlay_config.get("title_background_hex") or "#000000"
+        ).lstrip("#")
+        if len(background_hex) != 6 or any(
+            char not in "0123456789abcdefABCDEF" for char in background_hex
+        ):
+            raise RuntimeError("text_overlay.title_background_hex must be a six-digit hex color")
+        opacity = float(overlay_config.get("title_background_opacity", 1.0))
+        if not 0.0 <= opacity <= 1.0:
+            raise RuntimeError("text_overlay.title_background_opacity must be in 0..1")
+        filters.append(
+            "drawbox=x=0:y=0:w=iw:"
+            f"h={int(layout['title_top_height'])}:"
+            f"color=0x{background_hex}@{opacity:.4f}:t=fill"
+        )
+    elif title_background_mode != "none":
+        raise RuntimeError("text_overlay.title_background_mode must be 'none' or 'solid'")
     if layout.get("title_bar_enabled", True):
         filters.append(
             f"drawbox=x=(iw-{bar_width})/2:y={bar_y}:w={bar_width}:h={bar_height}:"
@@ -60,6 +80,7 @@ def _portrait_filter(
         "title_lines": rows,
         "title_text_files": line_files,
         "title_top_height": int(layout["title_top_height"]),
+        "title_background_mode": title_background_mode,
         "visual_top": int(layout["visual_top"]),
         "visual_height": int(layout["visual_height"]),
     }
