@@ -705,6 +705,7 @@ def test_topic_specificity_dominates_editorial_window_quality() -> None:
     assert persistent[0].transcript_text == specific.text
     assert persistent[0].score > persistent[1].score
 
+
 def test_mw4_title_has_no_accent_line_but_keeps_headline(tmp_path: Path) -> None:
     config = load_profile("mw4", CAMPAIGN).config
     target = tmp_path / "editorial_master.nut"
@@ -724,4 +725,3 @@ def test_mw4_title_has_no_accent_line_but_keeps_headline(tmp_path: Path) -> None
     assert "drawtext=" in filter_graph
     assert "fontcolor=0xFAFAFA" in filter_graph
     assert info["title_lines"][0]["text"] == "TEST HOOK"
-
