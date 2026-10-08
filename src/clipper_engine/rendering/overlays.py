@@ -49,9 +49,7 @@ def export_text_sidecars(
     if not Decimal(str(duration_seconds)).is_finite() or duration_seconds <= 0:
         raise RuntimeError("encoded video duration is invalid for text sidecars")
     end_ms = int(
-        (Decimal(str(duration_seconds)) * Decimal(1000)).to_integral_value(
-            rounding=ROUND_FLOOR
-        )
+        (Decimal(str(duration_seconds)) * Decimal(1000)).to_integral_value(rounding=ROUND_FLOOR)
     )
     if end_ms <= 0:
         raise RuntimeError("encoded video is too short for text sidecars")

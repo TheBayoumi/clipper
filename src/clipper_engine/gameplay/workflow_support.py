@@ -45,9 +45,11 @@ def _text_sidecar_contract_failures(
             failures.append(f"editable hook {extension} hash mismatch")
         paths[extension] = path
 
-    if "txt" in paths and paths["txt"].read_text(encoding="utf-8").strip() != str(
-        item.get("headline") or ""
-    ).strip():
+    if (
+        "txt" in paths
+        and paths["txt"].read_text(encoding="utf-8").strip()
+        != str(item.get("headline") or "").strip()
+    ):
         failures.append("editable hook txt content differs from selected headline")
     if "json" in paths:
         payload = _read(paths["json"])
@@ -292,9 +294,10 @@ def batch_summaries(
                         f"{source} clip {item.get('ordinal', '?')}: {failure}"
                         for failure in _text_sidecar_contract_failures(item, clip_meta)
                     )
-                elif overlay.get("applied") is not True or not str(
-                    item.get("headline") or ""
-                ).strip():
+                elif (
+                    overlay.get("applied") is not True
+                    or not str(item.get("headline") or "").strip()
+                ):
                     failures.append(
                         f"{source} clip {item.get('ordinal', '?')}: "
                         "mandatory on-screen text missing"

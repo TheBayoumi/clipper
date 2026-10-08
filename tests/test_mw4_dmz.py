@@ -762,14 +762,10 @@ def test_editable_hook_sidecars_do_not_require_video_burn_in(tmp_path: Path) -> 
     assert (tmp_path / f"{video.stem}.hook.srt").read_text(encoding="utf-8") == (
         "1\n00:00:00,000 --> 00:00:10,744\nWHY DOES EXTRACTION MATTER?\n"
     )
-    metadata = json.loads(
-        (tmp_path / f"{video.stem}.hook.json").read_text(encoding="utf-8")
-    )
+    metadata = json.loads((tmp_path / f"{video.stem}.hook.json").read_text(encoding="utf-8"))
     assert metadata["text"] == plan.headline
     assert metadata["burned_in_video"] is False
-    assert metadata["recommended_style"]["portrait_layout"]["background_mode"] == (
-        "blurred_source"
-    )
+    assert metadata["recommended_style"]["portrait_layout"]["background_mode"] == ("blurred_source")
 
 
 def test_batch_proves_editable_hook_sidecar_asset_integrity(tmp_path: Path) -> None:
@@ -789,7 +785,6 @@ def test_batch_proves_editable_hook_sidecar_asset_integrity(tmp_path: Path) -> N
     assert _text_sidecar_contract_failures(result, tmp_path) == []
     (tmp_path / f"{video.stem}.hook.txt").write_text("corrupted title", encoding="utf-8")
     assert any(
-        "hash mismatch" in failure
-        for failure in _text_sidecar_contract_failures(result, tmp_path)
+        "hash mismatch" in failure for failure in _text_sidecar_contract_failures(result, tmp_path)
     )
 
