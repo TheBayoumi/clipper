@@ -787,4 +787,3 @@ def test_batch_proves_editable_hook_sidecar_asset_integrity(tmp_path: Path) -> N
     assert any(
         "hash mismatch" in failure for failure in _text_sidecar_contract_failures(result, tmp_path)
     )
-
