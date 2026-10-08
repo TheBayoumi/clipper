@@ -201,12 +201,25 @@ def reviewed_summary_evidence(
                     or final.get("headline_self_contained") is not True
                     or final.get("central_highlight") is not True
                     or any(
-                        final.get(key) != "supported"
+                        final.get(key)
+                        not in ({"supported", "not_claimed"} if positional else {"supported"})
                         for key in (
                             "actor_action",
                             "relationship_role",
                             "setting_time",
                             "quantities_outcomes",
+                        )
+                    )
+                    or (
+                        positional
+                        and not any(
+                            final.get(key) == "supported"
+                            for key in (
+                                "actor_action",
+                                "relationship_role",
+                                "setting_time",
+                                "quantities_outcomes",
+                            )
                         )
                     )
                 ):

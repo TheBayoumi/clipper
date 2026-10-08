@@ -790,6 +790,30 @@ def test_independent_v6_requires_reviewed_spans_and_separate_qa_proof(tmp_path):
     review["boundary_audit"].update(setup_unit_last_id=0, payoff_unit_last_id=1)
     path.write_text(json.dumps(saved))
     assert reviewed_summary_evidence(tmp_path, hook, " ".join(units), 0, 24, "a" * 64)
+    # An unasserted headline dimension must not veto a v7 hook. Legacy v6
+    # proofs retain their stricter all-supported contract.
+    unclaimed = copy.deepcopy(saved)
+    unclaimed_audit = unclaimed["audit"]["assessments"][0]["exchange_review"]["headline_audits"][-1]
+    unclaimed_audit["setting_time"] = "not_claimed"
+    path.write_text(json.dumps(unclaimed))
+    assert reviewed_summary_evidence(tmp_path, hook, " ".join(units), 0, 24, "a" * 64)
+    unclaimed["identity"]["version"] = "podcast_structured_editor_v6"
+    path.write_text(json.dumps(unclaimed))
+    assert not reviewed_summary_evidence(tmp_path, hook, " ".join(units), 0, 24, "a" * 64)
+    for value in ("uncertain", "unsupported"):
+        rejected = copy.deepcopy(saved)
+        rejected["audit"]["assessments"][0]["exchange_review"]["headline_audits"][-1][
+            "setting_time"
+        ] = value
+        path.write_text(json.dumps(rejected))
+        assert not reviewed_summary_evidence(tmp_path, hook, " ".join(units), 0, 24, "a" * 64)
+    all_unclaimed = copy.deepcopy(saved)
+    for key in _HEADLINE_COMPONENTS:
+        all_unclaimed["audit"]["assessments"][0]["exchange_review"]["headline_audits"][-1][key] = (
+            "not_claimed"
+        )
+    path.write_text(json.dumps(all_unclaimed))
+    assert not reviewed_summary_evidence(tmp_path, hook, " ".join(units), 0, 24, "a" * 64)
     for field, value in (("evidence_contract", "unknown"), ("source_quote_spans", {})):
         changed = copy.deepcopy(saved)
         changed["audit"]["assessments"][0]["exchange_review"][field] = value
