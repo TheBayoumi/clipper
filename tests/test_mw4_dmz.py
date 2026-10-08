@@ -9,6 +9,7 @@ import pytest
 from clipper_engine import speech, spoken, spoken_semantics
 from clipper_engine.gameplay import allocation, contract
 from clipper_engine.profiles import load_profile
+from clipper_engine.rendering import overlays
 from clipper_engine.sources import catalog, mediasilo
 from clipper_engine.sources import qa as source_qa
 
@@ -48,6 +49,7 @@ def test_campaign_override_deep_merges_canonical_mw4_profile() -> None:
     assert profile.config["output"]["portrait_layout"]["enabled"] is True
     assert profile.config["output"]["portrait_layout"]["background_mode"] == "blurred_source"
     assert profile.config["output"]["portrait_layout"]["background_blur_sigma"] == 18
+    assert profile.config["output"]["portrait_layout"]["title_bar_enabled"] is False
 
 
 def test_spotlight_template_parser_extracts_provider_context() -> None:
@@ -702,3 +704,24 @@ def test_topic_specificity_dominates_editorial_window_quality() -> None:
     persistent.sort(key=lambda plan: -plan.score)
     assert persistent[0].transcript_text == specific.text
     assert persistent[0].score > persistent[1].score
+
+def test_mw4_title_has_no_accent_line_but_keeps_headline(tmp_path: Path) -> None:
+    config = load_profile("mw4", CAMPAIGN).config
+    target = tmp_path / "editorial_master.nut"
+    with patch(
+        "clipper_engine.rendering.overlays.portrait_layout.title_lines",
+        return_value=[{"text": "TEST HOOK", "font_size": 66, "y": 330, "width": 330.0}],
+    ):
+        filter_graph, info = overlays._portrait_filter(
+            "TEST HOOK",
+            target,
+            config,
+            {"width": 1080, "height": 1920},
+            Path("/unused-font-path.ttf"),
+        )
+
+    assert "drawbox=" not in filter_graph
+    assert "drawtext=" in filter_graph
+    assert "fontcolor=0xFAFAFA" in filter_graph
+    assert info["title_lines"][0]["text"] == "TEST HOOK"
+

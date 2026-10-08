@@ -36,10 +36,12 @@ def _portrait_filter(
     bar_width = round(width * float(layout.get("title_bar_width_fraction", 0.18)))
     bar_height = int(layout.get("title_bar_height", 5))
     bar_y = int(layout.get("title_bar_y", int(layout["title_top_height"]) - 90))
-    filters = [
-        f"drawbox=x=(iw-{bar_width})/2:y={bar_y}:w={bar_width}:h={bar_height}:"
-        f"color=0x{accent}:t=fill"
-    ]
+    filters: list[str] = []
+    if layout.get("title_bar_enabled", True):
+        filters.append(
+            f"drawbox=x=(iw-{bar_width})/2:y={bar_y}:w={bar_width}:h={bar_height}:"
+            f"color=0x{accent}:t=fill"
+        )
     line_files: list[str] = []
     for index, row in enumerate(rows):
         line_path = target.with_name(f"{target.stem}_headline_{index}.txt")

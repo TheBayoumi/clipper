@@ -121,6 +121,7 @@
       "title_bar_y": 548,
       "title_bar_width_fraction": 0.18,
       "title_bar_height": 5,
+      "title_bar_enabled": false,
       "background_mode": "blurred_source",
       "background_blur_sigma": 18
     }
