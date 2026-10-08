@@ -50,9 +50,10 @@ def test_campaign_override_deep_merges_canonical_mw4_profile() -> None:
     assert profile.config["output"]["portrait_layout"]["background_mode"] == "blurred_source"
     assert profile.config["output"]["portrait_layout"]["background_blur_sigma"] == 18
     assert profile.config["output"]["portrait_layout"]["title_bar_enabled"] is False
-    assert profile.config["text_overlay"]["title_background_mode"] == "solid"
+    assert profile.config["text_overlay"]["title_background_mode"] == "text_box"
     assert profile.config["text_overlay"]["title_background_hex"] == "#000000"
     assert profile.config["text_overlay"]["title_background_opacity"] == 1.0
+    assert profile.config["text_overlay"]["title_background_padding_px"] == 16
 
 
 def test_spotlight_template_parser_extracts_provider_context() -> None:
@@ -724,9 +725,10 @@ def test_mw4_title_has_no_accent_line_but_keeps_headline(tmp_path: Path) -> None
             Path("/unused-font-path.ttf"),
         )
 
-    assert filter_graph.startswith("drawbox=x=0:y=0:w=iw:h=656:color=0x000000@1.0000:t=fill,")
-    assert filter_graph.count("drawbox=") == 1
+    assert filter_graph.startswith("drawtext=")
+    assert "drawbox=" not in filter_graph
     assert "color=0xFFD848" not in filter_graph
+    assert "box=1:boxcolor=0x000000@1.0000:boxborderw=16:" in filter_graph
     assert "drawtext=" in filter_graph
     assert "fontcolor=0xFAFAFA" in filter_graph
     assert info["title_lines"][0]["text"] == "TEST HOOK"

@@ -39,7 +39,8 @@ def _portrait_filter(
     filters: list[str] = []
     overlay_config = dict(config.get("text_overlay") or {})
     title_background_mode = str(overlay_config.get("title_background_mode") or "none")
-    if title_background_mode == "solid":
+    text_background_filter = ""
+    if title_background_mode in {"solid", "text_box"}:
         background_hex = str(overlay_config.get("title_background_hex") or "#000000").lstrip("#")
         if len(background_hex) != 6 or any(
             char not in "0123456789abcdefABCDEF" for char in background_hex
@@ -48,13 +49,23 @@ def _portrait_filter(
         opacity = float(overlay_config.get("title_background_opacity", 1.0))
         if not 0.0 <= opacity <= 1.0:
             raise RuntimeError("text_overlay.title_background_opacity must be in 0..1")
-        filters.append(
-            "drawbox=x=0:y=0:w=iw:"
-            f"h={int(layout['title_top_height'])}:"
-            f"color=0x{background_hex}@{opacity:.4f}:t=fill"
-        )
+        if title_background_mode == "solid":
+            filters.append(
+                "drawbox=x=0:y=0:w=iw:"
+                f"h={int(layout['title_top_height'])}:"
+                f"color=0x{background_hex}@{opacity:.4f}:t=fill"
+            )
+        else:
+            padding = int(overlay_config.get("title_background_padding_px", 16))
+            if padding < 0 or padding > 64:
+                raise RuntimeError("text_overlay.title_background_padding_px must be in 0..64")
+            text_background_filter = (
+                f"box=1:boxcolor=0x{background_hex}@{opacity:.4f}:boxborderw={padding}:"
+            )
     elif title_background_mode != "none":
-        raise RuntimeError("text_overlay.title_background_mode must be 'none' or 'solid'")
+        raise RuntimeError(
+            "text_overlay.title_background_mode must be 'none', 'solid' or 'text_box'"
+        )
     if layout.get("title_bar_enabled", True):
         filters.append(
             f"drawbox=x=(iw-{bar_width})/2:y={bar_y}:w={bar_width}:h={bar_height}:"
@@ -70,6 +81,7 @@ def _portrait_filter(
             f"fontfile='{_escape_filter_path(font_path)}':"
             f"textfile='{_escape_filter_path(line_path)}':"
             f"fontcolor=0x{text_color}:fontsize={int(row['font_size'])}:"
+            f"{text_background_filter}"
             f"x=(w-text_w)/2:y={int(row['y'])}:"
             "shadowcolor=black@0.35:shadowx=1:shadowy=2:fix_bounds=1"
         )

@@ -136,9 +136,10 @@
     "enabled": true,
     "mode": "portrait_title_safe",
     "font_path": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "title_background_mode": "solid",
+    "title_background_mode": "text_box",
     "title_background_hex": "#000000",
-    "title_background_opacity": 1.0
+    "title_background_opacity": 1.0,
+    "title_background_padding_px": 16
   },
   "publishing": {
     "platforms": [
