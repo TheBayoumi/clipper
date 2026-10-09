@@ -464,6 +464,236 @@ def qualify_source_reviewer_gpu(
     return manifest
 
 
+@app.function(
+    image=reviewer_gpu_image,
+    gpu="L40S",
+    cpu=4,
+    memory=32768,
+    timeout=86400,
+    max_containers=1,
+    retries=0,
+    volumes={"/tjr-media": volume},
+)
+def qualify_podcast_narrative_gpu(
+    packed: bytes, profile: dict[str, Any], job_key: str, code_hash: str
+) -> dict[str, Any]:
+    """Diagnose source-blind story scope and event entailment on a real GPU.
+
+    This is a frozen single-source benchmark, never a general podcast approval.
+    Completed inference requests are committed individually for exact reruns.
+    """
+    import gzip
+    import hashlib
+    import importlib.metadata
+    import time
+
+    from llama_cpp import llama_supports_gpu_offload
+
+    from clipper.editorial_answer_comparison_probe import run_answer_comparison_probe
+    from clipper.editorial_benchmark import load_frozen_relations
+    from clipper.editorial_code_identity import qualification_code_hash
+    from clipper.editorial_source_scope_probe import run_source_scope_probe
+    from scripts.tjr_semantic_editor import (
+        LocalReasoningReviewer,
+        ReviewRequestCache,
+        _thinking_review_profile,
+    )
+
+    key_expected = hashlib.sha256(
+        packed + json.dumps(profile, sort_keys=True).encode() + code_hash.encode()
+    ).hexdigest()
+    if (
+        job_key != key_expected
+        or qualification_code_hash(Path("/app")) != code_hash
+        or profile != _thinking_review_profile()
+        or not llama_supports_gpu_offload()
+        or profile.get("gpu_layers") != -1
+    ):
+        raise ValueError("narrative GPU source, model or runtime identity mismatch")
+    payload = json.loads(gzip.decompress(packed))
+    if (
+        set(payload)
+        != {
+            "worker_code_sha256",
+            "fixture",
+            "proof",
+            "transcript",
+            "provenance",
+            "source_answer",
+            "scope_gold",
+        }
+        or payload["worker_code_sha256"] != hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    ):
+        raise ValueError("narrative GPU worker input contract differs from approved code")
+    root = Path("/tjr-media/reviewer/narrative") / job_key
+    root.mkdir(parents=True, exist_ok=True)
+    manifest_path = root / "manifest.json"
+    if manifest_path.is_file():
+        saved = json.loads(manifest_path.read_text())
+        if (
+            saved.get("experiment_complete") is True
+            and all(
+                (root / name).is_file()
+                and hashlib.sha256((root / name).read_bytes()).hexdigest() == digest
+                for name, digest in saved.get("file_hashes", {}).items()
+            )
+            and saved.get("file_hashes")
+        ):
+            return {**saved, "qualification_cache_hit": True}
+    paths = {}
+    for name in ("fixture", "proof", "transcript", "provenance", "source_answer", "scope_gold"):
+        if not isinstance(payload[name], str):
+            raise ValueError("narrative GPU input must preserve exact UTF-8 source bytes")
+        paths[name] = root / f"{name}.json"
+        paths[name].write_text(payload[name], encoding="utf-8")
+    gold = json.loads(paths["fixture"].read_text())
+    relations = load_frozen_relations(
+        paths["fixture"], paths["proof"], paths["transcript"], paths["provenance"]
+    )
+    source_answer = json.loads(paths["source_answer"].read_text())
+    if (
+        len(relations) != 15
+        or gold.get("source_sha256")
+        != "2a7e07b37074f3073d71b65e10a3efb4019b3cdd4277bc2d3770a99dcbc55e0a"
+        or source_answer.get("experiment") != "claim_blind_source_answer_v1"
+        or source_answer.get("experiment_complete") is not True
+        or source_answer.get("production_approved") is not False
+    ):
+        raise ValueError("narrative GPU requires complete pinned source-only evidence")
+    began = time.monotonic()
+    manifest: dict[str, Any] = {
+        "experiment": "podcast_narrative_gpu_v1",
+        "experiment_complete": False,
+        "diagnostic_only": True,
+        "production_approved": False,
+        "qualification_cache_hit": False,
+        "source_sha256": gold["source_sha256"],
+        "model_profile": profile,
+        "job_key": job_key,
+    }
+    reviewer = None
+    runtime = importlib.metadata.version("llama-cpp-python")
+
+    def factory():
+        nonlocal reviewer
+        if reviewer is None:
+            reviewer = LocalReasoningReviewer(profile)
+        return reviewer
+
+    def model_cache(stage: str, *, replay: bool):
+        return ReviewRequestCache(
+            root / stage / "review-request-cache.json",
+            (lambda: (_ for _ in ()).throw(RuntimeError("replay attempted new model inference")))
+            if replay
+            else factory,
+            {
+                "experiment": f"podcast_narrative_{stage}_v1",
+                "fixture_sha256": hashlib.sha256(paths["fixture"].read_bytes()).hexdigest(),
+                "baseline_proof_sha256": hashlib.sha256(paths["proof"].read_bytes()).hexdigest(),
+                "source_answer_sha256": hashlib.sha256(
+                    paths["source_answer"].read_bytes()
+                ).hexdigest(),
+                "model_profile": profile,
+            },
+            replay_only=replay,
+            recorded_runtime=runtime if replay else None,
+            reasoning=True,
+            on_response_persisted=None if replay else volume.commit,
+        )
+
+    try:
+        scores = {}
+        for replay in (False, True):
+            prefix = "warm" if replay else "cold"
+            scope_dir = root / "scope"
+            compare_dir = root / "comparison"
+            scope_dir.mkdir(exist_ok=True)
+            compare_dir.mkdir(exist_ok=True)
+            scope_cache = model_cache("scope", replay=replay)
+            comparison_cache = model_cache("comparison", replay=replay)
+            scope_out = scope_dir / f"{prefix}-proof.json"
+            compare_out = compare_dir / f"{prefix}-proof.json"
+            # The underlying diagnostics return 1 deliberately because the
+            # evaluator cannot grant automated production approval.
+            run_source_scope_probe(
+                paths["fixture"],
+                paths["proof"],
+                paths["transcript"],
+                paths["provenance"],
+                paths["source_answer"],
+                scope_out,
+                completion=scope_cache._review_completion,
+                scope_model_profile=profile,
+                request_metrics=lambda cache=scope_cache: cache.metrics,
+                scope_gold_path=paths["scope_gold"],
+            )
+            volume.commit()
+            run_answer_comparison_probe(
+                paths["fixture"],
+                paths["proof"],
+                paths["transcript"],
+                paths["provenance"],
+                scope_out,
+                compare_out,
+                completion=comparison_cache._review_completion,
+                comparison_model_profile=profile,
+                request_metrics=lambda cache=comparison_cache: cache.metrics,
+                scope_gold_path=paths["scope_gold"],
+            )
+            volume.commit()
+            scope_report = json.loads(scope_out.read_text())
+            compare_report = json.loads(compare_out.read_text())
+            if (
+                scope_report.get("experiment_complete") is not True
+                or compare_report.get("experiment_complete") is not True
+            ):
+                raise RuntimeError("narrative GPU report incomplete")
+            scores[prefix] = {
+                "scope": scope_report.get("scope_benchmark"),
+                "comparison": compare_report.get("benchmark"),
+                "scope_cache": scope_cache.metrics,
+                "comparison_cache": comparison_cache.metrics,
+                "scope_cases": [row.get("scope_review") for row in scope_report["cases"]],
+                "comparison_cases": [row.get("verdict") for row in compare_report["cases"]],
+            }
+        same = (
+            scores["cold"]["scope_cases"] == scores["warm"]["scope_cases"]
+            and scores["cold"]["comparison_cases"] == scores["warm"]["comparison_cases"]
+            and scores["warm"]["scope_cache"]["model_calls"] == 0
+            and scores["warm"]["comparison_cache"]["model_calls"] == 0
+        )
+        manifest.update(
+            experiment_complete=True,
+            semantic_pass=(
+                same
+                and scores["cold"]["scope"]["exact_pair_matches"] == 15
+                and scores["cold"]["comparison"]["exact_binary_matches"] == 15
+                and not scores["cold"]["scope"]["false_responsive_case_ids"]
+            ),
+            warm_replay_same_verdicts=same,
+            scoring={
+                k: {j: v for j, v in row.items() if j not in {"scope_cases", "comparison_cases"}}
+                for k, row in scores.items()
+            },
+        )
+    except Exception as error:
+        manifest["error"] = f"{type(error).__name__}: {error}"
+    finally:
+        if reviewer is not None:
+            reviewer.close()
+        manifest["wall_seconds"] = round(time.monotonic() - began, 3)
+        manifest["files"] = [
+            str(path.relative_to(root)) for path in root.rglob("*.json") if path != manifest_path
+        ]
+        manifest["file_hashes"] = {
+            name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+            for name in manifest["files"]
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+        volume.commit()
+    return manifest
+
+
 @app.function(image=image, volumes={"/tjr-media": volume}, timeout=1600, cpu=2, memory=2048)
 def inspect_original_youtube(candidates: list[dict[str, str]], run_key: str = "") -> dict[str, Any]:
     result = _inspect_original_youtube(candidates, run_key)

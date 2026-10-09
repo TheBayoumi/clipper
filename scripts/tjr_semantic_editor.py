@@ -4083,6 +4083,94 @@ def reviewer_gpu_qualification(
     return int(not report["semantic_pass"])
 
 
+def podcast_narrative_gpu_qualification(
+    fixture_path: Path,
+    proof_path: Path,
+    transcript_path: Path,
+    provenance_path: Path,
+    source_answer_path: Path,
+    output: Path,
+) -> int:
+    """One source-first story-scope + entailment diagnostic on existing Modal GPU.
+
+    The benchmark is transcript-derived and deliberately cannot approve
+    unattended publication. Preserve byte-identical frozen inputs.
+    """
+    import gzip
+
+    import modal
+
+    from clipper.editorial_benchmark import load_frozen_relations
+    from scripts.tjr_modal_probe import app, qualify_podcast_narrative_gpu, volume
+
+    relations = load_frozen_relations(fixture_path, proof_path, transcript_path, provenance_path)
+    if len(relations) != 15:
+        raise ValueError("narrative GPU diagnostic requires the original 15 frozen relations")
+    source_answers = json.loads(source_answer_path.read_text())
+    if (
+        source_answers.get("experiment") != "claim_blind_source_answer_v1"
+        or source_answers.get("experiment_complete") is not True
+        or source_answers.get("production_approved") is not False
+    ):
+        raise ValueError("narrative GPU diagnostic needs complete source-only answers")
+    gold_path = (
+        Path(__file__).resolve().parents[1] / "tests/fixtures/issue8_source_answer_scope_gold.json"
+    )
+    inputs = {
+        "worker_code_sha256": hashlib.sha256(
+            Path(__file__).with_name("tjr_modal_probe.py").read_bytes()
+        ).hexdigest(),
+        "fixture": fixture_path.read_text(),
+        "proof": proof_path.read_text(),
+        "transcript": transcript_path.read_text(),
+        "provenance": provenance_path.read_text(),
+        "source_answer": source_answer_path.read_text(),
+        "scope_gold": gold_path.read_text(),
+    }
+    packed = gzip.compress(json.dumps(inputs, sort_keys=True).encode(), mtime=0)
+    profile = _thinking_review_profile()
+    code_hash = qualification_code_hash(Path(__file__).resolve().parents[1])
+    job_key = hashlib.sha256(
+        packed + json.dumps(profile, sort_keys=True).encode() + code_hash.encode()
+    ).hexdigest()
+    report = {
+        "experiment": "podcast_narrative_gpu_qualification",
+        "experiment_complete": False,
+        "diagnostic_only": True,
+        "production_approved": False,
+        "source_sha256": json.loads(inputs["fixture"])["source_sha256"],
+        "code_sha256": code_hash,
+        "model_profile": profile,
+        "job_key": job_key,
+        "semantic_pass": False,
+        "qualification_rule": (
+            "The frozen 15 transcript-derived cases are regression controls, not "
+            "independent audio-reviewed cross-podcast qualification. Automatic "
+            "production approval is forbidden even if all controls pass."
+        ),
+    }
+    output.write_text(json.dumps(report, indent=2) + "\n")
+    directory = output.parent / "reviewer-gpu-evidence" / "narrative"
+    directory.mkdir(parents=True, exist_ok=True)
+    with modal.enable_output(), app.run():
+        try:
+            result = qualify_podcast_narrative_gpu.remote(packed, profile, job_key, code_hash)
+            report["worker"] = {key: value for key, value in result.items() if key != "file_hashes"}
+            for name in result.get("files", []):
+                target = directory / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with target.open("wb") as sink:
+                    for chunk in volume.read_file(f"reviewer/narrative/{job_key}/{name}"):
+                        sink.write(chunk)
+            report["experiment_complete"] = result.get("experiment_complete") is True
+            report["semantic_pass"] = result.get("semantic_pass") is True
+        except Exception as error:
+            report["error"] = f"{type(error).__name__}: {error}"
+        finally:
+            output.write_text(json.dumps(report, indent=2) + "\n")
+    return int(not report["semantic_pass"])
+
+
 def reviewer_preflight(transcript_path: Path, output: Path) -> int:
     """Exercise the real pinned reviewer before spending a full production run."""
     segments = json.loads(transcript_path.read_text())
@@ -4839,6 +4927,7 @@ if __name__ == "__main__":
     parser.add_argument("--evidence-qa-probe", action="store_true")
     parser.add_argument("--evidence-gpu-probe", action="store_true")
     parser.add_argument("--reasoning-gpu-probe", action="store_true")
+    parser.add_argument("--narrative-gpu-probe", action="store_true")
     parser.add_argument("--recover-gpu-evidence", type=Path)
     parser.add_argument("--structured-claim-probe", action="store_true")
     parser.add_argument("--source-bound-headline-probe", action="store_true")
@@ -4866,6 +4955,29 @@ if __name__ == "__main__":
             modal.Volume.from_name("clipper-tjr-source-transport", create_if_missing=False),
         )
         raise SystemExit(0)
+    if args.narrative_gpu_probe:
+        if not all(
+            (
+                args.reviewer_preflight_transcript,
+                args.frozen_relation_proof,
+                args.frozen_relation_provenance,
+                args.source_answer_report,
+            )
+        ):
+            parser.error(
+                "narrative GPU probe requires transcript, proof, provenance "
+                "and source-answer report"
+            )
+        raise SystemExit(
+            podcast_narrative_gpu_qualification(
+                Path(__file__).resolve().parents[1] / "tests/fixtures/issue8_frozen_relations.json",
+                args.frozen_relation_proof,
+                args.reviewer_preflight_transcript,
+                args.frozen_relation_provenance,
+                args.source_answer_report,
+                args.output,
+            )
+        )
     if args.answer_comparison_probe:
         if not all(
             (
