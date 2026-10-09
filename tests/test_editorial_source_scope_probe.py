@@ -118,7 +118,11 @@ def test_scope_probe_uses_saved_answers_and_checkpoints_every_case(tmp_path, mon
 
     def completion(prompt, payload, schema, tokens):
         calls.append(payload)
-        return {"responsiveness": "answers_question", "scope": "actual_event_or_state"}
+        return {
+            "responsiveness": "answers_question",
+            "scope": "actual_event_or_state",
+            "narrative_role": "recounted_event",
+        }
 
     assert (
         probe.run_source_scope_probe(
@@ -135,6 +139,10 @@ def test_scope_probe_uses_saved_answers_and_checkpoints_every_case(tmp_path, mon
     assert len(report["cases"]) == len(calls) == 15
     assert report["request_cache_metrics"] == {"model_calls": 15}
     assert all(case["scope_review"]["production_approved"] is False for case in report["cases"])
+    assert all(
+        case["scope_review"]["narrative_role"] == "recounted_event" for case in report["cases"]
+    )
+    assert report["experiment"] == "independent_source_answer_scope_v2_narrative"
 
 
 def test_scope_probe_rejects_incomplete_report(tmp_path, monkeypatch):
@@ -198,7 +206,11 @@ def test_scope_probe_scores_sealed_labels_after_inference(tmp_path, monkeypatch)
     def completion(prompt, payload, schema, tokens):
         payloads.append(payload)
         assert "expected" not in str(payload).lower()
-        return {"responsiveness": "answers_question", "scope": "actual_event_or_state"}
+        return {
+            "responsiveness": "answers_question",
+            "scope": "actual_event_or_state",
+            "narrative_role": "recounted_event",
+        }
 
     assert (
         probe.run_source_scope_probe(
@@ -241,7 +253,11 @@ def test_scope_score_separates_model_judgments_from_source_abstentions(tmp_path,
 
     def completion(prompt, payload, schema, tokens):
         calls.append(payload)
-        return {"responsiveness": "answers_question", "scope": "actual_event_or_state"}
+        return {
+            "responsiveness": "answers_question",
+            "scope": "actual_event_or_state",
+            "narrative_role": "recounted_event",
+        }
 
     assert (
         probe.run_source_scope_probe(

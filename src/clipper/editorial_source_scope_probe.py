@@ -161,7 +161,7 @@ def run_source_scope_probe(
         else None
     )
     report: dict[str, Any] = {
-        "experiment": "independent_source_answer_scope_v1",
+        "experiment": "independent_source_answer_scope_v2_narrative",
         "diagnostic_only": True,
         "production_approved": False,
         "experiment_complete": False,

@@ -12,6 +12,17 @@ from typing import Any
 
 Completion = Callable[[str, dict[str, Any], dict[str, Any], int], dict[str, Any]]
 _RESPONSIVENESS = ("answers_question", "does_not_answer", "uncertain")
+# Evidence meaning within a conversational narrative. This is source-only:
+# no headline or proposed answer may influence which speech act was performed.
+NARRATIVE_ROLES = (
+    "recounted_event",
+    "present_event_or_state",
+    "reported_utterance",
+    "reported_belief",
+    "conditional_or_hypothetical",
+    "general_discussion",
+    "unknown",
+)
 _SCOPES = (
     "actual_event_or_state",
     "actual_report_of_opinion",
@@ -43,6 +54,7 @@ def assess_source_answer_scope(
             "question": question,
             "responsiveness": "uncertain",
             "scope": "unknown",
+            "narrative_role": "unknown",
             "reason": "source_answer_abstained",
             "diagnostic_only": True,
             "production_approved": False,
@@ -67,7 +79,14 @@ def assess_source_answer_scope(
         "Distinguish an actual setting from words quoted as a warning or instruction, "
         "and a real outcome from an if/would/could hypothetical. A speaker may actually "
         "report an opinion without the embedded opinion being an independently verified "
-        "event. If the referent or speech-act boundary cannot be resolved from these "
+        "event. A guest can recount real experiences from years before the recording: "
+        "classify these as recounted_event, not a present event and not hypothetical. "
+        "Quoted dialogue inside an anecdote is a reported_utterance, even when it "
+        "asserts that something occurred; it does not by itself validate that event. "
+        "Track who speaks, who acts, what scene they describe, and whether the "
+        "answer quote refers to that scene. Classify narrative_role by the role "
+        "the cited answer plays in the source, independent of any headline. "
+        "If the referent or speech-act boundary cannot be resolved from these "
         "units, choose uncertain or unknown. Do not infer a headline or a proposed "
         "answer; neither is supplied. Return output_schema JSON only.",
         {
@@ -82,12 +101,21 @@ def assess_source_answer_scope(
         {
             "responsiveness": {"type": "string", "enum": list(_RESPONSIVENESS)},
             "scope": {"type": "string", "enum": list(_SCOPES)},
+            "narrative_role": {"type": "string", "enum": list(NARRATIVE_ROLES)},
         },
         80,
     )
-    if not isinstance(proposed, dict) or set(proposed) != {"responsiveness", "scope"}:
+    if not isinstance(proposed, dict) or set(proposed) != {
+        "responsiveness",
+        "scope",
+        "narrative_role",
+    }:
         raise ValueError("source-scope response has missing or unknown fields")
-    if proposed["responsiveness"] not in _RESPONSIVENESS or proposed["scope"] not in _SCOPES:
+    if (
+        proposed["responsiveness"] not in _RESPONSIVENESS
+        or proposed["scope"] not in _SCOPES
+        or proposed["narrative_role"] not in NARRATIVE_ROLES
+    ):
         raise ValueError("source-scope response has invalid labels")
     return {
         "question": question,

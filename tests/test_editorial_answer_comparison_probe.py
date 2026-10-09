@@ -73,6 +73,7 @@ def inputs(tmp_path: Path) -> tuple[Path, ...]:
             "citation": citation,
             "responsiveness": "answers_question",
             "scope": "actual_event_or_state",
+            "narrative_role": "recounted_event",
             "diagnostic_only": True,
             "production_approved": False,
         }
@@ -82,6 +83,7 @@ def inputs(tmp_path: Path) -> tuple[Path, ...]:
                 "question": QUESTION,
                 "responsiveness": "uncertain",
                 "scope": "unknown",
+                "narrative_role": "unknown",
                 "diagnostic_only": True,
                 "production_approved": False,
             }
@@ -101,7 +103,7 @@ def inputs(tmp_path: Path) -> tuple[Path, ...]:
     saved.write_text(
         json.dumps(
             {
-                "experiment": "independent_source_answer_scope_v1",
+                "experiment": "independent_source_answer_scope_v2_narrative",
                 "experiment_complete": True,
                 "production_approved": False,
                 "source_sha256": "a" * 64,
@@ -144,7 +146,14 @@ def test_scores_complete_pipeline_and_never_approves(tmp_path, monkeypatch):
         calls.append(payload)
         assert "proposed_answer" in payload
         assert payload["source_units"][0]["text"] == UNITS[0]
-        return {"relation": "equivalent"}
+        return {
+            "relation": "equivalent",
+            "claimed_narrative_role": "recounted_event",
+            "source_narrative_role": "recounted_event",
+            "event_link": "same_event",
+            "event_first_unit": 0,
+            "event_last_unit": 0,
+        }
 
     assert run(args, completion) == 1
     report = json.loads(args[5].read_text(encoding="utf-8"))
@@ -201,3 +210,13 @@ def test_workflow_routes_saved_scope_evidence_to_comparison_only():
     assert "--answer-comparison-probe" in assess
     assert '--source-scope-report "$SOURCE_SCOPE"' in assess
     assert "--frozen-relation-proof" in assess
+
+
+def test_v1_source_scope_cannot_qualify_narrative_comparison(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe, "load_frozen_relations", lambda *_: [relation(i) for i in range(15)])
+    args = inputs(tmp_path)
+    previous = json.loads(args[4].read_text())
+    previous["experiment"] = "independent_source_answer_scope_v1"
+    args[4].write_text(json.dumps(previous))
+    with pytest.raises(ValueError, match="complete pinned source-scope"):
+        run(args, lambda *_: pytest.fail("v1 evidence must not reach comparison model"))

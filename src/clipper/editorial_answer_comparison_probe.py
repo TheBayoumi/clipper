@@ -42,7 +42,7 @@ def run_answer_comparison_probe(
     if (
         len(relations) != 15
         or not isinstance(saved, dict)
-        or saved.get("experiment") != "independent_source_answer_scope_v1"
+        or saved.get("experiment") != "independent_source_answer_scope_v2_narrative"
         or saved.get("experiment_complete") is not True
         or saved.get("production_approved") is not False
         or saved.get("source_sha256") != fixture["source_sha256"]
@@ -77,6 +77,16 @@ def run_answer_comparison_probe(
             or scope.get("question") != relation.question
             or answer.get("diagnostic_only") is not True
             or answer.get("production_approved") is not False
+            or scope.get("narrative_role")
+            not in {
+                "recounted_event",
+                "present_event_or_state",
+                "reported_utterance",
+                "reported_belief",
+                "conditional_or_hypothetical",
+                "general_discussion",
+                "unknown",
+            }
             or scope.get("diagnostic_only") is not True
             or scope.get("production_approved") is not False
             or saved_case.get("error")

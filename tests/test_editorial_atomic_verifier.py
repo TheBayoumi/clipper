@@ -20,11 +20,22 @@ def answer(prompt, payload, schema, tokens):
 
 
 def scope(prompt, payload, schema, tokens):
-    return {"responsiveness": "answers_question", "scope": "actual_event_or_state"}
+    return {
+        "responsiveness": "answers_question",
+        "scope": "actual_event_or_state",
+        "narrative_role": "recounted_event",
+    }
 
 
 def relation(prompt, payload, schema, tokens):
-    return {"relation": "equivalent"}
+    return {
+        "relation": "equivalent",
+        "claimed_narrative_role": "recounted_event",
+        "source_narrative_role": "recounted_event",
+        "event_link": "same_event",
+        "event_first_unit": 1,
+        "event_last_unit": 1,
+    }
 
 
 def test_atomic_relation_withholds_candidate_until_source_is_scoped():
@@ -86,6 +97,7 @@ def test_atomic_relation_stops_on_nonresponsive_exact_quote():
         scope_completion=lambda *_: {
             "responsiveness": "does_not_answer",
             "scope": "quoted_instruction",
+            "narrative_role": "reported_utterance",
         },
         comparison_completion=lambda *_: (_ for _ in ()).throw(AssertionError("comparator called")),
     )
@@ -107,7 +119,10 @@ def test_atomic_relation_does_not_promote_different_or_uncertain_answer(comparis
         delivered_units=UNITS,
         source_completion=answer,
         scope_completion=scope,
-        comparison_completion=lambda *_: {"relation": comparison_label},
+        comparison_completion=lambda *_: {
+            **relation(None, None, None, None),
+            "relation": comparison_label,
+        },
     )
     assert result["verdict"] == expected
     assert result["production_approved"] is False
