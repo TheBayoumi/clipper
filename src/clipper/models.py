@@ -159,16 +159,16 @@ class VideoCandidate:
 
 
 @dataclass(frozen=True, slots=True)
-class TranscriptSegment:
+class WordTiming:
     start: float
     end: float
     text: str
 
     def __post_init__(self) -> None:
         if self.start < 0 or self.end <= self.start:
-            raise ValueError("transcript segment timestamps are invalid")
+            raise ValueError("word timing timestamps are invalid")
         if not self.text.strip():
-            raise ValueError("transcript segment text cannot be empty")
+            raise ValueError("word timing text cannot be empty")
 
     @property
     def duration(self) -> float:
@@ -176,6 +176,36 @@ class TranscriptSegment:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptSegment:
+    start: float
+    end: float
+    text: str
+    words: tuple[WordTiming, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.start < 0 or self.end <= self.start:
+            raise ValueError("transcript segment timestamps are invalid")
+        if not self.text.strip():
+            raise ValueError("transcript segment text cannot be empty")
+        previous_end = self.start
+        for word in self.words:
+            if word.start < self.start - 0.001 or word.end > self.end + 0.001:
+                raise ValueError("word timing falls outside the transcript segment")
+            if word.start < previous_end - 0.001:
+                raise ValueError("word timings must be in chronological order")
+            previous_end = word.end
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["words"] = [word.to_dict() for word in self.words]
+        return data
 
 
 @dataclass(frozen=True, slots=True)

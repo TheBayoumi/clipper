@@ -106,3 +106,145 @@ damage<00:00:04.480><c> or</c><00:00:04.720><c> you're</c><00:00:04.960><c> gone
         "damage or you're gone.",
     ]
     assert all(segment.duration > 0.05 for segment in segments)
+
+
+def test_word_aligned_whisper_keeps_real_word_timestamps_and_fallback(tmp_path: Path) -> None:
+    calls: list[object] = []
+    words = [
+        SimpleNamespace(start=i * 0.4, end=i * 0.4 + 0.3, word=token)
+        for i, token in enumerate(
+            [
+                "Wait",
+                " what",
+                " happened?",
+                " I",
+                " just",
+                " watched",
+                " that",
+                " candle",
+                " reverse",
+            ]
+        )
+    ]
+    words.extend(
+        [
+            SimpleNamespace(start=None, end=2.0, word=" skipped"),
+            SimpleNamespace(start=3.0, end=None, word=" skipped"),
+            SimpleNamespace(start=4.0, end=3.0, word=" skipped"),
+            SimpleNamespace(start=4.0, end=5.0, word=" "),
+        ]
+    )
+
+    class FakeModel:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def transcribe(self, *_args: object, **kwargs: object) -> tuple[object, object]:
+            calls.append(kwargs)
+            return (
+                [
+                    SimpleNamespace(start=0, end=4, text="Wait what happened?", words=words),
+                    SimpleNamespace(start=4, end=5, text=" Fallback original line ", words=[]),
+                    SimpleNamespace(start=6, end=6, text="Zero-duration", words=[]),
+                    SimpleNamespace(start=7, end=8, text=" ", words=None),
+                ],
+                object(),
+            )
+
+    with patch.dict(sys.modules, {"faster_whisper": SimpleNamespace(WhisperModel=FakeModel)}):
+        actual = transcribe_with_faster_whisper(
+            tmp_path / "audio.mp4",
+            model_name="small.en",
+            device="cpu",
+            language="en",
+            word_timestamps=True,
+        )
+    assert len(actual) >= 3
+    assert actual[0].text == "Wait what happened?"
+    assert actual[0].start == 0.0
+    assert actual[0].end == 1.1
+    assert actual[-1].text == "Fallback original line"
+    assert actual[-1].start == 4.0
+    assert all(item.duration > 0 for item in actual)
+    assert calls and isinstance(calls[0], dict) and calls[0]["word_timestamps"] is True
+
+
+def test_word_aligned_whisper_splits_long_sentences_on_actual_word_times() -> None:
+    words = [
+        SimpleNamespace(start=float(i), end=float(i) + 0.3, word=" hey" if i else "Wait")
+        for i in range(8)
+    ]
+
+    class FakeModel:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def transcribe(self, *_args: object, **_kwargs: object) -> tuple[object, object]:
+            return ([SimpleNamespace(start=0, end=8, text="Wait hey ...", words=words)], object())
+
+    with patch.dict(sys.modules, {"faster_whisper": SimpleNamespace(WhisperModel=FakeModel)}):
+        actual = transcribe_with_faster_whisper("sample.mp4", word_timestamps=True)
+    assert len(actual) > 1
+    assert actual[0].start == 0.0
+    assert actual[0].end < actual[-1].end
+    assert actual[-1].end == 7.3
+
+
+def test_word_aligned_whisper_preserves_exact_word_boundaries_and_groups() -> None:
+    raw = [
+        SimpleNamespace(start=i * 0.4, end=i * 0.4 + 0.25, word=word)
+        for i, word in enumerate(
+            (
+                "Wait",
+                " what",
+                " happened?",
+                " I",
+                " just",
+                " watched",
+                " that",
+                " candle",
+                " reverse",
+            )
+        )
+    ]
+    raw.extend(
+        [
+            SimpleNamespace(start=None, end=4, word="INVALID"),
+            SimpleNamespace(start=5, end=4, word="INVALID"),
+        ]
+    )
+
+    class FakeModel:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def transcribe(self, *_args: object, **_kwargs: object):
+            return (
+                [
+                    SimpleNamespace(start=0, end=4, text="Wait what happened?", words=raw),
+                    SimpleNamespace(start=4, end=5, text="unaligned fallback", words=[]),
+                ],
+                object(),
+            )
+
+    with patch.dict(sys.modules, {"faster_whisper": SimpleNamespace(WhisperModel=FakeModel)}):
+        actual = transcribe_with_faster_whisper("original.mp4", word_timestamps=True)
+    assert [segment.text for segment in actual][:2] == [
+        "Wait what happened?",
+        "I just watched that candle reverse",
+    ]
+    assert len(actual[0].words) == 3
+    assert actual[0].words[1].start == 0.4
+    assert actual[0].words[1].end == 0.65
+    assert actual[-1].text == "unaligned fallback"
+    assert actual[-1].words == ()
+    assert actual[0].to_dict()["words"][0]["text"] == "Wait"
+
+
+def test_asr_extra_pins_pyav_before_removed_metadata_api() -> None:
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    asr = config["project"]["optional-dependencies"]["asr"]
+    assert "av>=11,<19" in asr

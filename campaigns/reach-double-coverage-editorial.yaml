@@ -1,0 +1,6 @@
+# Run inputs only; campaign rights and editorial policy live in the referenced brief.
+# Override per-run source/cache provenance in a separate YAML/JSON file when needed.
+brief: reach-double-coverage-dedicated.yaml
+artifact_root: ../double-coverage-youtube-artifacts
+render_safety_limit: 20
+caption_style: B2

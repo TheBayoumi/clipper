@@ -1,0 +1,1127 @@
+name: Double Coverage HD clipping
+
+on:
+  push:
+    branches: [feat/tjr-weekly-hd-actions]
+    paths:
+      - ".github/workflows/tjr-weekly-hd.yml"
+      - "campaigns/reach-double-coverage-dedicated.yaml"
+      - "campaigns/reach-double-coverage-editorial.yaml"
+      - "src/clipper/**"
+      - "scripts/tjr_quality.py"
+      - "scripts/tjr_youtube_preview.py"
+      - "src/clipper/scoring.py"
+      - "scripts/tjr_modal_probe.py"
+      - "scripts/tjr_editorial.py"
+      - "src/clipper/editorial.py"
+      - "scripts/tjr_browser_probe.py"
+      - "scripts/tjr_modal_runner.py"
+      - "scripts/tjr_*.py"
+      - "tests/test_tjr_editorial.py"
+      - "tests/test_transcript.py"
+      - "src/clipper/transcript.py"
+      - "src/clipper/render.py"
+      - "src/clipper/tiktok.py"
+      - "src/clipper/source_fidelity.py"
+      - "tests/test_source_fidelity.py"
+      - "tests/test_tiktok.py"
+      - "src/clipper/youtube.py"
+      - "tests/test_tjr_quality.py"
+      - "tests/test_tjr_youtube_preview.py"
+      - "tests/test_tjr_browser_probe.py"
+      - "tests/test_render.py"
+      - "pyproject.toml"
+  pull_request:
+    paths:
+      - ".github/workflows/tjr-weekly-hd.yml"
+      - "campaigns/reach-double-coverage-dedicated.yaml"
+      - "scripts/tjr_*.py"
+      - "src/clipper/**"
+      - "tests/**"
+  workflow_dispatch:
+    inputs:
+      reviewer_model_probe:
+        description: "Diagnostic model comparison only; factual_9b tests saved headline claims without selection or media."
+        required: false
+        type: choice
+        options: [disabled, focused_4b, factual_9b, factual_consensus, factual_ablation_4b, factual_nli, evidence_qa, structured_claim, source_bound_headline, headline_materializer, cut_obligation, question_state, source_answer, source_scope, answer_comparison, claim_inventory, syntax_inventory, relation_minicheck, evidence_gpu, reasoning_gpu, narrative_gpu, gpu_recovery, gpu_build_logs]
+        default: disabled
+      editorial_preflight:
+        description: "Run real-model reviewer regression on cached transcript only; no source acquisition."
+        required: false
+        type: boolean
+        default: false
+      budget_confirmed:
+        description: "Submission eligibility only: I checked Whop acceptance and budget. Direct renders are review-only."
+        required: false
+        type: boolean
+        default: false
+      source_mode:
+        description: "Choose one explicit production transport or an authorized mirror."
+        required: true
+        type: choice
+        options: [validate_only, modal_direct, youtube_direct, verified_mirror, feedback_replay]
+        default: validate_only
+      target_channel_id:
+        description: "Exact Reach-listed YouTube channel for direct production; source video is discovered dynamically inside this channel."
+        required: false
+        type: string
+        default: ""
+      source_verified:
+        description: "I verified the staged video is authentic authorized Double Coverage footage."
+        required: false
+        type: boolean
+        default: false
+      source_video_id:
+        description: "Optional exact official source ID; leave blank to discover within target_channel_id."
+        required: false
+        type: string
+        default: ""
+      transcript_source_run_id:
+        description: "Optional prior Modal run transcript; exact source bytes and complete coverage must match."
+        required: false
+        type: string
+        default: ""
+      editorial_source_run_id:
+        description: "Optional prior editorial checkpoint; reuse requires exact source, transcript, proposals, model and editor code."
+        required: false
+        type: string
+        default: ""
+      diagnostic_source_run_id:
+        description: "Completed source-answer or source-scope diagnostic run; pinned source and cases are checked."
+        required: false
+        type: string
+        default: ""
+      feedback_source_run_id:
+        description: "Existing production run to replay and audit without downloading video anew."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: double-coverage-hd-${{ github.ref }}-${{ github.event_name }}-${{ inputs.source_mode || 'validation' }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    name: Validate source, policy and code
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Validate production inputs before any real source acquisition
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TJR_SOURCE_MODE: ${{ inputs.source_mode }}
+          TJR_BUDGET_CONFIRMED: ${{ inputs.budget_confirmed }}
+          TJR_SOURCE_VERIFIED: ${{ inputs.source_verified }}
+          TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
+          TJR_TARGET_CHANNEL_ID: ${{ inputs.target_channel_id }}
+          TJR_FEEDBACK_SOURCE_RUN_ID: ${{ inputs.feedback_source_run_id }}
+          TJR_TRANSCRIPT_SOURCE_RUN_ID: ${{ inputs.transcript_source_run_id }}
+          TJR_EDITORIAL_SOURCE_RUN_ID: ${{ inputs.editorial_source_run_id }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+
+          mode = os.environ['TJR_SOURCE_MODE']
+          if mode == 'validate_only':
+              print('Validation only: no real-source rendering requested')
+          elif mode == 'feedback_replay':
+              source_run_id = os.getenv('TJR_FEEDBACK_SOURCE_RUN_ID', '')
+              if not re.fullmatch(r'[1-9][0-9]{7,14}', source_run_id):
+                  raise SystemExit('feedback_replay requires a valid prior GitHub run ID')
+              print(f'Replaying existing artifacts from run {source_run_id}; no paid source')
+          else:
+              if mode not in {'modal_direct', 'youtube_direct', 'verified_mirror'}:
+                  raise SystemExit('Unknown campaign source mode')
+              if mode == 'verified_mirror' and os.getenv('TJR_BUDGET_CONFIRMED', '').lower() != 'true':
+                  raise SystemExit('Production requires explicit confirmation of the live Whop budget')
+              cache_run = os.getenv('TJR_TRANSCRIPT_SOURCE_RUN_ID', '')
+              if cache_run and (mode != 'modal_direct' or not re.fullmatch(r'[1-9][0-9]{7,14}', cache_run)):
+                  raise SystemExit('Transcript reuse requires modal_direct and a valid prior run ID')
+              video_id = os.getenv('TJR_SOURCE_VIDEO_ID', '')
+              if cache_run and not video_id:
+                  raise SystemExit('Transcript reuse requires the exact source_video_id')
+              editorial_run = os.getenv('TJR_EDITORIAL_SOURCE_RUN_ID', '')
+              if editorial_run and (
+                  mode != 'modal_direct' or not video_id
+                  or not re.fullmatch(r'[1-9][0-9]{7,14}', editorial_run)
+              ):
+                  raise SystemExit('Editorial reuse requires modal_direct, exact source ID and valid prior run ID')
+              target_channel_id = os.getenv('TJR_TARGET_CHANNEL_ID', '')
+              approved_channels = {
+                  'UCf1q6dhccWr6eQEcFFnJSbA',
+              }
+              if video_id and not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id):
+                  raise SystemExit('source_video_id must be an exact 11-character YouTube ID')
+              if mode in {'modal_direct', 'youtube_direct'}:
+                  if target_channel_id not in approved_channels:
+                      raise SystemExit(
+                          'Direct production requires exactly one Reach-listed target_channel_id'
+                      )
+              if mode == 'verified_mirror' and (
+                  not video_id or os.getenv('TJR_SOURCE_VERIFIED', '').lower() != 'true'
+              ):
+                  raise SystemExit('Verified mirror requires an exact video ID and source approval')
+              print(f'Production inputs valid: {mode}, target channel {target_channel_id or "n/a"}')
+          PY
+      - name: Reuse recent exact-head validation
+        id: validation_cache
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.setOutput('reused', 'false');
+            const requiredSteps = [
+              'Run python -m pip install -e ".[dev]"',
+              'Run ruff check .', 'Run ruff format --check .', 'Run mypy',
+              'Install FFmpeg for media regression tests and HD canary',
+              'Run pytest', 'Validate campaign rules',
+              'Verify pinned PO-token provider readiness without downloading video',
+              'Render and inspect a synthetic HD FFmpeg canary',
+            ];
+            try {
+              const {data} = await github.rest.actions.listWorkflowRuns({
+                ...context.repo, workflow_id: 'tjr-weekly-hd.yml',
+                head_sha: context.sha, status: 'completed', per_page: 30,
+              });
+              const candidates = data.workflow_runs.filter(run =>
+                run.head_sha === context.sha && run.status === 'completed' &&
+                run.conclusion === 'success' && ['push', 'pull_request'].includes(run.event) &&
+                run.path === '.github/workflows/tjr-weekly-hd.yml' &&
+                Date.now() - Date.parse(run.created_at) >= 0 &&
+                Date.now() - Date.parse(run.created_at) < 24 * 60 * 60 * 1000
+              );
+              for (const run of candidates) {
+                const {data: result} = await github.rest.actions.listJobsForWorkflowRun({
+                  ...context.repo, run_id: run.id, per_page: 100,
+                });
+                const proof = result.jobs.find(job =>
+                  job.name === 'Validate source, policy and code' &&
+                  job.status === 'completed' && job.conclusion === 'success' &&
+                  job.labels.includes('ubuntu-24.04') &&
+                  requiredSteps.every(name => job.steps.some(step =>
+                    step.name === name && step.status === 'completed' && step.conclusion === 'success'
+                  ))
+                );
+                if (!proof) continue;
+                core.setOutput('reused', 'true');
+                core.setOutput('run_id', String(run.id));
+                core.info(`CODE_VALIDATION_CACHE_HIT sha=${context.sha} run=${run.html_url}`);
+                break;
+              }
+            } catch (error) {
+              core.warning('Validation proof unavailable; performing the required checks locally.');
+            }
+      - if: steps.validation_cache.outputs.reused != 'true'
+        run: python -m pip install -e ".[dev]"
+      - if: steps.validation_cache.outputs.reused != 'true'
+        run: ruff check .
+      - if: steps.validation_cache.outputs.reused != 'true'
+        run: ruff format --check .
+      - name: Show precise formatting diff on failure
+        if: failure()
+        run: ruff format --diff .
+      - if: steps.validation_cache.outputs.reused != 'true'
+        run: mypy
+      - name: Install FFmpeg for media regression tests and HD canary
+        if: steps.validation_cache.outputs.reused != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+      - if: steps.validation_cache.outputs.reused != 'true'
+        run: pytest
+      - name: Validate campaign rules
+        if: steps.validation_cache.outputs.reused != 'true'
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from scripts.tjr_quality import check_campaign_brief
+
+          brief = check_campaign_brief(Path("campaigns/reach-double-coverage-dedicated.yaml"))
+          assert brief["required_hashtags"] == ["#DoubleCoverage"]
+          assert brief["watermark_url"] == "https://drive.google.com/file/d/1wn3gL5h7cUZn-8jzTfwkAvLhbleXgbL6/view?usp=sharing"
+          assert set(brief["source_channel_ids"]) == {
+              "UCf1q6dhccWr6eQEcFFnJSbA",
+          }
+          print("Reach YouTube source policy: PASS")
+          PY
+      - name: Verify pinned PO-token provider readiness without downloading video
+        if: steps.validation_cache.outputs.reused != 'true'
+        run: |
+          set -euo pipefail
+          docker run --name bgutil-canary -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider:2.0.0
+          trap 'docker rm -f bgutil-canary >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS --connect-timeout 1 --max-time 2 http://127.0.0.1:4416/ping >/dev/null; then break; fi
+            sleep 1
+          done
+          if ! curl -fsS --connect-timeout 1 --max-time 2 http://127.0.0.1:4416/ping; then
+            docker logs --tail 80 bgutil-canary
+            exit 1
+          fi
+      - name: Render and inspect a synthetic HD FFmpeg canary
+        if: steps.validation_cache.outputs.reused != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tjr-ffmpeg-canary
+          ffmpeg -nostdin -v error -y \
+            -f lavfi -i "testsrc2=size=1280x720:rate=30,setsar=4/3" \
+            -f lavfi -i sine=frequency=440:sample_rate=48000 \
+            -t 2 -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+            -c:a aac /tmp/tjr-ffmpeg-canary/source.mp4
+          CLIPPER_RENDER_PRESET=medium CLIPPER_RENDER_THREADS=2 python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+          from clipper.models import ClipCandidate, TranscriptSegment
+          from clipper.render import FFmpegRenderer
+
+          root = Path("/tmp/tjr-ffmpeg-canary")
+          source, output = root / "source.mp4", root / "output.mp4"
+          FFmpegRenderer().render(
+              source, output,
+              ClipCandidate("synthetic-canary", 0, 2, "Synthetic QA only", 1.0),
+              [TranscriptSegment(0, 2, "Synthetic QA only - do not publish")],
+          )
+          probe = subprocess.run(
+              ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)],
+              capture_output=True, text=True, check=True,
+          )
+          streams = json.loads(probe.stdout)["streams"]
+          video = next(s for s in streams if s["codec_type"] == "video")
+          assert (video["width"], video["height"]) == (1080, 1920)
+          assert video["codec_name"] == "h264" and video["pix_fmt"] == "yuv420p"
+          assert video.get("sample_aspect_ratio") == "1:1"
+          assert any(s["codec_type"] == "audio" for s in streams)
+          subprocess.run(
+              ["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i",
+               str(output), "-f", "null", "-"], check=True,
+          )
+          print("Synthetic HD render and full media decode: PASS")
+          PY
+
+
+  youtube_preview:
+    name: Browser-token YouTube original + editorial drafts
+    needs: tests
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.source_mode == 'youtube_direct'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      CLIPPER_RENDER_PRESET: slow
+      CLIPPER_RENDER_THREADS: "4"
+      TJR_CAPTION_STYLE: B2
+      TJR_RENDER_SAFETY_LIMIT: "20"
+      TJR_TARGET_CHANNEL_ID: ${{ inputs.target_channel_id }}
+      TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
+      TJR_BGUTIL_POT_PROVIDER_URL: http://127.0.0.1:4416
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install FFmpeg, Chrome display, and YouTube transcription dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg xvfb x11-utils
+          CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e ".[asr]"
+      - name: Start independent and browser-backed YouTube PO-token providers
+        run: |
+          set -euo pipefail
+          python -m pip install -e ".[youtube]"
+          docker rm -f bgutil-provider >/dev/null 2>&1 || true
+          docker run --name bgutil-provider -d --init \
+            -p 127.0.0.1:4416:4416 \
+            brainicism/bgutil-ytdlp-pot-provider:2.0.0
+          # v2.0.0 exposes /ping for readiness; GET / returns HTTP 400.
+          for attempt in $(seq 1 30); do
+            if curl -fsS --connect-timeout 1 --max-time 2 http://127.0.0.1:4416/ping >/dev/null; then break; fi
+            sleep 1
+          done
+          if ! curl -fsS --connect-timeout 1 --max-time 2 http://127.0.0.1:4416/ping; then
+            docker logs --tail 80 bgutil-provider
+            echo "::error::YouTube PO-token provider did not become ready at /ping."
+            exit 1
+          fi
+
+          CHROME="$(command -v google-chrome-stable || command -v google-chrome || command -v chromium)"
+          if [[ -z "$CHROME" ]]; then
+            echo "::error::This runner has no Chromium-compatible browser."
+            exit 1
+          fi
+          Xvfb :99 -screen 0 1366x768x24 -nolisten tcp > "$RUNNER_TEMP/tjr-xvfb.log" 2>&1 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          echo "YT_DLP_WPC_BROWSER_PATH=$CHROME" >> "$GITHUB_ENV"
+          export DISPLAY=:99
+          for attempt in $(seq 1 20); do
+            if xdpyinfo -display :99 >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          xdpyinfo -display :99 >/dev/null
+          python - <<'PY'
+          from importlib.metadata import version
+          print("yt-dlp:", version("yt-dlp"))
+          print("bgutil-ytdlp-pot-provider:", version("bgutil-ytdlp-pot-provider"))
+          print("yt-dlp-getpot-wpc:", version("yt-dlp-getpot-wpc"))
+          print("yt-dlp-ejs:", version("yt-dlp-ejs"))
+          PY
+          echo "YouTube PO-token providers are initialized for the explicit youtube_direct path."
+      - name: Load optional persistent YouTube session if previously authorized
+        env:
+          COOKIES_B64: ${{ secrets.TJR_YOUTUBE_COOKIES_B64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${COOKIES_B64:-}" ]]; then
+            echo "No authenticated YouTube session secret is configured; trying public transports only."
+            exit 0
+          fi
+          umask 077
+          COOKIE_FILE="$RUNNER_TEMP/tjr-youtube-cookies.txt"
+          printf '%s' "$COOKIES_B64" | base64 --decode > "$COOKIE_FILE"
+          if ! grep -q -m1 -E '^# (Netscape HTTP Cookie File|HTTP Cookie File)' "$COOKIE_FILE"; then
+            echo "::error::Invalid optional YouTube cookie jar; refusing to pass it to the downloader."
+            rm -f "$COOKIE_FILE"
+            exit 1
+          fi
+          if ! awk 'BEGIN {found=0} $1 ~ /^([.]?youtube[.]com|#HttpOnly_[.]?youtube[.]com)$/ {found=1} END {exit !found}' "$COOKIE_FILE"; then
+            echo "::error::Optional jar contains no YouTube session cookies."
+            rm -f "$COOKIE_FILE"
+            exit 1
+          fi
+          echo "YOUTUBE_COOKIES_FILE=$COOKIE_FILE" >> "$GITHUB_ENV"
+          echo "Previously authorized session loaded automatically; no per-video manual setup."
+      - name: Probe REAL official YouTube watch page in Chrome; acquire original if playable
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/tjr-youtube-artifacts/browser-capture"
+          python -m scripts.tjr_browser_probe --root "$ROOT" \
+            --brief campaigns/reach-double-coverage-dedicated.yaml
+          echo "TJR_BROWSER_CAPTURE_FILE=$ROOT/browser-source.json" >> "$GITHUB_ENV"
+      - name: Check source channel IDs and acquire authentic YouTube HD original
+        run: |
+          set -euo pipefail
+          python -m scripts.tjr_youtube_preview \
+            --artifact-root tjr-youtube-artifacts \
+            --brief campaigns/reach-double-coverage-dedicated.yaml
+      - name: Stop local PO-token provider
+        if: always()
+        run: docker rm -f bgutil-provider >/dev/null 2>&1 || true
+      - name: Remove ephemeral YouTube viewer session
+        if: always()
+        run: rm -f "$RUNNER_TEMP/tjr-youtube-cookies.txt"
+      - name: Upload verified MP4s or YouTube-source diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-real-youtube-hd-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tjr-youtube-artifacts/**/clips/*.mp4
+            tjr-youtube-artifacts/**/clips/*.srt
+            tjr-youtube-artifacts/**/clips/*.ass
+            tjr-youtube-artifacts/**/clips/*.quality.json
+            tjr-youtube-artifacts/**/clips/*.ssim.txt
+            tjr-youtube-artifacts/**/clips/*-preview.png
+            tjr-youtube-artifacts/**/clips/*-contact.png
+            tjr-youtube-artifacts/**/tjr-youtube-qa-report.json
+            tjr-youtube-artifacts/**/source-acquisition-errors.json
+            tjr-youtube-artifacts/**/official-source-candidates.json
+            tjr-youtube-artifacts/**/browser-probe.json
+            tjr-youtube-artifacts/**/browser-source.json
+            tjr-youtube-artifacts/**/transcript.json
+            tjr-youtube-artifacts/**/ranked-candidates.json
+            tjr-youtube-artifacts/**/editorial-candidate-audit.json
+            tjr-youtube-artifacts/**/editorial-cache.json
+            tjr-youtube-artifacts/**/claim-review-packets.json
+            tjr-youtube-artifacts/**/prior-audio-comparison.json
+            tjr-youtube-artifacts/**/source-analysis-coverage.json
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: warn
+
+
+
+
+  editorial_preflight:
+    name: Real-model editorial regression (no media acquisition)
+    needs: tests
+    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'validate_only' && inputs.editorial_preflight
+    runs-on: ubuntu-24.04
+    # GitHub-hosted hard maximum; avoid the previous artificial 75-minute cutoff.
+    timeout-minutes: 360
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/download-artifact@v4
+        if: inputs.reviewer_model_probe != 'gpu_build_logs'
+        with:
+          run-id: ${{ inputs.transcript_source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: tjr-real-original-youtube-hd-*
+          path: reviewer-input
+      - uses: actions/cache/restore@v4
+        id: reviewer_cpu_cache
+        with:
+          path: ~/.cache/pip
+          key: reviewer-cpu-ubuntu24-${{ runner.arch }}-py312-llamacpp035-nativeoff-v1
+      - name: Install pinned CPU entailment classifier
+        if: inputs.reviewer_model_probe == 'factual_nli'
+        run: |
+          python -m pip install "torch==2.8.0" --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e . "transformers==4.55.4" "sentencepiece==0.2.1"
+      - name: Install pinned CPU relation verifier
+        if: inputs.reviewer_model_probe == 'relation_minicheck'
+        run: |
+          python -m pip install "torch==2.8.0" --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e . "transformers==4.55.4" "sentencepiece==0.2.1" "huggingface-hub==0.34.4"
+      - name: Install pinned CPU headline parser
+        if: inputs.reviewer_model_probe == 'syntax_inventory'
+        run: |
+          python -m pip install -e . "spacy==3.8.7" "click==8.3.1" \
+            "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl#sha256=1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85"
+      - name: Install pinned CPU reviewer
+        if: inputs.reviewer_model_probe != 'factual_nli' && inputs.reviewer_model_probe != 'relation_minicheck' && inputs.reviewer_model_probe != 'syntax_inventory' && inputs.reviewer_model_probe != 'evidence_gpu' && inputs.reviewer_model_probe != 'reasoning_gpu' && inputs.reviewer_model_probe != 'narrative_gpu' && inputs.reviewer_model_probe != 'gpu_recovery' && inputs.reviewer_model_probe != 'gpu_build_logs'
+        run: CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e . "llama-cpp-python==0.3.35"
+      - name: Install private GPU orchestration client
+        if: inputs.reviewer_model_probe == 'evidence_gpu' || inputs.reviewer_model_probe == 'reasoning_gpu' || inputs.reviewer_model_probe == 'narrative_gpu' || inputs.reviewer_model_probe == 'gpu_recovery' || inputs.reviewer_model_probe == 'gpu_build_logs'
+        run: python -m pip install -e . "modal==1.6.0"
+      - uses: actions/cache@v4
+        if: inputs.reviewer_model_probe != 'factual_nli' && inputs.reviewer_model_probe != 'relation_minicheck' && inputs.reviewer_model_probe != 'syntax_inventory' && inputs.reviewer_model_probe != 'evidence_gpu' && inputs.reviewer_model_probe != 'reasoning_gpu' && inputs.reviewer_model_probe != 'narrative_gpu' && inputs.reviewer_model_probe != 'gpu_recovery' && inputs.reviewer_model_probe != 'gpu_build_logs'
+        with:
+          path: ~/.cache/clipper/editor
+          key: reviewer-gguf-${{ runner.os }}-${{ inputs.reviewer_model_probe }}-v1
+      - uses: actions/cache/save@v4
+        if: steps.reviewer_cpu_cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/pip
+          key: reviewer-cpu-ubuntu24-${{ runner.arch }}-py312-llamacpp035-nativeoff-v1
+      - uses: actions/download-artifact@v4
+        if: inputs.editorial_source_run_id != '' && inputs.reviewer_model_probe != 'gpu_build_logs'
+        with:
+          run-id: ${{ inputs.editorial_source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: reviewer-preflight-*
+          path: reviewer-baseline
+      - uses: actions/download-artifact@v4
+        if: (inputs.reviewer_model_probe == 'source_scope' || inputs.reviewer_model_probe == 'answer_comparison' || inputs.reviewer_model_probe == 'narrative_gpu') && inputs.diagnostic_source_run_id != ''
+        with:
+          run-id: ${{ inputs.diagnostic_source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: reviewer-preflight-*
+          path: reviewer-source-answer
+      - name: Fetch actual failed Modal image build logs
+        if: inputs.reviewer_model_probe == 'gpu_build_logs'
+        env:
+          GH_READ_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FAILED_RUN_ID: ${{ inputs.editorial_source_run_id }}
+        run: |
+          python - <<'PY'
+          import json, os, re, subprocess, requests
+          from pathlib import Path
+          root = "https://api.github.com/repos/TheBayoumi/clipper"
+          headers = {"Authorization": "Bearer " + os.environ["GH_READ_TOKEN"], "Accept": "application/vnd.github+json"}
+          run_id = os.environ["FAILED_RUN_ID"]
+          assert run_id.isdigit(), "failed run ID must be numeric"
+          def fetch(path):
+              response = requests.get(root + path, headers=headers, timeout=60)
+              response.raise_for_status()
+              response.encoding = "utf-8-sig"
+              return response.text
+          jobs = json.loads(fetch("/actions/runs/" + run_id + "/jobs"))["jobs"]
+          failed = next(job for job in jobs if job["name"].startswith("Real-model") and job["conclusion"] == "failure")
+          log = fetch("/actions/jobs/" + str(failed["id"]) + "/logs")
+          images = sorted(set(re.findall(r"Image build for (im-[A-Za-z0-9]+) failed", log)))
+          assert images, "no failed image ID in actual job log"
+          for image in images:
+              target = Path("modal-build-" + image + ".log")
+              with target.open("w") as sink:
+                  subprocess.run(["modal", "image", "logs", image, "--all"], stdout=sink, stderr=subprocess.STDOUT, timeout=300, check=True)
+              print(target.read_text())
+          PY
+      - name: Assess reviewer evidence (regression, diagnostics or model comparison)
+        if: inputs.reviewer_model_probe != 'gpu_build_logs'
+        run: |
+          if [ '${{ inputs.reviewer_model_probe }}' = 'gpu_recovery' ]; then
+            BASELINE=$(find reviewer-baseline -name reviewer-preflight.json -print -quit)
+            test -n "$BASELINE"
+            python -m scripts.tjr_semantic_editor --recover-gpu-evidence "$BASELINE" --output reviewer-preflight.json
+            exit $?
+          fi
+          if [ '${{ inputs.reviewer_model_probe }}' = 'source_bound_headline' ]; then
+            TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
+            test -n "$TRANSCRIPT"
+            PROBE_ARGUMENTS=()
+            if [ -d reviewer-baseline ]; then
+              CACHE=$(find reviewer-baseline -name review-request-cache.json -print -quit)
+              if [ -n "$CACHE" ]; then
+                PROBE_ARGUMENTS+=(--reviewer-model-probe-baseline "$CACHE")
+              fi
+            fi
+            python -m scripts.tjr_semantic_editor --source-bound-headline-probe \
+              --reviewer-preflight-transcript "$TRANSCRIPT" \
+              "${PROBE_ARGUMENTS[@]}" --output reviewer-preflight.json
+            exit $?
+          fi
+          if [ '${{ inputs.reviewer_model_probe }}' = 'headline_materializer' ]; then
+            TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
+            test -n "$TRANSCRIPT"
+            python -m scripts.tjr_semantic_editor --headline-materializer-probe \
+              --reviewer-preflight-transcript "$TRANSCRIPT" --output reviewer-preflight.json
+            exit $?
+          fi
+          if [ '${{ inputs.reviewer_model_probe }}' = 'cut_obligation' ]; then
+            TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
+            test -n "$TRANSCRIPT"
+            python -m scripts.tjr_semantic_editor --cut-obligation-probe \
+              --reviewer-preflight-transcript "$TRANSCRIPT" --output reviewer-preflight.json
+            exit $?
+          fi
+          if [ '${{ inputs.reviewer_model_probe }}' = 'question_state' ]; then
+            TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
+            test -n "$TRANSCRIPT"
+            python -m scripts.tjr_semantic_editor --question-state-probe \
+              --reviewer-preflight-transcript "$TRANSCRIPT" --output reviewer-preflight.json
+            exit $?
+          fi
+          if [ '${{ inputs.reviewer_model_probe }}' = 'source_answer' ] || [ '${{ inputs.reviewer_model_probe }}' = 'source_scope' ] || [ '${{ inputs.reviewer_model_probe }}' = 'answer_comparison' ] || [ '${{ inputs.reviewer_model_probe }}' = 'narrative_gpu' ] || [ '${{ inputs.reviewer_model_probe }}' = 'claim_inventory' ]; then
+            TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
+            test -n "$TRANSCRIPT"
+            PROVENANCE=$(dirname "$TRANSCRIPT")/editorial-cache.json
+            test -f "$PROVENANCE"
+            BASELINE=$(find reviewer-baseline -path '*/baseline_4b/cold/proof.json' -print -quit)
+            test -n "$BASELINE"
+            MODE_FLAG=--source-answer-probe
+            if [ '${{ inputs.reviewer_model_probe }}' = 'claim_inventory' ]; then
+              MODE_FLAG=--claim-inventory-probe
+            fi
+            EXTRA_ARGUMENTS=()
+            if [ '${{ inputs.reviewer_model_probe }}' = 'narrative_gpu' ]; then
+              MODE_FLAG=--narrative-gpu-probe
+              SOURCE_ANSWER=$(find reviewer-source-answer -name reviewer-preflight.json -print -quit)
+              test -n "$SOURCE_ANSWER"
+              EXTRA_ARGUMENTS+=(--source-answer-report "$SOURCE_ANSWER")
+            fi
+            if [ '${{ inputs.reviewer_model_probe }}' = 'source_scope' ]; then
+              MODE_FLAG=--source-scope-probe
+              SOURCE_ANSWER=$(find reviewer-source-answer -name reviewer-preflight.json -print -quit)
+              test -n "$SOURCE_ANSWER"
+              EXTRA_ARGUMENTS+=(--source-answer-report "$SOURCE_ANSWER")
+            fi
+            if [ '${{ inputs.reviewer_model_probe }}' = 'answer_comparison' ]; then
+              MODE_FLAG=--answer-comparison-probe
+              SOURCE_SCOPE=$(find reviewer-source-answer -name reviewer-preflight.json -print -quit)
+              test -n "$SOURCE_SCOPE"
+              EXTRA_ARGUMENTS+=(--source-scope-report "$SOURCE_SCOPE")
+            fi
+            python -m scripts.tjr_semantic_editor "$MODE_FLAG" \
+              --reviewer-preflight-transcript "$TRANSCRIPT" \
+              --frozen-relation-proof "$BASELINE" \
+              --frozen-relation-provenance "$PROVENANCE" \
+              "${EXTRA_ARGUMENTS[@]}" \
+              --output reviewer-preflight.json
+            exit $?
+          fi
+          if [ '${{ inputs.reviewer_model_probe }}' = 'syntax_inventory' ]; then
+            TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
+            test -n "$TRANSCRIPT"
+            PROVENANCE=$(dirname "$TRANSCRIPT")/editorial-cache.json
+            test -f "$PROVENANCE"
+            BASELINE=$(find reviewer-baseline -path '*/baseline_4b/cold/proof.json' -print -quit)
+            test -n "$BASELINE"
+            python -m clipper.cli syntax-inventory-benchmark \
+              --fixture tests/fixtures/issue8_frozen_relations.json \
+              --proof "$BASELINE" --transcript "$TRANSCRIPT" \
+              --provenance "$PROVENANCE" \
+              --heldout tests/fixtures/issue8_heldout_claims.json \
+              --output reviewer-preflight.json
+            exit $?
+          fi
+          if [ -d reviewer-baseline ]; then
+            BASELINE=$(find reviewer-baseline -name reviewer-preflight.json -print -quit)
+            if [ '${{ inputs.reviewer_model_probe }}' = 'structured_claim' ] || [ '${{ inputs.reviewer_model_probe }}' = 'relation_minicheck' ] || [ '${{ inputs.reviewer_model_probe }}' = 'reasoning_gpu' ]; then
+              BASELINE=$(find reviewer-baseline -path '*/baseline_4b/cold/proof.json' -print -quit)
+            fi
+            test -n "$BASELINE"
+            if [ '${{ inputs.reviewer_model_probe }}' = 'relation_minicheck' ]; then
+              TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
+              test -n "$TRANSCRIPT"
+              PROVENANCE=$(dirname "$TRANSCRIPT")/editorial-cache.json
+              test -f "$PROVENANCE"
+              python -m clipper.cli relation-benchmark \
+                --fixture tests/fixtures/issue8_frozen_relations.json \
+                --proof "$BASELINE" --transcript "$TRANSCRIPT" \
+                --provenance "$PROVENANCE" --output reviewer-preflight.json
+              exit $?
+            fi
+            if [ '${{ inputs.reviewer_model_probe }}' != 'disabled' ]; then
+              TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
+              test -n "$TRANSCRIPT"
+              PROBE_ARGUMENTS=()
+              if [[ '${{ inputs.reviewer_model_probe == 'factual_9b' || inputs.reviewer_model_probe == 'factual_consensus' }}' == 'true' ]]; then
+                PROBE_ARGUMENTS+=(--headline-factual-probe)
+              fi
+              if [[ '${{ inputs.reviewer_model_probe == 'factual_consensus' }}' == 'true' ]]; then
+                PROBE_ARGUMENTS+=(--headline-consensus-probe)
+              fi
+              if [[ '${{ inputs.reviewer_model_probe == 'factual_nli' }}' == 'true' ]]; then
+                PROBE_ARGUMENTS+=(--headline-nli-probe)
+              fi
+              if [[ '${{ inputs.reviewer_model_probe == 'factual_ablation_4b' }}' == 'true' ]]; then
+                PROBE_ARGUMENTS+=(--headline-ablation-probe)
+              fi
+              if [[ '${{ inputs.reviewer_model_probe == 'evidence_qa' }}' == 'true' ]]; then
+                PROBE_ARGUMENTS+=(--evidence-qa-probe)
+              fi
+              if [[ '${{ inputs.reviewer_model_probe == 'structured_claim' }}' == 'true' ]]; then
+                PROBE_ARGUMENTS+=(--structured-claim-probe)
+              fi
+              if [[ '${{ inputs.reviewer_model_probe == 'evidence_gpu' }}' == 'true' ]]; then
+                PROBE_ARGUMENTS+=(--evidence-gpu-probe)
+              fi
+              if [[ '${{ inputs.reviewer_model_probe == 'reasoning_gpu' }}' == 'true' ]]; then
+                PROBE_ARGUMENTS+=(--reasoning-gpu-probe)
+              fi
+              python -m scripts.tjr_semantic_editor --reviewer-model-probe-baseline "$BASELINE" --reviewer-preflight-transcript "$TRANSCRIPT" "${PROBE_ARGUMENTS[@]}" --output reviewer-preflight.json
+              exit $?
+            fi
+            python -m scripts.tjr_semantic_editor --reviewer-diagnostics-baseline "$BASELINE" --output reviewer-preflight.json
+            exit $?
+          fi
+          TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
+          test -n "$TRANSCRIPT"
+          python -m scripts.tjr_semantic_editor --reviewer-preflight-transcript "$TRANSCRIPT" --output reviewer-preflight.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reviewer-preflight-${{ github.run_id }}
+          path: |
+            reviewer-preflight.json
+            review-request-cache.json
+            reviewer-gpu-evidence/**/*.json
+            modal-build-*.log
+          if-no-files-found: warn
+
+  youtube_modal_egress:
+    name: Modal YouTube original + editorial drafts (${{ inputs.target_channel_id }})
+    needs: tests
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.source_mode == 'modal_direct'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      cache_run_id: ${{ steps.editorial_cache.outputs.run_id }}
+    permissions:
+      contents: read
+      actions: read
+    env:
+      TJR_PERSIST_SOURCE: "1"
+      TJR_MODAL_CHANNEL_ID: ${{ inputs.target_channel_id }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      CLIPPER_RENDER_PRESET: slow
+      CLIPPER_RENDER_THREADS: "4"
+      TJR_CAPTION_STYLE: B2
+      TJR_RENDER_SAFETY_LIMIT: "20"
+      TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
+      TJR_TRANSCRIPT_SOURCE_RUN_ID: ${{ inputs.transcript_source_run_id }}
+      CLIPPER_APPROVED_ASSET_SHA256: "5bd213d18ba0e8e29fbdecf62e967caa760fbb1d7f9700f990ee2e43feec698b"
+      CLIPPER_IMAGE_ASSET_CACHE_MANIFEST: "tjr-modal-probe/approved-watermark.json"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Prepare official-channel metadata and private Modal transfer
+        run: |
+          set -euo pipefail
+          python -m pip install -e . "curl-cffi>=0.15,<1" "modal>=1,<2"
+          python -m py_compile scripts/tjr_modal_probe.py
+      - name: Verify approved watermark before acquiring video
+        env:
+          CLIPPER_APPROVED_ASSET_BOOTSTRAP_URL: ${{ secrets.CLIPPER_APPROVED_ASSET_BOOTSTRAP_URL }}
+        run: python -m scripts.tjr_modal_runner --prepare-watermark
+      - name: Plan reusable source, transcript, editorial and render stages
+        id: editorial_cache
+        uses: actions/github-script@v7
+        env:
+          EXPLICIT_EDITORIAL_RUN: ${{ inputs.editorial_source_run_id }}
+          TARGET_CHANNEL: ${{ inputs.target_channel_id }}
+        with:
+          script: |
+            if (process.env.EXPLICIT_EDITORIAL_RUN) {
+              core.setOutput('run_id', process.env.EXPLICIT_EDITORIAL_RUN);
+              return;
+            }
+            const prefix = 'tjr-real-original-youtube-hd-' + process.env.TARGET_CHANNEL + '-';
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {
+              ...context.repo, per_page: 100
+            });
+            const match = artifacts.find(a => !a.expired && a.name.startsWith(prefix)
+              && a.workflow_run?.head_branch === context.ref.replace('refs/heads/', '')
+              && String(a.workflow_run.id) !== String(context.runId));
+            core.setOutput('run_id', match ? String(match.workflow_run.id) : '');
+            core.info(match ? 'Prior editorial artifact found; Python validates each stage identity.'
+              : 'No prior editorial artifact found; fresh assessment required.');
+      - name: Download reusable editorial checkpoint
+        if: steps.editorial_cache.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ steps.editorial_cache.outputs.run_id }}
+          path: tjr-editorial-cache
+          run-id: ${{ steps.editorial_cache.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Enable verified editorial checkpoint reuse
+        if: steps.editorial_cache.outputs.run_id != ''
+        run: |
+          echo "TJR_EDITORIAL_CACHE_ROOT=$PWD/tjr-editorial-cache" >> "$GITHUB_ENV"
+          echo "TJR_SOURCE_CACHE_ROOT=$PWD/tjr-editorial-cache" >> "$GITHUB_ENV"
+          echo "TJR_RENDER_CACHE_ROOT=$PWD/tjr-editorial-cache" >> "$GITHUB_ENV"
+          if [[ -z "${{ inputs.transcript_source_run_id }}" ]]; then
+            echo "TJR_TRANSCRIPT_CACHE_ROOT=$PWD/tjr-editorial-cache" >> "$GITHUB_ENV"
+          fi
+      - name: Reuse completed pipeline or acquire missing verified source
+        id: source_plan
+        env:
+          TJR_MODAL_STAGE_ORIGINAL: "1"
+        run: |
+          set -euo pipefail
+          rm -f tjr-modal-probe/staged-original.json
+          python -m scripts.tjr_modal_runner --acquire-original
+      - name: Download complete transcript from an explicitly selected prior run
+        if: inputs.transcript_source_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ inputs.transcript_source_run_id }}
+          path: tjr-transcript-cache
+          run-id: ${{ inputs.transcript_source_run_id }}
+          github-token: ${{ github.token }}
+      - name: Enable exact-source transcript reuse
+        if: inputs.transcript_source_run_id != ''
+        run: echo "TJR_TRANSCRIPT_CACHE_ROOT=$PWD/tjr-transcript-cache" >> "$GITHUB_ENV"
+      - name: Run only missing or invalidated editorial and rendering stages
+        if: steps.source_plan.outputs.pipeline_reused != 'true'
+        env:
+          TJR_MODAL_USE_STAGED: "1"
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+          CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e ".[asr]"
+          python -m clipper.cli editorial-config \
+            --brief campaigns/reach-double-coverage-dedicated.yaml \
+            --artifact-root tjr-modal-artifacts \
+            --output tjr-modal-probe/editorial-run.json
+          python -m scripts.tjr_modal_runner --config tjr-modal-probe/editorial-run.json
+      - name: Upload actual YouTube MP4s, SRT captions, source provenance and QA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ github.run_id }}
+          path: |
+            tjr-modal-probe/verified-original-egress.json
+            tjr-modal-probe/staged-original.json
+            tjr-modal-probe/pipeline-source-state.json
+            tjr-modal-probe/editorial-run.json
+            tjr-modal-probe/approved-watermark.json
+            tjr-modal-probe/acquisition-attempt-*.json
+            tjr-modal-artifacts/**/source-roundtrip.json
+            tjr-modal-artifacts/**/editorial-run.json
+            tjr-modal-artifacts/**/verified-original-egress.json
+            tjr-modal-artifacts/**/editorial-failure.json
+            tjr-modal-artifacts/**/remote-cleanup-error.json
+            tjr-modal-artifacts/**/clips/*.mp4
+            tjr-modal-artifacts/**/clips/*.cache.json
+            tjr-modal-artifacts/**/clips/*.srt
+            tjr-modal-artifacts/**/clips/*.ass
+            tjr-modal-artifacts/**/clips/*.quality.json
+            tjr-modal-artifacts/**/clips/*.ssim.txt
+            tjr-modal-artifacts/**/clips/*-preview.png
+            tjr-modal-artifacts/**/clips/*-contact.png
+            tjr-modal-artifacts/**/editorial-candidate-audit.json
+            tjr-modal-artifacts/**/editorial-cache.json
+            tjr-modal-artifacts/**/claim-review-packets.json
+            tjr-modal-artifacts/**/proposal-cache.json
+            tjr-modal-artifacts/**/pipeline-state.json
+            tjr-modal-artifacts/**/pipeline-completion.json
+            tjr-modal-artifacts/**/*.json
+            tjr-modal-artifacts/**/prior-audio-comparison.json
+            tjr-modal-artifacts/**/source-analysis-coverage.json
+            tjr-modal-artifacts/**/transcript-cache-provenance.json
+            tjr-modal-artifacts/**/ranked-candidates.json
+            tjr-modal-artifacts/**/tjr-youtube-qa-report.json
+            tjr-modal-artifacts/**/source-acquisition-errors.json
+            tjr-modal-artifacts/**/official-source-candidates.json
+            tjr-modal-artifacts/**/transcript.json
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: warn
+
+
+  feedback_audit:
+    name: Independent review of real MP4s and production evidence
+    needs: [tests, youtube_preview, youtube_modal_egress, render]
+    if: >-
+      always() && github.event_name == 'workflow_dispatch' &&
+      (
+        (
+          contains(fromJSON('["modal_direct","youtube_direct","verified_mirror"]'),
+          inputs.source_mode)
+        ) ||
+        inputs.source_mode == 'feedback_replay'
+      ) &&
+      needs.tests.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Download both current Modal channel artifacts, including partial failures
+        if: inputs.source_mode == 'modal_direct'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: tjr-real-original-youtube-hd-*
+          path: tjr-feedback-input
+      - name: Download direct YouTube production artifact
+        if: inputs.source_mode == 'youtube_direct'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: tjr-real-youtube-hd-*
+          path: tjr-feedback-input
+      - name: Download verified-mirror production artifact
+        if: inputs.source_mode == 'verified_mirror'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: tjr-weekly-hd-*
+          path: tjr-feedback-input
+      - name: Replay existing Modal production artifacts at no new media cost
+        if: inputs.source_mode == 'feedback_replay'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          run-id: ${{ inputs.feedback_source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: tjr-real-original-youtube-hd-*
+          path: tjr-feedback-input
+      - name: Replay existing direct YouTube production artifacts
+        if: inputs.source_mode == 'feedback_replay'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          run-id: ${{ inputs.feedback_source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: tjr-real-youtube-hd-*
+          path: tjr-feedback-input
+      - name: Replay existing verified-mirror production artifacts
+        if: inputs.source_mode == 'feedback_replay'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          run-id: ${{ inputs.feedback_source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: tjr-weekly-hd-*
+          path: tjr-feedback-input
+      - name: Restore prior independent decode proofs
+        if: needs.youtube_modal_egress.outputs.cache_run_id != ''
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          run-id: ${{ needs.youtube_modal_egress.outputs.cache_run_id }}
+          github-token: ${{ github.token }}
+          pattern: tjr-feedback-evidence-*
+          path: tjr-prior-audit
+      - name: Check whether delivered media needs FFmpeg
+        id: delivered_media
+        run: |
+          if find tjr-feedback-input -name '*.mp4' -print -quit | grep -q .; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install independent media verifier
+        if: steps.delivered_media.outputs.present == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Inspect every MP4, sidecar, full decode and editorial gate
+        env:
+          TJR_SOURCE_MODE: ${{ inputs.source_mode }}
+          TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
+          TJR_FEEDBACK_SOURCE_RUN_ID: ${{ inputs.feedback_source_run_id }}
+          TJR_AUDIT_CACHE_ROOT: tjr-prior-audit
+        run: |
+          set -euo pipefail
+          export TJR_REQUIRE_DELIVERY=1
+          EXPECTED_CHANNELS=1
+          if [[ "$TJR_SOURCE_MODE" == "feedback_replay" ]]; then
+            EXPECTED_CHANNELS=0
+          fi
+          mkdir -p tjr-feedback
+          if ! python -m scripts.tjr_feedback_gate \
+            --artifact-root tjr-feedback-input \
+            --output tjr-feedback \
+            --expected-channels "$EXPECTED_CHANNELS" \
+            --full-decode; then
+            if [[ ! -f tjr-feedback/feedback-report.json ]]; then
+              printf '%s\n' '{"status":"AUDITOR_CRASH","automatic_publication_allowed":false}' \
+                > tjr-feedback/feedback-report.json
+              printf '%s\n' 'Independent evidence audit crashed; inspect this job log.' \
+                > tjr-feedback/feedback-summary.md
+            fi
+            exit 1
+          fi
+      - name: Preserve immutable feedback JSON and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-feedback-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: tjr-feedback/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Publish concise audit to GitHub workflow
+        if: always()
+        run: |
+          if [[ -f tjr-feedback/feedback-summary.md ]]; then
+            cat tjr-feedback/feedback-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Record verified feedback for the autonomous controller
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ -f tjr-feedback/feedback-summary.md ]]; then
+            gh issue comment 7 --repo "$GITHUB_REPOSITORY" \
+              --body-file tjr-feedback/feedback-summary.md
+          fi
+
+
+  render:
+    name: Render and QA real Double Coverage HD clips
+    needs: tests
+    if: github.event_name == 'workflow_dispatch' && inputs.source_mode == 'verified_mirror' && inputs.budget_confirmed && inputs.source_verified
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      TJR_SOURCE_MEDIA_URL: ${{ secrets.TJR_SOURCE_MEDIA_URL }}
+      TJR_SOURCE_MEDIA_SHA256: ${{ secrets.TJR_SOURCE_MEDIA_SHA256 }}
+      TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
+      TJR_BUDGET_CONFIRMED: ${{ inputs.budget_confirmed }}
+      TJR_SOURCE_VERIFIED: ${{ inputs.source_verified }}
+      TJR_ASR_MODEL: distil-large-v3
+      TJR_ASR_DEVICE: cpu
+      TJR_ASR_COMPUTE_TYPE: int8
+      CLIPPER_RENDER_PRESET: slow
+      CLIPPER_RENDER_CRF: "18"
+      CLIPPER_RENDER_THREADS: "2"
+      TJR_CAPTION_STYLE: B2
+      TJR_RENDER_SAFETY_LIMIT: "20"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install FFmpeg and clipper
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e ".[asr]"
+          ffmpeg -version | head -n 1
+      - name: Prepare verified staged Double Coverage original (secret URL and SHA-256)
+        run: |
+          set -euo pipefail
+          python -m scripts.tjr_quality --prepare \
+            --brief campaigns/reach-double-coverage-dedicated.yaml \
+            --output-brief tjr-runtime/brief.yaml
+      - name: Download original, verify SHA-256, and stage for editorial renderer
+        run: |
+          set -euo pipefail
+          python -m scripts.tjr_quality --stage \
+            --brief tjr-runtime/brief.yaml \
+            --media-output tjr-mirror-stage/original.mp4 \
+            --output-manifest tjr-mirror-stage/staged-original.json
+          echo "TJR_BROWSER_CAPTURE_FILE=$PWD/tjr-mirror-stage/staged-original.json" >> "$GITHUB_ENV"
+          echo "TJR_REQUIRE_STAGED_ORIGINAL=1" >> "$GITHUB_ENV"
+      - name: Execute shared Double Coverage editorial selection and Style B2 rendering
+        run: |
+          set -euo pipefail
+          python -m scripts.tjr_youtube_preview \
+            --brief campaigns/reach-double-coverage-dedicated.yaml \
+            --artifact-root tjr-mirror-artifacts
+      - name: Upload clips, source provenance and editorial QA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-weekly-hd-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tjr-mirror-artifacts/**/tjr-youtube-qa-report.json
+            tjr-mirror-artifacts/**/editorial-candidate-audit.json
+            tjr-mirror-artifacts/**/editorial-cache.json
+            tjr-mirror-artifacts/**/claim-review-packets.json
+            tjr-mirror-artifacts/**/prior-audio-comparison.json
+            tjr-mirror-artifacts/**/ranked-candidates.json
+            tjr-mirror-artifacts/**/source-acquisition-errors.json
+            tjr-mirror-artifacts/**/official-source-candidates.json
+            tjr-mirror-artifacts/**/transcript.json
+            tjr-mirror-artifacts/**/source-analysis-coverage.json
+            tjr-mirror-artifacts/**/clips/*.mp4
+            tjr-mirror-artifacts/**/clips/*.srt
+            tjr-mirror-artifacts/**/clips/*.ass
+            tjr-mirror-artifacts/**/clips/*.quality.json
+            tjr-mirror-artifacts/**/clips/*.ssim.txt
+            tjr-mirror-artifacts/**/clips/*-preview.png
+            tjr-mirror-artifacts/**/clips/*-contact.png
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: warn

@@ -1,0 +1,1476 @@
+#!/usr/bin/env python3
+"""Review-only clips from Reach's explicitly approved campaign YouTube channel.
+
+No reposts/search-result substitution. Verify the video owner independently before
+acquisition, and fail closed if YouTube denies direct media access.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import math
+import os
+import re
+import shutil
+import subprocess
+import urllib.request
+from collections import Counter
+from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
+from fractions import Fraction
+from pathlib import Path
+from typing import Any
+
+import defusedxml.ElementTree as ET
+
+from clipper.brief import load_brief
+from clipper.editorial import (
+    RUBRIC_VERSION,
+    WEIGHTS,
+    select_editorial_moments,
+)
+from clipper.editorial_review import require_automated_factual_approval_for_render
+from clipper.editorial_run import EditorialRunConfig
+from clipper.models import ClipCandidate, TranscriptSegment, WordTiming
+from clipper.pipeline import _download_asset
+from clipper.render import FFmpegRenderer
+from clipper.source_fidelity import compare_audio_to_source, probe_source_profile
+from clipper.tiktok import audit_tiktok_ass
+from clipper.transcript import FasterWhisperTranscriber
+from scripts.tjr_quality import check_full_decode, probe_original, probe_video
+from scripts.tjr_semantic_editor import (
+    build_semantic_editorial_candidates,
+    refine_contextual_candidates,
+)
+from scripts.tjr_visual_analysis import analyze_candidate_visuals
+
+LOGGER = logging.getLogger("tjr-youtube")
+CHANNELS = {
+    "UCf1q6dhccWr6eQEcFFnJSbA": "@DOUBL3COVERAGEPODCAST",
+}
+ATOM = "{http://www.w3.org/2005/Atom}"
+YT = "{http://www.youtube.com/xml/schemas/2015}"
+VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}\Z")
+
+
+@dataclass(frozen=True)
+class OfficialVideo:
+    video_id: str
+    channel_id: str
+    title: str
+    published: str
+    duration_seconds: float | None = None
+
+    @property
+    def url(self) -> str:
+        return f"https://www.youtube.com/watch?v={self.video_id}"
+
+
+def parse_official_feed(xml: bytes, expected_channel: str) -> list[OfficialVideo]:
+    if expected_channel not in CHANNELS:
+        raise ValueError("non-campaign YouTube channel")
+    feed = ET.fromstring(xml)
+    yt_channel = (feed.findtext(f"{YT}channelId") or "").strip()
+    atom_id = (feed.findtext(f"{ATOM}id") or "").strip()
+    atom_channel = atom_id.removeprefix("yt:channel:") if atom_id else ""
+    # Live YouTube feeds observed on 2026-09-26 expose IDs without the UC prefix.
+    # Only accept the EXACT suffix of a previously approved, full channel ID.
+    trusted_forms = {expected_channel, expected_channel.removeprefix("UC")}
+    reported = [owner for owner in (yt_channel, atom_channel) if owner]
+    if not reported or any(owner not in trusted_forms for owner in reported):
+        raise ValueError(
+            "YouTube feed owner mismatch: "
+            f"root={feed.tag!r} yt_channel={yt_channel[:40]!r} "
+            f"atom_id={atom_id[:60]!r}"
+        )
+    items: list[OfficialVideo] = []
+    for entry in feed.findall(f"{ATOM}entry"):
+        video_id = (entry.findtext(f"{YT}videoId") or "").strip()
+        channel_id = (entry.findtext(f"{YT}channelId") or expected_channel).strip()
+        published = (entry.findtext(f"{ATOM}published") or "").strip()
+        if not VIDEO_ID.fullmatch(video_id) or channel_id not in trusted_forms or not published:
+            continue
+        items.append(
+            OfficialVideo(
+                video_id=video_id,
+                channel_id=expected_channel,
+                title=(entry.findtext(f"{ATOM}title") or "").strip(),
+                published=published,
+            )
+        )
+    return items
+
+
+def _flat_channel_playlist(
+    channel_id: str, *, section: str = "videos", limit: int = 36
+) -> list[OfficialVideo]:
+    """Discover older videos/stream replays on the exact allowlisted channel.
+
+    RSS exposes only recent uploads, which can all be sub-90-second Shorts.
+    Every discovered playlist entry is still independently owner-verified
+    before download. Neither search results nor third-party reposts qualify.
+    """
+    if channel_id not in CHANNELS or section not in {"videos", "streams"}:
+        raise ValueError("not a Reach-listed channel or approved playlist section")
+    if not 1 <= limit <= 50:
+        raise ValueError("playlist limit must be 1-50")
+    url = f"https://www.youtube.com/channel/{channel_id}/{section}"
+    result = invoke(
+        [
+            "yt-dlp",
+            "--flat-playlist",
+            "--dump-json",
+            "--no-warnings",
+            "--playlist-end",
+            str(limit),
+            url,
+        ],
+        timeout=180,
+    )
+    items: list[OfficialVideo] = []
+    for line in result.stdout.splitlines():
+        if not line.startswith("{"):
+            continue
+        entry = json.loads(line)
+        if not isinstance(entry, dict):
+            continue
+        video_id = str(entry.get("id") or "")
+        listed_owner = str(entry.get("channel_id") or "")
+        if not VIDEO_ID.fullmatch(video_id):
+            continue
+        if listed_owner and listed_owner != channel_id:
+            continue
+        timestamp = entry.get("release_timestamp") or entry.get("timestamp")
+        published = (
+            datetime.fromtimestamp(float(timestamp), UTC).isoformat()
+            if timestamp is not None
+            else ""
+        )
+        raw_duration = entry.get("duration")
+        duration = (
+            float(raw_duration)
+            if isinstance(raw_duration, (int, float)) and float(raw_duration) > 0
+            else None
+        )
+        items.append(
+            OfficialVideo(
+                video_id=video_id,
+                channel_id=channel_id,
+                title=str(entry.get("title") or ""),
+                published=published,
+                duration_seconds=duration,
+            )
+        )
+    if not items:
+        raise RuntimeError("official channel playlist did not expose any candidate videos")
+    LOGGER.info(
+        "Found %d candidates in official %s/%s playlist; metadata still unverified",
+        len(items),
+        CHANNELS[channel_id],
+        section,
+    )
+    return items
+
+
+def discover_official_uploads() -> tuple[list[OfficialVideo], list[dict[str, str]]]:
+    candidates: list[OfficialVideo] = []
+    failures: list[dict[str, str]] = []
+    for channel_id in CHANNELS:
+        url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        feed_items: list[OfficialVideo] = []
+        try:
+            request = urllib.request.Request(
+                url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/atom+xml"}
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=25) as response:  # noqa: S310
+                    content = response.read(2_000_000)
+            except Exception:
+                from curl_cffi import requests
+
+                response = requests.get(url, impersonate="chrome", timeout=25)
+                response.raise_for_status()
+                content = response.content
+            feed_items = parse_official_feed(content, channel_id)
+            if not feed_items:
+                raise RuntimeError("verified channel feed contains no recent upload entries")
+            LOGGER.info(
+                "Official %s feed supplied %d videos", CHANNELS[channel_id], len(feed_items)
+            )
+            candidates.extend(feed_items)
+        except Exception as exc:
+            failures.append({"source": url, "error": f"{type(exc).__name__}: {exc}"[:500]})
+        # An RSS feed populated by recent Shorts must not hide the official
+        # channel's longer /videos uploads or completed /streams broadcasts.
+        short_only = not feed_items or all(
+            (item.duration_seconds is not None and item.duration_seconds < 90)
+            or item.title.lower().strip() in {"", "unknown", "#doublecoverage"}
+            or ("#" in item.title and len(item.title) < 45)
+            for item in feed_items
+        )
+        sections = ("videos", "streams") if short_only else ("videos",)
+        for section in sections:
+            playlist_url = f"https://www.youtube.com/channel/{channel_id}/{section}"
+            try:
+                candidates.extend(_flat_channel_playlist(channel_id, section=section))
+            except Exception as exc:
+                failures.append(
+                    {"source": playlist_url, "error": f"{type(exc).__name__}: {exc}"[-1000:]}
+                )
+    # Feed timestamps are authoritative; supplement duplicates with duration
+    # metadata from the official channel's own playlist when available.
+    candidates.sort(key=lambda item: item.published, reverse=True)
+    unique: dict[str, OfficialVideo] = {}
+    for item in candidates:
+        existing = unique.get(item.video_id)
+        if existing is None:
+            unique[item.video_id] = item
+        elif existing.duration_seconds is None and item.duration_seconds is not None:
+            unique[item.video_id] = replace(existing, duration_seconds=item.duration_seconds)
+    return list(unique.values()), failures
+
+
+def _auth_args() -> list[str]:
+    """Optionally use an encrypted, explicitly supplied dedicated viewer session."""
+    value = os.environ.get("YOUTUBE_COOKIES_FILE", "").strip()
+    if not value:
+        return []
+    path = Path(value)
+    if not path.is_file() or not path.stat().st_size:
+        raise RuntimeError("configured YouTube cookie file is empty or unavailable")
+    return ["--cookies", str(path)]
+
+
+def invoke(command: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+        detail = (
+            exc.stderr or exc.stdout or str(exc)
+            if isinstance(exc, subprocess.CalledProcessError)
+            else str(exc)
+        )
+        raise RuntimeError(f"{command[0]}: {detail[-1200:]}") from exc
+
+
+def dynamic_bgutil_variants() -> tuple[tuple[str, ...], ...]:
+    """Use the independent BgUtils PO-token provider when the runner started it."""
+    base_url = os.getenv("TJR_BGUTIL_POT_PROVIDER_URL", "").strip()
+    if not base_url:
+        return ()
+    if not base_url.startswith("http://127.0.0.1:"):
+        raise RuntimeError("BgUtils PO-token provider must be bound to runner loopback")
+    plugin = ("--extractor-args", f"youtubepot-bgutilhttp:base_url={base_url}")
+    return (
+        ("--extractor-args", "youtube:player_client=default,mweb", *plugin),
+        ("--extractor-args", "youtube:player_client=web_safari", *plugin),
+    )
+
+
+def dynamic_browser_variants() -> tuple[tuple[str, ...], ...]:
+    """Mint per-video guest playback tokens using a fresh runner browser."""
+    browser = os.getenv("YT_DLP_WPC_BROWSER_PATH", "").strip()
+    if not browser:
+        return ()
+    path = Path(browser)
+    if not path.is_file():
+        raise RuntimeError("dynamic YouTube token browser executable is missing")
+    plugin = ("--extractor-args", f"youtubepot-wpc:browser_path={path}")
+    return (
+        ("--extractor-args", "youtube:player_client=default,mweb", *plugin),
+        ("--extractor-args", "youtube:player_client=web_safari", *plugin),
+    )
+
+
+def dynamic_token_variants() -> tuple[tuple[str, ...], ...]:
+    """Prefer independent BotGuard tokens, then browser-minted tokens."""
+    return (*dynamic_bgutil_variants(), *dynamic_browser_variants())
+
+
+def verified_youtube_metadata(video: OfficialVideo) -> dict[str, Any]:
+    """Do not trust a title, channel handle, RSS alone, or search result for provenance."""
+    errors: list[str] = []
+    # Prefer independently generated PO tokens before the browser-backed provider.
+    # Both remain automatic guest-session transports; authenticated cookies are optional.
+    client_variants = (
+        (),  # Match the original PR: let yt-dlp select its supported default clients.
+        *dynamic_token_variants(),
+        ("--extractor-args", "youtube:player_client=mweb"),
+        ("--extractor-args", "youtube:player_client=tv"),
+        ("--extractor-args", "youtube:player_client=web_safari"),
+        ("--extractor-args", "youtube:player_client=web_embedded"),
+        ("--extractor-args", "youtube:player_client=android_vr"),
+        ("--impersonate", "chrome", "--extractor-args", "youtube:player_client=web_safari"),
+    )
+    for variant in client_variants:
+        extra = list(variant)
+        try:
+            result = invoke(
+                [
+                    "yt-dlp",
+                    "--ignore-config",
+                    "--js-runtimes",
+                    "node",
+                    "--socket-timeout",
+                    "20",
+                    "--retries",
+                    "3",
+                    *_auth_args(),
+                    "--no-warnings",
+                    "--no-playlist",
+                    "--skip-download",
+                    "--dump-single-json",
+                    *extra,
+                    video.url,
+                ],
+                timeout=150,
+            )
+            metadata = json.loads(result.stdout)
+            if not isinstance(metadata, dict):
+                raise RuntimeError("unexpected YouTube metadata")
+            if metadata.get("id") != video.video_id:
+                raise RuntimeError("YouTube video ID does not match the official feed")
+            if metadata.get("channel_id") != video.channel_id:
+                raise RuntimeError("YouTube owner ID does not match Reach's channel")
+            live_status = str(metadata.get("live_status") or "")
+            if (
+                metadata.get("is_live")
+                or metadata.get("is_upcoming")
+                or live_status in {"is_live", "is_upcoming"}
+            ):
+                raise RuntimeError("live or upcoming stream is not an eligible source video")
+            if float(metadata.get("duration") or 0) < 90:
+                raise RuntimeError("video is shorter than the requested clipping workflow")
+            metadata["_verified_client_args"] = extra
+            return metadata
+        except (ValueError, TypeError, RuntimeError, json.JSONDecodeError) as exc:
+            errors.append(str(exc)[-600:])
+    raise RuntimeError("source metadata unavailable: " + " | ".join(errors))
+
+
+def youtube_scan_section_args(duration_seconds: float) -> list[str]:
+    """Require full originals within the supported one-hour analysis window."""
+    if duration_seconds <= 0:
+        raise ValueError("verified YouTube duration must be positive")
+    if duration_seconds > 3600:
+        raise ValueError("SOURCE_EXCEEDS_FULL_ANALYSIS_LIMIT: source exceeds one hour")
+    return []
+
+
+def verify_complete_download(path: Path, expected_seconds: float) -> float:
+    """Fail closed on valid-looking but incomplete DASH/HLS downloads."""
+    if not 90 <= expected_seconds <= 3600:
+        raise RuntimeError("SOURCE_EXCEEDS_FULL_ANALYSIS_LIMIT")
+    measured = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=45,
+    )
+    if measured.returncode:
+        raise RuntimeError("SOURCE_DURATION_UNVERIFIABLE")
+    try:
+        seconds = float(measured.stdout.strip())
+    except ValueError as exc:
+        raise RuntimeError("SOURCE_DURATION_UNVERIFIABLE") from exc
+    if not math.isfinite(seconds) or seconds + 30 < expected_seconds:
+        raise RuntimeError("SOURCE_DURATION_INCOMPLETE: original has missing DASH/HLS fragments")
+    return seconds
+
+
+def download_original_excerpt(
+    video: OfficialVideo, work: Path, *, metadata: dict[str, Any] | None = None
+) -> Path:
+    work.mkdir(parents=True, exist_ok=True)
+    expected_seconds = float((metadata or {}).get("duration") or video.duration_seconds or 0)
+    common = [
+        "yt-dlp",
+        "--ignore-config",
+        "--js-runtimes",
+        "node",
+        "--socket-timeout",
+        "20",
+        "--retries",
+        "3",
+        "--fragment-retries",
+        "3",
+        *_auth_args(),
+        "--no-playlist",
+        "--no-warnings",
+        "--abort-on-unavailable-fragments",
+        "--merge-output-format",
+        "mp4",
+        *youtube_scan_section_args(expected_seconds),
+        "-f",
+        "bv*[height>=720][height<=1080]+ba/b[height>=720]/bv*+ba/b",
+        "-o",
+        str(work / "source.%(ext)s"),
+    ]
+    preferred = tuple((metadata or {}).get("_verified_client_args") or ())
+    client_variants = (
+        preferred,
+        *dynamic_token_variants(),
+        ("--extractor-args", "youtube:player_client=mweb"),
+        ("--extractor-args", "youtube:player_client=tv"),
+        ("--extractor-args", "youtube:player_client=web_safari"),
+        ("--extractor-args", "youtube:player_client=web_embedded"),
+        ("--extractor-args", "youtube:player_client=android_vr"),
+    )
+    errors: list[str] = []
+    attempted: set[tuple[str, ...]] = set()
+    for variant in client_variants:
+        if variant in attempted:
+            continue
+        attempted.add(variant)
+        try:
+            invoke([common[0], *variant, *common[1:], video.url], timeout=1500)
+            files = sorted(
+                p
+                for p in work.glob("source.*")
+                if p.is_file() and p.suffix.lower() in {".mp4", ".mkv", ".webm"}
+            )
+            if not files:
+                raise RuntimeError("YouTube media download produced no source file")
+            probe_original(files[0])
+            verify_complete_download(files[0], expected_seconds)
+            return files[0]
+        except RuntimeError as exc:
+            errors.append(f"{' '.join(variant) or 'default'}: {str(exc)[-550:]}")
+            # Never accept stale bytes left by a previously failed transport.
+            for incomplete in work.glob("source.*"):
+                if incomplete.is_file():
+                    incomplete.unlink(missing_ok=True)
+    raise RuntimeError("verified YouTube media inaccessible: " + " | ".join(errors))
+
+
+def prioritize_campaign_moments(videos: list[OfficialVideo]) -> list[OfficialVideo]:
+    """Prefer full podcast episodes over Shorts while keeping newest-first behavior."""
+
+    def priority(video: OfficialVideo) -> tuple[int, str]:
+        title = video.title.lower().strip()
+        duration = video.duration_seconds
+        if duration is not None and duration < 90:
+            return (-1, video.published)
+        if duration is not None and duration >= 10 * 60:
+            return (4, video.published)
+        if any(term in title for term in ("podcast", "episode", "interview", "reacts", "shares")):
+            return (3, video.published)
+        if duration is not None and duration >= 90:
+            return (2, video.published)
+        if title in {"", "unknown"} or ("#" in title and len(title) < 45):
+            return (0, video.published)
+        return (1, video.published)
+
+    return sorted(videos, key=priority, reverse=True)
+
+
+def constrain_official_sources(
+    candidates: list[OfficialVideo],
+    requested_id: str | None,
+    *,
+    published_after: str | None = None,
+    target_channel_id: str | None = None,
+) -> list[OfficialVideo]:
+    """Require source provenance, one target channel, and the campaign window.
+
+    Missing or malformed publication dates never bypass the brief's cutoff.
+    Direct production may discover a video dynamically, but it must never spill
+    from the explicitly selected channel into the other Reach-listed channel.
+    """
+    if target_channel_id:
+        if target_channel_id not in CHANNELS:
+            raise RuntimeError("target channel is not one of the Reach-listed channels")
+        candidates = [video for video in candidates if video.channel_id == target_channel_id]
+    if published_after:
+        cutoff = datetime.fromisoformat(published_after.replace("Z", "+00:00"))
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=UTC)
+        eligible: list[OfficialVideo] = []
+        for video in candidates:
+            if not video.published:
+                continue
+            try:
+                published = datetime.fromisoformat(video.published.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=UTC)
+            if published.astimezone(UTC) >= cutoff.astimezone(UTC):
+                eligible.append(video)
+        candidates = eligible
+    if not requested_id:
+        if target_channel_id:
+            return sorted(candidates, key=lambda video: video.published, reverse=True)
+        return prioritize_campaign_moments(candidates)
+    if not VIDEO_ID.fullmatch(requested_id):
+        raise RuntimeError("selected source_video_id must be exactly 11 YouTube ID characters")
+    matches = [video for video in candidates if video.video_id == requested_id]
+    if len(matches) != 1 or matches[0].channel_id not in CHANNELS:
+        scope = (
+            "the target Reach-listed channel feed"
+            if target_channel_id
+            else "the Reach-listed campaign channel feed"
+        )
+        raise RuntimeError(f"selected source_video_id is not in {scope}")
+    return matches
+
+
+def load_verified_browser_original(
+    path: Path, candidates: list[OfficialVideo]
+) -> tuple[OfficialVideo, Path, dict[str, Any]] | None:
+    """Use Chrome-extracted HD bytes ONLY when exact original and checksum match."""
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise RuntimeError("browser original manifest is not an object")
+    selected = next(
+        (
+            item
+            for item in candidates
+            if item.video_id == data.get("video_id")
+            and item.channel_id == data.get("channel_id")
+            and item.url == data.get("public_video_url")
+        ),
+        None,
+    )
+    if selected is None:
+        raise RuntimeError("browser original is not in the verified official channel feed")
+    reported_seconds = int(data.get("duration") or 0)
+    if not 90 <= reported_seconds <= 3600:
+        raise RuntimeError("SOURCE_EXCEEDS_FULL_ANALYSIS_LIMIT: invalid capture duration")
+    original = Path(str(data.get("source_path") or ""))
+    if not original.is_file() or not re.fullmatch(r"[0-9a-f]{64}", str(data.get("source_sha256"))):
+        raise RuntimeError("browser original is missing or has no valid SHA-256")
+    with original.open("rb") as source_bytes:
+        actual_digest = hashlib.file_digest(source_bytes, "sha256").hexdigest()
+    if actual_digest != data["source_sha256"]:
+        raise RuntimeError("browser original SHA-256 does not match Chrome capture manifest")
+    probe_original(original)
+    duration_probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(original),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=45,
+    )
+    try:
+        actual_seconds = float(duration_probe.stdout.strip())
+    except ValueError as exc:
+        raise RuntimeError("captured original has no valid duration") from exc
+    if not math.isfinite(actual_seconds) or actual_seconds + 30 < reported_seconds:
+        raise RuntimeError("SOURCE_DURATION_INCOMPLETE: captured media is partial")
+    metadata: dict[str, Any] = {
+        "id": selected.video_id,
+        "channel_id": selected.channel_id,
+        "title": str(data.get("title") or selected.title),
+        "duration": int(data["duration"]),
+        "_transport": (
+            data.get("source_transport")
+            if data.get("source_transport") == "approved_sha256_mirror"
+            else "verified_official_youtube_capture"
+        ),
+    }
+    return selected, original, metadata
+
+
+def select_separate_clips(candidates: list[ClipCandidate], count: int = 2) -> list[ClipCandidate]:
+    chosen: list[ClipCandidate] = []
+    for candidate in sorted(candidates, key=lambda item: (-item.score, item.start)):
+        if any(
+            candidate.start < existing.end + 2 and existing.start < candidate.end + 2
+            for existing in chosen
+        ):
+            continue
+        chosen.append(candidate)
+        if len(chosen) >= count:
+            break
+    return chosen
+
+
+class NoEditorialMoments(RuntimeError):
+    """An approved source had no qualifying draft moments; try another official original."""
+
+
+def load_verified_transcript_cache(
+    source: Path, video_id: str, cache_root: Path, run_dir: Path
+) -> tuple[list[list[TranscriptSegment]], float]:
+    """Reuse only a complete transcript bound to these exact original bytes."""
+    matches = list(cache_root.rglob("transcript.json"))
+    if len(matches) != 1:
+        raise RuntimeError("TRANSCRIPT_CACHE_MUST_CONTAIN_ONE_SOURCE")
+    transcript = matches[0]
+    report = json.loads((transcript.parent / "tjr-youtube-qa-report.json").read_text())
+    coverage = json.loads((transcript.parent / "source-analysis-coverage.json").read_text())
+    with source.open("rb") as media:
+        digest = hashlib.file_digest(media, "sha256").hexdigest()
+    if (
+        report.get("source_url") != f"https://www.youtube.com/watch?v={video_id}"
+        or report.get("source_sha256") != digest
+        or coverage.get("full_source_analyzed") is not True
+        or not coverage.get("chunks")
+    ):
+        raise RuntimeError("TRANSCRIPT_CACHE_SOURCE_OR_COVERAGE_MISMATCH")
+    duration = float(coverage["analyzed_source_seconds"])
+    expected = float(report.get("source_duration_seconds") or coverage["reported_original_seconds"])
+    if not math.isfinite(duration) or abs(duration - expected) > 30:
+        raise RuntimeError("TRANSCRIPT_CACHE_INCOMPLETE_DURATION")
+    data = json.loads(transcript.read_text())
+    segments = [
+        TranscriptSegment(
+            float(item["start"]),
+            float(item["end"]),
+            str(item["text"]),
+            tuple(
+                WordTiming(float(w["start"]), float(w["end"]), str(w["text"]))
+                for w in item.get("words", [])
+            ),
+        )
+        for item in data
+    ]
+    if not segments or any(item.end > duration + 1 for item in segments):
+        raise RuntimeError("TRANSCRIPT_CACHE_INVALID_TIMESTAMPS")
+    chunks = [
+        [item for item in segments if float(chunk["start"]) <= item.start < float(chunk["end"])]
+        for chunk in coverage["chunks"]
+    ]
+    if sum(map(len, chunks)) != len(segments):
+        raise RuntimeError("TRANSCRIPT_CACHE_INVALID_CHUNK_COVERAGE")
+    (run_dir / "transcript-cache-provenance.json").write_text(
+        json.dumps(
+            {
+                "source_url": report["source_url"],
+                "source_sha256": digest,
+                "origin_run_id": os.getenv("TJR_TRANSCRIPT_SOURCE_RUN_ID", ""),
+                "source_hash_verified": True,
+                "full_source_analyzed": True,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return chunks, duration
+
+
+def audit_cached_delivery_audio(source: Path, cache_root: Path, run_dir: Path) -> None:
+    """Compare the previous delivered gaps with the exact verified source."""
+    reports = list(cache_root.rglob("tjr-youtube-qa-report.json"))
+    if len(reports) != 1:
+        raise RuntimeError("audio comparison requires one verified source report")
+    report = json.loads(reports[0].read_text())
+    base = reports[0].parent.resolve()
+    comparisons = []
+    for clip in report.get("clips", []):
+        path = (base / clip["file"]).resolve()
+        if not path.is_relative_to(base) or not path.is_file():
+            raise RuntimeError("previous delivered audio evidence is missing")
+        start, end = float(clip["source_start_seconds"]), float(clip["source_end_seconds"])
+        delivery = compare_audio_to_source(
+            source, path, start=start, duration=end - start, enforce=False
+        )
+        replay = run_dir / "work" / "prior-audio-normalizer.wav"
+        replay.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-y",
+                    "-ss",
+                    str(start),
+                    "-i",
+                    str(source),
+                    "-t",
+                    str(end - start),
+                    "-vn",
+                    "-af",
+                    "loudnorm=I=-14:LRA=11:TP=-1.5",
+                    "-ar",
+                    "48000",
+                    "-c:a",
+                    "pcm_f32le",
+                    str(replay),
+                ],
+                capture_output=True,
+                check=True,
+                timeout=120,
+            )
+            old_filter = compare_audio_to_source(
+                source, replay, start=start, duration=end - start, enforce=False
+            )
+        finally:
+            replay.unlink(missing_ok=True)
+        comparisons.append(
+            {
+                "file": clip["file"],
+                "source_start": start,
+                "source_end": end,
+                "delivered_audio": delivery,
+                "old_normalizer_replay": old_filter,
+                "interpretation": (
+                    "OLD_DYNAMIC_NORMALIZER_REPRODUCED_SOURCE_ABSENT_DROPOUT"
+                    if delivery["introduced_dropout_spans"]
+                    and old_filter["introduced_dropout_spans"]
+                    else "CHECK_RECORDED_SOURCE_AND_DELIVERY_EVIDENCE"
+                ),
+            }
+        )
+    (run_dir / "prior-audio-comparison.json").write_text(
+        json.dumps({"source_sha256": report["source_sha256"], "clips": comparisons}, indent=2)
+        + "\n"
+    )
+
+
+def transcribe_source_chunks(
+    source: Path,
+    run_dir: Path,
+    *,
+    chunk_seconds: int = 840,
+) -> tuple[list[list[TranscriptSegment]], float]:
+    """Transcribe bounded 14-minute audio chunks with original-video timestamps.
+
+    The original HD source stays intact so selected clips can be rendered from
+    their exact absolute offsets, including moments late in a livestream.
+    """
+    if not 60 <= chunk_seconds <= 900:
+        raise ValueError("audio chunk duration must be between 60 and 900 seconds")
+    probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    duration = float(probe.stdout.strip())
+    if not math.isfinite(duration) or duration < 1:
+        raise RuntimeError("original has no usable audio duration")
+    work = run_dir / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    chunks: list[list[TranscriptSegment]] = []
+    transcriber = FasterWhisperTranscriber(
+        model_name=os.getenv("TJR_ASR_MODEL", "distil-large-v3").strip() or "distil-large-v3",
+        device=os.getenv("TJR_ASR_DEVICE", "cpu").strip() or "cpu",
+        compute_type=os.getenv("TJR_ASR_COMPUTE_TYPE", "int8").strip() or "int8",
+        language="en",
+        word_timestamps=True,
+    )
+    for index, start in enumerate(range(0, math.ceil(duration), chunk_seconds)):
+        length = min(float(chunk_seconds), duration - start)
+        if length < 1:
+            break
+        audio = work / f"audio-chunk-{index:03d}.wav"
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-y",
+                    "-ss",
+                    str(start),
+                    "-i",
+                    str(source),
+                    "-t",
+                    str(length),
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    "-c:a",
+                    "pcm_s16le",
+                    str(audio),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=420,
+            )
+            local = transcriber.transcribe(audio)
+            shifted = [
+                TranscriptSegment(
+                    item.start + start,
+                    item.end + start,
+                    item.text,
+                    tuple(
+                        WordTiming(word.start + start, word.end + start, word.text)
+                        for word in item.words
+                    ),
+                )
+                for item in local
+            ]
+            chunks.append(shifted)
+        finally:
+            audio.unlink(missing_ok=True)
+    return chunks, duration
+
+
+def _sha_file(path: Path) -> str:
+    with path.open("rb") as file:
+        return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def _clip_render_identity(
+    source_sha: str,
+    clip: ClipCandidate,
+    hook: str,
+    segments: list[TranscriptSegment],
+    watermark: Path,
+    caption_style: str | None = None,
+) -> str:
+    root = Path(__file__).resolve().parents[1]
+    code = {
+        name: _sha_file(root / name)
+        for name in (
+            "src/clipper/render.py",
+            "src/clipper/tiktok.py",
+            "src/clipper/source_fidelity.py",
+            "scripts/tjr_quality.py",
+        )
+    }
+    runtime = subprocess.run(
+        ["ffmpeg", "-version"], check=True, capture_output=True, text=True, timeout=15
+    ).stdout
+    fonts = {
+        str(path): _sha_file(path)
+        for path in Path("/usr/share/fonts/truetype/dejavu").glob("*.ttf")
+    }
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "version": "verified-per-clip-render-v1",
+                "source": source_sha,
+                "clip": clip.to_dict(),
+                "hook": hook,
+                "transcript": [item.to_dict() for item in segments],
+                "watermark": _sha_file(watermark),
+                "code": code,
+                "fonts": fonts,
+                "ffmpeg": runtime,
+                "settings": {
+                    "CLIPPER_RENDER_PRESET": os.getenv("CLIPPER_RENDER_PRESET", ""),
+                    "CLIPPER_RENDER_THREADS": os.getenv("CLIPPER_RENDER_THREADS", ""),
+                    "TJR_CAPTION_STYLE": (
+                        caption_style
+                        if caption_style is not None
+                        else os.getenv("TJR_CAPTION_STYLE", "")
+                    ),
+                },
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+
+
+def _restore_clip_render(cache_root: Path, out: Path, identity: str) -> bool:
+    for manifest in cache_root.rglob("*.cache.json"):
+        try:
+            saved = json.loads(manifest.read_text())
+        except (ValueError, OSError):
+            continue
+        if not isinstance(saved, dict):
+            continue
+        if saved.get("identity") != identity or saved.get("full_decode_passed") is not True:
+            continue
+        prefix = manifest.name.removesuffix(".cache.json")
+        files = saved.get("files", {})
+        required = {".mp4", ".ass", ".srt", ".quality.json", "-preview.png", "-contact.png"}
+        if not required.issubset(files):
+            continue
+        if any(
+            not suffix.startswith((".", "-")) or "/" in suffix or "\\" in suffix for suffix in files
+        ):
+            continue
+        if any(
+            not (manifest.parent / (prefix + suffix)).is_file()
+            or _sha_file(manifest.parent / (prefix + suffix)) != digest
+            for suffix, digest in files.items()
+        ):
+            continue
+        out.parent.mkdir(parents=True, exist_ok=True)
+        for suffix in files:
+            shutil.copyfile(manifest.parent / (prefix + suffix), out.with_name(out.stem + suffix))
+        LOGGER.info("RENDER_CACHE_HIT: %s unchanged bytes and complete decode proof", out.name)
+        return True
+    return False
+
+
+def _save_clip_render(out: Path, identity: str) -> None:
+    files = {
+        path.name.removeprefix(out.stem): _sha_file(path)
+        for path in out.parent.glob(out.stem + "*")
+        if path.is_file() and not path.name.endswith(".cache.json")
+    }
+    out.with_suffix(".cache.json").write_text(
+        json.dumps(
+            {
+                "identity": identity,
+                "full_decode_passed": True,
+                "files": files,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
+def render_youtube_previews(
+    root: Path, brief_path: Path, *, run_config: EditorialRunConfig | None = None
+) -> Path:
+    if run_config is not None:
+        run_config.validate()
+        if root != run_config.artifact_root or brief_path != run_config.brief:
+            raise ValueError("editorial run paths differ from the validated config")
+    else:
+        run_config = EditorialRunConfig.from_legacy_environment(brief_path, root)
+    brief = load_brief(brief_path)
+    if (
+        set(brief.source_channel_ids) != set(CHANNELS)
+        or not brief.rights_confirmed
+        or brief.watermark_text
+        or not brief.watermark_url
+        or brief.required_hashtags != ["#DoubleCoverage"]
+    ):
+        raise RuntimeError("brief differs from Reach's exact Double Coverage channel or policy")
+    run_dir = root / (
+        "reach-double-coverage-youtube-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    )
+    run_dir.mkdir(parents=True, exist_ok=False)
+    errors: list[dict[str, str]] = []
+    step = "watermark_validation"
+    try:
+        watermark_path = _download_asset(
+            brief.watermark_url,
+            run_dir / "assets" / "double-coverage-watermark.png",
+            expected_kind="image",
+        )
+        step = "channel_discovery"
+        candidates, failures = discover_official_uploads()
+        errors.extend(failures)
+        (run_dir / "official-source-candidates.json").write_text(
+            json.dumps(
+                [
+                    {
+                        **asdict(item),
+                        "url": item.url,
+                        "channel_handle": CHANNELS[item.channel_id],
+                    }
+                    for item in candidates[:20]
+                ],
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if not candidates:
+            raise RuntimeError("official Double Coverage YouTube channel feed unavailable")
+        chosen_video: OfficialVideo | None = None
+        source: Path | None = None
+        metadata: dict[str, Any] = {}
+        bot_challenges = 0
+        # Put full videos before Shorts: a new 15-second hashtag Short is not
+        # a suitable 20-42s clip source and must not consume the bot budget.
+        requested_id = run_config.source_video_id
+        target_channel_id = run_config.target_channel_id or None
+        official_candidates = constrain_official_sources(
+            candidates,
+            requested_id,
+            published_after=brief.published_after,
+            target_channel_id=target_channel_id,
+        )
+        if requested_id:
+            LOGGER.info("Using explicitly requested official YouTube video ID: %s", requested_id)
+        browser_capture_file = run_config.browser_capture_file
+        if browser_capture_file:
+            step = "verified_browser_capture"
+            try:
+                captured = load_verified_browser_original(browser_capture_file, official_candidates)
+                if captured is not None:
+                    chosen_video, source, metadata = captured
+                    LOGGER.info(
+                        "Chrome obtained real original HD bytes from official video %s",
+                        chosen_video.video_id,
+                    )
+            except (ValueError, OSError, RuntimeError) as exc:
+                if run_config.require_staged_original:
+                    raise RuntimeError(
+                        "required approved staged original failed verification"
+                    ) from exc
+                errors.append({"source": "verified source capture", "error": str(exc)[:650]})
+        if run_config.require_staged_original and source is None:
+            raise RuntimeError("required approved staged original was not available")
+        for video in official_candidates[:8] if source is None else []:
+            step = "official_metadata"
+            try:
+                metadata = verified_youtube_metadata(video)
+                step = "youtube_original_download"
+                source = download_original_excerpt(
+                    video, run_dir / "work" / video.video_id, metadata=metadata
+                )
+                chosen_video = video
+                break
+            except (RuntimeError, ValueError) as exc:
+                errors.append({"source": video.url, "error": str(exc)[-1400:]})
+                if "Sign in to confirm" in str(exc):
+                    bot_challenges += 1
+                    if bot_challenges >= 2:
+                        raise RuntimeError(
+                            "YouTube bot confirmation blocks this GitHub-hosted runner; "
+                            "use an authentic original from one of the verified source URLs"
+                        ) from exc
+        if source is None or chosen_video is None:
+            raise RuntimeError("no recent approved-channel YouTube original could be downloaded")
+        source_profile = probe_source_profile(source)
+        step = "transcription"
+        cache_root = run_config.transcript_cache_root
+        if cache_root:
+            try:
+                source_chunks, analyzed_seconds = load_verified_transcript_cache(
+                    source, chosen_video.video_id, cache_root, run_dir
+                )
+            except (RuntimeError, OSError, ValueError):
+                if run_config.transcript_source_run_id:
+                    raise
+                LOGGER.info(
+                    "TRANSCRIPT_CACHE_MISS: incompatible automatic cache; transcribing source"
+                )
+                cache_root = ""
+                source_chunks, analyzed_seconds = transcribe_source_chunks(source, run_dir)
+        else:
+            source_chunks, analyzed_seconds = transcribe_source_chunks(source, run_dir)
+        segments = [item for chunk in source_chunks for item in chunk]
+        (run_dir / "source-analysis-coverage.json").write_text(
+            json.dumps(
+                {
+                    "reported_original_seconds": float(metadata.get("duration") or 0),
+                    "analyzed_source_seconds": round(analyzed_seconds, 2),
+                    "full_source_analyzed": (
+                        analyzed_seconds + 30 >= float(metadata.get("duration") or 0)
+                    ),
+                    "chunks": [
+                        {
+                            "index": index,
+                            "start": index * 840,
+                            "end": round(min((index + 1) * 840, analyzed_seconds), 2),
+                            "transcript_segments": len(chunk),
+                        }
+                        for index, chunk in enumerate(source_chunks)
+                    ],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if not segments:
+            raise RuntimeError("the original footage contains no usable English speech")
+        step = "clip_selection"
+        (run_dir / "transcript.json").write_text(
+            json.dumps([s.to_dict() for s in segments], indent=2) + "\n",
+            encoding="utf-8",
+        )
+        render_safety_limit = run_config.render_safety_limit
+        with source.open("rb") as original:
+            source_digest = hashlib.file_digest(original, "sha256").hexdigest()
+        proposal_root = run_config.editorial_cache_root or cache_root
+        proposal_caches = list(proposal_root.rglob("proposal-cache.json")) if proposal_root else []
+        ranked, semantic_audit = build_semantic_editorial_candidates(
+            brief,
+            chosen_video.video_id,
+            segments,
+            source_sha256=source_digest,
+            cache_path=run_dir / "proposal-cache.json",
+            reuse_path=proposal_caches[0] if len(proposal_caches) == 1 else None,
+        )
+        if cache_root and run_config.compare_prior_audio:
+            step = "previous_audio_comparison"
+            audit_cached_delivery_audio(source, cache_root, run_dir)
+        step = "structured_context_assessment"
+        with source.open("rb") as original:
+            source_digest = hashlib.file_digest(original, "sha256").hexdigest()
+        editorial_cache_root = run_config.editorial_cache_root or cache_root
+        reuse = (
+            list(editorial_cache_root.rglob("editorial-cache.json")) if editorial_cache_root else []
+        )
+        if len(reuse) > 1:
+            raise RuntimeError("editorial cache must contain one verified assessment")
+        ranked, structured_audit = refine_contextual_candidates(
+            brief,
+            ranked,
+            segments,
+            source_sha256=source_digest,
+            cache_path=run_dir / "editorial-cache.json",
+            reuse_path=reuse[0] if reuse else None,
+        )
+        review_packets = [
+            {
+                "proposal_start": item["proposal_start"],
+                "proposal_end": item["proposal_end"],
+                "reviewed_start": item.get("reviewed_start"),
+                "reviewed_end": item.get("reviewed_end"),
+                "packet": item["claim_review_packet"],
+            }
+            for item in structured_audit.get("assessments", [])
+            if isinstance(item.get("claim_review_packet"), dict)
+        ]
+        claim_packet_manifest = {
+            "schema": "clipper-headline-claim-packets-v1",
+            "source_sha256": source_digest,
+            "packets": review_packets,
+            "production_approved": False,
+        }
+        (run_dir / "claim-review-packets.json").write_text(
+            json.dumps(claim_packet_manifest, indent=2) + "\n", encoding="utf-8"
+        )
+        pipeline_state = {
+            "source_sha256": source_digest,
+            "video_id": chosen_video.video_id,
+            "transcript": "cache_hit" if cache_root else "transcribed",
+            "discovery": "cache_hit" if semantic_audit.get("cache_reused") else "computed",
+            "selector_cache_hits": structured_audit.get("selector_cache_hits", 0),
+            "reviewer_cache_hits": structured_audit.get("reviewer_cache_hits", 0),
+            "editorial_cache_reused": structured_audit.get("cache_reused", False),
+            "renders": [],
+        }
+        (run_dir / "pipeline-state.json").write_text(json.dumps(pipeline_state, indent=2) + "\n")
+        semantic_audit["discovery_architecture"] = semantic_audit["architecture"]
+        semantic_audit["architecture"] = structured_audit["architecture"]
+        semantic_audit["structured_context_assessment"] = structured_audit
+        screening_mode = str(semantic_audit["architecture"])
+        picks, rejected = select_editorial_moments(
+            ranked,
+            render_safety_limit=render_safety_limit,
+            segments=segments,
+            allow_review_only_opening=True,
+            review_provider=lambda candidate: analyze_candidate_visuals(source, candidate),
+        )
+        (run_dir / "ranked-candidates.json").write_text(
+            json.dumps([c.to_dict() for c in ranked[:150]], indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (run_dir / "editorial-candidate-audit.json").write_text(
+            json.dumps(
+                {
+                    "rubric_version": RUBRIC_VERSION,
+                    "weights": WEIGHTS,
+                    "provisional": True,
+                    "requires_manual_visual_and_integrity_review": True,
+                    "measured_visual_precheck": True,
+                    "screening_mode": screening_mode,
+                    "semantic_architecture": semantic_audit,
+                    "selection_policy": "context_ranked_review_drafts_zero_to_n",
+                    "render_safety_limit": render_safety_limit,
+                    "selected_count": len(picks),
+                    "render_safety_limit_rejections": sum(
+                        item.get("reason") == "RENDER_SAFETY_LIMIT" for item in rejected
+                    ),
+                    "transcript_segment_count": len(segments),
+                    "semantic_candidate_count": len(ranked),
+                    "selected": [pick.to_dict() for pick in picks],
+                    "rejected": rejected[:250],
+                    "rejection_breakdown": dict(Counter(str(item["reason"]) for item in rejected)),
+                    "source_chunks_analyzed": len(source_chunks),
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if not picks:
+            with source.open("rb") as media:
+                digest = hashlib.file_digest(media, "sha256").hexdigest()
+            report = {
+                "status": "NO_CREATOR_GRADE_MOMENTS",
+                "campaign": brief.campaign_id,
+                "source_platform": "youtube",
+                "source_url": chosen_video.url,
+                "source_channel_id": chosen_video.channel_id,
+                "source_channel_handle": CHANNELS[chosen_video.channel_id],
+                "source_title": metadata.get("title"),
+                "source_published_at": chosen_video.published,
+                "source_sha256": digest,
+                "source_transport": metadata.get("_transport", "verified_official_youtube"),
+                "source_dimensions": probe_original(source),
+                "source_profile": source_profile.as_dict(),
+                "editorial_rubric_version": RUBRIC_VERSION,
+                "editorial_weights": WEIGHTS,
+                "selection_policy": "context_ranked_review_drafts_zero_to_n",
+                "render_safety_limit": render_safety_limit,
+                "selected_clip_count": 0,
+                "clips": [],
+                "source_attempts": errors,
+                "manual_checks": [
+                    "No clip passed the creator-grade editorial gates for this source.",
+                    "Do not manufacture filler or switch sources because of editorial weakness.",
+                ],
+            }
+            (run_dir / "tjr-youtube-qa-report.json").write_text(
+                json.dumps(report, indent=2) + "\n", encoding="utf-8"
+            )
+            LOGGER.info(
+                "EDITORIAL_NOOP=NO_CREATOR_GRADE_MOMENTS semantic_candidates=%d",
+                len(ranked),
+            )
+            return run_dir
+        try:
+            require_automated_factual_approval_for_render(
+                selected_count=len(picks), claim_packet_manifest=claim_packet_manifest
+            )
+        except RuntimeError:
+            pipeline_state["factual_approval"] = "blocked_unqualified"
+            (run_dir / "pipeline-state.json").write_text(
+                json.dumps(pipeline_state, indent=2) + "\n", encoding="utf-8"
+            )
+            raise
+        LOGGER.info(
+            "EDITORIAL_PROVISIONAL_SCREEN_PASSED=%d rubric=%s screening=%s",
+            len(picks),
+            RUBRIC_VERSION,
+            screening_mode,
+        )
+        step = "render_and_decode"
+        renderer = FFmpegRenderer()
+        caption_style = run_config.caption_style
+        if caption_style != "B2":
+            raise RuntimeError(
+                "Double Coverage drafts require Style B2 captions and persistent hooks"
+            )
+        completed: list[dict[str, Any]] = []
+        for number, pick in enumerate(picks, start=1):
+            clip = pick.clip
+            out = run_dir / "clips" / f"{number:02d}-double-coverage-{chosen_video.video_id}.mp4"
+            layout = "default"
+            render_identity = _clip_render_identity(
+                source_digest, clip, pick.hook, segments, watermark_path, caption_style
+            )
+            render_cache_root = run_config.render_cache_root
+            render_reused = bool(render_cache_root) and _restore_clip_render(
+                render_cache_root, out, render_identity
+            )
+            if render_reused:
+                renderer.quality_results[str(out.resolve())] = json.loads(
+                    out.with_suffix(".quality.json").read_text()
+                )
+            else:
+                renderer.render(
+                    source,
+                    out,
+                    clip,
+                    segments,
+                    watermark_path=watermark_path,
+                    editorial_layout=layout,
+                    tiktok_hook=pick.hook if caption_style in {"B", "B2"} else None,
+                    source_profile=source_profile if caption_style in {"B", "B2"} else None,
+                )
+            overlay_acceptance = (
+                audit_tiktok_ass(out.with_suffix(".ass"), clip_duration=clip.duration)
+                if caption_style == "B2"
+                else None
+            )
+            details = probe_video(out)
+            if (
+                caption_style in {"B", "B2"}
+                and abs(details["fps"] - float(Fraction(source_profile.fps))) > 0.04
+            ):
+                raise RuntimeError("finished TikTok output changed native source frame rate")
+            if not render_reused:
+                check_full_decode(out)
+            thumbnail = out.with_name(out.stem + "-preview.png")
+            sheet = out.with_name(out.stem + "-contact.png")
+            if not render_reused:
+                invoke(
+                    [
+                        "ffmpeg",
+                        "-nostdin",
+                        "-v",
+                        "error",
+                        "-y",
+                        "-ss",
+                        "3",
+                        "-i",
+                        str(out),
+                        "-frames:v",
+                        "1",
+                        str(thumbnail),
+                    ],
+                    timeout=90,
+                )
+                invoke(
+                    [
+                        "ffmpeg",
+                        "-nostdin",
+                        "-v",
+                        "error",
+                        "-y",
+                        "-i",
+                        str(out),
+                        "-vf",
+                        "fps=1/6,scale=270:480,tile=4x1",
+                        "-frames:v",
+                        "1",
+                        str(sheet),
+                    ],
+                    timeout=110,
+                )
+            completed.append(
+                {
+                    **details,
+                    "render_cache_reused": render_reused,
+                    "hook_candidate": pick.hook,
+                    "caption_style": caption_style if caption_style else "legacy_srt",
+                    "creative_headline": pick.hook if caption_style == "B2" else None,
+                    "overlay_acceptance": overlay_acceptance,
+                    "burned_in_hook": caption_style in {"B", "B2"},
+                    "ass_sidecar": (
+                        str(out.with_suffix(".ass").relative_to(run_dir))
+                        if caption_style in {"B", "B2"}
+                        else None
+                    ),
+                    "file_megabytes": round(out.stat().st_size / 1_000_000, 2),
+                    "source_fidelity": renderer.quality_results.get(str(out.resolve())),
+                    "source_matched_quality": (
+                        str(out.with_suffix(".quality.json").relative_to(run_dir))
+                        if caption_style in {"B", "B2"}
+                        else None
+                    ),
+                    "hook_score": pick.hook_score,
+                    "editorial_rubric_version": RUBRIC_VERSION,
+                    "editorial_score": pick.editorial_score,
+                    "editorial_weighted_points": pick.weighted_points,
+                    "editorial_score_coverage": pick.score_coverage,
+                    "editorial_criteria": {
+                        name: rating.to_dict() for name, rating in pick.criteria.items()
+                    },
+                    "editorial_integrity_gate": {
+                        "status": pick.integrity_status,
+                        "evidence": list(pick.integrity_evidence),
+                    },
+                    "editorial_reasons": list(pick.reasons),
+                    "boundary_evidence": [
+                        reason
+                        for reason in clip.reasons
+                        if reason.startswith(("start_boundary=", "end_boundary="))
+                    ],
+                    "publication_status": "CONTEXT_RANKED_DRAFT__AUDIO_VISUAL_REVIEW_REQUIRED",
+                    "logo_safe_layout": layout,
+                    "logo_compliance_verified": False,
+                    "contact_sheet": str(sheet.relative_to(run_dir)),
+                    "file": str(out.relative_to(run_dir)),
+                    "srt": str(out.with_suffix(".srt").relative_to(run_dir)),
+                    "preview": str(thumbnail.relative_to(run_dir)),
+                    "source_url": chosen_video.url,
+                    "source_start_seconds": clip.start,
+                    "source_end_seconds": clip.end,
+                    "review_required": True,
+                }
+            )
+            _save_clip_render(out, render_identity)
+            pipeline_state["renders"].append(
+                {"file": out.name, "state": "cache_hit" if render_reused else "rendered"}
+            )
+            (run_dir / "pipeline-state.json").write_text(
+                json.dumps(pipeline_state, indent=2) + "\n"
+            )
+        with source.open("rb") as media:
+            digest = hashlib.file_digest(media, "sha256").hexdigest()
+        report = {
+            "status": "TECHNICAL_QA_AND_CONTEXT_RANKED_DRAFT__AUDIO_VISUAL_REVIEW_REQUIRED",
+            "campaign": brief.campaign_id,
+            "source_platform": "youtube",
+            "source_url": chosen_video.url,
+            "source_channel_id": chosen_video.channel_id,
+            "source_channel_handle": CHANNELS[chosen_video.channel_id],
+            "source_title": metadata.get("title"),
+            "source_published_at": chosen_video.published,
+            "source_sha256": digest,
+            "source_transport": metadata.get("_transport", "verified_official_youtube"),
+            "source_dimensions": probe_original(source),
+            "source_profile": source_profile.as_dict(),
+            "editorial_rubric_version": RUBRIC_VERSION,
+            "editorial_weights": WEIGHTS,
+            "selection_policy": "context_ranked_review_drafts_zero_to_n",
+            "render_safety_limit": render_safety_limit,
+            "selected_clip_count": len(completed),
+            "clips": completed,
+            "source_attempts": errors,
+            "manual_checks": [
+                "Verify Host Mystic Zach appears in every publishable clip.",
+                "Check spoken words against subtitles, story, retention, framing and hooks.",
+                "Assign a verified portrait-visual score and explicitly approve or reject "
+                "editorial integrity after watching the full source context.",
+                "Verify the official Double Coverage watermark is clearly visible and reject "
+                "unrelated logos or synthetic video footage.",
+                "Verify the clip does not portray the creators, guests or podcast negatively.",
+                "Verify Reach/Whop dedicated-account eligibility, remaining budget and audience.",
+                "Only publish after human approval; add #DoubleCoverage and submit "
+                "within 30 minutes.",
+            ],
+        }
+        (run_dir / "tjr-youtube-qa-report.json").write_text(
+            json.dumps(report, indent=2) + "\n", encoding="utf-8"
+        )
+        LOGGER.info("REAL_VERIFIED_YOUTUBE_MP4_COUNT=%d", len(completed))
+        return run_dir
+    except Exception as exc:
+        (run_dir / "source-acquisition-errors.json").write_text(
+            json.dumps({"stage": step, "error": str(exc)[-2000:], "attempts": errors}, indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
+        raise
+
+
+def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--brief", type=Path, default=Path("campaigns/reach-double-coverage-dedicated.yaml")
+    )
+    parser.add_argument(
+        "--artifact-root", type=Path, default=Path("double-coverage-youtube-artifacts")
+    )
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    try:
+        print(render_youtube_previews(args.artifact_root, args.brief))
+    except Exception:
+        LOGGER.exception("YouTube-only rendering failed; diagnostics were uploaded")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

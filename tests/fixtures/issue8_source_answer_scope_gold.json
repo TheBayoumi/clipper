@@ -1,0 +1,22 @@
+{
+  "schema": "clipper-source-answer-scope-gold-v1",
+  "annotation_status": "transcript_derived_not_independent_audio_gold",
+  "source_answer_report_sha256": "cd407e3b08c964e502da317d6591e580cdd92ce92ffafe4504a72ba6c34fb7de",
+  "cases": [
+    {"case_id": "podcast_revenue_asserted", "responsiveness": "does_not_answer", "scope": "actual_event_or_state"},
+    {"case_id": "instagram_nonpayment_reported", "responsiveness": "answers_question", "scope": "negated_actual_state"},
+    {"case_id": "fighter_meeting_broadcast_asserted", "responsiveness": "does_not_answer", "scope": "quoted_instruction"},
+    {"case_id": "first_fight_opponent_role_asserted", "responsiveness": "uncertain", "scope": "unknown"},
+    {"case_id": "bobby_pacing_actor", "responsiveness": "answers_question", "scope": "actual_event_or_state"},
+    {"case_id": "sean_pacing_actor_asserted", "responsiveness": "answers_question", "scope": "actual_event_or_state"},
+    {"case_id": "bobby_live_tv_asserted", "responsiveness": "answers_question", "scope": "actual_event_or_state"},
+    {"case_id": "instagram_millions_earned_asserted", "responsiveness": "answers_question", "scope": "negated_actual_state"},
+    {"case_id": "instagram_drives_podcast", "responsiveness": "answers_question", "scope": "actual_event_or_state"},
+    {"case_id": "instagram_not_income", "responsiveness": "answers_question", "scope": "negated_actual_state"},
+    {"case_id": "conditional_podcast_millions", "responsiveness": "answers_question", "scope": "hypothetical_or_conditional"},
+    {"case_id": "actual_podcast_millions_asserted", "responsiveness": "uncertain", "scope": "unknown"},
+    {"case_id": "bobby_paced_while_sean_spoke", "responsiveness": "answers_question", "scope": "actual_event_or_state"},
+    {"case_id": "others_listened_to_sean", "responsiveness": "answers_question", "scope": "actual_event_or_state"},
+    {"case_id": "bobby_opponent_asserted", "responsiveness": "uncertain", "scope": "unknown"}
+  ]
+}
