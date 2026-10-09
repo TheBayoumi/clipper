@@ -10,7 +10,9 @@ import pytest
 from clipper.editorial_request_cache import EditorialRequestCache
 
 
-def make_cache(path, factory, *, replay_only=False, recorded_runtime=None):
+def make_cache(
+    path, factory, *, replay_only=False, recorded_runtime=None, on_response_persisted=None
+):
     return EditorialRequestCache(
         path,
         factory,
@@ -22,6 +24,7 @@ def make_cache(path, factory, *, replay_only=False, recorded_runtime=None):
         stage_fingerprint=lambda *_: "unchanged-stage",
         replay_only=replay_only,
         recorded_runtime=recorded_runtime,
+        on_response_persisted=on_response_persisted,
     )
 
 
@@ -145,3 +148,77 @@ def test_resuming_request_cache_prefers_current_checkpoint_over_older_baseline(t
     assert resumed.semantic_draft("Check", {"source": "same"}, 32) == "resumed evidence"
     assert resumed.metrics["cache_hits"] == 1
     assert resumed.metrics["model_calls"] == 0
+
+
+def test_each_new_model_response_is_committed_immediately_and_cache_hits_are_not(tmp_path):
+    path = tmp_path / "requests.json"
+    commits = []
+    inference_calls = []
+
+    class Editor:
+        def draft(self, prompt, payload, tokens):
+            inference_calls.append(prompt)
+            return f"answered: {prompt}"
+
+    def commit():
+        saved = json.loads(path.read_text())
+        commits.append(len(saved["records"]))
+
+    cache = make_cache(path, Editor, on_response_persisted=commit)
+    assert cache.semantic_draft("Question A", {"source": "same"}, 32) == "answered: Question A"
+    assert commits == [1]
+    assert cache.semantic_draft("Question B", {"source": "same"}, 32) == "answered: Question B"
+    assert commits == [1, 2]
+    assert cache.semantic_draft("Question A", {"source": "same"}, 32) == "answered: Question A"
+    assert commits == [1, 2]
+    assert inference_calls == ["Question A", "Question B"]
+    assert cache.metrics["model_calls"] == 2 and cache.metrics["cache_hits"] == 1
+
+    resumed = make_cache(
+        path,
+        lambda: pytest.fail("resumed cache must not load the model"),
+        replay_only=True,
+        recorded_runtime=cache.identity["runtime"],
+        on_response_persisted=lambda: pytest.fail("replay must not recommit"),
+    )
+    assert resumed.semantic_draft("Question B", {"source": "same"}, 32) == "answered: Question B"
+    assert resumed.metrics["model_calls"] == 0
+
+
+def test_failed_inference_does_not_mark_any_response_as_durably_committed(tmp_path):
+    class Editor:
+        def draft(self, prompt, payload, tokens):
+            raise RuntimeError("model did not finish")
+
+    commits = []
+    path = tmp_path / "requests.json"
+    cache = make_cache(path, Editor, on_response_persisted=lambda: commits.append(True))
+    with pytest.raises(RuntimeError, match="model did not finish"):
+        cache.semantic_draft("Question A", {"source": "same"}, 32)
+    assert commits == [] and not path.exists()
+
+
+def test_reviewer_adapter_forwards_each_completed_response_to_durable_checkpoint(tmp_path):
+    from scripts import tjr_semantic_editor as editor
+
+    durable = []
+
+    class Reviewer:
+        def _review_completion(self, prompt, payload, properties, tokens):
+            return {"verdict": "supported"}
+
+    path = tmp_path / "review-request-cache.json"
+
+    def checkpoint():
+        assert len(json.loads(path.read_text())["records"]) == 1
+        durable.append(True)
+
+    cache = editor.ReviewRequestCache(
+        path, Reviewer, {"source_sha256": "a" * 64}, on_response_persisted=checkpoint
+    )
+    for _ in range(2):
+        assert cache._review_completion(
+            "Evaluate factual QA", {"units": ["Source"]}, {"verdict": {"type": "string"}}, 32
+        ) == {"verdict": "supported"}
+    assert durable == [True]
+    assert cache.metrics["cache_hits"] == 1

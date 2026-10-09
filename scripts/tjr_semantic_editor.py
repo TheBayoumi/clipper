@@ -1130,6 +1130,7 @@ class ReviewRequestCache(EditorialRequestCache):
         replay_only: bool = False,
         recorded_runtime: str | None = None,
         reasoning: bool = False,
+        on_response_persisted: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(
             path,
@@ -1144,6 +1145,7 @@ class ReviewRequestCache(EditorialRequestCache):
             replay_only=replay_only,
             recorded_runtime=recorded_runtime,
             sampling_parameters=THINKING_SAMPLING if reasoning else None,
+            on_response_persisted=on_response_persisted,
         )
 
 
@@ -3533,6 +3535,7 @@ def reviewer_evidence_qualification(
         replay_only=replay_only,
         recorded_runtime=recorded_runtime,
         reasoning=reasoning,
+        on_response_persisted=checkpoint_callback,
     )
     report: dict[str, Any] = {
         "experiment": (

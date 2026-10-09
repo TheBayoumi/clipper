@@ -32,6 +32,7 @@ class EditorialRequestCache:
         replay_only: bool = False,
         recorded_runtime: str | None = None,
         sampling_parameters: dict[str, Any] | None = None,
+        on_response_persisted: Callable[[], None] | None = None,
     ) -> None:
         if (recorded_runtime is not None) != replay_only:
             raise ValueError("a recorded runtime is permitted only for replay without inference")
@@ -40,6 +41,7 @@ class EditorialRequestCache:
         except PackageNotFoundError:
             runtime = "not-installed"
         self.path = path
+        self.on_response_persisted = on_response_persisted
         self.factory = factory
         self.replay_only = replay_only
         self.draft_completion = draft_completion
@@ -177,6 +179,10 @@ class EditorialRequestCache:
             json.dumps({"identity": self.identity, "records": self.records}, indent=2) + "\n"
         )
         partial.replace(self.path)
+        # A qualifying inference is not safely resumable until Modal has
+        # committed these exact bytes. Do not commit cache hits or failures.
+        if not hit and self.on_response_persisted is not None:
+            self.on_response_persisted()
         return json.loads(json.dumps(response))
 
     def _review_completion(
