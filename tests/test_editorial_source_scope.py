@@ -1,71 +1,136 @@
-"""An exact citation remains unapproved until responsiveness and scope qualify."""
+"""Source-only proposition, question intent, and relation remain independent."""
 
 from __future__ import annotations
 
 import pytest
 
+from clipper import editorial_propositions
 from clipper.editorial_source_scope import assess_source_answer_scope
 
 QUESTION = "What was the actual broadcast setting while Bobby paced?"
 UNITS = [
-    "Sean went over the fighter meeting instructions.",
-    "We're on live TV, don't do this. Bobby paced in the back.",
+    "Sean described the briefing years ago.",
+    "The organizer said, 'We're on live TV, don't do this.' Bobby paced in the back.",
 ]
 
 
-def answer():
+def answer(question=QUESTION, quote="We're on live TV", unit=1, units=UNITS):
     return {
-        "question": QUESTION,
+        "question": question,
         "status": "answered",
-        "answer_quote": "We're on live TV",
-        "citation": {
-            "first_unit": 1,
-            "last_unit": 1,
-            "text": UNITS[1],
-        },
+        "answer_quote": quote,
+        "citation": {"first_unit": unit, "last_unit": unit, "text": units[unit]},
     }
 
 
-def test_source_scope_sees_question_quote_and_full_context_but_no_headline_answer():
-    seen = []
+@pytest.fixture(autouse=True)
+def isolate_source_extraction(monkeypatch):
+    original = editorial_propositions.extract_source_proposition
 
-    def completion(prompt, payload, schema, tokens):
-        seen.append(payload)
-        assert "substring can be exact yet nonresponsive" in prompt
-        assert schema["scope"]["enum"]
-        assert tokens == 80
-        return {
-            "responsiveness": "does_not_answer",
-            "scope": "quoted_instruction",
-            "narrative_role": "reported_utterance",
+    def source_only(**kwargs):
+        quote = kwargs["answer_quote"].casefold()
+        spoken = "live tv" in quote or "studio tonight" in quote
+        negative = "don't make" in quote or "never earn" in quote
+        return original(
+            **{key: val for key, val in kwargs.items() if key != "completion"},
+            completion=lambda *_: {
+                "narrative_role": "reported_utterance" if spoken else "recounted_event",
+                "attribution": "reported_speech" if spoken else "first_person_account",
+                "timeframe": "past",
+                "polarity": "negated" if negative else "affirmed",
+                "modality": "asserted",
+                "actor": "guest",
+                "predicate": "account of the described event",
+            },
+        )
+
+    monkeypatch.setattr(editorial_propositions, "extract_source_proposition", source_only)
+
+
+def staged_completion(*, target="described_event_or_state", responsiveness="answers_question"):
+    calls = []
+
+    def fn(prompt, payload, schema, tokens):
+        calls.append((payload, schema))
+        if "question_target" in schema:
+            assert payload.keys() == {"question"}
+            return {"question_target": target}
+        assert schema == {
+            "responsiveness": {
+                "type": "string",
+                "enum": ["answers_question", "does_not_answer", "uncertain"],
+            }
         }
+        assert "source_proposition" in payload
+        assert "proposed_answer" not in payload and "headline" not in payload
+        return {"responsiveness": responsiveness}
 
-    result = assess_source_answer_scope(
-        question=QUESTION, source_answer=answer(), delivered_units=UNITS, completion=completion
+    return fn, calls
+
+
+def test_quoted_admonition_cannot_prove_actual_broadcast_even_if_model_approves():
+    completion, calls = staged_completion(responsiveness="answers_question")
+    scoped = assess_source_answer_scope(
+        question=QUESTION,
+        source_answer=answer(),
+        delivered_units=UNITS,
+        completion=completion,
     )
-    assert set(seen[0]) == {
-        "question",
-        "answer_quote",
-        "cited_first_unit",
-        "cited_last_unit",
-        "source_units",
-    }
-    assert result["scope"] == "quoted_instruction"
-    assert result["narrative_role"] == "reported_utterance"
-    assert result["production_approved"] is False
+    assert len(calls) == 2
+    assert scoped["responsiveness"] == "does_not_answer"
+    assert scoped["scope"] == "quoted_instruction"
+    assert scoped["narrative_role"] == "reported_utterance"
+    assert scoped["source_proposition"]["attribution"] == "reported_speech"
+    assert scoped["scope_correction"] == "reported_words_do_not_directly_establish_event"
+    assert scoped["production_approved"] is False
 
 
-def test_source_scope_abstained_answer_uses_no_model_call():
-    source_answer = {"question": QUESTION, "status": "unknown"}
+def test_quoted_words_can_answer_a_question_about_what_was_said():
+    question = "What did the organizer say?"
+    completion, _ = staged_completion(target="reported_words_or_belief")
+    scoped = assess_source_answer_scope(
+        question=question,
+        source_answer=answer(question=question),
+        delivered_units=UNITS,
+        completion=completion,
+    )
+    assert scoped["responsiveness"] == "answers_question"
+    assert scoped["scope"] == "quoted_instruction"
+    assert scoped["production_approved"] is False
+
+
+def test_negative_firsthand_claim_is_responsive_to_income_questions():
+    source = [
+        "After 60 million views he asked me about income.",
+        "You don't make anything off Instagram.",
+    ]
+    for question, target in (
+        ("What does the speaker say Instagram earns?", "reported_words_or_belief"),
+        ("Does the speaker earn money from those views?", "described_event_or_state"),
+    ):
+        completion, calls = staged_completion(target=target)
+        result = assess_source_answer_scope(
+            question=question,
+            source_answer=answer(question=question, quote="You don't make anything", units=source),
+            delivered_units=source,
+            completion=completion,
+        )
+        assert len(calls) == 2
+        assert result["responsiveness"] == "answers_question"
+        assert result["scope"] == "negated_actual_state"
+        assert result["source_proposition"]["polarity"] == "negated"
+        assert result["production_approved"] is False
+
+
+def test_model_cannot_upgrade_abstained_source_answer():
     result = assess_source_answer_scope(
         question=QUESTION,
-        source_answer=source_answer,
+        source_answer={"question": QUESTION, "status": "unknown"},
         delivered_units=UNITS,
-        completion=lambda *_: (_ for _ in ()).throw(AssertionError("no model call")),
+        completion=lambda *_: (_ for _ in ()).throw(AssertionError("unexpected model call")),
     )
     assert result["responsiveness"] == "uncertain"
     assert result["scope"] == "unknown"
-    assert result["narrative_role"] == "unknown"
     assert result["production_approved"] is False
 
 
@@ -74,12 +139,12 @@ def test_source_scope_abstained_answer_uses_no_model_call():
     [
         ({"question": "Different?"}, "does not match"),
         ({"answer_quote": "invented"}, "not exact delivered"),
-        ({"citation": {"first_unit": 2, "last_unit": 2, "text": ""}}, "positions"),
-        ({"citation": {"first_unit": 1, "last_unit": 1, "text": "changed"}}, "not exact"),
         ({"citation": None}, "exact cited answer"),
+        ({"citation": {"first_unit": 20, "last_unit": 20, "text": ""}}, "positions"),
+        ({"citation": {"first_unit": 1, "last_unit": 1, "text": "fake"}}, "not exact"),
     ],
 )
-def test_source_scope_rejects_tampered_answer_or_citation(mutation, error):
+def test_tampered_source_never_reaches_models(mutation, error):
     with pytest.raises(ValueError, match=error):
         assess_source_answer_scope(
             question=QUESTION,
@@ -89,164 +154,76 @@ def test_source_scope_rejects_tampered_answer_or_citation(mutation, error):
         )
 
 
-@pytest.mark.parametrize(
-    "proposal,error",
-    [
-        ({}, "missing or unknown"),
-        (
-            {
-                "responsiveness": "answers_question",
-                "scope": "invented",
-                "narrative_role": "unknown",
-            },
-            "invalid labels",
-        ),
-    ],
-)
-def test_source_scope_rejects_invalid_model_response(proposal, error):
-    with pytest.raises(ValueError, match=error):
+@pytest.mark.parametrize("target", ["future_guess", 123, None])
+def test_question_only_classifier_rejects_invalid_type(target):
+    calls = []
+
+    def completion(prompt, payload, schema, tokens):
+        calls.append(payload)
+        return {"question_target": target}
+
+    with pytest.raises(ValueError, match="question-only target classifier"):
         assess_source_answer_scope(
             question=QUESTION,
             source_answer=answer(),
             delivered_units=UNITS,
-            completion=lambda *_: proposal,
+            completion=completion,
         )
-
-
-def test_source_scope_requires_question_and_delivered_speech():
-    with pytest.raises(ValueError, match="factual question"):
-        assess_source_answer_scope(
-            question="not a question",
-            source_answer=answer(),
-            delivered_units=UNITS,
-            completion=lambda *_: {},
-        )
-    with pytest.raises(ValueError, match="delivered speech"):
-        assess_source_answer_scope(
-            question=QUESTION,
-            source_answer=answer(),
-            delivered_units=[],
-            completion=lambda *_: {},
-        )
-
-
-def test_past_anecdote_keeps_recounted_event_distinct_from_recording_present():
-    utterances = [
-        "Back when I worked at the radio station, I had a night shift.",
-        "I remember the power went out during that shift.",
-        "My boss yelled that we were broadcasting live, but the lights were out.",
-    ]
-    question = "When did the guest's station lose power?"
-    citation = {"first_unit": 1, "last_unit": 1, "text": utterances[1]}
-    captured = []
-
-    def model(prompt, payload, schema, tokens):
-        captured.append(payload)
-        assert "recount real experiences" in prompt
-        assert "narrative_role" in schema
-        return {
-            "responsiveness": "answers_question",
-            "scope": "actual_event_or_state",
-            "narrative_role": "recounted_event",
-        }
-
-    result = assess_source_answer_scope(
-        question=question,
-        source_answer={
-            "question": question,
-            "status": "answered",
-            "answer_quote": "power went out",
-            "citation": citation,
-        },
-        delivered_units=utterances,
-        completion=model,
-    )
-    assert result["narrative_role"] == "recounted_event"
-    assert "headline" not in captured[0] and "proposed_answer" not in captured[0]
-    assert result["production_approved"] is False
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize(
-    "question,question_target,expected_responsiveness",
+    "judgement",
     [
-        (
-            "Where did the guest actually receive the award?",
-            "described_event_or_state",
-            "does_not_answer",
-        ),
-        (
-            "What did the presenter say during the guest's award story?",
-            "reported_words_or_belief",
-            "answers_question",
-        ),
-        (
-            "What might have happened if the stage lights failed?",
-            "conditional_or_hypothetical",
-            "answers_question",
-        ),
-        ("What happened?", "unknown", "uncertain"),
+        {},
+        {"responsiveness": "somewhat"},
+        {"responsiveness": "answers_question", "scope": "fake"},
     ],
 )
-def test_quoted_speech_needs_question_only_intent_review(
-    question, question_target, expected_responsiveness
-):
-    speech = [
-        "The guest was describing an award ceremony years earlier.",
-        "The presenter told us, 'We're in the studio tonight!'",
-        "At the end of the story the guest received a trophy.",
-    ]
-    cited = {"first_unit": 1, "last_unit": 1, "text": speech[1]}
+def test_responsiveness_contract_is_not_the_source_role_schema(judgement):
     calls = []
 
     def completion(prompt, payload, schema, tokens):
         calls.append(payload)
         if "question_target" in schema:
-            assert payload == {"question": question}
-            assert "source_units" not in payload and "answer_quote" not in payload
-            return {"question_target": question_target}
-        assert "source_units" in payload
-        return {
-            "responsiveness": "answers_question",
-            "scope": "actual_event_or_state",
-            "narrative_role": "reported_utterance",
-        }
+            return {"question_target": "described_event_or_state"}
+        return judgement
 
-    actual = assess_source_answer_scope(
-        question=question,
-        source_answer={
-            "question": question,
-            "status": "answered",
-            "answer_quote": "We're in the studio tonight!",
-            "citation": cited,
-        },
-        delivered_units=speech,
+    with pytest.raises(ValueError, match="relation has invalid responsiveness"):
+        assess_source_answer_scope(
+            question=QUESTION,
+            source_answer=answer(),
+            delivered_units=UNITS,
+            completion=completion,
+        )
+    assert len(calls) == 2
+
+
+def test_unknown_question_intent_cannot_produce_positive_scope():
+    completion, _ = staged_completion(target="unknown")
+    result = assess_source_answer_scope(
+        question=QUESTION,
+        source_answer=answer(),
+        delivered_units=UNITS,
         completion=completion,
     )
-    assert actual["responsiveness"] == expected_responsiveness
-    assert actual["question_target"] == question_target
-    assert actual["production_approved"] is False
-    assert len(calls) == 2
-    assert (actual["scope_correction"] is not None) == (
-        question_target in {"described_event_or_state", "unknown"}
+    assert result["responsiveness"] == "uncertain"
+    assert result["scope_correction"] == "question_intent_unresolved"
+
+
+def test_recounted_event_not_equated_with_quote_inside_story():
+    source = [
+        "Back when I was working at the station, the power went out during my shift.",
+        "My boss yelled that we were broadcasting live, but the lights were out.",
+    ]
+    question = "When did the power go out?"
+    completion, _ = staged_completion()
+    result = assess_source_answer_scope(
+        question=question,
+        source_answer=answer(question=question, quote="power went out", unit=0, units=source),
+        delivered_units=source,
+        completion=completion,
     )
-
-
-def test_question_only_boundary_raises_for_invalid_classifier():
-    calls = 0
-
-    def completion(prompt, payload, schema, tokens):
-        nonlocal calls
-        calls += 1
-        if "question_target" in schema:
-            return {"question_target": "future_guess"}
-        return {
-            "responsiveness": "answers_question",
-            "scope": "actual_event_or_state",
-            "narrative_role": "reported_utterance",
-        }
-
-    with pytest.raises(ValueError, match="question-only target classifier"):
-        assess_source_answer_scope(
-            question=QUESTION, source_answer=answer(), delivered_units=UNITS, completion=completion
-        )
-    assert calls == 2
+    assert result["narrative_role"] == "recounted_event"
+    assert result["scope"] == "actual_event_or_state"
+    assert result["responsiveness"] == "answers_question"

@@ -16,6 +16,7 @@ from typing import Any
 
 from clipper.editorial_answer_comparison import compare_claim_answer
 from clipper.editorial_benchmark import load_frozen_relations
+from clipper.editorial_propositions import validate_source_proposition
 from clipper.editorial_source_scope import Completion
 
 
@@ -42,7 +43,7 @@ def run_answer_comparison_probe(
     if (
         len(relations) != 15
         or not isinstance(saved, dict)
-        or saved.get("experiment") != "independent_source_answer_scope_v2_narrative"
+        or saved.get("experiment") != "independent_source_answer_scope_v3_propositions"
         or saved.get("experiment_complete") is not True
         or saved.get("production_approved") is not False
         or saved.get("source_sha256") != fixture["source_sha256"]
@@ -108,6 +109,12 @@ def run_answer_comparison_probe(
                 or scope.get("answer_quote") != answer["answer_quote"]
             ):
                 raise ValueError("source-scope answer citation differs from pinned speech")
+            validate_source_proposition(
+                scope.get("source_proposition"),
+                answer_quote=answer["answer_quote"],
+                citation=citation,
+                delivered_units=relation.source_units,
+            )
         elif (
             answer.get("status") not in {"unknown", "uncertain"}
             or answer.get("citation") is not None

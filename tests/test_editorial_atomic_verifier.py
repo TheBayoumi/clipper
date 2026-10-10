@@ -4,7 +4,30 @@ from __future__ import annotations
 
 import pytest
 
+from clipper import editorial_propositions
 from clipper.editorial_atomic_verifier import verify_atomic_relation
+
+
+@pytest.fixture(autouse=True)
+def isolate_source_only_extraction(monkeypatch):
+    original = editorial_propositions.extract_source_proposition
+
+    def source_only_evidence(**kwargs):
+        return original(
+            **{key: val for key, val in kwargs.items() if key != "completion"},
+            completion=lambda *_: {
+                "narrative_role": "recounted_event",
+                "attribution": "first_person_account",
+                "polarity": "affirmed",
+                "modality": "asserted",
+                "timeframe": "past",
+                "actor": "Bobby Green",
+                "predicate": "paced",
+            },
+        )
+
+    monkeypatch.setattr(editorial_propositions, "extract_source_proposition", source_only_evidence)
+
 
 QUESTION = "Who paced at the fighter meeting?"
 UNITS = ["Sean Shelby spoke.", "Bobby Green paced in the back."]
@@ -20,18 +43,15 @@ def answer(prompt, payload, schema, tokens):
 
 
 def scope(prompt, payload, schema, tokens):
-    return {
-        "responsiveness": "answers_question",
-        "scope": "actual_event_or_state",
-        "narrative_role": "recounted_event",
-    }
+    if "question_target" in schema:
+        return {"question_target": "described_event_or_state"}
+    return {"responsiveness": "answers_question"}
 
 
 def relation(prompt, payload, schema, tokens):
     return {
         "relation": "equivalent",
-        "claimed_narrative_role": "recounted_event",
-        "source_narrative_role": "recounted_event",
+        "claim_type": "event_or_state",
         "event_link": "same_event",
         "event_first_unit": 1,
         "event_last_unit": 1,
@@ -63,7 +83,7 @@ def test_atomic_relation_withholds_candidate_until_source_is_scoped():
         scope_completion=scope_completion,
         comparison_completion=comparison_completion,
     )
-    assert [name for name, _ in calls] == ["source", "scope", "comparison"]
+    assert [name for name, _ in calls] == ["source", "scope", "scope", "comparison"]
     assert result["verdict"] == "supported_label_unqualified"
     assert result["claim_inventory_semantically_qualified"] is False
     assert result["source_entailment_qualified"] is False
@@ -94,11 +114,11 @@ def test_atomic_relation_stops_on_nonresponsive_exact_quote():
         proposed_answer="Bobby Green",
         delivered_units=UNITS,
         source_completion=answer,
-        scope_completion=lambda *_: {
-            "responsiveness": "does_not_answer",
-            "scope": "quoted_instruction",
-            "narrative_role": "reported_utterance",
-        },
+        scope_completion=lambda _p, _v, schema, _t: (
+            {"question_target": "described_event_or_state"}
+            if "question_target" in schema
+            else {"responsiveness": "does_not_answer"}
+        ),
         comparison_completion=lambda *_: (_ for _ in ()).throw(AssertionError("comparator called")),
     )
     assert result["verdict"] == "uncertain"

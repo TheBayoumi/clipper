@@ -78,105 +78,119 @@ def assess_source_answer_scope(
     cited = " ".join(delivered_units[first : last + 1])
     if citation.get("text") != cited or quote not in cited:
         raise ValueError("source-scope review citation is not exact delivered speech")
-    proposed = completion(
-        "Read the complete delivered source speech and the cited answer_quote. Judge "
-        "whether that quote actually answers the question with the same actor, role, "
-        "event, time and referent. A substring can be exact yet nonresponsive. "
-        "Distinguish an actual setting from words quoted as a warning or instruction, "
-        "and a real outcome from an if/would/could hypothetical. A speaker may actually "
-        "report an opinion without the embedded opinion being an independently verified "
-        "event. A guest can recount real experiences from years before the recording: "
-        "classify these as recounted_event, not a present event and not hypothetical. "
-        "Quoted dialogue inside an anecdote is a reported_utterance, even when it "
-        "asserts that something occurred; it does not by itself validate that event. "
-        "Track who speaks, who acts, what scene they describe, and whether the "
-        "answer quote refers to that scene. Resolve meaning across contiguous "
-        "speaker turns: a direct first-person report followed by an interlocutor's "
-        "generic 'you' restatement may still describe the first speaker. A negative "
-        "answer to a factual or yes/no question is still responsive; distinguish "
-        "a negated actual state from an affirmative outcome or a hypothetical one. "
-        "Classify narrative_role by the role the cited answer plays in the source, "
-        "independent of any headline. "
-        "If the referent or speech-act boundary cannot be resolved from these "
-        "units, choose uncertain or unknown. Do not infer a headline or a proposed "
-        "answer; neither is supplied. Return output_schema JSON only.",
+    from clipper.editorial_propositions import extract_source_proposition
+
+    source_proposition = extract_source_proposition(
+        answer_quote=quote,
+        citation=citation,
+        delivered_units=delivered_units,
+        completion=completion,
+    )
+    # Two independent questions: classify question intent WITHOUT source, then
+    # decide its relation to the PRE-FROZEN source proposition. Neither can
+    # change what the source quote is, nor insert an imagined event.
+    target_response = completion(
+        "Read the QUESTION ONLY, without transcript or answer. Choose "
+        "described_event_or_state for what actually happened, where, when, "
+        "who acted, whether something really occurred, or actual income; "
+        "reported_words_or_belief for what a speaker said, claimed, reported, "
+        "thought or believed; conditional_or_hypothetical for what could, "
+        "might or would happen. Choose unknown if unclear. A question asking "
+        "what a guest SAYS about income is about the guest's reported words; "
+        "asking what the guest ACTUALLY earned is about the described state. "
+        "Return output_schema JSON only.",
+        {"question": question},
+        {"question_target": {"type": "string", "enum": list(_QUESTION_TARGETS)}},
+        80,
+    )
+    if (
+        not isinstance(target_response, dict)
+        or set(target_response) != {"question_target"}
+        or target_response["question_target"] not in _QUESTION_TARGETS
+    ):
+        raise ValueError("question-only target classifier returned invalid fields")
+    question_target = target_response["question_target"]
+
+    # The final model judges only responsiveness. Scope and narrative role are
+    # derived from the already recorded SOURCE-ONLY proposition, not re-guessed
+    # in a question-conditioned model where the broadcast quote was mislabeled.
+    judgement = completion(
+        "Decide if the exact answer_quote and its source_proposition answer the "
+        "question about the SAME actors, referents, event and timeframe, using "
+        "the full source units for resolving pronouns. Negative answers ARE "
+        "responsive: 'you don't make anything from Instagram' can answer what "
+        "the speaker says views earn or whether the speaker receives income. "
+        "Distinguish a quote about a speaker's own income from a universal claim. "
+        "A quoted sentence like 'We're live on TV' inside an old story establishes "
+        "only that those words were reported: it does NOT establish the event's "
+        "actual broadcast setting. The quoted speech may answer 'what was said?' "
+        "but not 'was the event broadcast?'. Conditional claims do not prove "
+        "outcomes. Don't invent referents or unify separate stories; return "
+        "uncertain when context is inadequate. Select a RESPONSIVENESS label only; "
+        "source scope and narrative role are fixed and not for you to change. "
+        "Return output_schema JSON only.",
         {
             "question": question,
+            "question_target": question_target,
             "answer_quote": quote,
-            "cited_first_unit": first,
-            "cited_last_unit": last,
+            "source_proposition": source_proposition,
             "source_units": [
                 {"id": index, "text": unit} for index, unit in enumerate(delivered_units)
             ],
         },
-        {
-            "responsiveness": {"type": "string", "enum": list(_RESPONSIVENESS)},
-            "scope": {"type": "string", "enum": list(_SCOPES)},
-            "narrative_role": {"type": "string", "enum": list(NARRATIVE_ROLES)},
-        },
-        80,
+        {"responsiveness": {"type": "string", "enum": list(_RESPONSIVENESS)}},
+        100,
     )
-    if not isinstance(proposed, dict) or set(proposed) != {
-        "responsiveness",
-        "scope",
-        "narrative_role",
-    }:
-        raise ValueError("source-scope response has missing or unknown fields")
     if (
-        proposed["responsiveness"] not in _RESPONSIVENESS
-        or proposed["scope"] not in _SCOPES
-        or proposed["narrative_role"] not in NARRATIVE_ROLES
+        not isinstance(judgement, dict)
+        or set(judgement) != {"responsiveness"}
+        or judgement["responsiveness"] not in _RESPONSIVENESS
     ):
-        raise ValueError("source-scope response has invalid labels")
-    # A quoted statement may correctly answer "what did X say?" but cannot,
-    # merely by being quoted, establish the historical event or scene it claims.
-    # Classify the question separately without the transcript or quoted answer: a
-    # model must not justify a nonresponsive quote by treating the *question* as
-    # if it had asked about speech. Use this second call only at the high-risk
-    # speech-act boundary; all other scope assessments keep their original path.
-    question_target = None
+        raise ValueError("source-question relation has invalid responsiveness")
+    responsiveness = judgement["responsiveness"]
+    attribution = source_proposition["attribution"]
+    modality = source_proposition["modality"]
+    polarity = source_proposition["polarity"]
+    role = source_proposition["narrative_role"]
+
+    if attribution == "reported_speech":
+        scope = "quoted_instruction"
+    elif attribution == "reported_belief":
+        scope = "actual_report_of_opinion"
+    elif modality in {"conditional", "hypothetical"}:
+        scope = "hypothetical_or_conditional"
+    elif polarity == "negated":
+        scope = "negated_actual_state"
+    elif attribution == "unknown" or role == "unknown":
+        scope = "unknown"
+    else:
+        scope = "actual_event_or_state"
+
     correction = None
-    if proposed["responsiveness"] == "answers_question" and proposed["narrative_role"] in {
-        "reported_utterance",
-        "reported_belief",
-    }:
-        classification = completion(
-            "Interpret only the question, independently of any source transcript or "
-            "proposed answer. Choose described_event_or_state when asking what really "
-            "happened, the actual occasion/setting, or a person's actual action or "
-            "state, even if the narrative is about the speaker's past. Choose "
-            "reported_words_or_belief only when the question itself asks what "
-            "someone said, claimed, was told, thought, or believed. Choose "
-            "conditional_or_hypothetical when the question asks what might, could "
-            "or would have happened. Do not assume quoted speech establishes an "
-            "event. Return output_schema JSON only.",
-            {"question": question},
-            {"question_target": {"type": "string", "enum": list(_QUESTION_TARGETS)}},
-            80,
-        )
-        if (
-            not isinstance(classification, dict)
-            or set(classification) != {"question_target"}
-            or classification["question_target"] not in _QUESTION_TARGETS
-        ):
-            raise ValueError("question-only target classifier returned invalid fields")
-        question_target = classification["question_target"]
-        if question_target == "described_event_or_state":
-            # This says only that the chosen quotation does not directly prove
-            # the event being asked about. Source answer generation may recover
-            # by finding *direct event evidence* in other original speech units.
-            proposed = {**proposed, "responsiveness": "does_not_answer"}
-            correction = "reported_words_do_not_directly_establish_event"
-        elif question_target == "unknown":
-            proposed = {**proposed, "responsiveness": "uncertain"}
-            correction = "question_intent_unresolved"
+    if (
+        attribution in {"reported_speech", "reported_belief"}
+        and question_target == "described_event_or_state"
+        and responsiveness == "answers_question"
+    ):
+        responsiveness = "does_not_answer"
+        correction = "reported_words_do_not_directly_establish_event"
+    elif question_target == "unknown" and responsiveness == "answers_question":
+        responsiveness = "uncertain"
+        correction = "question_intent_unresolved"
+    elif scope == "unknown" and responsiveness == "answers_question":
+        responsiveness = "uncertain"
+        correction = "unresolved_source_proposition"
+
     return {
         "question": question,
         "answer_quote": quote,
         "citation": citation,
-        **proposed,
+        "responsiveness": responsiveness,
+        "scope": scope,
+        "narrative_role": role,
         "question_target": question_target,
         "scope_correction": correction,
+        "source_proposition": source_proposition,
         "diagnostic_only": True,
         "production_approved": False,
     }

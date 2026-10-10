@@ -12,6 +12,45 @@ from clipper.editorial_source_scope import NARRATIVE_ROLES, Completion
 
 _RELATIONS = ("equivalent", "different", "uncertain")
 _EVENT_LINKS = ("same_event", "different_event", "unresolved")
+# A comparison is about what the candidate asserts. Source interpretation
+# belongs to the independent source-only proposition and must not be predicted
+# again using an incompatible source-scope vocabulary.
+_CLAIM_TYPES = (
+    "event_or_state",
+    "reported_words",
+    "reported_belief",
+    "conditional_or_hypothetical",
+    "unknown",
+)
+
+
+def _source_claim_type(scope_review: dict[str, Any]) -> str:
+    proposition = scope_review.get("source_proposition")
+    if isinstance(proposition, dict):
+        if proposition.get("attribution") == "reported_speech":
+            return "reported_words"
+        if proposition.get("attribution") == "reported_belief":
+            return "reported_belief"
+        if proposition.get("modality") in {"conditional", "hypothetical"}:
+            return "conditional_or_hypothetical"
+        if proposition.get("attribution") in {
+            "first_person_account",
+            "third_person_account",
+            "general_claim",
+        }:
+            return "event_or_state"
+        return "unknown"
+    # Legacy direct API inputs remain diagnostic, never source qualification.
+    role = scope_review.get("narrative_role")
+    return {
+        "recounted_event": "event_or_state",
+        "present_event_or_state": "event_or_state",
+        "reported_utterance": "reported_words",
+        "reported_belief": "reported_belief",
+        "conditional_or_hypothetical": "conditional_or_hypothetical",
+    }.get(role, "unknown")
+
+
 _SOURCE_SCOPES = {
     "actual_event_or_state",
     "actual_report_of_opinion",
@@ -54,6 +93,8 @@ def compare_claim_answer(
         or scope_review.get("production_approved") is not False
     ):
         raise ValueError("answer comparison needs a responsive, scoped source answer")
+    from clipper.editorial_propositions import validate_source_proposition
+
     citation = source_answer.get("citation")
     quote = source_answer.get("answer_quote")
     if not isinstance(citation, dict) or not isinstance(quote, str) or not quote:
@@ -67,6 +108,13 @@ def compare_claim_answer(
         or quote not in citation["text"]
     ):
         raise ValueError("answer comparison citation differs from delivered speech")
+    if "source_proposition" in scope_review:
+        validate_source_proposition(
+            scope_review["source_proposition"],
+            answer_quote=quote,
+            citation=citation,
+            delivered_units=delivered_units,
+        )
     proposed = completion(
         "Compare proposed_answer with source_answer_quote as answers to the same "
         "question, using ALL source_units to resolve who was speaking, the story's "
@@ -83,9 +131,12 @@ def compare_claim_answer(
         "paraphrases which omit grammatical scaffolding without changing actors, "
         "roles, polarity, temporal meaning or event. Do not demand surface word "
         "identity when the same answer is clearly entailed. Distinguish the roles "
-        "of the headline claim and supporting source proposition: recounted event, "
-        "present event/state, reported utterance, reported belief, conditional, "
-        "general discussion, or unknown. Choose same_event only when the source "
+        "of the proposed claim only. source_proposition is a previously recorded "
+        "source-only account with fixed attribution, modality and polarity: do "
+        "not reinterpret it from the proposed headline. Claim type is either "
+        "event_or_state, reported_words, reported_belief, "
+        "conditional_or_hypothetical or unknown; these labels are distinct from "
+        "any source-scope values. Choose same_event only when the source "
         "supports the asserted relation for the SAME actors, action, occasion, scope "
         "and timeline; preserve actual-versus-conditional meaning, negation and "
         "attribution. A different_event label means the source demonstrates that "
@@ -103,6 +154,7 @@ def compare_claim_answer(
             "source_answer_quote": quote,
             "source_scope": scope_review["scope"],
             "blind_source_narrative_role": scope_review["narrative_role"],
+            "source_proposition": scope_review.get("source_proposition"),
             "cited_first_unit": first,
             "cited_last_unit": last,
             "source_units": [
@@ -111,8 +163,7 @@ def compare_claim_answer(
         },
         {
             "relation": {"type": "string", "enum": list(_RELATIONS)},
-            "claimed_narrative_role": {"type": "string", "enum": list(NARRATIVE_ROLES)},
-            "source_narrative_role": {"type": "string", "enum": list(NARRATIVE_ROLES)},
+            "claim_type": {"type": "string", "enum": list(_CLAIM_TYPES)},
             "event_link": {"type": "string", "enum": list(_EVENT_LINKS)},
             "event_first_unit": {"type": "integer", "enum": [-1, *range(len(delivered_units))]},
             "event_last_unit": {"type": "integer", "enum": [-1, *range(len(delivered_units))]},
@@ -121,8 +172,7 @@ def compare_claim_answer(
     )
     required = {
         "relation",
-        "claimed_narrative_role",
-        "source_narrative_role",
+        "claim_type",
         "event_link",
         "event_first_unit",
         "event_last_unit",
@@ -131,8 +181,7 @@ def compare_claim_answer(
         raise ValueError("narrative comparison has missing or unknown fields")
     if (
         proposed["relation"] not in _RELATIONS
-        or proposed["claimed_narrative_role"] not in NARRATIVE_ROLES
-        or proposed["source_narrative_role"] not in NARRATIVE_ROLES
+        or proposed["claim_type"] not in _CLAIM_TYPES
         or proposed["event_link"] not in _EVENT_LINKS
     ):
         raise ValueError("narrative comparison returned invalid relation or context labels")
@@ -157,10 +206,10 @@ def compare_claim_answer(
     # that a quoted instruction, imagined outcome, or recollection is an
     # independently occurring event. Do not change a model's 'different' into
     # approval; ambiguous linkage can only reduce confidence.
+    source_type = _source_claim_type(scope_review)
     narrative_consistent = (
-        proposed["claimed_narrative_role"] == proposed["source_narrative_role"]
-        and proposed["claimed_narrative_role"] != "unknown"
-        and proposed["source_narrative_role"] == scope_review["narrative_role"]
+        proposed["claim_type"] == source_type
+        and source_type != "unknown"
         and proposed["event_link"] == "same_event"
     )
     relation = (
@@ -175,8 +224,9 @@ def compare_claim_answer(
         "source_scope": scope_review["scope"],
         "relation": relation,
         "narrative_evidence": {
-            "claimed_role": proposed["claimed_narrative_role"],
-            "source_role": proposed["source_narrative_role"],
+            "claimed_type": proposed["claim_type"],
+            "source_type": source_type,
+            "source_anchor_id": (scope_review.get("source_proposition") or {}).get("anchor_id"),
             "blind_source_role": scope_review["narrative_role"],
             "event_link": proposed["event_link"],
             "event_source_span": {

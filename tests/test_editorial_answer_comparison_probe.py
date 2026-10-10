@@ -10,6 +10,7 @@ import pytest
 
 from clipper import editorial_answer_comparison_probe as probe
 from clipper.editorial_benchmark import FrozenRelation
+from clipper.editorial_propositions import extract_source_proposition
 
 QUESTION = "Who paced?"
 UNITS = ("Bobby paced.",)
@@ -77,6 +78,20 @@ def inputs(tmp_path: Path) -> tuple[Path, ...]:
             "diagnostic_only": True,
             "production_approved": False,
         }
+        scope["source_proposition"] = extract_source_proposition(
+            answer_quote="Bobby",
+            citation=citation,
+            delivered_units=UNITS,
+            completion=lambda *_: {
+                "narrative_role": "recounted_event",
+                "attribution": "first_person_account",
+                "timeframe": "past",
+                "polarity": "affirmed",
+                "modality": "asserted",
+                "actor": "Bobby",
+                "predicate": "paced",
+            },
+        )
         if index == 1:
             answer.update(status="unknown", answer_quote="", citation=None)
             scope = {
@@ -103,7 +118,7 @@ def inputs(tmp_path: Path) -> tuple[Path, ...]:
     saved.write_text(
         json.dumps(
             {
-                "experiment": "independent_source_answer_scope_v2_narrative",
+                "experiment": "independent_source_answer_scope_v3_propositions",
                 "experiment_complete": True,
                 "production_approved": False,
                 "source_sha256": "a" * 64,
@@ -148,8 +163,7 @@ def test_scores_complete_pipeline_and_never_approves(tmp_path, monkeypatch):
         assert payload["source_units"][0]["text"] == UNITS[0]
         return {
             "relation": "equivalent",
-            "claimed_narrative_role": "recounted_event",
-            "source_narrative_role": "recounted_event",
+            "claim_type": "event_or_state",
             "event_link": "same_event",
             "event_first_unit": 0,
             "event_last_unit": 0,

@@ -4731,7 +4731,7 @@ def source_scope_probe(
         output.with_name("review-request-cache.json"),
         factory,
         {
-            "experiment": "source-answer-scope-v1",
+            "experiment": "source-answer-scope-v2-propositions",
             "fixture_sha256": hashlib.sha256(fixture_path.read_bytes()).hexdigest(),
             "baseline_proof_sha256": hashlib.sha256(proof_path.read_bytes()).hexdigest(),
             "source_answer_report_sha256": hashlib.sha256(
@@ -4781,7 +4781,7 @@ def answer_comparison_probe(
         output.with_name("review-request-cache.json"),
         factory,
         {
-            "experiment": "source-first-answer-comparison-v1",
+            "experiment": "source-first-answer-comparison-v2-propositions",
             "fixture_sha256": hashlib.sha256(fixture_path.read_bytes()).hexdigest(),
             "baseline_proof_sha256": hashlib.sha256(proof_path.read_bytes()).hexdigest(),
             "source_scope_report_sha256": hashlib.sha256(

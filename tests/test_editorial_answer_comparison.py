@@ -21,8 +21,13 @@ def response(
 ):
     return {
         "relation": relation,
-        "claimed_narrative_role": claimed_role,
-        "source_narrative_role": source_role,
+        "claim_type": {
+            "recounted_event": "event_or_state",
+            "present_event_or_state": "event_or_state",
+            "reported_utterance": "reported_words",
+            "reported_belief": "reported_belief",
+            "conditional_or_hypothetical": "conditional_or_hypothetical",
+        }.get(claimed_role, "unknown"),
         "event_link": event_link,
         "event_first_unit": unit if event_link != "unresolved" else -1,
         "event_last_unit": unit if event_link != "unresolved" else -1,
@@ -141,7 +146,7 @@ def test_comparison_rejects_empty_answer_quote_after_scope_match():
         {**response(), "relation": "same"},
         {**response(), "event_first_unit": 99},
         {**response(), "event_link": "unresolved"},
-        {**response(), "claimed_narrative_role": "actual_television_show"},
+        {**response(), "claim_type": "actual_television_show"},
         {**response(), "event_first_unit": True},
     ],
 )
