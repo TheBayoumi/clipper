@@ -4143,6 +4143,7 @@ def podcast_narrative_gpu_qualification(
         "model_profile": profile,
         "job_key": job_key,
         "semantic_pass": False,
+        "gpu_execution_succeeded": False,
         "qualification_rule": (
             "The frozen 15 transcript-derived cases are regression controls, not "
             "independent audio-reviewed cross-podcast qualification. Automatic "
@@ -4156,19 +4157,48 @@ def podcast_narrative_gpu_qualification(
         try:
             result = qualify_podcast_narrative_gpu.remote(packed, profile, job_key, code_hash)
             report["worker"] = {key: value for key, value in result.items() if key != "file_hashes"}
-            for name in result.get("files", []):
+            file_hashes = result.get("file_hashes")
+            files = result.get("files")
+            if (
+                not isinstance(files, list)
+                or not files
+                or not isinstance(file_hashes, dict)
+                or set(file_hashes) != set(files)
+                or result.get("experiment_complete") is not True
+                or result.get("error")
+                or not isinstance(result.get("scoring"), dict)
+            ):
+                raise ValueError("GPU worker did not return complete verifiable evidence")
+            for name in files:
+                if (
+                    not isinstance(name, str)
+                    or not name
+                    or name.startswith("/")
+                    or ".." in Path(name).parts
+                ):
+                    raise ValueError("GPU worker provided unsafe evidence path")
+                digest = file_hashes[name]
+                if not isinstance(digest, str) or len(digest) != 64:
+                    raise ValueError("GPU worker provided invalid evidence hash")
                 target = directory / name
                 target.parent.mkdir(parents=True, exist_ok=True)
+                content_hash = hashlib.sha256()
                 with target.open("wb") as sink:
                     for chunk in volume.read_file(f"reviewer/narrative/{job_key}/{name}"):
+                        content_hash.update(chunk)
                         sink.write(chunk)
-            report["experiment_complete"] = result.get("experiment_complete") is True
+                if content_hash.hexdigest() != digest:
+                    raise ValueError(f"Downloaded GPU evidence hash mismatch: {name}")
+            report["experiment_complete"] = True
+            report["gpu_execution_succeeded"] = True
             report["semantic_pass"] = result.get("semantic_pass") is True
         except Exception as error:
             report["error"] = f"{type(error).__name__}: {error}"
         finally:
             output.write_text(json.dumps(report, indent=2) + "\n")
-    return int(not report["semantic_pass"])
+    # An unsuccessful SEMANTIC result is deliberately not an execution failure.
+    # GitHub enforces acceptance in a separate job, retaining the strict gate.
+    return int(not report["gpu_execution_succeeded"])
 
 
 def reviewer_preflight(transcript_path: Path, output: Path) -> int:

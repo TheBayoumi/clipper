@@ -63,6 +63,9 @@ def test_gpu_diagnostic_preserves_exact_source_bytes_and_never_approves(tmp_path
     report_path = tmp_path / "reviewer-preflight.json"
     observed = []
 
+    payload_bytes = b'{"sample": "GPU output"}'
+    evidence_name = "scope/cold-proof.json"
+
     def remote(packed, profile, job_key, code_hash):
         unpacked = json.loads(gzip.decompress(packed))
         observed.append(unpacked)
@@ -75,7 +78,15 @@ def test_gpu_diagnostic_preserves_exact_source_bytes_and_never_approves(tmp_path
                 packed + json.dumps(profile, sort_keys=True).encode() + code_hash.encode()
             ).hexdigest()
         )
-        return {"experiment_complete": True, "semantic_pass": False, "files": []}
+        return {
+            "experiment_complete": True,
+            "semantic_pass": False,
+            "diagnostic_only": True,
+            "production_approved": False,
+            "scoring": {"cold": {}, "warm": {}},
+            "files": [evidence_name],
+            "file_hashes": {evidence_name: hashlib.sha256(payload_bytes).hexdigest()},
+        }
 
     monkeypatch.setitem(sys.modules, "modal", SimpleNamespace(enable_output=lambda: nullcontext()))
     monkeypatch.setitem(
@@ -84,7 +95,7 @@ def test_gpu_diagnostic_preserves_exact_source_bytes_and_never_approves(tmp_path
         SimpleNamespace(
             app=SimpleNamespace(run=lambda: nullcontext()),
             qualify_podcast_narrative_gpu=SimpleNamespace(remote=remote),
-            volume=SimpleNamespace(read_file=lambda *_: []),
+            volume=SimpleNamespace(read_file=lambda *_: [payload_bytes]),
         ),
     )
     outcome = editor.podcast_narrative_gpu_qualification(
@@ -95,9 +106,13 @@ def test_gpu_diagnostic_preserves_exact_source_bytes_and_never_approves(tmp_path
         paths["source_answer"],
         report_path,
     )
-    assert outcome == 1 and len(observed) == 1
+    assert outcome == 0 and len(observed) == 1
     report = json.loads(report_path.read_text())
     assert report["experiment_complete"] is True
+    assert report["gpu_execution_succeeded"] is True
+    assert (
+        tmp_path / "reviewer-gpu-evidence" / "narrative" / evidence_name
+    ).read_bytes() == payload_bytes
     assert report["semantic_pass"] is False
     assert report["production_approved"] is False
     assert report["diagnostic_only"] is True

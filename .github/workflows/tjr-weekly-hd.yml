@@ -724,6 +724,12 @@ jobs:
           TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
           test -n "$TRANSCRIPT"
           python -m scripts.tjr_semantic_editor --reviewer-preflight-transcript "$TRANSCRIPT" --output reviewer-preflight.json
+      - name: Report 30B GPU execution and semantic status separately
+        if: always() && inputs.reviewer_model_probe == 'narrative_gpu'
+        run: |
+          python -m clipper.editorial_gpu_reporting \
+            --report reviewer-preflight.json \
+            --summary "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -734,6 +740,38 @@ jobs:
             reviewer-gpu-evidence/**/*.json
             modal-build-*.log
           if-no-files-found: warn
+
+  editorial_semantic_gate:
+    name: Editorial semantic acceptance (strict 15/15 gate)
+    needs: editorial_preflight
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.source_mode == 'validate_only' &&
+      inputs.editorial_preflight &&
+      inputs.reviewer_model_probe == 'narrative_gpu' &&
+      needs.editorial_preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Download completed GPU evidence from this workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: reviewer-preflight-${{ github.run_id }}
+          path: reviewer-report
+      - name: Enforce frozen editorial quality, never production approval
+        run: |
+          python -m clipper.editorial_gpu_reporting \
+            --report reviewer-report/reviewer-preflight.json \
+            --summary "$GITHUB_STEP_SUMMARY" --require-semantic
 
   youtube_modal_egress:
     name: Modal YouTube original + editorial drafts (${{ inputs.target_channel_id }})
