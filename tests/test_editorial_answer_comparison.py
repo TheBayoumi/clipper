@@ -24,8 +24,8 @@ def response(
         "claimed_narrative_role": claimed_role,
         "source_narrative_role": source_role,
         "event_link": event_link,
-        "event_first_unit": unit if event_link == "same_event" else -1,
-        "event_last_unit": unit if event_link == "same_event" else -1,
+        "event_first_unit": unit if event_link != "unresolved" else -1,
+        "event_last_unit": unit if event_link != "unresolved" else -1,
     }
 
 
@@ -272,10 +272,7 @@ def test_podcast_context_distinguishes_narrated_events_and_embedded_dialogue(
     assert result["relation"] == expected
     assert result["production_approved"] is False
     assert result["narrative_evidence"]["relation_before_guard"] == "equivalent"
-    if alignment == "same_event":
-        assert result["narrative_evidence"]["event_source_span"]["text"] == source_units[0]
-    else:
-        assert result["narrative_evidence"]["event_source_span"] is None
+    assert result["narrative_evidence"]["event_source_span"]["text"] == source_units[0]
 
 
 def test_narrative_comparator_cannot_override_blind_source_role():
@@ -290,3 +287,88 @@ def test_narrative_comparator_cannot_override_blind_source_role():
     )
     assert result["relation"] == "uncertain"
     assert result["narrative_evidence"]["blind_source_role"] == "reported_utterance"
+
+
+@pytest.mark.parametrize(
+    "source_units,question,answer_quote,proposal,event_link,unit",
+    [
+        (
+            ["Years ago our singer cancelled the tour.", "The drummer went on stage instead."],
+            "Who actually went on stage?",
+            "The drummer",
+            "singer",
+            "different_event",
+            1,
+        ),
+        (
+            [
+                "A guest recalled that her former boss gave the keynote.",
+                "Her colleague was responsible for lighting.",
+            ],
+            "Who gave the keynote?",
+            "her former boss",
+            "her colleague",
+            "different_event",
+            0,
+        ),
+        (
+            [
+                "I never earned any money from those views.",
+                "Had it been my channel I could have earned millions.",
+            ],
+            "What did the views actually earn?",
+            "never earned any money",
+            "millions",
+            "different_event",
+            0,
+        ),
+    ],
+)
+def test_negative_event_link_can_cite_contradicting_speech(
+    source_units, question, answer_quote, proposal, event_link, unit
+):
+    cited = " ".join(source_units)
+    source_answer = {
+        "question": question,
+        "status": "answered",
+        "answer_quote": answer_quote,
+        "citation": {"first_unit": 0, "last_unit": 1, "text": cited},
+    }
+    scope = {
+        "question": question,
+        "responsiveness": "answers_question",
+        "scope": "actual_event_or_state",
+        "narrative_role": "recounted_event",
+        "answer_quote": answer_quote,
+        "citation": source_answer["citation"],
+        "diagnostic_only": True,
+        "production_approved": False,
+    }
+    result = compare_claim_answer(
+        question=question,
+        proposed_answer=proposal,
+        source_answer=source_answer,
+        scope_review=scope,
+        delivered_units=source_units,
+        completion=lambda *_: response("different", event_link=event_link, unit=unit),
+    )
+    assert result["relation"] == "different"
+    assert result["narrative_evidence"]["event_source_span"]["text"] == source_units[unit]
+    assert result["production_approved"] is False
+
+
+def test_unresolved_link_cannot_cite_an_event():
+    with pytest.raises(ValueError, match="positions disagree"):
+        compare(
+            completion=lambda *_: {
+                **response("uncertain", event_link="unresolved"),
+                "event_first_unit": 1,
+                "event_last_unit": 1,
+            }
+        )
+
+
+def test_equivalence_cannot_pass_using_negative_event_evidence():
+    result = compare(completion=lambda *_: response("equivalent", event_link="different_event"))
+    assert result["relation"] == "uncertain"
+    assert result["production_approved"] is False

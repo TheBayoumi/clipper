@@ -78,15 +78,23 @@ def compare_claim_answer(
         "a headline explicitly about what someone said may be supported by the quoted "
         "utterance itself. Track referents across natural speech, including pronouns, "
         "interruptions, scene changes, and time shifts. Do not infer new details merely "
-        "because two statements occur in the same anecdote. Distinguish the roles "
+        "because two statements occur in the same anecdote. Resolve fragments of "
+        "speech that cross adjacent source-unit boundaries, and accept natural "
+        "paraphrases which omit grammatical scaffolding without changing actors, "
+        "roles, polarity, temporal meaning or event. Do not demand surface word "
+        "identity when the same answer is clearly entailed. Distinguish the roles "
         "of the headline claim and supporting source proposition: recounted event, "
         "present event/state, reported utterance, reported belief, conditional, "
         "general discussion, or unknown. Choose same_event only when the source "
         "supports the asserted relation for the SAME actors, action, occasion, scope "
         "and timeline; preserve actual-versus-conditional meaning, negation and "
-        "attribution; different_event for incompatible references, unresolved for "
-        "ambiguous linkage. Cite the narrowest contiguous original source-unit "
-        "range establishing that event linkage; do not author source quotes. "
+        "attribution. A different_event label means the source demonstrates that "
+        "the ASSERTED relation or actor is incompatible, even if the statement "
+        "belongs to the same scene. For different_event you MAY cite the original "
+        "contradictory source units: negative evidence is still evidence. For "
+        "same_event you MUST cite supporting units. For unresolved use -1/-1 "
+        "because no event linkage was established. Cite the narrowest contiguous "
+        "original source-unit range; do not author source quotes. "
         "Relation equivalent requires the SAME meaning, not merely a similar topic. "
         "Return output_schema JSON only.",
         {
@@ -137,7 +145,13 @@ def compare_claim_answer(
         )
     ):
         raise ValueError("narrative comparison returned invalid source positions")
-    if (proposed["event_link"] == "same_event") != (event_first >= 0):
+    # A model can cite the transcript to demonstrate a *contradiction*. The
+    # earlier biconditional rejected all such negative evidence, obscuring three
+    # correct 'different' judgments in real GPU qualification. Only unresolved
+    # linkages must abstain from citations; positive matches must cite support.
+    if (proposed["event_link"] == "same_event" and event_first < 0) or (
+        proposed["event_link"] == "unresolved" and event_first >= 0
+    ):
         raise ValueError("narrative event linkage and source positions disagree")
     # An equivalent topic is not proof that it refers to the same event, or
     # that a quoted instruction, imagined outcome, or recollection is an

@@ -164,3 +164,89 @@ def test_past_anecdote_keeps_recounted_event_distinct_from_recording_present():
     assert result["narrative_role"] == "recounted_event"
     assert "headline" not in captured[0] and "proposed_answer" not in captured[0]
     assert result["production_approved"] is False
+
+
+@pytest.mark.parametrize(
+    "question,question_target,expected_responsiveness",
+    [
+        (
+            "Where did the guest actually receive the award?",
+            "described_event_or_state",
+            "does_not_answer",
+        ),
+        (
+            "What did the presenter say during the guest's award story?",
+            "reported_words_or_belief",
+            "answers_question",
+        ),
+        (
+            "What might have happened if the stage lights failed?",
+            "conditional_or_hypothetical",
+            "answers_question",
+        ),
+        ("What happened?", "unknown", "uncertain"),
+    ],
+)
+def test_quoted_speech_needs_question_only_intent_review(
+    question, question_target, expected_responsiveness
+):
+    speech = [
+        "The guest was describing an award ceremony years earlier.",
+        "The presenter told us, 'We're in the studio tonight!'",
+        "At the end of the story the guest received a trophy.",
+    ]
+    cited = {"first_unit": 1, "last_unit": 1, "text": speech[1]}
+    calls = []
+
+    def completion(prompt, payload, schema, tokens):
+        calls.append(payload)
+        if "question_target" in schema:
+            assert payload == {"question": question}
+            assert "source_units" not in payload and "answer_quote" not in payload
+            return {"question_target": question_target}
+        assert "source_units" in payload
+        return {
+            "responsiveness": "answers_question",
+            "scope": "actual_event_or_state",
+            "narrative_role": "reported_utterance",
+        }
+
+    actual = assess_source_answer_scope(
+        question=question,
+        source_answer={
+            "question": question,
+            "status": "answered",
+            "answer_quote": "We're in the studio tonight!",
+            "citation": cited,
+        },
+        delivered_units=speech,
+        completion=completion,
+    )
+    assert actual["responsiveness"] == expected_responsiveness
+    assert actual["question_target"] == question_target
+    assert actual["production_approved"] is False
+    assert len(calls) == 2
+    assert (actual["scope_correction"] is not None) == (
+        question_target in {"described_event_or_state", "unknown"}
+    )
+
+
+def test_question_only_boundary_raises_for_invalid_classifier():
+    calls = 0
+
+    def completion(prompt, payload, schema, tokens):
+        nonlocal calls
+        calls += 1
+        if "question_target" in schema:
+            return {"question_target": "future_guess"}
+        return {
+            "responsiveness": "answers_question",
+            "scope": "actual_event_or_state",
+            "narrative_role": "reported_utterance",
+        }
+
+    with pytest.raises(ValueError, match="question-only target classifier"):
+        assess_source_answer_scope(
+            question=QUESTION, source_answer=answer(), delivered_units=UNITS, completion=completion
+        )
+    assert calls == 2
