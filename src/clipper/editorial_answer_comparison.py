@@ -42,6 +42,8 @@ def _source_claim_type(scope_review: dict[str, Any]) -> str:
         return "unknown"
     # Legacy direct API inputs remain diagnostic, never source qualification.
     role = scope_review.get("narrative_role")
+    if not isinstance(role, str):
+        return "unknown"
     return {
         "recounted_event": "event_or_state",
         "present_event_or_state": "event_or_state",

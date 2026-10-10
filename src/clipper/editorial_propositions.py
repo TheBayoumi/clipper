@@ -29,7 +29,7 @@ MODALITIES = ("asserted", "conditional", "hypothetical", "unknown")
 
 
 def validate_source_proposition(
-    proposition: dict[str, Any],
+    proposition: object,
     *,
     answer_quote: str,
     citation: dict[str, Any],
