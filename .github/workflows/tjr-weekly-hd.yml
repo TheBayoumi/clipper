@@ -784,7 +784,6 @@ jobs:
       github.event_name == 'workflow_dispatch' &&
       inputs.source_mode == 'modal_direct'
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
     outputs:
       cache_run_id: ${{ steps.editorial_cache.outputs.run_id }}
     permissions:
