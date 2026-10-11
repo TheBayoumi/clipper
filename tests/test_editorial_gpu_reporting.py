@@ -155,6 +155,9 @@ def test_narrative_quality_has_separate_github_actions_gate():
     assert "--require-semantic" not in reporter["run"]
     gate = jobs["editorial_semantic_gate"]
     assert gate["needs"] == "editorial_preflight"
+    assert gate["env"]["PYTHONPATH"] == "${{ github.workspace }}/src"
+    assert "Verify editorial gate is importable" in gate["steps"][2]["name"]
+    assert "from clipper.editorial_gpu_reporting import main" in gate["steps"][2]["run"]
     assert "inputs.reviewer_model_probe == 'narrative_gpu'" in gate["if"]
     assert "needs.editorial_preflight.result == 'success'" in gate["if"]
     assert "--require-semantic" in gate["steps"][-1]["run"]
