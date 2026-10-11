@@ -3679,3 +3679,49 @@ def test_model_malformed_headline_response_exhausts_with_zero_factual_approvals(
     assert result["headline"] == ""
     assert result["headline_supported"] is False
     assert all(row["verdict"] == "unverified" for row in result["headline_audits"])
+
+
+def test_source_evidence_error_rejects_one_candidate_and_checkpoint_continues(tmp_path):
+    import json
+
+    from clipper.editorial_engine import SourceEvidenceError
+    from clipper.models import ClipCandidate
+    from scripts.tjr_semantic_editor import refine_contextual_candidates
+
+    segments = [TranscriptSegment(0, 25, "Security stopped the performer at his own show.")]
+    proposals = [ClipCandidate("v", 0, 25, segments[0].text, score) for score in (11, 10)]
+    calls = []
+
+    def selector(context):
+        return {
+            "keep": True,
+            "start_unit": 0,
+            "end_unit": 0,
+            "opening": 4,
+            "story": 4,
+            "ending": 4,
+            "reason": "A complete access story is resolved.",
+        }
+
+    def reviewer(context):
+        calls.append(context)
+        if len(calls) == 1:
+            raise SourceEvidenceError("evidence range is reversed, absent or outside its namespace")
+        return _review(context)
+
+    path = tmp_path / "editorial-cache.json"
+    picks, audit = refine_contextual_candidates(
+        _brief(),
+        proposals,
+        segments,
+        source_sha256="a" * 64,
+        cache_path=path,
+        assessor=selector,
+        reviewer=reviewer,
+    )
+    assert len(calls) == 2 and len(picks) == 1
+    assert len(audit["assessments"]) == 2
+    assert audit["assessments"][0]["rejection"] == "INVALID_SOURCE_EVIDENCE"
+    assert "exchange_review" not in audit["assessments"][0]
+    assert audit["assessments"][1]["exchange_review"]["headline_supported"] is True
+    assert json.loads(path.read_text())["complete"] is True

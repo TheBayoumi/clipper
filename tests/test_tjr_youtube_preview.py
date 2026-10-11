@@ -813,3 +813,74 @@ def test_clip_cache_reuses_verified_files_and_rejects_corruption(tmp_path):
     assert not _restore_clip_render(out.parent, restored, "changed-renderer")
     out.write_bytes(b"corrupted")
     assert not _restore_clip_render(out.parent, restored, "identity")
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [None, "source_hash", "source_id", "roundtrip_hash", "missing_proof", "coverage", "timestamps"],
+)
+def test_failed_production_transcript_cache_uses_verified_roundtrip_without_mp4_qa(
+    tmp_path: Path,
+    fault: str | None,
+) -> None:
+    import hashlib
+
+    source = tmp_path / "original.mp4"
+    source.write_bytes(b"actual validated source bytes from previous run")
+    sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    run = tmp_path / "prior" / "tjr-modal-artifacts" / "attempt-1"
+    segment_dir = run / "reach-double-coverage-previous-run"
+    segment_dir.mkdir(parents=True)
+    probe = tmp_path / "prior" / "tjr-modal-probe"
+    probe.mkdir(parents=True)
+    video = "3S-fL9rNPp0"
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
+    original = {
+        "status": "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED",
+        "video_id": video,
+        "channel_id": channel,
+        "public_video_url": f"https://www.youtube.com/watch?v={video}",
+        "source_sha256": sha,
+        "duration": 60,
+        "source_scan_complete": True,
+    }
+    roundtrip = {"video_id": video, "channel_id": channel, "source_sha256": sha}
+    coverage = {
+        "reported_original_seconds": 60,
+        "analyzed_source_seconds": 60,
+        "full_source_analyzed": True,
+        "chunks": [{"start": 0, "end": 60}],
+    }
+    transcript = [
+        {
+            "start": 1,
+            "end": 8,
+            "text": "The guest answers the question.",
+            "words": [{"start": 1, "end": 2, "text": "The"}],
+        }
+    ]
+    if fault == "source_hash":
+        original["source_sha256"] = "f" * 64
+    if fault == "source_id":
+        original["video_id"] = "differently1"
+    if fault == "roundtrip_hash":
+        roundtrip["source_sha256"] = "f" * 64
+    if fault == "coverage":
+        coverage["full_source_analyzed"] = False
+    if fault == "timestamps":
+        transcript[0]["end"] = 90
+    if fault != "missing_proof":
+        (probe / "staged-original.json").write_text(json.dumps(original))
+    (run / "source-roundtrip.json").write_text(json.dumps(roundtrip))
+    (segment_dir / "source-analysis-coverage.json").write_text(json.dumps(coverage))
+    (segment_dir / "transcript.json").write_text(json.dumps(transcript))
+    load = SCRIPT["load_verified_transcript_cache"]
+    if fault:
+        with pytest.raises(RuntimeError, match="TRANSCRIPT_CACHE"):
+            load(source, video, tmp_path / "prior", tmp_path)
+    else:
+        chunks, duration = load(source, video, tmp_path / "prior", tmp_path)
+        assert duration == 60 and chunks[0][0].text == transcript[0]["text"]
+        proof = json.loads((tmp_path / "transcript-cache-provenance.json").read_text())
+        assert proof["provenance_type"] == "verified_source_roundtrip"
+        assert proof["source_hash_verified"] is True

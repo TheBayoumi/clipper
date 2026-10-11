@@ -10,6 +10,11 @@ import re
 from collections.abc import Callable
 from typing import Any, Protocol
 
+
+class SourceEvidenceError(RuntimeError):
+    """Invalid model-owned evidence; the current clip must fail closed."""
+
+
 SOURCE_EVIDENCE_VERSION = "source_unit_spans_v1"
 _WORD = re.compile(r"[A-Za-z0-9$%'.-]+")
 
@@ -30,16 +35,16 @@ def _unit_span_schema(count: int) -> dict[str, Any]:
 def _resolve_source_units(pointer: Any, units: list[str]) -> dict[str, Any] | None:
     """Extract one contiguous range from the specified namespace, including repeats."""
     if not isinstance(pointer, dict) or set(pointer) != {"first_unit", "last_unit"}:
-        raise RuntimeError("evidence pointer must contain only first_unit and last_unit")
+        raise SourceEvidenceError("evidence pointer must contain only first_unit and last_unit")
     first, last = pointer["first_unit"], pointer["last_unit"]
     if type(first) is not int or type(last) is not int:
-        raise RuntimeError("evidence positions must be integers, not booleans")
+        raise SourceEvidenceError("evidence positions must be integers, not booleans")
     if first == last == -1:
         return None
     if not 0 <= first <= last < len(units):
-        raise RuntimeError("evidence range is reversed, absent or outside its namespace")
+        raise SourceEvidenceError("evidence range is reversed, absent or outside its namespace")
     if any(not isinstance(unit, str) or not unit.strip() for unit in units[first : last + 1]):
-        raise RuntimeError("evidence range includes empty source speech")
+        raise SourceEvidenceError("evidence range includes empty source speech")
     return {"text": " ".join(units[first : last + 1]), "first_unit": first, "last_unit": last}
 
 
@@ -146,7 +151,7 @@ def review_source_positions(
         if type(purpose.get(label)) is not int or purpose[label] not in (0, 1):
             raise RuntimeError("speech-purpose review returned an invalid label")
         if (purpose[label] == 1) != (purpose_spans[key] is not None):
-            raise RuntimeError("speech-purpose label and evidence positions disagree")
+            raise SourceEvidenceError("speech-purpose label and evidence positions disagree")
     promotion_ids = sorted(
         {
             i
@@ -156,7 +161,7 @@ def review_source_positions(
         }
     )
     final_id = _final_substantive_unit_id(selected)
-    story = editor._review_completion(
+    story_prompt, story_payload, story_schema, story_budget = (
         "Assess ONLY delivered_units as the finished clip. Select its central setup_span "
         "and delivered resolution_span as continuous unit positions. A resolution can be "
         "an answer, consequence, contrast, reaction or punchline. Both resolution positions "
@@ -189,13 +194,36 @@ def review_source_positions(
         },
         160,
     )
-    for key in ("opening_independent", "last_thought_finished"):
-        if type(story.get(key)) is not int or story[key] not in (0, 1):
-            raise RuntimeError("thought reviewer returned an invalid verdict")
-    setup = _resolve_source_units(story.get("setup_span"), selected)
-    resolution = _resolve_source_units(story.get("resolution_span"), selected)
-    if resolution is not None and resolution["last_unit"] != final_id:
-        raise RuntimeError("delivered resolution omitted the final substantive unit")
+    # A model can return schema-valid but impossible mixed -1/range pointers.
+    # Request one new source-grounded response, then reject this candidate only.
+    for evidence_attempt in range(2):
+        story = editor._review_completion(story_prompt, story_payload, story_schema, story_budget)
+        try:
+            for key in ("opening_independent", "last_thought_finished"):
+                if type(story.get(key)) is not int or story[key] not in (0, 1):
+                    raise RuntimeError("thought reviewer returned an invalid verdict")
+            setup = _resolve_source_units(story.get("setup_span"), selected)
+            resolution = _resolve_source_units(story.get("resolution_span"), selected)
+            if resolution is not None and resolution["last_unit"] != final_id:
+                raise SourceEvidenceError("delivered resolution omitted the final substantive unit")
+        except SourceEvidenceError as error:
+            if evidence_attempt:
+                raise
+            story_payload = {
+                **story_payload,
+                "invalid_model_positions": {
+                    key: story.get(key) for key in ("setup_span", "resolution_span")
+                },
+                "evidence_validation_error": str(error),
+            }
+            story_prompt += (
+                " The prior output was invalid and is NOT source evidence. Re-read "
+                "the numbered delivered_units. Each span must use two valid ordered "
+                "indices, or exactly (-1,-1) when absent. A present resolution must "
+                "reach final_substantive_unit_id. Do not manufacture a resolution."
+            )
+            continue
+        break
     ending = story["last_thought_finished"] == 1
     continuation = None
     after = context.get("after", [])
@@ -248,11 +276,13 @@ def review_source_positions(
         for key, region in (("final_span", selected), ("continuation_span", after)):
             span = _resolve_source_units(continuation.get(key), region)
             if span is None:
-                raise RuntimeError("continuation review requires evidence in both namespaces")
+                raise SourceEvidenceError(
+                    "continuation review requires evidence in both namespaces"
+                )
             if key == "final_span" and (
                 span["first_unit"] != final_id or span["last_unit"] != final_id
             ):
-                raise RuntimeError("continuation review ignored the final substantive unit")
+                raise SourceEvidenceError("continuation review ignored the final substantive unit")
             continuation[key + "_source"] = span
         if continuation.get("relation") not in {
             "missing_answer",

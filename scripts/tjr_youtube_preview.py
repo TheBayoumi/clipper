@@ -621,7 +621,37 @@ def load_verified_transcript_cache(
     if len(matches) != 1:
         raise RuntimeError("TRANSCRIPT_CACHE_MUST_CONTAIN_ONE_SOURCE")
     transcript = matches[0]
-    report = json.loads((transcript.parent / "tjr-youtube-qa-report.json").read_text())
+    # Editorial failures may occur before any MP4 QA report exists. A failed
+    # run's verified staged original and source-roundtrip are independent
+    # provenance for its *completed* transcript. Neither is a success claim.
+    qa = transcript.parent / "tjr-youtube-qa-report.json"
+    if qa.is_file():
+        report = json.loads(qa.read_text())
+        source_proof = "delivery_qa"
+    else:
+        staged = list(cache_root.rglob("staged-original.json"))
+        roundtrips = list(cache_root.rglob("source-roundtrip.json"))
+        if len(staged) != 1 or len(roundtrips) != 1:
+            raise RuntimeError("TRANSCRIPT_CACHE_MISSING_VERIFIED_SOURCE_PROVENANCE")
+        original = json.loads(staged[0].read_text())
+        roundtrip = json.loads(roundtrips[0].read_text())
+        if (
+            original.get("status") != "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED"
+            or original.get("source_scan_complete") is not True
+            or any(
+                original.get(key) != roundtrip.get(key)
+                for key in ("video_id", "channel_id", "source_sha256")
+            )
+            or original.get("video_id") != video_id
+            or original.get("channel_id") not in CHANNELS
+        ):
+            raise RuntimeError("TRANSCRIPT_CACHE_SOURCE_PROVENANCE_MISMATCH")
+        report = {
+            "source_url": original.get("public_video_url"),
+            "source_sha256": original.get("source_sha256"),
+            "source_duration_seconds": original.get("duration"),
+        }
+        source_proof = "verified_source_roundtrip"
     coverage = json.loads((transcript.parent / "source-analysis-coverage.json").read_text())
     with source.open("rb") as media:
         digest = hashlib.file_digest(media, "sha256").hexdigest()
@@ -664,6 +694,7 @@ def load_verified_transcript_cache(
                 "source_sha256": digest,
                 "origin_run_id": os.getenv("TJR_TRANSCRIPT_SOURCE_RUN_ID", ""),
                 "source_hash_verified": True,
+                "provenance_type": source_proof,
                 "full_source_analyzed": True,
             },
             indent=2,

@@ -34,6 +34,7 @@ from clipper.editorial_engine import (
     _ACKNOWLEDGEMENTS,
     SOURCE_EVIDENCE_VERSION,
     HeadlineGenerator,
+    SourceEvidenceError,
     _evidence_excerpt,
     _final_substantive_unit_id,
     _numbered_source,
@@ -1553,7 +1554,20 @@ def refine_contextual_candidates(
                 review = cached["exchange_review"]
                 reviewer_reused += 1
             else:
-                review = review_backend(review_context)
+                try:
+                    review = review_backend(review_context)
+                except SourceEvidenceError as error:
+                    # Invalid model pointers never become authorized evidence.
+                    # Reject only this candidate and preserve the entire episode.
+                    evidence["review_input_sha256"] = review_input_sha
+                    evidence["rejection"] = "INVALID_SOURCE_EVIDENCE"
+                    evidence["source_evidence_error"] = str(error)[:240]
+                    checkpoint(number + 1)
+                    print(
+                        f"CONTEXT_EVIDENCE_REJECTED {number + 1}/{len(candidates)} reason={error}",
+                        flush=True,
+                    )
+                    continue
             evidence["review_input_sha256"] = review_input_sha
             evidence["reviewer_cache_reused"] = (
                 cached_review_identity_matches
