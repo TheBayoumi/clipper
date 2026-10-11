@@ -230,6 +230,15 @@ def _fit_lines(
     raise ValueError("headline exceeds portrait safe area; shorten editorial headline")
 
 
+def persistent_hook_layout(text: str) -> tuple[int, tuple[str, ...], float]:
+    """Use the actual Style B2 font/safe-area geometry, not a word quota.
+
+    Failed layout is a candidate rejection, never grounds for silently changing
+    what the source-backed headline claims.
+    """
+    return _fit_lines(_safe(text), max_width=_HOOK_SAFE_WIDTH, max_size=70, max_lines=3)
+
+
 def _ass_header() -> str:
     return (
         "[Script Info]\nTitle: Source-grounded Style B v2 review overlay\n"
@@ -354,7 +363,7 @@ def create_tiktok_ass(
     events: list[str] = []
     hook = _safe(hook_text)
     if hook and clip.duration >= 1:
-        size, lines, _ = _fit_lines(hook, max_width=_HOOK_SAFE_WIDTH, max_size=70, max_lines=3)
+        size, lines, _ = persistent_hook_layout(hook)
         events.append(_plate_event(0, clip.duration, size=size, lines=lines, hook=True))
         # No fade-out: the hook remains visible on the first and last frames.
         events.append(

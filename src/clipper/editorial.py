@@ -18,6 +18,7 @@ from clipper.models import ClipCandidate, TranscriptSegment
 from clipper.tiktok import (
     creative_hook_from_text,
     distinct_hook_from_text,
+    persistent_hook_layout,
     source_headline_candidates,
 )
 
@@ -211,7 +212,9 @@ def _reviewed_exchange_headline(candidate: ClipCandidate, hook: str) -> bool:
     }
     if not required.issubset(candidate.reasons) or hook != _semantic_hook_override(candidate):
         return False
-    if not 4 <= len(_WORDS.findall(hook)) <= 14:
+    try:
+        persistent_hook_layout(hook)
+    except (ValueError, OSError):
         return False
     for prefix in ("setup_quote=", "payoff_quote="):
         quotes = [

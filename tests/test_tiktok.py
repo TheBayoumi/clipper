@@ -10,6 +10,7 @@ from clipper.tiktok import (
     create_tiktok_ass,
     creative_hook_from_text,
     distinct_hook_from_text,
+    persistent_hook_layout,
 )
 
 
@@ -423,3 +424,17 @@ def test_caption_text_does_not_inconsistently_mask_profanity(tmp_path):
         hook_text="THE COMPLETE SOURCE STORY IS HERE",
     ).read_text()
     assert "FUCKING" in ass and "SHIT" in ass and "F***ING" in ass
+
+
+def test_live_model_headline_is_rejected_by_measured_layout_not_word_quota():
+    long_hook = (
+        "Manning family gives player luxury time to develop, unlike past "
+        "players who needed NFL to feed families"
+    )
+    from pytest import raises
+
+    assert len(long_hook.split()) == 17
+    with raises(ValueError, match="safe area"):
+        persistent_hook_layout(long_hook)
+    layout = persistent_hook_layout("Why the Manning family can wait longer than NFL rookies")
+    assert len(layout[1]) == 3 and layout[0] >= 42

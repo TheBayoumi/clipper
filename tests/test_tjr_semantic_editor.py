@@ -3583,3 +3583,99 @@ def test_gpu_qualification_cache_identity_ignores_packing_time(tmp_path, monkeyp
     )
     assert len(calls) == 1
     assert calls[0][1] == editor._thinking_review_profile()
+
+
+def test_production_headline_repair_is_layout_aware_and_still_fact_checked():
+    from scripts.tjr_semantic_editor import _source_grounded_headline
+
+    units = [
+        "Earlier players needed NFL money to support their families.",
+        "The speaker says the Manning family can give their player longer to develop.",
+    ]
+    spans = {
+        "setup_quote": {"text": units[0], "first_unit": 0, "last_unit": 0},
+        "resolution_quote": {"text": units[1], "first_unit": 1, "last_unit": 1},
+    }
+    invalid = (
+        "Manning family gives player luxury time to develop, unlike past "
+        "players who needed NFL to feed families"
+    )
+    valid = "Why the Manning family can wait longer than NFL rookies"
+    calls = []
+    responses = [{"headline": invalid}, {"headline": valid}]
+
+    class Editor:
+        def _review_completion(self, prompt, payload, schema, tokens):
+            calls.append((prompt, payload))
+            return responses.pop(0)
+
+    audited = []
+
+    def audit(editor, headline, evidence):
+        audited.append(headline)
+        assert evidence == units
+        return {"verdict": "supported", "headline_self_contained": True, "central_highlight": True}
+
+    result = _source_grounded_headline(Editor(), units, exchange_spans=spans, factual_audit=audit)
+    assert audited == [valid], "Invalid format must not bypass factual review"
+    assert len(calls) == 2
+    assert calls[0][1]["source_passages"] == calls[1][1]["source_passages"]
+    assert calls[1][1]["previous_invalid_headline"] == invalid
+    assert result["headline"] == valid
+    assert result["headline_supported"] is True
+    assert result["hook_status"] == "accepted"
+    assert result["headline_audits"][0]["failure"] == "HEADLINE_LAYOUT_UNFIT"
+
+
+def test_repeated_invalid_production_headline_rejects_candidate_not_episode():
+    from scripts.tjr_semantic_editor import _source_grounded_headline
+
+    units = [
+        "The speaker described a new scheduling policy for the whole team.",
+        "The director confirmed the policy was delayed until spring.",
+    ]
+    spans = {
+        "setup_quote": {"text": units[0], "first_unit": 0, "last_unit": 0},
+        "resolution_quote": {"text": units[1], "first_unit": 1, "last_unit": 1},
+    }
+    extremely_long = "A" * 100
+    calls = []
+
+    class Editor:
+        def _review_completion(self, prompt, payload, schema, tokens):
+            calls.append(payload)
+            return {"headline": extremely_long}
+
+    def never_audit(*args):
+        raise AssertionError("unrenderable model output must not be audited or accepted")
+
+    rejected = _source_grounded_headline(
+        Editor(), units, exchange_spans=spans, factual_audit=never_audit
+    )
+    assert len(calls) == 2
+    assert rejected["headline"] == ""
+    assert rejected["headline_supported"] is False
+    assert rejected["headline_self_contained"] is False
+    assert rejected["hook_status"] == "rejected_headline_layout_or_response"
+    assert rejected["headline_source_spans"] == spans
+    assert len(rejected["headline_audits"]) == 2
+    assert not any(item.get("verdict") == "supported" for item in rejected["headline_audits"])
+
+
+def test_model_malformed_headline_response_exhausts_with_zero_factual_approvals():
+    from scripts.tjr_semantic_editor import _source_grounded_headline
+
+    units = ["The guest revealed that he left the league to support his family."]
+
+    class Editor:
+        def _review_completion(self, prompt, payload, schema, tokens):
+            raise RuntimeError("generated headline violated JSON schema")
+
+    spans = {
+        "setup_quote": {"text": units[0], "first_unit": 0, "last_unit": 0},
+        "resolution_quote": {"text": units[0], "first_unit": 0, "last_unit": 0},
+    }
+    result = _source_grounded_headline(Editor(), units, exchange_spans=spans)
+    assert result["headline"] == ""
+    assert result["headline_supported"] is False
+    assert all(row["verdict"] == "unverified" for row in result["headline_audits"])
