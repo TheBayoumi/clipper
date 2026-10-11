@@ -3620,7 +3620,11 @@ def test_production_headline_repair_is_layout_aware_and_still_fact_checked():
     assert audited == [valid], "Invalid format must not bypass factual review"
     assert len(calls) == 2
     assert calls[0][1]["source_passages"] == calls[1][1]["source_passages"]
-    assert calls[1][1]["previous_invalid_headline"] == invalid
+    assert "previous_invalid_headline" not in calls[1][1]
+    assert calls[1][1]["headline_validation_failure"] == "text_does_not_fit_portrait_safe_area"
+    assert "NOT a story synopsis" in calls[0][0]
+    assert "ONE clear" in calls[0][0]
+    assert "source_passages" in calls[0][1]
     assert result["headline"] == valid
     assert result["headline_supported"] is True
     assert result["hook_status"] == "accepted"

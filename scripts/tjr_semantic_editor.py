@@ -2212,22 +2212,24 @@ def _source_grounded_headline(
                 raise RuntimeError("headline evidence is not an exact delivered source passage")
             spans[key] = span
     generation_prompt = (
-        "Write a concise on-screen hook that fits at least 42px across up to three "
-        "portrait-safe lines, expressing the central event or contrast "
-        "across these source_passages in their full source_context. A quoted rule, "
-        "instruction, hypothetical or reported statement is not an actual event merely "
-        "because its words occur in a passage. Retain the reporting scope and speaker "
-        "when reading the full context. Write one coherent highlight, not a keyword list "
-        "or an opening transcription. These are literal source passages, not model "
-        "interpretations. When setup_quote and resolution_quote are supplied, preserve "
-        "those reviewed roles: summarize the setup in light of its delivered resolution. "
-        "Do not substitute another source sentence for the actual resolution. "
-        "Preserve who acts, what happens and where it happens. Use an "
-        "explicit source name when available; do not invent an opponent, employer or "
-        "other relationship. Do not transfer actions between people or change a meeting "
-        "into the event itself. Do not invent motives or turn conditional earnings into "
-        "actual earnings. Avoid dangling pronouns. Use only facts in source_passages. "
-        "Return output_schema JSON."
+        "Write one compact, compelling ON-SCREEN TITLE for a portrait podcast clip. "
+        "This is a TikTok hook, NOT a story synopsis, descriptive sentence, or list "
+        "of everything discussed. Identify ONE clear, most interesting delivered "
+        "fact, reversal, or consequence from resolution_quote, using setup_quote "
+        "only to identify the actor and establish the essential contrast. "
+        "Aim for a title of roughly 5-9 words (usually under 60 characters) so "
+        "it remains large and readable in three portrait-safe lines at 42px or "
+        "larger. The renderer, not a word quota, determines the final visual fit. "
+        "Prefer a punchy noun phrase or short declarative title, not a paragraph. "
+        "Avoid a second clause, unnecessary dates, biography, and tangential "
+        "detail; they belong in the SPOKEN CLIP, not in the overlay title. "
+        "Do not create a misleading cliffhanger or promise an event that is not "
+        "delivered. Preserve negation, attribution, hypotheticals, and reporting "
+        "scope: a prediction is not a fact, a quote is not a real-world event, "
+        "and an assertion by a speaker is not independently established truth. "
+        "Choose precise actor and action from source_passages, with source_context "
+        "to resolve pronouns. Never invent a name, relationship, cause or outcome. "
+        "Return only the headline field in output_schema JSON."
     )
     payload = {
         "source_passages": {key: span["text"] for key, span in spans.items()},
@@ -2243,7 +2245,7 @@ def _source_grounded_headline(
     for attempt in range(2):
         try:
             generated = editor._review_completion(
-                generation_prompt, payload, {"headline": {"type": "string"}}, 96
+                generation_prompt, payload, {"headline": {"type": "string"}}, 72
             )
             candidate = generated.get("headline", "") if isinstance(generated, dict) else ""
         except (RuntimeError, ValueError) as error:
@@ -2272,12 +2274,15 @@ def _source_grounded_headline(
             if attempt == 0:
                 payload = {
                     **payload,
-                    "previous_invalid_headline": candidate,
+                    "headline_validation_failure": "text_does_not_fit_portrait_safe_area",
                     "revision_rule": (
-                        "Regenerate one shorter, complete, factual hook that fits a 1080px "
-                        "portrait, at least 42px text, within three lines and an 800px "
-                        "safe width. Do not truncate or omit source-critical qualifications. "
-                        "The earlier headline is not factual evidence."
+                        "The previous response was a story recap, not an overlay title. "
+                        "Start a FRESH headline describing ONE main payoff only. "
+                        "Prefer 5-8 words, typically under 50 visible characters; "
+                        "omit secondary facts, filler, background chronology and second "
+                        "clauses. Preserve any essential negation, uncertainty and actor. "
+                        "Keep the reviewed source evidence authoritative. Do not "
+                        "reuse the rejected headline as evidence."
                     ),
                 }
                 continue
