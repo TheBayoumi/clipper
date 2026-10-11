@@ -136,3 +136,276 @@ def test_repeated_invalid_source_positions_fail_closed():
             headline_generator=forbidden_headline,
         )
     assert not replies
+
+
+def test_completed_source_boundaries_can_be_reused_for_new_headline_only():
+    from clipper.editorial_engine import complete_source_review, review_source_boundaries
+
+    selected = [
+        "The coach asked who would take the field.",
+        "The quarterback confirmed he would start on Sunday.",
+    ]
+    absent = {"first_unit": -1, "last_unit": -1}
+    model_calls = []
+
+    class Model:
+        def _review_completion(self, prompt, payload, schema, tokens):
+            model_calls.append(prompt)
+            if "speech act performed" in prompt:
+                return {
+                    "ad_read_present": 0,
+                    "ad_read_span": absent,
+                    "show_intro_present": 0,
+                    "show_intro_span": absent,
+                    "reason": "Ordinary sporting discussion.",
+                }
+            if "finished clip" in prompt:
+                return {
+                    "setup_span": {"first_unit": 0, "last_unit": 0},
+                    "resolution_span": {"first_unit": 1, "last_unit": 1},
+                    "opening_independent": 1,
+                    "last_thought_finished": 1,
+                    "reason": "The quarterback gives a specific answer.",
+                }
+            raise AssertionError("Only new hook production is authorized")
+
+    context = {"selected_units": selected, "before": [], "after": []}
+    editor = Model()
+    boundary = review_source_boundaries(editor, context)
+    assert len(model_calls) == 2
+    headlines = []
+
+    def generate(editor, units, *, exchange_spans, factual_audit):
+        assert units == selected
+        assert exchange_spans["resolution_quote"]["text"] == selected[1]
+        headlines.append(1)
+        return {
+            "headline": "Quarterback confirms Sunday start",
+            "headline_supported": False,
+            "headline_self_contained": False,
+        }
+
+    first = complete_source_review(
+        editor, context, boundary, factual_audit=lambda *_: {}, headline_generator=generate
+    )
+    second = complete_source_review(
+        editor, context, first, factual_audit=lambda *_: {}, headline_generator=generate
+    )
+    assert len(model_calls) == 2 and len(headlines) == 2
+    assert second["headline"] == "Quarterback confirms Sunday start"
+    assert second["headline_supported"] is False
+    assert second["source_quote_spans"] == boundary["source_quote_spans"]
+
+
+def test_cached_story_cannot_mutate_completion_flags_or_payoff_locations():
+    import pytest
+
+    from clipper.editorial_engine import (
+        SourceEvidenceError,
+        complete_source_review,
+        review_source_boundaries,
+    )
+
+    selected = ["The owner answered the question."]
+    absent = {"first_unit": -1, "last_unit": -1}
+
+    class Model:
+        def _review_completion(self, prompt, payload, schema, tokens):
+            if "speech act performed" in prompt:
+                return {
+                    "ad_read_present": 0,
+                    "ad_read_span": absent,
+                    "show_intro_present": 0,
+                    "show_intro_span": absent,
+                    "reason": "No promotion",
+                }
+            return {
+                "setup_span": {"first_unit": 0, "last_unit": 0},
+                "resolution_span": {"first_unit": 0, "last_unit": 0},
+                "opening_independent": 1,
+                "last_thought_finished": 1,
+                "reason": "Complete exchange",
+            }
+
+    context = {"selected_units": selected, "after": []}
+    boundary = review_source_boundaries(Model(), context)
+
+    def should_not_generate(*args, **kwargs):
+        raise AssertionError("tampered boundary should never generate headlines")
+
+    for key, value in (("payoff_complete", False), ("contains_promotion_or_intro", True)):
+        corrupted = {**boundary, key: value}
+        with pytest.raises(SourceEvidenceError, match="differs from source review"):
+            complete_source_review(
+                Model(),
+                context,
+                corrupted,
+                factual_audit=lambda *_: {},
+                headline_generator=should_not_generate,
+            )
+    corrupted = {
+        **boundary,
+        "source_quote_spans": {
+            "setup_quote": boundary["source_quote_spans"]["setup_quote"],
+            "resolution_quote": None,
+        },
+    }
+    with pytest.raises(SourceEvidenceError, match="positions changed"):
+        complete_source_review(
+            Model(),
+            context,
+            corrupted,
+            factual_audit=lambda *_: {},
+            headline_generator=should_not_generate,
+        )
+
+
+def test_cached_source_boundary_does_not_trust_altered_factual_flags():
+    import copy
+
+    import pytest
+
+    from clipper.editorial_engine import (
+        SourceEvidenceError,
+        complete_source_review,
+        review_source_boundaries,
+    )
+
+    speech = ["The owner answered the final question."]
+    absent = {"first_unit": -1, "last_unit": -1}
+
+    class Model:
+        def _review_completion(self, prompt, payload, schema, tokens):
+            if "speech act performed" in prompt:
+                return {
+                    "ad_read_present": 0,
+                    "ad_read_span": absent,
+                    "show_intro_present": 0,
+                    "show_intro_span": absent,
+                    "reason": "No advertisement",
+                }
+            return {
+                "setup_span": {"first_unit": 0, "last_unit": 0},
+                "resolution_span": {"first_unit": 0, "last_unit": 0},
+                "opening_independent": 1,
+                "last_thought_finished": 1,
+                "reason": "Resolved final answer",
+            }
+
+    context = {"selected_units": speech, "before": [], "after": []}
+    original = review_source_boundaries(Model(), context)
+    variants = []
+    mismatch = copy.deepcopy(original)
+    mismatch["evidence_contract"] = "wrong contract"
+    variants.append(mismatch)
+    mismatch = copy.deepcopy(original)
+    mismatch["speech_purpose_review"]["ad_read_present"] = 1
+    variants.append(mismatch)
+    mismatch = copy.deepcopy(original)
+    mismatch["speech_purpose_quote_spans"]["ad_read_span"] = {
+        "text": speech[0],
+        "first_unit": 0,
+        "last_unit": 0,
+    }
+    variants.append(mismatch)
+    mismatch = copy.deepcopy(original)
+    mismatch["thought_completion_review"]["resolution_span"] = absent
+    variants.append(mismatch)
+    mismatch = copy.deepcopy(original)
+    mismatch["thought_completion_review"]["last_thought_finished"] = 0
+    variants.append(mismatch)
+    mismatch = copy.deepcopy(original)
+    mismatch["boundary_audit"]["payoff_location"] = "absent"
+    variants.append(mismatch)
+    mismatch = copy.deepcopy(original)
+    mismatch["continuation_review"] = {"relation": "new_topic"}
+    variants.append(mismatch)
+    for altered in variants:
+        with pytest.raises(SourceEvidenceError):
+            complete_source_review(
+                Model(),
+                context,
+                altered,
+                factual_audit=lambda *_: {},
+                headline_generator=lambda *args, **kwargs: pytest.fail("false approval"),
+            )
+
+
+def test_verified_excluded_continuation_is_rechecked_before_headline_reuse():
+    from clipper.editorial_engine import complete_source_review, review_source_boundaries
+
+    source = ["The quarterback confirmed that his team won its last game."]
+    later = ["Next, we should talk about the upcoming draft."]
+    absent = {"first_unit": -1, "last_unit": -1}
+    calls = []
+
+    class Model:
+        def _review_completion(self, prompt, payload, schema, tokens):
+            calls.append(prompt)
+            if "speech act performed" in prompt:
+                return {
+                    "ad_read_present": 0,
+                    "ad_read_span": absent,
+                    "show_intro_present": 0,
+                    "show_intro_span": absent,
+                    "reason": "Normal interview",
+                }
+            if "finished clip" in prompt:
+                return {
+                    "setup_span": {"first_unit": 0, "last_unit": 0},
+                    "resolution_span": {"first_unit": 0, "last_unit": 0},
+                    "opening_independent": 1,
+                    "last_thought_finished": 1,
+                    "reason": "The speaker answered.",
+                }
+            return {
+                "final_span": {"first_unit": 0, "last_unit": 0},
+                "continuation_span": {"first_unit": 0, "last_unit": 0},
+                "relation": "new_topic",
+                "reason": "The next question starts a new topic.",
+            }
+
+    context = {"selected_units": source, "before": [], "after": later}
+    model = Model()
+    boundary = review_source_boundaries(model, context)
+    result = complete_source_review(
+        model,
+        context,
+        boundary,
+        factual_audit=lambda *_: {},
+        headline_generator=lambda *_args, **_kw: {
+            "headline": "Team confirms recent victory",
+            "headline_supported": False,
+            "headline_self_contained": False,
+        },
+    )
+    assert len(calls) == 3
+    assert result["boundary_audit"]["ending"] == "closed"
+    assert result["source_quote_spans"] == boundary["source_quote_spans"]
+    assert result["headline_supported"] is False
+    import copy
+
+    import pytest
+
+    from clipper.editorial_engine import SourceEvidenceError
+
+    bad = copy.deepcopy(boundary)
+    bad["continuation_review"]["continuation_span"] = {"first_unit": -1, "last_unit": -1}
+    with pytest.raises(SourceEvidenceError, match="cached continuation"):
+        complete_source_review(
+            model,
+            context,
+            bad,
+            factual_audit=lambda *_: {},
+            headline_generator=lambda *_args, **_kw: pytest.fail("false evidence"),
+        )
+    bad = copy.deepcopy(boundary)
+    bad["continuation_review"] = None
+    with pytest.raises(SourceEvidenceError, match="continuation decision"):
+        complete_source_review(
+            model,
+            context,
+            bad,
+            factual_audit=lambda *_: {},
+            headline_generator=lambda *_args, **_kw: pytest.fail("missing source proof"),
+        )

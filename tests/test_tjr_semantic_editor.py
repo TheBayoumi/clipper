@@ -1,3 +1,5 @@
+import pytest
+
 from clipper.models import CampaignBrief, TranscriptSegment
 from scripts.tjr_semantic_editor import build_semantic_editorial_candidates
 
@@ -3363,19 +3365,27 @@ def test_position_headline_cannot_pass_without_any_supported_claim():
 def test_position_facts_are_blind_and_extract_source_text():
     import pytest
 
+    from clipper.editorial_engine import FactualEvidenceError
     from scripts import tjr_semantic_editor as editor
 
     units = ["The guest waited outside.", "The owner opened the door."]
     malformed = {"value": False}
+    calls = []
 
     class Model:
         def _review_completion(self, prompt, payload, properties, tokens):
-            assert set(payload) == {"source_units"}
-            assert "headline" not in payload
-            answer = "An unstated relationship" if malformed["value"] else "unknown"
+            calls.append(payload)
+            assert "source_units" in payload and "headline" not in payload
             return {
                 key: dict(
-                    answer="The owner opened the door." if key == "actor_action" else answer,
+                    status="answered" if key == "actor_action" else "unknown",
+                    answer=(
+                        "The owner opened the door."
+                        if key == "actor_action"
+                        else "no specific quantities or outcomes stated"
+                        if malformed["value"]
+                        else ""
+                    ),
                     evidence=dict(
                         first_unit=1 if key == "actor_action" else -1,
                         last_unit=1 if key == "actor_action" else -1,
@@ -3387,9 +3397,44 @@ def test_position_facts_are_blind_and_extract_source_text():
     facts = editor._source_position_facts(Model(), units)
     assert facts["facts"]["actor_action"]["source_span"]["text"] == units[1]
     assert facts["facts"]["relationship_role"]["source_span"] is None
+    assert facts["facts"]["relationship_role"]["status"] == "unknown"
+    assert len(calls) == 1
     malformed["value"] = True
-    with pytest.raises(RuntimeError, match="unknown"):
+    with pytest.raises(FactualEvidenceError, match="source-fact contract exhausted"):
         editor._source_position_facts(Model(), units)
+    assert len(calls) == 3
+    assert "repair_instruction" in calls[-1]
+
+
+def test_factual_status_retry_reuses_only_source_and_never_upgrades_abstention():
+    from scripts import tjr_semantic_editor as editor
+
+    units = ["The speaker said the Raiders could become contenders, but it is conditional."]
+    outputs = []
+
+    class Model:
+        def _review_completion(self, prompt, payload, properties, tokens):
+            outputs.append((prompt, payload, properties))
+            return {
+                key: {
+                    "status": "unknown" if key != "quantities_outcomes" else "uncertain",
+                    "answer": "no specific quantities or outcomes stated"
+                    if len(outputs) == 1 and key == "quantities_outcomes"
+                    else "",
+                    "evidence": {"first_unit": -1, "last_unit": -1},
+                }
+                for key in editor._HEADLINE_COMPONENTS
+            }
+
+    response = editor._source_position_facts(Model(), units)
+    assert len(outputs) == 2
+    assert response["facts"]["quantities_outcomes"] == {
+        "status": "uncertain",
+        "answer": "unknown",
+        "source_span": None,
+    }
+    assert outputs[1][1]["source_units"] == outputs[0][1]["source_units"]
+    assert "headline" not in outputs[1][1]
 
 
 def test_reviewer_profile_change_preserves_selection_and_invalidates_completion(
@@ -3729,3 +3774,152 @@ def test_source_evidence_error_rejects_one_candidate_and_checkpoint_continues(tm
     assert "exchange_review" not in audit["assessments"][0]
     assert audit["assessments"][1]["exchange_review"]["headline_supported"] is True
     assert json.loads(path.read_text())["complete"] is True
+
+
+def test_factual_model_exhaustion_rejects_candidate_without_stopping_next(tmp_path):
+    from clipper.editorial_engine import FactualEvidenceError
+    from clipper.models import ClipCandidate
+    from scripts.tjr_semantic_editor import refine_contextual_candidates
+
+    segments = [TranscriptSegment(0, 25, "The owner finally let the performer in.")]
+    candidates = [ClipCandidate("v", 0, 25, segments[0].text, rating) for rating in (9, 8)]
+    reviewed = []
+
+    def select(context):
+        return {
+            "keep": True,
+            "start_unit": 0,
+            "end_unit": 0,
+            "opening": 4,
+            "story": 4,
+            "ending": 5,
+            "reason": "Complete access story.",
+        }
+
+    def review(context):
+        reviewed.append(context)
+        if len(reviewed) == 1:
+            raise FactualEvidenceError("source-fact contract exhausted: unknown outcome")
+        return _review(context)
+
+    _, audit = refine_contextual_candidates(
+        _brief(),
+        candidates,
+        segments,
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "editorial-cache.json",
+        assessor=select,
+        reviewer=review,
+    )
+    assert len(reviewed) == 2
+    assert audit["assessments"][0]["rejection"] == "INVALID_FACTUAL_EVIDENCE"
+    assert audit["assessments"][1]["exchange_review"]["headline_supported"] is True
+
+
+def test_boundary_cache_fingerprint_does_not_depend_on_headline_prompt(tmp_path, monkeypatch):
+    import json
+
+    from clipper.models import ClipCandidate
+    from scripts import tjr_semantic_editor as editor
+
+    source = TranscriptSegment(0, 25, "The owner opened the security gate after the request.")
+    proposal = ClipCandidate("v", 0, 25, source.text, 9)
+
+    def selector(context):
+        return {"keep": False, "reason": "No playable complete clip."}
+
+    first = tmp_path / "first.json"
+    editor.refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        [source],
+        source_sha256="a" * 64,
+        cache_path=first,
+        assessor=selector,
+    )
+    original = json.loads(first.read_text())["identity"]
+
+    def revised_headline(editor_instance, units, *, exchange_spans, factual_audit):
+        return {"headline": "Revised hook", "headline_supported": False}
+
+    monkeypatch.setattr(editor, "_source_grounded_headline", revised_headline)
+    second = tmp_path / "second.json"
+    editor.refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        [source],
+        source_sha256="a" * 64,
+        cache_path=second,
+        reuse_path=first,
+        assessor=selector,
+    )
+    modified = json.loads(second.read_text())["identity"]
+    assert modified["boundary_sha256"] == original["boundary_sha256"]
+    assert modified["reviewer_sha256"] != original["reviewer_sha256"]
+
+
+@pytest.mark.parametrize(
+    "fault, error",
+    [
+        ("missing_dimension", "omitted a factual dimension"),
+        ("bad_shape", "invalid evidence contract"),
+        ("bad_status", "invalid status or answer"),
+        ("uncited_answer", "without valid cited evidence"),
+        ("unsupported_citation", "absent/uncertain status with claimed evidence"),
+        ("reversed_range", "evidence range is reversed"),
+    ],
+)
+def test_typed_source_fact_contract_rejects_all_malformed_model_states(fault, error):
+    import copy
+
+    from clipper.editorial_engine import FactualEvidenceError
+    from scripts import tjr_semantic_editor as editor
+
+    units = ["The guest said the Raiders might be contenders, but gave no result."]
+    fields = {
+        key: {"status": "unknown", "answer": "", "evidence": {"first_unit": -1, "last_unit": -1}}
+        for key in editor._HEADLINE_COMPONENTS
+    }
+    fields = copy.deepcopy(fields)
+    if fault == "missing_dimension":
+        fields.pop("setting_time")
+    elif fault == "bad_shape":
+        fields["actor_action"]["added"] = "unsupported"
+    elif fault == "bad_status":
+        fields["actor_action"]["status"] = ["answered"]
+    elif fault == "uncited_answer":
+        fields["quantities_outcomes"].update(status="answered", answer="Raiders won")
+    elif fault == "unsupported_citation":
+        fields["setting_time"]["evidence"] = {"first_unit": 0, "last_unit": 0}
+    elif fault == "reversed_range":
+        fields["actor_action"]["evidence"] = {"first_unit": 0, "last_unit": -1}
+    with pytest.raises(FactualEvidenceError, match=error):
+        editor._validate_source_position_facts(fields, units)
+
+
+def test_corrupted_selector_model_output_rejects_one_candidate_and_continues(tmp_path):
+    from clipper.editorial_engine import ModelOutputError
+    from clipper.models import ClipCandidate
+    from scripts.tjr_semantic_editor import refine_contextual_candidates
+
+    segment = TranscriptSegment(0, 25, "The owner opened the door.")
+    proposals = [ClipCandidate("v", 0, 25, segment.text, score) for score in (10, 9)]
+    calls = []
+
+    def selector(context):
+        calls.append(context)
+        if len(calls) == 1:
+            raise ModelOutputError("contextual reviewer returned malformed model JSON")
+        return {"keep": False, "reason": "No standalone clip."}
+
+    picks, report = refine_contextual_candidates(
+        _brief(),
+        proposals,
+        [segment],
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "editorial-cache.json",
+        assessor=selector,
+    )
+    assert picks == [] and len(calls) == 2
+    assert report["assessments"][0]["rejection"] == "INVALID_SELECTOR_MODEL_OUTPUT"
+    assert report["assessments"][1]["decision"]["keep"] is False

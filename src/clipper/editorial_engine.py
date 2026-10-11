@@ -15,6 +15,14 @@ class SourceEvidenceError(RuntimeError):
     """Invalid model-owned evidence; the current clip must fail closed."""
 
 
+class FactualEvidenceError(SourceEvidenceError):
+    """An answer/status/quote mismatch from a source-fact model response."""
+
+
+class ModelOutputError(SourceEvidenceError):
+    """The model returned invalid structured output, not an infrastructure fault."""
+
+
 SOURCE_EVIDENCE_VERSION = "source_unit_spans_v1"
 _WORD = re.compile(r"[A-Za-z0-9$%'.-]+")
 
@@ -109,12 +117,9 @@ class HeadlineGenerator(Protocol):
     ) -> dict[str, Any]: ...
 
 
-def review_source_positions(
+def review_source_boundaries(
     editor: Any,
     context: dict[str, Any],
-    *,
-    factual_audit: Callable[[Any, str, list[str]], dict[str, Any]],
-    headline_generator: HeadlineGenerator,
 ) -> dict[str, Any]:
     """Review actual delivered speech; excluded evidence cannot become its resolution."""
     selected = context["selected_units"]
@@ -335,12 +340,160 @@ def review_source_positions(
         "headline_self_contained": False,
         "reason": reason,
     }
-    if promotion_ids or not opening or not payoff or setup is None:
+    return result
+
+
+def _validate_cached_boundary(context: dict[str, Any], boundary: dict[str, Any]) -> None:
+    """Re-derive acceptance flags from source-owned model positions, never cache prose."""
+    selected = context["selected_units"]
+    if (
+        boundary.get("evidence_contract") != SOURCE_EVIDENCE_VERSION
+        or boundary.get("delivered_units") != selected
+        or not isinstance(boundary.get("source_quote_spans"), dict)
+        or not isinstance(boundary.get("speech_purpose_review"), dict)
+        or not isinstance(boundary.get("thought_completion_review"), dict)
+    ):
+        raise SourceEvidenceError("cached story evidence does not match selected source")
+    spans = boundary["source_quote_spans"]
+    if set(spans) != {"setup_quote", "resolution_quote"} or any(
+        span is not None and not _unit_span_valid(span, selected) for span in spans.values()
+    ):
+        raise SourceEvidenceError("cached story evidence is not canonical source speech")
+    purpose = boundary["speech_purpose_review"]
+    purpose_spans: dict[str, Any] = {}
+    for label, key in (
+        ("ad_read_present", "ad_read_span"),
+        ("show_intro_present", "show_intro_span"),
+    ):
+        if type(purpose.get(label)) is not int or purpose[label] not in (0, 1):
+            raise SourceEvidenceError("cached story has invalid promotion labels")
+        canonical = _resolve_source_units(purpose.get(key), selected)
+        if (purpose[label] == 1) != (canonical is not None):
+            raise SourceEvidenceError("cached promotion labels contradict source spans")
+        purpose_spans[key] = canonical
+    if purpose_spans != boundary.get("speech_purpose_quote_spans"):
+        raise SourceEvidenceError("cached promotion evidence differs from source")
+    story = boundary["thought_completion_review"]
+    setup = _resolve_source_units(story.get("setup_span"), selected)
+    resolution = _resolve_source_units(story.get("resolution_span"), selected)
+    if spans != {"setup_quote": setup, "resolution_quote": resolution}:
+        raise SourceEvidenceError("cached story positions changed since assessment")
+    final_id = _final_substantive_unit_id(selected)
+    if resolution is not None and resolution["last_unit"] != final_id:
+        raise SourceEvidenceError("cached payoff skipped last substantive source unit")
+    for key in ("opening_independent", "last_thought_finished"):
+        if type(story.get(key)) is not int or story[key] not in (0, 1):
+            raise SourceEvidenceError("cached story has invalid completion verdict")
+    after = context.get("after", [])
+    continuation = boundary.get("continuation_review")
+    ending = story["last_thought_finished"] == 1
+    if ending and after:
+        if not isinstance(continuation, dict):
+            raise SourceEvidenceError("cached continuation decision is missing")
+        final_span = _resolve_source_units(continuation.get("final_span"), selected)
+        after_span = _resolve_source_units(continuation.get("continuation_span"), after)
+        if (
+            final_span is None
+            or final_span["first_unit"] != final_id
+            or final_span["last_unit"] != final_id
+            or after_span is None
+            or continuation.get("final_span_source") != final_span
+            or continuation.get("continuation_span_source") != after_span
+            or continuation.get("relation")
+            not in {
+                "missing_answer",
+                "missing_contrast",
+                "unfinished_clause",
+                "optional_elaboration",
+                "new_topic",
+                "uncertain",
+            }
+        ):
+            raise SourceEvidenceError("cached continuation is not canonical source evidence")
+        ending = continuation["relation"] in {"optional_elaboration", "new_topic"}
+    elif continuation is not None:
+        raise SourceEvidenceError("cached continuation should not exist")
+    opening = story["opening_independent"] == 1
+    payoff = resolution is not None and ending
+    promoted = sorted(
+        {
+            index
+            for span in purpose_spans.values()
+            if span is not None
+            for index in range(span["first_unit"], span["last_unit"] + 1)
+        }
+    )
+    expected = {
+        "opening_standalone": opening,
+        "ending_complete": ending,
+        "exchange_has_payoff": resolution is not None,
+        "payoff_complete": payoff,
+        "contains_promotion_or_intro": bool(promoted),
+        "setup_quote": _evidence_excerpt(setup["text"]) if setup else "",
+        "payoff_quote": _evidence_excerpt(resolution["text"]) if payoff and resolution else "",
+        "reason": (continuation or story).get("reason"),
+    }
+    if any(boundary.get(key) != value for key, value in expected.items()):
+        raise SourceEvidenceError("cached completion verdict differs from source review")
+    audit = boundary.get("boundary_audit")
+    if not isinstance(audit, dict) or any(
+        audit.get(key) != value
+        for key, value in {
+            "promotion_unit_ids": promoted,
+            "opening": "standalone" if opening else "dependent",
+            "ending": "closed" if ending else "unresolved",
+            "payoff_location": "selected" if payoff else "absent",
+            "setup_unit_id": setup["first_unit"] if setup else -1,
+            "setup_unit_last_id": setup["last_unit"] if setup else -1,
+            "payoff_unit_id": resolution["first_unit"] if payoff and resolution else -1,
+            "payoff_unit_last_id": resolution["last_unit"] if payoff and resolution else -1,
+            "reason": expected["reason"],
+        }.items()
+    ):
+        raise SourceEvidenceError("cached boundary audit conflicts with source positions")
+
+
+def complete_source_review(
+    editor: Any,
+    context: dict[str, Any],
+    boundary: dict[str, Any],
+    *,
+    factual_audit: Callable[[Any, str, list[str]], dict[str, Any]],
+    headline_generator: HeadlineGenerator,
+) -> dict[str, Any]:
+    """Produce only headline-owned outputs after verified boundary evidence."""
+    _validate_cached_boundary(context, boundary)
+    selected = context["selected_units"]
+    spans = boundary["source_quote_spans"]
+    result = {
+        key: value
+        for key, value in boundary.items()
+        if key
+        not in {
+            "headline_audits",
+            "headline_source_spans",
+            "hook_status",
+            "source_excerpts",
+            "source_bound",
+            "candidate_model_audit",
+            "production_approved",
+            "exchange_accepted",
+        }
+    }
+    result.update({"headline": "", "headline_supported": False, "headline_self_contained": False})
+    if (
+        result.get("contains_promotion_or_intro") is True
+        or result.get("opening_standalone") is not True
+        or result.get("payoff_complete") is not True
+        or result.get("ending_complete") is not True
+        or spans["setup_quote"] is None
+        or spans["resolution_quote"] is None
+    ):
         return result
     generated = headline_generator(
         editor,
         selected,
-        exchange_spans=spans,
+        exchange_spans=result["source_quote_spans"],
         factual_audit=factual_audit,
     )
     if not isinstance(generated, dict):
@@ -373,3 +526,21 @@ def review_source_positions(
     result["exchange_accepted"] = True
     result.update(generated)
     return result
+
+
+def review_source_positions(
+    editor: Any,
+    context: dict[str, Any],
+    *,
+    factual_audit: Callable[[Any, str, list[str]], dict[str, Any]],
+    headline_generator: HeadlineGenerator,
+) -> dict[str, Any]:
+    """Boundary and headline stages with independent implementation identities."""
+    boundary = review_source_boundaries(editor, context)
+    return complete_source_review(
+        editor,
+        context,
+        boundary,
+        factual_audit=factual_audit,
+        headline_generator=headline_generator,
+    )
