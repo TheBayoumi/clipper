@@ -37,7 +37,12 @@ def isolate_source_only_extraction(monkeypatch):
 def completion_response(schema):
     if "question_target" in schema:
         return {"question_target": "described_event_or_state"}
-    return {"responsiveness": "answers_question"}
+    return {
+        "responsiveness": "answers_question",
+        "evidence_first_unit": 0,
+        "evidence_last_unit": 0,
+        "evidence_quote": "Bobby paced",
+    }
 
 
 QUESTION = "Who paced?"

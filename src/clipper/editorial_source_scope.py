@@ -115,19 +115,33 @@ def assess_source_answer_scope(
     # derived from the already recorded SOURCE-ONLY proposition, not re-guessed
     # in a question-conditioned model where the broadcast quote was mislabeled.
     judgement = completion(
-        "Decide if the exact answer_quote and its source_proposition answer the "
-        "question about the SAME actors, referents, event and timeframe, using "
-        "the full source units for resolving pronouns. Negative answers ARE "
-        "responsive: 'you don't make anything from Instagram' can answer what "
-        "the speaker says views earn or whether the speaker receives income. "
-        "Distinguish a quote about a speaker's own income from a universal claim. "
-        "A quoted sentence like 'We're live on TV' inside an old story establishes "
-        "only that those words were reported: it does NOT establish the event's "
-        "actual broadcast setting. The quoted speech may answer 'what was said?' "
-        "but not 'was the event broadcast?'. Conditional claims do not prove "
-        "outcomes. Don't invent referents or unify separate stories; return "
-        "uncertain when context is inadequate. Select a RESPONSIVENESS label only; "
-        "source scope and narrative role are fixed and not for you to change. "
+        "Resolve the QUESTION using the delivered SOURCE UNITS and cite the shortest "
+        "verbatim supporting speech. Work from the question's REQUESTED RELATION "
+        "(who did what to whom, negation, timing, attribution, event setting), "
+        "not from the nearest named person or merely an overlapping topic. "
+        "A source answer_quote can be a SHORT ELLIPTICAL fragment of a longer "
+        "exchange: locate a direct statement in another unit if it corroborates "
+        "the same speaker, subject, action and event; a nearby hypothetical "
+        "must not be confused with an actual outcome. Negation can answer "
+        "a positive-form question negatively. General second-person phrasing "
+        "may restate the speaker's earlier first-person experience, but ONLY "
+        "when the same speaker, referent and topic are explicit in source units. "
+        "Treat roles independently: a person pacing while a group listens "
+        "is not necessarily the person the group is listening TO. Sentences "
+        "may cross source-unit boundaries; the pre-extracted proposition actor "
+        "is a fallible source-only label, NOT permission to rewrite original "
+        "syntax or ignore explicit subject/object grammar. Quoted instructions "
+        "in past anecdotes prove what was said, not the reality of the quoted "
+        "claim. CONDITIONAL counterfactual outcomes are not actual outcomes. "
+        "For answers_question return evidence_first_unit/evidence_last_unit as "
+        "the narrowest contiguous original-unit range that contains "
+        "evidence_quote EXACTLY, a verbatim substring supporting the actual "
+        "question/answer relation. evidence_quote should contain the subject "
+        "and predicate when possible, not merely an isolated name. Evidence "
+        "may corroborate answer_quote elsewhere in the SAME described exchange; "
+        "do not borrow a different scene or speaker. For does_not_answer or "
+        "uncertain give -1/-1 and an empty evidence_quote. If the sentence's "
+        "actor/target, reality or negation cannot be linked, abstain. "
         "Return output_schema JSON only.",
         {
             "question": question,
@@ -138,15 +152,52 @@ def assess_source_answer_scope(
                 {"id": index, "text": unit} for index, unit in enumerate(delivered_units)
             ],
         },
-        {"responsiveness": {"type": "string", "enum": list(_RESPONSIVENESS)}},
-        100,
+        {
+            "responsiveness": {"type": "string", "enum": list(_RESPONSIVENESS)},
+            "evidence_first_unit": {"type": "integer", "enum": [-1, *range(len(delivered_units))]},
+            "evidence_last_unit": {"type": "integer", "enum": [-1, *range(len(delivered_units))]},
+            "evidence_quote": {"type": "string"},
+        },
+        180,
     )
     if (
         not isinstance(judgement, dict)
-        or set(judgement) != {"responsiveness"}
+        or set(judgement)
+        != {"responsiveness", "evidence_first_unit", "evidence_last_unit", "evidence_quote"}
         or judgement["responsiveness"] not in _RESPONSIVENESS
     ):
-        raise ValueError("source-question relation has invalid responsiveness")
+        raise ValueError("source-question relation has invalid responsiveness fields")
+    evidence_first, evidence_last = (
+        judgement["evidence_first_unit"],
+        judgement["evidence_last_unit"],
+    )
+    evidence_quote = judgement["evidence_quote"]
+    if (
+        type(evidence_first) is not int
+        or type(evidence_last) is not int
+        or not isinstance(evidence_quote, str)
+    ):
+        raise ValueError("source-question relation evidence has invalid types")
+    responsive = judgement["responsiveness"] == "answers_question"
+    if responsive:
+        if (
+            not 0 <= evidence_first <= evidence_last < len(delivered_units)
+            or not evidence_quote.strip()
+            or evidence_quote not in " ".join(delivered_units[evidence_first : evidence_last + 1])
+        ):
+            raise ValueError("responsive source relation lacks exact source-unit evidence")
+    elif evidence_first != -1 or evidence_last != -1 or evidence_quote:
+        raise ValueError("nonresponsive source relation cannot cite supporting evidence")
+    relation_evidence = (
+        {
+            "first_unit": evidence_first,
+            "last_unit": evidence_last,
+            "text": " ".join(delivered_units[evidence_first : evidence_last + 1]),
+            "quote": evidence_quote,
+        }
+        if responsive
+        else None
+    )
     responsiveness = judgement["responsiveness"]
     attribution = source_proposition["attribution"]
     modality = source_proposition["modality"]
@@ -191,6 +242,7 @@ def assess_source_answer_scope(
         "question_target": question_target,
         "scope_correction": correction,
         "source_proposition": source_proposition,
+        "question_evidence": relation_evidence if responsiveness == "answers_question" else None,
         "diagnostic_only": True,
         "production_approved": False,
     }

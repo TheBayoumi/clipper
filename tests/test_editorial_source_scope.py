@@ -30,7 +30,7 @@ def isolate_source_extraction(monkeypatch):
     def source_only(**kwargs):
         quote = kwargs["answer_quote"].casefold()
         spoken = "live tv" in quote or "studio tonight" in quote
-        negative = "don't make" in quote or "never earn" in quote
+        negative = "don't make" in quote or "don't earn" in quote or "never earn" in quote
         return original(
             **{key: val for key, val in kwargs.items() if key != "completion"},
             completion=lambda *_: {
@@ -55,15 +55,31 @@ def staged_completion(*, target="described_event_or_state", responsiveness="answ
         if "question_target" in schema:
             assert payload.keys() == {"question"}
             return {"question_target": target}
-        assert schema == {
-            "responsiveness": {
-                "type": "string",
-                "enum": ["answers_question", "does_not_answer", "uncertain"],
-            }
+        assert set(schema) == {
+            "responsiveness",
+            "evidence_first_unit",
+            "evidence_last_unit",
+            "evidence_quote",
         }
         assert "source_proposition" in payload
         assert "proposed_answer" not in payload and "headline" not in payload
-        return {"responsiveness": responsiveness}
+        if responsiveness == "answers_question":
+            unit = next(
+                (u for u in payload["source_units"] if payload["answer_quote"] in u["text"]),
+                payload["source_units"][-1],
+            )
+            return {
+                "responsiveness": responsiveness,
+                "evidence_first_unit": unit["id"],
+                "evidence_last_unit": unit["id"],
+                "evidence_quote": payload["answer_quote"],
+            }
+        return {
+            "responsiveness": responsiveness,
+            "evidence_first_unit": -1,
+            "evidence_last_unit": -1,
+            "evidence_quote": "",
+        }
 
     return fn, calls
 
@@ -227,3 +243,126 @@ def test_recounted_event_not_equated_with_quote_inside_story():
     assert result["narrative_role"] == "recounted_event"
     assert result["scope"] == "actual_event_or_state"
     assert result["responsiveness"] == "answers_question"
+
+
+def test_contextual_first_person_corrob_with_negative_answer():
+    speech = [
+        "I got so many views on that channel.",
+        "I'm not making a dime off those views.",
+        "If it were my podcast, I'd make a fortune.",
+        "You don't earn anything from that platform.",
+    ]
+    question = "How much did the creator earn from those views?"
+    used = []
+
+    def completion(prompt, payload, schema, tokens):
+        used.append(payload)
+        if "question_target" in schema:
+            return {"question_target": "described_event_or_state"}
+        assert payload["answer_quote"] == "You don't earn anything from that platform."
+        return {
+            "responsiveness": "answers_question",
+            "evidence_first_unit": 1,
+            "evidence_last_unit": 1,
+            "evidence_quote": "I'm not making a dime off those views.",
+        }
+
+    result = assess_source_answer_scope(
+        question=question,
+        source_answer=answer(
+            question=question,
+            quote="You don't earn anything from that platform.",
+            unit=3,
+            units=speech,
+        ),
+        delivered_units=speech,
+        completion=completion,
+    )
+    assert len(used) == 2
+    assert result["responsiveness"] == "answers_question"
+    assert result["scope"] == "negated_actual_state"
+    assert result["question_evidence"] == {
+        "first_unit": 1,
+        "last_unit": 1,
+        "text": speech[1],
+        "quote": "I'm not making a dime off those views.",
+    }
+    assert result["production_approved"] is False
+
+
+def test_recipient_of_listening_is_not_nearest_pacing_actor():
+    speech = [
+        "At the team meeting the director stood in front.",
+        "Henry was pacing and everyone was sitting, listening",
+        "to Morgan, who explained the schedule.",
+    ]
+    question = "Who were the others listening to?"
+
+    def completion(prompt, payload, schema, tokens):
+        if "question_target" in schema:
+            return {"question_target": "described_event_or_state"}
+        return {
+            "responsiveness": "answers_question",
+            "evidence_first_unit": 1,
+            "evidence_last_unit": 2,
+            "evidence_quote": "everyone was sitting, listening to Morgan",
+        }
+
+    result = assess_source_answer_scope(
+        question=question,
+        source_answer={
+            "question": question,
+            "status": "answered",
+            "answer_quote": "to Morgan",
+            "citation": {"first_unit": 1, "last_unit": 2, "text": " ".join(speech[1:])},
+        },
+        delivered_units=speech,
+        completion=completion,
+    )
+    assert result["responsiveness"] == "answers_question"
+    assert result["question_evidence"]["text"] == " ".join(speech[1:])
+    assert result["question_evidence"]["quote"].startswith("everyone")
+
+
+@pytest.mark.parametrize(
+    "relation",
+    [
+        {
+            "responsiveness": "answers_question",
+            "evidence_first_unit": -1,
+            "evidence_last_unit": -1,
+            "evidence_quote": "",
+        },
+        {
+            "responsiveness": "answers_question",
+            "evidence_first_unit": 1,
+            "evidence_last_unit": 1,
+            "evidence_quote": "invented unsupported statement",
+        },
+        {
+            "responsiveness": "answers_question",
+            "evidence_first_unit": 1,
+            "evidence_last_unit": 19,
+            "evidence_quote": "We're on live TV",
+        },
+        {
+            "responsiveness": "does_not_answer",
+            "evidence_first_unit": 1,
+            "evidence_last_unit": 1,
+            "evidence_quote": "We're on live TV",
+        },
+    ],
+)
+def test_grounded_responsiveness_fails_closed_on_bad_support(relation):
+    def completion(prompt, payload, schema, tokens):
+        if "question_target" in schema:
+            return {"question_target": "described_event_or_state"}
+        return relation
+
+    with pytest.raises(ValueError, match=r"source relation|source-question relation"):
+        assess_source_answer_scope(
+            question=QUESTION,
+            source_answer=answer(),
+            delivered_units=UNITS,
+            completion=completion,
+        )

@@ -45,7 +45,12 @@ def answer(prompt, payload, schema, tokens):
 def scope(prompt, payload, schema, tokens):
     if "question_target" in schema:
         return {"question_target": "described_event_or_state"}
-    return {"responsiveness": "answers_question"}
+    return {
+        "responsiveness": "answers_question",
+        "evidence_first_unit": 1,
+        "evidence_last_unit": 1,
+        "evidence_quote": "Bobby Green paced",
+    }
 
 
 def relation(prompt, payload, schema, tokens):
@@ -117,7 +122,12 @@ def test_atomic_relation_stops_on_nonresponsive_exact_quote():
         scope_completion=lambda _p, _v, schema, _t: (
             {"question_target": "described_event_or_state"}
             if "question_target" in schema
-            else {"responsiveness": "does_not_answer"}
+            else {
+                "responsiveness": "does_not_answer",
+                "evidence_first_unit": -1,
+                "evidence_last_unit": -1,
+                "evidence_quote": "",
+            }
         ),
         comparison_completion=lambda *_: (_ for _ in ()).throw(AssertionError("comparator called")),
     )

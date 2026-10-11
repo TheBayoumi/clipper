@@ -117,9 +117,34 @@ def compare_claim_answer(
             citation=citation,
             delivered_units=delivered_units,
         )
+    relation_evidence = scope_review.get("question_evidence")
+    if relation_evidence is not None:
+        if not isinstance(relation_evidence, dict) or set(relation_evidence) != {
+            "first_unit",
+            "last_unit",
+            "text",
+            "quote",
+        }:
+            raise ValueError("question-aligned source evidence has invalid structure")
+        evidence_first, evidence_last = (
+            relation_evidence["first_unit"],
+            relation_evidence["last_unit"],
+        )
+        if (
+            type(evidence_first) is not int
+            or type(evidence_last) is not int
+            or not 0 <= evidence_first <= evidence_last < len(delivered_units)
+            or relation_evidence["text"]
+            != " ".join(delivered_units[evidence_first : evidence_last + 1])
+            or not isinstance(relation_evidence["quote"], str)
+            or not relation_evidence["quote"].strip()
+            or relation_evidence["quote"] not in relation_evidence["text"]
+        ):
+            raise ValueError("question-aligned evidence must match delivered speech")
     proposed = completion(
         "Compare proposed_answer with source_answer_quote as answers to the same "
-        "question, using ALL source_units to resolve who was speaking, the story's "
+        "question, using ALL source_units and the separately verified "
+        "question_evidence (when available) to resolve who was speaking, the story's "
         "narrative viewpoint, and the events being recounted. A podcast guest may "
         "recount a past firsthand experience; treat this as a recounted event, not "
         "a present live event and not as inherently hypothetical. Dialogue quoted "
@@ -157,6 +182,7 @@ def compare_claim_answer(
             "source_scope": scope_review["scope"],
             "blind_source_narrative_role": scope_review["narrative_role"],
             "source_proposition": scope_review.get("source_proposition"),
+            "question_evidence": relation_evidence,
             "cited_first_unit": first,
             "cited_last_unit": last,
             "source_units": [

@@ -377,3 +377,17 @@ def test_equivalence_cannot_pass_using_negative_event_evidence():
     result = compare(completion=lambda *_: response("equivalent", event_link="different_event"))
     assert result["relation"] == "uncertain"
     assert result["production_approved"] is False
+
+
+def test_comparison_rejects_tampered_question_aligned_evidence():
+    scope = scope_review()
+    scope["question_evidence"] = {
+        "first_unit": 1,
+        "last_unit": 1,
+        "text": UNITS[1],
+        "quote": "Bobby Green paced",
+    }
+    assert compare(scope_review=scope)["relation"] == "different"
+    scope["question_evidence"]["quote"] = "invented relation"
+    with pytest.raises(ValueError, match="question-aligned evidence"):
+        compare(scope_review=scope)

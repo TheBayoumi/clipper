@@ -132,8 +132,14 @@ def extract_source_proposition(
         "with negated polarity; 'you don't make anything from views' can be the "
         "speaker's general statement about their own income in context, but should "
         "not automatically be extrapolated to everyone. Track conditional/hypothetical "
-        "and negation without dropping them. `actor` and `predicate` are concise "
-        "source-grounded strings, or empty strings if unclear; do not invent names. "
+        "and negation without dropping them. Actor is the GRAMMATICAL AGENT "
+        "of the action named by predicate, not the nearest proper name. "
+        "For clauses crossing source-unit boundaries, resolve the verb's "
+        "subject and object using the joined original sentence. If someone "
+        "paces while others listen to a different speaker, they have distinct "
+        "agents and the listener's target is not the pacing person. "
+        "`actor` and `predicate` are concise source-grounded strings, or "
+        "empty strings if unclear; do not invent names. "
         "Classify the speech act of the ANCHORED words rather than a neighboring "
         "event in the same anecdote. Return output_schema JSON only.",
         {
