@@ -743,10 +743,8 @@ jobs:
 
   editorial_semantic_gate:
     name: Editorial semantic acceptance (strict 15/15 gate)
-    # This lightweight checkout-only job does not install Clipper. Its sources
-    # live under src/ and must be importable before enforcing acceptance.
-    env:
-      PYTHONPATH: ${{ github.workspace }}/src
+    # Strict gate is stdlib-only and runs as a standalone script, avoiding
+    # Clipper's production package imports and their runtime dependencies.
     needs: editorial_preflight
     if: >-
       github.event_name == 'workflow_dispatch' &&
@@ -766,8 +764,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Verify editorial gate is importable without installing GPU dependencies
-        run: python -c "from clipper.editorial_gpu_reporting import main; print(main.__module__)"
+      - name: Verify standalone editorial acceptance checker
+        run: python -S src/clipper/editorial_gpu_reporting.py --help
       - name: Download completed GPU evidence from this workflow
         uses: actions/download-artifact@v4
         with:
@@ -775,7 +773,7 @@ jobs:
           path: reviewer-report
       - name: Enforce frozen editorial quality, never production approval
         run: |
-          python -m clipper.editorial_gpu_reporting \
+          python -S src/clipper/editorial_gpu_reporting.py \
             --report reviewer-report/reviewer-preflight.json \
             --summary "$GITHUB_STEP_SUMMARY" --require-semantic
 

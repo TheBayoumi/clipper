@@ -155,9 +155,10 @@ def test_narrative_quality_has_separate_github_actions_gate():
     assert "--require-semantic" not in reporter["run"]
     gate = jobs["editorial_semantic_gate"]
     assert gate["needs"] == "editorial_preflight"
-    assert gate["env"]["PYTHONPATH"] == "${{ github.workspace }}/src"
-    assert "Verify editorial gate is importable" in gate["steps"][2]["name"]
-    assert "from clipper.editorial_gpu_reporting import main" in gate["steps"][2]["run"]
+    assert "PYTHONPATH" not in gate.get("env", {})
+    assert "Verify standalone editorial acceptance checker" in gate["steps"][2]["name"]
+    assert "python -S src/clipper/editorial_gpu_reporting.py --help" in gate["steps"][2]["run"]
+    assert "python -S src/clipper/editorial_gpu_reporting.py" in gate["steps"][-1]["run"]
     assert "inputs.reviewer_model_probe == 'narrative_gpu'" in gate["if"]
     assert "needs.editorial_preflight.result == 'success'" in gate["if"]
     assert "--require-semantic" in gate["steps"][-1]["run"]
@@ -220,3 +221,28 @@ def test_worker_safety_and_incomplete_scores_fail_closed():
     evidence["worker"]["warm_replay_same_verdicts"] = False
     assert narrative_execution_issues(evidence) == []
     assert narrative_acceptance_issues(evidence)
+
+
+def test_standalone_gate_runs_without_clip_runtime_dependencies(tmp_path):
+    path = tmp_path / "gpu.json"
+    summary = tmp_path / "summary.md"
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    args = [
+        sys.executable,
+        "-S",
+        "src/clipper/editorial_gpu_reporting.py",
+        "--report",
+        str(path),
+        "--summary",
+        str(summary),
+        "--require-semantic",
+    ]
+    path.write_text(json.dumps(report(scope_matches=15, claim_matches=15, semantic_pass=True)))
+    passing = subprocess.run(args, env=environment, capture_output=True, text=True, check=False)
+    assert passing.returncode == 0, passing.stderr
+    assert "**Editorial semantic gate:** PASS" in passing.stdout
+    path.write_text(json.dumps(report()))
+    failing = subprocess.run(args, env=environment, capture_output=True, text=True, check=False)
+    assert failing.returncode == 1, failing.stderr
+    assert "**Editorial semantic gate:** FAIL" in failing.stdout
