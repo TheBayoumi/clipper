@@ -383,6 +383,57 @@ def _purge_remote(staging: dict[str, Any], diagnostic: Path | None = None) -> No
     raise RuntimeError("MODAL_VOLUME_CLEANUP_FAILED: " + remote)
 
 
+def _persist_source_cache_index(staging: dict[str, Any], probe_root: Path) -> str:
+    """Idempotently retain verified original provenance without rewriting cached bytes.
+
+    A matching manifest fetched from Modal is already authoritative after the
+    original has passed SHA-256 verification. When a saved GitHub artifact is
+    the only available manifest, refresh the remote index explicitly: Modal's
+    volume put refuses to overwrite existing files without --force.
+    """
+    retained = {
+        key: value
+        for key, value in staging.items()
+        if key not in {"source_cache_local_path", "source_cache_reused"}
+    }
+    remote_index = probe_root / "cached-source-index.json"
+    if staging.get("source_cache_reused") is True and remote_index.is_file():
+        try:
+            old_index = json.loads(remote_index.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            old_index = None
+        if isinstance(old_index, dict) and all(
+            old_index.get(name) == retained.get(name)
+            for name in (
+                "video_id",
+                "channel_id",
+                "source_remote_path",
+                "source_sha256",
+                "public_video_url",
+                "status",
+            )
+        ):
+            print(
+                "SOURCE_MANIFEST_CACHE_HIT: existing Modal index matches verified source",
+                flush=True,
+            )
+            return "cache_hit"
+    probe_root.mkdir(parents=True, exist_ok=True)
+    index = probe_root / "source-cache-index.json"
+    index.write_text(json.dumps(retained, indent=2) + "\n", encoding="utf-8")
+    remote_path = f"cache/{staging['channel_id']}/{staging['video_id']}/manifest.json"
+    command = ["modal", "volume", "put", "--force", VOLUME, str(index), remote_path]
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "MODAL_SOURCE_MANIFEST_UPLOAD_FAILED: "
+            f"exit={completed.returncode} "
+            f"stderr={completed.stderr[-1000:]}"
+        )
+    print("SOURCE_MANIFEST_UPSERT: verified exact-source index retained", flush=True)
+    return "uploaded"
+
+
 def run_modal_production(
     *,
     root: Path | None = None,
@@ -453,29 +504,11 @@ def run_modal_production(
             encoding="utf-8",
         )
         original = _transfer_verified_original(staging, attempt_root / "source")
-        if os.getenv("TJR_PERSIST_SOURCE") == "1":
-            # Retain the verified remote bytes and a deterministic index, so reuse
-            # survives GitHub artifact expiry and explicitly selected old checkpoints.
-            index = probe_root / "source-cache-index.json"
-            probe_root.mkdir(parents=True, exist_ok=True)
-            retained = {
-                key: value for key, value in staging.items() if key != "source_cache_local_path"
-            }
-            index.write_text(json.dumps(retained, indent=2) + "\n")
-            subprocess.run(
-                [
-                    "modal",
-                    "volume",
-                    "put",
-                    VOLUME,
-                    str(index),
-                    f"cache/{staging['channel_id']}/{staging['video_id']}/manifest.json",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
+        manifest_persistence = (
+            _persist_source_cache_index(staging, probe_root)
+            if os.getenv("TJR_PERSIST_SOURCE") == "1"
+            else "not_requested"
+        )
         env_manifest = str((attempt_root / "source.json").resolve())
         # This exact source is authoritative after verification. Editorial weakness
         # must produce an audited zero-clip result, never a different source.
@@ -507,6 +540,7 @@ def run_modal_production(
                     "video_id": staging["video_id"],
                     "source": "cache_hit" if staging.get("source_cache_reused") else "acquired",
                     "remote_original_retained": os.getenv("TJR_PERSIST_SOURCE") == "1",
+                    "source_manifest_persistence": manifest_persistence,
                 },
                 indent=2,
             )

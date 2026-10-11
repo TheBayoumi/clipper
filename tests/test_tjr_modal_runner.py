@@ -505,3 +505,108 @@ def test_completed_pipeline_replay_skips_source_and_invalidates_changed_settings
     monkeypatch.delenv("TJR_CAPTION_STYLE", raising=False)
     clip.write_bytes(b"corrupted delivery")
     assert not runner._restore_completed_pipeline(tmp_path / "corrupted")
+
+
+def test_matching_modal_source_manifest_is_idempotent(tmp_path: Path):
+    import json
+
+    import scripts.tjr_modal_runner as runner
+
+    staging = {
+        **_staged("3S-fL9rNPp0"),
+        "source_cache_reused": True,
+        "source_cache_local_path": str(tmp_path / "original.mp4"),
+    }
+    root = tmp_path / "probe"
+    root.mkdir()
+    (root / "cached-source-index.json").write_text(
+        json.dumps(
+            {
+                k: v
+                for k, v in staging.items()
+                if k not in {"source_cache_reused", "source_cache_local_path"}
+            }
+        )
+    )
+    with patch.object(runner.subprocess, "run") as run:
+        assert runner._persist_source_cache_index(staging, root) == "cache_hit"
+    run.assert_not_called()
+    assert not (root / "source-cache-index.json").exists()
+
+
+@pytest.mark.parametrize("stale_index", [True, False])
+def test_remote_source_manifest_upsert_uses_explicit_overwrite(tmp_path: Path, stale_index: bool):
+    import json
+
+    import scripts.tjr_modal_runner as runner
+
+    staging = {**_staged("3S-fL9rNPp0"), "source_cache_reused": True}
+    if stale_index:
+        tmp_path.joinpath("cached-source-index.json").write_text(
+            json.dumps({**staging, "source_sha256": "b" * 64})
+        )
+    with patch.object(
+        runner.subprocess, "run", return_value=Mock(returncode=0, stdout="ok", stderr="")
+    ) as put:
+        assert runner._persist_source_cache_index(staging, tmp_path) == "uploaded"
+    args = put.call_args.args[0]
+    assert args[:4] == ["modal", "volume", "put", "--force"]
+    assert args[4] == runner.VOLUME
+    assert args[-1] == f"cache/{CHANNEL}/3S-fL9rNPp0/manifest.json"
+    written = json.loads((tmp_path / "source-cache-index.json").read_text())
+    assert "source_cache_reused" not in written
+    assert written["source_sha256"] == staging["source_sha256"]
+
+
+def test_remote_source_manifest_failure_keeps_actionable_modal_diagnostics(tmp_path: Path):
+    import scripts.tjr_modal_runner as runner
+
+    with (
+        patch.object(
+            runner.subprocess,
+            "run",
+            return_value=Mock(returncode=2, stdout="", stderr="Permission denied"),
+        ),
+        pytest.raises(
+            RuntimeError, match=r"MODAL_SOURCE_MANIFEST_UPLOAD_FAILED.*Permission denied"
+        ),
+    ):
+        runner._persist_source_cache_index(_staged("3S-fL9rNPp0"), tmp_path)
+
+
+def test_cached_modal_source_proceeds_to_editorial_without_republishing_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import json
+
+    import scripts.tjr_modal_runner as runner
+
+    monkeypatch.setenv("TJR_PERSIST_SOURCE", "1")
+    staging = {**_staged("3S-fL9rNPp0"), "source_cache_reused": True}
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    probe.joinpath("cached-source-index.json").write_text(json.dumps(staging))
+    edited = []
+
+    def verified_transfer(source, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.with_suffix(".json").write_text("{}")
+        return destination.with_suffix(".mp4")
+
+    def render(directory, campaign, *, run_config):
+        edited.append(directory)
+        return directory
+
+    with (
+        patch.object(runner, "_acquire_original", return_value=staging),
+        patch.object(runner, "_transfer_verified_original", side_effect=verified_transfer),
+        patch.object(runner, "_save_pipeline_completion"),
+        patch.object(runner, "render_youtube_previews", side_effect=render),
+        patch.object(runner.subprocess, "run") as command,
+    ):
+        runner.run_modal_production(root=tmp_path / "production", probe_root=probe)
+    command.assert_not_called()
+    assert len(edited) == 1
+    state = json.loads((probe / "pipeline-source-state.json").read_text())
+    assert state["source"] == "cache_hit"
+    assert state["source_manifest_persistence"] == "cache_hit"
