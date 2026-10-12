@@ -522,7 +522,8 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
                 "complete_without_excluded": 1,
                 "reason": "Contradictory: declares an essential omission but says complete.",
             },
-        ] * 2,
+        ]
+        * 2,
         "optional_verified": True,
     }
     from clipper.editorial_engine import _optional_contrast_proof_valid
@@ -545,9 +546,9 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
 
     # Cache tampering cannot replace the independent verdict with a boolean.
     corrupted = copy.deepcopy(boundary)
-    corrupted["continuation_review"]["optional_contrast_proof"]["verdicts"][1][
-        "materiality"
-    ] = "needed_to_finish_delivered_point"
+    corrupted["continuation_review"]["optional_contrast_proof"]["verdicts"][1]["materiality"] = (
+        "needed_to_finish_delivered_point"
+    )
     with pytest.raises(SourceEvidenceError, match="approval was altered"):
         complete_source_review(
             model,
