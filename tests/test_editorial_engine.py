@@ -455,6 +455,16 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
             "reason": "The omitted source is checked against the same delivered obligation.",
         }
 
+    def event_guard(status="non_event"):
+        absent_event = {"first_unit": -1, "last_unit": -1}
+        return {
+            "excluded_event_span": absent_event,
+            "prior_event_setup_span": absent_event,
+            "delivered_event_outcome_span": absent_event,
+            "status": status,
+            "reason": "The excluded speech adds no separately teased consequential event.",
+        }
+
     def evaluate(first, second):
         responses = [
             first["obligation"],
@@ -491,6 +501,9 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
                         "reason": "First reviewer suspects a missing comparison.",
                     }
                 assert "missing_contrast" not in str(payload)
+                if "Perform a BLIND excluded-event inventory" in prompt:
+                    assert "frozen_delivered_obligation" not in payload
+                    return event_guard()
                 if "excluded_after" not in payload:
                     assert set(payload) == {"delivered_units", "final_substantive_unit_id"}
                 else:
@@ -500,7 +513,7 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
         model = Model()
         context = {"selected_units": delivered, "before": [], "after": excluded}
         boundary = review_source_boundaries(model, context)
-        assert len(prompts) == 7 and not responses
+        assert len(prompts) in (7, 8) and not responses
         assert boundary["continuation_review"]["relation"] == "missing_contrast"
         assert len(boundary["continuation_review"]["optional_contrast_proof"]["verdicts"]) == 2
         return model, context, boundary
@@ -610,20 +623,21 @@ def test_optional_proof_rejects_schema_valid_but_fake_delivered_payoff():
 
     with pytest.raises(SourceEvidenceError, match="canonical proof"):
         _optional_contrast_proof_valid(
-            {"verdicts": [build("pending", pointer)] * 2, "optional_verified": False},
+            {"verdicts": [build("pending", pointer)] * 2, "event_gap": None, "optional_verified": False},
             delivered,
             after,
             0,
         )
     with pytest.raises(SourceEvidenceError, match="canonical proof"):
         _optional_contrast_proof_valid(
-            {"verdicts": [build("delivered", absent)] * 2, "optional_verified": False},
+            {"verdicts": [build("delivered", absent)] * 2, "event_gap": None, "optional_verified": False},
             delivered,
             after,
             0,
         )
     proof = {
         "verdicts": [build("pending", absent)] * 2,
+        "event_gap": None,
         "optional_verified": False,
     }
     assert _optional_contrast_proof_valid(proof, delivered, after, 0) is False
@@ -676,18 +690,28 @@ def test_narrative_proof_validation_fails_closed_on_invalid_combinations():
             "reason": "The next speaker asks a separate question.",
         },
     }
+    safe_event_guard = {
+        "excluded_event_span": absent,
+        "prior_event_setup_span": absent,
+        "delivered_event_outcome_span": absent,
+        "status": "non_event",
+        "reason": "No additional consequential event follows this completed conclusion.",
+    }
     assert _optional_contrast_proof_valid(
-        {"verdicts": [valid, valid], "optional_verified": True}, selected, excluded, 0
+        {"verdicts": [valid, valid], "event_gap": safe_event_guard, "optional_verified": True},
+        selected,
+        excluded,
+        0,
     )
     assert _optional_contrast_proof_valid(None, selected, excluded, 0) is False
     for invalid in (
         [],
-        {"verdicts": [valid], "optional_verified": True},
-        {"verdicts": "untrusted", "optional_verified": False},
-        {"verdicts": [valid, valid], "optional_verified": False},
-        {"verdicts": [valid, valid], "optional_verified": True, "other": "tamper"},
-        {"verdicts": [valid, valid], "optional_verified": 1},
-        {"verdicts": [valid, {"obligation": valid["obligation"]}], "optional_verified": True},
+        {"verdicts": [valid], "event_gap": None, "optional_verified": True},
+        {"verdicts": "untrusted", "event_gap": None, "optional_verified": False},
+        {"verdicts": [valid, valid], "event_gap": safe_event_guard, "optional_verified": False},
+        {"verdicts": [valid, valid], "event_gap": safe_event_guard, "optional_verified": True, "other": "tamper"},
+        {"verdicts": [valid, valid], "event_gap": safe_event_guard, "optional_verified": 1},
+        {"verdicts": [valid, {"obligation": valid["obligation"]}], "event_gap": None, "optional_verified": True},
         {
             "verdicts": [
                 valid,
@@ -696,6 +720,7 @@ def test_narrative_proof_validation_fails_closed_on_invalid_combinations():
                     "dependency": {**valid["dependency"], "effect": "not_a_source_relation"},
                 },
             ],
+            "event_gap": None,
             "optional_verified": True,
         },
         {
