@@ -402,6 +402,7 @@ def test_full_exchange_summary_requires_retained_source_evidence():
         clip, hook_override="AN UNRELATED CLAIM ABOUT A DIFFERENT SHOW"
     )
 
+
 def test_archived_distinct_adjacent_stories_survive_without_temporal_overlap() -> None:
     """The 1.32-second gap between two real source thoughts is not a duplicate."""
     first = clip(
@@ -428,4 +429,3 @@ def test_archived_distinct_adjacent_stories_survive_without_temporal_overlap() -
     picks, rejected = select_editorial_moments([first, overlapping])
     assert len(picks) == 1
     assert any(row["reason"] == "DUPLICATE_OR_OVERLAP" for row in rejected)
-
