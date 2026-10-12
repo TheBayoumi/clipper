@@ -469,6 +469,24 @@ def test_source_cache_skips_youtube_acquisition(tmp_path, monkeypatch):
     run.assert_not_called()
 
 
+def test_explicit_editorial_recovery_never_falls_back_to_new_youtube_download(
+    tmp_path, monkeypatch
+):
+    import scripts.tjr_modal_runner as runner
+
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "3S-fL9rNPp0")
+    monkeypatch.setenv("TJR_EDITORIAL_CACHE_ROOT", str(tmp_path / "archived"))
+    monkeypatch.setenv("TJR_SOURCE_CACHE_ROOT", str(tmp_path / "archived"))
+    monkeypatch.delenv("TJR_MODAL_USE_STAGED", raising=False)
+    with (
+        patch.object(runner, "_restore_source_cache", return_value=None),
+        patch.object(runner.subprocess, "run") as acquire,
+        pytest.raises(RuntimeError, match="EDITORIAL_RECOVERY_SOURCE_CACHE_MISSING"),
+    ):
+        runner._acquire_original(set(), tmp_path / "current")
+    acquire.assert_not_called()
+
+
 def test_source_cache_does_not_reuse_a_different_video(tmp_path, monkeypatch):
     import json
 
