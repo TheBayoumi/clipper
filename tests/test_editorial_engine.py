@@ -422,12 +422,8 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
         review_source_boundaries,
     )
 
-    delivered = [
-        "Brock Purdy is now a quarterback you win because of, not just with."
-    ]
-    excluded = [
-        "Before we won with him, but now we would win because of him."
-    ]
+    delivered = ["Brock Purdy is now a quarterback you win because of, not just with."]
+    excluded = ["Before we won with him, but now we would win because of him."]
     absent = {"first_unit": -1, "last_unit": -1}
     grounded = {"first_unit": 0, "last_unit": 0}
 
