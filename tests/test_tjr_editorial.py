@@ -401,3 +401,31 @@ def test_full_exchange_summary_requires_retained_source_evidence():
     assert "UNSUPPORTED_SOURCE_HOOK" in candidate_gate_failures(
         clip, hook_override="AN UNRELATED CLAIM ABOUT A DIFFERENT SHOW"
     )
+
+def test_archived_distinct_adjacent_stories_survive_without_temporal_overlap() -> None:
+    """The 1.32-second gap between two real source thoughts is not a duplicate."""
+    first = clip(
+        2324.63,
+        "I was upset when the team made that decision, but life is not always "
+        "going to be rosy. You control how you respond to disappointment "
+        "and I decided I would take responsibility for my own response.",
+        90,
+    )
+    second = clip(
+        2356.95,
+        "I found joy again after leaving. I joined a different team because "
+        "I loved playing, and my years in Washington changed my family's "
+        "life for the better. I am grateful for that opportunity.",
+        95,
+    )
+    assert round(second.start - first.end, 2) == 1.32
+    picks, rejected = select_editorial_moments([first, second])
+    assert len(picks) == 2
+    assert not any(row["reason"] == "DUPLICATE_OR_OVERLAP" for row in rejected)
+
+    # Actual simultaneous source speech still rejects the second window.
+    overlapping = clip(2340, second.text, 80)
+    picks, rejected = select_editorial_moments([first, overlapping])
+    assert len(picks) == 1
+    assert any(row["reason"] == "DUPLICATE_OR_OVERLAP" for row in rejected)
+
