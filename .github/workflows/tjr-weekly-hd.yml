@@ -44,7 +44,7 @@ on:
         description: "Diagnostic model comparison only; factual_9b tests saved headline claims without selection or media."
         required: false
         type: choice
-        options: [disabled, focused_4b, factual_9b, factual_consensus, factual_ablation_4b, factual_nli, evidence_qa, structured_claim, source_bound_headline, headline_materializer, cut_obligation, question_state, source_answer, source_scope, answer_comparison, claim_inventory, syntax_inventory, relation_minicheck, evidence_gpu, reasoning_gpu, narrative_gpu, gpu_recovery, gpu_build_logs]
+        options: [disabled, continuation_qualification, focused_4b, factual_9b, factual_consensus, factual_ablation_4b, factual_nli, evidence_qa, structured_claim, source_bound_headline, headline_materializer, cut_obligation, question_state, source_answer, source_scope, answer_comparison, claim_inventory, syntax_inventory, relation_minicheck, evidence_gpu, reasoning_gpu, narrative_gpu, gpu_recovery, gpu_build_logs]
         default: disabled
       editorial_preflight:
         description: "Run real-model reviewer regression on cached transcript only; no source acquisition."
@@ -575,6 +575,19 @@ jobs:
       - name: Assess reviewer evidence (regression, diagnostics or model comparison)
         if: inputs.reviewer_model_probe != 'gpu_build_logs'
         run: |
+          if [ '${{ inputs.reviewer_model_probe }}' = 'continuation_qualification' ]; then
+            TRANSCRIPT=$(find reviewer-input -name transcript.json -print -quit)
+            test -n "$TRANSCRIPT"
+            EDITORIAL=$(dirname "$TRANSCRIPT")/editorial-cache.json
+            test -f "$EDITORIAL"
+            python -m scripts.tjr_continuation_qualification \
+              --editorial-cache "$EDITORIAL" --transcript "$TRANSCRIPT" \
+              --output continuation-source-precheck.json --dry-run
+            python -m scripts.tjr_continuation_qualification \
+              --editorial-cache "$EDITORIAL" --transcript "$TRANSCRIPT" \
+              --output reviewer-preflight.json
+            exit $?
+          fi
           if [ '${{ inputs.reviewer_model_probe }}' = 'gpu_recovery' ]; then
             BASELINE=$(find reviewer-baseline -name reviewer-preflight.json -print -quit)
             test -n "$BASELINE"
