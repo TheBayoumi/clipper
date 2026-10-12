@@ -409,3 +409,145 @@ def test_verified_excluded_continuation_is_rechecked_before_headline_reuse():
             factual_audit=lambda *_: {},
             headline_generator=lambda *_args, **_kw: pytest.fail("missing source proof"),
         )
+
+
+def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs():
+    import copy
+
+    import pytest
+
+    from clipper.editorial_engine import (
+        SourceEvidenceError,
+        complete_source_review,
+        review_source_boundaries,
+    )
+
+    delivered = [
+        "Brock Purdy is now a quarterback you win because of, not just with."
+    ]
+    excluded = [
+        "Before we won with him, but now we would win because of him."
+    ]
+    absent = {"first_unit": -1, "last_unit": -1}
+    grounded = {"first_unit": 0, "last_unit": 0}
+
+    def adjudication(role, complete=1, *, excluded_span=None):
+        return {
+            "delivered_span": grounded.copy(),
+            "excluded_span": grounded.copy() if excluded_span is None else excluded_span,
+            "role": role,
+            "complete_without_excluded": complete,
+            "reason": "The excluded speech repeats the already delivered conclusion.",
+        }
+
+    def evaluate(first, second):
+        prompts = []
+
+        class Model:
+            def _review_completion(self, prompt, payload, _schema, _tokens):
+                prompts.append(prompt)
+                if "speech act performed" in prompt:
+                    return {
+                        "ad_read_present": 0,
+                        "ad_read_span": absent,
+                        "show_intro_present": 0,
+                        "show_intro_span": absent,
+                        "reason": "Normal conversation",
+                    }
+                if "finished clip" in prompt:
+                    return {
+                        "setup_span": grounded,
+                        "resolution_span": grounded,
+                        "opening_independent": 1,
+                        "last_thought_finished": 1,
+                        "reason": "The speaker finishes the comparison.",
+                    }
+                if "Judge the CUT" in prompt:
+                    return {
+                        "final_span": grounded,
+                        "continuation_span": grounded,
+                        "relation": "missing_contrast",
+                        "reason": "First reviewer alleges omitted contrast.",
+                    }
+                if "Independently compare" in prompt:
+                    assert "missing_contrast" not in str(payload)
+                    return first
+                if "counterfactual cut test" in prompt:
+                    assert "missing_contrast" not in str(payload)
+                    return second
+                raise AssertionError("Unexpected reviewer prompt")
+
+        model = Model()
+        context = {"selected_units": delivered, "before": [], "after": excluded}
+        boundary = review_source_boundaries(model, context)
+        assert len(prompts) == 5
+        assert boundary["continuation_review"]["relation"] == "missing_contrast"
+        assert len(boundary["continuation_review"]["optional_contrast_proof"]["verdicts"]) == 2
+        return model, context, boundary
+
+    # Independent agreement with exact source positions can restore a draft.
+    model, context, boundary = evaluate(
+        adjudication("restatement"), adjudication("optional_detail")
+    )
+    assert boundary["ending_complete"] is True
+    assert boundary["payoff_complete"] is True
+    assert boundary["continuation_review"]["optional_contrast_proof"]["optional_verified"]
+    result = complete_source_review(
+        model,
+        context,
+        boundary,
+        factual_audit=lambda *_: {},
+        headline_generator=lambda *_args, **_kw: {
+            "headline": "Purdy became the reason they can win",
+            "headline_supported": False,
+            "headline_self_contained": False,
+        },
+    )
+    assert result["headline_supported"] is False
+    assert result["ending_complete"] is True
+
+    # A real omitted counterpoint remains vetoed, even if the other check disagrees.
+    _model, _context, veto = evaluate(
+        adjudication("restatement"),
+        adjudication("essential_contrast", complete=0),
+    )
+    assert veto["ending_complete"] is False
+    assert veto["payoff_complete"] is False
+    assert not veto["continuation_review"]["optional_contrast_proof"]["optional_verified"]
+
+    # Two agreeable but ungrounded responses must fail closed.
+    with pytest.raises(SourceEvidenceError, match="source proof"):
+        evaluate(
+            adjudication("restatement", excluded_span=absent),
+            adjudication("optional_detail"),
+        )
+
+    # Cache tampering cannot replace the independent verdict with a boolean.
+    corrupted = copy.deepcopy(boundary)
+    corrupted["continuation_review"]["optional_contrast_proof"]["verdicts"][1][
+        "complete_without_excluded"
+    ] = 0
+    with pytest.raises(SourceEvidenceError, match="approval was altered"):
+        complete_source_review(
+            model,
+            context,
+            corrupted,
+            factual_audit=lambda *_: {},
+            headline_generator=lambda *_args, **_kw: pytest.fail(
+                "tampered proof must not reach headline generation"
+            ),
+        )
+
+
+def test_missing_contrast_without_resolution_remains_vetoed():
+    from clipper.editorial_engine import _optional_contrast_proof_valid
+
+    assert (
+        _optional_contrast_proof_valid(
+            None,
+            ["The speaker starts a claim but gives no answer."],
+            ["The missing answer occurs later."],
+            0,
+        )
+        is False
+    )
