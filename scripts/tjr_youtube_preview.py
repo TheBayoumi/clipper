@@ -1304,13 +1304,36 @@ def render_youtube_previews(
         semantic_audit["architecture"] = structured_audit["architecture"]
         semantic_audit["structured_context_assessment"] = structured_audit
         screening_mode = str(semantic_audit["architecture"])
+        # Filter objectively unfinished story promises BEFORE overlap ranking
+        # and the bounded render queue. Filtering afterwards can waste a slot
+        # or suppress an otherwise good independent candidate.
+        render_eligible: list[ClipCandidate] = []
+        teaser_rejections: list[dict[str, object]] = []
+        for candidate in ranked:
+            if unresolved_teaser(candidate, segments):
+                teaser_rejections.append(
+                    {
+                        "start": candidate.start,
+                        "end": candidate.end,
+                        "reason": "UNDELIVERED_STORY_TEASER",
+                        "failed_gates": ["UNDELIVERED_STORY_TEASER"],
+                    }
+                )
+            else:
+                render_eligible.append(candidate)
+        LOGGER.info(
+            "PRE_SELECTION_STORY_QA eligible=%d rejected_teasers=%d",
+            len(render_eligible),
+            len(teaser_rejections),
+        )
         picks, rejected = select_editorial_moments(
-            ranked,
+            render_eligible,
             render_safety_limit=render_safety_limit,
             segments=segments,
             allow_review_only_opening=True,
             review_provider=lambda candidate: analyze_candidate_visuals(source, candidate),
         )
+        rejected = [*teaser_rejections, *rejected]
         # This pass consumes the completed editorial decisions. It does NOT
         # invalidate or re-run any of the 111 selector/model assessments.
         original_picks = len(picks)
