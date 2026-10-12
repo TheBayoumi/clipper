@@ -138,7 +138,7 @@ def qualify(
         report["status"] = "SOURCE_CONTEXT_VERIFIED__NO_MODEL_CALLS"
         output.write_text(json.dumps(report, indent=2) + "\n")
         return 0
-    editor = None
+    editor: LocalSourceReviewer | None = None
 
     def source_reviewer() -> LocalSourceReviewer:
         nonlocal editor
