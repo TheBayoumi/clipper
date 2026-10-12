@@ -106,7 +106,6 @@ def _evidence_excerpt(text: str) -> str:
     return text[: words[11].end()] if len(words) > 12 else text
 
 
-
 _OPTIONAL_CONTINUATION_ROLES = frozenset(
     {"restatement", "supporting_example", "optional_detail", "new_topic"}
 )
@@ -205,9 +204,7 @@ def review_optional_contrast(
         "stands alone unchanged, set complete_without_excluded=0 and role=uncertain. "
         "Return output_schema JSON.",
     )
-    verdicts = [
-        editor._review_completion(prompt, source, properties, 192) for prompt in prompts
-    ]
+    verdicts = [editor._review_completion(prompt, source, properties, 192) for prompt in prompts]
     proof = {"verdicts": verdicts, "optional_verified": False}
     # Validate independently supplied evidence before deriving the boolean.
     proof["optional_verified"] = all(
