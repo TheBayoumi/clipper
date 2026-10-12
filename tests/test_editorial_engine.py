@@ -450,7 +450,7 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
                         "show_intro_span": absent,
                         "reason": "Normal conversation",
                     }
-                if "finished clip" in prompt:
+                if "Assess ONLY delivered_units as the finished clip" in prompt:
                     return {
                         "setup_span": grounded,
                         "resolution_span": grounded,
