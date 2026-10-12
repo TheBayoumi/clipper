@@ -622,14 +622,19 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
                 "FFmpegRenderer": Mock(side_effect=AssertionError("render must not start")),
             },
         ),
-        pytest.raises(RuntimeError, match="AUTOMATED_FACTUAL_APPROVAL_REQUIRED"),
+        pytest.raises(
+            ValueError, match="private review draft has no exact source-bound claim packet"
+        ),
     ):
         render_youtube_previews(
             tmp_path / "blocked", Path("campaigns/reach-double-coverage-dedicated.yaml")
         )
     state_files = list((tmp_path / "blocked").rglob("pipeline-state.json"))
     assert len(state_files) == 1
-    assert json.loads(state_files[0].read_text())["factual_approval"] == "blocked_unqualified"
+    assert (
+        json.loads(state_files[0].read_text())["private_draft_evidence"]
+        == "rejected_missing_or_invalid"
+    )
 
 
 def test_campaign_source_cutoff_rejects_old_and_unknown_uploads() -> None:

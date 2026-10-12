@@ -56,6 +56,81 @@ def require_automated_factual_approval_for_render(
     )
 
 
+def require_private_review_draft_evidence(
+    *,
+    selected: list[tuple[float, float, str]],
+    claim_packet_manifest: dict[str, Any],
+    source_sha256: str,
+    source_video_id: str,
+) -> None:
+    """Allow *private unapproved review media*, never production authorization.
+
+    A clip is renderable only when the exact headline, cut, and verified original
+    are tied to one immutable diagnostic claim packet. Publication remains gated
+    by require_automated_factual_approval_for_render, which this does not call.
+    """
+    if (
+        not isinstance(claim_packet_manifest, dict)
+        or set(claim_packet_manifest)
+        != {"schema", "source_sha256", "packets", "production_approved"}
+        or claim_packet_manifest["schema"] != "clipper-headline-claim-packets-v1"
+    ):
+        raise ValueError("private review draft requires an exact claim-packet manifest")
+    if (
+        claim_packet_manifest["production_approved"] is not False
+        or claim_packet_manifest["source_sha256"] != source_sha256
+        or not _SHA256.fullmatch(source_sha256)
+        or not _VIDEO_ID.fullmatch(source_video_id)
+        or not isinstance(claim_packet_manifest["packets"], list)
+    ):
+        raise ValueError("private review draft is not a verified unapproved source")
+    if not selected:
+        return
+    # Numeric equality holds for the same transcript-derived thought-unit bounds.
+    # Do not use fuzzy timestamps or loose headline similarity for authorization.
+    available: dict[tuple[float, float, str], int] = {}
+    for entry in claim_packet_manifest["packets"]:
+        if not isinstance(entry, dict) or set(entry) != {
+            "proposal_start",
+            "proposal_end",
+            "reviewed_start",
+            "reviewed_end",
+            "packet",
+        }:
+            raise ValueError("private review draft packet has an invalid envelope")
+        packet = entry["packet"]
+        if (
+            not isinstance(packet, dict)
+            or packet.get("schema") != "clipper-headline-claim-packet-v1"
+        ):
+            raise ValueError("private review draft is missing original claim evidence")
+        if (
+            packet.get("source_sha256") != source_sha256
+            or packet.get("source_video_id") != source_video_id
+            or packet.get("production_approved") is not False
+            or packet.get("required_review")
+            != {
+                "whole_headline": "unreviewed",
+                "atomic_claims": "unreviewed",
+                "attribution_and_modality": "unreviewed",
+                "conditions_and_roles": "unreviewed",
+            }
+            or not isinstance(packet.get("headline"), str)
+            or not packet["headline"].strip()
+            or not isinstance(packet.get("selected_source_units"), list)
+            or not packet["selected_source_units"]
+        ):
+            raise ValueError("private review draft packet cannot grant factual approval")
+        key = (entry["reviewed_start"], entry["reviewed_end"], packet["headline"].casefold())
+        available[key] = available.get(key, 0) + 1
+    for start, end, title in selected:
+        count = available.get((start, end, title.casefold()), 0)
+        if count == 0:
+            raise ValueError("private review draft has no exact source-bound claim packet")
+        if count != 1:
+            raise ValueError("private review draft has ambiguous source evidence")
+
+
 def create_claim_review_packet(
     *,
     headline: str,

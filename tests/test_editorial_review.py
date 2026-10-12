@@ -425,3 +425,181 @@ def test_source_range_requires_exact_position_fields():
     value["claims"][0]["assessment"]["evidence"]["extra"] = "model copied quote"
     with pytest.raises(ValueError, match="exact source-unit range"):
         validate(value)
+
+
+def test_archived_five_double_coverage_drafts_are_renderable_but_never_factually_approved():
+    """Exact five selected ranges/headlines from archived real run #38176566387."""
+    import json
+    from pathlib import Path
+
+    from clipper.editorial_review import require_private_review_draft_evidence
+
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "double_coverage_archived_111_selector.json"
+        ).read_text()
+    )
+    selected = [tuple(item) for item in fixture["private_review_draft_candidates"]]
+    source = fixture["identity"]["source_sha256"]
+    assert len(selected) == 5
+    manifest = {
+        "schema": "clipper-headline-claim-packets-v1",
+        "source_sha256": source,
+        "production_approved": False,
+        "packets": [
+            {
+                "proposal_start": start,
+                "proposal_end": end,
+                "reviewed_start": start,
+                "reviewed_end": end,
+                "packet": {
+                    "schema": "clipper-headline-claim-packet-v1",
+                    "source_sha256": source,
+                    "source_video_id": "3S-fL9rNPp0",
+                    "headline": title,
+                    "selected_source_units": [{"id": 0, "text": "Selected source speech."}],
+                    "required_review": {
+                        "whole_headline": "unreviewed",
+                        "atomic_claims": "unreviewed",
+                        "attribution_and_modality": "unreviewed",
+                        "conditions_and_roles": "unreviewed",
+                    },
+                    "production_approved": False,
+                },
+            }
+            for start, end, title in selected
+        ],
+    }
+    require_private_review_draft_evidence(
+        selected=selected,
+        claim_packet_manifest=manifest,
+        source_sha256=source,
+        source_video_id="3S-fL9rNPp0",
+    )
+    with pytest.raises(RuntimeError, match="diagnostic claim packets cannot"):
+        require_automated_factual_approval_for_render(
+            selected_count=5,
+            claim_packet_manifest=manifest,
+        )
+    modified = deepcopy(manifest)
+    modified["packets"][0]["packet"]["production_approved"] = True
+    with pytest.raises(ValueError, match="cannot grant factual approval"):
+        require_private_review_draft_evidence(
+            selected=selected,
+            claim_packet_manifest=modified,
+            source_sha256=source,
+            source_video_id="3S-fL9rNPp0",
+        )
+    with pytest.raises(ValueError, match="no exact source-bound claim packet"):
+        require_private_review_draft_evidence(
+            selected=[(selected[0][0], selected[0][1], "invented headline")],
+            claim_packet_manifest=manifest,
+            source_sha256=source,
+            source_video_id="3S-fL9rNPp0",
+        )
+    with pytest.raises(ValueError, match="verified unapproved source"):
+        require_private_review_draft_evidence(
+            selected=selected,
+            claim_packet_manifest=manifest,
+            source_sha256="f" * 64,
+            source_video_id="3S-fL9rNPp0",
+        )
+
+
+def test_private_draft_ignores_unselected_packet_duplicates_but_blocks_selected_ambiguity():
+    from clipper.editorial_review import require_private_review_draft_evidence
+
+    sha = "a" * 64
+    video = "3S-fL9rNPp0"
+    required = {
+        "whole_headline": "unreviewed",
+        "atomic_claims": "unreviewed",
+        "attribution_and_modality": "unreviewed",
+        "conditions_and_roles": "unreviewed",
+    }
+
+    def entry(start, end, title):
+        return {
+            "proposal_start": start,
+            "proposal_end": end,
+            "reviewed_start": start,
+            "reviewed_end": end,
+            "packet": {
+                "schema": "clipper-headline-claim-packet-v1",
+                "source_sha256": sha,
+                "source_video_id": video,
+                "headline": title,
+                "selected_source_units": [{"id": 0, "text": "True source text."}],
+                "required_review": required,
+                "production_approved": False,
+            },
+        }
+
+    manifest = {
+        "schema": "clipper-headline-claim-packets-v1",
+        "source_sha256": sha,
+        "production_approved": False,
+        "packets": [
+            entry(10, 30, "Selected original headline"),
+            entry(60, 90, "Other duplicate"),
+            entry(60, 90, "Other duplicate"),
+        ],
+    }
+    options = dict(
+        selected=[(10, 30, "Selected original headline")],
+        claim_packet_manifest=manifest,
+        source_sha256=sha,
+        source_video_id=video,
+    )
+    require_private_review_draft_evidence(**options)
+    with pytest.raises(ValueError, match="ambiguous source evidence"):
+        require_private_review_draft_evidence(
+            selected=[(60, 90, "Other duplicate")],
+            claim_packet_manifest=manifest,
+            source_sha256=sha,
+            source_video_id=video,
+        )
+    bad = deepcopy(manifest)
+    bad["packets"][0]["packet"]["required_review"]["whole_headline"] = "approved"
+    with pytest.raises(ValueError, match="cannot grant factual approval"):
+        require_private_review_draft_evidence(**{**options, "claim_packet_manifest": bad})
+    bad = deepcopy(manifest)
+    bad["packets"][0]["packet"]["source_video_id"] = "WrongSource"
+    with pytest.raises(ValueError, match="cannot grant factual approval"):
+        require_private_review_draft_evidence(**{**options, "claim_packet_manifest": bad})
+
+
+def test_private_draft_contract_requires_known_manifest_even_for_zero_selected():
+    from clipper.editorial_review import require_private_review_draft_evidence
+
+    source = "a" * 64
+    with pytest.raises(ValueError, match="exact claim-packet manifest"):
+        require_private_review_draft_evidence(
+            selected=[],
+            claim_packet_manifest={"schema": "other"},
+            source_sha256=source,
+            source_video_id="3S-fL9rNPp0",
+        )
+    with pytest.raises(ValueError, match="verified unapproved source"):
+        require_private_review_draft_evidence(
+            selected=[],
+            claim_packet_manifest={
+                "schema": "clipper-headline-claim-packets-v1",
+                "source_sha256": source,
+                "packets": [],
+                "production_approved": True,
+            },
+            source_sha256=source,
+            source_video_id="3S-fL9rNPp0",
+        )
+    require_private_review_draft_evidence(
+        selected=[],
+        claim_packet_manifest={
+            "schema": "clipper-headline-claim-packets-v1",
+            "source_sha256": source,
+            "packets": [],
+            "production_approved": False,
+        },
+        source_sha256=source,
+        source_video_id="3S-fL9rNPp0",
+    )

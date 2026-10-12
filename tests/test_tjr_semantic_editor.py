@@ -3923,3 +3923,158 @@ def test_corrupted_selector_model_output_rejects_one_candidate_and_continues(tmp
     assert picks == [] and len(calls) == 2
     assert report["assessments"][0]["rejection"] == "INVALID_SELECTOR_MODEL_OUTPUT"
     assert report["assessments"][1]["decision"]["keep"] is False
+
+
+def test_archived_111_real_double_coverage_selector_decisions_reuse_without_reinference():
+    """Replay only metadata copied from the actual 38176566387 production artifact."""
+    import copy
+    import hashlib
+    import json
+    from pathlib import Path
+
+    from scripts import tjr_semantic_editor as editor
+
+    fixture_path = Path(__file__).parent / "fixtures" / "double_coverage_archived_111_selector.json"
+    fixture = json.loads(fixture_path.read_text())
+    rows = fixture["selector_rows"]
+    assert (
+        hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
+        == (fixture["original_selector_rows_sha256"])
+    )
+    assert len(rows) == len({(row[0], row[1]) for row in rows}) == 111
+    archived = {
+        "identity": fixture["identity"],
+        "complete": True,
+        "audit": {
+            "assessments": [
+                {
+                    "proposal_start": row[0],
+                    "proposal_end": row[1],
+                    "decision": {
+                        "keep": row[7],
+                        "start_unit": row[2],
+                        "end_unit": row[3],
+                        "opening": row[4],
+                        "story": row[5],
+                        "ending": row[6],
+                        "reason": "Previously completed source assessment.",
+                    },
+                }
+                for row in rows
+            ]
+        },
+    }
+    current = copy.deepcopy(fixture["identity"])
+    current.update(
+        selector_sha256=editor._VERIFIED_CURRENT_SELECTOR_CONTRACT_SHA,
+        boundary_sha256=editor._VERIFIED_CURRENT_BOUNDARY_CONTRACT_SHA,
+        selector_contract_version="source-exchange-selection-v1",
+        boundary_contract_version="source-unit-boundary-v1",
+        reviewer_sha256="new independently changed headline/factual-review code",
+    )
+    selectors, boundaries, full_reviews = editor._archived_selector_decisions(
+        archived,
+        current,
+        legacy_selector_fingerprint=editor._LEGACY_SELECTOR_FINGERPRINT,
+    )
+    assert len(selectors) == 111
+    assert all(selectors[(row[0], row[1])]["decision"]["keep"] is True for row in rows)
+    assert boundaries is True and full_reviews is False
+    assert sum(row[7] is True for row in rows) == 111
+
+    for changed in ("source_sha256", "transcript_sha256", "proposal_sha256", "model_sha256"):
+        altered = {**current, changed: "f" * 64}
+        rejected, boundaries, full_reviews = editor._archived_selector_decisions(
+            archived, altered, legacy_selector_fingerprint=editor._LEGACY_SELECTOR_FINGERPRINT
+        )
+        assert not rejected and not boundaries and not full_reviews
+    altered = {**current, "selector_sha256": "unreviewed-selector-prompt-change"}
+    rejected, _, _ = editor._archived_selector_decisions(
+        archived,
+        altered,
+        legacy_selector_fingerprint=editor._LEGACY_SELECTOR_FINGERPRINT,
+    )
+    assert not rejected
+
+
+def test_archived_111_previous_parser_fingerprint_remains_compatible():
+    import json
+    from pathlib import Path
+
+    from scripts import tjr_semantic_editor as editor
+
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "double_coverage_archived_111_selector.json"
+        ).read_text()
+    )
+    past = dict(fixture["identity"])
+    past["selector_sha256"] = "8163c62bf7c26e2df6e5aaab644cfc49c419b46081f341ec1cfa880564389315"
+    now = dict(past)
+    now["selector_sha256"] = editor._VERIFIED_CURRENT_SELECTOR_CONTRACT_SHA
+    now["selector_contract_version"] = "source-exchange-selection-v1"
+    now["boundary_contract_version"] = "source-unit-boundary-v1"
+    selector, _, _ = editor._compatible_editorial_cache_identities(past, now)
+    assert selector is True
+
+
+def test_explicit_archived_run_never_silently_reinferences_missing_selector_cache(tmp_path):
+    from clipper.models import ClipCandidate
+    from scripts.tjr_semantic_editor import refine_contextual_candidates
+
+    segment = TranscriptSegment(0, 25, "The owner explained the decision in full.")
+    proposal = ClipCandidate("v", 0, 25, segment.text, 10)
+    calls = []
+
+    def reject(context):
+        calls.append(context)
+        return {"keep": False, "reason": "Not a strong standalone moment."}
+
+    baseline = tmp_path / "baseline.json"
+    refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        [segment],
+        source_sha256="a" * 64,
+        cache_path=baseline,
+        assessor=reject,
+    )
+
+    def forbidden(context):
+        raise AssertionError("cached selector must never reinference")
+
+    _, reused = refine_contextual_candidates(
+        _brief(),
+        [proposal],
+        [segment],
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "reused.json",
+        reuse_path=baseline,
+        assessor=forbidden,
+        require_reusable_editorial_cache=True,
+    )
+    assert reused["selector_cache_hits"] == 1
+    assert reused["cache_reused"] is True and len(calls) == 1
+
+    with pytest.raises(RuntimeError, match="EDITORIAL_CACHE_REQUIRED_MISMATCH"):
+        refine_contextual_candidates(
+            _brief(),
+            [proposal],
+            [segment],
+            source_sha256="b" * 64,
+            cache_path=tmp_path / "invalidated.json",
+            reuse_path=baseline,
+            assessor=forbidden,
+            require_reusable_editorial_cache=True,
+        )
+    with pytest.raises(RuntimeError, match="EDITORIAL_CACHE_REQUIRED_MISSING"):
+        refine_contextual_candidates(
+            _brief(),
+            [proposal],
+            [segment],
+            source_sha256="a" * 64,
+            cache_path=tmp_path / "missing.json",
+            reuse_path=tmp_path / "absent.json",
+            assessor=forbidden,
+            require_reusable_editorial_cache=True,
+        )

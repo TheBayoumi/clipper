@@ -31,7 +31,7 @@ from clipper.editorial import (
     WEIGHTS,
     select_editorial_moments,
 )
-from clipper.editorial_review import require_automated_factual_approval_for_render
+from clipper.editorial_review import require_private_review_draft_evidence
 from clipper.editorial_run import EditorialRunConfig
 from clipper.models import ClipCandidate, TranscriptSegment, WordTiming
 from clipper.pipeline import _download_asset
@@ -1164,6 +1164,7 @@ def render_youtube_previews(
             source_sha256=source_digest,
             cache_path=run_dir / "editorial-cache.json",
             reuse_path=reuse[0] if reuse else None,
+            require_reusable_editorial_cache=run_config.editorial_cache_root is not None,
         )
         review_packets = [
             {
@@ -1275,16 +1276,28 @@ def render_youtube_previews(
                 len(ranked),
             )
             return run_dir
+        # Offline render of unapproved, non-publishable review drafts is not
+        # automated factual approval. Require the exact bound source evidence.
+        # Publication is a separate workflow and never consumes this flag.
         try:
-            require_automated_factual_approval_for_render(
-                selected_count=len(picks), claim_packet_manifest=claim_packet_manifest
+            require_private_review_draft_evidence(
+                selected=[(pick.clip.start, pick.clip.end, pick.hook) for pick in picks],
+                claim_packet_manifest=claim_packet_manifest,
+                source_sha256=source_digest,
+                source_video_id=chosen_video.video_id,
             )
-        except RuntimeError:
-            pipeline_state["factual_approval"] = "blocked_unqualified"
+        except ValueError:
+            pipeline_state["private_draft_evidence"] = "rejected_missing_or_invalid"
             (run_dir / "pipeline-state.json").write_text(
                 json.dumps(pipeline_state, indent=2) + "\n", encoding="utf-8"
             )
             raise
+        pipeline_state["private_draft_evidence"] = "verified_unapproved"
+        pipeline_state["factual_approval"] = "not_approved"
+        pipeline_state["publication_allowed"] = False
+        (run_dir / "pipeline-state.json").write_text(
+            json.dumps(pipeline_state, indent=2) + "\n", encoding="utf-8"
+        )
         LOGGER.info(
             "EDITORIAL_PROVISIONAL_SCREEN_PASSED=%d rubric=%s screening=%s",
             len(picks),

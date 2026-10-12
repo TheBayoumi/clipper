@@ -1216,6 +1216,111 @@ _LEGACY_SELECTOR_CODE_HASHES = {
     "34494b73b520d376ab8096c1c4718a0776d404787ebcea41edd1e5c98b3ee82d",
 }
 
+# Certified historical selector decisions from the same exact-source episode.
+# The parser's exception handling changed; the selector's output schema did not.
+# Reuse still requires matching source/transcript/proposals/model/bounds and
+# validation of every cached decision's unit positions and quality scores.
+_VERIFIED_SELECTOR_PARSER_COMPATIBILITY = frozenset(
+    {
+        "8163c62bf7c26e2df6e5aaab644cfc49c419b46081f341ec1cfa880564389315",
+        "fc63370e2ee440731df6435b481b9dc38a715a26e46fe89e6d953aca8a75e8b8",
+    }
+)
+_VERIFIED_CURRENT_SELECTOR_CONTRACT_SHA = (
+    "c190076490d6d57cc1eab99385f420eb5b1596d2be5e78f21ea1b07334e5b70d"
+)
+_VERIFIED_CURRENT_BOUNDARY_CONTRACT_SHA = (
+    "7baf17590d149371430cae73cdc070dfa5e67cfebc5287a1e7bf90f423ebe42e"
+)
+_VERIFIED_BOUNDARY_VALIDATOR_COMPATIBILITY = frozenset(
+    {
+        "7baf17590d149371430cae73cdc070dfa5e67cfebc5287a1e7bf90f423ebe42e",
+    }
+)
+
+
+def _compatible_editorial_cache_identities(
+    previous: dict[str, Any], current: dict[str, Any]
+) -> tuple[bool, bool, bool]:
+    """Compatibility decisions are explicit, provenance-bound, never whole-file hashes."""
+    required = (
+        "version",
+        "source_sha256",
+        "transcript_sha256",
+        "proposal_sha256",
+        "model_sha256",
+        "model_revision",
+        "duration_bounds",
+        "seed",
+        "temperature",
+    )
+    if not isinstance(previous, dict) or any(previous.get(k) != current.get(k) for k in required):
+        return False, False, False
+    # Avoid fallback based on an arbitrary old hash: we admit only two archived
+    # parser fingerprints verified against these exact persisted output schemas.
+    selector = previous.get("selector_sha256") == current.get("selector_sha256") or (
+        previous.get("selector_sha256") in _VERIFIED_SELECTOR_PARSER_COMPATIBILITY
+        and current.get("selector_contract_version") == "source-exchange-selection-v1"
+        and current.get("selector_sha256") == _VERIFIED_CURRENT_SELECTOR_CONTRACT_SHA
+    )
+    boundary = previous.get("boundary_sha256") == current.get("boundary_sha256") or (
+        previous.get("boundary_sha256") in _VERIFIED_BOUNDARY_VALIDATOR_COMPATIBILITY
+        and current.get("boundary_contract_version") == "source-unit-boundary-v1"
+        and current.get("boundary_sha256") == _VERIFIED_CURRENT_BOUNDARY_CONTRACT_SHA
+    )
+    reviewer = previous.get("reviewer_sha256") == current.get("reviewer_sha256")
+    return selector, boundary, reviewer
+
+
+def _archived_selector_decisions(
+    saved: dict[str, Any],
+    current_identity: dict[str, Any],
+    *,
+    legacy_selector_fingerprint: str,
+) -> tuple[dict[tuple[float, float], dict[str, Any]], bool, bool]:
+    """The production cache planner, independently replayable on 111 real IDs."""
+    previous_identity = saved.get("identity", {})
+    selector_matches, boundary_matches, review_matches = _compatible_editorial_cache_identities(
+        previous_identity, current_identity
+    )
+    old_core_keys = (
+        "source_sha256",
+        "transcript_sha256",
+        "proposal_sha256",
+        "model_sha256",
+        "model_revision",
+        "duration_bounds",
+        "seed",
+        "temperature",
+    )
+    legacy_positive_compatible = (
+        previous_identity.get("version") == "podcast_structured_editor_v3"
+        and all(previous_identity.get(key) == current_identity.get(key) for key in old_core_keys)
+        and legacy_selector_fingerprint == _LEGACY_SELECTOR_FINGERPRINT
+        and previous_identity.get("editor_code_sha256") in _LEGACY_SELECTOR_CODE_HASHES
+    )
+    decisions: dict[tuple[float, float], dict[str, Any]] = {}
+    if selector_matches or legacy_positive_compatible:
+        items = saved.get("audit", {}).get("assessments", saved.get("decisions", []))
+        if saved.get("complete") is False:
+            count = saved.get("processed_count", 0)
+            if type(count) is not int or not 0 <= count <= len(items):
+                raise RuntimeError("incomplete editorial checkpoint has invalid progress")
+            items = items[:count]
+        for item in items:
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("decision"), dict)
+                and (selector_matches or item["decision"].get("keep") is True)
+                and type(item.get("proposal_start")) in (int, float)
+                and type(item.get("proposal_end")) in (int, float)
+            ):
+                key = (item["proposal_start"], item["proposal_end"])
+                if key in decisions:
+                    raise RuntimeError("editorial cache has duplicate proposal identities")
+                decisions[key] = item
+    return decisions, boundary_matches, review_matches
+
 
 def _selection_context(
     units: Sequence[SemanticUnit],
@@ -1251,6 +1356,7 @@ def refine_contextual_candidates(
     source_sha256: str,
     cache_path: Path,
     reuse_path: Path | None = None,
+    require_reusable_editorial_cache: bool = False,
     assessor: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     reviewer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> tuple[list[ClipCandidate], dict[str, Any]]:
@@ -1281,11 +1387,13 @@ def refine_contextual_candidates(
         _closed_ending,
         source_headline_candidates,
     )
+    identity["selector_contract_version"] = "source-exchange-selection-v1"
     identity["selector_sha256"] = _stage_fingerprint(
-        legacy_selector_fingerprint, _select_exchange, LocalContextualEditor._review_completion
+        legacy_selector_fingerprint, _select_exchange, identity["selector_contract_version"]
     )
     review_profile = _review_model_profile()
     identity["reviewer_model_profile"] = review_profile
+    identity["boundary_contract_version"] = "source-unit-boundary-v1"
     identity["boundary_sha256"] = _stage_fingerprint(
         _validate_cached_boundary,
         review_source_boundaries,
@@ -1342,39 +1450,11 @@ def refine_contextual_candidates(
     resume_count = 0
     if reuse_path is not None and reuse_path.is_file():
         saved = json.loads(reuse_path.read_text())
-        previous_identity = saved.get("identity", {})
-        common_keys = (
-            "source_sha256",
-            "transcript_sha256",
-            "proposal_sha256",
-            "model_sha256",
-            "model_revision",
-            "duration_bounds",
-            "seed",
-            "temperature",
-        )
-        shared_inputs = all(previous_identity.get(key) == identity[key] for key in common_keys)
-        selector_matches = previous_identity.get("selector_sha256") == identity["selector_sha256"]
-        legacy_positive_compatible = (
-            legacy_selector_fingerprint == _LEGACY_SELECTOR_FINGERPRINT
-            and (
-                previous_identity.get("selector_sha256") == _LEGACY_SELECTOR_FINGERPRINT
-                or previous_identity.get("editor_code_sha256") in _LEGACY_SELECTOR_CODE_HASHES
+        cached_by_proposal, cached_boundary_identity_matches, cached_review_identity_matches = (
+            _archived_selector_decisions(
+                saved, identity, legacy_selector_fingerprint=legacy_selector_fingerprint
             )
         )
-        if shared_inputs and (selector_matches or legacy_positive_compatible):
-            cached_by_proposal = {
-                (item["proposal_start"], item["proposal_end"]): item
-                for item in saved.get("audit", {}).get("assessments", saved.get("decisions", []))
-                if isinstance(item.get("decision"), dict)
-                and (selector_matches or item["decision"].get("keep") is True)
-            }
-            cached_review_identity_matches = (
-                previous_identity.get("reviewer_sha256") == identity["reviewer_sha256"]
-            )
-            cached_boundary_identity_matches = (
-                previous_identity.get("boundary_sha256") == identity["boundary_sha256"]
-            )
         if saved.get("identity") == identity:
             result = [
                 ClipCandidate(
@@ -1389,7 +1469,20 @@ def refine_contextual_candidates(
             ]
             if saved.get("complete") is True:
                 cache_path.write_text(json.dumps(saved, indent=2) + "\n")
-                return result, {**saved["audit"], "cache_reused": True}
+                print(
+                    f"EDITORIAL_CACHE_COMPLETE_HIT: {len(candidates)}/{len(candidates)} "
+                    "assessments and previously qualified selections restored",
+                    flush=True,
+                )
+                return result, {
+                    **saved["audit"],
+                    "cache_reused": True,
+                    "selector_cache_hits": len(candidates),
+                    "reviewer_cache_hits": sum(
+                        isinstance(item.get("exchange_review"), dict)
+                        for item in saved.get("audit", {}).get("assessments", [])
+                    ),
+                }
             resume_count = saved.get("processed_count", 0)
             if type(resume_count) is not int or not 0 <= resume_count <= len(candidates):
                 raise RuntimeError("editorial checkpoint has invalid progress")
@@ -1400,6 +1493,25 @@ def refine_contextual_candidates(
                 for index, evidence in enumerate(decisions)
             ):
                 raise RuntimeError("editorial checkpoint does not match proposal order")
+    proposal_key_counts = Counter((item.start, item.end) for item in candidates)
+    if require_reusable_editorial_cache and candidates:
+        if reuse_path is None or not reuse_path.is_file():
+            raise RuntimeError(
+                "EDITORIAL_CACHE_REQUIRED_MISSING: requested prior run was not restored"
+            )
+        # The workflow explicitly requested an archived run; any changed source,
+        # prompt, or proposal identity must fail before hours of new inference.
+        available = sum(
+            proposal_key_counts[(candidate.start, candidate.end)] == 1
+            and (candidate.start, candidate.end) in cached_by_proposal
+            for candidate in candidates
+        )
+        distinct = sum(count == 1 for count in proposal_key_counts.values())
+        if available != distinct:
+            raise RuntimeError(
+                f"EDITORIAL_CACHE_REQUIRED_MISMATCH: {available}/{distinct} "
+                "unique selectors reusable; refusing silent full-episode reassessment"
+            )
     units = _thought_units(segments)
     local: LocalContextualEditor | None = None
 
@@ -1482,7 +1594,11 @@ def refine_contextual_candidates(
                 checkpoint(number + 1)
                 continue
             left, right, _hooks, context = _selection_context(units, covered, brief, candidate)
-            cached = cached_by_proposal.get((candidate.start, candidate.end), {})
+            cached = (
+                cached_by_proposal.get((candidate.start, candidate.end), {})
+                if proposal_key_counts[(candidate.start, candidate.end)] == 1
+                else {}
+            )
             started = time.monotonic()
             checkpoint(number)
             cached_decision = cached.get("decision")
@@ -1512,6 +1628,14 @@ def refine_contextual_candidates(
                     )
                 )
             )
+            if require_reusable_editorial_cache and (
+                proposal_key_counts[(candidate.start, candidate.end)] == 1
+                and not valid_cached_decision
+            ):
+                raise RuntimeError(
+                    f"EDITORIAL_CACHE_SELECTOR_INVALID at proposal {number + 1}; "
+                    "refusing unrequested model inference"
+                )
             if valid_cached_decision:
                 decision = cached["decision"]
                 selector_reused += 1
