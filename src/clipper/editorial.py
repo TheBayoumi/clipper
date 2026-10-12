@@ -447,9 +447,7 @@ def select_editorial_moments(
         # archived Double Coverage checkpoint (gap: 1.32 s). Keep substantive
         # temporal collisions blocked and retain textual duplicate detection.
         overlap = any(
-            min(pick.clip.end, other.clip.end)
-            - max(pick.clip.start, other.clip.start)
-            > 0.01
+            min(pick.clip.end, other.clip.end) - max(pick.clip.start, other.clip.start) > 0.01
             for other in chosen
         )
         if overlap or any(_similar(pick, other) for other in chosen):
