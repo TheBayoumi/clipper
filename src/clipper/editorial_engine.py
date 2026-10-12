@@ -23,7 +23,7 @@ class ModelOutputError(SourceEvidenceError):
     """The model returned invalid structured output, not an infrastructure fault."""
 
 
-SOURCE_EVIDENCE_VERSION = "source_unit_spans_v2"
+SOURCE_EVIDENCE_VERSION = "source_unit_spans_v1"
 _WORD = re.compile(r"[A-Za-z0-9$%'.-]+")
 
 
