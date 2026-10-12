@@ -611,6 +611,98 @@ def test_optional_proof_rejects_schema_valid_but_fake_delivered_payoff():
     assert _optional_contrast_proof_valid(proof, delivered, after, 0) is False
 
 
+
+def test_obligation_review_rejects_missing_payoff_span_before_dependency_inference():
+    import pytest
+
+    from clipper.editorial_engine import SourceEvidenceError, review_optional_contrast
+
+    calls = []
+
+    class Editor:
+        def _review_completion(self, prompt, payload, schema, tokens):
+            calls.append((prompt, payload))
+            assert "excluded_after" not in payload
+            return {
+                "setup_span": {"first_unit": 0, "last_unit": 0},
+                "payoff_span": {"first_unit": -1, "last_unit": -1},
+                "payoff_state": "delivered",
+                "reason": "The selected story allegedly finishes its obligation.",
+            }
+
+    with pytest.raises(SourceEvidenceError, match="payoff-state disagrees"):
+        review_optional_contrast(Editor(), ["The defender was closing in."], ["He tackled me."], 0)
+    assert len(calls) == 1
+
+
+def test_narrative_proof_validation_fails_closed_on_invalid_combinations():
+    import pytest
+
+    from clipper.editorial_engine import SourceEvidenceError, _optional_contrast_proof_valid
+
+    pointer = {"first_unit": 0, "last_unit": 0}
+    absent = {"first_unit": -1, "last_unit": -1}
+    selected = ["The speaker finished the comparison."]
+    excluded = ["Another speaker asks a different question."]
+    valid = {
+        "obligation": {
+            "setup_span": pointer,
+            "payoff_span": pointer,
+            "payoff_state": "delivered",
+            "reason": "The comparison concludes before the cut.",
+        },
+        "dependency": {
+            "excluded_span": pointer,
+            "effect": "new_subject",
+            "reason": "The next speaker asks a separate question.",
+        },
+    }
+    assert _optional_contrast_proof_valid(
+        {"verdicts": [valid, valid], "optional_verified": True}, selected, excluded, 0
+    )
+    for invalid in (
+        {"verdicts": [valid], "optional_verified": True},
+        {"verdicts": [valid, valid], "optional_verified": 1},
+        {"verdicts": [valid, {"obligation": valid["obligation"]}], "optional_verified": True},
+        {
+            "verdicts": [
+                valid,
+                {
+                    **valid,
+                    "dependency": {**valid["dependency"], "effect": "not_a_source_relation"},
+                },
+            ],
+            "optional_verified": True,
+        },
+        {
+            "verdicts": [
+                valid,
+                {
+                    **valid,
+                    "obligation": {**valid["obligation"], "reason": ""},
+                },
+            ],
+            "optional_verified": True,
+        },
+    ):
+        with pytest.raises(SourceEvidenceError):
+            _optional_contrast_proof_valid(invalid, selected, excluded, 0)
+    invalid_pending = {
+        **valid,
+        "obligation": {
+            **valid["obligation"],
+            "payoff_state": "pending",
+            "payoff_span": absent,
+        },
+    }
+    assert _optional_contrast_proof_valid(
+        {"verdicts": [valid, invalid_pending], "optional_verified": False},
+        selected,
+        excluded,
+        0,
+    ) is False
+
+
 def test_missing_contrast_without_resolution_remains_vetoed():
     from clipper.editorial_engine import _optional_contrast_proof_valid
 
