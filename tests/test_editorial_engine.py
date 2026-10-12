@@ -418,24 +418,35 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
 
     from clipper.editorial_engine import (
         SourceEvidenceError,
+        _optional_contrast_proof_valid,
         complete_source_review,
         review_source_boundaries,
     )
 
-    delivered = ["Brock Purdy is now a quarterback you win because of, not just with."]
-    excluded = ["Before we won with him, but now we would win because of him."]
+    delivered = ["Brock Purdy became a quarterback you win because of, not just with."]
+    excluded = ["He used to be someone they could win with, but now they win because of."]
     absent = {"first_unit": -1, "last_unit": -1}
     grounded = {"first_unit": 0, "last_unit": 0}
 
-    def adjudication(materiality, *, excluded_span=None):
+    def obligation(state="delivered", *, payoff_span=None):
         return {
-            "delivered_span": grounded.copy(),
-            "excluded_span": grounded.copy() if excluded_span is None else excluded_span,
-            "materiality": materiality,
-            "reason": "Source-grounded effect of the excluded material on the delivered point.",
+            "setup_span": grounded.copy(),
+            "payoff_span": (grounded.copy() if state == "delivered" else absent.copy())
+            if payoff_span is None
+            else payoff_span,
+            "payoff_state": state,
+            "reason": "The comparison concludes within delivered speech.",
+        }
+
+    def dependency(effect="restates_or_illustrates_delivered_payoff", *, span=None):
+        return {
+            "excluded_span": grounded.copy() if span is None else span,
+            "effect": effect,
+            "reason": "The after-cut material restates the delivered conclusion.",
         }
 
     def evaluate(first, second):
+        responses = [first["obligation"], first["dependency"], second["obligation"], second["dependency"]]
         prompts = []
 
         class Model:
@@ -447,7 +458,7 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
                         "ad_read_span": absent,
                         "show_intro_present": 0,
                         "show_intro_span": absent,
-                        "reason": "Normal conversation",
+                        "reason": "Ordinary football conversation.",
                     }
                 if "Assess ONLY delivered_units as the finished clip" in prompt:
                     return {
@@ -455,36 +466,32 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
                         "resolution_span": grounded,
                         "opening_independent": 1,
                         "last_thought_finished": 1,
-                        "reason": "The speaker finishes the comparison.",
+                        "reason": "The speaker delivers the complete comparison.",
                     }
                 if "Judge the CUT" in prompt:
                     return {
                         "final_span": grounded,
                         "continuation_span": grounded,
                         "relation": "missing_contrast",
-                        "reason": "First reviewer alleges omitted contrast.",
+                        "reason": "First reviewer suspects a missing comparison.",
                     }
-                if "Judge whether the omitted speech" in prompt:
-                    assert "missing_contrast" not in str(payload)
-                    return first
-                if "blinded counterfactual editing test" in prompt:
-                    assert "missing_contrast" not in str(payload)
-                    return second
-                raise AssertionError("Unexpected reviewer prompt")
+                assert "missing_contrast" not in str(payload)
+                if "excluded_after" not in payload:
+                    assert set(payload) == {"delivered_units", "final_substantive_unit_id"}
+                else:
+                    assert "frozen_delivered_obligation" in payload
+                return responses.pop(0)
 
         model = Model()
         context = {"selected_units": delivered, "before": [], "after": excluded}
         boundary = review_source_boundaries(model, context)
-        assert len(prompts) == 5
+        assert len(prompts) == 7 and not responses
         assert boundary["continuation_review"]["relation"] == "missing_contrast"
         assert len(boundary["continuation_review"]["optional_contrast_proof"]["verdicts"]) == 2
         return model, context, boundary
 
-    # Independent agreement with exact source positions can restore a draft.
-    model, context, boundary = evaluate(
-        adjudication("not_needed_for_delivered_point"),
-        adjudication("not_needed_for_delivered_point"),
-    )
+    optional = {"obligation": obligation(), "dependency": dependency()}
+    model, context, boundary = evaluate(optional, optional)
     assert boundary["ending_complete"] is True
     assert boundary["payoff_complete"] is True
     assert boundary["continuation_review"]["optional_contrast_proof"]["optional_verified"]
@@ -500,55 +507,47 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
         },
     )
     assert result["headline_supported"] is False
-    assert result["ending_complete"] is True
 
-    # A real omitted counterpoint remains vetoed, even if the other check disagrees.
-    _model, _context, veto = evaluate(
-        adjudication("not_needed_for_delivered_point"),
-        adjudication("needed_to_finish_delivered_point"),
-    )
+    missing = {
+        "obligation": obligation("pending"),
+        "dependency": dependency("supplies_missing_payoff"),
+    }
+    _model, _context, veto = evaluate(optional, missing)
     assert veto["ending_complete"] is False
     assert veto["payoff_complete"] is False
     assert not veto["continuation_review"]["optional_contrast_proof"]["optional_verified"]
 
-    # A previously accepted but logically contradictory role/complete result
-    # has no place in the single-outcome evidence contract.
+    _model, _context, unknown = evaluate(
+        optional,
+        {"obligation": obligation(), "dependency": dependency("uncertain")},
+    )
+    assert unknown["ending_complete"] is False
+
+    with pytest.raises(SourceEvidenceError, match="canonical proof"):
+        evaluate(
+            {"obligation": obligation(), "dependency": dependency(span=absent)},
+            optional,
+        )
+
     old_contract = {
         "verdicts": [
             {
                 "delivered_span": grounded.copy(),
                 "excluded_span": grounded.copy(),
-                "role": "essential_contrast",
-                "complete_without_excluded": 1,
-                "reason": "Contradictory: declares an essential omission but says complete.",
-            },
+                "materiality": "not_needed_for_delivered_point",
+                "reason": "Old approval contract is no longer valid.",
+            }
         ]
         * 2,
         "optional_verified": True,
     }
-    from clipper.editorial_engine import _optional_contrast_proof_valid
-
-    with pytest.raises(SourceEvidenceError, match="incomplete"):
+    with pytest.raises(SourceEvidenceError, match="narrative obligation"):
         _optional_contrast_proof_valid(old_contract, delivered, excluded, 0)
 
-    # An uncertain impact cannot override the original missing-contrast veto.
-    _model, _context, unknown = evaluate(
-        adjudication("not_needed_for_delivered_point"), adjudication("uncertain")
-    )
-    assert unknown["ending_complete"] is False
-
-    # Two agreeable but ungrounded responses must fail closed.
-    with pytest.raises(SourceEvidenceError, match="source proof"):
-        evaluate(
-            adjudication("not_needed_for_delivered_point", excluded_span=absent),
-            adjudication("not_needed_for_delivered_point"),
-        )
-
-    # Cache tampering cannot replace the independent verdict with a boolean.
     corrupted = copy.deepcopy(boundary)
-    corrupted["continuation_review"]["optional_contrast_proof"]["verdicts"][1]["materiality"] = (
-        "needed_to_finish_delivered_point"
-    )
+    corrupted["continuation_review"]["optional_contrast_proof"]["verdicts"][1][
+        "dependency"
+    ]["effect"] = "supplies_missing_payoff"
     with pytest.raises(SourceEvidenceError, match="approval was altered"):
         complete_source_review(
             model,
@@ -559,6 +558,52 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
                 "tampered proof must not reach headline generation"
             ),
         )
+
+
+def test_optional_proof_rejects_schema_valid_but_fake_delivered_payoff():
+    import pytest
+
+    from clipper.editorial_engine import SourceEvidenceError, _optional_contrast_proof_valid
+
+    pointer = {"first_unit": 0, "last_unit": 0}
+    absent = {"first_unit": -1, "last_unit": -1}
+    delivered = ["The runner crossed the field, then I looked behind."]
+    after = ["The defender hit me and drove me into the ground."]
+
+    def build(state, span):
+        return {
+            "obligation": {
+                "setup_span": pointer,
+                "payoff_span": span,
+                "payoff_state": state,
+                "reason": "Determine whether the promised impact is spoken.",
+            },
+            "dependency": {
+                "excluded_span": pointer,
+                "effect": "restates_or_illustrates_delivered_payoff",
+                "reason": "Candidate continuation comparison.",
+            },
+        }
+
+    with pytest.raises(SourceEvidenceError, match="canonical proof"):
+        _optional_contrast_proof_valid(
+            {"verdicts": [build("pending", pointer)] * 2, "optional_verified": False},
+            delivered,
+            after,
+            0,
+        )
+    with pytest.raises(SourceEvidenceError, match="canonical proof"):
+        _optional_contrast_proof_valid(
+            {"verdicts": [build("delivered", absent)] * 2, "optional_verified": False},
+            delivered,
+            after,
+            0,
+        )
+    proof = {
+        "verdicts": [build("pending", absent)] * 2,
+        "optional_verified": False,
+    }
+    assert _optional_contrast_proof_valid(proof, delivered, after, 0) is False
 
 
 def test_missing_contrast_without_resolution_remains_vetoed():
