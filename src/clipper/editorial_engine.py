@@ -106,22 +106,24 @@ def _evidence_excerpt(text: str) -> str:
     return text[: words[11].end()] if len(words) > 12 else text
 
 
-_OPTIONAL_CONTINUATION_ROLES = frozenset(
-    {"restatement", "supporting_example", "optional_detail", "new_topic"}
-)
-_CONTINUATION_ROLES = sorted(
-    _OPTIONAL_CONTINUATION_ROLES
-    | {"essential_contrast", "missing_resolution", "changes_claim", "uncertain"}
+# A single materiality outcome eliminates contradictory role/complete labels.
+# Both blind evaluations must independently prove the delivered payoff survives
+# the cut. Genuine missing resolutions and claim-changing continuations still veto.
+_CONTINUATION_IMPACTS = (
+    "not_needed_for_delivered_point",
+    "needed_to_finish_delivered_point",
+    "changes_delivered_point",
+    "uncertain",
 )
 
 
 def _optional_contrast_proof_valid(
     proof: Any, selected: list[str], after: list[str], final_id: int
 ) -> bool:
-    """An initial missing-contrast veto survives unless both blind checks agree.
+    """Validate both independent counterfactual decisions against source units.
 
-    Source pointers prove provenance only, not semantic correctness. Preserve
-    both independent model verdicts for subsequent qualification and human QA.
+    This validator recomputes the only approval bit; no label combination or
+    boolean from the language model can override the original continuation veto.
     """
     if proof is None:
         return False
@@ -135,8 +137,7 @@ def _optional_contrast_proof_valid(
         if not isinstance(verdict, dict) or set(verdict) != {
             "delivered_span",
             "excluded_span",
-            "role",
-            "complete_without_excluded",
+            "materiality",
             "reason",
         }:
             raise SourceEvidenceError("independent continuation verdict is incomplete")
@@ -146,18 +147,12 @@ def _optional_contrast_proof_valid(
             delivered is None
             or delivered["last_unit"] != final_id
             or excluded is None
-            or verdict["role"] not in _CONTINUATION_ROLES
-            or type(verdict["complete_without_excluded"]) is not int
-            or verdict["complete_without_excluded"] not in (0, 1)
+            or verdict["materiality"] not in _CONTINUATION_IMPACTS
             or not isinstance(verdict["reason"], str)
             or not verdict["reason"].strip()
         ):
             raise SourceEvidenceError("independent continuation verdict lacks source proof")
-        approved = (
-            approved
-            and verdict["role"] in _OPTIONAL_CONTINUATION_ROLES
-            and verdict["complete_without_excluded"] == 1
-        )
+        approved = approved and verdict["materiality"] == "not_needed_for_delivered_point"
     if type(proof["optional_verified"]) is not bool or proof["optional_verified"] != approved:
         raise SourceEvidenceError("independent continuation approval was altered")
     return approved
@@ -166,18 +161,17 @@ def _optional_contrast_proof_valid(
 def review_optional_contrast(
     editor: Any, selected: list[str], after: list[str], final_id: int
 ) -> dict[str, Any]:
-    """Independently challenge a missing-contrast classification, never waive it.
+    """Test whether the excluded speech is necessary to finish the delivered point.
 
-    Prompts never receive the first reviewer's verdict or each other's answers.
-    Any uncertainty, absent proof or disagreement retains the original veto.
+    The two separate prompts never see each other's decisions or the original
+    missing-contrast label. Doubt and disagreement retain the original veto.
     """
     if not selected or not after or not 0 <= final_id < len(selected):
         raise ValueError("contrast review requires source speech and a valid final unit")
     properties = {
         "delivered_span": _unit_span_schema(len(selected)),
         "excluded_span": _unit_span_schema(len(after)),
-        "role": {"type": "string", "enum": _CONTINUATION_ROLES},
-        "complete_without_excluded": {"type": "integer", "enum": [0, 1]},
+        "materiality": {"type": "string", "enum": list(_CONTINUATION_IMPACTS)},
         "reason": {"type": "string", "minLength": 1, "maxLength": 160},
     }
     source = {
@@ -186,36 +180,46 @@ def review_optional_contrast(
         "final_substantive_unit_id": final_id,
     }
     prompts = (
-        "Independently compare the final delivered payoff with omitted speech. "
-        "Does omitting it remove an answer, essential exception, reversal or "
-        "qualifier, or merely remove a repeat, example, optional detail or next "
-        "topic? A related statement is not automatically a necessary contrast. "
-        "Identify grounded ranges in BOTH namespaces, including the final "
-        "delivered payoff. Set complete_without_excluded=1 only if the finished "
-        "clip already conveys its point without changing its meaning. Treat "
-        "doubt as uncertain. Return output_schema JSON.",
-        "Without knowing any previous judgment, perform a counterfactual cut test. "
-        "What material information would a viewer lose if excluded_after were "
-        "removed? An omitted denial, condition, actual result or necessary "
-        "counterpoint is essential; restating the same claim, illustrating it or "
-        "asking a fresh question is optional. Ground your classification in the "
-        "final delivered payoff and the excluded words using positions in their "
-        "SEPARATE namespaces. If you cannot establish that the delivered payoff "
-        "stands alone unchanged, set complete_without_excluded=0 and role=uncertain. "
-        "Return output_schema JSON.",
+        "Judge whether the omitted speech is NEEDED TO FINISH the delivered clip, "
+        "not whether it is relevant to the same subject. First read delivered alone: "
+        "identify the particular question, narrative result, comparison or opinion "
+        "it promises and whether its last substantive unit delivers that outcome. "
+        "Then examine excluded_after. Choose ONE materiality: "
+        "needed_to_finish_delivered_point if excluded supplies a promised result, "
+        "punchline, answer or necessary counterpoint missing from delivered; "
+        "changes_delivered_point if excluded corrects, reverses or materially qualifies "
+        "a seemingly completed claim; not_needed_for_delivered_point ONLY if delivered "
+        "already says its complete point and excluded merely repeats, illustrates it, "
+        "adds optional statistics, or begins another question or topic; otherwise "
+        "uncertain. Subject overlap is NOT semantic dependency. An anecdote with a "
+        "promised event but no outcome is INCOMPLETE even if the last sentence ends. "
+        "Cite source unit ranges in both independent namespaces, including the final "
+        "delivered unit. Never invent speech. Return output_schema JSON.",
+        "Perform a blinded counterfactual editing test. Imagine viewers see ONLY "
+        "delivered. Does it close the setup, including any promised story outcome, "
+        "speaker's actual conclusion or rhetorical reversal? Next compare the "
+        "excluded_after units: would hiding them leave that already-delivered meaning "
+        "intact? A related follow-up, another interviewer question, more examples "
+        "or repetition does NOT become essential just by discussing the same person. "
+        "If excluded provides the payoff for a story set up inside delivered, choose "
+        "needed_to_finish_delivered_point. If it contradicts, corrects or adds a "
+        "qualifier needed for accuracy, choose changes_delivered_point. If both "
+        "setup and payoff stand alone without it, choose "
+        "not_needed_for_delivered_point. Otherwise choose uncertain. "
+        "Point to the final substantive delivered unit and actual excluded units "
+        "using their separate IDs. Return output_schema JSON.",
     )
     verdicts = [editor._review_completion(prompt, source, properties, 512) for prompt in prompts]
-    proof = {"verdicts": verdicts, "optional_verified": False}
-    # Validate independently supplied evidence before deriving the boolean.
-    proof["optional_verified"] = all(
-        isinstance(verdict, dict)
-        and verdict.get("role") in _OPTIONAL_CONTINUATION_ROLES
-        and verdict.get("complete_without_excluded") == 1
-        for verdict in verdicts
-    )
+    proof = {
+        "verdicts": verdicts,
+        "optional_verified": all(
+            isinstance(verdict, dict)
+            and verdict.get("materiality") == "not_needed_for_delivered_point"
+            for verdict in verdicts
+        ),
+    }
     _optional_contrast_proof_valid(proof, selected, after, final_id)
     return proof
-
 
 class HeadlineGenerator(Protocol):
     def __call__(
