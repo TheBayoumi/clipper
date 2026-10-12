@@ -79,6 +79,61 @@ def hook_grounded_in_transcript(hook: str, transcript: str) -> bool:
     return any(expected == normalize(sentence) for sentence in sentences)
 
 
+def cached_literal_draft_evidence(
+    base: Path, hook: str, transcript: str, start: float, end: float, source_hash: str
+) -> bool:
+    """Independently bind an *unapproved* source quote to a rejected headline.
+
+    Never accept a paraphrase from this path. Both the immutable original
+    rejection and the exact spoken title are required; neither grants factual
+    or publication approval.
+    """
+    path = base / "cached-editorial-recovery.json"
+    saved_path = base / "editorial-cache.json"
+    if not path.is_file() or not saved_path.is_file():
+        return False
+    recovery = read_json(path)
+    saved = read_json(saved_path)
+    if (
+        recovery.get("schema") != "clipper-cached-recovery-v1"
+        or recovery.get("automatic_publication_allowed") is not False
+        or recovery.get("source_sha256") != source_hash
+        or type(recovery.get("archive_assessment_count")) is not int
+        or recovery["archive_assessment_count"] < 1
+        or recovery["archive_assessment_count"]
+        != len(saved.get("audit", {}).get("assessments", []))
+        or saved.get("identity", {}).get("source_sha256") != source_hash
+        or saved.get("complete") is not True
+        or hook.casefold() not in transcript.casefold()
+    ):
+        return False
+    for record in recovery.get("records", []):
+        if (
+            record.get("reviewed_start") != start
+            or record.get("reviewed_end") != end
+            or record.get("draft_approved") is not False
+            or str(record.get("exact_spoken_hook", "")).casefold() != hook.casefold()
+        ):
+            continue
+        for item in saved.get("audit", {}).get("assessments", []):
+            review = item.get("exchange_review", {})
+            if (
+                item.get("rejection") == "HEADLINE_REVIEW_REJECTED"
+                and item.get("reviewed_start") == start
+                and item.get("reviewed_end") == end
+                and item.get("proposal_start") == record.get("proposal_start")
+                and item.get("proposal_end") == record.get("proposal_end")
+                and all(
+                    review.get(key) is True
+                    for key in ("opening_standalone", "payoff_complete", "ending_complete")
+                )
+                and review.get("contains_promotion_or_intro") is False
+                and hook.casefold() in " ".join(review.get("delivered_units", [])).casefold()
+            ):
+                return True
+    return False
+
+
 def reviewed_summary_evidence(
     base: Path, hook: str, transcript: str, start: float, end: float, source_hash: str
 ) -> bool:
@@ -647,15 +702,24 @@ def inspect_artifact(
                     boundary_segments,
                 ):
                     issues.append("UNDELIVERED_STORY_TEASER")
-                if not hook_grounded_in_transcript(
-                    hook, source_text
-                ) and not reviewed_summary_evidence(
-                    base,
-                    hook,
-                    source_text,
-                    window_start,
-                    window_end,
-                    str(report.get("source_sha256") or ""),
+                if (
+                    not hook_grounded_in_transcript(hook, source_text)
+                    and not reviewed_summary_evidence(
+                        base,
+                        hook,
+                        source_text,
+                        window_start,
+                        window_end,
+                        str(report.get("source_sha256") or ""),
+                    )
+                    and not cached_literal_draft_evidence(
+                        base,
+                        hook,
+                        source_text,
+                        window_start,
+                        window_end,
+                        str(report.get("source_sha256") or ""),
+                    )
                 ):
                     issues.append("HOOK_SOURCE_MISMATCH")
                 integrity = clip.get("editorial_integrity_gate")

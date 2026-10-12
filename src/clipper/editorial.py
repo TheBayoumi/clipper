@@ -229,6 +229,29 @@ def _reviewed_exchange_headline(candidate: ClipCandidate, hook: str) -> bool:
     return True
 
 
+def _verified_verbatim_cached_quote(candidate: ClipCandidate, hook: str) -> bool:
+    """A direct spoken quote may be an unapproved draft, never a factual approval."""
+    required = {
+        "headline_origin=verbatim_cached_source_quote_unapproved",
+        "cached_recovery=verbatim_quote_private_review_only",
+        "span_review=standalone_opening_delivered_payoff_complete_ending",
+        "context_assessment=structured_local_instruct_model",
+    }
+    if not required.issubset(candidate.reasons) or hook != _semantic_hook_override(candidate):
+        return False
+    if hook.casefold() not in candidate.text.casefold():
+        return False
+    try:
+        persistent_hook_layout(hook)
+    except (ValueError, OSError):
+        return False
+    for name in ("setup_quote=", "payoff_quote="):
+        matches = [x.removeprefix(name) for x in candidate.reasons if x.startswith(name)]
+        if len(matches) != 1 or not matches[0] or matches[0] not in candidate.text:
+            return False
+    return True
+
+
 def candidate_gate_failures(
     candidate: ClipCandidate,
     *,
@@ -262,8 +285,10 @@ def candidate_gate_failures(
         failed.append("NO_GROUNDED_HOOK")
     elif not _grounded_numbers(hook, text):
         failed.append("UNSUPPORTED_NUMERICAL_HOOK")
-    elif hook.upper() not in source_headline_candidates(text) and not _reviewed_exchange_headline(
-        candidate, hook
+    elif (
+        hook.upper() not in source_headline_candidates(text)
+        and not _reviewed_exchange_headline(candidate, hook)
+        and not _verified_verbatim_cached_quote(candidate, hook)
     ):
         failed.append("UNSUPPORTED_SOURCE_HOOK")
     if opening_margin is not None and opening_margin <= 0 and not allow_review_only_opening:

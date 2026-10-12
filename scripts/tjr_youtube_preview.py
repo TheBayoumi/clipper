@@ -32,8 +32,12 @@ from clipper.editorial import (
     WEIGHTS,
     select_editorial_moments,
 )
+from clipper.editorial_cached_recovery import recover_source_quote_drafts
 from clipper.editorial_delivery import unresolved_teaser
-from clipper.editorial_review import require_private_review_draft_evidence
+from clipper.editorial_review import (
+    create_claim_review_packet,
+    require_private_review_draft_evidence,
+)
 from clipper.editorial_run import EditorialRunConfig
 from clipper.models import ClipCandidate, TranscriptSegment, WordTiming
 from clipper.pipeline import _download_asset
@@ -1197,6 +1201,73 @@ def render_youtube_previews(
             reuse_path=reuse[0] if reuse else None,
             require_reusable_editorial_cache=run_config.editorial_cache_root is not None,
         )
+        # Scope the second pass to previously completed source reviews.
+        # No discovery, selector or reviewer model call is made here. Ambiguous
+        # missing-contrast decisions remain excluded pending fresh evidence.
+        recovery_candidates, recovery_audit = recover_source_quote_drafts(
+            structured_audit.get("assessments", []),
+            segments,
+            video_id=chosen_video.video_id,
+            min_duration=brief.min_clip_seconds,
+            max_duration=brief.max_clip_seconds,
+        )
+        recovery_audit.update(
+            {
+                "source_sha256": source_digest,
+                "source_video_id": chosen_video.video_id,
+                "archive_assessment_count": len(structured_audit.get("assessments", [])),
+            }
+        )
+        (run_dir / "cached-editorial-recovery.json").write_text(
+            json.dumps(recovery_audit, indent=2) + "\n", encoding="utf-8"
+        )
+        source_assessments = {
+            (float(item["reviewed_start"]), float(item["reviewed_end"])): item
+            for item in structured_audit.get("assessments", [])
+            if isinstance(item, dict)
+            and type(item.get("reviewed_start")) in (int, float)
+            and type(item.get("reviewed_end")) in (int, float)
+            and item.get("rejection") == "HEADLINE_REVIEW_REJECTED"
+        }
+        recovered_packets = []
+        transcript_hash = hashlib.sha256(
+            json.dumps([item.to_dict() for item in segments], sort_keys=True).encode()
+        ).hexdigest()
+        for clip in recovery_candidates:
+            evidence = source_assessments[(clip.start, clip.end)]
+            review = evidence["exchange_review"]
+            title = next(
+                value.removeprefix("semantic_hook=")
+                for value in clip.reasons
+                if value.startswith("semantic_hook=")
+            )
+            recovered_packets.append(
+                {
+                    "proposal_start": evidence["proposal_start"],
+                    "proposal_end": evidence["proposal_end"],
+                    "reviewed_start": clip.start,
+                    "reviewed_end": clip.end,
+                    "packet": create_claim_review_packet(
+                        headline=title,
+                        selected_units=review["delivered_units"],
+                        excluded_before=[],
+                        excluded_after=[],
+                        reviewed_spans=review["source_quote_spans"],
+                        source_video_id=chosen_video.video_id,
+                        source_sha256=source_digest,
+                        transcript_sha256=transcript_hash,
+                    ),
+                }
+            )
+        LOGGER.info(
+            "CACHED_EDITORIAL_RECOVERY missing_contrast_unapproved=%s "
+            "quote_drafts=%s selector_reassessment=0",
+            recovery_audit["breakdown"].get(
+                "boundary_requires_independent_review:missing_contrast", 0
+            ),
+            len(recovery_candidates),
+        )
+        ranked = [*ranked, *recovery_candidates]
         review_packets = [
             {
                 "proposal_start": item["proposal_start"],
@@ -1208,6 +1279,7 @@ def render_youtube_previews(
             for item in structured_audit.get("assessments", [])
             if isinstance(item.get("claim_review_packet"), dict)
         ]
+        review_packets.extend(recovered_packets)
         claim_packet_manifest = {
             "schema": "clipper-headline-claim-packets-v1",
             "source_sha256": source_digest,
