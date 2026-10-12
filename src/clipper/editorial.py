@@ -442,8 +442,14 @@ def select_editorial_moments(
     chosen: list[EditorialPick] = []
     used_hooks: set[str] = set()
     for pick in ordered:
+        # Source windows with a positive gap are independent cuts. A 1.5 s
+        # exclusion halo wrongly discarded adjacent completed stories from the
+        # archived Double Coverage checkpoint (gap: 1.32 s). Keep substantive
+        # temporal collisions blocked and retain textual duplicate detection.
         overlap = any(
-            pick.clip.start < other.clip.end + 1.5 and other.clip.start < pick.clip.end + 1.5
+            min(pick.clip.end, other.clip.end)
+            - max(pick.clip.start, other.clip.start)
+            > 0.01
             for other in chosen
         )
         if overlap or any(_similar(pick, other) for other in chosen):
