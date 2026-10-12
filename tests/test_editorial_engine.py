@@ -427,13 +427,12 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
     absent = {"first_unit": -1, "last_unit": -1}
     grounded = {"first_unit": 0, "last_unit": 0}
 
-    def adjudication(role, complete=1, *, excluded_span=None):
+    def adjudication(materiality, *, excluded_span=None):
         return {
             "delivered_span": grounded.copy(),
             "excluded_span": grounded.copy() if excluded_span is None else excluded_span,
-            "role": role,
-            "complete_without_excluded": complete,
-            "reason": "The excluded speech repeats the already delivered conclusion.",
+            "materiality": materiality,
+            "reason": "Source-grounded effect of the excluded material on the delivered point.",
         }
 
     def evaluate(first, second):
@@ -465,10 +464,10 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
                         "relation": "missing_contrast",
                         "reason": "First reviewer alleges omitted contrast.",
                     }
-                if "Independently compare" in prompt:
+                if "Judge whether the omitted speech" in prompt:
                     assert "missing_contrast" not in str(payload)
                     return first
-                if "counterfactual cut test" in prompt:
+                if "blinded counterfactual editing test" in prompt:
                     assert "missing_contrast" not in str(payload)
                     return second
                 raise AssertionError("Unexpected reviewer prompt")
@@ -483,7 +482,8 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
 
     # Independent agreement with exact source positions can restore a draft.
     model, context, boundary = evaluate(
-        adjudication("restatement"), adjudication("optional_detail")
+        adjudication("not_needed_for_delivered_point"),
+        adjudication("not_needed_for_delivered_point"),
     )
     assert boundary["ending_complete"] is True
     assert boundary["payoff_complete"] is True
@@ -504,25 +504,50 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
 
     # A real omitted counterpoint remains vetoed, even if the other check disagrees.
     _model, _context, veto = evaluate(
-        adjudication("restatement"),
-        adjudication("essential_contrast", complete=0),
+        adjudication("not_needed_for_delivered_point"),
+        adjudication("needed_to_finish_delivered_point"),
     )
     assert veto["ending_complete"] is False
     assert veto["payoff_complete"] is False
     assert not veto["continuation_review"]["optional_contrast_proof"]["optional_verified"]
 
+    # A previously accepted but logically contradictory role/complete result
+    # has no place in the single-outcome evidence contract.
+    old_contract = {
+        "verdicts": [
+            {
+                "delivered_span": grounded.copy(),
+                "excluded_span": grounded.copy(),
+                "role": "essential_contrast",
+                "complete_without_excluded": 1,
+                "reason": "Contradictory: declares an essential omission but says complete.",
+            },
+        ] * 2,
+        "optional_verified": True,
+    }
+    from clipper.editorial_engine import _optional_contrast_proof_valid
+
+    with pytest.raises(SourceEvidenceError, match="incomplete"):
+        _optional_contrast_proof_valid(old_contract, delivered, excluded, 0)
+
+    # An uncertain impact cannot override the original missing-contrast veto.
+    _model, _context, unknown = evaluate(
+        adjudication("not_needed_for_delivered_point"), adjudication("uncertain")
+    )
+    assert unknown["ending_complete"] is False
+
     # Two agreeable but ungrounded responses must fail closed.
     with pytest.raises(SourceEvidenceError, match="source proof"):
         evaluate(
-            adjudication("restatement", excluded_span=absent),
-            adjudication("optional_detail"),
+            adjudication("not_needed_for_delivered_point", excluded_span=absent),
+            adjudication("not_needed_for_delivered_point"),
         )
 
     # Cache tampering cannot replace the independent verdict with a boolean.
     corrupted = copy.deepcopy(boundary)
     corrupted["continuation_review"]["optional_contrast_proof"]["verdicts"][1][
-        "complete_without_excluded"
-    ] = 0
+        "materiality"
+    ] = "needed_to_finish_delivered_point"
     with pytest.raises(SourceEvidenceError, match="approval was altered"):
         complete_source_review(
             model,
