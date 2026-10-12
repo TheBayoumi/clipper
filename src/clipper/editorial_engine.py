@@ -106,24 +106,30 @@ def _evidence_excerpt(text: str) -> str:
     return text[: words[11].end()] if len(words) > 12 else text
 
 
-# A single materiality outcome eliminates contradictory role/complete labels.
-# Both blind evaluations must independently prove the delivered payoff survives
-# the cut. Genuine missing resolutions and claim-changing continuations still veto.
-_CONTINUATION_IMPACTS = (
-    "not_needed_for_delivered_point",
-    "needed_to_finish_delivered_point",
-    "changes_delivered_point",
+# A continuation veto can be overcome only by proving TWO separate facts:
+# the selected clip actually delivers its promised payoff, and the omitted speech
+# is unnecessary to that payoff. The model never authors the final approval bit.
+_PAYOFF_STATES = ("delivered", "pending", "uncertain")
+_EXCLUDED_EFFECTS = (
+    "supplies_missing_payoff",
+    "changes_or_qualifies_delivered_payoff",
+    "restates_or_illustrates_delivered_payoff",
+    "new_subject",
     "uncertain",
+)
+_OPTIONAL_EXCLUDED_EFFECTS = frozenset(
+    {"restates_or_illustrates_delivered_payoff", "new_subject"}
 )
 
 
 def _optional_contrast_proof_valid(
     proof: Any, selected: list[str], after: list[str], final_id: int
 ) -> bool:
-    """Validate both independent counterfactual decisions against source units.
+    """Check two source-bound narrative-obligation and exclusion decisions.
 
-    This validator recomputes the only approval bit; no label combination or
-    boolean from the language model can override the original continuation veto.
+    Production has the same strict fail-closed rule for cached and live model
+    responses. JSON fields and pointers prove the model made a traceable claim,
+    not that the claim is semantically true.
     """
     if proof is None:
         return False
@@ -134,25 +140,46 @@ def _optional_contrast_proof_valid(
         raise SourceEvidenceError("independent continuation proof requires two verdicts")
     approved = True
     for verdict in verdicts:
-        if not isinstance(verdict, dict) or set(verdict) != {
-            "delivered_span",
-            "excluded_span",
-            "materiality",
-            "reason",
+        if not isinstance(verdict, dict) or set(verdict) != {"obligation", "dependency"}:
+            raise SourceEvidenceError("narrative obligation and excluded dependency are required")
+        obligation, dependency = verdict["obligation"], verdict["dependency"]
+        if not isinstance(obligation, dict) or set(obligation) != {
+            "setup_span", "payoff_span", "payoff_state", "reason"
         }:
-            raise SourceEvidenceError("independent continuation verdict is incomplete")
-        delivered = _resolve_source_units(verdict["delivered_span"], selected)
-        excluded = _resolve_source_units(verdict["excluded_span"], after)
+            raise SourceEvidenceError("invalid delivered narrative-obligation record")
+        if not isinstance(dependency, dict) or set(dependency) != {
+            "excluded_span", "effect", "reason"
+        }:
+            raise SourceEvidenceError("invalid omitted-material dependency record")
+        setup = _resolve_source_units(obligation["setup_span"], selected)
+        payoff = _resolve_source_units(obligation["payoff_span"], selected)
+        excluded = _resolve_source_units(dependency["excluded_span"], after)
         if (
-            delivered is None
-            or delivered["last_unit"] != final_id
+            setup is None
             or excluded is None
-            or verdict["materiality"] not in _CONTINUATION_IMPACTS
-            or not isinstance(verdict["reason"], str)
-            or not verdict["reason"].strip()
+            or obligation["payoff_state"] not in _PAYOFF_STATES
+            or (
+                obligation["payoff_state"] == "delivered"
+                and (payoff is None or payoff["last_unit"] != final_id)
+            )
+            or (
+                obligation["payoff_state"] != "delivered"
+                and payoff is not None
+            )
+            or dependency["effect"] not in _EXCLUDED_EFFECTS
+            or any(
+                not isinstance(record["reason"], str)
+                or not record["reason"].strip()
+                or len(record["reason"]) > 300
+                for record in (obligation, dependency)
+            )
         ):
-            raise SourceEvidenceError("independent continuation verdict lacks source proof")
-        approved = approved and verdict["materiality"] == "not_needed_for_delivered_point"
+            raise SourceEvidenceError("narrative obligation or dependency lacks canonical proof")
+        approved = (
+            approved
+            and obligation["payoff_state"] == "delivered"
+            and dependency["effect"] in _OPTIONAL_EXCLUDED_EFFECTS
+        )
     if type(proof["optional_verified"]) is not bool or proof["optional_verified"] != approved:
         raise SourceEvidenceError("independent continuation approval was altered")
     return approved
@@ -161,66 +188,120 @@ def _optional_contrast_proof_valid(
 def review_optional_contrast(
     editor: Any, selected: list[str], after: list[str], final_id: int
 ) -> dict[str, Any]:
-    """Test whether the excluded speech is necessary to finish the delivered point.
+    """Two blinded evidence-first evaluations of one continuation boundary.
 
-    The two separate prompts never see each other's decisions or the original
-    missing-contrast label. Doubt and disagreement retain the original veto.
+    Each evaluation first examines DELIVERED speech alone and identifies the
+    obligation and delivered payoff. A separate subsequent model call evaluates
+    excluded speech against that fixed, source-positioned obligation. The two
+    evaluations see neither each other's results nor the initial veto label.
     """
     if not selected or not after or not 0 <= final_id < len(selected):
         raise ValueError("contrast review requires source speech and a valid final unit")
-    properties = {
-        "delivered_span": _unit_span_schema(len(selected)),
-        "excluded_span": _unit_span_schema(len(after)),
-        "materiality": {"type": "string", "enum": list(_CONTINUATION_IMPACTS)},
-        "reason": {"type": "string", "minLength": 1, "maxLength": 160},
+    obligation_properties = {
+        "setup_span": _unit_span_schema(len(selected)),
+        "payoff_span": _unit_span_schema(len(selected)),
+        "payoff_state": {"type": "string", "enum": list(_PAYOFF_STATES)},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 300},
     }
-    source = {
-        "delivered": _numbered_source(selected),
-        "excluded_after": _numbered_source(after),
+    dependency_properties = {
+        "excluded_span": _unit_span_schema(len(after)),
+        "effect": {"type": "string", "enum": list(_EXCLUDED_EFFECTS)},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 300},
+    }
+    delivered_source = {
+        "delivered_units": _numbered_source(selected),
         "final_substantive_unit_id": final_id,
     }
-    prompts = (
-        "Judge whether the omitted speech is NEEDED TO FINISH the delivered clip, "
-        "not whether it is relevant to the same subject. First read delivered alone: "
-        "identify the particular question, narrative result, comparison or opinion "
-        "it promises and whether its last substantive unit delivers that outcome. "
-        "Then examine excluded_after. Choose ONE materiality: "
-        "needed_to_finish_delivered_point if excluded supplies a promised result, "
-        "punchline, answer or necessary counterpoint missing from delivered; "
-        "changes_delivered_point if excluded corrects, reverses or materially qualifies "
-        "a seemingly completed claim; not_needed_for_delivered_point ONLY if delivered "
-        "already says its complete point and excluded merely repeats, illustrates it, "
-        "adds optional statistics, or begins another question or topic; otherwise "
-        "uncertain. Subject overlap is NOT semantic dependency. An anecdote with a "
-        "promised event but no outcome is INCOMPLETE even if the last sentence ends. "
-        "Cite source unit ranges in both independent namespaces, including the final "
-        "delivered unit. Never invent speech. Return output_schema JSON.",
-        "Perform a blinded counterfactual editing test. Imagine viewers see ONLY "
-        "delivered. Does it close the setup, including any promised story outcome, "
-        "speaker's actual conclusion or rhetorical reversal? Next compare the "
-        "excluded_after units: would hiding them leave that already-delivered meaning "
-        "intact? A related follow-up, another interviewer question, more examples "
-        "or repetition does NOT become essential just by discussing the same person. "
-        "If excluded provides the payoff for a story set up inside delivered, choose "
-        "needed_to_finish_delivered_point. If it contradicts, corrects or adds a "
-        "qualifier needed for accuracy, choose changes_delivered_point. If both "
-        "setup and payoff stand alone without it, choose "
-        "not_needed_for_delivered_point. Otherwise choose uncertain. "
-        "Point to the final substantive delivered unit and actual excluded units "
-        "using their separate IDs. Return output_schema JSON.",
+    # Explicit obligations prevent a related follow-up being treated as
+    # necessary merely because it mentions the same athlete or team.
+    obligation_prompts = (
+        "Read ONLY delivered_units; no future transcript is available. Identify "
+        "the CENTRAL story, claim, opinion or question introduced by the excerpt "
+        "(setup_span), then decide whether its specific payoff, answer, stated "
+        "conclusion or promised consequence is actually spoken by the final unit. "
+        "If yes, payoff_state=delivered and payoff_span MUST end at "
+        "final_substantive_unit_id. If a punchline, result, promised outcome or "
+        "meaningful answer remains unstated, payoff_state=pending and payoff_span "
+        "MUST be (-1,-1). If ambiguous use uncertain with (-1,-1). "
+        "An ending with a period or preliminary physical action is not a completed "
+        "story if its teased consequence is still missing. Describe the obligation "
+        "and what is or is not delivered in <=24 words. Return output_schema JSON.",
+        "Evaluate delivered_units ALONE as a short-form video. What setup is "
+        "the viewer promised, and which SOURCE SPAN actually finishes its point? "
+        "A complete conclusion or opinion counts as a payoff even when another "
+        "example could be added. A joke, anecdote or confrontation without its "
+        "anticipated punchline or consequential result is not complete. "
+        "Choose setup_span in delivered_units; payoff_state=delivered ONLY when "
+        "payoff_span reaches final_substantive_unit_id and completes the LIVE "
+        "obligation at the end. Otherwise set pending or uncertain and "
+        "payoff_span=(-1,-1). Explain your source-based decision in <=24 words. "
+        "Return output_schema JSON.",
     )
-    verdicts = [editor._review_completion(prompt, source, properties, 512) for prompt in prompts]
+    dependency_prompts = (
+        "Compare the FIXED narrative obligation from delivered speech with "
+        "excluded_after. Does excluded_after provide the actually MISSING "
+        "answer, event result or punchline (supplies_missing_payoff), alter or "
+        "qualify a finished conclusion (changes_or_qualifies_delivered_payoff), "
+        "merely repeat or illustrate an ALREADY STATED conclusion "
+        "(restates_or_illustrates_delivered_payoff), or begin a separate "
+        "subject/question (new_subject)? Topic similarity is NOT narrative "
+        "dependency. If the obligation cannot be determined, choose uncertain. "
+        "Cite the exact excluded unit span. Explain the causal relevance in "
+        "<=24 words. Return output_schema JSON.",
+        "Perform a cut-dependency test using the supplied frozen delivered "
+        "setup/payoff positions: what SPECIFIC semantic obligation would be "
+        "lost by cutting excluded_after? A subsequent question about another "
+        "team is a new_subject even if it mentions the same league. An example "
+        "repeating a complete comparison is a restatement, not required contrast. "
+        "An unrevealed hit, real-world outcome, answer or joke punchline teased "
+        "by the delivered setup supplies_missing_payoff. A correction, reversal "
+        "or necessary exception changes_or_qualifies_delivered_payoff. "
+        "Choose uncertain if unclear, cite actual excluded unit IDs, and "
+        "explain in <=24 words. Return output_schema JSON.",
+    )
+    verdicts: list[dict[str, Any]] = []
+    for obligation_prompt, dependency_prompt in zip(
+        obligation_prompts, dependency_prompts, strict=True
+    ):
+        obligation = editor._review_completion(
+            obligation_prompt, delivered_source, obligation_properties, 512
+        )
+        # Fail before the next expensive inference on malformed source pointers.
+        if not isinstance(obligation, dict) or not {
+            "setup_span", "payoff_span", "payoff_state", "reason"
+        } == set(obligation):
+            raise SourceEvidenceError("model returned invalid delivered obligation")
+        if _resolve_source_units(obligation["setup_span"], selected) is None:
+            raise SourceEvidenceError("narrative setup is not in delivered speech")
+        payoff = _resolve_source_units(obligation["payoff_span"], selected)
+        if obligation["payoff_state"] not in _PAYOFF_STATES or (
+            obligation["payoff_state"] == "delivered"
+        ) != (payoff is not None and payoff["last_unit"] == final_id) or (
+            obligation["payoff_state"] != "delivered" and payoff is not None
+        ):
+            raise SourceEvidenceError("model payoff-state disagrees with its source span")
+        dependency = editor._review_completion(
+            dependency_prompt,
+            {
+                **delivered_source,
+                "excluded_after": _numbered_source(after),
+                "frozen_delivered_obligation": obligation,
+            },
+            dependency_properties,
+            512,
+        )
+        verdicts.append({"obligation": obligation, "dependency": dependency})
     proof = {
         "verdicts": verdicts,
         "optional_verified": all(
-            isinstance(verdict, dict)
-            and verdict.get("materiality") == "not_needed_for_delivered_point"
-            for verdict in verdicts
+            item["obligation"]["payoff_state"] == "delivered"
+            and isinstance(item["dependency"], dict)
+            and item["dependency"].get("effect") in _OPTIONAL_EXCLUDED_EFFECTS
+            for item in verdicts
         ),
     }
     _optional_contrast_proof_valid(proof, selected, after, final_id)
     return proof
-
 
 class HeadlineGenerator(Protocol):
     def __call__(
