@@ -446,7 +446,12 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
         }
 
     def evaluate(first, second):
-        responses = [first["obligation"], first["dependency"], second["obligation"], second["dependency"]]
+        responses = [
+            first["obligation"],
+            first["dependency"],
+            second["obligation"],
+            second["dependency"],
+        ]
         prompts = []
 
         class Model:
@@ -545,9 +550,9 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
         _optional_contrast_proof_valid(old_contract, delivered, excluded, 0)
 
     corrupted = copy.deepcopy(boundary)
-    corrupted["continuation_review"]["optional_contrast_proof"]["verdicts"][1][
-        "dependency"
-    ]["effect"] = "supplies_missing_payoff"
+    corrupted["continuation_review"]["optional_contrast_proof"]["verdicts"][1]["dependency"][
+        "effect"
+    ] = "supplies_missing_payoff"
     with pytest.raises(SourceEvidenceError, match="approval was altered"):
         complete_source_review(
             model,
