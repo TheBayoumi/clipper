@@ -898,3 +898,24 @@ def test_failed_production_transcript_cache_uses_verified_roundtrip_without_mp4_
         proof = json.loads((tmp_path / "transcript-cache-provenance.json").read_text())
         assert proof["provenance_type"] == "verified_source_roundtrip"
         assert proof["source_hash_verified"] is True
+
+
+@pytest.mark.parametrize(
+    "source, accepted",
+    [
+        ({"upload_date": "20261009"}, True),
+        ({"release_date": "20261009"}, True),
+        ({"timestamp": 1791578100}, True),
+        ({"upload_date": "20261399"}, False),
+        ({"upload_date": "not-verified"}, False),
+        ({"timestamp": -1}, False),
+        ({}, False),
+    ],
+)
+def test_publication_metadata_from_verified_youtube_never_guesses(source, accepted):
+    from scripts.tjr_youtube_preview import _verified_publication_date
+
+    published = _verified_publication_date(source)
+    assert bool(published) is accepted
+    if published:
+        assert published.startswith("2026-10-09")

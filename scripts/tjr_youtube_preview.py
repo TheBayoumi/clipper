@@ -105,6 +105,24 @@ def parse_official_feed(xml: bytes, expected_channel: str) -> list[OfficialVideo
     return items
 
 
+def _verified_publication_date(metadata: dict[str, Any]) -> str:
+    """Parse only platform-provided timestamps/dates, never inferred episode dates."""
+    timestamp = metadata.get("release_timestamp") or metadata.get("timestamp")
+    try:
+        if timestamp is not None:
+            parsed = datetime.fromtimestamp(float(timestamp), UTC)
+        else:
+            date = metadata.get("upload_date") or metadata.get("release_date")
+            if not isinstance(date, str) or not re.fullmatch(r"[0-9]{8}", date):
+                return ""
+            parsed = datetime.strptime(date, "%Y%m%d").replace(tzinfo=UTC)
+        if datetime(2005, 1, 1, tzinfo=UTC) <= parsed <= datetime.now(UTC):
+            return parsed.isoformat()
+    except (ValueError, OverflowError, OSError, TypeError):
+        pass
+    return ""
+
+
 def _flat_channel_playlist(
     channel_id: str, *, section: str = "videos", limit: int = 36
 ) -> list[OfficialVideo]:
@@ -144,12 +162,7 @@ def _flat_channel_playlist(
             continue
         if listed_owner and listed_owner != channel_id:
             continue
-        timestamp = entry.get("release_timestamp") or entry.get("timestamp")
-        published = (
-            datetime.fromtimestamp(float(timestamp), UTC).isoformat()
-            if timestamp is not None
-            else ""
-        )
+        published = _verified_publication_date(entry)
         raw_duration = entry.get("duration")
         duration = (
             float(raw_duration)
@@ -1088,6 +1101,19 @@ def render_youtube_previews(
                         ) from exc
         if source is None or chosen_video is None:
             raise RuntimeError("no recent approved-channel YouTube original could be downloaded")
+        # Playlist flat records often omit timestamps even when the original
+        # episode has a verified publication date. Recover only from owner- and
+        # video-ID-verified platform metadata; yt-dlp is skip-download here.
+        if not chosen_video.published:
+            step = "source_publication_metadata"
+            dated_metadata = verified_youtube_metadata(chosen_video)
+            published = _verified_publication_date(dated_metadata)
+            if not published:
+                raise RuntimeError(
+                    "SOURCE_DATE_UNVERIFIED: exact YouTube publication date unavailable"
+                )
+            chosen_video = replace(chosen_video, published=published)
+            LOGGER.info("SOURCE_PUBLICATION_METADATA_VERIFIED=%s", published)
         source_profile = probe_source_profile(source)
         step = "transcription"
         cache_root = run_config.transcript_cache_root
