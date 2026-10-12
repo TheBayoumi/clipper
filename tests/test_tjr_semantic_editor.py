@@ -333,6 +333,8 @@ def test_focused_review_separates_speech_purpose_and_excluded_payoff():
     }
     dependency = {
         "excluded_span": {"first_unit": 0, "last_unit": 0},
+        "open_obligation_span": {"first_unit": 0, "last_unit": 0},
+        "missing_requirement": "unrevealed_outcome",
         "effect": "supplies_missing_payoff",
         "reason": "The excluded passage supplies the missing outcome.",
     }
