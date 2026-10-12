@@ -159,7 +159,7 @@ def test_completed_source_boundaries_can_be_reused_for_new_headline_only():
                     "show_intro_span": absent,
                     "reason": "Ordinary sporting discussion.",
                 }
-            if "finished clip" in prompt:
+            if "Assess ONLY delivered_units as the finished clip" in prompt:
                 return {
                     "setup_span": {"first_unit": 0, "last_unit": 0},
                     "resolution_span": {"first_unit": 1, "last_unit": 1},
