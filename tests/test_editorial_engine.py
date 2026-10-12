@@ -659,8 +659,8 @@ def test_narrative_proof_validation_fails_closed_on_invalid_combinations():
     assert _optional_contrast_proof_valid(
         {"verdicts": [valid, valid], "optional_verified": True}, selected, excluded, 0
     )
+    assert _optional_contrast_proof_valid(None, selected, excluded, 0) is False
     for invalid in (
-        None,
         [],
         {"verdicts": [valid], "optional_verified": True},
         {"verdicts": "untrusted", "optional_verified": False},
