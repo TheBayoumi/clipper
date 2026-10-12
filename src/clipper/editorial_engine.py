@@ -117,9 +117,7 @@ _EXCLUDED_EFFECTS = (
     "new_subject",
     "uncertain",
 )
-_OPTIONAL_EXCLUDED_EFFECTS = frozenset(
-    {"restates_or_illustrates_delivered_payoff", "new_subject"}
-)
+_OPTIONAL_EXCLUDED_EFFECTS = frozenset({"restates_or_illustrates_delivered_payoff", "new_subject"})
 
 
 def _optional_contrast_proof_valid(
@@ -144,11 +142,16 @@ def _optional_contrast_proof_valid(
             raise SourceEvidenceError("narrative obligation and excluded dependency are required")
         obligation, dependency = verdict["obligation"], verdict["dependency"]
         if not isinstance(obligation, dict) or set(obligation) != {
-            "setup_span", "payoff_span", "payoff_state", "reason"
+            "setup_span",
+            "payoff_span",
+            "payoff_state",
+            "reason",
         }:
             raise SourceEvidenceError("invalid delivered narrative-obligation record")
         if not isinstance(dependency, dict) or set(dependency) != {
-            "excluded_span", "effect", "reason"
+            "excluded_span",
+            "effect",
+            "reason",
         }:
             raise SourceEvidenceError("invalid omitted-material dependency record")
         setup = _resolve_source_units(obligation["setup_span"], selected)
@@ -162,10 +165,7 @@ def _optional_contrast_proof_valid(
                 obligation["payoff_state"] == "delivered"
                 and (payoff is None or payoff["last_unit"] != final_id)
             )
-            or (
-                obligation["payoff_state"] != "delivered"
-                and payoff is not None
-            )
+            or (obligation["payoff_state"] != "delivered" and payoff is not None)
             or dependency["effect"] not in _EXCLUDED_EFFECTS
             or any(
                 not isinstance(record["reason"], str)
@@ -268,16 +268,20 @@ def review_optional_contrast(
         )
         # Fail before the next expensive inference on malformed source pointers.
         if not isinstance(obligation, dict) or not {
-            "setup_span", "payoff_span", "payoff_state", "reason"
+            "setup_span",
+            "payoff_span",
+            "payoff_state",
+            "reason",
         } == set(obligation):
             raise SourceEvidenceError("model returned invalid delivered obligation")
         if _resolve_source_units(obligation["setup_span"], selected) is None:
             raise SourceEvidenceError("narrative setup is not in delivered speech")
         payoff = _resolve_source_units(obligation["payoff_span"], selected)
-        if obligation["payoff_state"] not in _PAYOFF_STATES or (
-            obligation["payoff_state"] == "delivered"
-        ) != (payoff is not None and payoff["last_unit"] == final_id) or (
-            obligation["payoff_state"] != "delivered" and payoff is not None
+        if (
+            obligation["payoff_state"] not in _PAYOFF_STATES
+            or (obligation["payoff_state"] == "delivered")
+            != (payoff is not None and payoff["last_unit"] == final_id)
+            or (obligation["payoff_state"] != "delivered" and payoff is not None)
         ):
             raise SourceEvidenceError("model payoff-state disagrees with its source span")
         dependency = editor._review_completion(
@@ -302,6 +306,7 @@ def review_optional_contrast(
     }
     _optional_contrast_proof_valid(proof, selected, after, final_id)
     return proof
+
 
 class HeadlineGenerator(Protocol):
     def __call__(
