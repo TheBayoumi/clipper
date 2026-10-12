@@ -26,11 +26,13 @@ from typing import Any
 import defusedxml.ElementTree as ET
 
 from clipper.brief import load_brief
+from clipper.caption_lexicon import correct_verified_caption_names
 from clipper.editorial import (
     RUBRIC_VERSION,
     WEIGHTS,
     select_editorial_moments,
 )
+from clipper.editorial_delivery import unresolved_teaser
 from clipper.editorial_review import require_private_review_draft_evidence
 from clipper.editorial_run import EditorialRunConfig
 from clipper.models import ClipCandidate, TranscriptSegment, WordTiming
@@ -887,6 +889,9 @@ def _clip_render_identity(
         for name in (
             "src/clipper/render.py",
             "src/clipper/tiktok.py",
+            "src/clipper/caption_lexicon.py",
+            "src/clipper/editorial_delivery.py",
+            "campaigns/reach-double-coverage-caption-names.json",
             "src/clipper/source_fidelity.py",
             "scripts/tjr_quality.py",
         )
@@ -1208,6 +1213,28 @@ def render_youtube_previews(
             allow_review_only_opening=True,
             review_provider=lambda candidate: analyze_candidate_visuals(source, candidate),
         )
+        # This pass consumes the completed editorial decisions. It does NOT
+        # invalidate or re-run any of the 111 selector/model assessments.
+        original_picks = len(picks)
+        retained = []
+        for pick in picks:
+            if unresolved_teaser(pick.clip, segments):
+                rejected.append(
+                    {
+                        "start": pick.clip.start,
+                        "end": pick.clip.end,
+                        "reason": "UNDELIVERED_STORY_TEASER",
+                        "failed_gates": ["UNDELIVERED_STORY_TEASER"],
+                    }
+                )
+            else:
+                retained.append(pick)
+        picks = retained
+        LOGGER.info(
+            "CACHED_POST_SELECTION_STORY_QA accepted=%d rejected_teasers=%d",
+            len(picks),
+            original_picks - len(picks),
+        )
         (run_dir / "ranked-candidates.json").write_text(
             json.dumps([c.to_dict() for c in ranked[:150]], indent=2) + "\n",
             encoding="utf-8",
@@ -1312,12 +1339,17 @@ def render_youtube_previews(
                 "Double Coverage drafts require Style B2 captions and persistent hooks"
             )
         completed: list[dict[str, Any]] = []
+        caption_lexicon_file = (
+            Path(__file__).resolve().parents[1]
+            / "campaigns/reach-double-coverage-caption-names.json"
+        )
         for number, pick in enumerate(picks, start=1):
             clip = pick.clip
+            caption_segments = correct_verified_caption_names(clip, segments, caption_lexicon_file)
             out = run_dir / "clips" / f"{number:02d}-double-coverage-{chosen_video.video_id}.mp4"
             layout = "default"
             render_identity = _clip_render_identity(
-                source_digest, clip, pick.hook, segments, watermark_path, caption_style
+                source_digest, clip, pick.hook, caption_segments, watermark_path, caption_style
             )
             render_cache_root = run_config.render_cache_root
             render_reused = bool(render_cache_root) and _restore_clip_render(
@@ -1332,7 +1364,7 @@ def render_youtube_previews(
                     source,
                     out,
                     clip,
-                    segments,
+                    caption_segments,
                     watermark_path=watermark_path,
                     editorial_layout=layout,
                     tiktok_hook=pick.hook if caption_style in {"B", "B2"} else None,

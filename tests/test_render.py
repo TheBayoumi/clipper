@@ -255,3 +255,56 @@ def test_memecoin_layout_is_chart_reaction_montage_without_visible_ui_edges(
     assert "overlay=0:310" in joined
     assert "overlay=0:850" in joined
     assert "gblur=sigma=18" not in joined
+
+
+def test_source_grounded_payoff_attention_is_one_sustained_bounded_edit(tmp_path: Path) -> None:
+    from clipper.render import _source_payoff_beat
+    from clipper.source_fidelity import SourceProfile
+
+    clip = ClipCandidate(
+        "v",
+        100,
+        132,
+        "discussion",
+        5,
+        ("payoff_quote=The team changed its approach and finally won.",),
+    )
+    segments = [
+        TranscriptSegment(100, 108, "The hosts questioned the starting strategy."),
+        TranscriptSegment(114, 117, "The team changed its approach."),
+        TranscriptSegment(120, 124, "The team changed its approach and finally won."),
+        TranscriptSegment(130, 132, "That is why this outcome mattered."),
+    ]
+    start = _source_payoff_beat(clip, segments)
+    assert start == 20
+    profile = SourceProfile(1920, 1080, "24/1", "h264", "yuv420p", 4000000, 128000)
+    command = build_ffmpeg_command(
+        "source.mp4",
+        "out.mp4",
+        clip,
+        tmp_path / "captions.ass",
+        attention_start_seconds=start,
+        source_fps=profile.fps,
+    )
+    graph = command[command.index("-filter_complex") + 1]
+    assert "[fg2]split=2[normal][punchsrc]" in graph
+    assert "gte(t,20.000)" in graph
+    assert "crop=iw/1.025:ih/1.025" in graph
+    assert graph.count("gte(t,") == 1
+    with pytest.raises(RenderError, match="attention beat"):
+        build_ffmpeg_command(
+            "source.mp4",
+            "out.mp4",
+            clip,
+            tmp_path / "captions.ass",
+            attention_start_seconds=29,
+        )
+
+
+def test_no_payoff_evidence_means_no_forced_zoom():
+    from clipper.render import _source_payoff_beat
+
+    clip = ClipCandidate("v", 100, 132, "discussion", 5)
+    assert (
+        _source_payoff_beat(clip, [TranscriptSegment(120, 122, "No established payoff.")]) is None
+    )

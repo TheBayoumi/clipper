@@ -63,6 +63,50 @@ def _escape_filter_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
 
 
+def _source_payoff_beat(clip: ClipCandidate, segments: Sequence[TranscriptSegment]) -> float | None:
+    """One sustained foreground emphasis, grounded in saved delivered payoff words."""
+    quote = next(
+        (r.removeprefix("payoff_quote=") for r in clip.reasons if r.startswith("payoff_quote=")), ""
+    )
+    if clip.duration < 18 or not quote:
+        return None
+    meaningful = {
+        word
+        for word in re.findall(r"[a-z]{3,}", quote.casefold())
+        if word
+        not in {
+            "the",
+            "and",
+            "that",
+            "this",
+            "with",
+            "for",
+            "but",
+            "his",
+            "her",
+            "are",
+            "was",
+            "you",
+            "from",
+            "not",
+            "they",
+        }
+    }
+    choices: list[tuple[int, float]] = []
+    for segment in segments:
+        offset = segment.start - clip.start
+        if not clip.start <= segment.start < clip.end:
+            continue
+        if not 0.30 * clip.duration <= offset <= 0.80 * clip.duration:
+            continue
+        if clip.duration - offset < 7.5:
+            continue
+        matches = len(meaningful & set(re.findall(r"[a-z]{3,}", segment.text.casefold())))
+        if matches >= 2:
+            choices.append((matches, offset))
+    return round(sorted(choices, key=lambda x: (-x[0], -x[1]))[0][1], 3) if choices else None
+
+
 def build_ffmpeg_command(
     source_path: str | Path,
     output_path: str | Path,
@@ -77,6 +121,7 @@ def build_ffmpeg_command(
     crf_override: int | None = None,
     source_profile: SourceProfile | None = None,
     audio_gain_db: float | None = None,
+    attention_start_seconds: float | None = None,
 ) -> list[str]:
     preset = os.getenv("CLIPPER_RENDER_PRESET", "ultrafast").strip().lower()
     if preset not in {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"}:
@@ -124,6 +169,28 @@ def build_ffmpeg_command(
         f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,"
         f"{caption_filter},fps={fps}:start_time=0[captioned]"
     )
+    if attention_start_seconds is not None:
+        if (
+            editorial_layout != "default"
+            or not is_tiktok
+            or not 7 <= attention_start_seconds <= clip.duration - 7
+        ):
+            raise RenderError("source-aware attention beat violates portrait editing bounds")
+        # Source-derived sustained editorial cut, not random zoom toggles.
+        # A 2.5% crop protects the subject while making the payoff visually distinct.
+        base_filter = (
+            f"[0:v]split=2[bg][fg];"
+            f"[bg]scale={blur_width}:{blur_height}:force_original_aspect_ratio=increase,"
+            f"crop={blur_width}:{blur_height},gblur=sigma=18,scale={width}:{height}[bg2];"
+            f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
+            f"[fg2]split=2[normal][punchsrc];"
+            f"[punchsrc]crop=iw/1.025:ih/1.025:(iw-ow)/2:(ih-oh)/2,"
+            f"scale={width}:-2[punch];"
+            f"[bg2][normal]overlay=(W-w)/2:(H-h)/2[normalcanvas];"
+            f"[normalcanvas][punch]overlay=(W-w)/2:(H-h)/2:"
+            f"enable='gte(t,{attention_start_seconds:.3f})',"
+            f"{caption_filter},fps={fps}:start_time=0[captioned]"
+        )
     if editorial_layout not in {
         "default",
         "tjr-trading-logo-safe",
@@ -313,6 +380,11 @@ class FFmpegRenderer:
             if tiktok_hook is not None
             else None
         )
+        attention_start = (
+            _source_payoff_beat(clip, segments)
+            if tiktok_hook and editorial_layout == "default"
+            else None
+        )
         split_montage = editorial_layout in {
             "tjr-trading-logo-safe",
             "tjr-memecoin-logo-safe",
@@ -338,6 +410,7 @@ class FFmpegRenderer:
                 crf_override=crf,
                 source_profile=native,
                 audio_gain_db=audio_gain,
+                attention_start_seconds=attention_start,
             )
             try:
                 subprocess.run(command, check=True, capture_output=True, text=True, timeout=900)
@@ -402,10 +475,24 @@ class FFmpegRenderer:
                 "editorial_visual_approval": False,
                 "edit_plan": {
                     "style": (
-                        "split_screen_montage" if split_montage else "caption_led_no_forced_effect"
+                        "split_screen_montage"
+                        if split_montage
+                        else "semantic_micro_punch"
+                        if attention_start is not None
+                        else "caption_led_no_forced_effect"
                     ),
-                    "punch_scale": 1.0,
-                    "attention_beats": [],
+                    "punch_scale": 1.025 if attention_start is not None else 1.0,
+                    "attention_beats": (
+                        [
+                            {
+                                "start": attention_start,
+                                "end": round(clip.duration, 3),
+                                "reason": "source-timed-delivered-payoff",
+                            }
+                        ]
+                        if attention_start is not None
+                        else []
+                    ),
                     "random_effects": False,
                     "editorial_layout": editorial_layout,
                 },

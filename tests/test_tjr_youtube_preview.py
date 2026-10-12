@@ -552,7 +552,7 @@ def test_chunked_asr_preserves_absolute_video_and_word_offsets(
 def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from clipper.models import TranscriptSegment
+    from clipper.models import ClipCandidate, TranscriptSegment
     from scripts.tjr_youtube_preview import render_youtube_previews
 
     channel = "UCf1q6dhccWr6eQEcFFnJSbA"
@@ -618,7 +618,16 @@ def test_editorial_scoring_sees_neighbors_across_audio_chunk_boundary(
                 "probe_original": lambda *_: {"width": 1920, "height": 1080},
                 "transcribe_source_chunks": lambda *_a, **_kw: ([[first], [second]], 900.0),
                 "build_semantic_editorial_candidates": inspect_candidates,
-                "select_editorial_moments": lambda *_a, **_kw: ([Mock(to_dict=lambda: {})], []),
+                "select_editorial_moments": lambda *_a, **_kw: (
+                    [
+                        Mock(
+                            clip=ClipCandidate(original.video_id, 835, 844, "original speech", 1),
+                            hook="Source-grounded discussion",
+                            to_dict=lambda: {},
+                        )
+                    ],
+                    [],
+                ),
                 "FFmpegRenderer": Mock(side_effect=AssertionError("render must not start")),
             },
         ),

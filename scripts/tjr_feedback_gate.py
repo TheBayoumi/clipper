@@ -632,6 +632,21 @@ def inspect_artifact(
                 window_start = float(clip["source_start_seconds"])
                 window_end = float(clip["source_end_seconds"])
                 source_text = clip_transcript_text(base, start=window_start, end=window_end)
+                # Independent source-only cut check: cached semantic reviewer
+                # cannot authorize a trailer ending on a future story promise.
+                from clipper.editorial_delivery import unresolved_teaser
+                from clipper.models import ClipCandidate, TranscriptSegment
+
+                boundary_segments = [
+                    TranscriptSegment(float(item["start"]), float(item["end"]), str(item["text"]))
+                    for item in read_json_array(base / "transcript.json")
+                    if float(item["end"]) > window_start and float(item["start"]) < window_end
+                ]
+                if unresolved_teaser(
+                    ClipCandidate(source_video_id, window_start, window_end, source_text, 0),
+                    boundary_segments,
+                ):
+                    issues.append("UNDELIVERED_STORY_TEASER")
                 if not hook_grounded_in_transcript(
                     hook, source_text
                 ) and not reviewed_summary_evidence(

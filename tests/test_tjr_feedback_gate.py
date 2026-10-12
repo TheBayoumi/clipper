@@ -281,7 +281,9 @@ def test_workflow_stores_independent_two_channel_evidence() -> None:
     assert "youtube_preview, youtube_modal_egress, render" in workflow
     assert "python -m scripts.tjr_feedback_gate" in workflow
     assert "actions/download-artifact@v4" in workflow
-    assert "gh issue comment 7" in workflow
+    assert "name: Install independent QA package without editorial or media acquisition" in workflow
+    assert "python -m pip install -e ." in workflow
+    assert "gh issue comment 7" not in workflow  # Artifact and step summary are authoritative.
 
 
 def test_replay_mode_never_requests_source_budget_or_new_media() -> None:

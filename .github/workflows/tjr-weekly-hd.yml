@@ -1032,6 +1032,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Install independent QA package without editorial or media acquisition
+        run: python -m pip install -e .
       - name: Inspect every MP4, sidecar, full decode and editorial gate
         env:
           TJR_SOURCE_MODE: ${{ inputs.source_mode }}
@@ -1072,16 +1074,6 @@ jobs:
         run: |
           if [[ -f tjr-feedback/feedback-summary.md ]]; then
             cat tjr-feedback/feedback-summary.md >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - name: Record verified feedback for the autonomous controller
-        if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [[ -f tjr-feedback/feedback-summary.md ]]; then
-            gh issue comment 7 --repo "$GITHUB_REPOSITORY" \
-              --body-file tjr-feedback/feedback-summary.md
           fi
 
 
