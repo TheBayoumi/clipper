@@ -439,10 +439,20 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
         }
 
     def dependency(effect="restates_or_illustrates_delivered_payoff", *, span=None):
+        if effect == "supplies_missing_payoff":
+            requirement, open_span = "unrevealed_outcome", grounded.copy()
+        elif effect == "changes_or_qualifies_delivered_payoff":
+            requirement, open_span = "necessary_correction", grounded.copy()
+        elif effect == "uncertain":
+            requirement, open_span = "uncertain", absent.copy()
+        else:
+            requirement, open_span = "none", absent.copy()
         return {
             "excluded_span": grounded.copy() if span is None else span,
+            "open_obligation_span": open_span,
+            "missing_requirement": requirement,
             "effect": effect,
-            "reason": "The after-cut material restates the delivered conclusion.",
+            "reason": "The omitted source is checked against the same delivered obligation.",
         }
 
     def evaluate(first, second):
@@ -553,6 +563,12 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
     corrupted["continuation_review"]["optional_contrast_proof"]["verdicts"][1]["dependency"][
         "effect"
     ] = "supplies_missing_payoff"
+    corrupted["continuation_review"]["optional_contrast_proof"]["verdicts"][1]["dependency"][
+        "missing_requirement"
+    ] = "unrevealed_outcome"
+    corrupted["continuation_review"]["optional_contrast_proof"]["verdicts"][1]["dependency"][
+        "open_obligation_span"
+    ] = grounded.copy()
     with pytest.raises(SourceEvidenceError, match="approval was altered"):
         complete_source_review(
             model,
@@ -585,6 +601,8 @@ def test_optional_proof_rejects_schema_valid_but_fake_delivered_payoff():
             },
             "dependency": {
                 "excluded_span": pointer,
+                "open_obligation_span": absent,
+                "missing_requirement": "none",
                 "effect": "restates_or_illustrates_delivered_payoff",
                 "reason": "Candidate continuation comparison.",
             },
@@ -652,6 +670,8 @@ def test_narrative_proof_validation_fails_closed_on_invalid_combinations():
         },
         "dependency": {
             "excluded_span": pointer,
+            "open_obligation_span": absent,
+            "missing_requirement": "none",
             "effect": "new_subject",
             "reason": "The next speaker asks a separate question.",
         },
@@ -691,6 +711,55 @@ def test_narrative_proof_validation_fails_closed_on_invalid_combinations():
     ):
         with pytest.raises(SourceEvidenceError):
             _optional_contrast_proof_valid(invalid, selected, excluded, 0)
+    # A model may not allege an essential continuation without identifying
+    # which delivered question, outcome or correction remains unresolved.
+    for omitted_claim in (
+        {"effect": "supplies_missing_payoff", "missing_requirement": "none"},
+        {
+            "effect": "supplies_missing_payoff",
+            "missing_requirement": "unrevealed_outcome",
+        },
+        {
+            "effect": "new_subject",
+            "missing_requirement": "unrevealed_outcome",
+            "open_obligation_span": pointer,
+        },
+        {
+            "effect": "changes_or_qualifies_delivered_payoff",
+            "missing_requirement": "necessary_correction",
+        },
+    ):
+        dep = {**valid["dependency"], **omitted_claim}
+        with pytest.raises(SourceEvidenceError, match="canonical proof"):
+            _optional_contrast_proof_valid(
+                {
+                    "verdicts": [valid, {**valid, "dependency": dep}],
+                    "optional_verified": False,
+                },
+                selected,
+                excluded,
+                0,
+            )
+    linked_missing = {
+        "excluded_span": pointer,
+        "open_obligation_span": pointer,
+        "missing_requirement": "unrevealed_outcome",
+        "effect": "supplies_missing_payoff",
+        "reason": "The omitted source reveals the awaited event outcome.",
+    }
+    assert (
+        _optional_contrast_proof_valid(
+            {
+                "verdicts": [valid, {**valid, "dependency": linked_missing}],
+                "optional_verified": False,
+            },
+            selected,
+            excluded,
+            0,
+        )
+        is False
+    )
+
     invalid_pending = {
         **valid,
         "obligation": {
