@@ -999,6 +999,27 @@ def _save_clip_render(out: Path, identity: str) -> None:
     )
 
 
+def _filter_unresolved_story_teasers(
+    candidates: list[ClipCandidate], segments: list[TranscriptSegment]
+) -> tuple[list[ClipCandidate], list[dict[str, object]]]:
+    """Reject undelivered endings before overlap ranking or render limit."""
+    eligible: list[ClipCandidate] = []
+    rejected: list[dict[str, object]] = []
+    for candidate in candidates:
+        if unresolved_teaser(candidate, segments):
+            rejected.append(
+                {
+                    "start": candidate.start,
+                    "end": candidate.end,
+                    "reason": "UNDELIVERED_STORY_TEASER",
+                    "failed_gates": ["UNDELIVERED_STORY_TEASER"],
+                }
+            )
+        else:
+            eligible.append(candidate)
+    return eligible, rejected
+
+
 def render_youtube_previews(
     root: Path, brief_path: Path, *, run_config: EditorialRunConfig | None = None
 ) -> Path:
@@ -1307,20 +1328,9 @@ def render_youtube_previews(
         # Filter objectively unfinished story promises BEFORE overlap ranking
         # and the bounded render queue. Filtering afterwards can waste a slot
         # or suppress an otherwise good independent candidate.
-        render_eligible: list[ClipCandidate] = []
-        teaser_rejections: list[dict[str, object]] = []
-        for candidate in ranked:
-            if unresolved_teaser(candidate, segments):
-                teaser_rejections.append(
-                    {
-                        "start": candidate.start,
-                        "end": candidate.end,
-                        "reason": "UNDELIVERED_STORY_TEASER",
-                        "failed_gates": ["UNDELIVERED_STORY_TEASER"],
-                    }
-                )
-            else:
-                render_eligible.append(candidate)
+        render_eligible, teaser_rejections = _filter_unresolved_story_teasers(
+            ranked, segments
+        )
         LOGGER.info(
             "PRE_SELECTION_STORY_QA eligible=%d rejected_teasers=%d",
             len(render_eligible),
