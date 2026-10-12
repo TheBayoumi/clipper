@@ -250,6 +250,13 @@ def _acquire_original(
     cached = _restore_source_cache(root, env=env)
     if cached is not None:
         return cached
+    # Explicit cached-editorial recovery is not permission to reacquire the
+    # entire podcast if its persisted original has gone missing.
+    if env.get("TJR_EDITORIAL_CACHE_ROOT") and env.get("TJR_SOURCE_VIDEO_ID"):
+        raise RuntimeError(
+            "EDITORIAL_RECOVERY_SOURCE_CACHE_MISSING: exact original unavailable; "
+            "refusing YouTube reacquisition"
+        )
     env["TJR_MODAL_STAGE_ORIGINAL"] = "1"
     env["TJR_MODAL_EXCLUDE_VIDEO_IDS"] = ",".join(sorted(excluded))
     stage = root / "staged-original.json"
