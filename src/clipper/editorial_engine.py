@@ -221,6 +221,7 @@ def review_optional_contrast(
     _optional_contrast_proof_valid(proof, selected, after, final_id)
     return proof
 
+
 class HeadlineGenerator(Protocol):
     def __call__(
         self,
