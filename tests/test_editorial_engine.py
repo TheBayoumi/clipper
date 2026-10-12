@@ -558,6 +558,7 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
         )
 
     old_contract = {
+        "event_gap": None,
         "verdicts": [
             {
                 "delivered_span": grounded.copy(),
@@ -582,6 +583,7 @@ def test_missing_contrast_veto_requires_two_independent_grounded_optional_proofs
     corrupted["continuation_review"]["optional_contrast_proof"]["verdicts"][1]["dependency"][
         "open_obligation_span"
     ] = grounded.copy()
+    corrupted["continuation_review"]["optional_contrast_proof"]["event_gap"] = None
     with pytest.raises(SourceEvidenceError, match="approval was altered"):
         complete_source_review(
             model,
@@ -731,6 +733,7 @@ def test_narrative_proof_validation_fails_closed_on_invalid_combinations():
                     "obligation": {**valid["obligation"], "reason": ""},
                 },
             ],
+            "event_gap": None,
             "optional_verified": True,
         },
     ):
@@ -759,6 +762,7 @@ def test_narrative_proof_validation_fails_closed_on_invalid_combinations():
             _optional_contrast_proof_valid(
                 {
                     "verdicts": [valid, {**valid, "dependency": dep}],
+                    "event_gap": None,
                     "optional_verified": False,
                 },
                 selected,
@@ -776,6 +780,7 @@ def test_narrative_proof_validation_fails_closed_on_invalid_combinations():
         _optional_contrast_proof_valid(
             {
                 "verdicts": [valid, {**valid, "dependency": linked_missing}],
+                "event_gap": None,
                 "optional_verified": False,
             },
             selected,
@@ -795,13 +800,77 @@ def test_narrative_proof_validation_fails_closed_on_invalid_combinations():
     }
     assert (
         _optional_contrast_proof_valid(
-            {"verdicts": [valid, invalid_pending], "optional_verified": False},
+            {"verdicts": [valid, invalid_pending], "event_gap": None, "optional_verified": False},
             selected,
             excluded,
             0,
         )
         is False
     )
+
+
+def test_excluded_event_gap_blocks_second_unresolved_story_payoff():
+    import pytest
+
+    from clipper.editorial_engine import SourceEvidenceError, _optional_contrast_proof_valid
+
+    selected = [
+        "He only cared about hitting the quarterback.",
+        "I turned around and made the throw, then had to jump backward.",
+    ]
+    excluded = ["He hit me, picked me up, and drove me to the ground."]
+    absent = {"first_unit": -1, "last_unit": -1}
+    event = {"first_unit": 0, "last_unit": 0}
+    latest = {"first_unit": 1, "last_unit": 1}
+    verdict = {
+        "obligation": {
+            "setup_span": event,
+            "payoff_span": latest,
+            "payoff_state": "delivered",
+            "reason": "The earlier throw completes one of the narrated outcomes.",
+        },
+        "dependency": {
+            "excluded_span": event,
+            "open_obligation_span": absent,
+            "missing_requirement": "none",
+            "effect": "restates_or_illustrates_delivered_payoff",
+            "reason": "The after-cut hit was incorrectly treated as a detail.",
+        },
+    }
+    unfinished = {
+        "excluded_event_span": event,
+        "prior_event_setup_span": event,
+        "delivered_event_outcome_span": absent,
+        "status": "unresolved_linked",
+        "reason": "The hit anticipated earlier occurs only after the cut.",
+    }
+    assert (
+        _optional_contrast_proof_valid(
+            {"verdicts": [verdict, verdict], "event_gap": unfinished, "optional_verified": False},
+            selected,
+            excluded,
+            1,
+        )
+        is False
+    )
+    with pytest.raises(SourceEvidenceError, match="approval was altered"):
+        _optional_contrast_proof_valid(
+            {"verdicts": [verdict, verdict], "event_gap": unfinished, "optional_verified": True},
+            selected,
+            excluded,
+            1,
+        )
+    with pytest.raises(SourceEvidenceError, match="canonical event evidence"):
+        _optional_contrast_proof_valid(
+            {
+                "verdicts": [verdict, verdict],
+                "event_gap": {**unfinished, "prior_event_setup_span": absent},
+                "optional_verified": False,
+            },
+            selected,
+            excluded,
+            1,
+        )
 
 
 def test_missing_contrast_without_resolution_remains_vetoed():
