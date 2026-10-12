@@ -611,7 +611,6 @@ def test_optional_proof_rejects_schema_valid_but_fake_delivered_payoff():
     assert _optional_contrast_proof_valid(proof, delivered, after, 0) is False
 
 
-
 def test_obligation_review_rejects_missing_payoff_span_before_dependency_inference():
     import pytest
 
@@ -695,12 +694,15 @@ def test_narrative_proof_validation_fails_closed_on_invalid_combinations():
             "payoff_span": absent,
         },
     }
-    assert _optional_contrast_proof_valid(
-        {"verdicts": [valid, invalid_pending], "optional_verified": False},
-        selected,
-        excluded,
-        0,
-    ) is False
+    assert (
+        _optional_contrast_proof_valid(
+            {"verdicts": [valid, invalid_pending], "optional_verified": False},
+            selected,
+            excluded,
+            0,
+        )
+        is False
+    )
 
 
 def test_missing_contrast_without_resolution_remains_vetoed():
