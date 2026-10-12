@@ -27,12 +27,12 @@ ARCHIVED_TRANSCRIPT_SHA = "d8dce573061aabb1c349faf89877b9a56996179bc749e0c8f4080
 ARCHIVED_REVIEWER_SHA = "7d8b600bdc063c5ddec1c2cee44f76537abcc5c7260e9e6566b719d5e69f7490"
 # Source-transcript provisional expectations, NOT independent audio annotation.
 CASE_STARTS = {
-    588.80: True,     # Coaching salary cap; next question is a new topic.
-    2229.11: True,    # League neutrality answered; next question is separate.
-    2474.51: True,    # Yardage comparison followed by restatement.
-    3054.71: True,    # Purdy transition answered; next sentences repeat it.
-    2063.88: False,   # DeMarcus Ware tackle result occurs after the cut.
-    1313.25: False,   # Fan-base punchline occurs after the cut.
+    588.80: True,  # Coaching salary cap; next question is a new topic.
+    2229.11: True,  # League neutrality answered; next question is separate.
+    2474.51: True,  # Yardage comparison followed by restatement.
+    3054.71: True,  # Purdy transition answered; next sentences repeat it.
+    2063.88: False,  # DeMarcus Ware tackle result occurs after the cut.
+    1313.25: False,  # Fan-base punchline occurs after the cut.
 }
 
 
@@ -66,7 +66,8 @@ def prepare_cases(
     result: list[dict[str, Any]] = []
     for start, expected in CASE_STARTS.items():
         matches = [
-            record for record in assessments
+            record
+            for record in assessments
             if isinstance(record.get("reviewed_start"), (float, int))
             and abs(float(record["reviewed_start"]) - start) < 0.02
             and record.get("rejection") == "SPAN_REVIEW_REJECTED"
@@ -93,14 +94,16 @@ def prepare_cases(
         resolution = review["source_quote_spans"]["resolution_quote"]
         if resolution is None:
             raise RuntimeError(f"CONTINUATION_MISSING_RESOLUTION: {start}")
-        result.append({
-            "start": start,
-            "expected_optional": expected,
-            "selected": context["selected_units"],
-            "after": context["after"],
-            "final_unit": resolution["last_unit"],
-            "review_context_sha256": digest,
-        })
+        result.append(
+            {
+                "start": start,
+                "expected_optional": expected,
+                "selected": context["selected_units"],
+                "after": context["after"],
+                "final_unit": resolution["last_unit"],
+                "review_context_sha256": digest,
+            }
+        )
     return result
 
 
@@ -150,9 +153,19 @@ def qualify(archive: Path, transcript: Path, output: Path, *, dry_run: bool = Fa
             output.write_text(json.dumps(report, indent=2) + "\n")
             print(
                 "CONTINUATION_CONTROL "
-                + json.dumps({key: record.get(key) for key in (
-                    "start", "expected_optional", "actual_optional", "correct", "error"
-                )}), flush=True
+                + json.dumps(
+                    {
+                        key: record.get(key)
+                        for key in (
+                            "start",
+                            "expected_optional",
+                            "actual_optional",
+                            "correct",
+                            "error",
+                        )
+                    }
+                ),
+                flush=True,
             )
     finally:
         if editor is not None:
@@ -171,7 +184,8 @@ def qualify(archive: Path, transcript: Path, output: Path, *, dry_run: bool = Fa
     )
     report["status"] = (
         "TRANSCRIPT_CONTROL_QUALIFIED__AUDIO_VALIDATION_STILL_REQUIRED"
-        if report["qualified"] else "CONTINUATION_QUALIFICATION_FAILED__DO_NOT_RENDER_RECOVERED"
+        if report["qualified"]
+        else "CONTINUATION_QUALIFICATION_FAILED__DO_NOT_RENDER_RECOVERED"
     )
     output.write_text(json.dumps(report, indent=2) + "\n")
     return 0 if report["qualified"] else 1
