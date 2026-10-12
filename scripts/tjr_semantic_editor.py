@@ -40,11 +40,13 @@ from clipper.editorial_engine import (
     _evidence_excerpt,
     _final_substantive_unit_id,
     _numbered_source,
+    _optional_contrast_proof_valid,
     _resolve_source_units,
     _unit_span_schema,
     _unit_span_valid,
     _validate_cached_boundary,
     complete_source_review,
+    review_optional_contrast,
     review_source_boundaries,
     review_source_positions,
 )
@@ -1397,6 +1399,8 @@ def refine_contextual_candidates(
     identity["boundary_sha256"] = _stage_fingerprint(
         _validate_cached_boundary,
         review_source_boundaries,
+        review_optional_contrast,
+        _optional_contrast_proof_valid,
         _unit_span_schema,
         _resolve_source_units,
         _unit_span_valid,
@@ -1416,6 +1420,8 @@ def refine_contextual_candidates(
         _focused_span_review,
         _source_position_review,
         review_source_positions,
+        review_optional_contrast,
+        _optional_contrast_proof_valid,
         _source_position_facts,
         _position_headline_audit,
         _unit_span_schema,
@@ -2806,7 +2812,26 @@ def _focused_span_review(
                 or _source_quote_span(continuation[key], region, max_words=64) is None
             ):
                 raise RuntimeError("continuation review omitted grounded boundary evidence")
-        ending = ending and relation in {"optional_elaboration", "new_topic"}
+        if (
+            relation == "missing_contrast"
+            and quote_spans["resolution_quote"] is not None
+            and quote_spans["resolution_quote"]["last_unit"] == _final_substantive_unit_id(selected)
+        ):
+            continuation["optional_contrast_proof"] = review_optional_contrast(
+                editor, selected, context["after"], _final_substantive_unit_id(selected)
+            )
+        ending = ending and (
+            relation in {"optional_elaboration", "new_topic"}
+            or (
+                relation == "missing_contrast"
+                and _optional_contrast_proof_valid(
+                    continuation.get("optional_contrast_proof"),
+                    selected,
+                    context["after"],
+                    _final_substantive_unit_id(selected),
+                )
+            )
+        )
     payoff = quote_spans["resolution_quote"] is not None and ending
     setup_span = quote_spans["setup_quote"]
     payoff_span = quote_spans["resolution_quote"]
