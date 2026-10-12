@@ -115,10 +115,15 @@ def qualify(
     *,
     dry_run: bool = False,
     reuse_request_cache: Path | None = None,
+    case_start: float | None = None,
 ) -> int:
     saved = json.loads(archive.read_text(encoding="utf-8"))
     raw = json.loads(transcript.read_text(encoding="utf-8"))
     cases = prepare_cases(saved, raw)
+    if case_start is not None:
+        cases = [case for case in cases if abs(case["start"] - case_start) < 0.01]
+        if len(cases) != 1:
+            raise ValueError("CONTINUATION_CASE_NOT_IN_FROZEN_CONTROL_SET")
     report: dict[str, Any] = {
         "schema": "clipper-targeted-continuation-qualification-v1",
         "source_sha256": ARCHIVED_SOURCE_SHA,
@@ -128,6 +133,8 @@ def qualify(
         "full_review_rerun": 0,
         "source_acquired": False,
         "render_invoked": False,
+        "diagnostic_only": case_start is not None,
+        "case_start": case_start,
         "annotation_status": "transcript_provisional_not_independent_audio_gold",
         "cases": [],
         "qualified": False,
@@ -207,18 +214,29 @@ def qualify(
         case.get("actual_optional") is False for case in negatives
     )
     report["qualified"] = (
-        len(report["cases"]) == len(CASE_STARTS)
+        case_start is None
+        and len(report["cases"]) == len(CASE_STARTS)
         and report["positive_recall"] >= 3
         and report["negative_controls_preserved"] == len(negatives)
         and not any("error" in case for case in report["cases"])
     )
+    report["diagnostic_passed"] = (
+        case_start is not None
+        and len(report["cases"]) == 1
+        and report["cases"][0].get("correct") is True
+        and "error" not in report["cases"][0]
+    )
     report["status"] = (
         "TRANSCRIPT_CONTROL_QUALIFIED__AUDIO_VALIDATION_STILL_REQUIRED"
         if report["qualified"]
-        else "CONTINUATION_QUALIFICATION_FAILED__DO_NOT_RENDER_RECOVERED"
+        else (
+            "SINGLE_CONTROL_DIAGNOSTIC_PASS__NOT_PRODUCTION_QUALIFIED"
+            if report["diagnostic_passed"]
+            else "CONTINUATION_QUALIFICATION_FAILED__DO_NOT_RENDER_RECOVERED"
+        )
     )
     output.write_text(json.dumps(report, indent=2) + "\n")
-    return 0 if report["qualified"] else 1
+    return 0 if (report["qualified"] or report["diagnostic_passed"]) else 1
 
 
 def main() -> int:
@@ -228,6 +246,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--reuse-request-cache", type=Path)
+    parser.add_argument("--case-start", type=float)
     args = parser.parse_args()
     return qualify(
         args.editorial_cache,
@@ -235,6 +254,7 @@ def main() -> int:
         args.output,
         dry_run=args.dry_run,
         reuse_request_cache=args.reuse_request_cache,
+        case_start=args.case_start,
     )
 
 
