@@ -1472,10 +1472,8 @@ def refine_contextual_candidates(
         prior_identity = saved.get("identity", {})
         archived_base_review_compatible = (
             bool(cached_by_proposal)
-            and prior_identity.get("reviewer_sha256")
-            == _VERIFIED_CONTRAST_BASE_REVIEWER_SHA
-            and prior_identity.get("boundary_sha256")
-            in _VERIFIED_BOUNDARY_VALIDATOR_COMPATIBILITY
+            and prior_identity.get("reviewer_sha256") == _VERIFIED_CONTRAST_BASE_REVIEWER_SHA
+            and prior_identity.get("boundary_sha256") in _VERIFIED_BOUNDARY_VALIDATOR_COMPATIBILITY
             and prior_identity.get("reviewer_model_profile") == review_profile
             and prior_identity.get("boundary_contract_version")
             == identity["boundary_contract_version"]
@@ -1783,9 +1781,7 @@ def refine_contextual_candidates(
                         cached_base_reused = True
                         continuation = base.get("continuation_review") or {}
                         resolution = base["source_quote_spans"]["resolution_quote"]
-                        final_id = _final_substantive_unit_id(
-                            review_context["selected_units"]
-                        )
+                        final_id = _final_substantive_unit_id(review_context["selected_units"])
                         if (
                             continuation.get("relation") == "missing_contrast"
                             and base.get("opening_standalone") is True
@@ -1805,9 +1801,7 @@ def refine_contextual_candidates(
                             if proof["optional_verified"]:
                                 migrated["ending_complete"] = True
                                 migrated["payoff_complete"] = True
-                                migrated["payoff_quote"] = _evidence_excerpt(
-                                    resolution["text"]
-                                )
+                                migrated["payoff_quote"] = _evidence_excerpt(resolution["text"])
                                 audit = migrated["boundary_audit"]
                                 audit["ending"] = "closed"
                                 audit["payoff_location"] = "selected"
