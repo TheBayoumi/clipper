@@ -325,13 +325,22 @@ def test_focused_review_separates_speech_purpose_and_excluded_payoff():
         editor._focused_span_review(FakeEditor(), context)
     replies[1]["resolution_quote"] = "drive my podcast instead"
     replies[2]["relation"] = "missing_contrast"
+    veto = {
+        "delivered_span": {"first_unit": 2, "last_unit": 2},
+        "excluded_span": {"first_unit": 0, "last_unit": 0},
+        "role": "essential_contrast",
+        "complete_without_excluded": 0,
+        "reason": "Independent evidence does not prove optionality.",
+    }
+    replies[3] = veto
+    replies[4] = veto.copy()
     calls.clear()
     rejected = editor._focused_span_review(FakeEditor(), context)
     assert rejected["exchange_has_payoff"] is True
     assert rejected["ending_complete"] is False
     assert rejected["payoff_complete"] is False
     assert rejected["headline"] == ""
-    assert len(calls) == 3
+    assert len(calls) == 5
     assert "delivered_resolution_quote" not in calls[2]
     assert "delivered_setup_quote" not in calls[2]
     replies[2]["continuation_quote"] = "invented missing fact without source"
