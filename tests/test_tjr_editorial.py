@@ -52,6 +52,17 @@ def test_render_safety_bounds_are_explicit() -> None:
         select_editorial_moments([], render_safety_limit=0)
 
 
+def test_invalid_visual_editorial_rating_fails_before_selection() -> None:
+    from clipper.editorial import CriterionRating
+
+    with pytest.raises(ValueError, match="0-5"):
+        CriterionRating(
+            score=5.1,
+            basis="manual_verified",
+            evidence=("Out-of-range quality ratings cannot enter production ranking.",),
+        )
+
+
 def test_no_creative_trading_claim_for_unrelated_stream_banter() -> None:
     clip = ClipCandidate(
         "video",
