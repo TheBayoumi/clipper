@@ -23,7 +23,7 @@ class ModelOutputError(SourceEvidenceError):
     """The model returned invalid structured output, not an infrastructure fault."""
 
 
-SOURCE_EVIDENCE_VERSION = "source_unit_spans_v1"
+SOURCE_EVIDENCE_VERSION = "source_unit_spans_v2"
 _WORD = re.compile(r"[A-Za-z0-9$%'.-]+")
 
 
@@ -104,6 +104,120 @@ def _evidence_excerpt(text: str) -> str:
     """Format bounded evidence only after full source-span verification."""
     words = list(_WORD.finditer(text))
     return text[: words[11].end()] if len(words) > 12 else text
+
+
+
+_OPTIONAL_CONTINUATION_ROLES = frozenset(
+    {"restatement", "supporting_example", "optional_detail", "new_topic"}
+)
+_CONTINUATION_ROLES = sorted(
+    _OPTIONAL_CONTINUATION_ROLES
+    | {"essential_contrast", "missing_resolution", "changes_claim", "uncertain"}
+)
+
+
+def _optional_contrast_proof_valid(
+    proof: Any, selected: list[str], after: list[str], final_id: int
+) -> bool:
+    """An initial missing-contrast veto survives unless both blind checks agree.
+
+    Source pointers prove provenance only, not semantic correctness. Preserve
+    both independent model verdicts for subsequent qualification and human QA.
+    """
+    if proof is None:
+        return False
+    if not isinstance(proof, dict) or set(proof) != {"verdicts", "optional_verified"}:
+        raise SourceEvidenceError("invalid independent continuation proof")
+    verdicts = proof["verdicts"]
+    if not isinstance(verdicts, list) or len(verdicts) != 2:
+        raise SourceEvidenceError("independent continuation proof requires two verdicts")
+    approved = True
+    for verdict in verdicts:
+        if not isinstance(verdict, dict) or set(verdict) != {
+            "delivered_span",
+            "excluded_span",
+            "role",
+            "complete_without_excluded",
+            "reason",
+        }:
+            raise SourceEvidenceError("independent continuation verdict is incomplete")
+        delivered = _resolve_source_units(verdict["delivered_span"], selected)
+        excluded = _resolve_source_units(verdict["excluded_span"], after)
+        if (
+            delivered is None
+            or delivered["last_unit"] != final_id
+            or excluded is None
+            or verdict["role"] not in _CONTINUATION_ROLES
+            or type(verdict["complete_without_excluded"]) is not int
+            or verdict["complete_without_excluded"] not in (0, 1)
+            or not isinstance(verdict["reason"], str)
+            or not verdict["reason"].strip()
+        ):
+            raise SourceEvidenceError("independent continuation verdict lacks source proof")
+        approved = (
+            approved
+            and verdict["role"] in _OPTIONAL_CONTINUATION_ROLES
+            and verdict["complete_without_excluded"] == 1
+        )
+    if type(proof["optional_verified"]) is not bool or proof["optional_verified"] != approved:
+        raise SourceEvidenceError("independent continuation approval was altered")
+    return approved
+
+
+def review_optional_contrast(
+    editor: Any, selected: list[str], after: list[str], final_id: int
+) -> dict[str, Any]:
+    """Independently challenge a missing-contrast classification, never waive it.
+
+    Prompts never receive the first reviewer's verdict or each other's answers.
+    Any uncertainty, absent proof or disagreement retains the original veto.
+    """
+    if not selected or not after or not 0 <= final_id < len(selected):
+        raise ValueError("contrast review requires source speech and a valid final unit")
+    properties = {
+        "delivered_span": _unit_span_schema(len(selected)),
+        "excluded_span": _unit_span_schema(len(after)),
+        "role": {"type": "string", "enum": _CONTINUATION_ROLES},
+        "complete_without_excluded": {"type": "integer", "enum": [0, 1]},
+        "reason": {"type": "string"},
+    }
+    source = {
+        "delivered": _numbered_source(selected),
+        "excluded_after": _numbered_source(after),
+        "final_substantive_unit_id": final_id,
+    }
+    prompts = (
+        "Independently compare the final delivered payoff with omitted speech. "
+        "Does omitting it remove an answer, essential exception, reversal or "
+        "qualifier, or merely remove a repeat, example, optional detail or next "
+        "topic? A related statement is not automatically a necessary contrast. "
+        "Identify grounded ranges in BOTH namespaces, including the final "
+        "delivered payoff. Set complete_without_excluded=1 only if the finished "
+        "clip already conveys its point without changing its meaning. Treat "
+        "doubt as uncertain. Return output_schema JSON.",
+        "Without knowing any previous judgment, perform a counterfactual cut test. "
+        "What material information would a viewer lose if excluded_after were "
+        "removed? An omitted denial, condition, actual result or necessary "
+        "counterpoint is essential; restating the same claim, illustrating it or "
+        "asking a fresh question is optional. Ground your classification in the "
+        "final delivered payoff and the excluded words using positions in their "
+        "SEPARATE namespaces. If you cannot establish that the delivered payoff "
+        "stands alone unchanged, set complete_without_excluded=0 and role=uncertain. "
+        "Return output_schema JSON.",
+    )
+    verdicts = [
+        editor._review_completion(prompt, source, properties, 192) for prompt in prompts
+    ]
+    proof = {"verdicts": verdicts, "optional_verified": False}
+    # Validate independently supplied evidence before deriving the boolean.
+    proof["optional_verified"] = all(
+        isinstance(verdict, dict)
+        and verdict.get("role") in _OPTIONAL_CONTINUATION_ROLES
+        and verdict.get("complete_without_excluded") == 1
+        for verdict in verdicts
+    )
+    _optional_contrast_proof_valid(proof, selected, after, final_id)
+    return proof
 
 
 class HeadlineGenerator(Protocol):
@@ -298,7 +412,20 @@ def review_source_boundaries(
             "uncertain",
         }:
             raise RuntimeError("continuation review returned an invalid relation")
-        ending = continuation["relation"] in {"optional_elaboration", "new_topic"}
+        if (
+            continuation["relation"] == "missing_contrast"
+            and resolution is not None
+            and not promotion_ids
+        ):
+            continuation["optional_contrast_proof"] = review_optional_contrast(
+                editor, selected, after, final_id
+            )
+        ending = continuation["relation"] in {"optional_elaboration", "new_topic"} or (
+            continuation["relation"] == "missing_contrast"
+            and _optional_contrast_proof_valid(
+                continuation.get("optional_contrast_proof"), selected, after, final_id
+            )
+        )
     payoff = resolution is not None and ending
     opening = story["opening_independent"] == 1
     reason = (continuation or story).get("reason")
@@ -410,7 +537,13 @@ def _validate_cached_boundary(context: dict[str, Any], boundary: dict[str, Any])
             }
         ):
             raise SourceEvidenceError("cached continuation is not canonical source evidence")
-        ending = continuation["relation"] in {"optional_elaboration", "new_topic"}
+        proof = continuation.get("optional_contrast_proof")
+        if proof is not None and continuation["relation"] != "missing_contrast":
+            raise SourceEvidenceError("independent proof cannot override another relation")
+        ending = continuation["relation"] in {"optional_elaboration", "new_topic"} or (
+            continuation["relation"] == "missing_contrast"
+            and _optional_contrast_proof_valid(proof, selected, after, final_id)
+        )
     elif continuation is not None:
         raise SourceEvidenceError("cached continuation should not exist")
     opening = story["opening_independent"] == 1
