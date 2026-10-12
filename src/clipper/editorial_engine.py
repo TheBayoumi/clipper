@@ -118,6 +118,7 @@ _EXCLUDED_EFFECTS = (
     "uncertain",
 )
 _OPTIONAL_EXCLUDED_EFFECTS = frozenset({"restates_or_illustrates_delivered_payoff", "new_subject"})
+_OPEN_REQUIREMENTS = ("none", "unanswered_question", "unrevealed_outcome", "missing_contrast", "necessary_correction", "uncertain")
 
 
 def _optional_contrast_proof_valid(
@@ -150,6 +151,8 @@ def _optional_contrast_proof_valid(
             raise SourceEvidenceError("invalid delivered narrative-obligation record")
         if not isinstance(dependency, dict) or set(dependency) != {
             "excluded_span",
+            "open_obligation_span",
+            "missing_requirement",
             "effect",
             "reason",
         }:
@@ -157,6 +160,26 @@ def _optional_contrast_proof_valid(
         setup = _resolve_source_units(obligation["setup_span"], selected)
         payoff = _resolve_source_units(obligation["payoff_span"], selected)
         excluded = _resolve_source_units(dependency["excluded_span"], after)
+        open_obligation = _resolve_source_units(dependency["open_obligation_span"], selected)
+        requirement = dependency["missing_requirement"]
+        effect = dependency["effect"]
+        # Required content needs an explicitly traceable, still-unfulfilled
+        # promise or claim from the selected clip. Source pointers alone are
+        # not semantic entailment; the live qualification checks that too.
+        linked = (
+            (effect in _OPTIONAL_EXCLUDED_EFFECTS and requirement == "none" and open_obligation is None)
+            or (
+                effect == "supplies_missing_payoff"
+                and requirement in {"unanswered_question", "unrevealed_outcome", "missing_contrast"}
+                and open_obligation is not None
+            )
+            or (
+                effect == "changes_or_qualifies_delivered_payoff"
+                and requirement == "necessary_correction"
+                and open_obligation is not None
+            )
+            or (effect == "uncertain" and requirement == "uncertain" and open_obligation is None)
+        )
         if (
             setup is None
             or excluded is None
@@ -166,7 +189,9 @@ def _optional_contrast_proof_valid(
                 and (payoff is None or payoff["last_unit"] != final_id)
             )
             or (obligation["payoff_state"] != "delivered" and payoff is not None)
-            or dependency["effect"] not in _EXCLUDED_EFFECTS
+            or effect not in _EXCLUDED_EFFECTS
+            or requirement not in _OPEN_REQUIREMENTS
+            or not linked
             or any(
                 not isinstance(record["reason"], str)
                 or not record["reason"].strip()
@@ -205,6 +230,8 @@ def review_optional_contrast(
     }
     dependency_properties = {
         "excluded_span": _unit_span_schema(len(after)),
+        "open_obligation_span": _unit_span_schema(len(selected)),
+        "missing_requirement": {"type": "string", "enum": list(_OPEN_REQUIREMENTS)},
         "effect": {"type": "string", "enum": list(_EXCLUDED_EFFECTS)},
         "reason": {"type": "string", "minLength": 1, "maxLength": 300},
     }
@@ -238,26 +265,39 @@ def review_optional_contrast(
         "Return output_schema JSON.",
     )
     dependency_prompts = (
-        "Compare the FIXED narrative obligation from delivered speech with "
-        "excluded_after. Does excluded_after provide the actually MISSING "
-        "answer, event result or punchline (supplies_missing_payoff), alter or "
-        "qualify a finished conclusion (changes_or_qualifies_delivered_payoff), "
-        "merely repeat or illustrate an ALREADY STATED conclusion "
-        "(restates_or_illustrates_delivered_payoff), or begin a separate "
-        "subject/question (new_subject)? Topic similarity is NOT narrative "
-        "dependency. If the obligation cannot be determined, choose uncertain. "
-        "Cite the exact excluded unit span. Explain the causal relevance in "
-        "<=24 words. Return output_schema JSON.",
-        "Perform a cut-dependency test using the supplied frozen delivered "
-        "setup/payoff positions: what SPECIFIC semantic obligation would be "
-        "lost by cutting excluded_after? A subsequent question about another "
-        "team is a new_subject even if it mentions the same league. An example "
-        "repeating a complete comparison is a restatement, not required contrast. "
-        "An unrevealed hit, real-world outcome, answer or joke punchline teased "
-        "by the delivered setup supplies_missing_payoff. A correction, reversal "
-        "or necessary exception changes_or_qualifies_delivered_payoff. "
-        "Choose uncertain if unclear, cite actual excluded unit IDs, and "
-        "explain in <=24 words. Return output_schema JSON.",
+        "A narrative obligation and its delivered payoff were identified with "
+        "exact source IDs BEFORE seeing excluded_after. They are FROZEN. First "
+        "compare excluded_after against the SAME obligation, not against the "
+        "general conversation topic. If the selected payoff already states the "
+        "conclusion, additional context, examples, statistics or restatements "
+        "are restates_or_illustrates_delivered_payoff; an interviewer asking a "
+        "fresh question is new_subject. These require missing_requirement=none "
+        "and open_obligation_span=(-1,-1). To call anything "
+        "supplies_missing_payoff, you MUST cite an explicit, still-unfulfilled "
+        "question, teased consequence or incomplete contrast IN delivered_units "
+        "with open_obligation_span, and name missing_requirement as "
+        "unanswered_question, unrevealed_outcome or missing_contrast. It must "
+        "remain open after the frozen payoff, not simply receive more detail. "
+        "For an actual correction/reversal cite the delivered claim and set "
+        "necessary_correction; if unclear use uncertain and (-1,-1). "
+        "Select excluded_span from excluded_after only. Reason in <=28 words. "
+        "Return output_schema JSON.",
+        "Source-evidence test for the proposed cut, not general topical "
+        "relevance: which SPECIFIC unresolved narrative promise in the "
+        "delivered video does the next passage fulfill? The frozen payoff is "
+        "already spoken if payoff_state=delivered. One can cite an additional "
+        "genuinely OPEN question, story consequence or contradiction, but "
+        "must name its selected source units with open_obligation_span and "
+        "label missing_requirement accurately. If there is no specific "
+        "unresolved setup, set missing_requirement=none and "
+        "open_obligation_span=(-1,-1); choose new_subject for a different "
+        "question, or restates_or_illustrates_delivered_payoff for evidence "
+        "and repetition of a conclusion. A later example is NOT a missing "
+        "payoff. An omitted injury, awaited hit, genuine answer, required "
+        "exception or reversal IS material when set up by delivered speech. "
+        "If uncertain about actual dependency, choose effect=uncertain and "
+        "missing_requirement=uncertain with no open span. Never invent words "
+        "or use excluded speech as delivered payoff. Return output_schema JSON.",
     )
     verdicts: list[dict[str, Any]] = []
     for obligation_prompt, dependency_prompt in zip(
