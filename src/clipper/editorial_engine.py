@@ -128,6 +128,86 @@ _OPEN_REQUIREMENTS = (
 )
 
 
+_EVENT_GAP_STATUSES = (
+    "unresolved_linked",
+    "delivered_same_event",
+    "independent_example",
+    "non_event",
+    "uncertain",
+)
+_EVENT_GAP_SAFE = frozenset({"delivered_same_event", "independent_example", "non_event"})
+
+
+def _excluded_event_gap_valid(gap: Any, selected: list[str], after: list[str]) -> bool:
+    """A second, payoff-blind inventory checks overlooked event obligations.
+
+    This does NOT semantically establish truth from source positions. It makes
+    the missing-event veto explicit and auditable; source labels remain subject
+    to real-model qualification and independent audio review.
+    """
+    if not isinstance(gap, dict) or set(gap) != {
+        "excluded_event_span",
+        "prior_event_setup_span",
+        "delivered_event_outcome_span",
+        "status",
+        "reason",
+    }:
+        raise SourceEvidenceError("excluded-event inventory is incomplete")
+    event = _resolve_source_units(gap["excluded_event_span"], after)
+    setup = _resolve_source_units(gap["prior_event_setup_span"], selected)
+    outcome = _resolve_source_units(gap["delivered_event_outcome_span"], selected)
+    status = gap["status"]
+    if (
+        status not in _EVENT_GAP_STATUSES
+        or not isinstance(gap["reason"], str)
+        or not gap["reason"].strip()
+        or len(gap["reason"]) > 280
+        or (status == "unresolved_linked" and (event is None or setup is None or outcome is not None))
+        or (status == "delivered_same_event" and (event is None or outcome is None))
+        or (status == "independent_example" and (event is None or setup is not None))
+        or (status == "non_event" and event is not None)
+    ):
+        raise SourceEvidenceError("excluded-event inventory lacks canonical event evidence")
+    return status in _EVENT_GAP_SAFE
+
+
+def _review_excluded_event_gap(editor: Any, selected: list[str], after: list[str]) -> dict[str, Any]:
+    """Inspect after-cut events without seeing earlier payoff or dependency verdicts."""
+    return editor._review_completion(
+        "Perform a BLIND excluded-event inventory, independent of any earlier "
+        "completion judgment. Begin with excluded_after: does it disclose a "
+        "specific new completed event, hit, confrontation, reveal, result, "
+        "punchline or reversal? If yes cite excluded_event_span. Look backward "
+        "in delivered_units for a setup that specifically anticipates THIS "
+        "event or consequence: cite prior_event_setup_span if it exists. "
+        "Then determine whether delivered_units ALREADY narrate the exact "
+        "event actually occurring and its consequence: cite "
+        "delivered_event_outcome_span only for that specific completed "
+        "occurrence, not for a generic tendency, foreshadowed threat, nearby "
+        "action, attempted move, or earlier partial result. "
+        "Choose unresolved_linked if the new omitted event fulfills a setup "
+        "within the same anecdote but the event is not actually delivered. "
+        "Choose delivered_same_event if its occurrence is already narrated; "
+        "independent_example if the later event is a separate illustration "
+        "with NO still-pending same-story promise; non_event if excluded "
+        "contains no new consequential event; uncertain otherwise. "
+        "An earlier conclusion about SOME aspect of a story does not "
+        "cancel a separately foreshadowed event's missing resolution. "
+        "Use (-1,-1) for absent pointers. Ground only in quoted source-unit "
+        "positions, no invented speech. Explain in <=35 words. "
+        "Return output_schema JSON.",
+        {"delivered_units": _numbered_source(selected), "excluded_after": _numbered_source(after)},
+        {
+            "excluded_event_span": _unit_span_schema(len(after)),
+            "prior_event_setup_span": _unit_span_schema(len(selected)),
+            "delivered_event_outcome_span": _unit_span_schema(len(selected)),
+            "status": {"type": "string", "enum": list(_EVENT_GAP_STATUSES)},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 280},
+        },
+        512,
+    )
+
+
 def _optional_contrast_proof_valid(
     proof: Any, selected: list[str], after: list[str], final_id: int
 ) -> bool:
@@ -139,7 +219,7 @@ def _optional_contrast_proof_valid(
     """
     if proof is None:
         return False
-    if not isinstance(proof, dict) or set(proof) != {"verdicts", "optional_verified"}:
+    if not isinstance(proof, dict) or set(proof) != {"verdicts", "event_gap", "optional_verified"}:
         raise SourceEvidenceError("invalid independent continuation proof")
     verdicts = proof["verdicts"]
     if not isinstance(verdicts, list) or len(verdicts) != 2:
@@ -216,6 +296,12 @@ def _optional_contrast_proof_valid(
             and obligation["payoff_state"] == "delivered"
             and dependency["effect"] in _OPTIONAL_EXCLUDED_EFFECTS
         )
+    gap = proof["event_gap"]
+    if approved:
+        approved = _excluded_event_gap_valid(gap, selected, after)
+    elif gap is not None:
+        # The independent gap probe is intentionally skipped once a veto exists.
+        raise SourceEvidenceError("unnecessary excluded-event inventory after veto")
     if type(proof["optional_verified"]) is not bool or proof["optional_verified"] != approved:
         raise SourceEvidenceError("independent continuation approval was altered")
     return approved
@@ -346,14 +432,18 @@ def review_optional_contrast(
             512,
         )
         verdicts.append({"obligation": obligation, "dependency": dependency})
+    base_optional = all(
+        item["obligation"]["payoff_state"] == "delivered"
+        and isinstance(item["dependency"], dict)
+        and item["dependency"].get("effect") in _OPTIONAL_EXCLUDED_EFFECTS
+        for item in verdicts
+    )
+    event_gap = _review_excluded_event_gap(editor, selected, after) if base_optional else None
+    gap_safe = _excluded_event_gap_valid(event_gap, selected, after) if base_optional else False
     proof = {
         "verdicts": verdicts,
-        "optional_verified": all(
-            item["obligation"]["payoff_state"] == "delivered"
-            and isinstance(item["dependency"], dict)
-            and item["dependency"].get("effect") in _OPTIONAL_EXCLUDED_EFFECTS
-            for item in verdicts
-        ),
+        "event_gap": event_gap,
+        "optional_verified": base_optional and gap_safe,
     }
     _optional_contrast_proof_valid(proof, selected, after, final_id)
     return proof
