@@ -118,7 +118,14 @@ _EXCLUDED_EFFECTS = (
     "uncertain",
 )
 _OPTIONAL_EXCLUDED_EFFECTS = frozenset({"restates_or_illustrates_delivered_payoff", "new_subject"})
-_OPEN_REQUIREMENTS = ("none", "unanswered_question", "unrevealed_outcome", "missing_contrast", "necessary_correction", "uncertain")
+_OPEN_REQUIREMENTS = (
+    "none",
+    "unanswered_question",
+    "unrevealed_outcome",
+    "missing_contrast",
+    "necessary_correction",
+    "uncertain",
+)
 
 
 def _optional_contrast_proof_valid(
@@ -167,7 +174,11 @@ def _optional_contrast_proof_valid(
         # promise or claim from the selected clip. Source pointers alone are
         # not semantic entailment; the live qualification checks that too.
         linked = (
-            (effect in _OPTIONAL_EXCLUDED_EFFECTS and requirement == "none" and open_obligation is None)
+            (
+                effect in _OPTIONAL_EXCLUDED_EFFECTS
+                and requirement == "none"
+                and open_obligation is None
+            )
             or (
                 effect == "supplies_missing_payoff"
                 and requirement in {"unanswered_question", "unrevealed_outcome", "missing_contrast"}
