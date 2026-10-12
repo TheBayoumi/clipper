@@ -17,6 +17,7 @@ from clipper.editorial_engine import _validate_cached_boundary, review_optional_
 from clipper.models import TranscriptSegment, WordTiming
 from scripts.tjr_semantic_editor import (
     LocalSourceReviewer,
+    ReviewRequestCache,
     _review_context,
     _review_model_profile,
     _thought_units,
@@ -107,7 +108,14 @@ def prepare_cases(
     return result
 
 
-def qualify(archive: Path, transcript: Path, output: Path, *, dry_run: bool = False) -> int:
+def qualify(
+    archive: Path,
+    transcript: Path,
+    output: Path,
+    *,
+    dry_run: bool = False,
+    reuse_request_cache: Path | None = None,
+) -> int:
     saved = json.loads(archive.read_text(encoding="utf-8"))
     raw = json.loads(transcript.read_text(encoding="utf-8"))
     cases = prepare_cases(saved, raw)
@@ -131,8 +139,25 @@ def qualify(archive: Path, transcript: Path, output: Path, *, dry_run: bool = Fa
         output.write_text(json.dumps(report, indent=2) + "\n")
         return 0
     editor = None
+
+    def source_reviewer() -> LocalSourceReviewer:
+        nonlocal editor
+        if editor is None:
+            editor = LocalSourceReviewer(_review_model_profile())
+        return editor
+
+    request_cache = ReviewRequestCache(
+        output.with_name("review-request-cache.json"),
+        source_reviewer,
+        {
+            "source_sha256": ARCHIVED_SOURCE_SHA,
+            "transcript_sha256": ARCHIVED_TRANSCRIPT_SHA,
+            "reviewer_profile": _review_model_profile(),
+            "stage": "targeted_optional_contrast_v1",
+        },
+        reuse_path=reuse_request_cache,
+    )
     try:
-        editor = LocalSourceReviewer(_review_model_profile())
         for case in cases:
             record = {
                 "start": case["start"],
@@ -141,7 +166,7 @@ def qualify(archive: Path, transcript: Path, output: Path, *, dry_run: bool = Fa
             }
             try:
                 proof = review_optional_contrast(
-                    editor, case["selected"], case["after"], case["final_unit"]
+                    request_cache, case["selected"], case["after"], case["final_unit"]
                 )
                 record["proof"] = proof
                 record["actual_optional"] = proof["optional_verified"]
@@ -150,6 +175,7 @@ def qualify(archive: Path, transcript: Path, output: Path, *, dry_run: bool = Fa
                 record["error"] = f"{type(exc).__name__}: {exc}"
                 record["correct"] = False
             report["cases"].append(record)
+            report["request_cache_metrics"] = request_cache.metrics
             output.write_text(json.dumps(report, indent=2) + "\n")
             print(
                 "CONTINUATION_CONTROL "
@@ -167,6 +193,10 @@ def qualify(archive: Path, transcript: Path, output: Path, *, dry_run: bool = Fa
                 ),
                 flush=True,
             )
+            if "error" in record:
+                # A schema/transport failure is not a semantic classification.
+                # Abort before consuming model time on the remaining controls.
+                break
     finally:
         if editor is not None:
             editor.close()
@@ -197,8 +227,15 @@ def main() -> int:
     parser.add_argument("--transcript", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--reuse-request-cache", type=Path)
     args = parser.parse_args()
-    return qualify(args.editorial_cache, args.transcript, args.output, dry_run=args.dry_run)
+    return qualify(
+        args.editorial_cache,
+        args.transcript,
+        args.output,
+        dry_run=args.dry_run,
+        reuse_request_cache=args.reuse_request_cache,
+    )
 
 
 if __name__ == "__main__":
