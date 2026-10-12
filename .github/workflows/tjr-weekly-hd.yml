@@ -583,9 +583,16 @@ jobs:
             python -m scripts.tjr_continuation_qualification \
               --editorial-cache "$EDITORIAL" --transcript "$TRANSCRIPT" \
               --output continuation-source-precheck.json --dry-run
+            CACHE_ARGUMENTS=()
+            if [ -d reviewer-baseline ]; then
+              PROOF_CACHE=$(find reviewer-baseline -name review-request-cache.json -print -quit)
+              if [ -n "$PROOF_CACHE" ]; then
+                CACHE_ARGUMENTS+=(--reuse-request-cache "$PROOF_CACHE")
+              fi
+            fi
             python -m scripts.tjr_continuation_qualification \
               --editorial-cache "$EDITORIAL" --transcript "$TRANSCRIPT" \
-              --output reviewer-preflight.json
+              "${CACHE_ARGUMENTS[@]}" --output reviewer-preflight.json
             exit $?
           fi
           if [ '${{ inputs.reviewer_model_probe }}' = 'gpu_recovery' ]; then
