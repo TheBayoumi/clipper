@@ -405,18 +405,15 @@ def test_full_exchange_summary_requires_retained_source_evidence():
 
 def test_archived_distinct_adjacent_stories_survive_without_temporal_overlap() -> None:
     """The 1.32-second gap between two real source thoughts is not a duplicate."""
-    first = clip(
-        2324.63,
-        "I was upset when the team made that decision, but life is not always "
-        "going to be rosy. You control how you respond to disappointment "
-        "and I decided I would take responsibility for my own response.",
-        90,
-    )
+    # Use two previously qualified, self-contained examples. Only the timing
+    # is under test; the semantic content must not introduce another veto.
+    first = clip(2324.63, STRONG_SEGMENT, 90)
     second = clip(
         2356.95,
-        "I found joy again after leaving. I joined a different team because "
-        "I loved playing, and my years in Washington changed my family's "
-        "life for the better. I am grateful for that opportunity.",
+        "Why did the referee cancel that goal? We had planned a final attack against "
+        "the other team. But the ball touched my hand before the shot went in. So "
+        "the replay showed the mistake and we accepted the decision before starting "
+        "again.",
         95,
     )
     assert round(second.start - first.end, 2) == 1.32
