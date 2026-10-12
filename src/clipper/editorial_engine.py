@@ -178,7 +178,7 @@ def review_optional_contrast(
         "excluded_span": _unit_span_schema(len(after)),
         "role": {"type": "string", "enum": _CONTINUATION_ROLES},
         "complete_without_excluded": {"type": "integer", "enum": [0, 1]},
-        "reason": {"type": "string"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 160},
     }
     source = {
         "delivered": _numbered_source(selected),
@@ -204,7 +204,7 @@ def review_optional_contrast(
         "stands alone unchanged, set complete_without_excluded=0 and role=uncertain. "
         "Return output_schema JSON.",
     )
-    verdicts = [editor._review_completion(prompt, source, properties, 192) for prompt in prompts]
+    verdicts = [editor._review_completion(prompt, source, properties, 512) for prompt in prompts]
     proof = {"verdicts": verdicts, "optional_verified": False}
     # Validate independently supplied evidence before deriving the boolean.
     proof["optional_verified"] = all(
