@@ -1328,9 +1328,7 @@ def render_youtube_previews(
         # Filter objectively unfinished story promises BEFORE overlap ranking
         # and the bounded render queue. Filtering afterwards can waste a slot
         # or suppress an otherwise good independent candidate.
-        render_eligible, teaser_rejections = _filter_unresolved_story_teasers(
-            ranked, segments
-        )
+        render_eligible, teaser_rejections = _filter_unresolved_story_teasers(ranked, segments)
         LOGGER.info(
             "PRE_SELECTION_STORY_QA eligible=%d rejected_teasers=%d",
             len(render_eligible),
