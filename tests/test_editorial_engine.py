@@ -660,7 +660,12 @@ def test_narrative_proof_validation_fails_closed_on_invalid_combinations():
         {"verdicts": [valid, valid], "optional_verified": True}, selected, excluded, 0
     )
     for invalid in (
+        None,
+        [],
         {"verdicts": [valid], "optional_verified": True},
+        {"verdicts": "untrusted", "optional_verified": False},
+        {"verdicts": [valid, valid], "optional_verified": False},
+        {"verdicts": [valid, valid], "optional_verified": True, "other": "tamper"},
         {"verdicts": [valid, valid], "optional_verified": 1},
         {"verdicts": [valid, {"obligation": valid["obligation"]}], "optional_verified": True},
         {
