@@ -919,3 +919,28 @@ def test_publication_metadata_from_verified_youtube_never_guesses(source, accept
     assert bool(published) is accepted
     if published:
         assert published.startswith("2026-10-09")
+
+def test_unfinished_story_teasers_are_filtered_before_rank_and_render_limit() -> None:
+    from clipper.models import ClipCandidate, TranscriptSegment
+    from scripts.tjr_youtube_preview import _filter_unresolved_story_teasers
+
+    teaser = ClipCandidate(
+        "3S-fL9rNPp0", 0.0, 31.0,
+        "An excellent story appears to begin, but its explanation is deferred.", 95.0,
+    )
+    complete = ClipCandidate(
+        "3S-fL9rNPp0", 32.32, 63.32,
+        "The speaker gave a standalone answer with a clear resolution.", 89.0,
+    )
+    segments = [
+        TranscriptSegment(0.0, 24.0, "We discussed the setup."),
+        TranscriptSegment(24.0, 31.0, "Let me explain what happened next."),
+        TranscriptSegment(32.32, 63.32, "The answer is complete and the point is clear."),
+    ]
+    eligible, rejected = _filter_unresolved_story_teasers([teaser, complete], segments)
+    assert eligible == [complete]
+    assert len(rejected) == 1
+    assert rejected[0]["reason"] == "UNDELIVERED_STORY_TEASER"
+    assert rejected[0]["start"] == teaser.start
+    assert _filter_unresolved_story_teasers([complete], segments) == ([complete], [])
+
