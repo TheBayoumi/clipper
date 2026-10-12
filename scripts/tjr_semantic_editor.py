@@ -7,6 +7,7 @@ Regex rules remain downstream safety checks; they are not the primary editor.
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import inspect
 import json
@@ -1239,6 +1240,12 @@ _VERIFIED_BOUNDARY_VALIDATOR_COMPATIBILITY = frozenset(
         "7baf17590d149371430cae73cdc070dfa5e67cfebc5287a1e7bf90f423ebe42e",
     }
 )
+# Baseline reviewer from the archived 111-decision, six-MP4 production checkpoint.
+# Only source-validated unchanged boundary decisions can migrate. The missing-
+# contrast verdict itself is NEVER reused as approval: it needs a new proof.
+_VERIFIED_CONTRAST_BASE_REVIEWER_SHA = (
+    "7d8b600bdc063c5ddec1c2cee44f76537abcc5c7260e9e6566b719d5e69f7490"
+)
 
 
 def _compatible_editorial_cache_identities(
@@ -1450,6 +1457,7 @@ def refine_contextual_candidates(
     reviewer_reused = 0
     cached_review_identity_matches = False
     cached_boundary_identity_matches = False
+    archived_base_review_compatible = False
     boundary_reused = 0
     decisions: list[dict[str, Any]] = []
     result: list[ClipCandidate] = []
@@ -1460,6 +1468,20 @@ def refine_contextual_candidates(
             _archived_selector_decisions(
                 saved, identity, legacy_selector_fingerprint=legacy_selector_fingerprint
             )
+        )
+        prior_identity = saved.get("identity", {})
+        archived_base_review_compatible = (
+            bool(cached_by_proposal)
+            and prior_identity.get("reviewer_sha256")
+            == _VERIFIED_CONTRAST_BASE_REVIEWER_SHA
+            and prior_identity.get("boundary_sha256")
+            in _VERIFIED_BOUNDARY_VALIDATOR_COMPATIBILITY
+            and prior_identity.get("reviewer_model_profile") == review_profile
+            and prior_identity.get("boundary_contract_version")
+            == identity["boundary_contract_version"]
+            and prior_identity.get("source_sha256") == source_sha256
+            and prior_identity.get("transcript_sha256") == transcript_hash
+            and prior_identity.get("proposal_sha256") == identity["proposal_sha256"]
         )
         if saved.get("identity") == identity:
             result = [
@@ -1561,7 +1583,8 @@ def refine_contextual_candidates(
     print(
         f"EDITORIAL_CACHE_PLAN reusable_selectors={len(cached_by_proposal)} "
         f"reviewer_identity_match={cached_review_identity_matches} "
-        f"boundary_identity_match={cached_boundary_identity_matches}",
+        f"boundary_identity_match={cached_boundary_identity_matches} "
+        f"verified_base_review_migration={archived_base_review_compatible}",
         flush=True,
     )
 
@@ -1717,6 +1740,7 @@ def refine_contextual_candidates(
             review_input_sha = hashlib.sha256(
                 json.dumps(review_context, sort_keys=True).encode()
             ).hexdigest()
+            cached_base_reused = False
             if (
                 valid_cached_decision
                 and cached_review_identity_matches
@@ -1743,6 +1767,63 @@ def refine_contextual_candidates(
                             headline_generator=_source_grounded_headline,
                         )
                         boundary_reused += 1
+                    elif (
+                        assessor is None
+                        and reviewer is None
+                        and archived_base_review_compatible
+                        and valid_cached_decision
+                        and cached.get("review_input_sha256") == review_input_sha
+                        and isinstance(cached.get("exchange_review"), dict)
+                    ):
+                        # Reuse every archived reviewer decision as SOURCE EVIDENCE,
+                        # not as new approval. Revalidate immutable transcript
+                        # positions and only re-review disputed missing contrasts.
+                        base = cached["exchange_review"]
+                        _validate_cached_boundary(review_context, base)
+                        cached_base_reused = True
+                        continuation = base.get("continuation_review") or {}
+                        resolution = base["source_quote_spans"]["resolution_quote"]
+                        final_id = _final_substantive_unit_id(
+                            review_context["selected_units"]
+                        )
+                        if (
+                            continuation.get("relation") == "missing_contrast"
+                            and base.get("opening_standalone") is True
+                            and base.get("contains_promotion_or_intro") is False
+                            and resolution is not None
+                            and resolution["last_unit"] == final_id
+                            and review_context["after"]
+                        ):
+                            migrated = copy.deepcopy(base)
+                            proof = review_optional_contrast(
+                                request_cache,
+                                review_context["selected_units"],
+                                review_context["after"],
+                                final_id,
+                            )
+                            migrated["continuation_review"]["optional_contrast_proof"] = proof
+                            if proof["optional_verified"]:
+                                migrated["ending_complete"] = True
+                                migrated["payoff_complete"] = True
+                                migrated["payoff_quote"] = _evidence_excerpt(
+                                    resolution["text"]
+                                )
+                                audit = migrated["boundary_audit"]
+                                audit["ending"] = "closed"
+                                audit["payoff_location"] = "selected"
+                                audit["payoff_unit_id"] = resolution["first_unit"]
+                                audit["payoff_unit_last_id"] = resolution["last_unit"]
+                            review = complete_source_review(
+                                request_cache,
+                                review_context,
+                                migrated,
+                                factual_audit=_position_headline_audit,
+                                headline_generator=_source_grounded_headline,
+                            )
+                            boundary_reused += 1
+                        else:
+                            review = base
+                            reviewer_reused += 1
                     else:
                         review = review_backend(review_context)
                 except SourceEvidenceError as error:
@@ -1762,7 +1843,7 @@ def refine_contextual_candidates(
                     )
                     continue
             evidence["review_input_sha256"] = review_input_sha
-            evidence["reviewer_cache_reused"] = (
+            evidence["reviewer_cache_reused"] = cached_base_reused or (
                 cached_review_identity_matches
                 and cached.get("review_input_sha256") == review_input_sha
                 and isinstance(cached.get("exchange_review"), dict)
