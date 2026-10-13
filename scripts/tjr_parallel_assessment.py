@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -42,7 +41,9 @@ SOURCE_KEYS = (
 def unique(root: Path, basename: str) -> Path:
     matches = sorted(root.rglob(basename))
     if len(matches) != 1:
-        raise RuntimeError(f"PARALLEL_ARCHIVE_MISSING_OR_AMBIGUOUS: {basename} count={len(matches)}")
+        raise RuntimeError(
+            f"PARALLEL_ARCHIVE_MISSING_OR_AMBIGUOUS: {basename} count={len(matches)}"
+        )
     return matches[0]
 
 
@@ -54,7 +55,9 @@ def digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def assessment_data(root: Path) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+def assessment_data(
+    root: Path,
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     cache = read(unique(root, "editorial-cache.json"))
     proposal = read(unique(root, "proposal-cache.json"))
     transcript = read(unique(root, "transcript.json"))
@@ -110,7 +113,9 @@ def plan(root: Path, output: Path, *, width: int = SHARD_WIDTH) -> list[dict[str
         for start_index in range(start, len(candidates), width)
     ]
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps({"shards": shards, "total": len(candidates), "cached": start}) + "\n")
+    output.write_text(
+        json.dumps({"shards": shards, "total": len(candidates), "cached": start}) + "\n"
+    )
     print(
         f"PARALLEL_PLAN: preserved={start}/{len(candidates)} "
         f"remaining={len(candidates) - start} shards={len(shards)}",
@@ -153,7 +158,7 @@ def shard(root: Path, output: Path, *, start: int, stop: int) -> None:
     if not count <= start < stop <= len(proposals) or stop - start > 12:
         raise RuntimeError("PARALLEL_SHARD_RANGE_INVALID")
     output.mkdir(parents=True, exist_ok=True)
-    result, audit = refine_contextual_candidates(
+    result, _audit = refine_contextual_candidates(
         load_brief(Path("campaigns/reach-double-coverage-dedicated.yaml")),
         candidate_objects(proposals),
         transcript_objects(transcript),
@@ -192,7 +197,7 @@ def shard(root: Path, output: Path, *, start: int, stop: int) -> None:
 
 
 def merge(root: Path, parts: Path, output: Path) -> None:
-    baseline, proposal, transcript, candidates = assessment_data(root)
+    baseline, _proposal, _transcript, candidates = assessment_data(root)
     first = baseline["processed_count"]
     all_decisions: list[dict[str, Any] | None] = [None] * len(candidates)
     all_decisions[:first] = baseline["decisions"]
@@ -261,7 +266,12 @@ def merge(root: Path, parts: Path, output: Path) -> None:
     }
     (output / "editorial-cache.json").write_text(
         json.dumps(
-            {"identity": merged_identity, "complete": True, "audit": audit, "candidates": all_clips},
+            {
+                "identity": merged_identity,
+                "complete": True,
+                "audit": audit,
+                "candidates": all_clips,
+            },
             indent=2,
         ) + "\n"
     )
