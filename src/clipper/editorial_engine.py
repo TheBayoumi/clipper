@@ -162,7 +162,10 @@ def _excluded_event_gap_valid(gap: Any, selected: list[str], after: list[str]) -
         or not isinstance(gap["reason"], str)
         or not gap["reason"].strip()
         or len(gap["reason"]) > 280
-        or (status == "unresolved_linked" and (event is None or setup is None or outcome is not None))
+        or (
+            status == "unresolved_linked"
+            and (event is None or setup is None or outcome is not None)
+        )
         or (status == "delivered_same_event" and (event is None or outcome is None))
         or (status == "independent_example" and (event is None or setup is not None))
         or (status == "non_event" and event is not None)
@@ -171,7 +174,9 @@ def _excluded_event_gap_valid(gap: Any, selected: list[str], after: list[str]) -
     return status in _EVENT_GAP_SAFE
 
 
-def _review_excluded_event_gap(editor: Any, selected: list[str], after: list[str]) -> dict[str, Any]:
+def _review_excluded_event_gap(
+    editor: Any, selected: list[str], after: list[str]
+) -> dict[str, Any]:
     """Inspect after-cut events without seeing earlier payoff or dependency verdicts."""
     return editor._review_completion(
         "Perform a BLIND excluded-event inventory, independent of any earlier "
