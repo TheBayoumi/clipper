@@ -1368,6 +1368,7 @@ def refine_contextual_candidates(
     cache_path: Path,
     reuse_path: Path | None = None,
     require_reusable_editorial_cache: bool = False,
+    force_full_candidate_reassessment: bool = False,
     assessor: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     reviewer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> tuple[list[ClipCandidate], dict[str, Any]]:
@@ -1487,7 +1488,7 @@ def refine_contextual_candidates(
             and prior_identity.get("transcript_sha256") == transcript_hash
             and prior_identity.get("proposal_sha256") == identity["proposal_sha256"]
         )
-        if saved.get("identity") == identity:
+        if saved.get("identity") == identity and not force_full_candidate_reassessment:
             result = [
                 ClipCandidate(
                     item["video_id"],
@@ -1573,7 +1574,11 @@ def refine_contextual_candidates(
             "model_revision": review_profile["revision"],
             "reviewer_profile": review_profile,
         },
-        reuse_path.with_name("review-request-cache.json") if reuse_path else None,
+        (
+            reuse_path.with_name("review-request-cache.json")
+            if reuse_path and not force_full_candidate_reassessment
+            else None
+        ),
     )
 
     def review_with_local(context: dict[str, Any]) -> dict[str, Any]:
@@ -1588,7 +1593,8 @@ def refine_contextual_candidates(
         f"EDITORIAL_CACHE_PLAN reusable_selectors={len(cached_by_proposal)} "
         f"reviewer_identity_match={cached_review_identity_matches} "
         f"boundary_identity_match={cached_boundary_identity_matches} "
-        f"verified_base_review_migration={archived_base_review_compatible}",
+        f"verified_base_review_migration={archived_base_review_compatible} "
+        f"force_full_candidate_reassessment={force_full_candidate_reassessment}",
         flush=True,
     )
 
@@ -1634,7 +1640,9 @@ def refine_contextual_candidates(
             )
             started = time.monotonic()
             checkpoint(number)
-            cached_decision = cached.get("decision")
+            cached_decision = (
+                None if force_full_candidate_reassessment else cached.get("decision")
+            )
             valid_cached_decision = (
                 isinstance(cached_decision, dict)
                 and type(cached_decision.get("keep")) is bool
@@ -1661,8 +1669,10 @@ def refine_contextual_candidates(
                     )
                 )
             )
-            if require_reusable_editorial_cache and (
-                proposal_key_counts[(candidate.start, candidate.end)] == 1
+            if (
+                require_reusable_editorial_cache
+                and not force_full_candidate_reassessment
+                and proposal_key_counts[(candidate.start, candidate.end)] == 1
                 and not valid_cached_decision
             ):
                 raise RuntimeError(
