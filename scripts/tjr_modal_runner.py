@@ -220,17 +220,14 @@ def _recover_source_from_fallback(
             f"SOURCE_FALLBACK_MANIFEST_INVALID: {type(exc).__name__}: {exc}"
         ) from exc
     if not isinstance(saved, dict) or any(
-        saved.get(key) != staged.get(key)
-        for key in ("video_id", "channel_id", "source_sha256")
+        saved.get(key) != staged.get(key) for key in ("video_id", "channel_id", "source_sha256")
     ):
         raise RuntimeError("SOURCE_FALLBACK_IDENTITY_MISMATCH: refusing unrelated archived source")
     expected = str(staged["source_sha256"])
     with source.open("rb") as video:
         actual = hashlib.file_digest(video, "sha256").hexdigest()
     if actual != expected:
-        raise RuntimeError(
-            f"SOURCE_FALLBACK_SHA256_MISMATCH: expected={expected} actual={actual}"
-        )
+        raise RuntimeError(f"SOURCE_FALLBACK_SHA256_MISMATCH: expected={expected} actual={actual}")
     print(f"SOURCE_FALLBACK_VERIFIED: {source.name} sha256={actual}", flush=True)
     return source
 
