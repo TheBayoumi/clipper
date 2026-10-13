@@ -51,6 +51,11 @@ on:
         required: false
         type: string
         default: ""
+      source_preflight_only:
+        description: "Restore and SHA-verify pinned original only; no editorial, rendering or MP4 acceptance."
+        required: false
+        type: boolean
+        default: false
       source_fallback_run_id:
         description: "Optional prior workflow run containing a verified-source backup artifact."
         required: false
@@ -140,6 +145,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         env:
           TJR_SOURCE_MODE: ${{ inputs.source_mode }}
+          TJR_SOURCE_PREFLIGHT_ONLY: ${{ inputs.source_preflight_only }}
           TJR_BUDGET_CONFIRMED: ${{ inputs.budget_confirmed }}
           TJR_SOURCE_VERIFIED: ${{ inputs.source_verified }}
           TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
@@ -153,6 +159,8 @@ jobs:
           import re
 
           mode = os.environ['TJR_SOURCE_MODE']
+          if os.getenv('TJR_SOURCE_PREFLIGHT_ONLY', '').lower() == 'true' and mode != 'modal_direct':
+              raise SystemExit('source_preflight_only requires modal_direct mode')
           if mode == 'validate_only':
               print('Validation only: no real-source rendering requested')
           elif mode == 'feedback_replay':
@@ -971,7 +979,7 @@ jobs:
         if: inputs.transcript_source_run_id != ''
         run: echo "TJR_TRANSCRIPT_CACHE_ROOT=$PWD/tjr-transcript-cache" >> "$GITHUB_ENV"
       - name: Run only missing or invalidated editorial and rendering stages
-        if: steps.source_plan.outputs.pipeline_reused != 'true'
+        if: steps.source_plan.outputs.pipeline_reused != 'true' && !inputs.source_preflight_only
         env:
           TJR_MODAL_USE_STAGED: "1"
         run: |
@@ -1035,6 +1043,7 @@ jobs:
     needs: [tests, youtube_preview, youtube_modal_egress, render]
     if: >-
       always() && github.event_name == 'workflow_dispatch' &&
+      !inputs.source_preflight_only &&
       (
         (
           contains(fromJSON('["modal_direct","youtube_direct","verified_mirror"]'),
