@@ -505,7 +505,10 @@ def test_modal_duplicate_manifests_fetch_the_same_source_only_once(
     assert result["source_cache_local_path"] == str(
         (tmp_path / "current" / "cached-source.mp4").resolve()
     )
-    assert len([request for request in requests if request[-2] == staged["source_remote_path"]]) == 1
+    assert (
+        len([request for request in requests if request[-2] == staged["source_remote_path"]])
+        == 1
+    )
     assert Path(result["source_cache_local_path"]).read_bytes() == payload
 
 
