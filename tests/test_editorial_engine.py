@@ -930,6 +930,14 @@ def test_excluded_event_inventory_evidence_contract_is_fail_closed():
         "excluded_event_span": absent,
     }
     assert _excluded_event_gap_valid(non_event, selected, excluded) is True
+    # A non-event label may quote the reviewed conversation without inventing a
+    # story outcome: source-span presence alone is not evidence of event materiality.
+    assert (
+        _excluded_event_gap_valid(
+            {**non_event, "excluded_event_span": after}, selected, excluded
+        )
+        is True
+    )
     assert _excluded_event_gap_valid({**base, "status": "uncertain"}, selected, excluded) is False
     invalid_records = (
         None,
@@ -942,7 +950,8 @@ def test_excluded_event_inventory_evidence_contract_is_fail_closed():
         {**base, "delivered_event_outcome_span": realized},
         {**already, "delivered_event_outcome_span": absent},
         {**independent, "prior_event_setup_span": before},
-        {**non_event, "excluded_event_span": after},
+        {**non_event, "prior_event_setup_span": before},
+        {**non_event, "delivered_event_outcome_span": realized},
     )
     for record in invalid_records:
         with pytest.raises(SourceEvidenceError):
