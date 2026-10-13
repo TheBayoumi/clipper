@@ -967,6 +967,7 @@ def test_staged_original_never_queries_youtube_for_missing_publication(
 ) -> None:
     import hashlib
 
+    from clipper.editorial_run import EditorialRunConfig
     from scripts.tjr_youtube_preview import render_youtube_previews
 
     channel = "UCf1q6dhccWr6eQEcFFnJSbA"
