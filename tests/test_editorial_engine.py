@@ -933,9 +933,7 @@ def test_excluded_event_inventory_evidence_contract_is_fail_closed():
     # A non-event label may quote the reviewed conversation without inventing a
     # story outcome: source-span presence alone is not evidence of event materiality.
     assert (
-        _excluded_event_gap_valid(
-            {**non_event, "excluded_event_span": after}, selected, excluded
-        )
+        _excluded_event_gap_valid({**non_event, "excluded_event_span": after}, selected, excluded)
         is True
     )
     assert _excluded_event_gap_valid({**base, "status": "uncertain"}, selected, excluded) is False
