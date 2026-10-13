@@ -51,6 +51,16 @@ on:
         required: false
         type: string
         default: ""
+      parallel_assessment:
+        description: "Resume archived assessments via independent, hash-bound GitHub matrix shards; render only after full reconciliation."
+        required: false
+        type: boolean
+        default: false
+      assessment_checkpoint_run_id:
+        description: "Archived canceled-run ID containing the partial 44/111 editorial checkpoint (required for parallel assessment)."
+        required: false
+        type: string
+        default: ""
       source_preflight_only:
         description: "Restore and SHA-verify pinned original only; no editorial, rendering or MP4 acceptance."
         required: false
@@ -831,7 +841,7 @@ jobs:
     needs: tests
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      inputs.source_mode == 'modal_direct'
+      inputs.source_mode == 'modal_direct' && !inputs.parallel_assessment
     runs-on: ubuntu-24.04
     outputs:
       cache_run_id: ${{ steps.editorial_cache.outputs.run_id }}
@@ -1040,7 +1050,7 @@ jobs:
 
   feedback_audit:
     name: Independent review of real MP4s and production evidence
-    needs: [tests, youtube_preview, youtube_modal_egress, render]
+    needs: [tests, youtube_preview, youtube_modal_egress, render, assessment_render]
     if: >-
       always() && github.event_name == 'workflow_dispatch' &&
       !inputs.source_preflight_only &&
@@ -1259,5 +1269,243 @@ jobs:
             tjr-mirror-artifacts/**/clips/*-preview.png
             tjr-mirror-artifacts/**/clips/*-contact.png
           retention-days: 14
+          compression-level: 0
+          if-no-files-found: warn
+
+
+  assessment_prepare:
+    name: Plan parallel assessment from verified checkpoint
+    needs: tests
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.source_mode == 'modal_direct' && inputs.parallel_assessment &&
+      !inputs.source_preflight_only && needs.tests.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Reject missing or unsafe checkpoint input
+        env:
+          CHECKPOINT_RUN: ${{ inputs.assessment_checkpoint_run_id }}
+        run: |
+          if [[ ! "$CHECKPOINT_RUN" =~ ^[1-9][0-9]{7,14}$ ]]; then
+            echo "::error::PARALLEL_CHECKPOINT_RUN_REQUIRED"
+            exit 1
+          fi
+      - name: Download frozen source, transcript, proposals and 44 completed decisions
+        uses: actions/download-artifact@v4
+        with:
+          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ inputs.assessment_checkpoint_run_id }}
+          path: assessment-baseline
+          run-id: ${{ inputs.assessment_checkpoint_run_id }}
+          github-token: ${{ github.token }}
+      - name: Validate full proposal identity and prepare remaining shards
+        id: plan
+        run: |
+          python -m pip install -e .
+          python -m scripts.tjr_parallel_assessment plan \
+            --baseline assessment-baseline --output assessment-plan.json
+          echo "shards=$(python -c 'import json; print(json.dumps(json.load(open("assessment-plan.json"))["shards"],separators=(",",":")))')" >> "$GITHUB_OUTPUT"
+      - name: Preserve reproducible shard manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: editorial-shard-plan-${{ github.run_id }}
+          path: assessment-plan.json
+          retention-days: 30
+          if-no-files-found: error
+
+  assessment_shard:
+    name: "Assess candidates ${{ matrix.shard.start }}–${{ matrix.shard.stop }}"
+    needs: assessment_prepare
+    if: needs.assessment_prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: ${{ fromJSON(needs.assessment_prepare.outputs.shards) }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Restore immutable canceled-run checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ inputs.assessment_checkpoint_run_id }}
+          path: assessment-baseline
+          run-id: ${{ inputs.assessment_checkpoint_run_id }}
+          github-token: ${{ github.token }}
+      - name: Install exact production editorial models
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+          CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e ".[asr]"
+      - name: Assess assigned candidates only, preserving full transcript context
+        run: |
+          python -m scripts.tjr_parallel_assessment shard \
+            --baseline assessment-baseline \
+            --output shard-checkpoint \
+            --start "${{ matrix.shard.start }}" \
+            --stop "${{ matrix.shard.stop }}"
+      - name: Archive shard evidence even if its runner is interrupted
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editorial-shard-${{ matrix.shard.start }}-${{ matrix.shard.stop }}
+          path: shard-checkpoint/
+          retention-days: 30
+          if-no-files-found: warn
+
+  assessment_merge:
+    name: Require all 111 editorial decisions before media acquisition
+    needs: [assessment_prepare, assessment_shard]
+    if: needs.assessment_shard.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Restore archived checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ inputs.assessment_checkpoint_run_id }}
+          path: assessment-baseline
+          run-id: ${{ inputs.assessment_checkpoint_run_id }}
+          github-token: ${{ github.token }}
+      - name: Restore all independently completed editorial shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: editorial-shard-*
+          path: editorial-parts
+      - name: Reject missing, duplicate or identity-drifted decisions
+        run: |
+          python -m pip install -e .
+          python -m scripts.tjr_parallel_assessment merge \
+            --baseline assessment-baseline --parts editorial-parts \
+            --output merged-editorial
+      - name: Preserve immutable complete editorial checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: editorial-merged-${{ github.run_id }}
+          path: merged-editorial/
+          retention-days: 30
+          if-no-files-found: error
+
+  assessment_render:
+    name: Render full HD clips from merged editorials without model inference
+    needs: [tests, assessment_merge]
+    if: needs.assessment_merge.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 320
+    permissions:
+      contents: read
+      actions: read
+    env:
+      TJR_PERSIST_SOURCE: "1"
+      TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
+      TJR_MODAL_CHANNEL_ID: ${{ inputs.target_channel_id }}
+      TJR_TRANSCRIPT_SOURCE_RUN_ID: ${{ inputs.transcript_source_run_id }}
+      TJR_FORCE_FULL_CANDIDATE_REASSESSMENT: "false"
+      TJR_RENDER_SAFETY_LIMIT: "20"
+      TJR_CAPTION_STYLE: B2
+      CLIPPER_RENDER_PRESET: slow
+      CLIPPER_RENDER_THREADS: "4"
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      CLIPPER_IMAGE_ASSET_CACHE_MANIFEST: tjr-modal-probe/approved-watermark.json
+      CLIPPER_APPROVED_ASSET_SHA256: "5bd213d18ba0e8e29fbdecf62e967caa760fbb1d7f9700f990ee2e43feec698b"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Validate fallback original and archived transcript IDs exist
+        env:
+          ORIGINAL_RUN: ${{ inputs.source_fallback_run_id }}
+          TRANSCRIPT_RUN: ${{ inputs.transcript_source_run_id }}
+        run: |
+          if [[ ! "$ORIGINAL_RUN" =~ ^[1-9][0-9]{7,14}$ || ! "$TRANSCRIPT_RUN" =~ ^[1-9][0-9]{7,14}$ ]]; then
+            echo "::error::PARALLEL_VERIFIED_SOURCE_AND_TRANSCRIPT_REQUIRED"
+            exit 1
+          fi
+      - name: Restore consolidated candidate results
+        uses: actions/download-artifact@v4
+        with:
+          name: editorial-merged-${{ github.run_id }}
+          path: merged-editorial
+      - name: Restore exact SHA-verified source instead of downloading YouTube
+        uses: actions/download-artifact@v4
+        with:
+          name: tjr-verified-original-${{ inputs.target_channel_id }}-${{ inputs.source_fallback_run_id }}
+          path: tjr-verified-source-cache
+          run-id: ${{ inputs.source_fallback_run_id }}
+          github-token: ${{ github.token }}
+      - name: Restore full immutable source transcript
+        uses: actions/download-artifact@v4
+        with:
+          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ inputs.transcript_source_run_id }}
+          path: tjr-transcript-cache
+          run-id: ${{ inputs.transcript_source_run_id }}
+          github-token: ${{ github.token }}
+      - name: Render actual clips from aggregate without assessing candidates
+        env:
+          TJR_EDITORIAL_CACHE_ROOT: ${{ github.workspace }}/merged-editorial
+          TJR_SOURCE_FALLBACK_ROOT: ${{ github.workspace }}/tjr-verified-source-cache
+          TJR_TRANSCRIPT_CACHE_ROOT: ${{ github.workspace }}/tjr-transcript-cache
+          CLIPPER_APPROVED_ASSET_BOOTSTRAP_URL: ${{ secrets.CLIPPER_APPROVED_ASSET_BOOTSTRAP_URL }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+          CMAKE_BUILD_PARALLEL_LEVEL=2 CMAKE_ARGS="-DGGML_NATIVE=OFF" python -m pip install -e ".[asr]" "curl-cffi>=0.15,<1" "modal>=1,<2"
+          python -m scripts.tjr_modal_runner --prepare-watermark
+          python -m clipper.cli editorial-config \
+            --brief campaigns/reach-double-coverage-dedicated.yaml \
+            --artifact-root tjr-modal-artifacts \
+            --output tjr-modal-probe/editorial-run.json
+          python -m scripts.tjr_modal_runner --config tjr-modal-probe/editorial-run.json
+      - name: Always preserve real rendered MP4s, source identity and audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-real-original-youtube-hd-${{ inputs.target_channel_id }}-${{ github.run_id }}
+          path: |
+            tjr-modal-probe/**/*.json
+            tjr-modal-artifacts/**/*.json
+            tjr-modal-artifacts/**/clips/*.mp4
+            tjr-modal-artifacts/**/clips/*.srt
+            tjr-modal-artifacts/**/clips/*.ass
+            tjr-modal-artifacts/**/clips/*.quality.json
+            tjr-modal-artifacts/**/clips/*.ssim.txt
+            tjr-modal-artifacts/**/clips/*-preview.png
+            tjr-modal-artifacts/**/clips/*-contact.png
+          retention-days: 30
           compression-level: 0
           if-no-files-found: warn
