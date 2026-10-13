@@ -900,18 +900,6 @@ def test_failed_production_transcript_cache_uses_verified_roundtrip_without_mp4_
         assert proof["source_hash_verified"] is True
 
 
-@pytest.mark.parametrize(
-    "source, accepted",
-    [
-        ({"upload_date": "20261009"}, True),
-        ({"release_date": "20261009"}, True),
-        ({"timestamp": 1791578100}, True),
-        ({"upload_date": "20261399"}, False),
-        ({"upload_date": "not-verified"}, False),
-        ({"timestamp": -1}, False),
-        ({}, False),
-    ],
-)
 def test_staged_original_publication_uses_hash_bound_archived_feed(
     tmp_path: Path,
 ) -> None:
@@ -1029,6 +1017,18 @@ def test_staged_original_never_queries_youtube_for_missing_publication(
         render_youtube_previews(config.artifact_root, config.brief, run_config=config)
 
 
+@pytest.mark.parametrize(
+    "source, accepted",
+    [
+        ({"upload_date": "20261009"}, True),
+        ({"release_date": "20261009"}, True),
+        ({"timestamp": 1791578100}, True),
+        ({"upload_date": "20261399"}, False),
+        ({"upload_date": "not-verified"}, False),
+        ({"timestamp": -1}, False),
+        ({}, False),
+    ],
+)
 def test_publication_metadata_from_verified_youtube_never_guesses(source, accepted):
     from scripts.tjr_youtube_preview import _verified_publication_date
 
