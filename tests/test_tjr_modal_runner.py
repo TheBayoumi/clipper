@@ -197,7 +197,7 @@ def test_transfer_rejects_wrong_sha_and_removes_unverified_original(tmp_path: Pa
 
     with (
         patch.object(runner.subprocess, "run", side_effect=fake_run),
-        pytest.raises(RuntimeError, match="SHA-256 mismatch"),
+        pytest.raises(RuntimeError, match="MODAL_SOURCE_SHA256_MISMATCH"),
     ):
         _transfer_verified_original(stage, destination)
     assert not destination.with_suffix(".mp4").exists()
