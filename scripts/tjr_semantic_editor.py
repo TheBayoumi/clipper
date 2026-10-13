@@ -1369,6 +1369,7 @@ def refine_contextual_candidates(
     reuse_path: Path | None = None,
     require_reusable_editorial_cache: bool = False,
     force_full_candidate_reassessment: bool = False,
+    only_indices: frozenset[int] | None = None,
     assessor: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     reviewer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> tuple[list[ClipCandidate], dict[str, Any]]:
@@ -1545,6 +1546,11 @@ def refine_contextual_candidates(
                 f"EDITORIAL_CACHE_REQUIRED_MISMATCH: {available}/{distinct} "
                 "unique selectors reusable; refusing silent full-episode reassessment"
             )
+    if only_indices is not None and (
+        not only_indices
+        or any(type(index) is not int or not 0 <= index < len(candidates) for index in only_indices)
+    ):
+        raise ValueError("editorial shard indices must be a nonempty in-range set")
     units = _thought_units(segments)
     local: LocalContextualEditor | None = None
 
@@ -1616,6 +1622,16 @@ def refine_contextual_candidates(
     try:
         for number, candidate in enumerate(candidates):
             if number < resume_count:
+                continue
+            if only_indices is not None and number not in only_indices:
+                decisions.append(
+                    {
+                        "proposal_start": candidate.start,
+                        "proposal_end": candidate.end,
+                        "rejection": "SHARD_NOT_ASSIGNED",
+                    }
+                )
+                checkpoint(number + 1)
                 continue
             covered = [
                 i
@@ -2006,7 +2022,7 @@ def refine_contextual_candidates(
     }
     saved = {
         "identity": identity,
-        "complete": True,
+        "complete": only_indices is None,
         "audit": audit,
         "candidates": [candidate.to_dict() for candidate in result],
     }
