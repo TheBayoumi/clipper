@@ -795,7 +795,7 @@ def main(argv: list[str] | None = None) -> int:
                 local = staging.get("source_cache_local_path")
                 if not isinstance(local, str) or not Path(local).is_file():
                     verified = _transfer_verified_original(
-                        staging, probe / "cached-source", verify_media=True
+                        staging, probe / "cached-source", verify_media=False
                     )
                     staging["source_cache_local_path"] = str(verified.resolve())
                     probe.joinpath("staged-original.json").write_text(
