@@ -185,6 +185,54 @@ def _restore_completed_pipeline(root: Path) -> bool:
     return False
 
 
+# A verified ~330 MB source should never be fetched twice or left waiting for
+# the Modal CLI's unbounded internal retries. Keep this below the editorial gate.
+_SOURCE_TRANSFER_TIMEOUT_SECONDS = 600
+
+
+def _source_transfer_timeout() -> int:
+    setting = os.getenv("TJR_SOURCE_TRANSFER_TIMEOUT_SECONDS", "600")
+    try:
+        seconds = int(setting)
+    except ValueError as exc:
+        raise RuntimeError("SOURCE_TRANSFER_TIMEOUT_INVALID: expected integer seconds") from exc
+    if not 30 <= seconds <= 1800:
+        raise RuntimeError("SOURCE_TRANSFER_TIMEOUT_INVALID: permitted range 30..1800 seconds")
+    return seconds
+
+
+def _recover_source_from_fallback(
+    staged: dict[str, Any], destination: Path, *, fallback_root: str
+) -> Path | None:
+    """Restore GitHub's separately archived verified original, never arbitrary media."""
+    if not fallback_root:
+        return None
+    source = Path(fallback_root) / "verified-original.mp4"
+    manifest = Path(fallback_root) / "staged-original.json"
+    if not source.is_file() or not manifest.is_file():
+        return None
+    try:
+        saved = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"SOURCE_FALLBACK_MANIFEST_INVALID: {type(exc).__name__}: {exc}") from exc
+    if not isinstance(saved, dict) or any(
+        saved.get(key) != staged.get(key)
+        for key in ("video_id", "channel_id", "source_sha256", "source_remote_path")
+    ):
+        raise RuntimeError("SOURCE_FALLBACK_IDENTITY_MISMATCH: refusing unrelated archived source")
+    expected = str(staged["source_sha256"])
+    with source.open("rb") as video:
+        actual = hashlib.file_digest(video, "sha256").hexdigest()
+    if actual != expected:
+        raise RuntimeError(
+            f"SOURCE_FALLBACK_SHA256_MISMATCH: expected={expected} actual={actual}"
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+    print(f"SOURCE_FALLBACK_VERIFIED: {source.name} sha256={actual}", flush=True)
+    return destination
+
+
 def _restore_source_cache(
     root: Path, *, env: dict[str, str] | None = None
 ) -> dict[str, Any] | None:
@@ -193,8 +241,9 @@ def _restore_source_cache(
     requested = settings.get("TJR_SOURCE_VIDEO_ID", "").strip()
     if not requested:
         return None
-    manifests = list(Path(cache_root).rglob("staged-original.json")) if cache_root else []
     channel = settings.get("TJR_MODAL_CHANNEL_ID", "")
+    manifests: list[Path] = []
+    failures: list[dict[str, str]] = []
     if (
         settings.get("TJR_PERSIST_SOURCE") == "1"
         and re.fullmatch(r"[A-Za-z0-9_-]{11}", requested)
@@ -202,45 +251,103 @@ def _restore_source_cache(
     ):
         root.mkdir(parents=True, exist_ok=True)
         index = root / "cached-source-index.json"
-        result = subprocess.run(
-            [
-                "modal",
-                "volume",
-                "get",
-                VOLUME,
-                f"cache/{channel}/{requested}/manifest.json",
-                str(index),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if result.returncode == 0 and index.is_file():
-            manifests.insert(0, index)
+        try:
+            result = subprocess.run(
+                [
+                    "modal",
+                    "volume",
+                    "get",
+                    VOLUME,
+                    f"cache/{channel}/{requested}/manifest.json",
+                    str(index),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode == 0 and index.is_file():
+                manifests.append(index)
+            elif result.returncode != 0:
+                failures.append(
+                    {
+                        "candidate": "modal-source-index",
+                        "error": f"exit={result.returncode} stderr={result.stderr[-450:]}",
+                    }
+                )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            failures.append(
+                {"candidate": "modal-source-index", "error": f"{type(exc).__name__}: {exc}"}
+            )
+    if cache_root:
+        manifests.extend(sorted(Path(cache_root).rglob("staged-original.json")))
+    # The remote index and prior GitHub manifest often reference the SAME remote
+    # original. Trying the same ~330 MB object twice created the 94-minute failure.
+    attempted: set[tuple[str, str]] = set()
     for manifest in manifests:
         try:
-            cached = json.loads(manifest.read_text())
-        except (ValueError, OSError):
+            cached = json.loads(manifest.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as exc:
+            failures.append({"candidate": str(manifest), "error": f"manifest: {exc}"})
             continue
         if not isinstance(cached, dict):
+            failures.append({"candidate": str(manifest), "error": "manifest is not an object"})
             continue
         if cached.get("video_id") != requested or cached.get("channel_id") != channel:
             continue
+        key = (str(cached.get("source_remote_path")), str(cached.get("source_sha256")))
+        if key in attempted:
+            print(f"SOURCE_CACHE_DUPLICATE_SKIPPED: {key[0]}", flush=True)
+            continue
+        attempted.add(key)
         cached.pop("source_cache_local_path", None)
+        destination = root / "cached-source"
         try:
-            local = _transfer_verified_original(cached, root / "cached-source", verify_media=False)
-        except (RuntimeError, OSError, subprocess.CalledProcessError):
-            print("SOURCE_CACHE_MISS: unavailable or invalid original bytes", flush=True)
+            fallback = _recover_source_from_fallback(
+                cached,
+                destination.with_suffix(Path(str(cached.get("source_remote_path"))).suffix),
+                fallback_root=settings.get("TJR_SOURCE_FALLBACK_ROOT", "").strip(),
+            )
+            if fallback is not None:
+                cached["source_cache_local_path"] = str(fallback.resolve())
+                # Build the verified manifest via the same exact identity+SHA contract.
+                _transfer_verified_original(cached, destination, verify_media=False)
+                local = destination.with_suffix(fallback.suffix)
+            else:
+                print(
+                    f"SOURCE_CACHE_TRANSFER_START: remote={key[0]} "
+                    f"deadline_seconds={_source_transfer_timeout()}",
+                    flush=True,
+                )
+                local = _transfer_verified_original(cached, destination, verify_media=False)
+        except (RuntimeError, OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            failure = f"{type(exc).__name__}: {exc}"
+            failures.append({"candidate": key[0], "error": failure[-1400:]})
+            print(f"SOURCE_CACHE_RESTORE_FAILED: remote={key[0]} detail={failure[-1400:]}", flush=True)
             continue
         cached["source_cache_local_path"] = str(local.resolve())
         cached["source_cache_reused"] = True
         root.mkdir(parents=True, exist_ok=True)
         (root / "staged-original.json").write_text(json.dumps(cached, indent=2) + "\n")
-        print(
-            "SOURCE_CACHE_HIT: exact verified bytes restored; YouTube download skipped", flush=True
-        )
+        print("SOURCE_CACHE_HIT: exact verified bytes restored; YouTube download skipped", flush=True)
         return cached
+    if failures:
+        root.mkdir(parents=True, exist_ok=True)
+        report = root / "source-cache-diagnostics.json"
+        report.write_text(
+            json.dumps(
+                {
+                    "video_id": requested,
+                    "channel_id": channel,
+                    "unique_media_attempts": len(attempted),
+                    "failures": failures,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(f"SOURCE_CACHE_DIAGNOSTICS: {report}", flush=True)
     return None
 
 
