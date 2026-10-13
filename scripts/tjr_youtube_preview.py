@@ -1221,6 +1221,9 @@ def render_youtube_previews(
             cache_path=run_dir / "editorial-cache.json",
             reuse_path=reuse[0] if reuse else None,
             require_reusable_editorial_cache=run_config.editorial_cache_root is not None,
+            force_full_candidate_reassessment=(
+                os.getenv("TJR_FORCE_FULL_CANDIDATE_REASSESSMENT", "").lower() == "true"
+            ),
         )
         # Scope the second pass to previously completed source reviews.
         # No discovery, selector or reviewer model call is made here. Ambiguous
