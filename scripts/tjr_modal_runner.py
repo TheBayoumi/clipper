@@ -227,10 +227,8 @@ def _recover_source_from_fallback(
         raise RuntimeError(
             f"SOURCE_FALLBACK_SHA256_MISMATCH: expected={expected} actual={actual}"
         )
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
     print(f"SOURCE_FALLBACK_VERIFIED: {source.name} sha256={actual}", flush=True)
-    return destination
+    return source
 
 
 def _restore_source_cache(
@@ -310,9 +308,8 @@ def _restore_source_cache(
             )
             if fallback is not None:
                 cached["source_cache_local_path"] = str(fallback.resolve())
-                # Build the verified manifest via the same exact identity+SHA contract.
-                _transfer_verified_original(cached, destination, verify_media=False)
-                local = destination.with_suffix(fallback.suffix)
+                # Every fallback is copied and checked through the SAME proof path.
+                local = _transfer_verified_original(cached, destination, verify_media=False)
             else:
                 print(
                     f"SOURCE_CACHE_TRANSFER_START: remote={key[0]} "
@@ -440,13 +437,43 @@ def _transfer_verified_original(
 
             shutil.copyfile(cached_local, original)
         else:
-            subprocess.run(["modal", "volume", "get", VOLUME, remote, str(original)], check=True)
+            print(
+                f"MODAL_SOURCE_TRANSFER: remote={remote} timeout={_source_transfer_timeout()}s",
+                flush=True,
+            )
+            try:
+                transfer = subprocess.run(
+                    ["modal", "volume", "get", VOLUME, remote, str(original)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=_source_transfer_timeout(),
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(
+                    f"MODAL_SOURCE_TRANSFER_TIMEOUT: remote={remote} "
+                    f"deadline={_source_transfer_timeout()}s"
+                ) from exc
+            if transfer.returncode != 0:
+                raise RuntimeError(
+                    f"MODAL_SOURCE_TRANSFER_FAILED: remote={remote} "
+                    f"exit={transfer.returncode} stderr={transfer.stderr[-900:]}"
+                )
         if not original.is_file():
             raise RuntimeError("Modal volume transfer did not produce an original")
         with original.open("rb") as src:
             actual = hashlib.file_digest(src, "sha256").hexdigest()
         if actual != expected:
-            raise RuntimeError("Modal original source transfer SHA-256 mismatch")
+            raise RuntimeError(
+                f"MODAL_SOURCE_SHA256_MISMATCH: remote={remote} "
+                f"expected={expected} actual={actual} size={original.stat().st_size}"
+            )
+        expected_size = staging.get("size_bytes")
+        if type(expected_size) is int and expected_size > 0 and original.stat().st_size != expected_size:
+            raise RuntimeError(
+                f"MODAL_SOURCE_SIZE_MISMATCH: remote={remote} "
+                f"expected={expected_size} actual={original.stat().st_size}"
+            )
         if verify_media:
             probe_original(original)
         manifest = {
