@@ -128,6 +128,9 @@ def _save_pipeline_completion(
 
 
 def _restore_completed_pipeline(root: Path) -> bool:
+    # A requested fresh assessment must not restore old completed render output.
+    if os.getenv("TJR_FORCE_FULL_CANDIDATE_REASSESSMENT", "").lower() == "true":
+        return False
     cached_root = os.getenv("TJR_RENDER_CACHE_ROOT", "").strip()
     if not cached_root or not os.getenv("TJR_SOURCE_VIDEO_ID", "").strip():
         return False
