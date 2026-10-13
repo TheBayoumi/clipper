@@ -912,6 +912,121 @@ def test_failed_production_transcript_cache_uses_verified_roundtrip_without_mp4_
         ({}, False),
     ],
 )
+def test_staged_original_publication_uses_hash_bound_archived_feed(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    from scripts.tjr_youtube_preview import archived_verified_publication
+
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
+    original = tmp_path / "original.mp4"
+    original.write_bytes(b"one specific verified source")
+    digest = hashlib.sha256(original.read_bytes()).hexdigest()
+    video = OfficialVideo("3S-fL9rNPp0", channel, "Source", "")
+    archive = tmp_path / "archived"
+    archive.mkdir()
+    manifest = {
+        "video_id": video.video_id,
+        "channel_id": channel,
+        "public_video_url": video.url,
+        "source_sha256": digest,
+    }
+    record = {
+        "video_id": video.video_id,
+        "channel_id": channel,
+        "url": video.url,
+        "published": "2026-10-09T20:27:11+00:00",
+    }
+    (archive / "staged-original.json").write_text(json.dumps(manifest))
+    (archive / "official-source-candidates.json").write_text(json.dumps([record]))
+    assert archived_verified_publication(
+        video, original, archive, "2026-09-01T00:00:00Z"
+    ) == record["published"]
+
+    # No mismatch, stale/forged upload, or missing source evidence can trigger
+    # an unapproved live yt-dlp fallback for a verified staged original.
+    cases = (
+        ("bad_sha", {**manifest, "source_sha256": "f" * 64}, record),
+        ("bad_owner", {**manifest, "channel_id": "UCxxxxxxxxxxxxxxxxxxxxxx"}, record),
+        ("bad_date", manifest, {**record, "published": "2026-08-09T20:27:11+00:00"}),
+        ("missing_date", manifest, {**record, "published": ""}),
+        ("wrong_video", manifest, {**record, "video_id": "X7msxvyQd_U"}),
+    )
+    for _label, staged, candidate in cases:
+        (archive / "staged-original.json").write_text(json.dumps(staged))
+        (archive / "official-source-candidates.json").write_text(json.dumps([candidate]))
+        with pytest.raises(RuntimeError, match="SOURCE_DATE_ARCHIVE_UNVERIFIED"):
+            archived_verified_publication(
+                video, original, archive, "2026-09-01T00:00:00Z"
+            )
+
+
+def test_staged_original_never_queries_youtube_for_missing_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    from scripts.tjr_youtube_preview import render_youtube_previews
+
+    channel = "UCf1q6dhccWr6eQEcFFnJSbA"
+    video = OfficialVideo("3S-fL9rNPp0", channel, "Official", "")
+    media = tmp_path / "source.mp4"
+    media.write_bytes(b"verified staged original fixture")
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    (archive / "staged-original.json").write_text(
+        json.dumps(
+            {
+                "video_id": video.video_id,
+                "channel_id": channel,
+                "public_video_url": video.url,
+                "source_sha256": hashlib.sha256(media.read_bytes()).hexdigest(),
+            }
+        )
+    )
+    (archive / "official-source-candidates.json").write_text(
+        json.dumps(
+            [{
+                "video_id": video.video_id,
+                "channel_id": channel,
+                "url": video.url,
+                "published": "2026-10-09T20:27:11+00:00",
+            }]
+        )
+    )
+    config = EditorialRunConfig(
+        brief=Path("campaigns/reach-double-coverage-dedicated.yaml"),
+        artifact_root=tmp_path / "output",
+        source_video_id=video.video_id,
+        target_channel_id=channel,
+        browser_capture_file=tmp_path / "stage.json",
+        editorial_cache_root=archive,
+        require_staged_original=True,
+    )
+    # Stop after the publication gate, but prove we got there without live metadata.
+    with (
+        patch.dict(
+            render_youtube_previews.__globals__,
+            {
+                "discover_official_uploads": lambda: ([video], []),
+                "_download_asset": lambda _url, path, **_kwargs: path,
+                "load_verified_browser_original": lambda *_: (
+                    video, media, {"id": video.video_id, "channel_id": channel, "duration": 3390}
+                ),
+                "verified_youtube_metadata": Mock(
+                    side_effect=AssertionError("cached original must not query YouTube metadata")
+                ),
+                "probe_source_profile": Mock(side_effect=RuntimeError("PROFILE_REACHED")),
+            },
+        ),
+        pytest.raises(RuntimeError, match="PROFILE_REACHED"),
+    ):
+        render_youtube_previews(
+            config.artifact_root, config.brief, run_config=config
+        )
+
+
 def test_publication_metadata_from_verified_youtube_never_guesses(source, accepted):
     from scripts.tjr_youtube_preview import _verified_publication_date
 
