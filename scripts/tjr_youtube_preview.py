@@ -614,6 +614,63 @@ def load_verified_browser_original(
     return selected, original, metadata
 
 
+def archived_verified_publication(
+    selected: OfficialVideo, source: Path, cache_root: Path | None, cutoff: str
+) -> str:
+    """Recover platform publication evidence pinned to the exact original bytes.
+
+    A real staged source is not permission to query YouTube again. Require
+    archived official-feed evidence from the SAME source-hash checkpoint.
+    """
+    if cache_root is None:
+        raise RuntimeError("SOURCE_DATE_ARCHIVE_MISSING: no pinned editorial checkpoint")
+    manifests = list(cache_root.rglob("staged-original.json"))
+    if len(manifests) != 1:
+        raise RuntimeError("SOURCE_DATE_ARCHIVE_MISSING: expected one source manifest")
+    try:
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            raise ValueError("archived source manifest is not an object")
+        if (
+            manifest.get("video_id") != selected.video_id
+            or manifest.get("channel_id") != selected.channel_id
+            or manifest.get("public_video_url") != selected.url
+            or manifest.get("source_sha256") != _sha_file(source)
+        ):
+            raise ValueError("archived source identity or SHA-256 differs")
+        records = list(cache_root.rglob("official-source-candidates.json"))
+        if len(records) != 1:
+            raise ValueError("expected one archived official channel feed")
+        candidates = json.loads(records[0].read_text(encoding="utf-8"))
+        if not isinstance(candidates, list):
+            raise ValueError("archived official feed is not a list")
+        matches = [
+            item
+            for item in candidates
+            if isinstance(item, dict)
+            and item.get("video_id") == selected.video_id
+            and item.get("channel_id") == selected.channel_id
+            and item.get("url") == selected.url
+        ]
+        if len(matches) != 1:
+            raise ValueError("exact source absent or duplicated in archived official feed")
+        published = matches[0].get("published")
+        if not isinstance(published, str):
+            raise ValueError("archived official upload date missing")
+        when = datetime.fromisoformat(published.replace("Z", "+00:00"))
+        if when.tzinfo is None:
+            raise ValueError("archived official upload date has no timezone")
+        floor = datetime.fromisoformat(cutoff.replace("Z", "+00:00"))
+        if floor.tzinfo is None:
+            floor = floor.replace(tzinfo=UTC)
+        if not floor.astimezone(UTC) <= when.astimezone(UTC) <= datetime.now(UTC):
+            raise ValueError("archived upload date violates campaign cutoff or current date")
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(f"SOURCE_DATE_ARCHIVE_UNVERIFIED: {exc}") from exc
+    LOGGER.info("SOURCE_PUBLICATION_ARCHIVE_VERIFIED=%s", when.isoformat())
+    return when.isoformat()
+
+
 def select_separate_clips(candidates: list[ClipCandidate], count: int = 2) -> list[ClipCandidate]:
     chosen: list[ClipCandidate] = []
     for candidate in sorted(candidates, key=lambda item: (-item.score, item.start)):
@@ -1131,12 +1188,20 @@ def render_youtube_previews(
         # video-ID-verified platform metadata; yt-dlp is skip-download here.
         if not chosen_video.published:
             step = "source_publication_metadata"
-            dated_metadata = verified_youtube_metadata(chosen_video)
-            published = _verified_publication_date(dated_metadata)
-            if not published:
-                raise RuntimeError(
-                    "SOURCE_DATE_UNVERIFIED: exact YouTube publication date unavailable"
+            if run_config.require_staged_original:
+                published = archived_verified_publication(
+                    chosen_video,
+                    source,
+                    run_config.editorial_cache_root,
+                    brief.published_after,
                 )
+            else:
+                dated_metadata = verified_youtube_metadata(chosen_video)
+                published = _verified_publication_date(dated_metadata)
+                if not published:
+                    raise RuntimeError(
+                        "SOURCE_DATE_UNVERIFIED: exact YouTube publication date unavailable"
+                    )
             chosen_video = replace(chosen_video, published=published)
             LOGGER.info("SOURCE_PUBLICATION_METADATA_VERIFIED=%s", published)
         source_profile = probe_source_profile(source)
