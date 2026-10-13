@@ -207,7 +207,9 @@ def _recover_source_from_fallback(
     """Restore GitHub's separately archived verified original, never arbitrary media."""
     if not fallback_root:
         return None
-    source = Path(fallback_root) / "verified-original.mp4"
+    source = Path(fallback_root) / (
+        "cached-source" + Path(str(staged.get("source_remote_path", ""))).suffix
+    )
     manifest = Path(fallback_root) / "staged-original.json"
     if not source.is_file() or not manifest.is_file():
         return None
@@ -217,7 +219,7 @@ def _recover_source_from_fallback(
         raise RuntimeError(f"SOURCE_FALLBACK_MANIFEST_INVALID: {type(exc).__name__}: {exc}") from exc
     if not isinstance(saved, dict) or any(
         saved.get(key) != staged.get(key)
-        for key in ("video_id", "channel_id", "source_sha256", "source_remote_path")
+        for key in ("video_id", "channel_id", "source_sha256")
     ):
         raise RuntimeError("SOURCE_FALLBACK_IDENTITY_MISMATCH: refusing unrelated archived source")
     expected = str(staged["source_sha256"])
@@ -788,7 +790,22 @@ def main(argv: list[str] | None = None) -> int:
                 with Path(output).open("a") as file:
                     file.write(f"pipeline_reused={'true' if reused else 'false'}\n")
             if not reused:
-                _acquire_original(set(), Path("tjr-modal-probe"))
+                probe = Path("tjr-modal-probe")
+                staging = _acquire_original(set(), probe)
+                local = staging.get("source_cache_local_path")
+                if not isinstance(local, str) or not Path(local).is_file():
+                    verified = _transfer_verified_original(
+                        staging, probe / "cached-source", verify_media=True
+                    )
+                    staging["source_cache_local_path"] = str(verified.resolve())
+                    probe.joinpath("staged-original.json").write_text(
+                        json.dumps(staging, indent=2) + "\n", encoding="utf-8"
+                    )
+                print(
+                    "SOURCE_PREFLIGHT_VERIFIED: exact original SHA-256 verified "
+                    "and durable fallback staging prepared",
+                    flush=True,
+                )
         else:
             config = load_editorial_run_config(args.config) if args.config is not None else None
             run_modal_production(run_config=config)
