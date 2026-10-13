@@ -51,6 +51,11 @@ on:
         required: false
         type: string
         default: ""
+      source_fallback_run_id:
+        description: "Optional prior workflow run containing a verified-source backup artifact."
+        required: false
+        type: string
+        default: ""
       full_candidate_reassessment:
         description: "Rerun selector and reviewer on all cached proposals; reuse original source and transcript."
         required: false
@@ -895,6 +900,44 @@ jobs:
           if [[ -z "${{ inputs.transcript_source_run_id }}" ]]; then
             echo "TJR_TRANSCRIPT_CACHE_ROOT=$PWD/tjr-editorial-cache" >> "$GITHUB_ENV"
           fi
+      - name: Locate durable verified-original fallback
+        id: source_fallback
+        uses: actions/github-script@v7
+        env:
+          FALLBACK_RUN_ID: ${{ inputs.source_fallback_run_id }}
+          TARGET_CHANNEL: ${{ inputs.target_channel_id }}
+        with:
+          script: |
+            const explicit = process.env.FALLBACK_RUN_ID;
+            const prefix = 'tjr-verified-original-' + process.env.TARGET_CHANNEL + '-';
+            if (explicit) {
+              if (!/^[1-9][0-9]{7,14}$/.test(explicit)) {
+                core.setFailed('SOURCE_FALLBACK_RUN_ID_INVALID');
+                return;
+              }
+              core.setOutput('run_id', explicit);
+              return;
+            }
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {
+              ...context.repo, per_page: 100
+            });
+            const match = artifacts.find(a => !a.expired && a.name.startsWith(prefix)
+              && a.workflow_run?.head_branch === context.ref.replace('refs/heads/', '')
+              && String(a.workflow_run.id) !== String(context.runId));
+            core.setOutput('run_id', match ? String(match.workflow_run.id) : '');
+            core.info(match ? 'Existing verified-original backup found; bytes will be SHA-256 verified.'
+              : 'No durable source backup found; using bounded Modal source preflight.');
+      - name: Restore durable verified-original backup
+        if: steps.source_fallback.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: tjr-verified-original-${{ inputs.target_channel_id }}-${{ steps.source_fallback.outputs.run_id }}
+          path: tjr-verified-source-cache
+          run-id: ${{ steps.source_fallback.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Enable verified source fallback
+        if: steps.source_fallback.outputs.run_id != ''
+        run: echo "TJR_SOURCE_FALLBACK_ROOT=$PWD/tjr-verified-source-cache" >> "$GITHUB_ENV"
       - name: Reuse completed pipeline or acquire missing verified source
         id: source_plan
         env:
@@ -903,6 +946,19 @@ jobs:
           set -euo pipefail
           rm -f tjr-modal-probe/staged-original.json
           python -m scripts.tjr_modal_runner --acquire-original
+      - name: Preserve verified original separately before editorial inference
+        if: steps.source_plan.outputs.pipeline_reused != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tjr-verified-original-${{ inputs.target_channel_id }}-${{ github.run_id }}
+          path: |
+            tjr-modal-probe/cached-source.mp4
+            tjr-modal-probe/cached-source.mkv
+            tjr-modal-probe/cached-source.webm
+            tjr-modal-probe/staged-original.json
+          retention-days: 30
+          compression-level: 0
+          if-no-files-found: error
       - name: Download complete transcript from an explicitly selected prior run
         if: inputs.transcript_source_run_id != ''
         uses: actions/download-artifact@v4
@@ -936,6 +992,7 @@ jobs:
           path: |
             tjr-modal-probe/verified-original-egress.json
             tjr-modal-probe/staged-original.json
+            tjr-modal-probe/source-cache-diagnostics.json
             tjr-modal-probe/pipeline-source-state.json
             tjr-modal-probe/editorial-run.json
             tjr-modal-probe/approved-watermark.json
