@@ -51,6 +51,11 @@ on:
         required: false
         type: string
         default: ""
+      full_candidate_reassessment:
+        description: "Rerun selector and reviewer on all cached proposals; reuse original source and transcript."
+        required: false
+        type: boolean
+        default: false
       editorial_preflight:
         description: "Run real-model reviewer regression on cached transcript only; no source acquisition."
         required: false
@@ -831,6 +836,7 @@ jobs:
       TJR_RENDER_SAFETY_LIMIT: "20"
       TJR_SOURCE_VIDEO_ID: ${{ inputs.source_video_id }}
       TJR_TRANSCRIPT_SOURCE_RUN_ID: ${{ inputs.transcript_source_run_id }}
+      TJR_FORCE_FULL_CANDIDATE_REASSESSMENT: ${{ inputs.full_candidate_reassessment }}
       CLIPPER_APPROVED_ASSET_SHA256: "5bd213d18ba0e8e29fbdecf62e967caa760fbb1d7f9700f990ee2e43feec698b"
       CLIPPER_IMAGE_ASSET_CACHE_MANIFEST: "tjr-modal-probe/approved-watermark.json"
     steps:
