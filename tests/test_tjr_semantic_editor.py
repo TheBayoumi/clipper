@@ -606,6 +606,32 @@ def test_structured_editor_selects_complete_span_and_full_clip_hook(tmp_path) ->
     )
     assert second == first and reused["cache_reused"] is True and len(calls) == 1
 
+    # An explicitly authorized full run re-executes the selector and reviewer
+    # even when a completed, identity-matching checkpoint is available.
+    reviewer_calls = []
+
+    def fresh_review(context):
+        reviewer_calls.append(context)
+        return _review(context)
+
+    third, full_audit = refine_contextual_candidates(
+        brief,
+        [proposal],
+        segments,
+        source_sha256="a" * 64,
+        cache_path=tmp_path / "fully-reassessed.json",
+        reuse_path=output,
+        force_full_candidate_reassessment=True,
+        assessor=assess,
+        reviewer=fresh_review,
+    )
+    assert third == first
+    assert len(calls) == 2
+    assert len(reviewer_calls) == 1
+    assert full_audit["selector_cache_hits"] == 0
+    assert full_audit["reviewer_cache_hits"] == 0
+    assert full_audit["cache_reused"] is False
+
 
 def test_structured_editor_rejects_incomplete_cut_and_unsupported_hook(tmp_path) -> None:
     import pytest
