@@ -216,7 +216,9 @@ def _recover_source_from_fallback(
     try:
         saved = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise RuntimeError(f"SOURCE_FALLBACK_MANIFEST_INVALID: {type(exc).__name__}: {exc}") from exc
+        raise RuntimeError(
+            f"SOURCE_FALLBACK_MANIFEST_INVALID: {type(exc).__name__}: {exc}"
+        ) from exc
     if not isinstance(saved, dict) or any(
         saved.get(key) != staged.get(key)
         for key in ("video_id", "channel_id", "source_sha256")
@@ -319,16 +321,27 @@ def _restore_source_cache(
                     flush=True,
                 )
                 local = _transfer_verified_original(cached, destination, verify_media=False)
-        except (RuntimeError, OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        except (
+            RuntimeError,
+            OSError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ) as exc:
             failure = f"{type(exc).__name__}: {exc}"
             failures.append({"candidate": key[0], "error": failure[-1400:]})
-            print(f"SOURCE_CACHE_RESTORE_FAILED: remote={key[0]} detail={failure[-1400:]}", flush=True)
+            print(
+                f"SOURCE_CACHE_RESTORE_FAILED: remote={key[0]} detail={failure[-1400:]}",
+                flush=True,
+            )
             continue
         cached["source_cache_local_path"] = str(local.resolve())
         cached["source_cache_reused"] = True
         root.mkdir(parents=True, exist_ok=True)
         (root / "staged-original.json").write_text(json.dumps(cached, indent=2) + "\n")
-        print("SOURCE_CACHE_HIT: exact verified bytes restored; YouTube download skipped", flush=True)
+        print(
+            "SOURCE_CACHE_HIT: exact verified bytes restored; YouTube download skipped",
+            flush=True,
+        )
         return cached
     if failures:
         root.mkdir(parents=True, exist_ok=True)
@@ -471,7 +484,11 @@ def _transfer_verified_original(
                 f"expected={expected} actual={actual} size={original.stat().st_size}"
             )
         expected_size = staging.get("size_bytes")
-        if type(expected_size) is int and expected_size > 0 and original.stat().st_size != expected_size:
+        if (
+            type(expected_size) is int
+            and expected_size > 0
+            and original.stat().st_size != expected_size
+        ):
             raise RuntimeError(
                 f"MODAL_SOURCE_SIZE_MISMATCH: remote={remote} "
                 f"expected={expected_size} actual={original.stat().st_size}"
