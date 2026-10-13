@@ -276,6 +276,13 @@ def merge(root: Path, parts: Path, output: Path) -> None:
         ) + "\n"
     )
     shutil.copyfile(unique(root, "proposal-cache.json"), output / "proposal-cache.json")
+    # Staged-original publication provenance must remain available offline.
+    # The renderer MUST NOT query YouTube again when the official feed omits a date.
+    shutil.copyfile(unique(root, "staged-original.json"), output / "staged-original.json")
+    shutil.copyfile(
+        unique(root, "official-source-candidates.json"),
+        output / "official-source-candidates.json",
+    )
     (output / "merge-proof.json").write_text(
         json.dumps(
             {
