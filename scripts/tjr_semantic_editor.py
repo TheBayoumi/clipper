@@ -1640,9 +1640,7 @@ def refine_contextual_candidates(
             )
             started = time.monotonic()
             checkpoint(number)
-            cached_decision = (
-                None if force_full_candidate_reassessment else cached.get("decision")
-            )
+            cached_decision = None if force_full_candidate_reassessment else cached.get("decision")
             valid_cached_decision = (
                 isinstance(cached_decision, dict)
                 and type(cached_decision.get("keep")) is bool
