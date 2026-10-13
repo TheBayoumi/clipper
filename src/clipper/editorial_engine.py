@@ -178,7 +178,7 @@ def _review_excluded_event_gap(
     editor: Any, selected: list[str], after: list[str]
 ) -> dict[str, Any]:
     """Inspect after-cut events without seeing earlier payoff or dependency verdicts."""
-    return editor._review_completion(
+    result: dict[str, Any] = editor._review_completion(
         "Perform a BLIND excluded-event inventory, independent of any earlier "
         "completion judgment. Begin with excluded_after: does it disclose a "
         "specific new completed event, hit, confrontation, reveal, result, "
@@ -211,6 +211,7 @@ def _review_excluded_event_gap(
         },
         512,
     )
+    return result
 
 
 def _optional_contrast_proof_valid(
