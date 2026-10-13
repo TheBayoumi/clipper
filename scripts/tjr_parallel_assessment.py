@@ -94,7 +94,8 @@ def assessment_data(
         raise RuntimeError("PARALLEL_BASELINE_CHECKPOINT_INVALID")
     for i, assessment in enumerate(decisions):
         if not isinstance(assessment, dict) or (
-            assessment.get("proposal_start"), assessment.get("proposal_end")
+            assessment.get("proposal_start"),
+            assessment.get("proposal_end"),
         ) != (candidates[i]["start"], candidates[i]["end"]):
             raise RuntimeError(f"PARALLEL_BASELINE_ORDER_MISMATCH: {i}")
     return cache, proposal, transcript, candidates
@@ -190,7 +191,8 @@ def shard(root: Path, output: Path, *, start: int, stop: int) -> None:
                 "complete": True,
             },
             indent=2,
-        ) + "\n"
+        )
+        + "\n"
     )
     print(f"PARALLEL_SHARD_COMPLETE: indices={start}:{stop} accepted={len(result)}", flush=True)
 
@@ -223,10 +225,7 @@ def merge(root: Path, parts: Path, output: Path) -> None:
             raise RuntimeError(f"PARALLEL_SHARD_CONTRACT_FAILED: {path}")
         if merged_identity is None:
             merged_identity = identity
-            if any(
-                identity.get(key) != baseline["identity"].get(key)
-                for key in SOURCE_KEYS
-            ):
+            if any(identity.get(key) != baseline["identity"].get(key) for key in SOURCE_KEYS):
                 raise RuntimeError("PARALLEL_BASELINE_REVIEW_CONTRACT_MISMATCH")
         elif identity != merged_identity:
             raise RuntimeError("PARALLEL_SHARD_IDENTITY_DRIFT")
@@ -234,11 +233,10 @@ def merge(root: Path, parts: Path, output: Path) -> None:
             raise RuntimeError("PARALLEL_SHARD_OVERLAP_OR_RANGE")
         for i, decision in enumerate(saved["audit"]["assessments"]):
             if start <= i < stop:
-                if (
-                    decision.get("rejection") == "SHARD_NOT_ASSIGNED"
-                    or (decision.get("proposal_start"), decision.get("proposal_end"))
-                    != (candidates[i]["start"], candidates[i]["end"])
-                ):
+                if decision.get("rejection") == "SHARD_NOT_ASSIGNED" or (
+                    decision.get("proposal_start"),
+                    decision.get("proposal_end"),
+                ) != (candidates[i]["start"], candidates[i]["end"]):
                     raise RuntimeError(f"PARALLEL_MISSING_OR_WRONG_DECISION: {i}")
                 all_decisions[i] = decision
             elif decision.get("rejection") != "SHARD_NOT_ASSIGNED":
@@ -272,7 +270,8 @@ def merge(root: Path, parts: Path, output: Path) -> None:
                 "candidates": all_clips,
             },
             indent=2,
-        ) + "\n"
+        )
+        + "\n"
     )
     shutil.copyfile(unique(root, "proposal-cache.json"), output / "proposal-cache.json")
     # Staged-original publication provenance must remain available offline.
@@ -295,7 +294,8 @@ def merge(root: Path, parts: Path, output: Path) -> None:
                 "all_indices_unique": True,
             },
             indent=2,
-        ) + "\n"
+        )
+        + "\n"
     )
     print(
         f"PARALLEL_MERGE_VERIFIED: {len(all_decisions)}/{len(candidates)} "
