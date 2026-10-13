@@ -469,6 +469,147 @@ def test_source_cache_skips_youtube_acquisition(tmp_path, monkeypatch):
     run.assert_not_called()
 
 
+def test_modal_duplicate_manifests_fetch_the_same_source_only_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+    import json
+
+    import scripts.tjr_modal_runner as runner
+
+    payload = b"verified original source bytes"
+    staged = _staged("3S-fL9rNPp0")
+    staged["source_sha256"] = hashlib.sha256(payload).hexdigest()
+    staged["size_bytes"] = len(payload)
+    prior = tmp_path / "prior"
+    prior.mkdir()
+    (prior / "staged-original.json").write_text(json.dumps(staged))
+    monkeypatch.setenv("TJR_SOURCE_CACHE_ROOT", str(prior))
+    monkeypatch.setenv("TJR_PERSIST_SOURCE", "1")
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "3S-fL9rNPp0")
+    monkeypatch.setenv("TJR_MODAL_CHANNEL_ID", CHANNEL)
+    requests = []
+
+    def modal(args, **kwargs):
+        requests.append(args)
+        Path(args[-1]).parent.mkdir(parents=True, exist_ok=True)
+        if str(args[-2]).endswith("/manifest.json"):
+            Path(args[-1]).write_text(json.dumps(staged))
+        else:
+            Path(args[-1]).write_bytes(payload)
+        return Mock(returncode=0, stdout="ok", stderr="")
+
+    with patch.object(runner.subprocess, "run", side_effect=modal):
+        result = runner._restore_source_cache(tmp_path / "current")
+    assert result is not None and result["source_cache_reused"] is True
+    assert result["source_cache_local_path"] == str(
+        (tmp_path / "current" / "cached-source.mp4").resolve()
+    )
+    assert len([request for request in requests if request[-2] == staged["source_remote_path"]]) == 1
+    assert Path(result["source_cache_local_path"]).read_bytes() == payload
+
+
+def test_source_cache_failure_records_exact_sha_error_without_retrying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    import scripts.tjr_modal_runner as runner
+
+    prior = tmp_path / "prior"
+    prior.mkdir()
+    (prior / "staged-original.json").write_text(json.dumps(_staged("3S-fL9rNPp0")))
+    monkeypatch.setenv("TJR_SOURCE_CACHE_ROOT", str(prior))
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "3S-fL9rNPp0")
+    monkeypatch.setenv("TJR_MODAL_CHANNEL_ID", CHANNEL)
+    monkeypatch.delenv("TJR_PERSIST_SOURCE", raising=False)
+
+    def corrupt(args, **kwargs):
+        Path(args[-1]).write_bytes(b"source bytes with wrong checksum")
+        assert kwargs["timeout"] == 600
+        return Mock(returncode=0, stdout="ok", stderr="")
+
+    with patch.object(runner.subprocess, "run", side_effect=corrupt) as command:
+        result = runner._restore_source_cache(tmp_path / "current")
+    assert result is None and command.call_count == 1
+    report = json.loads((tmp_path / "current" / "source-cache-diagnostics.json").read_text())
+    assert report["unique_media_attempts"] == 1
+    assert "MODAL_SOURCE_SHA256_MISMATCH" in report["failures"][0]["error"]
+    assert not (tmp_path / "current" / "cached-source.mp4").exists()
+
+
+def test_source_cache_timeout_is_bounded_and_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    import subprocess
+
+    import scripts.tjr_modal_runner as runner
+
+    prior = tmp_path / "prior"
+    prior.mkdir()
+    (prior / "staged-original.json").write_text(json.dumps(_staged("3S-fL9rNPp0")))
+    monkeypatch.setenv("TJR_SOURCE_CACHE_ROOT", str(prior))
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "3S-fL9rNPp0")
+    monkeypatch.setenv("TJR_MODAL_CHANNEL_ID", CHANNEL)
+    monkeypatch.delenv("TJR_PERSIST_SOURCE", raising=False)
+
+    with patch.object(
+        runner.subprocess,
+        "run",
+        side_effect=subprocess.TimeoutExpired(cmd=["modal", "volume", "get"], timeout=600),
+    ) as command:
+        assert runner._restore_source_cache(tmp_path / "current") is None
+    assert command.call_count == 1
+    report = json.loads((tmp_path / "current" / "source-cache-diagnostics.json").read_text())
+    assert "MODAL_SOURCE_TRANSFER_TIMEOUT" in report["failures"][0]["error"]
+
+
+def test_durable_verified_source_fallback_requires_exact_sha_and_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+    import json
+
+    import scripts.tjr_modal_runner as runner
+
+    original = b"exact durable source media bytes"
+    stage = _staged("3S-fL9rNPp0")
+    stage["source_sha256"] = hashlib.sha256(original).hexdigest()
+    prior, backup = tmp_path / "prior", tmp_path / "backup"
+    prior.mkdir()
+    backup.mkdir()
+    (prior / "staged-original.json").write_text(json.dumps(stage))
+    (backup / "staged-original.json").write_text(json.dumps(stage))
+    (backup / "cached-source.mp4").write_bytes(original)
+    monkeypatch.setenv("TJR_SOURCE_CACHE_ROOT", str(prior))
+    monkeypatch.setenv("TJR_SOURCE_FALLBACK_ROOT", str(backup))
+    monkeypatch.setenv("TJR_SOURCE_VIDEO_ID", "3S-fL9rNPp0")
+    monkeypatch.setenv("TJR_MODAL_CHANNEL_ID", CHANNEL)
+    monkeypatch.delenv("TJR_PERSIST_SOURCE", raising=False)
+
+    with patch.object(runner.subprocess, "run") as modal:
+        restored = runner._restore_source_cache(tmp_path / "current")
+    modal.assert_not_called()
+    assert restored is not None
+    assert Path(restored["source_cache_local_path"]).read_bytes() == original
+    (backup / "cached-source.mp4").write_bytes(b"corrupt backup")
+    with patch.object(runner.subprocess, "run") as modal:
+        assert runner._restore_source_cache(tmp_path / "corrupt") is None
+    modal.assert_not_called()
+    errors = json.loads((tmp_path / "corrupt" / "source-cache-diagnostics.json").read_text())
+    assert "SOURCE_FALLBACK_SHA256_MISMATCH" in errors["failures"][0]["error"]
+    (backup / "cached-source.mp4").write_bytes(original)
+    (backup / "staged-original.json").write_text(
+        json.dumps({**stage, "video_id": "X7msxvyQd_U"})
+    )
+    with patch.object(runner.subprocess, "run") as modal:
+        assert runner._restore_source_cache(tmp_path / "wrong-video") is None
+    modal.assert_not_called()
+    errors = json.loads((tmp_path / "wrong-video" / "source-cache-diagnostics.json").read_text())
+    assert "SOURCE_FALLBACK_IDENTITY_MISMATCH" in errors["failures"][0]["error"]
+
+
 def test_explicit_editorial_recovery_never_falls_back_to_new_youtube_download(
     tmp_path, monkeypatch
 ):
