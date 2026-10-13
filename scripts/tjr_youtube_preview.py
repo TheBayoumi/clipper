@@ -615,7 +615,7 @@ def load_verified_browser_original(
 
 
 def archived_verified_publication(
-    selected: OfficialVideo, source: Path, cache_root: Path | None, cutoff: str
+    selected: OfficialVideo, source: Path, cache_root: Path | None, cutoff: str | None
 ) -> str:
     """Recover platform publication evidence pinned to the exact original bytes.
 
@@ -660,7 +660,11 @@ def archived_verified_publication(
         when = datetime.fromisoformat(published.replace("Z", "+00:00"))
         if when.tzinfo is None:
             raise ValueError("archived official upload date has no timezone")
-        floor = datetime.fromisoformat(cutoff.replace("Z", "+00:00"))
+        floor = (
+            datetime.fromisoformat(cutoff.replace("Z", "+00:00"))
+            if cutoff
+            else datetime(2005, 1, 1, tzinfo=UTC)
+        )
         if floor.tzinfo is None:
             floor = floor.replace(tzinfo=UTC)
         if not floor.astimezone(UTC) <= when.astimezone(UTC) <= datetime.now(UTC):
