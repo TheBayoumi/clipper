@@ -890,6 +890,65 @@ def test_excluded_event_gap_blocks_second_unresolved_story_payoff():
         )
 
 
+def test_excluded_event_inventory_evidence_contract_is_fail_closed():
+    import pytest
+
+    from clipper.editorial_engine import SourceEvidenceError, _excluded_event_gap_valid
+
+    selected = [
+        "The defender always wanted a hit on the quarterback.",
+        "I made the throw and jumped backward.",
+    ]
+    excluded = ["He then hit me hard, lifted me and drove me into the ground."]
+    absent = {"first_unit": -1, "last_unit": -1}
+    before = {"first_unit": 0, "last_unit": 0}
+    realized = {"first_unit": 1, "last_unit": 1}
+    after = {"first_unit": 0, "last_unit": 0}
+    base = {
+        "excluded_event_span": after,
+        "prior_event_setup_span": before,
+        "delivered_event_outcome_span": absent,
+        "status": "unresolved_linked",
+        "reason": "An anticipated impact is revealed only after the cut.",
+    }
+    assert _excluded_event_gap_valid(base, selected, excluded) is False
+    already = {
+        **base,
+        "status": "delivered_same_event",
+        "delivered_event_outcome_span": realized,
+    }
+    assert _excluded_event_gap_valid(already, selected, excluded) is True
+    independent = {
+        **base,
+        "status": "independent_example",
+        "prior_event_setup_span": absent,
+    }
+    assert _excluded_event_gap_valid(independent, selected, excluded) is True
+    non_event = {
+        **independent,
+        "status": "non_event",
+        "excluded_event_span": absent,
+    }
+    assert _excluded_event_gap_valid(non_event, selected, excluded) is True
+    assert _excluded_event_gap_valid({**base, "status": "uncertain"}, selected, excluded) is False
+    invalid_records = (
+        None,
+        [],
+        {"status": "unresolved_linked"},
+        {**base, "status": "fabricated_relation"},
+        {**base, "reason": ""},
+        {**base, "reason": "x" * 281},
+        {**base, "prior_event_setup_span": absent},
+        {**base, "delivered_event_outcome_span": realized},
+        {**already, "delivered_event_outcome_span": absent},
+        {**independent, "prior_event_setup_span": before},
+        {**non_event, "excluded_event_span": after},
+    )
+    for record in invalid_records:
+        with pytest.raises(SourceEvidenceError):
+            _excluded_event_gap_valid(record, selected, excluded)
+
+
 def test_missing_contrast_without_resolution_remains_vetoed():
     from clipper.editorial_engine import _optional_contrast_proof_valid
 
