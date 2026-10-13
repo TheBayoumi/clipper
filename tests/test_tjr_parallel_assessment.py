@@ -1,6 +1,7 @@
 """Small, model-free checks for parallel checkpoint and merge invariants."""
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,17 @@ def _archive(root: Path) -> tuple[dict, list[dict]]:
     _json(
         root / "tjr-modal-probe" / "staged-original.json",
         {"video_id": "3S-fL9rNPp0", "source_sha256": "b" * 64},
+    )
+    _json(
+        root / "case" / "official-source-candidates.json",
+        [
+            {
+                "video_id": "3S-fL9rNPp0",
+                "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
+                "url": "https://www.youtube.com/watch?v=3S-fL9rNPp0",
+                "published": "2026-10-09T20:27:11+00:00",
+            }
+        ],
     )
     return identity, proposals
 
@@ -138,7 +150,7 @@ def test_aggregation_rejects_missing_overlap_and_identity_drift(tmp_path: Path) 
     _shard(parts, identity, proposals, 3, 5)
     with pytest.raises(RuntimeError, match="OVERLAP"):
         merge(baseline, parts, tmp_path / "overlap")
-    (parts / "editorial-shard-3-5").rename(parts / "removed-overlap")
+    shutil.rmtree(parts / "editorial-shard-3-5")
     _shard(parts, identity, proposals, 4, 5)
     shard_path = parts / "editorial-shard-4-5" / "editorial-cache.json"
     edited = json.loads(shard_path.read_text())
