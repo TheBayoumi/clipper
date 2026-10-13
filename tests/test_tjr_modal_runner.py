@@ -506,8 +506,7 @@ def test_modal_duplicate_manifests_fetch_the_same_source_only_once(
         (tmp_path / "current" / "cached-source.mp4").resolve()
     )
     assert (
-        len([request for request in requests if request[-2] == staged["source_remote_path"]])
-        == 1
+        len([request for request in requests if request[-2] == staged["source_remote_path"]]) == 1
     )
     assert Path(result["source_cache_local_path"]).read_bytes() == payload
 
@@ -603,9 +602,7 @@ def test_durable_verified_source_fallback_requires_exact_sha_and_identity(
     errors = json.loads((tmp_path / "corrupt" / "source-cache-diagnostics.json").read_text())
     assert "SOURCE_FALLBACK_SHA256_MISMATCH" in errors["failures"][0]["error"]
     (backup / "cached-source.mp4").write_bytes(original)
-    (backup / "staged-original.json").write_text(
-        json.dumps({**stage, "video_id": "X7msxvyQd_U"})
-    )
+    (backup / "staged-original.json").write_text(json.dumps({**stage, "video_id": "X7msxvyQd_U"}))
     with patch.object(runner.subprocess, "run") as modal:
         assert runner._restore_source_cache(tmp_path / "wrong-video") is None
     modal.assert_not_called()
