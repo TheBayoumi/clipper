@@ -17,7 +17,6 @@ from typing import Any
 from clipper.brief import load_brief
 from clipper.models import ClipCandidate, TranscriptSegment, WordTiming
 
-
 SHARD_WIDTH = 8
 SOURCE_KEYS = (
     "version",
