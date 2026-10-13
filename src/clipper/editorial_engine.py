@@ -168,7 +168,10 @@ def _excluded_event_gap_valid(gap: Any, selected: list[str], after: list[str]) -
         )
         or (status == "delivered_same_event" and (event is None or outcome is None))
         or (status == "independent_example" and (event is None or setup is not None))
-        or (status == "non_event" and event is not None)
+        # For non_event, the model may cite after-cut speech to explain what
+        # it inspected. Those words are not necessarily an event. They must
+        # not, however, claim a linked setup or delivered event outcome.
+        or (status == "non_event" and (setup is not None or outcome is not None))
     ):
         raise SourceEvidenceError("excluded-event inventory lacks canonical event evidence")
     return status in _EVENT_GAP_SAFE
