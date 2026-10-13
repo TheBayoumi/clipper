@@ -940,9 +940,10 @@ def test_staged_original_publication_uses_hash_bound_archived_feed(
     }
     (archive / "staged-original.json").write_text(json.dumps(manifest))
     (archive / "official-source-candidates.json").write_text(json.dumps([record]))
-    assert archived_verified_publication(
-        video, original, archive, "2026-09-01T00:00:00Z"
-    ) == record["published"]
+    assert (
+        archived_verified_publication(video, original, archive, "2026-09-01T00:00:00Z")
+        == record["published"]
+    )
 
     # No mismatch, stale/forged upload, or missing source evidence can trigger
     # an unapproved live yt-dlp fallback for a verified staged original.
@@ -957,9 +958,7 @@ def test_staged_original_publication_uses_hash_bound_archived_feed(
         (archive / "staged-original.json").write_text(json.dumps(staged))
         (archive / "official-source-candidates.json").write_text(json.dumps([candidate]))
         with pytest.raises(RuntimeError, match="SOURCE_DATE_ARCHIVE_UNVERIFIED"):
-            archived_verified_publication(
-                video, original, archive, "2026-09-01T00:00:00Z"
-            )
+            archived_verified_publication(video, original, archive, "2026-09-01T00:00:00Z")
 
 
 def test_staged_original_never_queries_youtube_for_missing_publication(
@@ -988,12 +987,14 @@ def test_staged_original_never_queries_youtube_for_missing_publication(
     )
     (archive / "official-source-candidates.json").write_text(
         json.dumps(
-            [{
-                "video_id": video.video_id,
-                "channel_id": channel,
-                "url": video.url,
-                "published": "2026-10-09T20:27:11+00:00",
-            }]
+            [
+                {
+                    "video_id": video.video_id,
+                    "channel_id": channel,
+                    "url": video.url,
+                    "published": "2026-10-09T20:27:11+00:00",
+                }
+            ]
         )
     )
     config = EditorialRunConfig(
@@ -1013,7 +1014,9 @@ def test_staged_original_never_queries_youtube_for_missing_publication(
                 "discover_official_uploads": lambda: ([video], []),
                 "_download_asset": lambda _url, path, **_kwargs: path,
                 "load_verified_browser_original": lambda *_: (
-                    video, media, {"id": video.video_id, "channel_id": channel, "duration": 3390}
+                    video,
+                    media,
+                    {"id": video.video_id, "channel_id": channel, "duration": 3390},
                 ),
                 "verified_youtube_metadata": Mock(
                     side_effect=AssertionError("cached original must not query YouTube metadata")
@@ -1023,9 +1026,7 @@ def test_staged_original_never_queries_youtube_for_missing_publication(
         ),
         pytest.raises(RuntimeError, match="PROFILE_REACHED"),
     ):
-        render_youtube_previews(
-            config.artifact_root, config.brief, run_config=config
-        )
+        render_youtube_previews(config.artifact_root, config.brief, run_config=config)
 
 
 def test_publication_metadata_from_verified_youtube_never_guesses(source, accepted):
