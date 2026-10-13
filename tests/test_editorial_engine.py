@@ -625,14 +625,22 @@ def test_optional_proof_rejects_schema_valid_but_fake_delivered_payoff():
 
     with pytest.raises(SourceEvidenceError, match="canonical proof"):
         _optional_contrast_proof_valid(
-            {"verdicts": [build("pending", pointer)] * 2, "event_gap": None, "optional_verified": False},
+            {
+                "verdicts": [build("pending", pointer)] * 2,
+                "event_gap": None,
+                "optional_verified": False,
+            },
             delivered,
             after,
             0,
         )
     with pytest.raises(SourceEvidenceError, match="canonical proof"):
         _optional_contrast_proof_valid(
-            {"verdicts": [build("delivered", absent)] * 2, "event_gap": None, "optional_verified": False},
+            {
+                "verdicts": [build("delivered", absent)] * 2,
+                "event_gap": None,
+                "optional_verified": False,
+            },
             delivered,
             after,
             0,
@@ -711,9 +719,18 @@ def test_narrative_proof_validation_fails_closed_on_invalid_combinations():
         {"verdicts": [valid], "event_gap": None, "optional_verified": True},
         {"verdicts": "untrusted", "event_gap": None, "optional_verified": False},
         {"verdicts": [valid, valid], "event_gap": safe_event_guard, "optional_verified": False},
-        {"verdicts": [valid, valid], "event_gap": safe_event_guard, "optional_verified": True, "other": "tamper"},
+        {
+            "verdicts": [valid, valid],
+            "event_gap": safe_event_guard,
+            "optional_verified": True,
+            "other": "tamper",
+        },
         {"verdicts": [valid, valid], "event_gap": safe_event_guard, "optional_verified": 1},
-        {"verdicts": [valid, {"obligation": valid["obligation"]}], "event_gap": None, "optional_verified": True},
+        {
+            "verdicts": [valid, {"obligation": valid["obligation"]}],
+            "event_gap": None,
+            "optional_verified": True,
+        },
         {
             "verdicts": [
                 valid,
