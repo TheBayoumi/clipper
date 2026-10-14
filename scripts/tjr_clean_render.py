@@ -15,7 +15,6 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-
 _VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SOURCE_STATUS = "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED"
