@@ -152,10 +152,24 @@ def clean_ffmpeg_command(source: Path, destination: Path, *, start: float, end: 
             "trunc(min(ih\\,iw*16/9)/2)*2:(iw-ow)/2:(ih-oh)/2,"
             "scale=1080:1920:flags=lanczos,setsar=1"
         ),
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
-        "-map_metadata", "-1", "-movflags", "+faststart",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-ar",
+        "48000",
+        "-map_metadata",
+        "-1",
+        "-movflags",
+        "+faststart",
         str(destination),
     ]
 
@@ -170,9 +184,7 @@ def render(selection_path: Path, staging_path: Path, source: Path, output: Path)
     for item in clips:
         destination = clips_root / f"{item['id']}-{selection['video_id']}.mp4"
         subprocess.run(
-            clean_ffmpeg_command(
-                source, destination, start=item["start"], end=item["end"]
-            ),
+            clean_ffmpeg_command(source, destination, start=item["start"], end=item["end"]),
             check=True,
         )
         info = _probe(destination)
@@ -194,9 +206,10 @@ def render(selection_path: Path, staging_path: Path, source: Path, output: Path)
             raise RuntimeError(f"CLEAN_OUTPUT_MEDIA_VERIFICATION_FAILED: {item['id']}")
         # Full-decode every delivered file rather than trusting the container header.
         subprocess.run(
-            ["ffmpeg", "-v", "error", "-xerror", "-i", str(destination),
-             "-f", "null", "-"],
-            check=True, capture_output=True, text=True,
+            ["ffmpeg", "-v", "error", "-xerror", "-i", str(destination), "-f", "null", "-"],
+            check=True,
+            capture_output=True,
+            text=True,
         )
         record = {
             **item,
