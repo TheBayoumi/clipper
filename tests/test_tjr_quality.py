@@ -374,8 +374,31 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
         "youtube_direct",
         "verified_mirror",
         "feedback_replay",
+        "clean_source_only",
     }
+    assert inputs["clean_selection_manifest"]["required"] is False
     jobs = config["jobs"]
+    assert jobs["clean_source_only"]["needs"] == "tests"
+    assert (
+        jobs["clean_source_only"]["uses"]
+        == "./.github/workflows/double-coverage-clean-clips.yml"
+    )
+    assert "clean_source_only" in jobs["clean_source_only"]["if"]
+    assert "inputs.clean_selection_manifest" in jobs["clean_source_only"]["with"]["selection_manifest"]
+    clean = yaml.safe_load(
+        Path(".github/workflows/double-coverage-clean-clips.yml").read_text(encoding="utf-8")
+    )
+    clean_events = clean.get("on", clean.get(True))
+    assert "workflow_call" in clean_events
+    assert "workflow_dispatch" in clean_events
+    assert set(clean["jobs"]) == {"clean_manifest", "clean_render", "clean_independent_qa"}
+    assert "scripts.tjr_clean_render" in " ".join(
+        step.get("run", "") for step in clean["jobs"]["clean_render"]["steps"]
+    )
+    assert not any(
+        keyword in " ".join(step.get("run", "") for step in clean["jobs"]["clean_render"]["steps"])
+        for keyword in ("faster_whisper", "tjr_semantic_editor", "tjr_youtube_preview")
+    )
     preflight = next(
         item
         for item in jobs["tests"]["steps"]
