@@ -54,3 +54,32 @@
 - [Full reconciled editorial decisions](https://github.com/TheBayoumi/clipper/actions/runs/38469818017/artifacts/11860880858)
 - [Independent technical audit](https://github.com/TheBayoumi/clipper/actions/runs/38469818017/artifacts/11861302435)
 - [Archived 44-candidate checkpoint](https://github.com/TheBayoumi/clipper/actions/runs/38364505410/artifacts/11819910219)
+
+
+## Verified full-view vs. center-crop quality comparison (2026-10-14)
+
+**Assessment workflow:** [Run #38552680233](https://github.com/TheBayoumi/clipper/actions/runs/38552680233). Source SHA-256 and 16 clean-clip identities were verified; **no new ASR/model work or clip rendering occurred**.
+
+| Measure | SHA-verified original | Existing clean source-only render |
+| --- | --- | --- |
+| Geometry | 1920 × 1080 (16:9) | 1080 × 1920 (9:16) |
+| Video codec | AV1 | H.264 |
+| Average encoded/container bitrate | 0.779 Mb/s (whole original) | 4.548 Mb/s (weighted mean of 16 clips) |
+| Unique source image region visible | Full 1920 × 1080 | Central 606 × 1080 |
+| Original frame area retained | 100% | **31.5625%** |
+| Original frame area discarded | 0% | **68.4375%** |
+| Horizontal and vertical image scaling | Native dimensions | 1.782× × 1.778× interpolation |
+| Real scene content added by upscaling | N/A | **None** |
+
+The 16 clean outputs total 479.59 seconds and 272,643,327 MP4 bytes. Their output bitrates range approximately 3.82–5.07 Mb/s. These bitrates are **not** comparable as perceptual quality metrics across AV1 and H.264 with different frame regions. A larger H.264 output is not evidence of recovered original detail.
+
+**Cause:** `scripts/tjr_clean_render.py` uses a fixed center-crop to 9:16 and scales the remaining 606×1080 image to 1080×1920. This is **not a motion/AI zoom**, but it looks like zooming and permanently removes both sides of every shot.
+
+**Frame-based review evidence:** [Side-by-side contact sheet and quality JSON](https://github.com/TheBayoumi/clipper/actions/runs/38552680233/artifacts/11887895531), comparing the actual full source and clean crop at representative moments from clips 01, 04, 08 and 14. This provides framing evidence, **not** an SSIM/VMAF perceptual verdict. The current job does not compute frame-aligned PSNR/SSIM/VMAF; do not claim that those scores exist.
+
+**Recommended frame policy:**
+1. **Raw clean-review master:** retain the complete original 1920×1080 scene in source aspect ratio, without overlays, ASR, AI, or unnecessary upscaling.
+2. **Portrait clean-review alternative:** fit the complete 16:9 frame inside 1080×1920 with neutral padding or a clearly identified background fill; never silently discard source pixels. The fitted picture would occupy approximately 1080×608 pixels, leaving vertical space to fill.
+3. **Edited TikTok production:** choose scene-specific face/speaker tracking, split composition or justified selective reframing *only when the full-frame reference confirms nothing important is lost*. No blanket center-crop default.
+
+**Open issue 16:** Separate clean review framing from creative crop decisions. Expose `source_full_frame` and `portrait_fit` as non-destructive modes, make the default preserve all footage, and report native-vs-output geometry, retained source area, and interpolation ratio in QA. Keep automated publication disabled.
