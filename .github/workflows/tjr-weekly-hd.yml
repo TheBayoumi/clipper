@@ -95,7 +95,7 @@ on:
         description: "Choose one explicit production transport or an authorized mirror."
         required: true
         type: choice
-        options: [validate_only, modal_direct, youtube_direct, verified_mirror, feedback_replay, clean_source_only]
+        options: [validate_only, modal_direct, youtube_direct, verified_mirror, feedback_replay, clean_source_only, quality_compare]
         default: validate_only
       target_channel_id:
         description: "Exact Reach-listed YouTube channel for direct production; source video is discovered dynamically inside this channel."
@@ -180,6 +180,8 @@ jobs:
               print('Validation only: no real-source rendering requested')
           elif mode == 'clean_source_only':
               print('Clean source-only render: pinned original and existing clip ranges; no ASR/model/overlays')
+          elif mode == 'quality_compare':
+              print('Measure original versus clean crop, source-only, no rendering or ASR')
           elif mode == 'feedback_replay':
               source_run_id = os.getenv('TJR_FEEDBACK_SOURCE_RUN_ID', '')
               if not re.fullmatch(r'[1-9][0-9]{7,14}', source_run_id):
@@ -1531,3 +1533,199 @@ jobs:
     permissions:
       contents: read
       actions: read
+
+
+  clean_frame_comparison:
+    name: Compare actual full-frame source versus 16 cropped outputs
+    needs: tests
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.source_mode == 'quality_compare' &&
+      needs.tests.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Download verified original footage from frozen source checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: tjr-verified-original-UCf1q6dhccWr6eQEcFFnJSbA-38358793137
+          run-id: 38358793137
+          path: original
+          github-token: ${{ github.token }}
+      - name: Download all 16 completed clean-render MP4s, no re-render
+        uses: actions/download-artifact@v4
+        with:
+          name: double-coverage-clean-clips-38526598143
+          run-id: 38526598143
+          path: existing-clean
+          github-token: ${{ github.token }}
+      - name: Verify video source and run objective media comparison
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python -m pip install "Pillow>=11,<13"
+          python - <<'PY'
+          import hashlib
+          import json
+          import math
+          import re
+          import subprocess
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+          original = Path("original/cached-source.mp4")
+          staging = json.loads(Path("original/staged-original.json").read_text())
+          manifest = json.loads(
+              Path("campaigns/reach-double-coverage-clean-clips-38469818017.json").read_text()
+          )
+          report = json.loads(Path("existing-clean/clean-render-report.json").read_text())
+          if not original.is_file():
+              raise SystemExit("SOURCE_ORIGINAL_MISSING")
+          digest = hashlib.file_digest(original.open("rb"), "sha256").hexdigest()
+          if digest != staging["source_sha256"] or digest != manifest["source_sha256"]:
+              raise SystemExit("QUALITY_COMPARE_SOURCE_SHA_MISMATCH")
+          if report["source_sha256"] != digest or report["verified_clean_clip_count"] != 16:
+              raise SystemExit("QUALITY_COMPARE_SELECTION_OR_REPORT_MISMATCH")
+          def probe(path):
+              result = subprocess.run(
+                  ["ffprobe", "-v", "error", "-show_entries",
+                   "format=duration,size,bit_rate:stream=codec_type,codec_name,width,height,avg_frame_rate,bit_rate",
+                   "-of", "json", str(path)],
+                  capture_output=True, text=True, check=True,
+              )
+              return json.loads(result.stdout)
+          src = probe(original)
+          sv = next(x for x in src["streams"] if x["codec_type"] == "video")
+          sw, sh = int(sv["width"]), int(sv["height"])
+          cropw = math.floor(min(sw, sh * 9 / 16) / 2) * 2
+          croph = math.floor(min(sh, sw * 16 / 9) / 2) * 2
+          kept = (cropw * croph) / (sw * sh)
+          print(f"SOURCE_NATIVE_VIDEO: {sw}x{sh} codec={sv['codec_name']} "
+                f"source_total_bitrate={src['format'].get('bit_rate')}")
+          print(f"CROP_GEOMETRY: {cropw}x{croph} "
+                f"kept={kept:.4%} removed={1-kept:.4%} "
+                f"upscale_x={1080/cropw:.3f} upscale_y={1920/croph:.3f}")
+          rows = []
+          sample_dir = Path("quality-samples")
+          sample_dir.mkdir(parents=True, exist_ok=True)
+          samples = []
+          for i, entry in enumerate(manifest["clips"]):
+              clean_path = Path("existing-clean/clips") / f"{entry['id']}-3S-fL9rNPp0.mp4"
+              if not clean_path.is_file():
+                  raise SystemExit(f"MISSING_CLEAN_MP4: {entry['id']}")
+              details = probe(clean_path)
+              stream = next(x for x in details["streams"] if x["codec_type"] == "video")
+              audio = next(x for x in details["streams"] if x["codec_type"] == "audio")
+              if (stream["width"], stream["height"], stream["codec_name"]) != (1080, 1920, "h264"):
+                  raise SystemExit("CLEAN_GEOMETRY_NOT_AS_EXPECTED")
+              clean_size = clean_path.stat().st_size
+              seconds = float(details["format"]["duration"])
+              item = {
+                  "id": entry["id"],
+                  "source_start": entry["start_seconds"],
+                  "source_end": entry["end_seconds"],
+                  "output_seconds": seconds,
+                  "output_bytes": clean_size,
+                  "output_mbits_per_s": clean_size * 8 / seconds / 1000000,
+                  "output_fps": stream.get("avg_frame_rate"),
+                  "audio_codec": audio["codec_name"],
+              }
+              rows.append(item)
+              if i not in (0, 3, 7, 13):
+                  continue
+              at = min(5.0, seconds / 2.0)
+              src_time = entry["start_seconds"] + at
+              full = sample_dir / f"{entry['id']}-source.png"
+              center = sample_dir / f"{entry['id']}-crop.png"
+              subprocess.run(
+                  ["ffmpeg", "-v", "error", "-y", "-ss", f"{src_time:.4f}",
+                   "-i", str(original), "-frames:v", "1",
+                   "-vf", "scale=960:-2", str(full)],
+                  check=True,
+              )
+              subprocess.run(
+                  ["ffmpeg", "-v", "error", "-y", "-ss", f"{at:.4f}",
+                   "-i", str(clean_path), "-frames:v", "1",
+                   "-vf", "scale=-2:540", str(center)],
+                  check=True,
+              )
+              samples.append((entry["id"], full, center))
+          panels = []
+          for name, full_path, clean_path in samples:
+              with Image.open(full_path) as im:
+                  full_im = im.convert("RGB")
+              with Image.open(clean_path) as im:
+                  clean_im = im.convert("RGB")
+              canvas = Image.new("RGB", (full_im.width+clean_im.width+36, max(full_im.height,clean_im.height)+66), "#19232e")
+              draw = ImageDraw.Draw(canvas)
+              draw.text((12, 10), f"{name}: FULL ORIGINAL VIEW", fill="#ffffff")
+              draw.text((full_im.width+24, 10), "CENTER CROPPED", fill="#ffffff")
+              canvas.paste(full_im, (12, 44))
+              canvas.paste(clean_im, (full_im.width+24, 44))
+              kept_x = math.floor((sw-cropw)/2/sw*full_im.width)
+              kept_y = math.floor((sh-croph)/2/sh*full_im.height)
+              keep_width = math.floor(cropw/sw*full_im.width)
+              keep_height = math.floor(croph/sh*full_im.height)
+              draw.rectangle(
+                  (12+kept_x,44+kept_y,12+kept_x+keep_width,44+kept_y+keep_height),
+                  outline="#00edaa", width=4,
+              )
+              panels.append(canvas)
+          if not panels:
+              raise SystemExit("NO_SOURCE_COMPARISON_FRAMES")
+          sheet = Image.new("RGB", (max(p.width for p in panels), sum(p.height for p in panels)), "#19232e")
+          top = 0
+          for panel in panels:
+              sheet.paste(panel, (0, top))
+              top += panel.height
+          sheet.save(sample_dir / "original-vs-cropped-contact-sheet.jpg", quality=92)
+          assessment = {
+              "status": "TECHNICAL_COMPARISON_COMPLETE__VISUAL_HUMAN_REVIEW_REQUIRED",
+              "source_sha256": digest,
+              "source": {
+                  "width": sw, "height": sh,
+                  "codec": sv.get("codec_name"),
+                  "frame_rate": sv.get("avg_frame_rate"),
+                  "container_bit_rate": src["format"].get("bit_rate"),
+                  "container_bytes": original.stat().st_size,
+              },
+              "crop": {
+                  "width": cropw, "height": croph,
+                  "native_pixel_area_kept_fraction": kept,
+                  "native_pixel_area_discarded_fraction": 1-kept,
+                  "upscale_width_ratio": 1080/cropw,
+                  "upscale_height_ratio": 1920/croph,
+                  "output_pixel_count": 1080 * 1920,
+                  "native_crop_pixel_count": cropw * croph,
+                  "interpolated_pixel_factor": (1080 * 1920) / (cropw * croph),
+              },
+              "clean_clip_count": len(rows),
+              "clips": rows,
+              "notes": [
+                  "Crop retained area and geometric interpolation are measured exactly from source dimensions.",
+                  "Recompression bitrate is not a perceptual quality score; source and clean contain different pixel areas.",
+                  "Frames visually compare original full context with clean cropped output; not human-certified.",
+                  "No claim of SSIM equivalence across different framing; original full frame is not pixel-aligned to crop.",
+              ],
+          }
+          (sample_dir / "quality-comparison-report.json").write_text(json.dumps(assessment,indent=2)+"\n")
+          print(f"QUALITY_COMPARISON_COMPLETE: source={sw}x{sh} "
+                f"retained={kept:.4%} comparison_frames={len(samples)} clean_mp4={len(rows)}")
+          PY
+      - name: Upload comparison metrics and original-versus-crop frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-versus-clean-crop-${{ github.run_id }}
+          path: quality-samples/
+          retention-days: 30
+          if-no-files-found: warn
