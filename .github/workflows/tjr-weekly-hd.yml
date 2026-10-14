@@ -86,11 +86,16 @@ on:
         required: false
         type: boolean
         default: false
+      clean_selection_manifest:
+        description: "Pinned selection JSON for clean source-only MP4 rendering (no ASR, AI, text overlays)."
+        required: false
+        type: string
+        default: campaigns/reach-double-coverage-clean-clips-38469818017.json
       source_mode:
         description: "Choose one explicit production transport or an authorized mirror."
         required: true
         type: choice
-        options: [validate_only, modal_direct, youtube_direct, verified_mirror, feedback_replay]
+        options: [validate_only, modal_direct, youtube_direct, verified_mirror, feedback_replay, clean_source_only]
         default: validate_only
       target_channel_id:
         description: "Exact Reach-listed YouTube channel for direct production; source video is discovered dynamically inside this channel."
@@ -173,6 +178,8 @@ jobs:
               raise SystemExit('source_preflight_only requires modal_direct mode')
           if mode == 'validate_only':
               print('Validation only: no real-source rendering requested')
+          elif mode == 'clean_source_only':
+              print('Clean source-only render: pinned original and existing clip ranges; no ASR/model/overlays')
           elif mode == 'feedback_replay':
               source_run_id = os.getenv('TJR_FEEDBACK_SOURCE_RUN_ID', '')
               if not re.fullmatch(r'[1-9][0-9]{7,14}', source_run_id):
@@ -1509,3 +1516,18 @@ jobs:
           retention-days: 30
           compression-level: 0
           if-no-files-found: warn
+
+
+  clean_source_only:
+    name: Clean source-only clip pipeline (no ASR, hooks or subtitle overlays)
+    needs: tests
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.source_mode == 'clean_source_only' &&
+      needs.tests.result == 'success'
+    uses: ./.github/workflows/double-coverage-clean-clips.yml
+    with:
+      selection_manifest: ${{ inputs.clean_selection_manifest }}
+    permissions:
+      contents: read
+      actions: read
