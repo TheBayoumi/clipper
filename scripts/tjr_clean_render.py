@@ -123,17 +123,29 @@ def validate_inputs(
     return safe_ranges, duration
 
 
-def clean_ffmpeg_command(
-    source: Path, destination: Path, *, start: float, end: float
-) -> list[str]:
+def clean_ffmpeg_command(source: Path, destination: Path, *, start: float, end: float) -> list[str]:
     """Center-crop the native video only. No subtitles, overlays or visual effects."""
     if not 0 <= start < end:
         raise ValueError("CLEAN_INVALID_CUT_TIMES")
     return [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-        "-ss", f"{start:.3f}", "-i", str(source),
-        "-t", f"{end - start:.3f}",
-        "-map", "0:v:0", "-map", "0:a:0", "-sn", "-dn",
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        "-ss",
+        f"{start:.3f}",
+        "-i",
+        str(source),
+        "-t",
+        f"{end - start:.3f}",
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0",
+        "-sn",
+        "-dn",
         "-vf",
         (
             "crop=trunc(min(iw\\,ih*9/16)/2)*2:"
