@@ -49,11 +49,18 @@ def _sha256(path: Path) -> str:
 def _probe(path: Path) -> dict[str, Any]:
     proc = subprocess.run(
         [
-            "ffprobe", "-v", "error", "-show_entries",
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
             "format=duration:stream=codec_type,codec_name,width,height",
-            "-of", "json", str(path),
+            "-of",
+            "json",
+            str(path),
         ],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     return json.loads(proc.stdout)
 
