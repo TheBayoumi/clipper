@@ -82,9 +82,10 @@ def validate_inputs(
         or not channel.startswith("UC")
         or not isinstance(sha, str)
         or not _SHA256.fullmatch(sha)
-        or any(staging.get(key) != value for key, value in (
-            ("video_id", video), ("channel_id", channel), ("source_sha256", sha)
-        ))
+        or any(
+            staging.get(key) != value
+            for key, value in (("video_id", video), ("channel_id", channel), ("source_sha256", sha))
+        )
     ):
         raise ValueError("CLEAN_SOURCE_PROVENANCE_MISMATCH")
     if not source.is_file() or _sha256(source) != sha:
