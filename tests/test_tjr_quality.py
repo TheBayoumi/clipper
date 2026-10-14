@@ -375,7 +375,9 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
         "verified_mirror",
         "feedback_replay",
         "clean_source_only",
+        "quality_compare",
     }
+    assert "quality_compare" in config["jobs"]["clean_frame_comparison"]["if"]
     assert inputs["clean_selection_manifest"]["required"] is False
     jobs = config["jobs"]
     assert jobs["clean_source_only"]["needs"] == "tests"
