@@ -1,6 +1,11 @@
 name: Double Coverage clean source-only clips
 
 on:
+  workflow_call:
+    inputs:
+      selection_manifest:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       selection_manifest:
