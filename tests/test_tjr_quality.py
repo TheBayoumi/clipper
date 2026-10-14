@@ -380,13 +380,11 @@ def test_production_workflow_validates_inputs_and_avoids_duplicate_renders() -> 
     jobs = config["jobs"]
     assert jobs["clean_source_only"]["needs"] == "tests"
     assert (
-        jobs["clean_source_only"]["uses"]
-        == "./.github/workflows/double-coverage-clean-clips.yml"
+        jobs["clean_source_only"]["uses"] == "./.github/workflows/double-coverage-clean-clips.yml"
     )
     assert "clean_source_only" in jobs["clean_source_only"]["if"]
     assert (
-        "inputs.clean_selection_manifest"
-        in jobs["clean_source_only"]["with"]["selection_manifest"]
+        "inputs.clean_selection_manifest" in jobs["clean_source_only"]["with"]["selection_manifest"]
     )
     clean = yaml.safe_load(
         Path(".github/workflows/double-coverage-clean-clips.yml").read_text(encoding="utf-8")
