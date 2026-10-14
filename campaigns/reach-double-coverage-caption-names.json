@@ -1,0 +1,9 @@
+{
+  "schema": "source-confirmed-caption-names-v1",
+  "names": [
+    {
+      "canonical": "Brock Purdy",
+      "asr_variants": ["Brock Birdie", "Brock Bertie"]
+    }
+  ]
+}

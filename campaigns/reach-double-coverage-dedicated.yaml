@@ -1,29 +1,39 @@
-campaign_id: reach-double-coverage-dedicated-1f1adbf3
-title: Double Coverage Podcast Dedicated Account
-objective: Find self-contained, high-retention moments from the Double Coverage podcast that can perform as short-form clips while preserving the speaker context and avoiding negative portrayal.
+# Reach Dedicated Double Coverage campaign.
+# Reviewed against https://reachclipping.com/DedicatedDoubleCoverage (2026-10-01).
+campaign_id: reach-double-coverage-dedicated-20261001
+title: Double Coverage Podcast
+objective: Find self-contained, high-retention funny moments, memorable quotes, authentic reactions, surprising or shocking stories, disagreements, reveals and payoffs from Double Coverage Podcast while preserving context, featuring Host Mystic Zach, and portraying the creators positively.
 keywords:
-  - Clix
-  - Fortnite
-  - creator
-  - streaming
-  - esports
+  - Double Coverage
+  - Mystic Zach
+  - Zach Hirsch
+  - N3on
+  - podcast
+  - sports
+  - betting
+  - story
+  - reaction
+  - funny
+  - shocking
+  - memorable
+  - guest
   - money
   - business
-  - Ferrari
-negative_keywords: []
+negative_keywords:
+  - sponsor read
+  - promo code
+  - housekeeping
 required_phrases: []
 language: en
 region_code: US
-clip_count: 3
+# Editorial output is deliberately 0..N. No campaign clip quota is used.
 min_clip_seconds: 20
 max_clip_seconds: 45
-source_limit: 1
-max_clips_per_source: 3
-published_after: "2026-07-30T00:00:00Z"
+source_limit: 12
 source_channel_ids:
-  - UCf1q6dhccWr6eQEcFFnJSbA
-allowed_video_ids:
-  - 2Y4LP85PTak
+  - UCf1q6dhccWr6eQEcFFnJSbA # https://www.youtube.com/@DOUBL3COVERAGEPODCAST
+allowed_video_ids: []
+source_media_urls: {}
 rights_confirmed: true
 attribution_required: true
 watermark_text: null
@@ -31,9 +41,15 @@ watermark_url: "https://drive.google.com/file/d/1wn3gL5h7cUZn-8jzTfwkAvLhbleXgbL
 required_hashtags:
   - "#DoubleCoverage"
 posting_requirements:
-  - Use a dedicated Double Coverage themed account.
-  - Publish only to YouTube Shorts, TikTok, or Instagram Reels.
-  - The audience must be at least 50% English-speaking.
-  - Minimum 15,000 views are required for campaign payout.
-  - Do not use botted views or AI-generated source content.
-  - Do not portray Double Coverage negatively.
+  - "Use a dedicated Double Coverage focused account; non-dedicated accounts are rejected."
+  - "Link https://www.youtube.com/@DOUBL3COVERAGEPODCAST on the account."
+  - "Use only Double Coverage YouTube Podcast episodes as source material; any uploaded episode is allowed."
+  - "Every published video must include Host Mystic Zach."
+  - "The provided Double Coverage podcast watermark is mandatory and must be clearly visible; no other logos are allowed."
+  - "Publish only to Instagram Reels, TikTok, or YouTube Shorts."
+  - "At least 50% of the audience must be from USA, Canada, Australia, UK, or New Zealand."
+  - "Do not portray the creators, guests, or podcast negatively."
+  - "Do not use botted views or engagement."
+  - "Do not use AI-generated video footage."
+  - "Submit the public clip link to Whop within 30 minutes of posting."
+  - "Minimum 15000 views and Reach approval are required for payout."

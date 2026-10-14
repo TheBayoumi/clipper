@@ -33,6 +33,17 @@ def _phrase_present(text: str, phrase: str) -> bool:
     return phrase.lower() in text.lower()
 
 
+def _term_count(text: str, term: str) -> int:
+    haystack = _tokens(text)
+    needle = _tokens(term)
+    if not needle or len(needle) > len(haystack):
+        return 0
+    size = len(needle)
+    return sum(
+        haystack[index : index + size] == needle for index in range(len(haystack) - size + 1)
+    )
+
+
 def _window_score(
     brief: CampaignBrief,
     text: str,
@@ -41,8 +52,11 @@ def _window_score(
     tokens = _tokens(text)
     counts = Counter(tokens)
     reasons: list[str] = []
-    keyword_hits = sum(min(counts[word.lower()], 2) for word in brief.keywords)
-    negative_hits = sum(counts[word.lower()] for word in brief.negative_keywords)
+    keyword_hits = sum(
+        min(counts[word.lower()], 2) if len(_tokens(word)) == 1 else min(_term_count(text, word), 2)
+        for word in brief.keywords
+    )
+    negative_hits = sum(_term_count(text, phrase) for phrase in brief.negative_keywords)
     required_hits = sum(_phrase_present(text, phrase) for phrase in brief.required_phrases)
     hook_hits = sum(counts[word] for word in _HOOK_WORDS)
 
@@ -81,36 +95,89 @@ def score_transcript(
     segments: Sequence[TranscriptSegment],
     *,
     limit: int = 20,
+    sentence_boundaries: bool = False,
+    pause_threshold: float = 0.7,
+    diversify: bool = True,
 ) -> list[ClipCandidate]:
+    if not 0.3 <= pause_threshold <= 1.5:
+        raise ValueError("pause_threshold must be between 0.3 and 1.5 seconds")
     if not segments:
         return []
     candidates: list[ClipCandidate] = []
     for start_index, first in enumerate(segments):
+        previous = segments[start_index - 1] if start_index else None
+        preceding_pause = first.start - previous.end if previous is not None else 0.0
+        if (
+            sentence_boundaries
+            and previous is not None
+            and not previous.text.rstrip().endswith((".", "!", "?"))
+            and preceding_pause < pause_threshold
+        ):
+            continue
         text_parts: list[str] = []
-        for segment in segments[start_index:]:
+        for segment_index in range(start_index, len(segments)):
+            segment = segments[segment_index]
+            if segment_index > start_index:
+                gap = segment.start - segments[segment_index - 1].end
+                if sentence_boundaries and gap > 1.75:
+                    break
             duration = segment.end - first.start
             if duration > brief.max_clip_seconds:
                 break
             text_parts.append(segment.text)
             if duration < brief.min_clip_seconds:
                 continue
+            next_segment = (
+                segments[segment_index + 1] if segment_index + 1 < len(segments) else None
+            )
+            sentence_end = segment.text.rstrip().endswith((".", "!", "?"))
+            next_pause = next_segment.start - segment.end if next_segment is not None else 0.0
+            if sentence_boundaries and not (
+                sentence_end or next_segment is None or next_pause >= pause_threshold
+            ):
+                continue
             text = " ".join(text_parts).strip()
             score, reasons = _window_score(brief, text, duration)
+            start = max(0.0, math.floor(first.start * 10) / 10)
+            end = math.ceil(segment.end * 10) / 10
+            if end - start > brief.max_clip_seconds:
+                continue
+            if sentence_boundaries:
+                if previous is None:
+                    start_basis = "source_start"
+                elif previous.text.rstrip().endswith((".", "!", "?")):
+                    start_basis = "previous_sentence"
+                else:
+                    start_basis = "preceding_pause"
+                if sentence_end:
+                    end_basis = "sentence_end"
+                elif next_segment is None:
+                    end_basis = "source_end"
+                else:
+                    end_basis = "following_pause"
+                reasons += (
+                    f"start_boundary={start_basis}",
+                    f"end_boundary={end_basis}",
+                    f"pause_threshold={pause_threshold:.2f}",
+                )
             candidates.append(
                 ClipCandidate(
                     video_id=video_id,
-                    start=max(0.0, math.floor(first.start * 10) / 10),
-                    end=math.ceil(segment.end * 10) / 10,
+                    start=start,
+                    end=end,
                     text=text,
                     score=score,
                     reasons=reasons,
                 )
             )
-            if text.endswith((".", "!", "?")):
+            if sentence_end:
                 break
 
+    ranked = sorted(candidates, key=lambda item: (-item.score, item.start))
+    if not diversify:
+        return ranked[:limit]
     selected: list[ClipCandidate] = []
-    for candidate in sorted(candidates, key=lambda item: (-item.score, item.start)):
+    for candidate in ranked:
         if any(_overlap_ratio(candidate, existing) >= 0.55 for existing in selected):
             continue
         selected.append(candidate)

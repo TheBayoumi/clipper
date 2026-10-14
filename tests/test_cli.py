@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+from clipper import editorial_benchmark
 from clipper.cli import main
 from clipper.models import VideoCandidate
 
@@ -62,3 +63,37 @@ def test_cli_run_and_error(tmp_path: Path, capsys, monkeypatch) -> None:
 
     with patch("clipper.cli.load_brief", side_effect=RuntimeError("boom")):
         assert main(["validate", "--brief", str(path)]) == 1
+
+
+def test_cli_audio_review_check_writes_unapproved_assessment(tmp_path: Path, monkeypatch) -> None:
+    seen = {}
+
+    def assess(*paths):
+        seen["paths"] = paths
+        return {"audio_gold_qualified": False, "production_approved": False}
+
+    monkeypatch.setattr(editorial_benchmark, "assess_completed_audio_review", assess)
+    inputs = [tmp_path / name for name in ("submitted", "fixture", "transcript", "cache", "clips")]
+    output = tmp_path / "result.json"
+    assert (
+        main(
+            [
+                "audio-review-check",
+                "--submitted",
+                str(inputs[0]),
+                "--fixture",
+                str(inputs[1]),
+                "--transcript",
+                str(inputs[2]),
+                "--provenance",
+                str(inputs[3]),
+                "--clips-dir",
+                str(inputs[4]),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert seen["paths"] == tuple(inputs)
+    assert json.loads(output.read_text(encoding="utf-8"))["production_approved"] is False

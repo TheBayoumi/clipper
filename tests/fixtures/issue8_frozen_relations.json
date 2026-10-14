@@ -1,0 +1,160 @@
+{
+  "schema": "clipper-frozen-relations-v1",
+  "annotation_status": "derived_from_frozen_transcript_controls_not_independent_audio_gold",
+  "source_video_id": "_kDrxucOx9g",
+  "source_sha256": "2a7e07b37074f3073d71b65e10a3efb4019b3cdd4277bc2d3770a99dcbc55e0a",
+  "transcript_sha256": "1e71997293af767ff285f236f6be3af13e2c075abece593f295bae6bb0d9741b",
+  "baseline_proof_sha256": "1880a9a3d0966d659167c4e2b75fbcbf5907bf35f13ab69a1f64d23aa9b04073",
+  "cases": [
+    {
+      "id": "podcast_revenue_asserted",
+      "fixture_index": 0,
+      "dimension": "quantity_outcome",
+      "question": "What does the podcast drive in this exchange?",
+      "answer": "revenue",
+      "expected_supported": false,
+      "evidence": {"first_unit": 11, "last_unit": 11, "quote": "No, it just drives the podcast."},
+      "annotation_reason": "The speech says Instagram drives the podcast, not that the podcast generates revenue."
+    },
+    {
+      "id": "instagram_nonpayment_reported",
+      "fixture_index": 0,
+      "dimension": "quantity_outcome",
+      "question": "What does the speaker say the Instagram views earn?",
+      "answer": "nothing",
+      "expected_supported": true,
+      "evidence": {"first_unit": 2, "last_unit": 2, "quote": "I'm like not making a dime off of it."},
+      "annotation_reason": "The speaker reports no direct income from the Instagram views."
+    },
+    {
+      "id": "fighter_meeting_broadcast_asserted",
+      "fixture_index": 1,
+      "dimension": "setting_time",
+      "question": "What was the actual broadcast setting while Bobby paced?",
+      "answer": "live TV",
+      "expected_supported": false,
+      "evidence": {"first_unit": 1, "last_unit": 2, "quote": "We're on live TV, don't do this"},
+      "annotation_reason": "This appears within what Sean Shelby would go over at the meeting; it does not establish the meeting was broadcast."
+    },
+    {
+      "id": "first_fight_opponent_role_asserted",
+      "fixture_index": 2,
+      "dimension": "relationship_role",
+      "question": "What was the described man's relationship to the speaker in the first fight?",
+      "answer": "Opponent",
+      "expected_supported": false,
+      "evidence": {"first_unit": 2, "last_unit": 3, "quote": "Bobby Green was just like in the back"},
+      "annotation_reason": "Bobby is described at the fighter meeting, not identified as the speaker's opponent."
+    },
+    {
+      "id": "bobby_pacing_actor",
+      "fixture_index": 3,
+      "dimension": "actor_action",
+      "question": "Who paced during the fighter meeting?",
+      "answer": "Bobby Green",
+      "expected_supported": true,
+      "evidence": {"first_unit": 2, "last_unit": 2, "quote": "Bobby Green was just like in the back just like pacing"},
+      "annotation_reason": "The source explicitly names Bobby immediately before saying he was pacing."
+    },
+    {
+      "id": "sean_pacing_actor_asserted",
+      "fixture_index": 4,
+      "dimension": "actor_action",
+      "question": "Who paced during the fighter meeting?",
+      "answer": "Sean Shelby",
+      "expected_supported": false,
+      "evidence": {"first_unit": 2, "last_unit": 3, "quote": "Bobby Green was just like in the back just like pacing"},
+      "annotation_reason": "The source names Bobby as pacing; others are described listening to Sean."
+    },
+    {
+      "id": "bobby_live_tv_asserted",
+      "fixture_index": 5,
+      "dimension": "setting_time",
+      "question": "Where did Bobby pace according to the source?",
+      "answer": "live TV",
+      "expected_supported": false,
+      "evidence": {"first_unit": 1, "last_unit": 2, "quote": "We're on live TV, don't do this"},
+      "annotation_reason": "The broadcast words are part of a reported instruction, not the setting of Bobby's pacing."
+    },
+    {
+      "id": "instagram_millions_earned_asserted",
+      "fixture_index": 6,
+      "dimension": "quantity_outcome",
+      "question": "What did the Instagram views earn?",
+      "answer": "millions of dollars",
+      "expected_supported": false,
+      "evidence": {"first_unit": 2, "last_unit": 3, "quote": "I'm like not making a dime off of it."},
+      "annotation_reason": "No Instagram revenue was reported; millions was conditional on a hypothetical podcast."
+    },
+    {
+      "id": "instagram_drives_podcast",
+      "fixture_index": 7,
+      "dimension": "actor_action",
+      "question": "What do the Instagram views drive?",
+      "answer": "podcast",
+      "expected_supported": true,
+      "evidence": {"first_unit": 11, "last_unit": 11, "quote": "No, it just drives the podcast."},
+      "annotation_reason": "The speaker explicitly says the Instagram audience drives the podcast."
+    },
+    {
+      "id": "instagram_not_income",
+      "fixture_index": 7,
+      "dimension": "quantity_outcome",
+      "question": "Do the Instagram views produce income for the speaker?",
+      "answer": "not income",
+      "expected_supported": true,
+      "evidence": {"first_unit": 0, "last_unit": 2, "quote": "I'm like not making a dime off of it."},
+      "annotation_reason": "The stated 60 million Instagram views are followed by a report of no direct earnings."
+    },
+    {
+      "id": "conditional_podcast_millions",
+      "fixture_index": 8,
+      "dimension": "event_modality",
+      "question": "What could a podcast with sixty million views earn?",
+      "answer": "millions",
+      "expected_supported": true,
+      "evidence": {"first_unit": 3, "last_unit": 3, "quote": "if you had a podcast getting 60 million views, you'd be making millions of dollars."},
+      "annotation_reason": "The source states this as a conditional possibility, which the headline retains."
+    },
+    {
+      "id": "actual_podcast_millions_asserted",
+      "fixture_index": 9,
+      "dimension": "event_modality",
+      "question": "What has the speaker already earned from his podcast?",
+      "answer": "millions",
+      "expected_supported": false,
+      "evidence": {"first_unit": 3, "last_unit": 3, "quote": "if you had a podcast getting 60 million views, you'd be making millions of dollars."},
+      "annotation_reason": "A conditional statement does not establish actual past podcast earnings."
+    },
+    {
+      "id": "bobby_paced_while_sean_spoke",
+      "fixture_index": 10,
+      "dimension": "actor_action",
+      "question": "Who paced while the others listened?",
+      "answer": "Bobby Green",
+      "expected_supported": true,
+      "evidence": {"first_unit": 2, "last_unit": 3, "quote": "Bobby Green was just like in the back just like pacing"},
+      "annotation_reason": "Bobby is the pacing actor while everyone else is described listening."
+    },
+    {
+      "id": "others_listened_to_sean",
+      "fixture_index": 10,
+      "dimension": "relationship_role",
+      "question": "Who did the others listen to?",
+      "answer": "Sean Shelby",
+      "expected_supported": true,
+      "evidence": {"first_unit": 2, "last_unit": 3, "quote": "everyone's just sitting like listening to Sean Shelby"},
+      "annotation_reason": "The source says everyone else was listening to Sean Shelby."
+    },
+    {
+      "id": "bobby_opponent_asserted",
+      "fixture_index": 11,
+      "dimension": "relationship_role",
+      "question": "Who was the speaker's opponent in his first fight?",
+      "answer": "Bobby Green",
+      "expected_supported": false,
+      "evidence": {"first_unit": 0, "last_unit": 2, "quote": "Bobby Green was just like in the back"},
+      "annotation_reason": "The source says Bobby was at a fighter meeting, not that he fought the speaker."
+    }
+  ]
+}

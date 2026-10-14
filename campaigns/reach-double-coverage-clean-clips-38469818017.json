@@ -1,0 +1,95 @@
+{
+  "schema": "clipper-clean-source-ranges-v1",
+  "status": "REVIEW_DRAFT_NOT_APPROVED_FOR_PUBLICATION",
+  "selection_run_id": 38469818017,
+  "verified_original_run_id": 38358793137,
+  "video_id": "3S-fL9rNPp0",
+  "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
+  "source_sha256": "db13e67b993ff1e56d33721ce64a0349b695b71165ab6b36791b9a5e95b9e080",
+  "source_duration_seconds": 3389.781,
+  "aspect_ratio": "9:16",
+  "output_width": 1080,
+  "output_height": 1920,
+  "clips": [
+    {
+      "id": "clean-01",
+      "start_seconds": 1864.68,
+      "end_seconds": 1900.08
+    },
+    {
+      "id": "clean-02",
+      "start_seconds": 2248.63,
+      "end_seconds": 2284.99
+    },
+    {
+      "id": "clean-03",
+      "start_seconds": 2894.39,
+      "end_seconds": 2914.45
+    },
+    {
+      "id": "clean-04",
+      "start_seconds": 2999.01,
+      "end_seconds": 3030.85
+    },
+    {
+      "id": "clean-05",
+      "start_seconds": 2953.91,
+      "end_seconds": 2998.81
+    },
+    {
+      "id": "clean-06",
+      "start_seconds": 698.66,
+      "end_seconds": 735.88
+    },
+    {
+      "id": "clean-07",
+      "start_seconds": 2537.5,
+      "end_seconds": 2560.88
+    },
+    {
+      "id": "clean-08",
+      "start_seconds": 2418.27,
+      "end_seconds": 2439.79
+    },
+    {
+      "id": "clean-09",
+      "start_seconds": 819.2,
+      "end_seconds": 859.42
+    },
+    {
+      "id": "clean-10",
+      "start_seconds": 1417.15,
+      "end_seconds": 1439.85
+    },
+    {
+      "id": "clean-11",
+      "start_seconds": 2448.39,
+      "end_seconds": 2468.69
+    },
+    {
+      "id": "clean-12",
+      "start_seconds": 2347.69,
+      "end_seconds": 2372.67
+    },
+    {
+      "id": "clean-13",
+      "start_seconds": 2474.51,
+      "end_seconds": 2517.16
+    },
+    {
+      "id": "clean-14",
+      "start_seconds": 505.06,
+      "end_seconds": 541.38
+    },
+    {
+      "id": "clean-15",
+      "start_seconds": 798.98,
+      "end_seconds": 818.98
+    },
+    {
+      "id": "clean-16",
+      "start_seconds": 2324.63,
+      "end_seconds": 2346.37
+    }
+  ]
+}

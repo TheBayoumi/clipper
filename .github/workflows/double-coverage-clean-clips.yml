@@ -1,0 +1,206 @@
+name: Double Coverage clean source-only clips
+
+on:
+  workflow_call:
+    inputs:
+      selection_manifest:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      selection_manifest:
+        description: "Repository-committed, SHA-bound selection JSON; no ASR, models or overlays"
+        required: true
+        type: string
+        default: campaigns/reach-double-coverage-clean-clips-38469818017.json
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: double-coverage-clean-${{ github.ref }}-${{ inputs.selection_manifest }}
+  cancel-in-progress: false
+
+jobs:
+  clean_manifest:
+    name: Verify immutable source and previously selected clip boundaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      source_run_id: ${{ steps.plan.outputs.source_run_id }}
+      channel_id: ${{ steps.plan.outputs.channel_id }}
+      expected_count: ${{ steps.plan.outputs.expected_count }}
+      selection_file: ${{ steps.plan.outputs.selection_file }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Verify manifest path and pinned source
+        id: plan
+        env:
+          SELECTION_FILE: ${{ inputs.selection_manifest }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+          value = os.environ["SELECTION_FILE"]
+          file = Path(value)
+          if (
+              file.is_absolute()
+              or ".." in file.parts
+              or not value.startswith("campaigns/")
+              or file.suffix != ".json"
+              or not file.is_file()
+          ):
+              raise SystemExit("CLEAN_MANIFEST_UNAUTHORIZED_PATH")
+          data = json.loads(file.read_text(encoding="utf-8"))
+          if (
+              data.get("schema") != "clipper-clean-source-ranges-v1"
+              or not re.fullmatch(r"[0-9a-f]{64}", str(data.get("source_sha256", "")))
+              or not re.fullmatch(r"UC[A-Za-z0-9_-]{22}", str(data.get("channel_id", "")))
+              or type(data.get("verified_original_run_id")) is not int
+              or type(data.get("selection_run_id")) is not int
+              or not isinstance(data.get("clips"), list)
+              or not 1 <= len(data["clips"]) <= 20
+          ):
+              raise SystemExit("CLEAN_MANIFEST_UNVERIFIED_SOURCE_OR_SELECTION")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              for key, val in (
+                  ("source_run_id", data["verified_original_run_id"]),
+                  ("channel_id", data["channel_id"]),
+                  ("expected_count", len(data["clips"])),
+                  ("selection_file", value),
+              ):
+                  handle.write(f"{key}={val}\n")
+          print(
+              f"CLEAN_SOURCE_SELECTION_PINNED: {len(data['clips'])} clips; "
+              f"prior_selection_run={data['selection_run_id']}; "
+              f"original_run={data['verified_original_run_id']}"
+          )
+          PY
+
+  clean_render:
+    name: Render source-only clean clips — no ASR, text, captions or LLM
+    needs: clean_manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Download exact archived original without acquiring YouTube
+        uses: actions/download-artifact@v4
+        with:
+          name: tjr-verified-original-${{ needs.clean_manifest.outputs.channel_id }}-${{ needs.clean_manifest.outputs.source_run_id }}
+          path: verified-original
+          run-id: ${{ needs.clean_manifest.outputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - name: Install only FFmpeg; no model, ASR or editorial dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Produce clean 9:16 source cuts and full-decode each output
+        env:
+          SELECTION_FILE: ${{ needs.clean_manifest.outputs.selection_file }}
+        run: |
+          set -euo pipefail
+          python -m scripts.tjr_clean_render \
+            --selection "$SELECTION_FILE" \
+            --source verified-original/cached-source.mp4 \
+            --staging verified-original/staged-original.json \
+            --output clean-production
+      - name: Preserve independent raw clips and provenance, including partial failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: double-coverage-clean-clips-${{ github.run_id }}
+          path: |
+            clean-production/clips/*.mp4
+            clean-production/clean-render-report.json
+          retention-days: 30
+          compression-level: 0
+          if-no-files-found: warn
+
+  clean_independent_qa:
+    name: Independent clean MP4 evidence audit
+    needs: [clean_manifest, clean_render]
+    if: needs.clean_render.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Restore actual clean render artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: double-coverage-clean-clips-${{ github.run_id }}
+          path: clean-production
+      - name: Validate immutable count, media hashes and zero sidecar overlays
+        env:
+          EXPECTED_COUNT: ${{ needs.clean_manifest.outputs.expected_count }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          folder = Path("clean-production")
+          data = json.loads((folder / "clean-render-report.json").read_text())
+          files = sorted((folder / "clips").glob("*.mp4"))
+          expected = int(os.environ["EXPECTED_COUNT"])
+          if (
+              data.get("verified_clean_clip_count") != expected
+              or len(files) != expected
+              or len(data.get("clips", [])) != expected
+              or data.get("status") != "TECHNICAL_QA_PASSED__HUMAN_REVIEW_REQUIRED"
+              or any(value is not False for value in data.get("policy", {}).values())
+              or list(folder.rglob("*.srt"))
+              or list(folder.rglob("*.ass"))
+              or list(folder.rglob("*.vtt"))
+          ):
+              raise SystemExit("CLEAN_INDEPENDENT_QA_CONTRACT_FAILED")
+          for record in data["clips"]:
+              name = Path(record["file"])
+              if name.is_absolute() or ".." in name.parts:
+                  raise SystemExit("CLEAN_UNSAFE_OUTPUT_PATH")
+              video = folder / name
+              if not video.is_file():
+                  raise SystemExit(f"CLEAN_MISSING_FILE: {video}")
+              sha = hashlib.file_digest(video.open("rb"), "sha256").hexdigest()
+              if record["sha256"] != sha:
+                  raise SystemExit(f"CLEAN_FILE_HASH_MISMATCH: {video}")
+              probe = subprocess.run(
+                  ["ffprobe", "-v", "error", "-show_entries",
+                   "stream=codec_type,width,height,codec_name", "-of", "json", str(video)],
+                  check=True, capture_output=True, text=True,
+              )
+              tracks = json.loads(probe.stdout)["streams"]
+              if (
+                  not any(x.get("codec_type") == "video"
+                          and (x.get("width"), x.get("height")) == (1080, 1920)
+                          and x.get("codec_name") == "h264" for x in tracks)
+                  or not any(x.get("codec_type") == "audio"
+                             and x.get("codec_name") == "aac" for x in tracks)
+                  or any(x.get("codec_type") == "subtitle" for x in tracks)
+              ):
+                  raise SystemExit(f"CLEAN_OUTPUT_MEDIA_INVALID: {video}")
+          print(f"CLEAN_INDEPENDENT_QA_PASSED: {expected}/{expected} decoded clean MP4s")
+          PY

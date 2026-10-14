@@ -4,8 +4,9 @@ import html
 import re
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
-from .models import TranscriptSegment
+from .models import TranscriptSegment, WordTiming
 
 _TIMESTAMP_RE = re.compile(
     r"(?P<h1>\d{2}):(?P<m1>\d{2}):(?P<s1>\d{2}[.,]\d{3})\s+-->\s+"
@@ -94,32 +95,139 @@ def load_vtt(path: str | Path) -> list[TranscriptSegment]:
     return parse_vtt(Path(path).read_text(encoding="utf-8-sig"))
 
 
-def transcribe_with_faster_whisper(
-    media_path: str | Path,
-    *,
-    model_name: str = "small",
-    device: str = "auto",
-    compute_type: str = "int8",
-    language: str | None = None,
-) -> list[TranscriptSegment]:
-    try:
-        from faster_whisper import WhisperModel  # type: ignore[import-not-found]
-    except ImportError as exc:  # pragma: no cover - optional dependency guard
-        raise RuntimeError(
-            "no subtitles were available and faster-whisper is not installed; "
-            "install with `pip install -e '.[asr]'`"
-        ) from exc
+def _word_text(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
 
-    model = WhisperModel(model_name, device=device, compute_type=compute_type)
-    raw_segments, _ = model.transcribe(
-        str(media_path),
-        language=language,
-        vad_filter=True,
-        beam_size=5,
-        word_timestamps=False,
-    )
+
+def _segments_from_whisper(
+    raw_segments: Iterable[Any], *, word_timestamps: bool
+) -> list[TranscriptSegment]:
+    if word_timestamps:
+        aligned: list[TranscriptSegment] = []
+        for sentence in raw_segments:
+            group: list[WordTiming] = []
+            for raw_word in getattr(sentence, "words", None) or []:
+                raw_start = getattr(raw_word, "start", None)
+                raw_end = getattr(raw_word, "end", None)
+                raw_text = _word_text(getattr(raw_word, "word", ""))
+                if (
+                    raw_start is None
+                    or raw_end is None
+                    or float(raw_end) <= float(raw_start)
+                    or not raw_text
+                ):
+                    continue
+                start = float(raw_start)
+                end = float(raw_end)
+                if group and start < group[-1].end - 0.005:
+                    continue
+                word = WordTiming(start, end, raw_text)
+                if group and (len(group) >= 6 or end - group[0].start > 2.6):
+                    aligned.append(
+                        TranscriptSegment(
+                            group[0].start,
+                            group[-1].end,
+                            " ".join(item.text for item in group),
+                            tuple(group),
+                        )
+                    )
+                    group = []
+                group.append(word)
+                if raw_text.rstrip().endswith((".", "!", "?")) and len(group) >= 3:
+                    aligned.append(
+                        TranscriptSegment(
+                            group[0].start,
+                            group[-1].end,
+                            " ".join(item.text for item in group),
+                            tuple(group),
+                        )
+                    )
+                    group = []
+            if group:
+                aligned.append(
+                    TranscriptSegment(
+                        group[0].start,
+                        group[-1].end,
+                        " ".join(item.text for item in group),
+                        tuple(group),
+                    )
+                )
+            elif (
+                not getattr(sentence, "words", None)
+                and sentence.text.strip()
+                and sentence.end > sentence.start
+            ):
+                aligned.append(
+                    TranscriptSegment(
+                        float(sentence.start), float(sentence.end), sentence.text.strip()
+                    )
+                )
+        return aligned
     return [
         TranscriptSegment(float(segment.start), float(segment.end), segment.text.strip())
         for segment in raw_segments
         if segment.text.strip() and float(segment.end) > float(segment.start)
     ]
+
+
+class FasterWhisperTranscriber:
+    """Reusable local ASR model for a complete source.
+
+    Production uses distil-large-v3: a larger English model designed for
+    faster-whisper. The model is loaded once, then reused for every audio chunk.
+    """
+
+    def __init__(
+        self,
+        *,
+        model_name: str = "distil-large-v3",
+        device: str = "auto",
+        compute_type: str = "int8",
+        language: str | None = None,
+        word_timestamps: bool = False,
+    ) -> None:
+        try:
+            from faster_whisper import WhisperModel  # type: ignore[import-not-found]
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                "no subtitles were available and faster-whisper is not installed; "
+                "install with `pip install -e '.[asr]'`"
+            ) from exc
+        self.model_name = model_name
+        self.language = language
+        self.word_timestamps = word_timestamps
+        self._model: Any = WhisperModel(model_name, device=device, compute_type=compute_type)
+
+    def transcribe(self, media_path: str | Path) -> list[TranscriptSegment]:
+        raw_segments, _ = self._model.transcribe(
+            str(media_path),
+            language=self.language,
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500},
+            beam_size=5,
+            word_timestamps=self.word_timestamps,
+            condition_on_previous_text=False,
+        )
+        return _segments_from_whisper(raw_segments, word_timestamps=self.word_timestamps)
+
+
+def transcribe_with_faster_whisper(
+    media_path: str | Path,
+    *,
+    model_name: str = "distil-large-v3",
+    device: str = "auto",
+    compute_type: str = "int8",
+    language: str | None = None,
+    word_timestamps: bool = False,
+) -> list[TranscriptSegment]:
+    """Compatibility wrapper for one-off callers.
+
+    Multi-chunk production should instantiate FasterWhisperTranscriber once.
+    """
+    return FasterWhisperTranscriber(
+        model_name=model_name,
+        device=device,
+        compute_type=compute_type,
+        language=language,
+        word_timestamps=word_timestamps,
+    ).transcribe(media_path)

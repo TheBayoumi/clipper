@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+import json
+import os
 import re
 import shutil
 import subprocess
 from collections.abc import Sequence
+from fractions import Fraction
 from pathlib import Path
 
 from .models import ClipCandidate, TranscriptSegment
+from .source_fidelity import (
+    SourceProfile,
+    compare_audio_to_source,
+    compare_encoded_to_composition,
+    crf_attempts,
+    measure_audio_gain,
+    probe_source_profile,
+)
+from .tiktok import create_tiktok_ass
 
 
 class RenderError(RuntimeError):
@@ -51,6 +63,50 @@ def _escape_filter_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
 
 
+def _source_payoff_beat(clip: ClipCandidate, segments: Sequence[TranscriptSegment]) -> float | None:
+    """One sustained foreground emphasis, grounded in saved delivered payoff words."""
+    quote = next(
+        (r.removeprefix("payoff_quote=") for r in clip.reasons if r.startswith("payoff_quote=")), ""
+    )
+    if clip.duration < 18 or not quote:
+        return None
+    meaningful = {
+        word
+        for word in re.findall(r"[a-z]{3,}", quote.casefold())
+        if word
+        not in {
+            "the",
+            "and",
+            "that",
+            "this",
+            "with",
+            "for",
+            "but",
+            "his",
+            "her",
+            "are",
+            "was",
+            "you",
+            "from",
+            "not",
+            "they",
+        }
+    }
+    choices: list[tuple[int, float]] = []
+    for segment in segments:
+        offset = segment.start - clip.start
+        if not clip.start <= segment.start < clip.end:
+            continue
+        if not 0.30 * clip.duration <= offset <= 0.80 * clip.duration:
+            continue
+        if clip.duration - offset < 7.5:
+            continue
+        matches = len(meaningful & set(re.findall(r"[a-z]{3,}", segment.text.casefold())))
+        if matches >= 2:
+            choices.append((matches, offset))
+    return round(sorted(choices, key=lambda x: (-x[0], -x[1]))[0][1], 3) if choices else None
+
+
 def build_ffmpeg_command(
     source_path: str | Path,
     output_path: str | Path,
@@ -60,8 +116,49 @@ def build_ffmpeg_command(
     watermark_path: str | Path | None = None,
     width: int = 1080,
     height: int = 1920,
+    editorial_layout: str = "default",
+    source_fps: str | None = None,
+    crf_override: int | None = None,
+    source_profile: SourceProfile | None = None,
+    audio_gain_db: float | None = None,
+    attention_start_seconds: float | None = None,
 ) -> list[str]:
+    preset = os.getenv("CLIPPER_RENDER_PRESET", "ultrafast").strip().lower()
+    if preset not in {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"}:
+        raise RenderError("CLIPPER_RENDER_PRESET is not an allowed x264 preset")
+    try:
+        crf = int(os.getenv("CLIPPER_RENDER_CRF", "20"))
+        threads = int(os.getenv("CLIPPER_RENDER_THREADS", "1"))
+    except ValueError as exc:
+        raise RenderError("render CRF and threads must be integers") from exc
+    if crf_override is not None:
+        crf = crf_override
+    if not 12 <= crf <= 28 or not 1 <= threads <= 4:
+        raise RenderError("render CRF must be 12-28 and threads must be 1-4")
     escaped_subtitles = _escape_filter_path(Path(subtitle_path))
+    is_tiktok = Path(subtitle_path).suffix.lower() == ".ass"
+    caption_filter = (
+        f"ass='{escaped_subtitles}'"
+        if is_tiktok
+        else (
+            f"subtitles='{escaped_subtitles}':"
+            "force_style='FontName=DejaVu Sans,FontSize=10,Alignment=2,"
+            "MarginV=28,MarginL=24,MarginR=24,Outline=2,Shadow=0,"
+            "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000'"
+        )
+    )
+    if is_tiktok and (width != 1080 or height != 1920):
+        raise RenderError("Style B requires an exact 1080x1920 vertical output")
+    if source_fps:
+        try:
+            rate = Fraction(source_fps)
+            if not 23 <= float(rate) <= 61:
+                raise ValueError("unsupported source frame rate")
+        except (ValueError, ZeroDivisionError) as exc:
+            raise RenderError("invalid original source frame rate") from exc
+        fps = source_fps
+    else:
+        fps = "30"
     blur_width = max(180, width // 3)
     blur_height = max(320, height // 3)
     base_filter = (
@@ -70,11 +167,66 @@ def build_ffmpeg_command(
         f"crop={blur_width}:{blur_height},gblur=sigma=18,scale={width}:{height}[bg2];"
         f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
         f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,"
-        f"subtitles='{escaped_subtitles}':"
-        "force_style='FontName=DejaVu Sans,FontSize=10,Alignment=2,"
-        "MarginV=28,MarginL=24,MarginR=24,Outline=2,Shadow=0,"
-        "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000',fps=30[captioned]"
+        f"{caption_filter},fps={fps}:start_time=0[captioned]"
     )
+    if attention_start_seconds is not None:
+        if (
+            editorial_layout != "default"
+            or not is_tiktok
+            or not 7 <= attention_start_seconds <= clip.duration - 7
+        ):
+            raise RenderError("source-aware attention beat violates portrait editing bounds")
+        # Source-derived sustained editorial cut, not random zoom toggles.
+        # A 2.5% crop protects the subject while making the payoff visually distinct.
+        base_filter = (
+            f"[0:v]split=2[bg][fg];"
+            f"[bg]scale={blur_width}:{blur_height}:force_original_aspect_ratio=increase,"
+            f"crop={blur_width}:{blur_height},gblur=sigma=18,scale={width}:{height}[bg2];"
+            f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
+            f"[fg2]split=2[normal][punchsrc];"
+            f"[punchsrc]crop=iw/1.025:ih/1.025:(iw-ow)/2:(ih-oh)/2,"
+            f"scale={width}:-2[punch];"
+            f"[bg2][normal]overlay=(W-w)/2:(H-h)/2[normalcanvas];"
+            f"[normalcanvas][punch]overlay=(W-w)/2:(H-h)/2:"
+            f"enable='gte(t,{attention_start_seconds:.3f})',"
+            f"{caption_filter},fps={fps}:start_time=0[captioned]"
+        )
+    if editorial_layout not in {
+        "default",
+        "tjr-trading-logo-safe",
+        "tjr-memecoin-logo-safe",
+    }:
+        raise RenderError("unknown editorial layout; never silently bypass logo guard")
+    if editorial_layout == "tjr-trading-logo-safe":
+        if watermark_path is not None or (width, height) != (1080, 1920):
+            raise RenderError("TJR logo-safe crop rejects logos or nonvertical outputs")
+        # This known TRiches livestream layout has chart above the webcam,
+        # with sponsor strips in the lower-right source region. No pixel of
+        # that sponsor area enters the output; no logo is added by Clipper.
+        base_filter = (
+            "[0:v]split=2[chart][webcam];"
+            "[chart]crop=1460:600:280:20,scale=1080:445:flags=lanczos[top];"
+            "[webcam]crop=565:335:20:710,scale=1080:640:flags=lanczos[face];"
+            f"color=c=0x10131a:s=1080x1920:r={fps}[canvas];"
+            "[canvas][top]overlay=0:180[layout];"
+            "[layout][face]overlay=0:830,"
+            f"{caption_filter},fps={fps}:start_time=0[captioned]"
+        )
+    if editorial_layout == "tjr-memecoin-logo-safe":
+        if watermark_path is not None or (width, height) != (1080, 1920):
+            raise RenderError("TJR memecoin crop rejects logos or nonvertical outputs")
+        # Audited 1920x1080 TJRTrades memecoin layout: isolate the central
+        # chart and the bottom-right reaction camera. The Fomo header/sidebar,
+        # order-entry panel and chart-provider badge remain outside the crop.
+        base_filter = (
+            "[0:v]split=2[chart][webcam];"
+            "[chart]crop=1140:465:340:155,scale=1080:440:flags=lanczos[top];"
+            "[webcam]crop=575:325:1345:755,scale=1080:610:flags=lanczos[face];"
+            f"color=c=0x10131a:s=1080x1920:r={fps}[canvas];"
+            "[canvas][top]overlay=0:310[layout];"
+            "[layout][face]overlay=0:850,"
+            f"{caption_filter},fps={fps}:start_time=0[captioned]"
+        )
     inputs = [
         "ffmpeg",
         "-hide_banner",
@@ -91,10 +243,10 @@ def build_ffmpeg_command(
         filter_complex = (
             base_filter
             + ";[1:v]scale=180:-1:force_original_aspect_ratio=decrease[wm];"
-            + "[captioned][wm]overlay=W-w-48:48:format=auto,format=yuv420p[v]"
+            + "[captioned][wm]overlay=W-w-48:48:format=auto,format=yuv420p,setsar=1[v]"
         )
     else:
-        filter_complex = base_filter + ";[captioned]format=yuv420p[v]"
+        filter_complex = base_filter + ";[captioned]format=yuv420p,setsar=1[v]"
     return [
         *inputs,
         "-t",
@@ -106,29 +258,98 @@ def build_ffmpeg_command(
         "-map",
         "0:a?",
         "-af",
-        "loudnorm=I=-14:LRA=11:TP=-1.5",
+        (
+            f"volume={audio_gain_db:.6f}dB,aresample=48000"
+            if audio_gain_db is not None
+            else "loudnorm=I=-14:LRA=11:TP=-1.5"
+        ),
         "-c:v",
         "libx264",
         "-preset",
-        "ultrafast",
+        preset,
         "-crf",
-        "20",
+        str(crf),
         "-threads",
-        "1",
+        str(threads),
         "-c:a",
         "aac",
         "-b:a",
-        "192k",
+        "320k" if is_tiktok else "192k",
+        "-ar",
+        "48000",
+        "-pix_fmt",
+        "yuv420p",
+        *(
+            ["-profile:v", "high", "-x264-params", "aq-mode=3:aq-strength=1.05"]
+            if is_tiktok
+            else []
+        ),
+        *(
+            ["-colorspace", source_profile.color_space]
+            if source_profile and source_profile.color_space in {"bt709", "smpte170m"}
+            else []
+        ),
+        *(
+            ["-color_trc", source_profile.color_transfer]
+            if source_profile and source_profile.color_transfer in {"bt709", "smpte170m"}
+            else []
+        ),
+        *(
+            ["-color_primaries", source_profile.color_primaries]
+            if source_profile and source_profile.color_primaries in {"bt709", "smpte170m"}
+            else []
+        ),
         "-movflags",
         "+faststart",
         str(output_path),
     ]
 
 
+def _source_frame_rate(path: Path) -> str:
+    """Read the original cadence so Style B does not create fake 60fps."""
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=avg_frame_rate,r_frame_rate",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=40,
+        )
+        streams = json.loads(probe.stdout)["streams"]
+        source = streams[0]
+        rate = str(source.get("avg_frame_rate") or source.get("r_frame_rate") or "")
+        if 23 <= float(Fraction(rate)) <= 61:
+            return rate
+        raise ValueError("unusable native frame rate")
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        IndexError,
+        TypeError,
+        ZeroDivisionError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as exc:
+        raise RenderError("Style B could not verify the native source frame rate") from exc
+
+
 class FFmpegRenderer:
     def __init__(self) -> None:
         if not shutil.which("ffmpeg"):
             raise RenderError("ffmpeg is not installed or not on PATH")
+        self.quality_results: dict[str, dict[str, object]] = {}
 
     def render(
         self,
@@ -137,23 +358,151 @@ class FFmpegRenderer:
         clip: ClipCandidate,
         segments: Sequence[TranscriptSegment],
         watermark_path: Path | None = None,
+        editorial_layout: str = "default",
+        tiktok_hook: str | None = None,
+        source_profile: SourceProfile | None = None,
     ) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         subtitle_path = output_path.with_suffix(".srt")
         create_srt(clip, segments, subtitle_path)
-        command = build_ffmpeg_command(
-            source_path,
-            output_path,
-            clip,
-            subtitle_path,
-            watermark_path=watermark_path,
+        burn_in = (
+            create_tiktok_ass(
+                clip,
+                segments,
+                output_path.with_suffix(".ass"),
+                hook_text=tiktok_hook,
+            )
+            if tiktok_hook is not None
+            else subtitle_path
         )
-        try:
-            subprocess.run(command, check=True, capture_output=True, text=True, timeout=900)
-        except subprocess.CalledProcessError as exc:
-            raise RenderError((exc.stderr or exc.stdout or str(exc))[-2000:]) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise RenderError("ffmpeg render timed out after 900 seconds") from exc
-        if not output_path.is_file() or output_path.stat().st_size == 0:
-            raise RenderError(f"ffmpeg did not create a valid output: {output_path}")
-        return output_path
+        native = (
+            (source_profile or probe_source_profile(source_path))
+            if tiktok_hook is not None
+            else None
+        )
+        attention_start = (
+            _source_payoff_beat(clip, segments)
+            if tiktok_hook and editorial_layout == "default"
+            else None
+        )
+        split_montage = editorial_layout in {
+            "tjr-trading-logo-safe",
+            "tjr-memecoin-logo-safe",
+        }
+        audio_gain = (
+            measure_audio_gain(source_path, start=clip.start, duration=clip.duration)
+            if native is not None
+            else None
+        )
+        rates = crf_attempts(native) if native else (None,)
+        evidence: list[dict[str, float | int]] = []
+        stats_path = output_path.with_suffix(".ssim.txt")
+        self.quality_results.pop(str(output_path.resolve()), None)
+        for crf in rates:
+            command = build_ffmpeg_command(
+                source_path,
+                output_path,
+                clip,
+                burn_in,
+                watermark_path=watermark_path,
+                editorial_layout=editorial_layout,
+                source_fps=native.fps if native else None,
+                crf_override=crf,
+                source_profile=native,
+                audio_gain_db=audio_gain,
+                attention_start_seconds=attention_start,
+            )
+            try:
+                subprocess.run(command, check=True, capture_output=True, text=True, timeout=900)
+            except subprocess.CalledProcessError as exc:
+                raise RenderError((exc.stderr or exc.stdout or str(exc))[-2000:]) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise RenderError("ffmpeg render timed out after 900 seconds") from exc
+            if not output_path.is_file() or output_path.stat().st_size == 0:
+                raise RenderError(f"ffmpeg did not create a valid output: {output_path}")
+            if native is None:
+                return output_path
+            if crf is None:
+                raise RenderError("source-matched encoding requires measured attempt")
+            try:
+                measured, compared = compare_encoded_to_composition(
+                    command,
+                    source=source_path,
+                    output=output_path,
+                    clip_start=clip.start,
+                    duration=clip.duration,
+                    fps=native.fps,
+                    stats_path=stats_path,
+                )
+            except Exception:
+                output_path.unlink(missing_ok=True)
+                raise
+            evidence.append({"crf": crf, "mean_ssim": measured, "frames_compared": compared})
+            if measured < 0.99:
+                continue
+            try:
+                audio_evidence = compare_audio_to_source(
+                    source_path, output_path, start=clip.start, duration=clip.duration
+                )
+            except Exception:
+                output_path.unlink(missing_ok=True)
+                raise
+            report: dict[str, object] = {
+                "audio_fidelity": audio_evidence,
+                "audio_normalization": {
+                    "mode": "measured_constant_gain",
+                    "gain_db": audio_gain,
+                    "sample_rate": 48000,
+                    "target_lufs": -14,
+                    "true_peak_ceiling_db": -1.5,
+                },
+                "status": "MEASURED_SOURCE_MATCHED_ENCODING",
+                "source_profile": native.as_dict(),
+                "output_cadence": native.fps,
+                "output_format": "1080x1920 H.264 high yuv420p",
+                "campaign_watermark_applied": watermark_path is not None,
+                "source_to_delivery_mean_ssim": measured,
+                "minimum_mean_ssim": 0.99,
+                "compared_frames": compared,
+                "accepted_crf": crf,
+                "attempts": evidence,
+                "output_bytes": output_path.stat().st_size,
+                "measurement_method": (
+                    "frame-level SSIM against decoded original with the identical "
+                    "crop, animated ASS overlay, pixel format and native cadence "
+                    "before the final H.264 encode"
+                ),
+                "editorial_visual_approval": False,
+                "edit_plan": {
+                    "style": (
+                        "split_screen_montage"
+                        if split_montage
+                        else "semantic_micro_punch"
+                        if attention_start is not None
+                        else "caption_led_no_forced_effect"
+                    ),
+                    "punch_scale": 1.025 if attention_start is not None else 1.0,
+                    "attention_beats": (
+                        [
+                            {
+                                "start": attention_start,
+                                "end": round(clip.duration, 3),
+                                "reason": "source-timed-delivered-payoff",
+                            }
+                        ]
+                        if attention_start is not None
+                        else []
+                    ),
+                    "random_effects": False,
+                    "editorial_layout": editorial_layout,
+                },
+            }
+            report_path = output_path.with_suffix(".quality.json")
+            report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            self.quality_results[str(output_path.resolve())] = report
+            return output_path
+        output_path.unlink(missing_ok=True)
+        raise RenderError(
+            "final render did not match the actual source composition at "
+            "mean frame SSIM 0.99 or higher: " + str(evidence)
+        )

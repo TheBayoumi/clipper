@@ -1,0 +1,124 @@
+name: TJR official YouTube egress probe
+
+on:
+  push:
+    branches: [feat/tjr-weekly-hd-actions]
+    paths:
+      - ".github/workflows/tjr-egress-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  macos-transport:
+    name: macOS runner original YouTube source and media-byte test
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install current official YouTube extractor (no cookies)
+        run: |
+          set -euo pipefail
+          python -m pip install -U "yt-dlp[default]" curl-cffi
+          yt-dlp --version
+          node --version
+      - name: Verify official TJR YouTube owner AND actual HD media transfer
+        env:
+          TJR_PROBE_TARGET_ID: p2LU37eat70
+          TJR_PROBE_TARGET_CHANNEL: UCZen39LQJPx04GjPj7FOMcw
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import tempfile
+          from pathlib import Path
+
+          video_id = os.environ["TJR_PROBE_TARGET_ID"]
+          owner = os.environ["TJR_PROBE_TARGET_CHANNEL"]
+          url = "https://www.youtube.com/watch?v=" + video_id
+          results = []
+          with tempfile.TemporaryDirectory() as temp_dir:
+              root = Path(temp_dir)
+              for client in ("web_safari", "tv", "android_vr", "mweb"):
+                  common = [
+                      "yt-dlp",
+                      "--ignore-config",
+                      "--no-warnings",
+                      "--no-playlist",
+                      "--socket-timeout",
+                      "15",
+                      "--extractor-retries",
+                      "1",
+                      "--js-runtimes",
+                      "node",
+                      "--extractor-args",
+                      "youtube:player_client=" + client,
+                  ]
+                  try:
+                      meta = subprocess.run(
+                          [*common, "--dump-single-json", "--skip-download", url],
+                          capture_output=True,
+                          text=True,
+                          timeout=65,
+                          check=False,
+                      )
+                  except subprocess.TimeoutExpired:
+                      results.append({"client": client, "stage": "timeout"})
+                      continue
+                  if meta.returncode:
+                      cause = "BOT_CONFIRMATION" if "not a bot" in meta.stderr else "NO_METADATA"
+                      results.append({"client": client, "stage": cause})
+                      continue
+                  data = json.loads(meta.stdout)
+                  if data.get("id") != video_id or data.get("channel_id") != owner:
+                      results.append({"client": client, "stage": "REJECTED_CHANNEL_OWNER"})
+                      continue
+                  formats = data.get("formats") or []
+                  hd = any(
+                      isinstance(fmt, dict)
+                      and fmt.get("height", 0) >= 720
+                      and fmt.get("vcodec") != "none"
+                      for fmt in formats
+                  )
+                  if not hd:
+                      results.append({"client": client, "stage": "NO_HD_FORMATS"})
+                      continue
+                  media = subprocess.run(
+                      [
+                          *common,
+                          "--test",
+                          "--no-part",
+                          "-f",
+                          "bv*[height>=720]",
+                          "-o",
+                          str(root / "real-youtube-byte-test.%(ext)s"),
+                          url,
+                      ],
+                      capture_output=True,
+                      text=True,
+                      timeout=95,
+                      check=False,
+                  )
+                  downloaded = [
+                      p for p in root.glob("real-youtube-byte-test.*")
+                      if p.is_file() and p.stat().st_size >= 1024
+                  ]
+                  if media.returncode == 0 and downloaded:
+                      print(
+                          "VERIFIED_YOUTUBE_HD_MEDIA_BYTES=YES",
+                          "client=" + client,
+                          "video_id=" + video_id,
+                          "channel_id=" + owner,
+                      )
+                      raise SystemExit(0)
+                  results.append({"client": client, "stage": "HD_MEDIA_TRANSFER_FAILED"})
+          report = root if False else results
+          print("YOUTUBE_MACOS_EGRESS_TEST=" + json.dumps(report))
+          raise SystemExit(1)
+          PY
