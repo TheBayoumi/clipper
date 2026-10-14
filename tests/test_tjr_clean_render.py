@@ -28,9 +28,7 @@ def _fixture(path: Path) -> tuple[dict, dict, Path]:
         "video_id": "3S-fL9rNPp0",
         "channel_id": "UCf1q6dhccWr6eQEcFFnJSbA",
         "source_sha256": sha,
-        "clips": [
-            {"id": "clean-01", "start_seconds": 0.1, "end_seconds": 1.1}
-        ],
+        "clips": [{"id": "clean-01", "start_seconds": 0.1, "end_seconds": 1.1}],
     }
     staging = {
         "status": "REAL_OFFICIAL_YOUTUBE_ORIGINAL_STAGED",
@@ -93,9 +91,7 @@ def test_clean_rejects_duplicate_or_outside_source_ranges(
             "streams": [{"codec_type": "video"}, {"codec_type": "audio"}],
         },
     )
-    selection["clips"].append(
-        {"id": "clean-01", "start_seconds": 0.2, "end_seconds": 1.2}
-    )
+    selection["clips"].append({"id": "clean-01", "start_seconds": 0.2, "end_seconds": 1.2})
     with pytest.raises(ValueError, match="CLEAN_INVALID_SOURCE_RANGE"):
         validate_inputs(selection, staging, source)
     selection["clips"] = [{"id": "clean-01", "start_seconds": 1.5, "end_seconds": 2.6}]
@@ -109,13 +105,32 @@ def test_clean_renders_real_portrait_mp4_without_text_sidecars(tmp_path: Path) -
     selection, staging, source = _fixture(tmp_path)
     subprocess.run(
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", "color=c=blue:s=320x180:r=24:d=2",
-            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
-            "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264",
-            "-c:a", "aac", "-shortest", str(source),
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=320x180:r=24:d=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=2",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(source),
         ],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     sha = hashlib.sha256(source.read_bytes()).hexdigest()
     selection["source_sha256"] = sha
