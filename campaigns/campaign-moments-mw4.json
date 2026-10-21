@@ -1,0 +1,142 @@
+{
+  "profile": "mw4",
+  "campaign": "Modern Warfare 4 - Campaign Moments Clipping (October 20, 2026)",
+  "source_profile": {
+    "provider": "mediasilo",
+    "review_url": "https://app.mediasilo.com/review/6ad7e5593c66821dec1d97a6",
+    "expected_count": 6,
+    "analysis_derivative": "proxy",
+    "allow_proxy_for_analysis": true,
+    "assets": [
+      {
+        "title": "MW4_CampaignClipping_TrafficChase_1.mp4",
+        "source_key": "traffic_chase",
+        "content_type": "campaign_cinematic"
+      },
+      {
+        "title": "MW4_CampaignClipping_GhostFight_GhostAndGazAtEnd_1.mp4",
+        "source_key": "ghost_fight",
+        "content_type": "campaign_cinematic"
+      },
+      {
+        "title": "MW4_CampaignClipping_CivillianExecution_RefusingOrders_1.mp4",
+        "source_key": "refusing_orders",
+        "content_type": "campaign_cinematic"
+      },
+      {
+        "title": "MW4_CampaignClipping_ConvenienceStore_1.mp4",
+        "source_key": "convenience_store",
+        "content_type": "campaign_cinematic"
+      },
+      {
+        "title": "MW4_CampaignClipping_MakarovChaseAndFight_Trimmed_1.mp4",
+        "source_key": "makarov_chase",
+        "content_type": "campaign_cinematic"
+      },
+      {
+        "title": "MW4_CampaignClipping_NightClub_1.mp4",
+        "source_key": "nightclub",
+        "content_type": "campaign_cinematic"
+      }
+    ]
+  },
+  "batch_selection": {
+    "require_verified_finishing_move_when_available": false
+  },
+  "output": {
+    "width": 1080,
+    "height": 1920,
+    "fps": "source",
+    "video_bitrate_kbps": 25000,
+    "shadow_video_bitrate_kbps": 8000,
+    "shadow_maxrate_kbps": 10000,
+    "shadow_bufsize_kbps": 16000,
+    "portrait_layout": {
+      "enabled": true,
+      "width": 1080,
+      "height": 1920,
+      "background_hex": "#0F1115",
+      "text_hex": "#FAFAFA",
+      "accent_hex": "#FFD848",
+      "visual_left": 0,
+      "visual_top": 656,
+      "visual_width": 1080,
+      "visual_height": 608,
+      "title_top_height": 656,
+      "title_y_positions": {
+        "1": [
+          330
+        ],
+        "2": [
+          275,
+          385
+        ],
+        "3": [
+          236,
+          352,
+          438
+        ]
+      },
+      "title_font_sizes": {
+        "1": [
+          66
+        ],
+        "2": [
+          62,
+          58
+        ],
+        "3": [
+          60,
+          56,
+          52
+        ]
+      },
+      "title_max_width_fraction": 0.88,
+      "title_bar_y": 548,
+      "title_bar_width_fraction": 0.18,
+      "title_bar_height": 5,
+      "title_bar_enabled": false,
+      "background_mode": "blurred_source",
+      "background_blur_sigma": 18
+    }
+  },
+  "editorial": {
+    "hook_text": false,
+    "campaign_text": false,
+    "campaign_logo": false,
+    "source_audio_only": true
+  },
+  "finishing_move_detector": {
+    "enabled": false,
+    "automatic_discovery_enabled": false,
+    "verified_spans": {
+      "r1": [],
+      "batch2": [],
+      "week2": []
+    }
+  },
+  "capabilities": {
+    "finishing_move_detection": {
+      "enabled": false
+    }
+  },
+  "source_integrity": {
+    "verified_cut_windows": {
+      "r1": [],
+      "batch2": [],
+      "week2": []
+    }
+  },
+  "publishing": {
+    "platforms": [
+      "tiktok",
+      "instagram_reels"
+    ],
+    "language": "en",
+    "on_screen_text_required": false,
+    "disclosure": "#Ad",
+    "account_tag": "@callofduty",
+    "hashtags": [],
+    "source_audio_only": true
+  }
+}
