@@ -259,6 +259,15 @@ def analyze_source_file(
 
     excluded = config.get("excluded_windows", {}).get(source_key, [])
     output_dir.mkdir(parents=True, exist_ok=True)
+    from ..inference import vision
+
+    neural_visual_evidence = vision.analyze_source(
+        source,
+        source.with_suffix(".source_qa.json"),
+        config,
+        output_dir,
+        source_key=source_key,
+    )
     timeline = analysis.analyze_source(source, config)
     diagnostics = analysis.diagnose_source(timeline, config, excluded, source_key)
     plans = analysis.build_plans_for_source(timeline, config, excluded, source_key)
@@ -282,6 +291,16 @@ def analyze_source_file(
         "verified_finishing_moves": [asdict(span) for span in timeline.finishing_moves],
         "automatic_finishing_move_candidates": automatic_candidates,
         "automatic_finishing_move_candidates_are_discovery_only": True,
+        "neural_visual_evidence": (
+            {
+                "status": neural_visual_evidence["status"],
+                "path": "neural_visual_evidence.json",
+                "coverage": neural_visual_evidence["coverage"],
+                "model": neural_visual_evidence["model"],
+            }
+            if neural_visual_evidence is not None
+            else None
+        ),
         "failure": None,
     }
     path = output_dir / f"{source_key}_analysis.json"

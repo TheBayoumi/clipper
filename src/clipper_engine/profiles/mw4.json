@@ -342,6 +342,12 @@
     "finishing_move_detection": {
       "enabled": true,
       "mode": "verified_campaign_spans"
+    },
+    "neural_visual_events": {
+      "enabled": false,
+      "backend": "modal",
+      "app_name": "clipper-neural-qualification",
+      "notes": "Clipper neural visual evidence is proposals-only until independent source verification; requires exact deployed SHA and controlled GPU qualification."
     }
   },
   "player_state_detector": {
