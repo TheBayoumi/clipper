@@ -20,10 +20,55 @@ from ..sources import qa as source_qa
 # ContentRewards work. A worker must report this exact identity and deployment SHA.
 VISION_MODEL_ID = "Qwen/Qwen3-VL-8B-Instruct"
 VISION_REVISION = "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b"
-VISION_PROMPT_VERSION = "grounded-source-visual-observations-1"
+VISION_PROMPT_VERSION = "grounded-source-visual-observations-2"
 VISION_SCHEMA_VERSION = "clipper-visual-observations-1"
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
+
+
+def source_visual_prompt(timestamps: list[float], *, recovery_attempt: int = 0) -> str:
+    """Required exact output structure; no guessed events for unsupplied frames."""
+    if not timestamps or any(
+        isinstance(t, bool) or not isinstance(t, int | float) or not math.isfinite(t) or t < 0
+        for t in timestamps
+    ):
+        raise ValueError("vision prompt requires finite source-clock timestamps")
+    if recovery_attempt not in {0, 1}:
+        raise ValueError("vision schema recovery attempt is invalid")
+    skeleton = {
+        "observations": [
+            {
+                "timestamp": value,
+                "summary": "directly visible facts or no visible action",
+                "event_labels": [],
+                "confidence": 0.0,
+            }
+            for value in timestamps
+        ]
+    }
+    recovery = (
+        " Your previous reply did not match this schema. A standalone event "
+        "object, events array, or omitted timestamp is invalid; regenerate "
+        "the entire observations array exactly as specified."
+        if recovery_attempt
+        else ""
+    )
+    return (
+        "Watch the supplied source-indexed images in order. Return ONE JSON object "
+        "and nothing else. The top-level key MUST be 'observations' (plural). "
+        f"There MUST be exactly {len(timestamps)} observation objects, with "
+        "timestamps exactly matching the provided values in the same order. "
+        "Every observation MUST have numeric timestamp and confidence from 0 to 1, "
+        "string summary, and event_labels as an array of short strings. "
+        "Use an EMPTY event_labels array if no relevant action is visible. "
+        "Describe only visible direct evidence of gameplay action, confrontation, "
+        "possible outcome, traversal or reveal. Do NOT infer unseen kills, character "
+        "identity, dialogue, motives or actions between sampled frames. "
+        "Use precisely this JSON structure (replace summaries, labels and confidences "
+        "with your observations, but preserve timestamps and all keys): "
+        + json.dumps(skeleton, separators=(",", ":"))
+        + recovery
+    )
 
 
 class VisionProvider(Protocol):

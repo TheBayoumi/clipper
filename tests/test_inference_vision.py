@@ -259,3 +259,20 @@ def test_neural_source_key_mismatch_fails_closed(
             provider=FakeVision(),
             source_key="different_source",
         )
+
+
+def test_grounded_vision_prompt_contains_exact_array_schema() -> None:
+    text = vision.source_visual_prompt([0.0, 4.0])
+    assert "top-level key MUST be 'observations'" in text
+    assert '"timestamp":0.0' in text
+    assert '"timestamp":4.0' in text
+    assert text.count('"event_labels":[]') == 2
+    retry = vision.source_visual_prompt([0.0, 4.0], recovery_attempt=1)
+    assert "Your previous reply did not match this schema" in retry
+    assert len(retry) > len(text)
+
+
+@pytest.mark.parametrize("times", [[], [float("nan")], [-1.0], [True]])
+def test_grounded_vision_prompt_refuses_invalid_clock(times: list[float]) -> None:
+    with pytest.raises(ValueError, match="finite source-clock"):
+        vision.source_visual_prompt(times)

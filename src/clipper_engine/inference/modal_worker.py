@@ -11,6 +11,7 @@ ContentRewards/TJR deployments. Training weights are pinned to the qualified don
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import os
@@ -25,6 +26,7 @@ from clipper_engine.inference.vision import (
     VISION_PROMPT_VERSION,
     VISION_REVISION,
     VISION_SCHEMA_VERSION,
+    source_visual_prompt,
 )
 
 DEPLOYED_GIT_SHA = os.getenv("CLIPPER_DEPLOYED_GIT_SHA", "").strip().lower()
@@ -156,40 +158,80 @@ class VisionModel:
             for item in payload["frames_base64"]
         ]
         timestamps = payload["frame_timestamps"]
-        instruction = (
-            "You are observing source-indexed gameplay or cinematic footage. "
-            "For each supplied image, report directly visible source-grounded "
-            "actions, confrontations, reveals, traversal, and possible outcomes. "
-            "Do not claim confirmed deaths, kills, motives, dialogue or actor "
-            "identities without directly visible evidence. Do not infer events "
-            "between sampled frames. Return exactly one JSON object with "
-            "observations, an array of exactly one item per frame in the given "
-            "order; each item has timestamp, summary, event_labels (string array), "
-            "confidence (number 0 to 1). Empty labels are valid. Timestamps must "
-            "exactly match supplied values. No markdown or extra text. "
-            "Frame timestamps: " + json.dumps(timestamps)
-        )
-        content: list[dict[str, Any]] = [{"type": "image", "image": frame} for frame in frames]
-        content.append({"type": "text", "text": instruction})
-        messages = [{"role": "user", "content": content}]
-        inputs = self.processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt",
-        )
-        input_tokens = int(inputs["input_ids"].numel())
-        inputs = inputs.to(self.model.device)
-        with torch.inference_mode():
-            output = self.model.generate(
-                **inputs,
-                max_new_tokens=min(2048, 192 * len(frames) + 256),
-                do_sample=False,
+        total_input_units = 0
+        total_output_units = 0
+        observations: list[dict[str, Any]] | None = None
+        for attempt in range(2):
+            instruction = source_visual_prompt(timestamps, recovery_attempt=attempt)
+            content: list[dict[str, Any]] = [{"type": "image", "image": frame} for frame in frames]
+            content.append({"type": "text", "text": instruction})
+            messages = [{"role": "user", "content": content}]
+            inputs = self.processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt",
             )
-        result_tokens = output[0][inputs["input_ids"].shape[-1] :]
-        decoded = self.processor.decode(result_tokens, skip_special_tokens=True)
-        observations = _strict_observations(json.loads(decoded), timestamps)
+            total_input_units += int(inputs["input_ids"].numel())
+            inputs = inputs.to(self.model.device)
+            generation_budget = min(4096, max(768, 240 * len(frames) + 128) * (attempt + 1))
+            with torch.inference_mode():
+                output = self.model.generate(
+                    **inputs, max_new_tokens=generation_budget, do_sample=False
+                )
+            result_tokens = output[0][inputs["input_ids"].shape[-1] :]
+            total_output_units += int(result_tokens.numel())
+            decoded = self.processor.decode(result_tokens, skip_special_tokens=True)
+            keys: list[str] = []
+            try:
+                value = json.loads(decoded)
+                if isinstance(value, dict):
+                    keys = list(value)[:15]
+                else:
+                    raise ValueError("neural visual output must be a JSON object")
+                observations = _strict_observations(value, timestamps)
+                print(
+                    json.dumps(
+                        {
+                            "event": "neural_vision_schema_validation",
+                            "valid": True,
+                            "attempt": attempt + 1,
+                            "frames": len(frames),
+                            "output_keys": keys,
+                            "output_tokens": int(result_tokens.numel()),
+                        }
+                    ),
+                    flush=True,
+                )
+                break
+            except (json.JSONDecodeError, ValueError) as exc:
+                print(
+                    json.dumps(
+                        {
+                            "event": "neural_vision_schema_validation",
+                            "valid": False,
+                            "attempt": attempt + 1,
+                            "frames": len(frames),
+                            "output_keys": keys,
+                            "error_type": type(exc).__name__,
+                            "output_sha256": hashlib.sha256(decoded.encode()).hexdigest()[:16],
+                            "output_tokens": int(result_tokens.numel()),
+                            "generation_budget": generation_budget,
+                        }
+                    ),
+                    flush=True,
+                )
+                if attempt == 1:
+                    raise ValueError(
+                        "neural model did not return a complete source-stamped "
+                        "observations array after bounded format recovery"
+                    ) from exc
+            finally:
+                del inputs, output, result_tokens
+                torch.cuda.empty_cache()
+        if observations is None:
+            raise RuntimeError("neural vision schema validation produced no observations")
         duration = time.perf_counter() - started
         return {
             "deployed_git_sha": DEPLOYED_GIT_SHA,
@@ -201,8 +243,8 @@ class VisionModel:
                 "gpu_type": APP_GPU,
                 "gpu_seconds": duration * 2,
                 "estimated_cost_usd": duration * GPU_ESTIMATED_USD_PER_SECOND,
-                "input_units": input_tokens,
-                "output_units": int(result_tokens.numel()),
+                "input_units": total_input_units,
+                "output_units": total_output_units,
                 "peak_vram_mb": max(
                     torch.cuda.max_memory_allocated(i) / (1024 * 1024)
                     for i in range(torch.cuda.device_count())

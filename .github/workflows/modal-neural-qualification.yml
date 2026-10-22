@@ -8,6 +8,8 @@ on:
       - feat/mw4-fullframe-retention-v3-1
     paths:
       - .github/workflows/modal-neural-qualification.yml
+      - src/clipper_engine/inference/modal_worker.py
+      - src/clipper_engine/inference/vision.py
   workflow_dispatch:
 
 permissions:
