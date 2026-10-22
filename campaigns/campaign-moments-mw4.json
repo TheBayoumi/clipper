@@ -48,9 +48,9 @@
     "height": 1920,
     "fps": "source",
     "video_bitrate_kbps": 25000,
-    "shadow_video_bitrate_kbps": 8000,
-    "shadow_maxrate_kbps": 10000,
-    "shadow_bufsize_kbps": 16000,
+    "shadow_video_bitrate_kbps": 12000,
+    "shadow_maxrate_kbps": 15000,
+    "shadow_bufsize_kbps": 24000,
     "portrait_layout": {
       "enabled": true,
       "width": 1080,
@@ -118,6 +118,10 @@
   "capabilities": {
     "finishing_move_detection": {
       "enabled": false
+    },
+    "cinematic_event_detection": {
+      "enabled": true,
+      "mode": "source_verified_event_anchor_search"
     }
   },
   "source_integrity": {
@@ -138,5 +142,45 @@
     "account_tag": "@callofduty",
     "hashtags": [],
     "source_audio_only": true
+  },
+  "cinematic_moments": {
+    "enabled": true,
+    "policy": "Only source-viewed moments from this exact authorized MediaSilo folder may be declared; Clipper searches all legal windows independently, without hostile HUD assumptions.",
+    "verified_anchors": {
+      "ghost_fight": [
+        {
+          "id": "rooftop_exchange",
+          "time": 51.0,
+          "label": "Rooftop fight escalates",
+          "verification": "Official Ghost Fight proxy visually reviewed at 45-57s: direct rooftop strikes and confrontation"
+        },
+        {
+          "id": "rooftop_grapple",
+          "time": 81.0,
+          "label": "Fight intensifies on the rooftop",
+          "verification": "Official Ghost Fight proxy visually reviewed at 75-87s: close-quarters exchange and grapple"
+        },
+        {
+          "id": "interior_faceoff",
+          "time": 171.0,
+          "label": "Close-quarters interior confrontation",
+          "verification": "Official Ghost Fight proxy visually reviewed at 166-178s: interior character combat and faceoff"
+        }
+      ],
+      "refusing_orders": [
+        {
+          "id": "courtyard_standoff",
+          "time": 60.0,
+          "label": "Courtyard confrontation",
+          "verification": "Official Refusing Orders proxy visually reviewed at 54-66s: armed soldiers and detainees in a tense courtyard confrontation"
+        },
+        {
+          "id": "character_exchange",
+          "time": 137.0,
+          "label": "A tense character exchange",
+          "verification": "Official Refusing Orders proxy visually reviewed at 132-144s: two uniformed characters confront each other and exchange dialogue"
+        }
+      ]
+    }
   }
 }

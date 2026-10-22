@@ -131,3 +131,106 @@ def test_profile_override_must_still_declare_mw4(tmp_path: Path) -> None:
     path.write_text('{"profile":"other"}', encoding="utf-8")
     with pytest.raises(ValueError, match="expected 'mw4'"):
         load_profile("mw4", path)
+
+
+def test_cinematic_anchor_search_is_source_verified_and_independent() -> None:
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from clipper_engine.gameplay import cinematic
+
+    config = load_profile("mw4", Path("campaigns/campaign-moments-mw4.json")).config
+    times = np.arange(0, 188 * 6, dtype=np.float32) / 6
+    timeline = SimpleNamespace(
+        base=SimpleNamespace(duration=188.0),
+        times=times,
+        fps=6.0,
+        signals={"interest": np.full(len(times), 0.65, dtype=np.float32)},
+        shots=(SimpleNamespace(start=0.0, end=188.0),),
+        engagements=(),
+        finishing_moves=(),
+    )
+    with patch(
+        "clipper_engine.gameplay.cinematic.quality.plan_integrity_violations", return_value=[]
+    ):
+        plans, anchors = cinematic.analyze(timeline, config, [], "ghost_fight")
+    assert len(anchors) == 3
+    assert all(item["disposition"] == "search_required" for item in anchors)
+    assert all(item["attempted_variant_count"] > 0 for item in anchors)
+    assert all(plan.story_type == "cinematic_moment" for plan in plans)
+    assert all(10.0 <= plan.output_duration <= 12.0 for plan in plans)
+    assert {anchor["id"] for anchor in anchors} == {
+        plan.covered_semantic_anchor_ids[0] for plan in plans
+    }
+    assert all(not plan.engagements for plan in plans)
+
+
+def test_mixed_cinematic_and_verified_combat_anchors_remain_required() -> None:
+    manifest = {
+        "required_semantic_anchors": [{"id": "cinematic:ghost_fight:rooftop"}],
+        "diagnostics": {
+            "local_interaction_verifier": {
+                "verified_hostile_event_assignment": [
+                    {"time": 34.2, "hostile_verified": True, "kinds": ["outcome_like"]},
+                ],
+            },
+        },
+    }
+    assert set(allocation._required_anchors(manifest)) == {
+        "cinematic:ghost_fight:rooftop",
+        34.2,
+    }
+    plan = _candidate("cinematic", 30.0, 40.0, [34.2], 0.8)
+    plan["covered_semantic_anchor_ids"] = ["cinematic:ghost_fight:rooftop"]
+    assert allocation._candidate_coverage(plan) == {
+        "cinematic:ghost_fight:rooftop",
+        34.2,
+    }
+
+
+def test_encoder_retries_only_fidelity_failure_without_lowering_quality(tmp_path: Path) -> None:
+    from clipper_engine.rendering import worker
+
+    config = {
+        "output": {
+            "shadow_video_bitrate_kbps": 12000,
+            "shadow_maxrate_kbps": 15000,
+            "shadow_bufsize_kbps": 24000,
+        }
+    }
+    target = tmp_path / "output.mp4"
+    calls: list[int] = []
+
+    def fake_encode(*args, **kwargs):
+        calls.append(args[1]["output"]["shadow_video_bitrate_kbps"])
+        target.write_bytes(b"encoded")
+
+    with (
+        patch.object(
+            worker.source_fidelity, "_encode_from_canonical_master", side_effect=fake_encode
+        ),
+        patch.object(
+            worker.ffv1,
+            "_source_fidelity_qa",
+            side_effect=[
+                RuntimeError("source-fidelity QA failed: SSIM=0.989193 minimum=0.990000"),
+                {"checks": {"ssim": True}},
+            ],
+        ),
+    ):
+        qa, attempts = worker._encode_and_certify(
+            tmp_path / "source.nut",
+            target,
+            config,
+            "shadow",
+            {},
+            {},
+            [],
+            tmp_path / "native.nut",
+            {},
+        )
+    assert calls == [12000, 18000]
+    assert [entry["result"] for entry in attempts] == ["fidelity_rejected", "PASS"]
+    assert qa["checks"]["ssim"] is True
+    assert config["output"]["shadow_video_bitrate_kbps"] == 12000

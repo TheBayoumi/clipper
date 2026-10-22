@@ -6,7 +6,7 @@ on:
       config_path:
         description: MW4 campaign/profile override committed in this repository
         required: false
-        default: "campaigns/mw4-dmz-from-the-ward.json"
+        default: "campaigns/campaign-moments-mw4.json"
         type: string
       render_mode:
         description: Qualification render mode
@@ -37,7 +37,7 @@ permissions:
   contents: read
 
 env:
-  MW4_CONFIG_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.config_path || 'campaigns/mw4-dmz-from-the-ward.json' }}
+  MW4_CONFIG_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.config_path || 'campaigns/campaign-moments-mw4.json' }}
   MW4_RENDER_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.render_mode || 'production' }}
 
 jobs:

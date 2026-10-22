@@ -36,22 +36,22 @@ def _required_outcome_anchors(manifest: dict[str, Any]) -> tuple[float, ...]:
 
 def _required_anchors(manifest: dict[str, Any]) -> tuple[Anchor, ...]:
     semantic = list(manifest.get("required_semantic_anchors") or [])
-    if semantic:
-        ids = [str(item.get("id") or "") for item in semantic]
-        if any(not item for item in ids) or len(set(ids)) != len(ids):
-            raise AssertionError("required_semantic_anchors require unique non-empty ids")
-        return tuple(sorted(ids))
-    return _required_outcome_anchors(manifest)
+    ids = [str(item.get("id") or "") for item in semantic]
+    if any(not item for item in ids) or len(set(ids)) != len(ids):
+        raise AssertionError("required_semantic_anchors require unique non-empty ids")
+    diagnostics = dict(manifest.get("diagnostics") or {})
+    local = dict(diagnostics.get("local_interaction_verifier") or {})
+    outcomes = (
+        _required_outcome_anchors(manifest) if "verified_hostile_event_assignment" in local else ()
+    )
+    return (*sorted(ids), *outcomes)
 
 
 def _candidate_coverage(plan: dict[str, Any]) -> frozenset[Anchor]:
     semantic = [str(item) for item in (plan.get("covered_semantic_anchor_ids") or []) if str(item)]
-    if semantic:
-        return frozenset(semantic)
-
     explicit = plan.get("covered_outcome_anchor_times") or []
     if explicit:
-        return frozenset(round(float(item), 3) for item in explicit)
+        return frozenset(semantic) | frozenset(round(float(item), 3) for item in explicit)
 
     anchors: set[float] = set()
     for event in plan.get("effect_events") or []:
@@ -61,7 +61,7 @@ def _candidate_coverage(plan: dict[str, Any]) -> frozenset[Anchor]:
         for event in engagement.get("events") or []:
             if "outcome_like" in (event.get("kinds") or []) and "time" in event:
                 anchors.add(round(float(event["time"]), 3))
-    return frozenset(anchors)
+    return frozenset(semantic) | frozenset(anchors)
 
 
 def _anchor_diagnostics(manifest: dict[str, Any]) -> dict[float, dict[str, Any]]:
@@ -275,10 +275,12 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
             for item in (manifest.get("required_semantic_anchors") or [])
             if item.get("id")
         }
+        qualified: set[Anchor] = {
+            anchor for anchor in required if isinstance(anchor, float) and anchor in union
+        }
         if is_spoken:
-            qualified: set[Anchor] = set()
             unresolved_semantic: list[Anchor] = []
-            for anchor in sorted(required, key=str):
+            for anchor in sorted(semantic_details, key=str):
                 detail = semantic_details.get(str(anchor))
                 if detail is None:
                     unresolved_semantic.append(anchor)
@@ -297,17 +299,15 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
                     f"{source}: semantic anchors lack explicit discovery disposition: "
                     f"{unresolved_semantic}"
                 )
-        else:
-            qualified = required & union
 
         dispositions: list[dict[str, Any]] = []
         unresolved: list[Anchor] = []
-        diagnostics = _anchor_diagnostics(manifest) if not is_spoken else {}
+        diagnostics = _anchor_diagnostics(manifest)
         for anchor in sorted(required, key=str):
             if anchor in qualified:
                 dispositions.append({"anchor": anchor, "disposition": "qualified_for_allocation"})
                 continue
-            if is_spoken:
+            if isinstance(anchor, str) and anchor in semantic_details:
                 detail = semantic_details.get(str(anchor))
                 if detail is None:
                     unresolved.append(anchor)
@@ -340,7 +340,7 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
 
         verified_finishers = int(manifest.get("verified_finishing_move_count", 0))
         require_finisher = bool(
-            not is_spoken
+            str(config.get("content_strategy", {}).get("mode") or "") != "spoken_content"
             and verified_finishers
             and config.get("batch_selection", {}).get(
                 "require_verified_finishing_move_when_available", True

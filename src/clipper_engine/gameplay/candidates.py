@@ -5,7 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from . import analysis, contract, features, interaction
+from . import analysis, cinematic, contract, features, interaction
 
 ENGINE = "deterministic-gameplay"
 EDITOR = "semantic-editor"
@@ -262,6 +262,10 @@ def analyze_source_file(
     timeline = analysis.analyze_source(source, config)
     diagnostics = analysis.diagnose_source(timeline, config, excluded, source_key)
     plans = analysis.build_plans_for_source(timeline, config, excluded, source_key)
+    cinematic_plans, cinematic_anchors = cinematic.analyze(timeline, config, excluded, source_key)
+    plans.extend(cinematic_plans)
+    diagnostics["verified_cinematic_anchor_count"] = len(cinematic_anchors)
+    diagnostics["cinematic_anchor_dispositions"] = cinematic_anchors
     automatic_candidates = _automatic_finishing_candidates(timeline, config)
     payload = {
         "schema_version": 1,
@@ -273,6 +277,7 @@ def analyze_source_file(
         "diagnostics": diagnostics,
         "candidate_count_after_semantic_gates": len(plans),
         "candidate_pool": [_candidate_dict(plan, timeline, config) for plan in plans],
+        "required_semantic_anchors": cinematic_anchors,
         "verified_finishing_move_count": len(timeline.finishing_moves),
         "verified_finishing_moves": [asdict(span) for span in timeline.finishing_moves],
         "automatic_finishing_move_candidates": automatic_candidates,

@@ -16,6 +16,70 @@ def _write(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _encode_and_certify(
+    canonical_master: Path,
+    target: Path,
+    config: dict[str, Any],
+    mode: str,
+    source_profile: dict[str, Any],
+    delivery_profile: dict[str, Any],
+    staging_fidelity: list[dict[str, Any]],
+    source_native_master: Path,
+    composition_info: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Bounded quality retries, never relaxes fidelity or timing contracts.
+
+    A failed SSIM/PSNR encode is retried from the SAME lossless canonical master.
+    Contract mismatches, source failures and FFmpeg errors fail immediately.
+    """
+    settings = dict(config["output"])
+    bitrate_key = "shadow_video_bitrate_kbps" if mode == "shadow" else "video_bitrate_kbps"
+    initial = int(settings.get(bitrate_key, 8000 if mode == "shadow" else 25000))
+    if initial <= 0:
+        raise RuntimeError("encoded bitrate must be positive")
+    attempts: list[dict[str, Any]] = []
+    # Caps avoid unbounded storage or compute use; retry only fidelity-metric failures.
+    for multiplier in (1.0, 1.5, 2.0):
+        bitrate = int(initial * multiplier)
+        trial_config = dict(config)
+        output = dict(settings)
+        output[bitrate_key] = bitrate
+        if mode == "shadow":
+            output["shadow_maxrate_kbps"] = max(bitrate, int(bitrate * 1.25))
+            output["shadow_bufsize_kbps"] = bitrate * 2
+        trial_config["output"] = output
+        source_fidelity._encode_from_canonical_master(
+            canonical_master,
+            trial_config,
+            delivery_profile,
+            target,
+            mode=mode,
+        )
+        try:
+            qa = ffv1._source_fidelity_qa(
+                source_profile,
+                staging_fidelity,
+                canonical_master,
+                target,
+                config,
+                source_native_master=source_native_master,
+                delivery_profile=delivery_profile,
+                composition_info=composition_info,
+            )
+        except RuntimeError as exc:
+            reason = str(exc)
+            attempts.append(
+                {"bitrate_kbps": bitrate, "result": "fidelity_rejected", "reason": reason}
+            )
+            if not reason.startswith("source-fidelity QA failed: SSIM=") or multiplier == 2.0:
+                raise
+            target.unlink(missing_ok=True)
+            continue
+        attempts.append({"bitrate_kbps": bitrate, "result": "PASS"})
+        return qa, attempts
+    raise AssertionError("fidelity retry exhausted without a terminal result")
+
+
 def render_one(
     *,
     source_key: str,
@@ -104,22 +168,16 @@ def render_one(
                 canonical_master,
             )
             canonical_info = overlay_info
-        source_fidelity._encode_from_canonical_master(
+        fidelity_qa, encoding_attempts = _encode_and_certify(
             canonical_master,
-            config,
-            delivery_profile,
             target,
-            mode=mode,
-        )
-        fidelity_qa = ffv1._source_fidelity_qa(
+            config,
+            mode,
             source_profile,
+            delivery_profile,
             staging_fidelity,
-            canonical_master,
-            target,
-            config,
-            source_native_master=source_native_master,
-            delivery_profile=delivery_profile,
-            composition_info=composition_info,
+            source_native_master,
+            composition_info,
         )
 
     qa = helpers.validate_output(target, config, mode=mode, source_profile=source_profile)
@@ -149,6 +207,7 @@ def render_one(
         "technical_qa_passed": all(bool(value) for value in qa["checks"].values()),
         "source_fidelity_qa_passed": all(bool(value) for value in fidelity_qa["checks"].values()),
         "source_fidelity": fidelity_qa,
+        "encoding_attempts": encoding_attempts,
         "canonical_master": canonical_info,
         "source_native_master": source_native_info,
         "text_overlay": overlay_info,
