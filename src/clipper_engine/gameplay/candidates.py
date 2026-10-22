@@ -5,7 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from . import analysis, cinematic, contract, features, interaction
+from . import analysis, cinematic, contract, features, interaction, neural_evidence
 
 ENGINE = "deterministic-gameplay"
 EDITOR = "semantic-editor"
@@ -269,6 +269,15 @@ def analyze_source_file(
         source_key=source_key,
     )
     timeline = analysis.analyze_source(source, config)
+    neural_review = (
+        neural_evidence.reconcile(neural_visual_evidence, timeline, source_key, config)
+        if neural_visual_evidence is not None
+        else None
+    )
+    if neural_review is not None:
+        (output_dir / "neural_review_queue.json").write_text(
+            json.dumps(neural_review, indent=2), encoding="utf-8"
+        )
     diagnostics = analysis.diagnose_source(timeline, config, excluded, source_key)
     plans = analysis.build_plans_for_source(timeline, config, excluded, source_key)
     cinematic_plans, cinematic_anchors = cinematic.analyze(timeline, config, excluded, source_key)
@@ -291,6 +300,15 @@ def analyze_source_file(
         "verified_finishing_moves": [asdict(span) for span in timeline.finishing_moves],
         "automatic_finishing_move_candidates": automatic_candidates,
         "automatic_finishing_move_candidates_are_discovery_only": True,
+        "neural_review_queue": (
+            {
+                "status": neural_review["status"],
+                "path": "neural_review_queue.json",
+                "coverage": neural_review["coverage"],
+            }
+            if neural_review is not None
+            else None
+        ),
         "neural_visual_evidence": (
             {
                 "status": neural_visual_evidence["status"],
