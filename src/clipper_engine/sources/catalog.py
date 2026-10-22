@@ -158,6 +158,7 @@ def discover(
                 "width": derivative.get("width"),
                 "height": derivative.get("height"),
                 "duration_ms": derivative.get("duration") or asset.get("duration"),
+                "provider_review_url": review_url,
                 "provider_asset_id": asset.get("id"),
                 "provider_presentation_id": asset.get("_presentation_id"),
                 "provider_playlist_id": asset.get("_playlist_id"),

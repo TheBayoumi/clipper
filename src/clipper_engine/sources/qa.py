@@ -70,12 +70,21 @@ def certify_analysis_alignment(
         "same_source_key": analysis.get("source_key") == original.get("source_key"),
         "same_title": analysis.get("title") == original.get("title"),
         "same_file_name": analysis.get("file_name") == original.get("file_name"),
+        "same_provider_review": bool(analysis.get("provider_review_url"))
+        and analysis.get("provider_review_url") == original.get("provider_review_url"),
         "same_provider_asset": bool(analysis.get("provider_asset_id"))
         and analysis.get("provider_asset_id") == original.get("provider_asset_id"),
-        "same_provider_presentation": bool(analysis.get("provider_presentation_id"))
-        and analysis.get("provider_presentation_id") == original.get("provider_presentation_id"),
-        "same_provider_playlist": bool(analysis.get("provider_playlist_id"))
-        and analysis.get("provider_playlist_id") == original.get("provider_playlist_id"),
+        # Legacy MediaSilo Review pages do not always expose presentation or playlist
+        # IDs. Verify them when both sides provide them; source identity remains
+        # mandatory through the same review, asset ID, filename, and duration.
+        "same_provider_presentation": (
+            not (analysis.get("provider_presentation_id") and original.get("provider_presentation_id"))
+            or analysis.get("provider_presentation_id") == original.get("provider_presentation_id")
+        ),
+        "same_provider_playlist": (
+            not (analysis.get("provider_playlist_id") and original.get("provider_playlist_id"))
+            or analysis.get("provider_playlist_id") == original.get("provider_playlist_id")
+        ),
     }
 
     analysis_declared = int(analysis.get("declared_duration_ms") or 0)
@@ -100,6 +109,13 @@ def certify_analysis_alignment(
         "analysis_derivative": "proxy",
         "production_derivative": "source",
         "provider_asset_id": original.get("provider_asset_id"),
+        "provider_review_url": original.get("provider_review_url"),
+        "provider_presentation_id_comparable": bool(
+            analysis.get("provider_presentation_id") and original.get("provider_presentation_id")
+        ),
+        "provider_playlist_id_comparable": bool(
+            analysis.get("provider_playlist_id") and original.get("provider_playlist_id")
+        ),
         "analysis_sha256": analysis.get("sha256"),
         "production_sha256": original.get("sha256"),
         "analysis_duration_seconds": analysis_duration,
@@ -183,6 +199,7 @@ def certify(
         "video_profile": media.video_profile(source),
         "audio_profile": media.audio_profile(source),
         "provider_asset_id": resolved.get("provider_asset_id"),
+        "provider_review_url": resolved.get("provider_review_url"),
         "provider_presentation_id": resolved.get("provider_presentation_id"),
         "provider_playlist_id": resolved.get("provider_playlist_id"),
     }

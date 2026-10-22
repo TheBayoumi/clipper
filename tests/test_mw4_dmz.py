@@ -535,6 +535,7 @@ def test_catalog_resolves_spotlight_original_through_provider_download_api(
 
     selected = result["sources"][0]
     assert selected["derivative_type"] == "source"
+    assert selected["provider_review_url"] == "https://app.mediasilo.com/spotlight/presentation-1"
     assert selected["url_mode"] == "provider_download_api"
     assert selected["url"] == (
         "https://api.mediasilo.com/v3/presentations/presentation-1/"
@@ -550,6 +551,7 @@ def test_proxy_original_alignment_requires_same_provider_asset_and_timing(
         "title": "DMZ.mp4",
         "file_name": "DMZ.mp4",
         "provider_asset_id": "asset-1",
+        "provider_review_url": "https://app.mediasilo.com/review/same-source",
         "provider_presentation_id": "presentation-1",
         "provider_playlist_id": "playlist-1",
         "declared_duration_ms": 12_000,
@@ -595,6 +597,7 @@ def test_proxy_original_alignment_rejects_different_provider_asset(tmp_path: Pat
         "source_key": "dmz",
         "title": "DMZ.mp4",
         "file_name": "DMZ.mp4",
+        "provider_review_url": "https://app.mediasilo.com/review/same-source",
         "provider_presentation_id": "presentation-1",
         "provider_playlist_id": "playlist-1",
         "declared_duration_ms": 12_000,
@@ -633,6 +636,82 @@ def test_proxy_original_alignment_rejects_different_provider_asset(tmp_path: Pat
             analysis_path,
             original_path,
             tmp_path / "alignment.json",
+        )
+
+
+def test_proxy_original_alignment_accepts_unavailable_optional_review_ids(
+    tmp_path: Path,
+) -> None:
+    common = {
+        "source_key": "ghost_fight",
+        "title": "Ghost.mp4",
+        "file_name": "Ghost.mp4",
+        "provider_review_url": "https://app.mediasilo.com/review/verified-campaign",
+        "provider_asset_id": "same-provider-asset",
+        "provider_presentation_id": None,
+        "provider_playlist_id": None,
+        "declared_duration_ms": 188_050,
+        "media_contract": {"video": {"timing": {"nominal_rate": "60/1"}}},
+    }
+    analysis = {
+        **common,
+        "derivative_type": "proxy",
+        "duration_seconds": 188.053,
+        "sha256": "proxy-digest",
+    }
+    original = {
+        **common,
+        "derivative_type": "source",
+        "duration_seconds": 188.050,
+        "sha256": "source-digest",
+    }
+    analysis_path = tmp_path / "analysis.json"
+    original_path = tmp_path / "original.json"
+    analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+    original_path.write_text(json.dumps(original), encoding="utf-8")
+    result = source_qa.certify_analysis_alignment(
+        analysis_path, original_path, tmp_path / "alignment.json"
+    )
+    assert result["status"] == "PASS"
+    assert result["checks"]["same_provider_review"]
+    assert result["checks"]["same_provider_asset"]
+    assert result["checks"]["same_provider_presentation"]
+    assert result["checks"]["same_provider_playlist"]
+    assert result["provider_presentation_id_comparable"] is False
+    assert result["provider_playlist_id_comparable"] is False
+
+
+@pytest.mark.parametrize("mismatch", ["review", "asset", "presentation", "playlist"])
+def test_proxy_original_alignment_still_rejects_identity_mismatch(
+    tmp_path: Path, mismatch: str
+) -> None:
+    common = {
+        "source_key": "ghost_fight",
+        "title": "Ghost.mp4",
+        "file_name": "Ghost.mp4",
+        "provider_review_url": "https://app.mediasilo.com/review/official",
+        "provider_asset_id": "asset-1",
+        "provider_presentation_id": "presentation-1",
+        "provider_playlist_id": "playlist-1",
+        "declared_duration_ms": 188_050,
+        "duration_seconds": 188.05,
+        "media_contract": {"video": {"timing": {"nominal_rate": "60/1"}}},
+    }
+    analysis = {**common, "derivative_type": "proxy", "sha256": "proxy-digest"}
+    original = {**common, "derivative_type": "source", "sha256": "source-digest"}
+    original[{
+        "review": "provider_review_url",
+        "asset": "provider_asset_id",
+        "presentation": "provider_presentation_id",
+        "playlist": "provider_playlist_id",
+    }[mismatch]] = "different"
+    analysis_path = tmp_path / "analysis.json"
+    original_path = tmp_path / "original.json"
+    analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+    original_path.write_text(json.dumps(original), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="alignment failed"):
+        source_qa.certify_analysis_alignment(
+            analysis_path, original_path, tmp_path / "alignment.json"
         )
 
 
