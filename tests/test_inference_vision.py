@@ -29,6 +29,13 @@ MODEL = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _test_execution_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit tests use a controlled immutable execution SHA, not runner HEAD."""
+    monkeypatch.setenv("GITHUB_SHA", SHA)
+    monkeypatch.delenv("CLIPPER_ACCEPTANCE_SHA", raising=False)
+
+
 def _config(**overrides: object) -> dict[str, Any]:
     return {
         "capabilities": {

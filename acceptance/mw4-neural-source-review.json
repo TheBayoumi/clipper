@@ -1,0 +1,171 @@
+{
+  "schema": "clipper-neural-source-review-v1",
+  "source_of_truth": "campaigns/campaign-moments-mw4.json",
+  "type": "benchmark_annotation_seed_NOT_model_ground_truth",
+  "independent_review_complete": false,
+  "gold_qualification": "PENDING_SOURCE_PLAYBACK",
+  "provider": "mediasilo",
+  "provider_review_url": "https://app.mediasilo.com/review/6ad7e5593c66821dec1d97a6",
+  "evaluation_rules": {
+    "confirmed_required_payoff_recall": 1.0,
+    "unresolved_qualified_anchors_allowed": 0,
+    "model_only_claimed_kills_allowed": 0,
+    "independent_source_frame_review_required": true,
+    "all_six_sources_must_be_adjudicated": true,
+    "negative_event_footage_required": true,
+    "evaluation_before_profile_enablement": true
+  },
+  "sources": [
+    {
+      "source_key": "traffic_chase",
+      "source_title": "MW4_CampaignClipping_TrafficChase_1.mp4",
+      "review_status": "PENDING_INDEPENDENT_SOURCE_PLAYBACK",
+      "prior_campaign_verified_cinematic_anchors": [],
+      "required_review_categories": [
+        "direct_hostile_interaction",
+        "outcome_payoff",
+        "finishing_move",
+        "player_death",
+        "traversal_recovery",
+        "cinematic_confrontation",
+        "dialogue_claim",
+        "narrative_reveal",
+        "negative_running_search",
+        "negative_visual_distractor"
+      ],
+      "adjudicated_source_frame_annotations": []
+    },
+    {
+      "source_key": "ghost_fight",
+      "source_title": "MW4_CampaignClipping_GhostFight_GhostAndGazAtEnd_1.mp4",
+      "review_status": "PENDING_INDEPENDENT_SOURCE_PLAYBACK",
+      "prior_campaign_verified_cinematic_anchors": [
+        {
+          "id": "rooftop_exchange",
+          "source_seconds": 51.0,
+          "label": "Rooftop fight escalates",
+          "prior_source_verification": "Official Ghost Fight proxy visually reviewed at 45-57s: direct rooftop strikes and confrontation",
+          "independent_re_review": "PENDING"
+        },
+        {
+          "id": "rooftop_grapple",
+          "source_seconds": 81.0,
+          "label": "Fight intensifies on the rooftop",
+          "prior_source_verification": "Official Ghost Fight proxy visually reviewed at 75-87s: close-quarters exchange and grapple",
+          "independent_re_review": "PENDING"
+        },
+        {
+          "id": "interior_faceoff",
+          "source_seconds": 171.0,
+          "label": "Close-quarters interior confrontation",
+          "prior_source_verification": "Official Ghost Fight proxy visually reviewed at 166-178s: interior character combat and faceoff",
+          "independent_re_review": "PENDING"
+        }
+      ],
+      "required_review_categories": [
+        "direct_hostile_interaction",
+        "outcome_payoff",
+        "finishing_move",
+        "player_death",
+        "traversal_recovery",
+        "cinematic_confrontation",
+        "dialogue_claim",
+        "narrative_reveal",
+        "negative_running_search",
+        "negative_visual_distractor"
+      ],
+      "adjudicated_source_frame_annotations": []
+    },
+    {
+      "source_key": "refusing_orders",
+      "source_title": "MW4_CampaignClipping_CivillianExecution_RefusingOrders_1.mp4",
+      "review_status": "PENDING_INDEPENDENT_SOURCE_PLAYBACK",
+      "prior_campaign_verified_cinematic_anchors": [
+        {
+          "id": "courtyard_standoff",
+          "source_seconds": 60.0,
+          "label": "Courtyard confrontation",
+          "prior_source_verification": "Official Refusing Orders proxy visually reviewed at 54-66s: armed soldiers and detainees in a tense courtyard confrontation",
+          "independent_re_review": "PENDING"
+        },
+        {
+          "id": "character_exchange",
+          "source_seconds": 137.0,
+          "label": "A tense character exchange",
+          "prior_source_verification": "Official Refusing Orders proxy visually reviewed at 132-144s: two uniformed characters confront each other and exchange dialogue",
+          "independent_re_review": "PENDING"
+        }
+      ],
+      "required_review_categories": [
+        "direct_hostile_interaction",
+        "outcome_payoff",
+        "finishing_move",
+        "player_death",
+        "traversal_recovery",
+        "cinematic_confrontation",
+        "dialogue_claim",
+        "narrative_reveal",
+        "negative_running_search",
+        "negative_visual_distractor"
+      ],
+      "adjudicated_source_frame_annotations": []
+    },
+    {
+      "source_key": "convenience_store",
+      "source_title": "MW4_CampaignClipping_ConvenienceStore_1.mp4",
+      "review_status": "PENDING_INDEPENDENT_SOURCE_PLAYBACK",
+      "prior_campaign_verified_cinematic_anchors": [],
+      "required_review_categories": [
+        "direct_hostile_interaction",
+        "outcome_payoff",
+        "finishing_move",
+        "player_death",
+        "traversal_recovery",
+        "cinematic_confrontation",
+        "dialogue_claim",
+        "narrative_reveal",
+        "negative_running_search",
+        "negative_visual_distractor"
+      ],
+      "adjudicated_source_frame_annotations": []
+    },
+    {
+      "source_key": "makarov_chase",
+      "source_title": "MW4_CampaignClipping_MakarovChaseAndFight_Trimmed_1.mp4",
+      "review_status": "PENDING_INDEPENDENT_SOURCE_PLAYBACK",
+      "prior_campaign_verified_cinematic_anchors": [],
+      "required_review_categories": [
+        "direct_hostile_interaction",
+        "outcome_payoff",
+        "finishing_move",
+        "player_death",
+        "traversal_recovery",
+        "cinematic_confrontation",
+        "dialogue_claim",
+        "narrative_reveal",
+        "negative_running_search",
+        "negative_visual_distractor"
+      ],
+      "adjudicated_source_frame_annotations": []
+    },
+    {
+      "source_key": "nightclub",
+      "source_title": "MW4_CampaignClipping_NightClub_1.mp4",
+      "review_status": "PENDING_INDEPENDENT_SOURCE_PLAYBACK",
+      "prior_campaign_verified_cinematic_anchors": [],
+      "required_review_categories": [
+        "direct_hostile_interaction",
+        "outcome_payoff",
+        "finishing_move",
+        "player_death",
+        "traversal_recovery",
+        "cinematic_confrontation",
+        "dialogue_claim",
+        "narrative_reveal",
+        "negative_running_search",
+        "negative_visual_distractor"
+      ],
+      "adjudicated_source_frame_annotations": []
+    }
+  ]
+}
