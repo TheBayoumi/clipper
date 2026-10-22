@@ -79,3 +79,16 @@ every confirmed payoff before enabling neural-powered production allocation.
 - Integration of verified visual events into Clipper detector/timeline semantics.
 - Exact final-SHA CI, Modal worker identity, full 4K master render, FFV1/NUT
   hashes, encoded 10-12 s, SSIM/PSNR, source/color QA, full clip playback.
+
+## Non-disruptive bounded GPU qualification
+
+`.github/workflows/modal-neural-qualification.yml` is a **permanent
+validation-only workflow**. Its push trigger matches changes to the workflow
+file on the MW4 feature branch; it runs a 25-minute bounded ephemeral
+`modal run` (no shared worker deployment) after retrieving and re-certifying a
+previously qualified `ghost_fight` MediaSilo analysis proxy. It transmits
+only one 640-pixel source-clock JPEG to Modal and records exact source SHA,
+worker SHA, revision, CUDA readiness and model observations. GPU-only estimated
+cost must stay below $1. Actual Modal charges can include startup/CPU/memory
+and must be separately audited. A failed or unavailable Modal workspace is
+reported as an incomplete qualification, not silently deemed a pass.

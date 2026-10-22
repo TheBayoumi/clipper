@@ -50,7 +50,14 @@ image = (
         "pillow>=11,<13",
         "sentencepiece>=0.2,<1",
     )
-    .env({"HF_HOME": "/models", "HF_HUB_CACHE": "/models"})
+    .env(
+        {
+            "HF_HOME": "/models",
+            "HF_HUB_CACHE": "/models",
+            "CLIPPER_DEPLOYED_GIT_SHA": DEPLOYED_GIT_SHA,
+            "CLIPPER_NEURAL_MODAL_APP": APP_NAME,
+        }
+    )
     .add_local_python_source("clipper_engine")
 )
 
@@ -202,3 +209,76 @@ class VisionModel:
                 ),
             },
         }
+
+
+@app.local_entrypoint()
+def smoke(
+    frame_path: str,
+    source_identity_json: str,
+    timestamp: float,
+    output_path: str,
+    max_estimated_usd: float = 1.0,
+) -> None:
+    """Validation-only live GPU smoke on one pre-certified source-clock frame."""
+    from pathlib import Path
+
+    from clipper_engine.inference.vision import _parse_batch
+
+    if not 0 < max_estimated_usd <= 1.0:
+        raise ValueError("smoke hard estimated cost ceiling is one USD")
+    frame = Path(frame_path)
+    identity = json.loads(Path(source_identity_json).read_text(encoding="utf-8"))
+    at = round(float(timestamp), 3)
+    source_frame_sha256 = __import__("hashlib").sha256(frame.read_bytes()).hexdigest()
+    payload = {
+        "task": "source_gameplay_visual_scout",
+        "frame_timestamps": [at],
+        "source_identity": identity,
+        "expected_git_sha": DEPLOYED_GIT_SHA,
+        "model": {
+            "model_id": VISION_MODEL_ID,
+            "revision": VISION_REVISION,
+            "prompt_version": VISION_PROMPT_VERSION,
+            "schema_version": VISION_SCHEMA_VERSION,
+        },
+        "frames_base64": [base64.b64encode(frame.read_bytes()).decode("ascii")],
+    }
+    _validate_request(payload)
+    started = time.perf_counter()
+    worker = VisionModel()
+    ready = worker.ready.remote()
+    if (
+        ready.get("deployed_git_sha") != DEPLOYED_GIT_SHA
+        or ready.get("model_id") != VISION_MODEL_ID
+        or ready.get("revision") != VISION_REVISION
+        or ready.get("cuda_available") is not True
+        or ready.get("gpu_count", 0) < 2
+    ):
+        raise RuntimeError("neural GPU model readiness/identity qualification failed")
+    result = worker.inspect.remote(payload)
+    observations, gpu_seconds, gpu_only_cost = _parse_batch(
+        result, identity=identity, requested=(at,), deployed_sha=DEPLOYED_GIT_SHA
+    )
+    wall_elapsed = time.perf_counter() - started
+    # Conservatively include startup/ready wall time as if both GPUs were allocated.
+    estimated_total_cost = wall_elapsed * GPU_ESTIMATED_USD_PER_SECOND
+    if max(gpu_only_cost, estimated_total_cost) > max_estimated_usd:
+        raise RuntimeError("neural live qualification exceeded estimated cost budget")
+    evidence = {
+        "status": "GPU_SMOKE_PASS_PROPOSALS_ONLY",
+        "deployed_git_sha": DEPLOYED_GIT_SHA,
+        "model": payload["model"],
+        "source_identity": identity,
+        "frame_timestamp": at,
+        "source_frame_sha256": source_frame_sha256,
+        "readiness": ready,
+        "observations": observations,
+        "usage": {
+            "gpu_seconds": gpu_seconds,
+            "worker_estimated_gpu_cost_usd": gpu_only_cost,
+            "conservative_wall_estimated_gpu_cost_usd": estimated_total_cost,
+            "wall_seconds": wall_elapsed,
+        },
+    }
+    Path(output_path).write_text(json.dumps(evidence, indent=2), encoding="utf-8")
+    print(json.dumps({"neural_gpu_smoke": evidence["status"], "usage": evidence["usage"]}))

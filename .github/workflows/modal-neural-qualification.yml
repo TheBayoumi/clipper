@@ -1,0 +1,130 @@
+name: Canonical Clipper neural GPU qualification
+
+on:
+  # Feature-only validation. The first addition triggers a bounded GPU smoke;
+  # later edits to the canonical workflow are intentionally reviewed/costed.
+  push:
+    branches:
+      - feat/mw4-fullframe-retention-v3-1
+    paths:
+      - .github/workflows/modal-neural-qualification.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clipper-neural-gpu-qualification-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  neural-source-gpu-smoke:
+    name: Isolated Qwen3-VL source/identity smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      CLIPPER_NEURAL_MODAL_APP: clipper-neural-qualification
+      CLIPPER_DEPLOYED_GIT_SHA: ${{ github.sha }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify immutable exact-head and controlled GPU access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CLIPPER_DEPLOYED_GIT_SHA"
+          test -n "$MODAL_TOKEN_ID"
+          test -n "$MODAL_TOKEN_SECRET"
+          test "$CLIPPER_NEURAL_MODAL_APP" = clipper-neural-qualification
+          command -v ffmpeg
+          command -v ffprobe
+      - name: Install canonical Clipper inference runtime
+        run: python -m pip install -e '.[modal]'
+      - name: Retrieve previous certified analysis proxy, not 4K master
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 39749647361
+          github-token: ${{ github.token }}
+          name: MW4-qualification-source-ghost_fight
+          path: raw_sources
+      - name: Reverify source bytes and frame identity before cloud sampling
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from clipper_engine.sources import qa
+
+          video = Path('raw_sources/ghost_fight.mp4')
+          manifest = qa.verify(
+              video, Path('raw_sources/ghost_fight.source_qa.json'),
+              require_original=False,
+          )
+          if manifest.get('source_key') != 'ghost_fight':
+              raise RuntimeError('source key mismatch in certified proxy')
+          if manifest.get('derivative_type') != 'proxy':
+              raise RuntimeError('neural smoke requires certified analysis proxy')
+          if float(manifest['duration_seconds']) < 52:
+              raise RuntimeError('expected source-relative 51s sample is unavailable')
+          identity = {
+              key: str(manifest.get(value) or '')
+              for key, value in {
+                  'source_key': 'source_key',
+                  'provider_asset_id': 'provider_asset_id',
+                  'provider_review_url': 'provider_review_url',
+                  'analysis_sha256': 'sha256',
+                  'derivative_type': 'derivative_type',
+              }.items()
+          }
+          if any(not value for value in identity.values()):
+              raise RuntimeError('source identity incomplete')
+          Path('neural-source-identity.json').write_text(
+              json.dumps(identity, indent=2), encoding='utf-8',
+          )
+          PY
+          ffmpeg -hide_banner -loglevel error -nostdin -y \
+            -ss 51.000 -i raw_sources/ghost_fight.mp4 \
+            -vf "scale=w='min(640,iw)':h='min(640,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2" \
+            -frames:v 1 -q:v 3 neural-sample.jpg
+          test -s neural-sample.jpg
+      - name: Execute isolated Modal GPU model and strict output contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          modal run src/clipper_engine/inference/modal_worker.py \
+            --frame-path neural-sample.jpg \
+            --source-identity-json neural-source-identity.json \
+            --timestamp 51.0 \
+            --output-path neural-gpu-smoke.json \
+            --max-estimated-usd 1.0
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('neural-gpu-smoke.json').read_text(encoding='utf-8'))
+          assert report['status'] == 'GPU_SMOKE_PASS_PROPOSALS_ONLY'
+          assert report['deployed_git_sha'] == __import__('os').environ['GITHUB_SHA']
+          assert report['readiness']['cuda_available'] is True
+          assert report['readiness']['gpu_count'] >= 2
+          assert report['source_identity']['source_key'] == 'ghost_fight'
+          assert report['usage']['conservative_wall_estimated_gpu_cost_usd'] <= 1.0
+          print('ISOLATED_NEURAL_GPU_SMOKE: PASS')
+          PY
+      - name: Save evidence for source and worker qualification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Clipper-neural-GPU-smoke-${{ github.sha }}
+          path: |
+            neural-source-identity.json
+            neural-gpu-smoke.json
+          retention-days: 30
+          if-no-files-found: warn
