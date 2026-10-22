@@ -9,15 +9,20 @@ from .vision import VisionSettings
 
 
 class ModalVisionProvider:
-    def __init__(self, settings: VisionSettings) -> None:
+    def __init__(self, settings: VisionSettings, *, worker: Any | None = None) -> None:
         self.settings = settings
+        self.worker = worker
 
     def inspect(self, request: dict[str, Any]) -> dict[str, Any]:
-        try:
-            modal = importlib.import_module("modal")
-        except ImportError as exc:
-            raise RuntimeError("Modal visual inference requires the clipper[modal] extra") from exc
-        worker = modal.Cls.from_name(self.settings.app_name, "VisionModel")()
+        worker = self.worker
+        if worker is None:
+            try:
+                modal = importlib.import_module("modal")
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Modal visual inference requires the clipper[modal] extra"
+                ) from exc
+            worker = modal.Cls.from_name(self.settings.app_name, "VisionModel")()
         call = worker.inspect.spawn(request)
         try:
             result: Any = call.get(timeout=self.settings.deadline_seconds)

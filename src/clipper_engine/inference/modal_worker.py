@@ -324,3 +324,111 @@ def smoke(
     }
     Path(output_path).write_text(json.dumps(evidence, indent=2), encoding="utf-8")
     print(json.dumps({"neural_gpu_smoke": evidence["status"], "usage": evidence["usage"]}))
+
+
+@app.local_entrypoint()
+def source_scout(
+    source_path: str,
+    manifest_path: str,
+    campaign_config: str,
+    output_dir: str,
+    max_gpu_seconds: float = 1800.0,
+    max_estimated_usd: float = 3.0,
+    sample_interval_seconds: float = 12.0,
+    batch_frames: int = 5,
+    max_refinement_anchors: int = 30,
+    max_sample_frames: int = 300,
+) -> None:
+    """Validation-only source-WIDE GPU scout via the canonical Clipper analysis.
+
+    No alternate analyzer, planner, allocator or renderer. GPU model outputs are
+    source-stamped PROPOSALS only and are separately queued for human review.
+    """
+    from pathlib import Path
+
+    from clipper_engine.gameplay import analysis, neural_evidence
+    from clipper_engine.inference.modal import ModalVisionProvider
+    from clipper_engine.inference.vision import VisionSettings, analyze_source
+    from clipper_engine.profiles import load_profile
+    from clipper_engine.sources import qa as source_qa
+
+    video = Path(source_path)
+    source_certificate = Path(manifest_path)
+    output = Path(output_dir)
+    if not 0 < max_estimated_usd <= 3.0 or not 0 < max_gpu_seconds <= 3600:
+        raise ValueError("source-wide scout budget must be finite and bounded")
+    if not 4 <= sample_interval_seconds <= 15 or not 1 <= batch_frames <= 8:
+        raise ValueError("source-wide scout sampling must be bounded")
+    if not 1 <= max_refinement_anchors <= 100 or not 20 <= max_sample_frames <= 500:
+        raise ValueError("source-wide scout anchor/frame budget must be bounded")
+    if not DEPLOYED_GIT_SHA or len(DEPLOYED_GIT_SHA) != 40:
+        raise RuntimeError("source-wide qualification requires immutable git SHA")
+    if os.environ.get("GITHUB_SHA") and os.environ["GITHUB_SHA"] != DEPLOYED_GIT_SHA:
+        raise RuntimeError("source-wide GPU worker SHA differs from checked-out source")
+    identity = source_qa.verify(video, source_certificate, require_original=False)
+    source_key = str(identity.get("source_key") or "")
+    if identity.get("derivative_type") != "proxy" or not source_key:
+        raise ValueError("source-wide neural qualification requires certified analysis proxy")
+    config = load_profile("mw4", Path(campaign_config)).config
+    capability = dict((config.get("capabilities") or {}).get("neural_visual_events") or {})
+    capability.update(
+        {
+            "enabled": True,
+            "backend": "modal",
+            "deployed_sha": DEPLOYED_GIT_SHA,
+            "model_id": VISION_MODEL_ID,
+            "model_revision": VISION_REVISION,
+            "sample_interval_seconds": sample_interval_seconds,
+            "batch_frames": batch_frames,
+            "max_gpu_seconds": max_gpu_seconds,
+            "max_estimated_usd": max_estimated_usd,
+            "max_sample_frames": max_sample_frames,
+            "max_refinement_anchors": max_refinement_anchors,
+            "deadline_seconds": 180.0,
+        }
+    )
+    config["capabilities"]["neural_visual_events"] = capability
+    settings = VisionSettings.from_profile(config)
+    worker = VisionModel()
+    ready = worker.ready.remote()
+    if (
+        ready.get("deployed_git_sha") != DEPLOYED_GIT_SHA
+        or ready.get("model_id") != VISION_MODEL_ID
+        or ready.get("revision") != VISION_REVISION
+        or ready.get("cuda_available") is not True
+        or ready.get("gpu_count", 0) < 2
+    ):
+        raise RuntimeError("source-wide neural worker CUDA/model/SHA readiness mismatch")
+    timeline = analysis.analyze_source(video, config)
+    output.mkdir(parents=True, exist_ok=True)
+    report = analyze_source(
+        video,
+        source_certificate,
+        config,
+        output,
+        provider=ModalVisionProvider(settings, worker=worker),
+        source_key=source_key,
+        timeline=timeline,
+    )
+    if report is None or report.get("status") != "PROPOSALS_ONLY":
+        raise RuntimeError("source-wide visual scout did not yield complete proposals")
+    review = neural_evidence.reconcile(report, timeline, source_key, config)
+    (output / "neural_review_queue.json").write_text(json.dumps(review, indent=2), encoding="utf-8")
+    summary = {
+        "status": "GPU_SOURCE_WIDE_PROPOSALS_ONLY",
+        "execution_sha": DEPLOYED_GIT_SHA,
+        "source_key": source_key,
+        "source_sha256": identity["sha256"],
+        "model": report["model"],
+        "source_clock": report.get("source_clock"),
+        "coverage": report["coverage"],
+        "usage": report.get("usage"),
+        "review_queue_coverage": review["coverage"],
+        "readiness": ready,
+        "requires_independent_source_review": True,
+        "may_create_verified_outcomes": False,
+    }
+    (output / "source_wide_gpu_qualification.json").write_text(
+        json.dumps(summary, indent=2), encoding="utf-8"
+    )
+    print(json.dumps(summary))

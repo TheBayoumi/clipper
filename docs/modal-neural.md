@@ -106,3 +106,32 @@ worker SHA, revision, CUDA readiness and model observations. GPU-only estimated
 cost must stay below $1. Actual Modal charges can include startup/CPU/memory
 and must be separately audited. A failed or unavailable Modal workspace is
 reported as an incomplete qualification, not silently deemed a pass.
+
+## Source-wide isolated GPU qualification (six-source, opt-in)
+
+The permanent validation-only workflow `.github/workflows/modal-neural-qualification.yml`
+has an optional `workflow_dispatch` input `source_wide=true`. It uses one of six
+hash-certified original MediaSilo **analysis proxies** as inputs per job, rechecks
+each certificate, and invokes the existing `VisionModel` via Modal's ephemeral
+app context with `modal run ...::source_scout`. The orchestration is in the same
+canonical Clipper inference provider (`ModalVisionProvider`) and normal Clipper
+CPU visual-semantic timeline (`gameplay.analysis.analyze_source`); no duplicate
+analyzer, planner, allocator or renderer is instantiated.
+
+An isolated source-wide run produces `neural_visual_evidence.json`,
+`neural_review_queue.json` and `source_wide_gpu_qualification.json`. The
+expected and observed number of source-frame samples must match. Every
+observation remains `PROPOSED` or a negative observation; the reviewer queue
+may link to independently verified pre-existing anchors but never turns a
+model claim into a verified event. Every sample is tied to exact certified
+source bytes, rational time grid, pinned model revision, prompt and deployment
+SHA. Explicit per-source GPU and sampling budgets fail closed, and terminal
+cancellation remains mandatory. Recorded dollar figures are **estimates**, not
+account-wide hard Modal spending caps.
+
+The validation job may reuse archived **certified** analysis proxies for
+repeatable experiments. Original-master renders, complete independent video and
+audio ground-truth review, player-death evidence, GPU speech/alignment, actual
+10–12-second encoded clip and final same-SHA production qualification remain
+separate mandatory acceptance gates. No MediaSilo credential or original
+uncompressed master is uploaded to the Modal worker.

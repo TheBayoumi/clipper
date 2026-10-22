@@ -11,6 +11,12 @@ on:
       - src/clipper_engine/inference/modal_worker.py
       - src/clipper_engine/inference/vision.py
   workflow_dispatch:
+    inputs:
+      source_wide:
+        description: 'Run independently certified source-wide GPU review probes on all six MW4 analysis proxies'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -112,7 +118,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          modal run src/clipper_engine/inference/modal_worker.py \
+          modal run src/clipper_engine/inference/modal_worker.py::smoke \
             --frame-path neural-sample.jpg \
             --source-identity-json neural-source-identity.json \
             --timestamp 51.0 \
@@ -138,5 +144,112 @@ jobs:
           path: |
             neural-source-identity.json
             neural-gpu-smoke.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  neural-source-wide-review:
+    name: Source-wide proposed visual evidence (${{ matrix.source }})
+    # Validation-only and deliberately opt-in due cost. Never deploy or modify
+    # shared Modal workers or mutate source; use certified, hash-reverified proxies.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.source_wide == true }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - {source: ghost_fight, run_id: 39827390899}
+          - {source: convenience_store, run_id: 39827390899}
+          - {source: traffic_chase, run_id: 39827390899}
+          - {source: nightclub, run_id: 39827390899}
+          - {source: makarov_chase, run_id: 39827390899}
+          - {source: refusing_orders, run_id: 39749647361}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      CLIPPER_NEURAL_MODAL_APP: clipper-neural-qualification
+      CLIPPER_DEPLOYED_GIT_SHA: ${{ github.sha }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check checkout, GPU account access and CPU decoder
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CLIPPER_DEPLOYED_GIT_SHA"
+          test -n "$MODAL_TOKEN_ID"
+          test -n "$MODAL_TOKEN_SECRET"
+          command -v ffmpeg
+          command -v ffprobe
+      - name: Install Clipper and Modal validation dependencies
+        run: python -m pip install -e '.[mw4,modal]'
+      - name: Retrieve immutable certified MediaSilo analysis proxy
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ matrix.run_id }}
+          github-token: ${{ github.token }}
+          name: MW4-qualification-source-${{ matrix.source }}
+          path: raw_sources
+      - name: Verify certified source bytes, identity and frame timing
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from clipper_engine.sources import qa
+          name = '${{ matrix.source }}'
+          video = Path('raw_sources') / (name + '.mp4')
+          cert = Path('raw_sources') / (name + '.source_qa.json')
+          source = qa.verify(video, cert, require_original=False)
+          if source.get('source_key') != name or source.get('derivative_type') != 'proxy':
+              raise RuntimeError('certified MediaSilo analysis proxy identity invalid')
+          clock = ((source.get('media_contract') or {}).get('video') or {}).get('timing') or {}
+          if not clock.get('nominal_rate'):
+              raise RuntimeError('source certificate missing original rational frame timing')
+          print('SOURCE_IDENTITY_PASS', name, source['sha256'], clock['nominal_rate'])
+          PY
+      - name: Analyze complete certified source via Clipper and isolated Qwen3-VL
+        shell: bash
+        run: |
+          set -euo pipefail
+          modal run src/clipper_engine/inference/modal_worker.py::source_scout \
+            --source-path raw_sources/${{ matrix.source }}.mp4 \
+            --manifest-path raw_sources/${{ matrix.source }}.source_qa.json \
+            --campaign-config campaigns/campaign-moments-mw4.json \
+            --output-dir neural-source-${{ matrix.source }} \
+            --sample-interval-seconds 15 \
+            --batch-frames 5 \
+            --max-refinement-anchors 30 \
+            --max-sample-frames 300 \
+            --max-gpu-seconds 1800 \
+            --max-estimated-usd 2.0
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path('neural-source-${{ matrix.source }}')
+          report = json.loads((p / 'source_wide_gpu_qualification.json').read_text())
+          queue = json.loads((p / 'neural_review_queue.json').read_text())
+          assert report['status'] == 'GPU_SOURCE_WIDE_PROPOSALS_ONLY'
+          assert report['execution_sha'] == os.environ['GITHUB_SHA']
+          assert report['source_key'] == '${{ matrix.source }}'
+          assert report['coverage']['expected_samples'] == report['coverage']['observed_samples']
+          assert queue['status'] == 'REVIEW_QUEUE_ONLY'
+          assert report['may_create_verified_outcomes'] is False
+          assert report['requires_independent_source_review'] is True
+          print('SOURCE_WIDE_GPU_EVIDENCE_PASS', report['source_key'], report['coverage'])
+          PY
+      - name: Retain source-wide model output and independent review requirements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-neural-source-wide-${{ matrix.source }}-${{ github.sha }}
+          path: neural-source-${{ matrix.source }}/
           retention-days: 30
           if-no-files-found: warn
