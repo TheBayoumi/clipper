@@ -230,15 +230,14 @@ def _anchor_plans(
     qualified_anchor_count = 0
     for anchor_time in sorted(qualified):
         unique: list[SemanticPlan] = []
-        seen: set[tuple[float, float]] = set()
+        seen: set[tuple[tuple[float, float], ...]] = set()
         for plan in sorted(
             qualified[anchor_time],
             key=lambda item: item.score,
             reverse=True,
         ):
-            key = (
-                round(float(plan.segments[0].start), 3),
-                round(float(plan.segments[0].end), 3),
+            key = tuple(
+                (round(float(seg.start), 3), round(float(seg.end), 3)) for seg in plan.segments
             )
             if key in seen:
                 continue

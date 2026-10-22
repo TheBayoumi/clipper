@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any, ClassVar
 
-from . import analysis, interaction, quality
+from . import analysis, editing, interaction, quality
 from . import source_spans as canonical
 
 SemanticPlan = canonical.SemanticPlan
@@ -41,7 +41,7 @@ def plan_integrity_violations(
         config,
         source_key,
     )
-    if plan.story_type == "finishing_move_open":
+    if plan.story_type in {"finishing_move_open", "combat_montage"}:
         return failures
     return [failure for failure in failures if "crosses a source-shot boundary" not in failure]
 
@@ -400,12 +400,26 @@ def _anchor_plans(
             else:
                 qualified[anchor_time].append(plan)
 
+        montage, montage_rejections = editing.montage_for_anchor(
+            timeline,
+            config,
+            excluded,
+            source_key,
+            anchor_time,
+            region,
+        )
+        qualified[anchor_time].extend(montage)
+        rejections.update(montage_rejections)
         anchor_diagnostics.append(
             {
                 "anchor_time": anchor_time,
                 "source_region": [region[0], region[1]],
-                "attempted_variant_count": len(variants),
+                "attempted_variant_count": len(variants)
+                + len(montage)
+                + sum(montage_rejections.values()),
                 "qualified_variant_count": len(qualified[anchor_time]),
+                "beat_edit_qualified_count": len(montage),
+                "beat_edit_rejections": montage_rejections,
                 "rejections": dict(sorted(rejections.items())),
             }
         )
@@ -414,15 +428,15 @@ def _anchor_plans(
     qualified_anchor_count = 0
     for anchor_time in sorted(qualified):
         unique: list[SemanticPlan] = []
-        seen: set[tuple[float, float]] = set()
+        seen: set[tuple[tuple[float, float], ...]] = set()
         for plan in sorted(
             qualified[anchor_time],
             key=lambda item: item.score,
             reverse=True,
         ):
-            key = (
-                round(float(plan.segments[0].start), 3),
-                round(float(plan.segments[0].end), 3),
+            key = tuple(
+                (round(float(segment.start), 3), round(float(segment.end), 3))
+                for segment in plan.segments
             )
             if key in seen:
                 continue
@@ -430,7 +444,11 @@ def _anchor_plans(
             unique.append(plan)
         if unique:
             qualified_anchor_count += 1
-            selected.extend(unique[:3])
+            # Keep legal montage proposals in the allocator's choice set even
+            # when high scoring contiguous windows already exist for this anchor.
+            contiguous = [p for p in unique if p.story_type != "combat_montage"]
+            composed = [p for p in unique if p.story_type == "combat_montage"]
+            selected.extend(contiguous[:3] + composed[:3])
 
     existing = dict(getattr(timeline, "_proposal_diagnostics", {}) or {})
     existing.update(
@@ -470,16 +488,13 @@ def normal_plans(
         source_key,
     )
     merged: list[SemanticPlan] = []
-    seen: set[tuple[float, float]] = set()
+    seen: set[tuple[tuple[float, float], ...]] = set()
     for plan in sorted(
         anchored + legacy,
         key=lambda item: item.score,
         reverse=True,
     ):
-        key = (
-            round(float(plan.segments[0].start), 3),
-            round(float(plan.segments[-1].end), 3),
-        )
+        key = tuple((round(float(seg.start), 3), round(float(seg.end), 3)) for seg in plan.segments)
         if key in seen:
             continue
         seen.add(key)

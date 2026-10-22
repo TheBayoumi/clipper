@@ -313,6 +313,21 @@ def analyze_source_file(
             if neural_review is not None
             else None
         ),
+        "analysis_compute": {
+            "feature_extraction": "cpu_ffmpeg_numpy",
+            "direct_interaction_refinement": "cpu_bounded_high_frame_rate",
+            "semantic_planning": "cpu_clipper_engine",
+            "neural_visual": (
+                "modal_gpu_inference_or_provenance_bound_cache"
+                if neural_visual_evidence is not None
+                else "disabled"
+            ),
+            "neural_gpu_seconds_this_run": (
+                float(neural_visual_evidence.get("usage", {}).get("gpu_seconds", 0.0))
+                if neural_visual_evidence is not None
+                else 0.0
+            ),
+        },
         "neural_visual_evidence": (
             {
                 "status": neural_visual_evidence["status"],

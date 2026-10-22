@@ -583,6 +583,12 @@ def _planned_cross_shot_bridge(
     right: EditSegment,
     bridge_index: int,
 ) -> bool:
+    if plan.story_type == "combat_montage":
+        return (
+            left.reason == "verified_combat_setup"
+            and right.reason == "verified_combat_payoff"
+            and plan.effect_profile == "source_native_combat_hard_cuts"
+        )
     if plan.story_type != "finishing_move_open":
         return False
     if (

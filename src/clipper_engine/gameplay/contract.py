@@ -347,6 +347,68 @@ def _finishing_plan_failures(
     return failures
 
 
+def _beat_montage_failures(
+    source: str, index: int, plan: dict[str, Any], config: dict[str, Any]
+) -> list[str]:
+    """Reject forged/ambiguous planned hard cuts before the allocator sees them."""
+    if plan.get("story_type") != "combat_montage":
+        return []
+    from types import SimpleNamespace
+
+    from . import interaction
+
+    reason = f"{source} clip {index}: "
+    limits = config.get("semantic_editor", {}).get("beat_editing") or {}
+    failures: list[str] = []
+    if limits.get("enabled") is not True:
+        failures.append(reason + "beat composition not enabled for profile")
+    segments = list(plan.get("segments") or [])
+    engagements = list(plan.get("engagements") or [])
+    if len(segments) != 2 or len(engagements) != 2:
+        return [*failures, reason + "beat montage requires two verified source segments"]
+    if plan.get("effect_profile") != "source_native_combat_hard_cuts":
+        failures.append(reason + "beat montage must retain source-native hard cuts")
+    if [str(s.get("reason")) for s in segments] != [
+        "verified_combat_setup",
+        "verified_combat_payoff",
+    ]:
+        failures.append(reason + "beat montage has incorrect editorial segment reasons")
+    gap = float(segments[1]["start"]) - float(segments[0]["end"])
+    max_gap = float(limits.get("max_source_gap_seconds", 18.0))
+    if not 0.05 < gap <= max_gap:
+        failures.append(reason + "beat montage source gap outside verified reach")
+    actual = sum(float(s["end"]) - float(s["start"]) for s in segments)
+    if abs(actual - float(plan.get("output_duration", 0))) > _EPS:
+        failures.append(reason + "montage duration does not equal retained footage")
+    anchor = plan.get("proposal_anchor_time")
+    try:
+        target = float(anchor)
+    except (TypeError, ValueError):
+        target = float("nan")
+    if not (float(segments[1]["start"]) <= target <= float(segments[1]["end"])):
+        failures.append(reason + "verified payoff omitted from retained final beat")
+    for pos, (segment, engagement) in enumerate(zip(segments, engagements, strict=True)):
+        events = engagement.get("events") or []
+        verified = [
+            event
+            for event in events
+            if isinstance(event, dict)
+            and float(segment["start"]) - _EPS
+            <= float(event.get("time", -1))
+            <= float(segment["end"]) + _EPS
+            and interaction.hostile_decision(SimpleNamespace(**event), config).hostile
+        ]
+        if not verified:
+            failures.append(reason + f"beat {pos + 1} lacks directly verified hostile evidence")
+        if pos == 1 and not any(
+            abs(float(event["time"]) - target) <= 0.002
+            and set(event.get("kinds") or []).intersection(interaction.PAYOFF_KINDS)
+            for event in verified
+        ):
+            failures.append(reason + "terminal payoff is not independently verified")
+    return failures
+
+
 def validate_plan(
     source: str,
     index: int,
@@ -397,6 +459,7 @@ def validate_plan(
         if not (plan.get("covered_semantic_anchor_ids") or []):
             failures.append(f"{source} clip {index}: spoken plan covers no semantic anchor")
     else:
+        failures.extend(_beat_montage_failures(source, index, plan, config))
         failures.extend(_finishing_plan_failures(source, index, plan, config))
     return list(dict.fromkeys(failures))
 

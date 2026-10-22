@@ -1,0 +1,7 @@
+# Clipper gameplay beat editor
+
+For every independently verified hostile payoff, Clipper searches both a normal continuous 10–12 second clip and a source-native two-beat montage. The montage retains verified combat setup and terminal payoff, hard-cuts away uninteresting source time, and produces an actual 10–12 second edit. It does not fabricate evidence, reorder source chronology, cross verified source cuts, include player death or cut protected Finishing Move choreography. MW4 activates and calibrates this Clipper-owned capability through `semantic_editor.beat_editing`.
+
+Both retained segments must contain directly verified hostile interaction and lie inside individual source shot boundaries. The skipped gap is bounded; source-original timing, FFV1/NUT staging and delivery QA remain owned by Clipper. Composite opening/ending/retention metrics are measured on retained frames, not the removed footage. Coverage and de-duplication are based on actual source segments.
+
+The analysis manifest now includes `analysis_compute`: normal gameplay features, refinement, semantic verification and editing run on CPU with FFmpeg/NumPy. Qwen3-VL runs on Modal GPUs only if the separately qualified `neural_visual_events` capability is enabled. MW4 currently keeps it disabled by default: earlier single-frame GPU smoke passes do not certify full-source neural understanding. Source-wide six-reel neural, independent A/V gold and final same-SHA render acceptance are still mandatory.

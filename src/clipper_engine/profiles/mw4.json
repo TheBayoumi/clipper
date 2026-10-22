@@ -225,6 +225,14 @@
       "retention_quality_weight": 0.24,
       "payoff_quality_weight": 0.17,
       "weakest_section_weight": 0.1
+    },
+    "beat_editing": {
+      "enabled": true,
+      "max_source_gap_seconds": 18.0,
+      "candidate_lookback_seconds": 25.0,
+      "hard_cut_only": true,
+      "maximum_segments": 2,
+      "policy": "Clipper source-grounded setup + verified payoff. Each retained beat remains source-native, chronological, inside certified source/shot walls; 10-12s applies to stitched output."
     }
   },
   "story_quality_gates": {
