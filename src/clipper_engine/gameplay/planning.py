@@ -257,7 +257,9 @@ def _anchor_plans(
             qualified_anchor_count += 1
             continuous = [p for p in unique if p.story_type != "combat_montage"]
             composed = [p for p in unique if p.story_type == "combat_montage"]
-            selected.extend(continuous[:4] + composed[:4])
+            two_beats = [p for p in composed if len(p.segments) == 2]
+            three_beats = [p for p in composed if len(p.segments) == 3]
+            selected.extend(continuous[:4] + two_beats[:2] + three_beats[:2])
 
     existing = dict(getattr(timeline, "_proposal_diagnostics", {}) or {})
     existing.update(

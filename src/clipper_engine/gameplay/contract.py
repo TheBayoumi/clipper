@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -364,19 +365,24 @@ def _beat_montage_failures(
         failures.append(reason + "beat composition not enabled for profile")
     segments = list(plan.get("segments") or [])
     engagements = list(plan.get("engagements") or [])
-    if len(segments) != 2 or len(engagements) != 2:
-        return [*failures, reason + "beat montage requires two verified source segments"]
+    if len(segments) not in (2, 3) or len(engagements) != len(segments):
+        return [*failures, reason + "beat montage requires two or three verified source segments"]
+    if len(segments) > int(limits.get("maximum_segments", 2)):
+        failures.append(reason + "beat montage exceeds profile segment budget")
     if plan.get("effect_profile") != "source_native_combat_hard_cuts":
         failures.append(reason + "beat montage must retain source-native hard cuts")
-    if [str(s.get("reason")) for s in segments] != [
-        "verified_combat_setup",
-        "verified_combat_payoff",
-    ]:
+    expected = (
+        ["verified_combat_setup"]
+        + (["verified_combat_escalation"] if len(segments) == 3 else [])
+        + ["verified_combat_payoff"]
+    )
+    if [str(s.get("reason")) for s in segments] != expected:
         failures.append(reason + "beat montage has incorrect editorial segment reasons")
-    gap = float(segments[1]["start"]) - float(segments[0]["end"])
     max_gap = float(limits.get("max_source_gap_seconds", 18.0))
-    if not 0.05 < gap <= max_gap:
-        failures.append(reason + "beat montage source gap outside verified reach")
+    for left, right in pairwise(segments):
+        gap = float(right["start"]) - float(left["end"])
+        if not 0.05 < gap <= max_gap:
+            failures.append(reason + "beat montage source gap outside verified reach")
     actual = sum(float(s["end"]) - float(s["start"]) for s in segments)
     if abs(actual - float(plan.get("output_duration", 0))) > _EPS:
         failures.append(reason + "montage duration does not equal retained footage")
@@ -385,7 +391,7 @@ def _beat_montage_failures(
         target = float(anchor)
     except (TypeError, ValueError):
         target = float("nan")
-    if not (float(segments[1]["start"]) <= target <= float(segments[1]["end"])):
+    if not (float(segments[-1]["start"]) <= target <= float(segments[-1]["end"])):
         failures.append(reason + "verified payoff omitted from retained final beat")
     for pos, (segment, engagement) in enumerate(zip(segments, engagements, strict=True)):
         events = engagement.get("events") or []
@@ -400,7 +406,7 @@ def _beat_montage_failures(
         ]
         if not verified:
             failures.append(reason + f"beat {pos + 1} lacks directly verified hostile evidence")
-        if pos == 1 and not any(
+        if pos == len(segments) - 1 and not any(
             abs(float(event["time"]) - target) <= 0.002
             and set(event.get("kinds") or []).intersection(interaction.PAYOFF_KINDS)
             for event in verified

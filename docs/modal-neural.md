@@ -39,11 +39,11 @@ sampling and spend calibration, use the gameplay profile override:
       "model_id": "Qwen/Qwen3-VL-8B-Instruct",
       "model_revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
       "sample_interval_seconds": 15,
-      "batch_frames": 5,
-      "frame_max_edge": 640,
-      "max_refinement_anchors": 30,
-      "max_sample_frames": 300,
-      "deadline_seconds": 600,
+      "batch_frames": 2,
+      "frame_max_edge": 512,
+      "max_refinement_anchors": 20,
+      "max_sample_frames": 144,
+      "deadline_seconds": 480,
       "max_gpu_seconds": 1800,
       "max_estimated_usd": 2
     }
@@ -145,3 +145,39 @@ audio ground-truth review, player-death evidence, GPU speech/alignment, actual
 10–12-second encoded clip and final same-SHA production qualification remain
 separate mandatory acceptance gates. No MediaSilo credential or original
 uncompressed master is uploaded to the Modal worker.
+
+## Bounded adaptive production analysis and reproducible qualification
+
+Clipper keeps sparse, rational-frame-clock coverage of the whole video and
+prioritizes every independently verified outcome and campaign-reviewed cue.
+Remaining local refinement slots now go to strong audiovisual activity or
+uncertain changes **across the entire source**, using the canonical CPU
+features, not just earliest combat detections. Fixed 15-second VLM interval
+alone is not enough to discover every 2-second interaction; no such claim is
+made. The VLM remains a context proposal generator; the direct CPU verifier
+and independently verified scene events are the only authorities for outcomes.
+
+MW4 calibrates this Clipper functionality to 2-frame GPU batches, a 512-pixel
+source image edge and at most 144 samples per source, with an estimated 1800
+GPU-second/$2 inference budget. Large model and multi-batch latency must be
+measured in an actual six-source run; exceeding budget fails closed rather than
+silently omitting independently verified anchors. Modal timeout cancellation
+also requests remote GPU container termination. Unknown cancellation terminal
+state remains a hard failure; no speculative retry or success receipt.
+
+Source-wide inference saves source/model/deployment-SHA-bound batch checkpoints.
+The production workflow restores and retains checkpoints for retries on the
+**same exact commit**, and uploads partial diagnostics on failure. The model
+cache can never substitute for independent reviewed positives and negatives.
+The canonical analysis manifest provides candidate edit-type counts, inferred
+source-wide observations, cache reuse, GPU seconds, estimated GPU cost and
+reviewable new-vs-corroborated proposals. These are throughput/coverage metrics,
+not proof of precision, recall, or editorial quality.
+
+Full MW4 qualification is manually dispatched on a frozen SHA; normal CI remains
+push-triggered. Source analyses (2 independent runners), global allocation (1),
+rendering (2 independent runners) and final batch QA have explicit dependency
+order. Independent six-source A/V gold continues to reject incomplete review;
+it is never bypassed to produce a green build. A qualifying acceptance record
+requires same-SHA CI, source-wide GPU/CPU review, all verified-anchor coverage
+and actual original-master render QA, plus source and final-clip playback.

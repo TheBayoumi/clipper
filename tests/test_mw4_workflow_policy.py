@@ -1,0 +1,68 @@
+"""Production and neural qualification stay validation-only at immutable source SHA."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_complete_production_is_deliberately_dispatched_and_not_cancelled() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/mw4-qualification.yml").read_text())
+    trigger = workflow.get("on", workflow.get(True))
+    assert "workflow_dispatch" in trigger
+    assert "push" not in trigger  # CI still runs on push; expensive acceptance is frozen.
+    concurrency = workflow["concurrency"]
+    assert "github.sha" in concurrency["group"]
+    assert concurrency["cancel-in-progress"] is False
+    jobs = workflow["jobs"]
+    assert jobs["analyze"]["strategy"]["max-parallel"] == 2
+    assert jobs["render-one"]["strategy"]["max-parallel"] == 2
+    assert jobs["allocate"]["needs"] == "analyze"
+    assert jobs["render-one"]["needs"] == "allocate"
+    assert "independent-source-review" in jobs
+    assert any(
+        "review-contract" in step.get("run", "")
+        for step in jobs["independent-source-review"]["steps"]
+    )
+    assert jobs["batch-contract"]["needs"] == ["allocate", "render-one"]
+
+
+def test_gpu_analysis_uses_profile_and_exact_sha_cached_batches() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/mw4-qualification.yml").read_text())
+    analyze = workflow["jobs"]["analyze"]
+    assert analyze["env"]["CLIPPER_NEURAL_MODAL_APP"] == "clipper-mw4-vision-run"
+    assert "github.sha" in analyze["env"]["CLIPPER_DEPLOYED_GIT_SHA"]
+    assert "MODAL_TOKEN_ID" in analyze["env"]
+    steps = analyze["steps"]
+    assert any("settings.enabled" in step.get("run", "") for step in steps)
+    assert any("clipper mw4 analyze" in step.get("run", "") for step in steps)
+    cache = [step for step in steps if "actions/cache/" in str(step.get("uses", ""))]
+    assert {step["uses"] for step in cache} == {"actions/cache/restore@v4", "actions/cache/save@v4"}
+    for step in cache:
+        assert "github.sha" in step["with"]["key"]
+        assert "matrix.source" in step["with"]["key"]
+    assert any(
+        step.get("if") == "always()" and "neural diagnostic" in step.get("name", "").lower()
+        for step in steps
+    )
+
+
+def test_source_wide_gpu_qualification_matches_production_sampling() -> None:
+    profile = __import__("json").loads((ROOT / "src/clipper_engine/profiles/mw4.json").read_text())
+    settings = profile["capabilities"]["neural_visual_events"]
+    assert settings["enabled"] is True and settings["backend"] == "modal"
+    assert settings["batch_frames"] == 2
+    assert settings["max_sample_frames"] == 144
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/modal-neural-qualification.yml").read_text()
+    )
+    job = workflow["jobs"]["neural-source-wide-review"]
+    assert job["env"]["CLIPPER_NEURAL_MODAL_APP"] == settings["app_name"]
+    gpu_steps = [step.get("run", "") for step in job["steps"]]
+    command = next(text for text in gpu_steps if "::source_scout" in text)
+    assert "--batch-frames 2" in command
+    assert "--max-sample-frames 144" in command
+    assert "--max-refinement-anchors 20" in command

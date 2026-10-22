@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from itertools import pairwise
 from typing import Any
 
 import numpy as np
@@ -80,8 +81,8 @@ def _evidence(
 
 def _edited_metrics(
     timeline: Any,
-    segments: tuple[EditSegment, EditSegment],
-    engagements: tuple[Engagement, Engagement],
+    segments: tuple[EditSegment, ...],
+    engagements: tuple[Engagement, ...],
     anchor_time: float,
     config: dict[str, Any],
 ) -> dict[str, float]:
@@ -124,7 +125,7 @@ def _edited_metrics(
             1,
         )
     )
-    tail = segments[1].end - anchor_time
+    tail = segments[-1].end - anchor_time
     ending = float(
         np.clip(
             0.65 * (1 - min(1.0, abs(tail - 0.45) / 0.85))
@@ -134,14 +135,15 @@ def _edited_metrics(
         )
     )
     confirmed = [
-        event for event in engagements[1].events if abs(float(event.time) - anchor_time) <= 0.002
+        event for event in engagements[-1].events if abs(float(event.time) - anchor_time) <= 0.002
     ]
     if not confirmed:
         raise ValueError("payoff was not retained in the final beat")
     payoff = float(
         np.clip(0.73 * max(float(event.confidence) for event in confirmed) + 0.27 * ending, 0, 1)
     )
-    gap = segments[1].start - segments[0].end
+    gaps = [right.start - left.end for left, right in pairwise(segments)]
+    gap = max(gaps)
     limit = float(_settings(config).get("max_source_gap_seconds", 18.0))
     coherence = float(
         np.clip(
@@ -184,13 +186,28 @@ def montage_for_anchor(
     anchor_time: float,
     region: tuple[float, float],
 ) -> tuple[list[SemanticPlan], dict[str, int]]:
-    """Search independently verified setup+payoff hard-cut edits for one anchor."""
+    """Search frame-preserving two- and three-beat edits for one verified payoff.
+
+    The edit grid is a calibrated search space, not a fixed duration template;
+    its candidates pass the same source, evidence and duration contracts as
+    continuous gameplay proposals. No source footage is fabricated or reordered.
+    """
     settings = _settings(config)
     if settings.get("enabled") is not True:
         return [], {"beat_editing_disabled": 1}
     max_gap = float(settings.get("max_source_gap_seconds", 18.0))
     lookback = float(settings.get("candidate_lookback_seconds", 25.0))
-    if not 0.5 <= max_gap <= 30 or not 5 <= lookback <= 45:
+    step = float(settings.get("duration_grid_step_seconds", 0.5))
+    min_payoff = float(settings.get("min_payoff_beat_seconds", 5.0))
+    max_payoff = float(settings.get("max_payoff_beat_seconds", 7.0))
+    max_segments = int(settings.get("maximum_segments", 2))
+    if (
+        not 0.5 <= max_gap <= 30
+        or not 5 <= lookback <= 45
+        or not 0.25 <= step <= 1.0
+        or not 3.5 <= min_payoff <= max_payoff <= 8.0
+        or max_segments not in (2, 3)
+    ):
         raise ValueError("beat editing budget outside safe Clipper bounds")
     events = _verified_events(timeline, config)
     anchor = next(
@@ -216,97 +233,168 @@ def montage_for_anchor(
     reject: Counter[str] = Counter()
     proposals: list[SemanticPlan] = []
     seen: set[tuple[float, ...]] = set()
-    for cue in setup_events:
-        for setup_len, payoff_len in (
-            (4.25, 6.0),
-            (4.75, 6.0),
-            (5.25, 6.0),
-            (5.50, 5.50),
-            (4.50, 5.50),
+
+    def submit(spans: tuple[EditSegment, ...]) -> None:
+        key = tuple(t for seg in spans for t in (seg.start, seg.end))
+        if key in seen:
+            return
+        seen.add(key)
+        duration = sum(seg.end - seg.start for seg in spans)
+        if duration < minimum - _EPS or duration > maximum + _EPS:
+            reject["duration_outside_final_edit_contract"] += 1
+            return
+        gaps = [right.start - left.end for left, right in pairwise(spans)]
+        if any(not 0.05 < gap <= max_gap for gap in gaps):
+            reject["invalid_source_cut_distance"] += 1
+            return
+        if spans[0].start < region[0] - _EPS or spans[-1].end > region[1] + _EPS:
+            reject["outside_certified_source_region"] += 1
+            return
+        reason = next(
+            (
+                failure
+                for seg in spans
+                if (failure := _safe_beat(timeline, seg, config, source_key, excluded))
+            ),
+            None,
+        )
+        if reason:
+            reject[reason] += 1
+            return
+        engagements = tuple(_evidence(events, seg, timeline, config) for seg in spans)
+        if any(item is None for item in engagements):
+            reject["not_all_retained_beats_directly_verified"] += 1
+            return
+        # The assertion follows the explicit non-None checks above.
+        verified = tuple(item for item in engagements if item is not None)
+        if anchor not in verified[-1].events:
+            reject["verified_payoff_not_retained_in_terminal_beat"] += 1
+            return
+        if float(verified[0].events[0].time) - spans[0].start > float(
+            editor["opening"].get("max_time_to_meaningful_action_seconds", 0.9)
         ):
-            setup_start = round(max(region[0], float(cue.time) - 0.35), 3)
-            setup_end = round(setup_start + setup_len, 3)
-            payoff_end = round(min(region[1], anchor_time + 0.45), 3)
-            payoff_start = round(payoff_end - payoff_len, 3)
-            if not minimum - _EPS <= setup_len + payoff_len <= maximum + _EPS:
-                reject["duration_outside_final_edit_contract"] += 1
-                continue
-            gap = payoff_start - setup_end
-            if not 0.05 < gap <= max_gap or payoff_start < region[0] or setup_end > region[1]:
-                reject["invalid_source_cut_distance"] += 1
-                continue
-            spans = (
-                EditSegment(setup_start, setup_end, 1.0, "verified_combat_setup"),
-                EditSegment(payoff_start, payoff_end, 1.0, "verified_combat_payoff"),
-            )
-            key = tuple(t for seg in spans for t in (seg.start, seg.end))
-            if key in seen:
-                continue
-            seen.add(key)
-            reason = next(
-                (
-                    failure
-                    for seg in spans
-                    if (failure := _safe_beat(timeline, seg, config, source_key, excluded))
-                ),
-                None,
-            )
-            if reason:
-                reject[reason] += 1
-                continue
-            first = _evidence(events, spans[0], timeline, config)
-            last = _evidence(events, spans[1], timeline, config)
-            if first is None or last is None or anchor not in last.events:
-                reject["not_two_directly_verified_beats"] += 1
-                continue
-            if float(first.events[0].time) - spans[0].start > float(
-                editor["opening"].get("max_time_to_meaningful_action_seconds", 0.9)
-            ):
-                reject["edited_opening_action_latency"] += 1
-                continue
-            metrics = _edited_metrics(timeline, spans, (first, last), anchor_time, config)
-            score = quality._score_plan(
-                metrics["retention"],
-                metrics["payoff"],
-                metrics["opening"],
-                metrics["ending"],
-                metrics["coherence"],
-                metrics["weakest"],
-                False,
-                config,
-            )
-            plan = SemanticPlan(
-                spans[0].start,
-                spans[-1].end,
-                round(setup_len + payoff_len, 3),
-                round(setup_len + payoff_len, 3),
-                round(score, 5),
-                round(metrics["retention"], 4),
-                round(metrics["payoff"], 4),
-                round(metrics["opening"], 4),
-                round(metrics["ending"], 4),
-                round(metrics["coherence"], 4),
-                round(metrics["weakest"], 4),
-                round(metrics["low_fraction"], 4),
-                round(metrics["residual"], 3),
-                "combat_montage",
-                "source_native_combat_hard_cuts",
-                spans,
-                quality._effect_events_for_engagements(timeline, (first, last)),
-                (first, last),
-                None,
-                (
-                    "independently verified setup and outcome composed by Clipper",
-                    "discarded dull source time instead of rejecting 10-12s finished edit",
-                    "retention and ending measured on retained frames",
-                ),
-                round(anchor_time, 3),
-                None,
-            )
-            violations = quality.plan_integrity_violations(plan, timeline, config, source_key)
-            if violations:
-                reject["integrity." + violations[0]] += 1
-                continue
-            proposals.append(plan)
-    proposals.sort(key=lambda p: (-p.score, p.start, p.end))
-    return proposals[:8], dict(sorted(reject.items()))
+            reject["edited_opening_action_latency"] += 1
+            return
+        metrics = _edited_metrics(timeline, spans, verified, anchor_time, config)
+        score = quality._score_plan(
+            metrics["retention"],
+            metrics["payoff"],
+            metrics["opening"],
+            metrics["ending"],
+            metrics["coherence"],
+            metrics["weakest"],
+            False,
+            config,
+        )
+        plan = SemanticPlan(
+            spans[0].start,
+            spans[-1].end,
+            round(duration, 3),
+            round(duration, 3),
+            round(score, 5),
+            round(metrics["retention"], 4),
+            round(metrics["payoff"], 4),
+            round(metrics["opening"], 4),
+            round(metrics["ending"], 4),
+            round(metrics["coherence"], 4),
+            round(metrics["weakest"], 4),
+            round(metrics["low_fraction"], 4),
+            round(metrics["residual"], 3),
+            "combat_montage",
+            "source_native_combat_hard_cuts",
+            spans,
+            quality._effect_events_for_engagements(timeline, verified),
+            verified,
+            None,
+            (
+                "source-grounded independently verified combat-beat composition",
+                "uninteresting source time omitted using explicit native hard cuts",
+                "editorial strength measured on actual retained source frames",
+            ),
+            round(anchor_time, 3),
+            None,
+        )
+        violations = quality.plan_integrity_violations(plan, timeline, config, source_key)
+        if violations:
+            reject["integrity." + violations[0]] += 1
+            return
+        proposals.append(plan)
+
+    def grid(low: float, high: float) -> tuple[float, ...]:
+        return tuple(
+            round(low + i * step, 3) for i in range(max(0, math.floor((high - low) / step)) + 1)
+        )
+
+    for cue in setup_events:
+        for target in grid(minimum, maximum):
+            for payoff_length in grid(min_payoff, min(max_payoff, target - 2.0)):
+                setup_length = round(target - payoff_length, 3)
+                for lead in (0.25, 0.50):
+                    begin = round(max(region[0], float(cue.time) - lead), 3)
+                    for tail in (0.35, 0.60):
+                        payoff_end = round(min(region[1], anchor_time + tail), 3)
+                        spans = (
+                            EditSegment(
+                                begin, round(begin + setup_length, 3), 1.0, "verified_combat_setup"
+                            ),
+                            EditSegment(
+                                round(payoff_end - payoff_length, 3),
+                                payoff_end,
+                                1.0,
+                                "verified_combat_payoff",
+                            ),
+                        )
+                        submit(spans)
+
+    # When a third distinct verified interaction lies between setup and payoff,
+    # also search short escalation beats. This is an additional framing choice,
+    # never another independent outcome detector or allocator.
+    if max_segments == 3:
+        for first_index, first in enumerate(setup_events):
+            for middle in setup_events[first_index + 1 :]:
+                if float(middle.time) - float(first.time) < 3.0:
+                    continue
+                for target in grid(minimum, maximum):
+                    for start_length in (2.0, 2.5, 3.0):
+                        for middle_length in (2.0, 2.5, 3.0):
+                            payoff_length = round(target - start_length - middle_length, 3)
+                            if not min_payoff <= payoff_length <= max_payoff:
+                                continue
+                            begin = round(max(region[0], float(first.time) - 0.35), 3)
+                            middle_start = round(float(middle.time) - 0.30, 3)
+                            payoff_end = round(min(region[1], anchor_time + 0.45), 3)
+                            submit(
+                                (
+                                    EditSegment(
+                                        begin,
+                                        round(begin + start_length, 3),
+                                        1.0,
+                                        "verified_combat_setup",
+                                    ),
+                                    EditSegment(
+                                        middle_start,
+                                        round(middle_start + middle_length, 3),
+                                        1.0,
+                                        "verified_combat_escalation",
+                                    ),
+                                    EditSegment(
+                                        round(payoff_end - payoff_length, 3),
+                                        payoff_end,
+                                        1.0,
+                                        "verified_combat_payoff",
+                                    ),
+                                )
+                            )
+    proposals.sort(
+        key=lambda plan: (
+            -plan.score,
+            plan.start,
+            plan.end,
+            tuple((seg.start, seg.end) for seg in plan.segments),
+        )
+    )
+    two_beats = [plan for plan in proposals if len(plan.segments) == 2]
+    three_beats = [plan for plan in proposals if len(plan.segments) == 3]
+    # Preserve the editor's composition alternatives in the allocator's pool;
+    # a dense two-beat grid must not erase every valid three-beat framing.
+    return two_beats[:6] + three_beats[:6], dict(sorted(reject.items()))

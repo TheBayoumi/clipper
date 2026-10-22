@@ -10,11 +10,14 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlparse
+
+import numpy as np
 
 from ..sources import qa as source_qa
 
@@ -262,16 +265,17 @@ def _refined_sample_times(
     source_key: str,
     settings: VisionSettings,
 ) -> tuple[float, ...]:
-    """Refine local frame-clock evidence near Clipper's existing source cues.
+    """Cost-bounded, source-grid adaptive observations around verified and uncertain cues.
 
-    Existing directly confirmed outcomes receive priority, before cinematic
-    source-verified anchors and other coarse combat events. No VLM claim can
-    create an anchor or change the canonical verifier.
+    Every independently verified outcome and source-reviewed cinematic cue gets
+    priority. Remaining slots are allocated to independent audiovisual change
+    peaks across the *entire* reel, not just the earliest CPU events. Coarse
+    coverage is never replaced; unverified GPU output never creates an anchor.
     """
     from ..gameplay import interaction
 
     protected: set[float] = set()
-    optional: set[float] = set()
+    optional: dict[float, float] = {}
     for event in getattr(timeline, "consolidated_events", ()):
         kinds = set(getattr(event, "kinds", ()) or ())
         if not kinds.intersection({"outcome_like", "impact", "combat_burst", "contact"}):
@@ -282,7 +286,7 @@ def _refined_sample_times(
         if "outcome_like" in kinds and interaction.hostile_decision(event, config).hostile:
             protected.add(t)
         else:
-            optional.add(t)
+            optional[t] = max(optional.get(t, 0.0), float(getattr(event, "confidence", 0.5)))
     cinematic = (config.get("cinematic_moments") or {}).get("verified_anchors") or {}
     for moment in cinematic.get(source_key) or []:
         if moment.get("verification") and "time" in moment:
@@ -291,21 +295,79 @@ def _refined_sample_times(
                 protected.add(t)
     if len(protected) > settings.max_refinement_anchors:
         raise RuntimeError("verified source anchors exceed neural local-refinement budget")
-    selected = sorted(protected)
-    selected.extend(
-        sorted(optional - protected)[: max(0, settings.max_refinement_anchors - len(selected))]
-    )
+
+    # Uniform coverage detects the detector's blind spots; audiovisual peaks
+    # nominate higher-resolution sampling even without a CPU-hostile event.
+    # The source timeline's low-rate fps is its own certified feature clock.
+    signals = getattr(timeline, "signals", {}) or {}
+    feature_fps = float(getattr(timeline, "fps", 0) or 0)
+    if feature_fps > 0 and isinstance(signals, dict):
+        available = [
+            np.asarray(signals[name], dtype=np.float32)
+            for name in ("interest", "audio_transient", "center_change", "global_motion")
+            if name in signals
+        ]
+        if available:
+            shortest = min(len(array) for array in available)
+            # 0.5-second cells avoid quantizing a fast event to a 15s grid.
+            stride = max(1, round(feature_fps * 0.5))
+            for start in range(0, shortest, stride):
+                end = min(shortest, start + stride)
+                values = [
+                    float(np.max(np.nan_to_num(array[start:end], nan=0.0))) for array in available
+                ]
+                strength = max(values)
+                if strength < 0.38:
+                    continue
+                t = min(duration - 1e-6, (start + (end - start) / 2) / feature_fps)
+                optional[round(t, 4)] = max(optional.get(round(t, 4), 0), strength)
+
     max_frame = math.floor((duration - 1e-6) * float(rate))
     indices = {round(Fraction(str(t)) * rate) for t in coarse}
-    for anchor in selected:
-        radius = settings.local_refine_radius_seconds
-        step = settings.local_refine_interval_seconds
-        count = math.floor((2 * radius) / step) + 1
-        for k in range(count + 1):
-            t = max(0.0, min(duration - 1e-6, anchor - radius + k * step))
-            indices.add(max(0, min(max_frame, round(Fraction(str(t)) * rate))))
     if len(indices) > settings.max_sample_frames:
         raise RuntimeError("source-wide neural sampling exceeds configured frame budget")
+
+    def neighborhood(stamp: float) -> set[int]:
+        radius = settings.local_refine_radius_seconds
+        step = settings.local_refine_interval_seconds
+        count = math.ceil((2 * radius) / step)
+        return {
+            max(
+                0,
+                min(
+                    max_frame,
+                    round(
+                        Fraction(str(max(0.0, min(duration - 1e-6, stamp - radius + k * step))))
+                        * rate
+                    ),
+                ),
+            )
+            for k in range(count + 1)
+        }
+
+    # Required anchors must never be removed to accommodate arbitrary model
+    # budget constraints: fail visibly if they cannot all fit.
+    for stamp in sorted(protected):
+        indices.update(neighborhood(stamp))
+    if len(indices) > settings.max_sample_frames:
+        raise RuntimeError("verified source anchors exceed neural frame budget")
+    slots = settings.max_refinement_anchors - len(protected)
+    selected = sorted(protected)
+    # Rank by actionable audiovisual evidence; ties prefer earlier source time
+    # deterministically. Enforce spatial diversity so one explosion does not
+    # consume every refinement slot.
+    ordered = sorted(optional.items(), key=lambda item: (-item[1], item[0]))
+    for stamp, _ in ordered:
+        if slots <= 0:
+            break
+        if any(abs(stamp - existing) < 1.5 for existing in selected):
+            continue
+        additions = neighborhood(stamp)
+        if len(indices | additions) > settings.max_sample_frames:
+            continue
+        indices.update(additions)
+        selected.append(stamp)
+        slots -= 1
     return tuple(round(float(Fraction(index, 1) / rate), 6) for index in sorted(indices))
 
 
@@ -428,6 +490,7 @@ def analyze_source(
     settings = VisionSettings.from_profile(config)
     if not settings.enabled:
         return None
+    started_at = time.monotonic()
     identity = _source_identity(source, source_qa_path)
     if identity["source_key"] != (source_key or source.stem):
         raise RuntimeError("neural source key does not match certified source identity")
@@ -565,7 +628,13 @@ def analyze_source(
             "checkpoint_hits": hits,
             "source_wide": True,
         },
-        "usage": {"gpu_seconds": total_gpu_seconds, "estimated_cost_usd": total_cost},
+        "usage": {
+            "gpu_seconds": total_gpu_seconds,
+            "estimated_cost_usd": total_cost,
+            "source_analysis_wall_seconds": round(time.monotonic() - started_at, 3),
+            "fresh_model_batches": math.ceil(len(times) / settings.batch_frames) - hits,
+            "cache_reused_batches": hits,
+        },
         "observations": observations,
     }
     path = output_dir / "neural_visual_evidence.json"

@@ -145,3 +145,128 @@ def test_edited_source_native_two_beat_lossless_duration_and_audio(tmp_path: Pat
     assert video["codec_name"] == "ffv1"
     assert video["r_frame_rate"] == "60000/1001"
     assert audio["codec_name"] == "pcm_s16le"
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="Source-native three-beat render smoke needs FFmpeg",
+)
+def test_real_three_beat_ffv1_audio_concatenation_uses_final_encoded_duration(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mov"
+    output = tmp_path / "three.nut"
+    _run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=96x64:rate=60000/1001:duration=24",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=650:sample_rate=48000:duration=24",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(source),
+        ]
+    )
+    spans = (
+        EditSegment(1.0, 3.5, 1.0, "verified_combat_setup"),
+        EditSegment(8.0, 10.5, 1.0, "verified_combat_escalation"),
+        EditSegment(16.0, 21.5, 1.0, "verified_combat_payoff"),
+    )
+    target = sum(seg.end - seg.start for seg in spans)
+    assert target == 10.5
+    plan = SemanticPlan(
+        1.0,
+        21.5,
+        target,
+        target,
+        0.9,
+        0.9,
+        0.9,
+        0.9,
+        0.9,
+        0.9,
+        0.8,
+        0.05,
+        0.2,
+        "combat_montage",
+        "source_native_combat_hard_cuts",
+        spans,
+        (),
+        (),
+        None,
+        ("source-native triple hard cut proof",),
+    )
+    graph, planned = _build_source_native_filter(
+        plan, {"_audio_sample_rate": 48000, "sample_aspect_ratio": "1:1"}
+    )
+    assert "concat=n=3:v=1:a=1" in graph and planned == target
+    _run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-i",
+            str(source),
+            "-filter_complex",
+            graph,
+            "-map",
+            "[outv]",
+            "-map",
+            "[aout]",
+            "-c:v",
+            "ffv1",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "pcm_s16le",
+            "-r",
+            "60000/1001",
+            "-t",
+            str(target),
+            "-f",
+            "nut",
+            str(output),
+        ]
+    )
+    result = json.loads(
+        subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration:stream=index,codec_name,r_frame_rate",
+                "-of",
+                "json",
+                str(output),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        ).stdout
+    )
+    actual = float(result["format"]["duration"])
+    assert 10.0 <= actual <= 12.0 and abs(actual - target) < 0.05
+    assert [x["codec_name"] for x in result["streams"]] == ["ffv1", "pcm_s16le"]
+    assert result["streams"][0]["r_frame_rate"] == "60000/1001"

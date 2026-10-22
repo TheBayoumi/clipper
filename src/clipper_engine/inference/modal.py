@@ -70,7 +70,9 @@ class ModalVisionProvider:
             # A timed-out model invocation may still be running and incurring GPU charges.
             # Never retry until the producer has provably reached its terminal state.
             try:
-                call.cancel()
+                # Ask Modal to terminate the GPU container as well as its call.
+                # A timeout must never leave a billable worker running silently.
+                call.cancel(terminate_containers=True)
                 call.get(timeout=30)
             except TimeoutError as error:
                 raise RuntimeError(

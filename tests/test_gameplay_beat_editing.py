@@ -218,3 +218,43 @@ def test_public_clipper_analysis_route_uses_only_canonical_montage_search(
     assert diag["payoff_anchor_diagnostics"][0]["beat_edit_qualified_count"] > 0
     assert diag["semantic_montage_enabled"] is True
     assert (out / "ghost_fight_analysis.json").is_file()
+
+
+def test_three_beat_combat_story_is_verified_and_preserved_for_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, timeline = _example(monkeypatch)
+    timeline.consolidated_events = (
+        core.ConsolidatedEvent(2.0, ("combat_burst",), 0.96, {}),
+        core.ConsolidatedEvent(10.5, ("combat_burst",), 0.91, {}),
+        core.ConsolidatedEvent(20.5, ("outcome_like",), 0.98, {}),
+    )
+    timeline.shots = (core.ShotSpan(0.0, 9.0), core.ShotSpan(9.0, 30.0))
+    timeline.signals["interest"] = np.full(300, 0.83, dtype=np.float32)
+    timeline.signals["player_death"] = np.zeros(300, dtype=np.float32)
+    timeline.times = np.arange(300) / 10.0
+    timeline.duration = 30.0
+    timeline.base.duration = 30.0
+    proposals, rejections = editing.montage_for_anchor(
+        timeline, config, [], "ghost_fight", 20.5, (0.0, 30.0)
+    )
+    three_beats = [p for p in proposals if len(p.segments) == 3]
+    assert three_beats, rejections
+    sample = three_beats[0]
+    assert [seg.reason for seg in sample.segments] == [
+        "verified_combat_setup",
+        "verified_combat_escalation",
+        "verified_combat_payoff",
+    ]
+    assert 10.0 <= sample.output_duration <= 12.0
+    assert contract.validate_plan("ghost_fight", 0, asdict(sample), config) == []
+    monkeypatch.setattr(planning, "_terminal_aware_variants", lambda *_: ())
+    monkeypatch.setattr(planning.canonical, "finishing_open_plans", lambda *_: [])
+    planned = planning.build_plans_for_source(timeline, config, [], "ghost_fight")
+    assert any(len(p.segments) == 3 for p in planned)
+    forged = asdict(sample)
+    forged["segments"][1]["reason"] = "unverified_filler"
+    assert any(
+        "incorrect editorial segment reasons" in issue
+        for issue in contract.validate_plan("ghost_fight", 0, forged, config)
+    )

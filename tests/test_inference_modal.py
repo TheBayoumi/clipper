@@ -20,6 +20,7 @@ class FakeCall:
     def __init__(self, responses: list[Any], *, cancel_error: Exception | None = None) -> None:
         self.responses = responses
         self.cancelled = False
+        self.terminate_containers = False
         self.cancel_error = cancel_error
 
     def get(self, timeout: float) -> dict[str, Any]:
@@ -30,8 +31,9 @@ class FakeCall:
         assert isinstance(value, dict)
         return value
 
-    def cancel(self) -> None:
+    def cancel(self, *, terminate_containers: bool = False) -> None:
         self.cancelled = True
+        self.terminate_containers = terminate_containers
         if self.cancel_error is not None:
             raise self.cancel_error
 
@@ -60,6 +62,7 @@ def test_modal_vision_cancelled_deadline_never_retries(monkeypatch: pytest.Monke
     with pytest.raises(RuntimeError, match="bounded inference deadline"):
         provider.inspect({"task": "source_gameplay_visual_scout"})
     assert call.cancelled
+    assert call.terminate_containers
 
 
 def test_modal_vision_refuses_unconfirmed_cancellation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -68,6 +71,7 @@ def test_modal_vision_refuses_unconfirmed_cancellation(monkeypatch: pytest.Monke
     with pytest.raises(RuntimeError, match="terminal state unconfirmed"):
         provider.inspect({"task": "source_gameplay_visual_scout"})
     assert call.cancelled
+    assert call.terminate_containers
 
 
 def test_modal_vision_refuses_unknown_cancellation_error(monkeypatch: pytest.MonkeyPatch) -> None:

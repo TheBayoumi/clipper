@@ -111,7 +111,7 @@ def _strict_observations(raw: dict[str, Any], timestamps: list[float]) -> list[d
     gpu=APP_GPU,
     memory=32768,
     volumes={"/models": model_cache},
-    timeout=240,
+    timeout=600,
     max_containers=1,
 )
 class VisionModel:
@@ -175,7 +175,7 @@ class VisionModel:
             )
             total_input_units += int(inputs["input_ids"].numel())
             inputs = inputs.to(self.model.device)
-            generation_budget = min(4096, max(768, 240 * len(frames) + 128) * (attempt + 1))
+            generation_budget = min(2048, max(384, 170 * len(frames) + 96) * (attempt + 1))
             with torch.inference_mode():
                 output = self.model.generate(
                     **inputs, max_new_tokens=generation_budget, do_sample=False

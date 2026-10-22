@@ -90,3 +90,58 @@ def test_neural_budget_rejects_unbounded_source_frame_sampling() -> None:
             "ghost_fight",
             _settings(max_sample_frames=8),
         )
+
+
+def test_late_source_change_gets_refinement_instead_of_first_cpu_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import numpy as np
+
+    monkeypatch.setattr(
+        interaction,
+        "hostile_decision",
+        lambda event, _: SimpleNamespace(hostile=float(event.time) == 11.0),
+    )
+    rate = Fraction(60000, 1001)
+    reel = _timeline()
+    reel.fps = 5.0
+    reel.signals = {
+        "interest": np.zeros(150, dtype=np.float32),
+        "audio_transient": np.zeros(150, dtype=np.float32),
+    }
+    # The action is late. A chronological-first algorithm would choose 17s.
+    reel.signals["interest"][135:138] = 0.96
+    times = vision._refined_sample_times(
+        vision._sample_times(30.0, 15.0, rate),
+        30.0,
+        rate,
+        reel,
+        {},
+        "ghost_fight",
+        _settings(max_refinement_anchors=2),
+    )
+    assert any(26.5 <= time <= 28.0 for time in times)
+    assert any(abs(time - 11.0) < 0.02 for time in times)
+
+
+def test_optional_refinement_never_displaces_source_wide_coarse_samples() -> None:
+    import numpy as np
+
+    rate = Fraction(60)
+    reel = SimpleNamespace(
+        consolidated_events=(),
+        fps=10.0,
+        signals={"interest": np.full(400, 0.98, dtype=np.float32)},
+    )
+    coarse = vision._sample_times(40.0, 5.0, rate)
+    times = vision._refined_sample_times(
+        coarse,
+        40.0,
+        rate,
+        reel,
+        {},
+        "ghost_fight",
+        _settings(max_refinement_anchors=30, max_sample_frames=12),
+    )
+    assert len(times) <= 12
+    assert set(coarse).issubset(set(times))

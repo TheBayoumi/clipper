@@ -231,8 +231,11 @@
       "max_source_gap_seconds": 18.0,
       "candidate_lookback_seconds": 25.0,
       "hard_cut_only": true,
-      "maximum_segments": 2,
-      "policy": "Clipper source-grounded setup + verified payoff. Each retained beat remains source-native, chronological, inside certified source/shot walls; 10-12s applies to stitched output."
+      "maximum_segments": 3,
+      "policy": "Clipper source-grounded setup + verified payoff. Each retained beat remains source-native, chronological, inside certified source/shot walls; 10-12s applies to stitched output.",
+      "duration_grid_step_seconds": 0.5,
+      "min_payoff_beat_seconds": 5.0,
+      "max_payoff_beat_seconds": 7.0
     }
   },
   "story_quality_gates": {
@@ -358,12 +361,13 @@
       "notes": "Enabled production neural scouting via ephemeral source-SHA-pinned Modal GPU. PROPOSALS ONLY: direct Clipper verification remains authority and no CPU-only silent fallback.",
       "deployed_sha": "current-run",
       "sample_interval_seconds": 15.0,
-      "batch_frames": 5,
-      "max_refinement_anchors": 30,
-      "max_sample_frames": 300,
-      "deadline_seconds": 600.0,
+      "batch_frames": 2,
+      "max_refinement_anchors": 20,
+      "max_sample_frames": 144,
+      "deadline_seconds": 480.0,
       "max_gpu_seconds": 1800.0,
-      "max_estimated_usd": 2.0
+      "max_estimated_usd": 2.0,
+      "frame_max_edge": 512
     }
   },
   "player_state_detector": {

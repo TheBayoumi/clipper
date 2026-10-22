@@ -343,6 +343,21 @@ def analyze_source_file(
                 else 0.0
             ),
         },
+        "performance_diagnostics": {
+            "selected_candidates_generated": len(plans),
+            "continuous_candidates": sum(p.story_type != "combat_montage" for p in plans),
+            "two_beat_candidates": sum(
+                p.story_type == "combat_montage" and len(p.segments) == 2 for p in plans
+            ),
+            "three_beat_candidates": sum(
+                p.story_type == "combat_montage" and len(p.segments) == 3 for p in plans
+            ),
+            "neural_gpu_usage": (
+                neural_visual_evidence.get("usage") if neural_visual_evidence else None
+            ),
+            "neural_review_queue": (neural_review.get("coverage") if neural_review else None),
+            "source_grounded_outcome_authority": "clipper_direct_interaction_only",
+        },
         "neural_visual_evidence": (
             {
                 "status": neural_visual_evidence["status"],

@@ -169,7 +169,7 @@ jobs:
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      CLIPPER_NEURAL_MODAL_APP: clipper-neural-qualification
+      CLIPPER_NEURAL_MODAL_APP: clipper-mw4-vision-run
       CLIPPER_DEPLOYED_GIT_SHA: ${{ github.sha }}
       PYTHONUNBUFFERED: '1'
     steps:
@@ -235,9 +235,9 @@ jobs:
             --campaign-config campaigns/campaign-moments-mw4.json \
             --output-dir neural-source-${{ matrix.source }} \
             --sample-interval-seconds 15 \
-            --batch-frames 5 \
-            --max-refinement-anchors 30 \
-            --max-sample-frames 300 \
+            --batch-frames 2 \
+            --max-refinement-anchors 20 \
+            --max-sample-frames 144 \
             --max-gpu-seconds 1800 \
             --max-estimated-usd 2.0
           python - <<'PY'

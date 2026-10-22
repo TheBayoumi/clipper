@@ -16,22 +16,10 @@ on:
         options:
           - production
           - shadow
-  push:
-    branches:
-      - feat/mw4-fullframe-retention-v3-1
-    paths:
-      - .github/workflows/mw4-qualification.yml
-      - .github/mw4-production-trigger
-      - pyproject.toml
-      - campaigns/mw4-*.json
-      - src/clipper_engine/profiles/mw4.json
-      - src/clipper/cli.py
-      - src/clipper_engine/**/*.py
-      - tests/test_mw4_dmz.py
 
 concurrency:
-  group: mw4-qualification-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.render_mode || 'production' }}
-  cancel-in-progress: true
+  group: mw4-qualification-${{ github.sha }}-${{ inputs.render_mode || 'production' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -126,7 +114,7 @@ jobs:
       CLIPPER_DEPLOYED_GIT_SHA: ${{ github.sha }}
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 2
       matrix: ${{ fromJSON(needs.discover-sources.outputs.source_matrix) }}
     steps:
       - uses: actions/checkout@v4
@@ -166,6 +154,15 @@ jobs:
           assert settings.app_name == os.environ['CLIPPER_NEURAL_MODAL_APP']
           print('PRODUCTION_MODAL_GPU_ENABLED', settings.app_name, settings.deployed_sha)
           PY
+      # Persist only identity-checked, source-hashed model checkpoints. Each
+      # restored batch is revalidated against exact source bytes, model and SHA
+      # by the Clipper inference engine before reuse. Failed jobs save progress.
+      - name: Restore source-bound neural model checkpoints
+        id: neural-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: analysis/${{ matrix.source }}/neural_checkpoints
+          key: mw4-neural-${{ github.sha }}-${{ matrix.source }}
       - name: Resolve, certify, analyze, and diagnose source through Clipper CLI
         timeout-minutes: 95
         env:
@@ -186,6 +183,23 @@ jobs:
             --source-key "$SOURCE_KEY" \
             --source-dir raw_sources \
             --output-dir "analysis/$SOURCE_KEY"
+      - name: Save source-bound completed GPU batches even on failure
+        if: always() && steps.neural-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: analysis/${{ matrix.source }}/neural_checkpoints
+          key: mw4-neural-${{ github.sha }}-${{ matrix.source }}
+      - name: Upload structured neural diagnostic checkpoints
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-neural-diagnostics-${{ matrix.source }}-${{ github.sha }}
+          path: |
+            analysis/${{ matrix.source }}/neural_checkpoints/*.json
+            analysis/${{ matrix.source }}/neural_review_queue.json
+            analysis/${{ matrix.source }}/neural_visual_evidence.json
+          retention-days: 14
+          if-no-files-found: warn
       - name: Upload certified analysis source for isolated render workspaces
         uses: actions/upload-artifact@v4
         with:
@@ -265,7 +279,7 @@ jobs:
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 2
       matrix: ${{ fromJSON(needs.allocate.outputs.render_matrix) }}
     steps:
       - uses: actions/checkout@v4
