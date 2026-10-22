@@ -17,10 +17,16 @@ independent-anchor search, allocator and original-source renderer remain the
 sole production authorities. Source-wide frames are decoded into bounded JPEG
 batches at the configured interval; original masters never go to Modal.
 
-The default MW4 profile leaves neural scouting **disabled** until live GPU and
-independent cinematic/combat benchmarking have been completed. To test the
-capability on a certified source use a profile override with the following
-properties, backed by a deployed isolated worker:
+The default MW4 profile **enables** GPU visual scouting in the normal
+`clipper mw4 analyze` production path. It launches an ephemeral pinned Modal
+worker for each certified source via Clipper's `ModalVisionProvider`. No
+persistent Modal app is deployed by CI and existing shared apps remain
+untouched. Model output is **PROPOSED**, never directly verified combat.
+A normal production run must fail closed if GPU inference is unavailable,
+times out, loses source identity, exceeds the allowed budget, or does not
+return complete source-stamped results. Successful activation is **not** proof
+that six-source accuracy or the whole batch is qualified. To change GPU
+sampling and spend calibration, use the gameplay profile override:
 
 ```json
 {
@@ -28,16 +34,18 @@ properties, backed by a deployed isolated worker:
     "neural_visual_events": {
       "enabled": true,
       "backend": "modal",
-      "app_name": "clipper-neural-qualification",
-      "deployed_sha": "REPLACE_WITH_EXACT_40_HEX_DEPLOYMENT_SHA",
+      "app_name": "clipper-mw4-vision-run",
+      "deployed_sha": "current-run",
       "model_id": "Qwen/Qwen3-VL-8B-Instruct",
       "model_revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
-      "sample_interval_seconds": 4,
-      "batch_frames": 8,
+      "sample_interval_seconds": 15,
+      "batch_frames": 5,
       "frame_max_edge": 640,
-      "deadline_seconds": 180,
-      "max_gpu_seconds": 900,
-      "max_estimated_usd": 1
+      "max_refinement_anchors": 30,
+      "max_sample_frames": 300,
+      "deadline_seconds": 600,
+      "max_gpu_seconds": 1800,
+      "max_estimated_usd": 2
     }
   }
 }
@@ -57,12 +65,14 @@ For 60000/1001 timing, the nearest frames to 0, 4 and 8 seconds are frames
 clock evidence, not a claim that a sparse VLM sample proves an intermediate
 hit or kill. Bounded high-rate interaction verification remains Clipper-owned.
 
-Neural scouting may
-only use a separate `clipper-*` Modal app, not the shared ContentRewards
-`clipper-open-editor` or `clipper-production-pipeline` apps. The worker's app
-name is selected with `CLIPPER_NEURAL_MODAL_APP`; its immutable commit identity
-is set with `CLIPPER_DEPLOYED_GIT_SHA`. Deploying is an **explicit controlled
-operation**, never source migration through GitHub Actions:
+Neural scouting uses an isolated `clipper-*` app identity, not the shared
+ContentRewards `clipper-open-editor` or `clipper-production-pipeline` apps.
+The worker's app name comes from `CLIPPER_NEURAL_MODAL_APP`; its immutable
+commit identity from `CLIPPER_DEPLOYED_GIT_SHA`. The production Actions job
+sets these to `clipper-mw4-vision-run` and `${{ github.sha }}` and runs
+`clipper mw4 analyze`, which launches an ephemeral worker for the duration
+of source inference. No persistent deploy is needed. An independently
+operated persistent deployment remains an explicit administrative operation:
 
 ```bash
 python -m pip install -e '.[modal]'

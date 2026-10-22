@@ -118,7 +118,12 @@ jobs:
     name: analyze-${{ matrix.source }}
     needs: discover-sources
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 50
+    timeout-minutes: 115
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      CLIPPER_NEURAL_MODAL_APP: clipper-mw4-vision-run
+      CLIPPER_DEPLOYED_GIT_SHA: ${{ github.sha }}
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -138,12 +143,31 @@ jobs:
       - name: Install Clipper MW4 CLI analysis runtime
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[mw4]"
+          python -m pip install -e ".[mw4,modal]"
           python -m playwright install --with-deps chromium
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install --no-install-recommends -y ffmpeg
+      - name: Verify requested production GPU neural capability
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CLIPPER_DEPLOYED_GIT_SHA"
+          test -n "$MODAL_TOKEN_ID"
+          test -n "$MODAL_TOKEN_SECRET"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from clipper_engine.profiles import load_profile
+          from clipper_engine.inference.vision import VisionSettings
+          p = load_profile('mw4', Path(os.environ['MW4_CONFIG_PATH']))
+          settings = VisionSettings.from_profile(p.config)
+          assert settings.enabled, 'production neural GPU capability disabled'
+          assert settings.deployed_sha == os.environ['GITHUB_SHA']
+          assert settings.app_name == os.environ['CLIPPER_NEURAL_MODAL_APP']
+          print('PRODUCTION_MODAL_GPU_ENABLED', settings.app_name, settings.deployed_sha)
+          PY
       - name: Resolve, certify, analyze, and diagnose source through Clipper CLI
-        timeout-minutes: 35
+        timeout-minutes: 95
         env:
           SOURCE_KEY: ${{ matrix.source }}
           OMP_NUM_THREADS: '2'

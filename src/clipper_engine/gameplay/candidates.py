@@ -264,14 +264,29 @@ def analyze_source_file(
     from ..inference import vision
 
     timeline = analysis.analyze_source(source, config)
-    neural_visual_evidence = vision.analyze_source(
-        source,
-        source.with_suffix(".source_qa.json"),
-        config,
-        output_dir,
-        source_key=source_key,
-        timeline=timeline,
-    )
+    settings = vision.VisionSettings.from_profile(config)
+    if settings.enabled:
+        from ..inference.modal import ModalVisionProvider
+
+        with ModalVisionProvider(settings) as gpu_provider:
+            neural_visual_evidence = vision.analyze_source(
+                source,
+                source.with_suffix(".source_qa.json"),
+                config,
+                output_dir,
+                provider=gpu_provider,
+                source_key=source_key,
+                timeline=timeline,
+            )
+    else:
+        neural_visual_evidence = vision.analyze_source(
+            source,
+            source.with_suffix(".source_qa.json"),
+            config,
+            output_dir,
+            source_key=source_key,
+            timeline=timeline,
+        )
     neural_review = (
         neural_evidence.reconcile(neural_visual_evidence, timeline, source_key, config)
         if neural_visual_evidence is not None

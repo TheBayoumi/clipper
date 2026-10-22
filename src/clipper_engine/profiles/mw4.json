@@ -352,10 +352,18 @@
       "mode": "verified_campaign_spans"
     },
     "neural_visual_events": {
-      "enabled": false,
+      "enabled": true,
       "backend": "modal",
-      "app_name": "clipper-neural-qualification",
-      "notes": "Clipper neural visual evidence is proposals-only until independent source verification; requires exact deployed SHA and controlled GPU qualification."
+      "app_name": "clipper-mw4-vision-run",
+      "notes": "Enabled production neural scouting via ephemeral source-SHA-pinned Modal GPU. PROPOSALS ONLY: direct Clipper verification remains authority and no CPU-only silent fallback.",
+      "deployed_sha": "current-run",
+      "sample_interval_seconds": 15.0,
+      "batch_frames": 5,
+      "max_refinement_anchors": 30,
+      "max_sample_frames": 300,
+      "deadline_seconds": 600.0,
+      "max_gpu_seconds": 1800.0,
+      "max_estimated_usd": 2.0
     }
   },
   "player_state_detector": {

@@ -175,6 +175,7 @@ def test_analysis_manifest_clearly_reports_cpu_vs_gpu(
     from clipper_engine.inference import vision
 
     config, timeline = _example(monkeypatch)
+    config["capabilities"]["neural_visual_events"]["enabled"] = False
     monkeypatch.setattr(candidates.analysis, "analyze_source", lambda *_: timeline)
     monkeypatch.setattr(candidates.analysis, "diagnose_source", lambda *_: {})
     monkeypatch.setattr(candidates.analysis, "build_plans_for_source", lambda *_: [])
@@ -195,6 +196,7 @@ def test_public_clipper_analysis_route_uses_only_canonical_montage_search(
     from clipper_engine.inference import vision
 
     config, timeline = _example(monkeypatch)
+    config["capabilities"]["neural_visual_events"]["enabled"] = False
     # The old duplicate payoff planner must not reappear as an inactive authority.
     assert not hasattr(anchor_search, "_anchor_plans")
     monkeypatch.setattr(analysis, "analyze_source", lambda *_: timeline)
