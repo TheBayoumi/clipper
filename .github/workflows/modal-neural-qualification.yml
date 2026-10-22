@@ -41,11 +41,21 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$CLIPPER_DEPLOYED_GIT_SHA"
-          test -n "$MODAL_TOKEN_ID"
-          test -n "$MODAL_TOKEN_SECRET"
+          if [ -z "$MODAL_TOKEN_ID" ] || [ -z "$MODAL_TOKEN_SECRET" ]; then
+            echo '::error::MODAL_CREDENTIALS_MISSING: GitHub repository Modal secrets unavailable'
+            exit 1
+          fi
           test "$CLIPPER_NEURAL_MODAL_APP" = clipper-neural-qualification
-          command -v ffmpeg
-          command -v ffprobe
+      - name: Install FFmpeg and FFprobe if missing (bounded)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            sudo timeout 180 apt-get update -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -qq
+            sudo DEBIAN_FRONTEND=noninteractive timeout 180 apt-get install -y ffmpeg
+          fi
+          command -v ffmpeg || { echo '::error::FFMPEG_NOT_AVAILABLE'; exit 1; }
+          command -v ffprobe || { echo '::error::FFPROBE_NOT_AVAILABLE'; exit 1; }
       - name: Install canonical Clipper inference runtime
         run: python -m pip install -e '.[modal]'
       - name: Retrieve previous certified analysis proxy, not 4K master
