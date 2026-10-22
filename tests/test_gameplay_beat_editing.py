@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from clipper_engine.gameplay import anchor_search, combat, contract, editing, interaction
+from clipper_engine.gameplay import combat, contract, editing, interaction, planning
 from clipper_engine.gameplay import semantics as core
 from clipper_engine.profiles import load_profile
 
@@ -77,8 +77,9 @@ def test_anchor_search_keeps_legal_montage_even_if_contiguous_search_finds_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, timeline = _example(monkeypatch)
-    monkeypatch.setattr(anchor_search, "_anchor_variants", lambda *_: ())
-    plans = anchor_search._anchor_plans(timeline, config, [], "ghost_fight")
+    monkeypatch.setattr(planning, "_terminal_aware_variants", lambda *_: ())
+    monkeypatch.setattr(planning.canonical, "finishing_open_plans", lambda *_: [])
+    plans = planning.build_plans_for_source(timeline, config, [], "ghost_fight")
     assert plans
     assert all(p.story_type == "combat_montage" for p in plans)
     diag = timeline._proposal_diagnostics
@@ -185,3 +186,33 @@ def test_analysis_manifest_clearly_reports_cpu_vs_gpu(
     assert result["analysis_compute"]["feature_extraction"] == "cpu_ffmpeg_numpy"
     assert result["analysis_compute"]["neural_visual"] == "disabled"
     assert result["analysis_compute"]["neural_gpu_seconds_this_run"] == 0.0
+
+
+def test_public_clipper_analysis_route_uses_only_canonical_montage_search(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from clipper_engine.gameplay import analysis, anchor_search, candidates
+    from clipper_engine.inference import vision
+
+    config, timeline = _example(monkeypatch)
+    # The old duplicate payoff planner must not reappear as an inactive authority.
+    assert not hasattr(anchor_search, "_anchor_plans")
+    monkeypatch.setattr(analysis, "analyze_source", lambda *_: timeline)
+    monkeypatch.setattr(analysis, "diagnose_source", lambda *_: {"canonical": True})
+    monkeypatch.setattr(planning, "_terminal_aware_variants", lambda *_: ())
+    monkeypatch.setattr(planning.canonical, "finishing_open_plans", lambda *_: [])
+    monkeypatch.setattr(candidates.cinematic, "analyze", lambda *_: ([], []))
+    monkeypatch.setattr(candidates, "_automatic_finishing_candidates", lambda *_: [])
+    monkeypatch.setattr(vision, "analyze_source", lambda *_args, **_kwargs: None)
+    source = tmp_path / "ghost_fight.mp4"
+    source.write_bytes(b"independently certified test source stub")
+    out = tmp_path / "analysis"
+    report = candidates.analyze_source_file("ghost_fight", source, config, out)
+    montages = [p for p in report["candidate_pool"] if p["story_type"] == "combat_montage"]
+    assert montages
+    assert all(len(p["segments"]) == 2 for p in montages)
+    assert all(p["covered_outcome_anchor_times"] == [16.5] for p in montages)
+    diag = timeline._proposal_diagnostics
+    assert diag["payoff_anchor_diagnostics"][0]["beat_edit_qualified_count"] > 0
+    assert diag["semantic_montage_enabled"] is True
+    assert (out / "ghost_fight_analysis.json").is_file()

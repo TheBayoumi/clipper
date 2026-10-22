@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
-from . import analysis
+from . import analysis, editing
 from . import anchor_search as canonical
 
 SemanticPlan = canonical.SemanticPlan
@@ -215,13 +215,23 @@ def _anchor_plans(
             else:
                 qualified[anchor_time].append(plan)
 
+        composed, compose_rejections = editing.montage_for_anchor(
+            timeline, config, excluded, source_key, anchor_time, region
+        )
+        qualified[anchor_time].extend(composed)
+        rejections.update(compose_rejections)
+        attempted += len(composed) + sum(compose_rejections.values())
         anchor_diagnostics.append(
             {
                 "anchor_time": anchor_time,
                 "source_region": [region[0], region[1]],
                 "terminal_payoff_candidates": list(terminal_candidates),
-                "attempted_variant_count": len(variants),
+                "attempted_variant_count": len(variants)
+                + len(composed)
+                + sum(compose_rejections.values()),
                 "qualified_variant_count": len(qualified[anchor_time]),
+                "beat_edit_qualified_count": len(composed),
+                "beat_edit_rejections": compose_rejections,
                 "rejections": dict(sorted(rejections.items())),
             }
         )
@@ -245,7 +255,9 @@ def _anchor_plans(
             unique.append(plan)
         if unique:
             qualified_anchor_count += 1
-            selected.extend(unique[:4])
+            continuous = [p for p in unique if p.story_type != "combat_montage"]
+            composed = [p for p in unique if p.story_type == "combat_montage"]
+            selected.extend(continuous[:4] + composed[:4])
 
     existing = dict(getattr(timeline, "_proposal_diagnostics", {}) or {})
     existing.update(
@@ -276,6 +288,23 @@ def normal_plans(
     return _anchor_plans(timeline, config, excluded, source_key)
 
 
+def _one_per_finishing_move(plans: list[SemanticPlan]) -> list[SemanticPlan]:
+    """One unique verified Finishing Move is a hard semantic exclusivity rule."""
+    best: dict[tuple[float, float, float], SemanticPlan] = {}
+    for plan in plans:
+        span = plan.finishing_move
+        if span is None:
+            continue
+        key = (
+            round(float(span.start), 3),
+            round(float(span.payoff), 3),
+            round(float(span.end), 3),
+        )
+        if key not in best or plan.score > best[key].score:
+            best[key] = plan
+    return sorted(best.values(), key=lambda item: item.score, reverse=True)
+
+
 def build_plans_for_source(
     timeline: Any,
     config: dict[str, Any],
@@ -289,8 +318,8 @@ def build_plans_for_source(
         excluded,
         source_key,
     )
-    finishing = canonical._one_per_finishing_move(
-        canonical.canonical.finishing_open_plans(
+    finishing = _one_per_finishing_move(
+        canonical.finishing_open_plans(
             timeline,
             config,
             excluded,
@@ -307,12 +336,14 @@ def build_plans_for_source(
         {
             "proposal_architecture": (
                 "independent verified-payoff anchor search with terminal-aware "
-                "legal-window refinement"
+                "legal-window refinement + verified two-beat source-native edit search"
             ),
             "finishing_move_variants_collapsed_per_verified_move": True,
             "automatic_scene_cuts_are_soft_for_normal_payoff_proposals": True,
             "verified_stringout_cuts_remain_hard": True,
-            "semantic_montage_enabled": False,
+            "semantic_montage_enabled": bool(
+                config.get("semantic_editor", {}).get("beat_editing", {}).get("enabled", False)
+            ),
             "alternate_normal_planner_enabled": False,
             "threshold_reduction_used": False,
             "qualified_plan_count": len(plans),
