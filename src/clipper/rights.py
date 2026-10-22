@@ -16,11 +16,8 @@ def assert_campaign_authorized(brief: CampaignBrief) -> None:
 
 
 def assert_video_allowed(brief: CampaignBrief, video: VideoCandidate) -> None:
+    """Authorize production media only by the explicit target video allow-list."""
     assert_campaign_authorized(brief)
-    if brief.allowed_video_ids and video.video_id in brief.allowed_video_ids:
+    if video.video_id in brief.allowed_video_ids:
         return
-    if brief.source_channel_ids and video.channel_id in brief.source_channel_ids:
-        return
-    raise RightsError(
-        f"video {video.video_id} from channel {video.channel_id} is outside the brief allow-list"
-    )
+    raise RightsError(f"video {video.video_id} is outside the explicit target video allow-list")
