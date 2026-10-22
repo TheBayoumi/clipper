@@ -5,7 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from . import speech, spoken_semantics
+from . import build_identity, speech, spoken_semantics
 from .gameplay import contract, semantics
 
 
@@ -250,6 +250,7 @@ def analyze_source_file(
         "schema_version": 3,
         "mode": "analysis",
         "source_key": source_key,
+        "execution_sha": build_identity.current_execution_sha(),
         "semantic_engine": str(strategy.get("semantic_engine") or "embedding-semantic"),
         "editorial_planner": str(strategy.get("editorial_planner") or "spoken-context-editor"),
         "candidate_mode": str(strategy.get("candidate_mode") or "semantic-moment-topic-coverage"),

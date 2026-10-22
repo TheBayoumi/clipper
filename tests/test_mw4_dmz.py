@@ -430,6 +430,7 @@ def test_allocator_covers_string_semantic_anchors_without_redundant_clips() -> N
             "end": start + 11.0,
             "segments": [{"start": start, "end": start + 11.0, "speed": 1.0, "reason": anchor}],
             "covered_semantic_anchor_ids": [anchor],
+            "covered_outcome_anchor_times": [],
             "finishing_move": None,
         }
 

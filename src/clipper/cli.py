@@ -81,6 +81,13 @@ def _add_mw4_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
     batch.add_argument("--clip-meta", type=Path, required=True)
     batch.add_argument("--output-dir", type=Path, required=True)
 
+    neural_review = stages.add_parser(
+        "review-contract", help="validate independent six-source semantic source playback gold"
+    )
+    neural_review.add_argument("--config", type=Path)
+    neural_review.add_argument("--review", type=Path, required=True)
+    neural_review.add_argument("--output", type=Path, required=True)
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(

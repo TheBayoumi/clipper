@@ -84,6 +84,10 @@ class VisionSettings:
     sample_interval_seconds: float = 4.0
     frame_max_edge: int = 640
     batch_frames: int = 8
+    local_refine_radius_seconds: float = 0.5
+    local_refine_interval_seconds: float = 0.25
+    max_refinement_anchors: int = 120
+    max_sample_frames: int = 1024
     deadline_seconds: float = 180.0
     max_gpu_seconds: float = 900.0
     max_estimated_usd: float = 1.0
@@ -109,6 +113,10 @@ class VisionSettings:
             "sample_interval_seconds",
             "frame_max_edge",
             "batch_frames",
+            "local_refine_radius_seconds",
+            "local_refine_interval_seconds",
+            "max_refinement_anchors",
+            "max_sample_frames",
             "deadline_seconds",
             "max_gpu_seconds",
             "max_estimated_usd",
@@ -129,6 +137,10 @@ class VisionSettings:
             "sample_interval_seconds",
             "frame_max_edge",
             "batch_frames",
+            "local_refine_radius_seconds",
+            "local_refine_interval_seconds",
+            "max_refinement_anchors",
+            "max_sample_frames",
             "deadline_seconds",
             "max_gpu_seconds",
             "max_estimated_usd",
@@ -156,12 +168,19 @@ class VisionSettings:
             raise ValueError(
                 "neural inference may not target existing shared production Modal apps"
             )
-        for name in ("frame_max_edge", "batch_frames"):
+        for name in (
+            "frame_max_edge",
+            "batch_frames",
+            "max_refinement_anchors",
+            "max_sample_frames",
+        ):
             value = getattr(s, name)
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError(f"{name} must be an integer")
         for name in (
             "sample_interval_seconds",
+            "local_refine_radius_seconds",
+            "local_refine_interval_seconds",
             "deadline_seconds",
             "max_gpu_seconds",
             "max_estimated_usd",
@@ -175,6 +194,10 @@ class VisionSettings:
             not 0.5 <= s.sample_interval_seconds <= 15
             or not 128 <= s.frame_max_edge <= 960
             or not 1 <= s.batch_frames <= 16
+            or not 0.10 <= s.local_refine_radius_seconds <= 2
+            or not 0.10 <= s.local_refine_interval_seconds <= 1
+            or not 1 <= s.max_refinement_anchors <= 300
+            or not 8 <= s.max_sample_frames <= 4096
             or not 10 <= s.deadline_seconds <= 900
             or not 1 <= s.max_gpu_seconds <= 21600
             or not 0 < s.max_estimated_usd <= 100
@@ -182,6 +205,8 @@ class VisionSettings:
             raise ValueError("neural inference sampling or budget is outside bounded limits")
         for value in (
             s.sample_interval_seconds,
+            s.local_refine_radius_seconds,
+            s.local_refine_interval_seconds,
             s.deadline_seconds,
             s.max_gpu_seconds,
             s.max_estimated_usd,
@@ -226,6 +251,62 @@ def _sample_times(duration: float, interval: float, frame_rate: Fraction) -> tup
         for i in range(math.ceil(duration / interval))
     }
     return tuple(round(float(Fraction(index, 1) / frame_rate), 6) for index in sorted(indices))
+
+
+def _refined_sample_times(
+    coarse: tuple[float, ...],
+    duration: float,
+    rate: Fraction,
+    timeline: Any,
+    config: dict[str, Any],
+    source_key: str,
+    settings: VisionSettings,
+) -> tuple[float, ...]:
+    """Refine local frame-clock evidence near Clipper's existing source cues.
+
+    Existing directly confirmed outcomes receive priority, before cinematic
+    source-verified anchors and other coarse combat events. No VLM claim can
+    create an anchor or change the canonical verifier.
+    """
+    from ..gameplay import interaction
+
+    protected: set[float] = set()
+    optional: set[float] = set()
+    for event in getattr(timeline, "consolidated_events", ()):
+        kinds = set(getattr(event, "kinds", ()) or ())
+        if not kinds.intersection({"outcome_like", "impact", "combat_burst", "contact"}):
+            continue
+        t = float(event.time)
+        if not math.isfinite(t) or not 0 <= t < duration:
+            continue
+        if "outcome_like" in kinds and interaction.hostile_decision(event, config).hostile:
+            protected.add(t)
+        else:
+            optional.add(t)
+    cinematic = (config.get("cinematic_moments") or {}).get("verified_anchors") or {}
+    for moment in cinematic.get(source_key) or []:
+        if moment.get("verification") and "time" in moment:
+            t = float(moment["time"])
+            if math.isfinite(t) and 0 <= t < duration:
+                protected.add(t)
+    if len(protected) > settings.max_refinement_anchors:
+        raise RuntimeError("verified source anchors exceed neural local-refinement budget")
+    selected = sorted(protected)
+    selected.extend(
+        sorted(optional - protected)[: max(0, settings.max_refinement_anchors - len(selected))]
+    )
+    max_frame = math.floor((duration - 1e-6) * float(rate))
+    indices = {round(Fraction(str(t)) * rate) for t in coarse}
+    for anchor in selected:
+        radius = settings.local_refine_radius_seconds
+        step = settings.local_refine_interval_seconds
+        count = math.floor((2 * radius) / step) + 1
+        for k in range(count + 1):
+            t = max(0.0, min(duration - 1e-6, anchor - radius + k * step))
+            indices.add(max(0, min(max_frame, round(Fraction(str(t)) * rate))))
+    if len(indices) > settings.max_sample_frames:
+        raise RuntimeError("source-wide neural sampling exceeds configured frame budget")
+    return tuple(round(float(Fraction(index, 1) / rate), 6) for index in sorted(indices))
 
 
 def _extract_samples(
@@ -341,6 +422,7 @@ def analyze_source(
     *,
     provider: VisionProvider | None = None,
     source_key: str | None = None,
+    timeline: Any | None = None,
 ) -> dict[str, Any] | None:
     """Optional neural scouting; none of its claims are verified semantic anchors."""
     settings = VisionSettings.from_profile(config)
@@ -358,8 +440,20 @@ def analyze_source(
     times = _sample_times(
         float(manifest["duration_seconds"]), settings.sample_interval_seconds, source_rate
     )
+    if timeline is not None:
+        times = _refined_sample_times(
+            times,
+            float(manifest["duration_seconds"]),
+            source_rate,
+            timeline,
+            config,
+            identity["source_key"],
+            settings,
+        )
     if not times:
         raise RuntimeError("certified source has no neural visual samples")
+    if len(times) > settings.max_sample_frames:
+        raise RuntimeError("source-wide neural sampling exceeds configured frame budget")
     from .modal import ModalVisionProvider
 
     engine = provider if provider is not None else ModalVisionProvider(settings)
@@ -389,6 +483,9 @@ def analyze_source(
                         "deployed_sha": settings.deployed_sha,
                         "edge": settings.frame_max_edge,
                         "interval": settings.sample_interval_seconds,
+                        "local_refine_radius": settings.local_refine_radius_seconds,
+                        "local_refine_step": settings.local_refine_interval_seconds,
+                        "max_refinement_anchors": settings.max_refinement_anchors,
                     },
                     sort_keys=True,
                 ).encode()

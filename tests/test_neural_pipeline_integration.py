@@ -20,7 +20,7 @@ def test_neural_visual_goes_through_canonical_clip_pipeline(
     source.write_bytes(b"proxy")
     output = tmp_path / "analysis"
     seen: list[str] = []
-    timeline = SimpleNamespace(
+    expected_timeline = SimpleNamespace(
         duration=20.0,
         consolidated_events=(),
         finishing_moves=(),
@@ -33,9 +33,11 @@ def test_neural_visual_goes_through_canonical_clip_pipeline(
         _output: Path,
         *,
         source_key: str,
+        timeline: Any,
     ) -> dict[str, Any]:
         assert manifest == tmp_path / "ghost_fight.source_qa.json"
         assert source_key == "ghost_fight"
+        assert timeline is expected_timeline
         seen.append("scout")
         return {
             "status": "PROPOSALS_ONLY",
@@ -57,7 +59,7 @@ def test_neural_visual_goes_through_canonical_clip_pipeline(
 
     def canonical_analysis(*_args: object) -> Any:
         seen.append("analysis")
-        return timeline
+        return expected_timeline
 
     monkeypatch.setattr(candidates.analysis, "analyze_source", canonical_analysis)
     monkeypatch.setattr(candidates.analysis, "diagnose_source", lambda *_: {"canonical": True})
@@ -65,7 +67,7 @@ def test_neural_visual_goes_through_canonical_clip_pipeline(
     monkeypatch.setattr(candidates.cinematic, "analyze", lambda *_: ([], []))
     monkeypatch.setattr(candidates, "_automatic_finishing_candidates", lambda *_: [])
     payload = candidates.analyze_source_file("ghost_fight", source, {}, output)
-    assert seen == ["scout", "analysis"]
+    assert seen == ["analysis", "scout"]
     assert payload["semantic_engine"] == candidates.ENGINE
     assert payload["editorial_planner"] == candidates.EDITOR
     assert payload["candidate_count_after_semantic_gates"] == 0

@@ -191,8 +191,11 @@ def render_one(
         )
     helpers.create_contact_sheets(target, output_dir / "contact_sheets")
 
+    from .. import build_identity
+
     result = {
         "schema_version": 1,
+        "execution_sha": build_identity.current_execution_sha(),
         "mode": mode,
         "source_key": source_key,
         "ordinal": ordinal,

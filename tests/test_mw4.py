@@ -53,6 +53,7 @@ def _candidate(key: str, start: float, end: float, anchors: list[float], score: 
         "finishing_move": None,
         "editorial_reasons": [],
         "covered_outcome_anchor_times": anchors,
+        "covered_semantic_anchor_ids": [],
         "covered_payoff_anchor_times": anchors,
     }
 

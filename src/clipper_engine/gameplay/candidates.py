@@ -5,6 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from .. import build_identity
 from . import analysis, cinematic, contract, features, interaction, neural_evidence
 
 ENGINE = "deterministic-gameplay"
@@ -224,6 +225,7 @@ def _select_from_allocation(
     source_key: str, allocation_path: Path
 ) -> tuple[list[analysis.SemanticPlan], dict[str, Any]]:
     allocation = json.loads(allocation_path.read_text(encoding="utf-8"))
+    build_identity.validate_artifact_sha(allocation.get("execution_sha"), stage="allocation")
     source_allocation = allocation.get("source_allocations", {}).get(source_key)
     if not isinstance(source_allocation, dict):
         raise RuntimeError(f"global allocation has no entry for {source_key}")
@@ -261,14 +263,15 @@ def analyze_source_file(
     output_dir.mkdir(parents=True, exist_ok=True)
     from ..inference import vision
 
+    timeline = analysis.analyze_source(source, config)
     neural_visual_evidence = vision.analyze_source(
         source,
         source.with_suffix(".source_qa.json"),
         config,
         output_dir,
         source_key=source_key,
+        timeline=timeline,
     )
-    timeline = analysis.analyze_source(source, config)
     neural_review = (
         neural_evidence.reconcile(neural_visual_evidence, timeline, source_key, config)
         if neural_visual_evidence is not None
@@ -289,6 +292,7 @@ def analyze_source_file(
         "schema_version": 1,
         "mode": "analysis",
         "source_key": source_key,
+        "execution_sha": build_identity.current_execution_sha(),
         "semantic_engine": ENGINE,
         "editorial_planner": EDITOR,
         "candidate_mode": CANDIDATE_MODE,

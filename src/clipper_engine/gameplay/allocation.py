@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
+from .. import build_identity
 from . import contract
 
 Anchor = float | str
@@ -48,20 +50,73 @@ def _required_anchors(manifest: dict[str, Any]) -> tuple[Anchor, ...]:
 
 
 def _candidate_coverage(plan: dict[str, Any]) -> frozenset[Anchor]:
-    semantic = [str(item) for item in (plan.get("covered_semantic_anchor_ids") or []) if str(item)]
-    explicit = plan.get("covered_outcome_anchor_times") or []
-    if explicit:
-        return frozenset(semantic) | frozenset(round(float(item), 3) for item in explicit)
+    """Use only explicitly declared coverage produced by canonical source verification.
 
-    anchors: set[float] = set()
-    for event in plan.get("effect_events") or []:
-        if event.get("kind") == "outcome_like" and "time" in event:
-            anchors.add(round(float(event["time"]), 3))
-    for engagement in plan.get("engagements") or []:
-        for event in engagement.get("events") or []:
-            if "outcome_like" in (event.get("kinds") or []) and "time" in event:
-                anchors.add(round(float(event["time"]), 3))
-    return frozenset(semantic) | frozenset(anchors)
+    Reconstructing outcome anchors from engagement or effect-event text can turn
+    unverified model claims into allocation requirements or false source coverage.
+    An explicit empty list means no directly verified outcome in this framing.
+    """
+    raw_outcomes = plan.get("covered_outcome_anchor_times")
+    raw_semantics = plan.get("covered_semantic_anchor_ids")
+    if not isinstance(raw_outcomes, list):
+        raise AssertionError("candidate missing explicit covered_outcome_anchor_times")
+    if not isinstance(raw_semantics, list):
+        raise AssertionError("candidate missing explicit covered_semantic_anchor_ids")
+    if any(not isinstance(anchor, str) or not anchor for anchor in raw_semantics):
+        raise AssertionError("candidate semantic anchor IDs must be nonempty strings")
+    if any(
+        isinstance(anchor, bool)
+        or not isinstance(anchor, int | float)
+        or not math.isfinite(anchor)
+        or anchor < 0
+        for anchor in raw_outcomes
+    ):
+        raise AssertionError("candidate outcome anchors must be finite positive source times")
+    return frozenset(
+        [str(item) for item in plan["covered_semantic_anchor_ids"]]
+        + [round(float(item), 3) for item in plan["covered_outcome_anchor_times"]]
+    )
+
+
+def _validate_declared_coverage(plan: dict[str, Any], required: set[Anchor]) -> list[str]:
+    """Validate source-local, explicitly verified anchor coverage before allocation."""
+    problems: list[str] = []
+    try:
+        covered = _candidate_coverage(plan)
+    except (AssertionError, ValueError, TypeError, OverflowError) as exc:
+        return [f"explicit_anchor_coverage_invalid:{exc}"]
+    if not covered.issubset(required):
+        problems.append("unverified_or_foreign_anchor_coverage")
+    segments = plan.get("segments") or []
+    if not isinstance(segments, list):
+        return ["invalid_source_segments"]
+    try:
+        intervals = [
+            (float(item["start"]), float(item["end"]))
+            for item in segments
+            if isinstance(item, dict) and "start" in item and "end" in item
+        ]
+    except (TypeError, ValueError, OverflowError):
+        return ["invalid_source_segments"]
+    if not intervals or any(
+        not math.isfinite(left) or not math.isfinite(right) or right <= left
+        for left, right in intervals
+    ):
+        return ["invalid_source_segments"]
+    for anchor in covered:
+        if isinstance(anchor, float) and (
+            not math.isfinite(anchor)
+            or not any(left - 0.001 <= anchor <= right + 0.001 for left, right in intervals)
+        ):
+            problems.append("outcome_anchor_outside_actual_source_segments")
+            break
+    if len(plan["covered_outcome_anchor_times"]) != len(
+        set(map(str, plan["covered_outcome_anchor_times"]))
+    ) or len(plan["covered_semantic_anchor_ids"]) != len(
+        set(map(str, plan["covered_semantic_anchor_ids"]))
+    ):
+        problems.append("duplicate_declared_anchor_coverage")
+    return sorted(set(problems))
 
 
 def _anchor_diagnostics(manifest: dict[str, Any]) -> dict[float, dict[str, Any]]:
@@ -235,6 +290,19 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         raise AssertionError("no analysis manifests found")
     if len(by_source) != len(manifests):
         raise AssertionError("duplicate or missing source_key in analysis manifests")
+    profile_sources = [
+        str(item.get("source_key") or "")
+        for item in ((config.get("source_profile") or {}).get("assets") or [])
+    ]
+    if profile_sources:
+        if len(set(profile_sources)) != len(profile_sources) or not all(profile_sources):
+            raise AssertionError("source profile declares duplicate or empty asset keys")
+        if set(profile_sources) != set(by_source):
+            raise AssertionError(
+                f"incomplete configured-source qualification: "
+                f"missing={sorted(set(profile_sources) - set(by_source))}, "
+                f"unexpected={sorted(set(by_source) - set(profile_sources))}"
+            )
 
     source_order = _source_order(by_source)
     allocations: dict[str, Any] = {}
@@ -255,21 +323,36 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
             raise AssertionError(f"{source}: wrong candidate mode in analysis")
         if manifest.get("failure"):
             raise AssertionError(f"{source}: analysis failure: {manifest['failure']}")
-
-        valid: list[dict[str, Any]] = []
-        rejected_by_contract = 0
-        for index, raw_plan in enumerate(manifest.get("candidate_pool") or [], 1):
-            plan = dict(raw_plan)
-            plan["plan_key"] = str(plan.get("plan_key") or contract.plan_key(plan))
-            failures = contract.validate_plan(source, index, plan, config)
-            if failures:
-                rejected_by_contract += 1
-                continue
-            valid.append(plan)
+        build_identity.validate_artifact_sha(
+            manifest.get("execution_sha"), stage=f"{source} analysis"
+        )
 
         required = set(_required_anchors(manifest))
+        valid: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        for index, raw_plan in enumerate(manifest.get("candidate_pool") or [], 1):
+            plan = dict(raw_plan)
+            expected_key = contract.plan_key(plan)
+            reasons: list[str] = []
+            if plan.get("plan_key") != expected_key:
+                reasons.append("candidate_plan_key_identity_mismatch")
+            reasons.extend(_validate_declared_coverage(plan, required))
+            if not reasons:
+                reasons.extend(contract.validate_plan(source, index, plan, config))
+            if reasons:
+                rejected.append(
+                    {
+                        "candidate_index": index,
+                        "plan_key": expected_key,
+                        "reasons": sorted(set(reasons)),
+                    }
+                )
+                continue
+            valid.append(plan)
+        rejected_by_contract = len(rejected)
+
         union = set().union(*(_candidate_coverage(plan) for plan in valid)) if valid else set()
-        is_spoken = bool(manifest.get("required_semantic_anchors"))
+        has_semantic_anchors = bool(manifest.get("required_semantic_anchors"))
         semantic_details = {
             str(item.get("id")): dict(item)
             for item in (manifest.get("required_semantic_anchors") or [])
@@ -278,7 +361,7 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
         qualified: set[Anchor] = {
             anchor for anchor in required if isinstance(anchor, float) and anchor in union
         }
-        if is_spoken:
+        if has_semantic_anchors:
             unresolved_semantic: list[Anchor] = []
             for anchor in sorted(semantic_details, key=str):
                 detail = semantic_details.get(str(anchor))
@@ -292,7 +375,13 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
                             f"{source}: qualified semantic anchor has no legal candidate: {anchor}"
                         )
                     qualified.add(anchor)
-                elif disposition != "no_admissible_candidate":
+                elif disposition == "no_admissible_candidate":
+                    if int(detail.get("legal_candidate_count", 0)) > 0:
+                        raise AssertionError(
+                            f"{source}: semantic anchor {anchor} had legal proposals "
+                            "but was incorrectly marked no_admissible_candidate"
+                        )
+                else:
                     unresolved_semantic.append(anchor)
             if unresolved_semantic:
                 raise AssertionError(
@@ -324,6 +413,18 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
             if detail is None:
                 unresolved.append(anchor)
                 continue
+            if int(detail.get("qualified_variant_count", 0)) > 0:
+                raise AssertionError(
+                    f"{source}: verified outcome {anchor} had legal independent "
+                    "proposals but none survived source/contract allocation"
+                )
+            if int(detail.get("attempted_variant_count", 0)) == 0 and not (
+                detail.get("rejections") or {}
+            ):
+                raise AssertionError(
+                    f"{source}: verified outcome {anchor} has no structured "
+                    "independent search rejection"
+                )
             dispositions.append(
                 {
                     "anchor": anchor,
@@ -383,11 +484,17 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
             "plans": selected,
             "qualified_candidate_count": len(valid),
             "rejected_by_contract": rejected_by_contract,
+            "rejected_candidates": rejected,
             "required_anchor_count": len(required),
             "qualified_anchor_count": len(qualified),
             "covered_qualified_anchor_count": len(qualified),
             "anchor_dispositions": dispositions,
-            "outcome_dispositions": dispositions if not is_spoken else [],
+            "outcome_dispositions": [
+                item for item in dispositions if isinstance(item["anchor"], float)
+            ],
+            "semantic_anchor_dispositions": [
+                item for item in dispositions if isinstance(item["anchor"], str)
+            ],
             "selected_pair_conflict_count": 0,
         }
         total_selected += len(selected)
@@ -399,6 +506,7 @@ def allocate(root: Path, config: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "schema_version": 2,
+        "execution_sha": build_identity.current_execution_sha(),
         "semantic_engine": expected_engine,
         "editorial_planner": expected_editor,
         "candidate_mode": expected_mode,

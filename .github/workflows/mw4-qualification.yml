@@ -86,6 +86,34 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
+  independent-source-review:
+    name: independent-six-source-semantic-gold
+    needs: discover-sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Clipper validation runtime
+        run: python -m pip install -e ".[mw4]"
+      - name: Verify independently reviewed source-frame and audio gold
+        run: |
+          set -euo pipefail
+          clipper mw4 review-contract \
+            --config "$MW4_CONFIG_PATH" \
+            --review acceptance/mw4-neural-source-review.json \
+            --output acceptance-review-result.json
+      - name: Upload independently adjudicated gold acceptance blockers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MW4-independent-source-review-${{ github.sha }}
+          path: acceptance-review-result.json
+          retention-days: 30
+          if-no-files-found: warn
+
   analyze:
     name: analyze-${{ matrix.source }}
     needs: discover-sources

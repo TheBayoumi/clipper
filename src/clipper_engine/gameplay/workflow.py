@@ -272,4 +272,20 @@ def run_mw4(args: argparse.Namespace) -> int:
     if command == "batch-contract":
         batch_contract(profile, args)
         return 0
+    if command == "review-contract":
+        review = json.loads(args.review.read_text(encoding="utf-8"))
+        try:
+            evidence = qualification.validate_neural_source_review(review, profile.config)
+        except AssertionError as exc:
+            try:
+                evidence = json.loads(str(exc))
+            except ValueError:
+                raise
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(evidence, indent=2), encoding="utf-8")
+            raise
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(evidence, indent=2), encoding="utf-8")
+        print(json.dumps(evidence, indent=2))
+        return 0
     raise RuntimeError(f"unsupported MW4 command: {command}")

@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .. import build_identity
+
 
 def _read(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -222,6 +224,7 @@ def batch_summaries(
     output_dir: Path,
 ) -> None:
     allocation = _read(allocation_path)
+    build_identity.validate_artifact_sha(allocation.get("execution_sha"), stage="batch allocation")
     config = dict(config_path) if isinstance(config_path, dict) else _read(config_path)
     results = [_read(path) for path in clip_meta.rglob("*_clip_result.json")]
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -263,6 +266,12 @@ def batch_summaries(
         summary_mode = next(iter(modes), "unknown")
 
         for item in actual:
+            try:
+                build_identity.validate_artifact_sha(
+                    item.get("execution_sha"), stage=f"{source} rendered clip"
+                )
+            except RuntimeError as exc:
+                failures.append(str(exc))
             clip_failures = _clip_ffv1_nut_contract_failures(item)
             architecture_failures.extend(
                 f"{source} clip {item.get('ordinal', '?')}: {failure}" for failure in clip_failures
@@ -340,6 +349,7 @@ def batch_summaries(
             and len(actual) == len(expected)
         )
         summary = {
+            "execution_sha": build_identity.current_execution_sha(),
             "mode": summary_mode,
             "source_key": source,
             "selected_count": len(actual),
