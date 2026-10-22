@@ -178,7 +178,8 @@ def test_lifecycle_gate_accepts_output_retry_regeneration_restart_closure() -> N
                 else item
                 for item in records
             ],
-            "replacement lifecycle has no authoritative producer start",
+            "editorial producer terminal identity does not match its start: "
+            "field=producer_lifecycle_id",
         ),
         (
             lambda records: [
