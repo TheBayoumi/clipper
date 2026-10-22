@@ -699,12 +699,14 @@ def test_proxy_original_alignment_still_rejects_identity_mismatch(
     }
     analysis = {**common, "derivative_type": "proxy", "sha256": "proxy-digest"}
     original = {**common, "derivative_type": "source", "sha256": "source-digest"}
-    original[{
-        "review": "provider_review_url",
-        "asset": "provider_asset_id",
-        "presentation": "provider_presentation_id",
-        "playlist": "provider_playlist_id",
-    }[mismatch]] = "different"
+    original[
+        {
+            "review": "provider_review_url",
+            "asset": "provider_asset_id",
+            "presentation": "provider_presentation_id",
+            "playlist": "provider_playlist_id",
+        }[mismatch]
+    ] = "different"
     analysis_path = tmp_path / "analysis.json"
     original_path = tmp_path / "original.json"
     analysis_path.write_text(json.dumps(analysis), encoding="utf-8")

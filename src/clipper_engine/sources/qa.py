@@ -78,7 +78,10 @@ def certify_analysis_alignment(
         # IDs. Verify them when both sides provide them; source identity remains
         # mandatory through the same review, asset ID, filename, and duration.
         "same_provider_presentation": (
-            not (analysis.get("provider_presentation_id") and original.get("provider_presentation_id"))
+            not (
+                analysis.get("provider_presentation_id")
+                and original.get("provider_presentation_id")
+            )
             or analysis.get("provider_presentation_id") == original.get("provider_presentation_id")
         ),
         "same_provider_playlist": (
