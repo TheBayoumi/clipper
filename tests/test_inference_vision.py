@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -72,7 +73,15 @@ def _source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path
     file = tmp_path / "ghost_fight.mp4"
     file.write_bytes(b"certified proxy stub")
     manifest = tmp_path / "ghost_fight.source_qa.json"
-    manifest.write_text(json.dumps({"duration_seconds": 8.0}), encoding="utf-8")
+    manifest.write_text(
+        json.dumps(
+            {
+                "duration_seconds": 8.0,
+                "media_contract": {"video": {"timing": {"nominal_rate": "60000/1001"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
 
     def verify(_file: Path, _manifest: Path, *, require_original: bool) -> dict[str, Any]:
         assert not require_original
@@ -151,7 +160,11 @@ def test_neural_source_scan_emits_unverified_timestamped_proposals_and_cache(
     assert report["coverage"]["expected_samples"] == 2
     assert report["coverage"]["observed_samples"] == 2
     assert provider.calls == 2
-    assert [item["timestamp"] for item in report["observations"]] == [0.0, 4.0]
+    assert [item["timestamp"] for item in report["observations"]] == [0.0, 4.004]
+    assert report["source_clock"] == {
+        "nominal_rate": "60000/1001",
+        "sample_frame_indices": [0, 240],
+    }
     assert all(item["verification"] == "PROPOSED" for item in report["observations"])
     assert all(item["review_required"] for item in report["observations"])
     assert report["usage"]["gpu_seconds"] == 4.0
@@ -276,3 +289,49 @@ def test_grounded_vision_prompt_contains_exact_array_schema() -> None:
 def test_grounded_vision_prompt_refuses_invalid_clock(times: list[float]) -> None:
     with pytest.raises(ValueError, match="finite source-clock"):
         vision.source_visual_prompt(times)
+
+
+def test_neural_profile_can_pin_exact_current_run_sha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_SHA", SHA)
+    profile = _config(deployed_sha="current-run")
+    assert vision.VisionSettings.from_profile(profile).deployed_sha == SHA
+
+
+def test_neural_profile_fails_on_mismatched_running_sha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_SHA", "f" * 40)
+    with pytest.raises(ValueError, match="deployment SHA must equal execution SHA"):
+        vision.VisionSettings.from_profile(_config())
+
+
+def test_neural_profile_fails_on_conflicting_sha_authorities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_SHA", SHA)
+    monkeypatch.setenv("CLIPPER_ACCEPTANCE_SHA", "f" * 40)
+    with pytest.raises(ValueError, match="conflicting source SHA identities"):
+        vision.VisionSettings.from_profile(_config())
+
+
+def test_neural_profile_rejects_missing_current_run_sha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
+    monkeypatch.delenv("CLIPPER_ACCEPTANCE_SHA", raising=False)
+    with pytest.raises(ValueError, match="explicit deployed 40-character Git SHA"):
+        vision.VisionSettings.from_profile(_config(deployed_sha="current-run"))
+
+
+def test_neural_source_samples_follow_certified_60000_over_1001_grid() -> None:
+    rate = Fraction(60000, 1001)
+    observed = vision._sample_times(9.1, 4.0, rate)
+    assert observed == (0.0, 4.004, 8.008)
+    assert [round(Fraction(str(t)) * rate) for t in observed] == [0, 240, 480]
+
+
+def test_neural_sampling_rejects_unverifiable_frame_rate() -> None:
+    with pytest.raises(ValueError, match="certified positive rational"):
+        vision._sample_times(10, 4, Fraction(0, 1))

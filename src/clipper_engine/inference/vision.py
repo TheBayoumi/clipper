@@ -6,10 +6,12 @@ import base64
 import hashlib
 import json
 import math
+import os
 import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlparse
@@ -135,7 +137,17 @@ class VisionSettings:
                 values[key] = raw[key]
         values["enabled"] = True
         values["app_name"] = str(raw.get("app_name") or "clipper-neural-qualification")
-        values["deployed_sha"] = str(raw.get("deployed_sha") or "").strip().lower()
+        requested_sha = str(raw.get("deployed_sha") or "").strip().lower()
+        github_sha = os.getenv("GITHUB_SHA", "").strip().lower()
+        acceptance_sha = os.getenv("CLIPPER_ACCEPTANCE_SHA", "").strip().lower()
+        if github_sha and acceptance_sha and github_sha != acceptance_sha:
+            raise ValueError("neural inference runner has conflicting source SHA identities")
+        run_sha = acceptance_sha or github_sha
+        if requested_sha == "current-run":
+            requested_sha = run_sha
+        if run_sha and requested_sha != run_sha:
+            raise ValueError("neural inference deployment SHA must equal execution SHA")
+        values["deployed_sha"] = requested_sha
         s = cls(**values)
         if not s.app_name.startswith("clipper-") or s.app_name in {
             "clipper-open-editor",
@@ -200,10 +212,20 @@ def _source_identity(source: Path, manifest_path: Path) -> dict[str, str]:
     return fields
 
 
-def _sample_times(duration: float, interval: float) -> tuple[float, ...]:
+def _sample_times(duration: float, interval: float, frame_rate: Fraction) -> tuple[float, ...]:
+    """Sample at actual certified source-frame times, not rounded wall-clock guesses."""
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError("certified source duration must be finite and positive")
-    return tuple(round(i * interval, 3) for i in range(math.ceil(duration / interval)))
+    if not isinstance(frame_rate, Fraction) or frame_rate <= 0:
+        raise ValueError("neural source timing requires certified positive rational frame rate")
+    maximum_index = math.floor((duration - 1e-6) * float(frame_rate))
+    if maximum_index < 0:
+        raise ValueError("certified source cannot supply a complete video frame")
+    indices = {
+        min(maximum_index, round(Fraction(str(i * interval)) * frame_rate))
+        for i in range(math.ceil(duration / interval))
+    }
+    return tuple(round(float(Fraction(index, 1) / frame_rate), 6) for index in sorted(indices))
 
 
 def _extract_samples(
@@ -328,7 +350,14 @@ def analyze_source(
     if identity["source_key"] != (source_key or source.stem):
         raise RuntimeError("neural source key does not match certified source identity")
     manifest = json.loads(source_qa_path.read_text(encoding="utf-8"))
-    times = _sample_times(float(manifest["duration_seconds"]), settings.sample_interval_seconds)
+    timing = (manifest.get("media_contract") or {}).get("video", {}).get("timing") or {}
+    try:
+        source_rate = Fraction(str(timing.get("nominal_rate") or ""))
+    except (ValueError, ZeroDivisionError) as exc:
+        raise RuntimeError("certified source has no rational nominal frame rate") from exc
+    times = _sample_times(
+        float(manifest["duration_seconds"]), settings.sample_interval_seconds, source_rate
+    )
     if not times:
         raise RuntimeError("certified source has no neural visual samples")
     from .modal import ModalVisionProvider
@@ -428,6 +457,10 @@ def analyze_source(
         "source_identity": identity,
         "model": model,
         "deployed_git_sha": settings.deployed_sha,
+        "source_clock": {
+            "nominal_rate": str(source_rate),
+            "sample_frame_indices": [round(Fraction(str(t)) * source_rate) for t in times],
+        },
         "status": "PROPOSALS_ONLY",
         "coverage": {
             "expected_samples": len(times),

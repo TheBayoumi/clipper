@@ -43,7 +43,21 @@ properties, backed by a deployed isolated worker:
 }
 ```
 
-The profile must provide an **exact deployed SHA**, never `latest`, and may
+The profile must provide an **exact deployed SHA**, never `latest`. A checked-in
+profile may instead specify `"deployed_sha": "current-run"`: Clipper resolves
+that value from `GITHUB_SHA` / `CLIPPER_ACCEPTANCE_SHA` at execution time and
+rejects conflicting identities. This avoids the impossible requirement to embed
+its own ever-changing Git commit SHA in the source profile. The model request
+and worker still compare immutable **40-character SHAs** before inference.
+
+Neural scouting snaps frame samples to the **certified rational nominal frame
+rate**, recording `source_clock.nominal_rate` and sampled source-frame indices.
+For 60000/1001 timing, the nearest frames to 0, 4 and 8 seconds are frames
+0, 240 and 480 at 0.000, 4.004 and 8.008 seconds respectively. This is source
+clock evidence, not a claim that a sparse VLM sample proves an intermediate
+hit or kill. Bounded high-rate interaction verification remains Clipper-owned.
+
+Neural scouting may
 only use a separate `clipper-*` Modal app, not the shared ContentRewards
 `clipper-open-editor` or `clipper-production-pipeline` apps. The worker's app
 name is selected with `CLIPPER_NEURAL_MODAL_APP`; its immutable commit identity
