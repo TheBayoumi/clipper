@@ -242,9 +242,7 @@ def _script_feedback(raw: object, error: Exception) -> str:
     return message[:900]
 
 
-def _revision_request(
-    original: dict[str, object], previous: str, error: str
-) -> dict[str, object]:
+def _revision_request(original: dict[str, object], previous: str, error: str) -> dict[str, object]:
     messages = original["messages"]
     if not isinstance(messages, list):
         raise NicheVideoError("internal request lost original script context")

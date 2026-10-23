@@ -177,9 +177,7 @@ def test_failed_word_count_receives_targeted_repair(
     assert "total_narration_words=28" in str(revision)
     assert config.topic in str(revision)
     assert (tmp_path / "scripts" / f"{fingerprint}.json").is_file()
-    audit = json.loads(
-        (tmp_path / "script_diagnostics" / f"{fingerprint}.json").read_text()
-    )
+    audit = json.loads((tmp_path / "script_diagnostics" / f"{fingerprint}.json").read_text())
     assert [item["accepted"] for item in audit] == [False, True]
     nv.generate_episode(config, tmp_path)
     assert model.call_count == 2
