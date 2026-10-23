@@ -1,0 +1,9 @@
+# Example original-content channel; not a Reach/Whop campaign.
+niche: Practical AI workflows
+audience: Developers and technical professionals learning useful AI automation
+brand: THE WORKFLOW LAB
+voice: marin
+topic: Three rules for building reliable AI agent workflows
+# Supply independently checked facts here when an episode needs specific claims.
+# Empty means the script should teach general methods, not invent statistics or news.
+facts: []
