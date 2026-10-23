@@ -118,3 +118,24 @@ def test_gpu_qualification_uses_signed_official_ubuntu_archive_not_slow_azure_mi
         assert "Acquire::https::Timeout=20" in installer
         assert "DEBIAN_FRONTEND=noninteractive" in installer
         assert "command -v ffprobe" in installer
+
+
+def test_gpu_qualification_resolves_unexpired_certified_source_without_stale_run_ids() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/modal-neural-qualification.yml").read_text()
+    )
+    for job_name in ("neural-source-gpu-smoke", "neural-source-wide-review"):
+        steps = workflow["jobs"][job_name]["steps"]
+        resolver = next(s for s in steps if s.get("id") == "certified-source")
+        script = resolver["run"]
+        assert "actions/artifacts?name=" in script
+        assert ".expired == false" in script
+        assert ".workflow_run.head_branch" in script
+        assert "MW4 production qualification" in script
+        assert "CERTIFIED_SOURCE_ARTIFACT_UNAVAILABLE" in script
+        assert "CERTIFIED_SOURCE_RUN_INVALID" in script
+        assert "GH_TOKEN" in resolver["env"]
+        download = next(s for s in steps if s.get("uses") == "actions/download-artifact@v4")
+        assert download["with"]["run-id"] == "${{ steps.certified-source.outputs.run_id }}"
+        assert "39749647361" not in str(download)
+        assert "39827390899" not in str(download)
