@@ -134,6 +134,7 @@ jobs:
         with:
           path: artifacts/niche/_cache
           key: original-niche-${{ runner.os }}-${{ hashFiles('niches/*.yaml') }}-${{ github.run_id }}
+          save-always: true
           restore-keys: |
             original-niche-${{ runner.os }}-${{ hashFiles('niches/*.yaml') }}-
       - name: Generate a real Kokoro voice sample (no API key)
@@ -196,6 +197,14 @@ jobs:
           python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Three rules for building reliable AI agent workflows}" --output-root artifacts/niche
           test -n "$(find artifacts/niche -name draft.mp4 -size +0c -print -quit)"
           test -n "$(find artifacts/niche -name manifest.json -size +0c -print -quit)"
+      - name: Upload Qwen3 validation diagnostics even after failure
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.generate_draft }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: niche-script-diagnostics-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/niche/_cache/script_diagnostics/*.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload draft for listening and visual review
         if: github.event_name == 'workflow_dispatch' && inputs.generate_draft
         uses: actions/upload-artifact@v4
