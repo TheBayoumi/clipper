@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
+import sys
 import urllib.error
 from pathlib import Path
 from typing import Any
@@ -9,7 +11,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from scripts import niche_video as nv
+_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "niche_video.py"
+_SPEC = importlib.util.spec_from_file_location("niche_video", _SCRIPT)
+assert _SPEC is not None and _SPEC.loader is not None
+nv = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = nv
+_SPEC.loader.exec_module(nv)
 
 
 @pytest.fixture
