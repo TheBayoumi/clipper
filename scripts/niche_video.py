@@ -12,9 +12,9 @@ import io
 import json
 import math
 import os
-import sys
 import shutil
 import subprocess
+import sys
 import tempfile
 import wave
 from dataclasses import dataclass
@@ -154,7 +154,7 @@ def _script_request(config: NicheConfig) -> dict[str, object]:
                     "Write exactly one valid JSON object, no markdown or commentary. "
                     'Schema: {"title": string, "scenes": '
                     '[{"headline": string, "narration": string}]}. '
-                     "Write four distinct scenes, aiming for 80-100 narration words "
+                    "Write four distinct scenes, aiming for 80-100 narration words "
                     "in total, around 20-25 words each. Hard limits: 3-5 scenes, "
                     "45-125 total words, 6-45 per scene, headline <= 65 chars. "
                     "Start with a clear honest hook, develop useful original "
