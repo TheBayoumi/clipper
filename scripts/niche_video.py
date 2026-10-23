@@ -7,9 +7,9 @@ All external calls are explicit; generated videos remain unpublished drafts.
 from __future__ import annotations
 
 import argparse
-import io
 import gc
 import hashlib
+import io
 import json
 import math
 import os
@@ -17,8 +17,8 @@ import shutil
 import subprocess
 import tempfile
 import wave
-from functools import lru_cache
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -183,7 +183,9 @@ def _local_script_completion(request: dict[str, object]) -> str:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
     except ImportError as exc:
-        raise NicheVideoError("Install the [niche-models] runtime for open-weight inference") from exc
+        raise NicheVideoError(
+            "Install the [niche-models] runtime for open-weight inference"
+        ) from exc
 
     torch.manual_seed(42)
     torch.set_num_threads(min(4, os.cpu_count() or 1))
