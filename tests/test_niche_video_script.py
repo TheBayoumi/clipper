@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import subprocess
 import sys
-import urllib.error
+import wave
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -27,7 +28,7 @@ def config(tmp_path: Path) -> nv.NicheConfig:
         "audience: Builders\n"
         "brand: WORKFLOW LAB\n"
         "topic: Agent reliability\n"
-        "voice: marin\n"
+        "voice: af_heart\n"
         "facts: []\n",
         encoding="utf-8",
     )
@@ -69,7 +70,7 @@ def test_niche_config_defaults_and_override(config: nv.NicheConfig, tmp_path: Pa
         encoding="utf-8",
     )
     changed = nv.NicheConfig.load(path, "Overridden topic")
-    assert config.voice == "marin"
+    assert config.voice == "af_heart"
     assert changed.topic == "Overridden topic"
     assert changed.facts == ("Explicitly approved test statement",)
 
@@ -112,11 +113,21 @@ def test_invalid_episode(raw: object) -> None:
         nv.Episode.from_json(raw)
 
 
-def test_script_request_is_structured_and_constrained(config: nv.NicheConfig) -> None:
+def _valid_wav() -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(24000)
+        handle.writeframes(b"\x01\x00" * 24000)
+    return buffer.getvalue()
+
+
+def test_script_request_is_local_and_constrained(config: nv.NicheConfig) -> None:
     request = nv._script_request(config)
     assert request["model"] == nv.SCRIPT_MODEL
-    schema: Any = request["response_format"]
-    assert schema["json_schema"]["strict"] is True
+    assert request["revision"] == nv.SCRIPT_REVISION
+    assert request["seed"] == 42
     assert "approved_facts" in str(request)
 
 
@@ -126,39 +137,24 @@ def test_generate_episode_reuses_identical_script(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    post = Mock(
-        return_value=json.dumps(
-            {
-                "choices": [
-                    {"finish_reason": "stop", "message": {"content": json.dumps(episode.to_dict())}}
-                ]
-            }
-        ).encode()
-    )
-    monkeypatch.setattr(nv, "_openai_post", post)
+    model = Mock(return_value=json.dumps(episode.to_dict()))
+    monkeypatch.setattr(nv, "_local_script_completion", model)
     first, fingerprint = nv.generate_episode(config, tmp_path)
     second, again = nv.generate_episode(config, tmp_path)
     assert first == second == episode
     assert fingerprint == again
-    post.assert_called_once()
+    model.assert_called_once()
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {},
-        {"choices": [{"finish_reason": "length", "message": {}}]},
-        {"choices": [{"finish_reason": "stop", "message": {"refusal": "no"}}]},
-    ],
-)
+@pytest.mark.parametrize("completion", ["", "not json", "[]", "{}"])
 def test_generation_rejects_bad_completions(
     config: nv.NicheConfig,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    payload: dict[str, object],
+    completion: str,
 ) -> None:
-    monkeypatch.setattr(nv, "_openai_post", lambda *_args, **_kw: json.dumps(payload).encode())
-    with pytest.raises(nv.NicheVideoError):
+    monkeypatch.setattr(nv, "_local_script_completion", lambda _request: completion)
+    with pytest.raises((nv.NicheVideoError, json.JSONDecodeError)):
         nv.generate_episode(config, tmp_path)
 
 
@@ -168,42 +164,52 @@ def test_tts_content_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    post = Mock(return_value=b"x" * 2048)
-    monkeypatch.setattr(nv, "_openai_post", post)
+    voice = Mock(return_value=_valid_wav())
+    monkeypatch.setattr(nv, "_kokoro_wav", voice)
     a = nv.synthesize_scene(episode.scenes[0], config, tmp_path)
     b = nv.synthesize_scene(episode.scenes[0], config, tmp_path)
     assert a == b
-    assert a.stat().st_size == 2048
-    post.assert_called_once()
+    assert a.suffix == ".wav"
+    assert nv._wav_metadata(a.read_bytes()) == (1, 24000, 24000)
+    voice.assert_called_once()
 
 
-def test_short_tts_fails(
+def test_empty_tts_fails(
     config: nv.NicheConfig,
     episode: nv.Episode,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(nv, "_openai_post", lambda *_args, **_kw: b"bad")
+    monkeypatch.setattr(nv, "_kokoro_wav", lambda *_args: b"invalid")
     with pytest.raises(nv.NicheVideoError):
         nv.synthesize_scene(episode.scenes[0], config, tmp_path)
 
 
-def test_api_missing_key(config: nv.NicheConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_no_openai_key_required(
+    config: nv.NicheConfig,
+    episode: nv.Episode,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    with pytest.raises(nv.NicheVideoError, match="OPENAI_API_KEY"):
-        nv._openai_post("audio/speech", {"input": "hello"}, audio=True)
+    monkeypatch.setattr(nv, "_local_script_completion", lambda _req: json.dumps(episode.to_dict()))
+    monkeypatch.setattr(nv, "_kokoro_wav", lambda *_args: _valid_wav())
+    generated, _ = nv.generate_episode(config, tmp_path)
+    assert generated == episode
+    assert nv.synthesize_scene(episode.scenes[0], config, tmp_path).is_file()
 
 
-def test_api_error_redacts_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "secret-that-must-not-appear")
-
-    def fail(*_args: object, **_kwargs: object) -> None:
-        raise urllib.error.HTTPError("endpoint", 429, "limit", {}, None)
-
-    monkeypatch.setattr(nv.urllib.request, "urlopen", fail)
-    with pytest.raises(nv.NicheVideoError) as caught:
-        nv._openai_post("audio/speech", {"input": "test"}, audio=True)
-    assert "secret-that-must-not-appear" not in str(caught.value)
+def test_cached_audio_corruption_fails(
+    config: nv.NicheConfig,
+    episode: nv.Episode,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(nv, "_kokoro_wav", lambda *_args: _valid_wav())
+    location = nv.synthesize_scene(episode.scenes[0], config, tmp_path)
+    location.write_bytes(b"not a wave")
+    with pytest.raises(nv.NicheVideoError):
+        nv.synthesize_scene(episode.scenes[0], config, tmp_path)
 
 
 def test_atomic_write(tmp_path: Path) -> None:
@@ -303,5 +309,7 @@ def test_validate_only_requires_no_external_calls(
 ) -> None:
     config = tmp_path / "config.yml"
     config.write_text("niche: AI\naudience: Devs\nbrand: LAB\ntopic: Example\n", encoding="utf-8")
-    monkeypatch.setattr(nv, "_openai_post", Mock(side_effect=AssertionError("API called")))
+    monkeypatch.setattr(
+        nv, "_local_script_completion", Mock(side_effect=AssertionError("model called"))
+    )
     assert nv.main(["--config", str(config), "--validate-only"]) == 0
