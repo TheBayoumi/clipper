@@ -7,6 +7,8 @@ All external calls are explicit; generated videos remain unpublished drafts.
 from __future__ import annotations
 
 import argparse
+import io
+import gc
 import hashlib
 import json
 import math
@@ -14,34 +16,22 @@ import os
 import shutil
 import subprocess
 import tempfile
-import urllib.error
-import urllib.request
+import wave
+from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-SCRIPT_MODEL = "gpt-4.1-mini"
-VOICE_MODEL = "gpt-4o-mini-tts"
-SCRIPT_CONTRACT = "niche-scenes-v1"
-VOICES = frozenset(
-    {
-        "alloy",
-        "ash",
-        "ballad",
-        "coral",
-        "echo",
-        "fable",
-        "onyx",
-        "nova",
-        "sage",
-        "shimmer",
-        "verse",
-        "marin",
-        "cedar",
-    }
-)
+# Pin the script weights; keep TTS identity versioned to invalidate cache on upgrades.
+SCRIPT_MODEL = "Qwen/Qwen3-1.7B"
+SCRIPT_REVISION = "8d4744f9e13072f4920c326350fa81eedb74eae9"
+VOICE_MODEL = "hexgrad/Kokoro-82M"
+VOICE_REVISION = "v1.0"
+SCRIPT_CONTRACT = "niche-scenes-open-v2"
+VOICE_CONTRACT = "kokoro-24khz-wav-v1"
+VOICES = frozenset({"af_heart", "af_bella", "am_adam", "am_michael", "bf_emma"})
 
 
 class NicheVideoError(RuntimeError):
@@ -78,9 +68,9 @@ class NicheConfig:
             raise NicheVideoError("facts must be a list of at most twelve verified statements")
         if not all(isinstance(fact, str) and 1 <= len(fact.strip()) <= 400 for fact in facts):
             raise NicheVideoError("every fact must be a nonempty string of at most 400 characters")
-        voice = _text(raw.get("voice", "marin"), "voice", 30).lower()
+        voice = _text(raw.get("voice", "af_heart"), "voice", 30).lower()
         if voice not in VOICES:
-            raise NicheVideoError("unsupported OpenAI TTS voice")
+            raise NicheVideoError("unsupported Kokoro voice")
         return cls(
             niche=_text(raw.get("niche"), "niche", 150),
             audience=_text(raw.get("audience"), "audience", 200),
@@ -150,59 +140,25 @@ def _write_atomic(path: Path, data: bytes) -> None:
     temp.replace(path)
 
 
-def _openai_post(path: str, payload: dict[str, object], *, audio: bool = False) -> bytes:
-    key = os.environ.get("OPENAI_API_KEY")
-    if not key:
-        raise NicheVideoError("OPENAI_API_KEY is required for paid inference")
-    request = urllib.request.Request(
-        f"https://api.openai.com/v1/{path}",
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "Accept": "audio/mpeg" if audio else "application/json",
-        },
-        method="POST",
-    )
-    try:
-        # The URL is always prefixed with the fixed HTTPS OpenAI API host.
-        with urllib.request.urlopen(request, timeout=120) as response:  # noqa: S310
-            result = response.read()
-    except urllib.error.HTTPError as exc:
-        raise NicheVideoError(f"OpenAI {path} returned HTTP {exc.code}") from exc
-    except (OSError, TimeoutError) as exc:
-        raise NicheVideoError(f"OpenAI {path} request failed") from exc
-    if not result:
-        raise NicheVideoError(f"OpenAI {path} returned an empty response")
-    return result
-
-
 def _script_request(config: NicheConfig) -> dict[str, object]:
-    scene_schema: dict[str, object] = {
-        "type": "object",
-        "properties": {
-            "headline": {"type": "string"},
-            "narration": {"type": "string"},
-        },
-        "required": ["headline", "narration"],
-        "additionalProperties": False,
-    }
     return {
         "model": SCRIPT_MODEL,
-        "temperature": 0.4,
-        "max_completion_tokens": 1100,
+        "revision": SCRIPT_REVISION,
+        "seed": 42,
+        "max_new_tokens": 960,
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    "Create one original, concise, useful vertical-video episode. "
-                    "Return only the requested JSON. Write a surprising but honest first "
-                    "line, substantive middle and a resolved ending. 3-5 scenes, 45-125 "
-                    "narration words total, 6-45 words per scene. Never include invented "
-                    "statistics, quotations, product promises, or news. Treat the supplied "
-                    "facts as the only approved source for concrete factual claims. "
-                    "If no facts are supplied, teach general methods without unverifiable "
-                    "claims. Avoid filler, emojis, hashtags, and calls for engagement."
+                    "Write exactly one valid JSON object, no markdown or commentary. "
+                    "Schema: {\\"title\\": string, \\"scenes\\": "
+                    "[{\\"headline\\": string, \\"narration\\": string}]}. "
+                    "Create 3 to 5 scenes totalling 45 to 125 narration words, "
+                    "each scene 6 to 45 words, headline <= 65 characters. "
+                    "Start with a clear honest hook, develop useful original "
+                    "ideas, finish with a complete payoff. Never invent statistics, "
+                    "quotes, or news. Concrete claims may use approved_facts only. "
+                    "With no facts, use general reproducible methods instead."
                 ),
             },
             {
@@ -218,23 +174,47 @@ def _script_request(config: NicheConfig) -> dict[str, object]:
                 ),
             },
         ],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "niche_episode",
-                "strict": True,
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "title": {"type": "string"},
-                        "scenes": {"type": "array", "items": scene_schema},
-                    },
-                    "required": ["title", "scenes"],
-                    "additionalProperties": False,
-                },
-            },
-        },
     }
+
+
+def _local_script_completion(request: dict[str, object]) -> str:
+    """Run the pinned Apache-2.0 Qwen3 model, without proprietary API access."""
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as exc:
+        raise NicheVideoError("Install the [niche-models] runtime for open-weight inference") from exc
+
+    torch.manual_seed(42)
+    torch.set_num_threads(min(4, os.cpu_count() or 1))
+    tokenizer = AutoTokenizer.from_pretrained(SCRIPT_MODEL, revision=SCRIPT_REVISION)
+    model = AutoModelForCausalLM.from_pretrained(
+        SCRIPT_MODEL, revision=SCRIPT_REVISION, dtype="auto"
+    ).eval()
+    inputs = tokenizer.apply_chat_template(
+        request["messages"],
+        tokenize=True,
+        add_generation_prompt=True,
+        enable_thinking=False,
+        return_dict=True,
+        return_tensors="pt",
+    )
+    with torch.inference_mode():
+        output = model.generate(
+            **inputs,
+            max_new_tokens=960,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.8,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    output_ids = output[0][inputs["input_ids"].shape[-1] :]
+    result = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+    del model, tokenizer, inputs, output, output_ids
+    gc.collect()
+    if result.startswith("```"):
+        result = "\n".join(result.splitlines()[1:-1]).strip()
+    return result
 
 
 def generate_episode(config: NicheConfig, cache_root: Path) -> tuple[Episode, str]:
@@ -243,33 +223,74 @@ def generate_episode(config: NicheConfig, cache_root: Path) -> tuple[Episode, st
     path = cache_root / "scripts" / f"{digest}.json"
     if path.is_file():
         return Episode.from_json(json.loads(path.read_text(encoding="utf-8"))), digest
-    response = json.loads(_openai_post("chat/completions", request))
-    choices = response.get("choices") or []
-    if not choices or choices[0].get("finish_reason") != "stop":
-        raise NicheVideoError("script generation did not finish cleanly")
-    message = choices[0].get("message") or {}
-    if message.get("refusal") or not isinstance(message.get("content"), str):
-        raise NicheVideoError("script generation returned a refusal or no content")
-    episode = Episode.from_json(json.loads(message["content"]))
+    response = _local_script_completion(request)
+    if not response:
+        raise NicheVideoError("local script model returned no content")
+    episode = Episode.from_json(json.loads(response))
     _write_atomic(path, json.dumps(episode.to_dict(), ensure_ascii=False, indent=2).encode("utf-8"))
     return episode, digest
 
 
+@lru_cache(maxsize=1)
+def _kokoro_pipeline() -> Any:
+    try:
+        from kokoro import KPipeline
+    except ImportError as exc:
+        raise NicheVideoError("Install the [niche-models] runtime for Kokoro TTS") from exc
+    return KPipeline(lang_code="a", repo_id=VOICE_MODEL)
+
+
+def _wav_metadata(payload: bytes) -> tuple[int, int, int]:
+    try:
+        with wave.open(io.BytesIO(payload), "rb") as wav:
+            return wav.getnchannels(), wav.getframerate(), wav.getnframes()
+    except (wave.Error, EOFError) as exc:
+        raise NicheVideoError("Kokoro produced invalid WAV audio") from exc
+
+
+def _kokoro_wav(narration: str, voice: str) -> bytes:
+    try:
+        import numpy as np
+        import soundfile as sf
+    except ImportError as exc:
+        raise NicheVideoError("Install soundfile and numpy for open-source TTS") from exc
+    chunks = [
+        np.asarray(audio, dtype=np.float32).reshape(-1)
+        for _, _, audio in _kokoro_pipeline()(narration, voice=voice, speed=1.0)
+    ]
+    if not chunks:
+        raise NicheVideoError("Kokoro returned no audio segments")
+    speech = np.concatenate(chunks)
+    if len(speech) < 8000 or not np.isfinite(speech).all():
+        raise NicheVideoError("Kokoro returned empty or non-finite audio")
+    buffer = io.BytesIO()
+    sf.write(buffer, np.clip(speech, -1.0, 1.0), 24000, format="WAV", subtype="PCM_16")
+    return buffer.getvalue()
+
+
 def synthesize_scene(scene: Scene, config: NicheConfig, cache_root: Path) -> Path:
-    request: dict[str, object] = {
+    request = {
+        "contract": VOICE_CONTRACT,
         "model": VOICE_MODEL,
+        "model_revision": VOICE_REVISION,
         "voice": config.voice,
-        "input": scene.narration,
-        "instructions": "Warm, energetic, clear natural narration. No exaggerated announcer voice.",
-        "response_format": "mp3",
+        "language": "en-us",
+        "sample_rate": 24000,
+        "speed": 1.0,
+        "text": scene.narration,
     }
     digest = _fingerprint(request)
-    path = cache_root / "tts" / f"{digest}.mp3"
-    if not path.is_file():
-        audio = _openai_post("audio/speech", request, audio=True)
-        if len(audio) < 512:
-            raise NicheVideoError("TTS result is too small to be credible audio")
-        _write_atomic(path, audio)
+    path = cache_root / "tts" / f"{digest}.wav"
+    if path.is_file():
+        nch, rate, frames = _wav_metadata(path.read_bytes())
+        if nch == 1 and rate == 24000 and frames >= 8000:
+            return path
+        raise NicheVideoError("Cached TTS WAV has invalid geometry or duration")
+    audio = _kokoro_wav(scene.narration, config.voice)
+    nch, rate, frames = _wav_metadata(audio)
+    if nch != 1 or rate != 24000 or frames < 8000:
+        raise NicheVideoError("Kokoro WAV must be mono 24 kHz with audible duration")
+    _write_atomic(path, audio)
     return path
 
 
@@ -441,7 +462,9 @@ def produce(config: NicheConfig, output_root: Path) -> Path:
         "approved_facts": list(config.facts),
         "script_fingerprint": script_hash,
         "script_model": SCRIPT_MODEL,
+        "script_model_revision": SCRIPT_REVISION,
         "tts_model": VOICE_MODEL,
+        "tts_model_revision": VOICE_REVISION,
         "voice": config.voice,
         "disclosure": "Includes AI-generated narration",
         "editorial_review": "PENDING",
