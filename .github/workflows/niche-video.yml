@@ -1,4 +1,4 @@
-name: Original niche video draft
+name: Original niche video draft (open models)
 
 on:
   push:
@@ -20,8 +20,13 @@ on:
         description: Optional episode topic override
         type: string
         required: false
-      confirm_paid_inference:
-        description: Explicitly allow paid script generation and TTS
+      generate_draft:
+        description: Generate the full niche episode with local open-weight models
+        type: boolean
+        required: true
+        default: false
+      voice_smoke:
+        description: Generate a real Kokoro narration sample without the script model
         type: boolean
         required: true
         default: false
@@ -36,7 +41,7 @@ concurrency:
 jobs:
   draft:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,7 +56,7 @@ jobs:
       - name: Install FFmpeg runtime
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          sudo apt-get install -y --no-install-recommends ffmpeg espeak-ng
           command -v ffmpeg
           command -v ffprobe
       - name: Verify niche runtime source style
@@ -118,8 +123,61 @@ jobs:
             artifacts/niche/smoke/smoke-qc.json
           if-no-files-found: error
           retention-days: 7
+      - name: Install CPU-only open-weight inference dependencies
+        if: github.event_name == 'workflow_dispatch' && (inputs.generate_draft || inputs.voice_smoke)
+        run: |
+          python -m pip install 'torch>=2.6,<3' --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'kokoro==0.9.4' 'soundfile>=0.13,<1' 'transformers==4.57.3' 'numpy>=2,<2.5'
+      - name: Generate a real Kokoro voice sample (no API key)
+        if: github.event_name == 'workflow_dispatch' && inputs.voice_smoke
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          import json
+          import sys
+          from pathlib import Path
+          source = Path("scripts/niche_video.py").resolve()
+          spec = importlib.util.spec_from_file_location("niche_kokoro_smoke", source)
+          assert spec is not None and spec.loader is not None
+          media = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = media
+          spec.loader.exec_module(media)
+          config = media.NicheConfig.load(Path("niches/ai-workflows.yaml"))
+          root = Path("artifacts/niche/open-source-voice").resolve()
+          root.mkdir(parents=True, exist_ok=True)
+          scene = media.Scene(
+              headline="A SMALL CHANGE CAN MAKE AGENTS MORE RELIABLE",
+              narration=(
+                  "Give every agent an explicit list of actions it can perform. "
+                  "Check the results before allowing another action, and keep a "
+                  "trace so you can understand the decisions afterward."
+              ),
+          )
+          audio = media.synthesize_scene(scene, config, root / "cache")
+          duration = media._render_scene(scene, audio, root / "kokoro-scene.mp4", config.brand)
+          qc = media._verify_video(root / "kokoro-scene.mp4", duration)
+          (root / "voice-qc.json").write_text(json.dumps({
+              "model": media.VOICE_MODEL, "voice": config.voice, "voice_revision": media.VOICE_REVISION,
+              "source_revision": __import__("os").getenv("GITHUB_SHA"),
+              "audio": audio.name, "duration": duration, "qc": qc,
+              "paid_api": False, "human_listening_review": "PENDING"
+          }, indent=2), encoding="utf-8")
+          PY
+      - name: Upload real Kokoro speech evidence
+        if: github.event_name == 'workflow_dispatch' && inputs.voice_smoke
+        uses: actions/upload-artifact@v4
+        with:
+          name: niche-kokoro-speech-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            artifacts/niche/open-source-voice/kokoro-scene.mp4
+            artifacts/niche/open-source-voice/voice-qc.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Restore content-addressed script and TTS cache
-        if: github.event_name == 'workflow_dispatch' && inputs.confirm_paid_inference
+        if: github.event_name == 'workflow_dispatch' && (inputs.generate_draft || inputs.voice_smoke)
         uses: actions/cache@v4
         with:
           path: artifacts/niche/_cache
@@ -127,9 +185,8 @@ jobs:
           restore-keys: |
             original-niche-${{ runner.os }}-${{ hashFiles('niches/*.yaml') }}-
       - name: Render private draft (never publish)
-        if: github.event_name == 'workflow_dispatch' && inputs.confirm_paid_inference
+        if: github.event_name == 'workflow_dispatch' && inputs.generate_draft
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CONFIG_PATH: ${{ inputs.config_path }}
           EPISODE_TOPIC: ${{ inputs.topic }}
         run: |
@@ -140,7 +197,7 @@ jobs:
           test -n "$(find artifacts/niche -name draft.mp4 -size +0c -print -quit)"
           test -n "$(find artifacts/niche -name manifest.json -size +0c -print -quit)"
       - name: Upload draft for listening and visual review
-        if: github.event_name == 'workflow_dispatch' && inputs.confirm_paid_inference
+        if: github.event_name == 'workflow_dispatch' && inputs.generate_draft
         uses: actions/upload-artifact@v4
         with:
           name: niche-draft-${{ github.sha }}-${{ github.run_id }}
