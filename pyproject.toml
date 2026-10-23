@@ -25,6 +25,12 @@ diarization = ["pyannote.audio>=4.0.7,<5"]
 editorial = ["accelerate>=1.14,<2", "transformers==4.57.3"]
 vision = ["accelerate>=1.14,<2", "transformers==4.57.3"]
 modal = ["huggingface-hub>=1.24,<2", "modal==1.5.5"]
+niche-models = [
+  "torch>=2.6,<3",
+  "transformers==4.57.3",
+  "kokoro==0.9.4",
+  "soundfile>=0.13,<1",
+]
 open-models = [
   "accelerate>=1.14,<2",
   "faster-whisper>=1.2.1,<2",
