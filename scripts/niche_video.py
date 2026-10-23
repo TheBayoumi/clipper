@@ -7,12 +7,12 @@ All external calls are explicit; generated videos remain unpublished drafts.
 from __future__ import annotations
 
 import argparse
-import gc
 import hashlib
 import io
 import json
 import math
 import os
+import sys
 import shutil
 import subprocess
 import tempfile
@@ -29,7 +29,8 @@ SCRIPT_MODEL = "Qwen/Qwen3-1.7B"
 SCRIPT_REVISION = "8d4744f9e13072f4920c326350fa81eedb74eae9"
 VOICE_MODEL = "hexgrad/Kokoro-82M"
 VOICE_REVISION = "v1.0"
-SCRIPT_CONTRACT = "niche-scenes-open-v2"
+SCRIPT_CONTRACT = "niche-scenes-open-v3"
+MAX_SCRIPT_ATTEMPTS = 3
 VOICE_CONTRACT = "kokoro-24khz-wav-v1"
 VOICES = frozenset({"af_heart", "af_bella", "am_adam", "am_michael", "bf_emma"})
 
@@ -153,8 +154,9 @@ def _script_request(config: NicheConfig) -> dict[str, object]:
                     "Write exactly one valid JSON object, no markdown or commentary. "
                     'Schema: {"title": string, "scenes": '
                     '[{"headline": string, "narration": string}]}. '
-                    "Create 3 to 5 scenes totalling 45 to 125 narration words, "
-                    "each scene 6 to 45 words, headline <= 65 characters. "
+                     "Write four distinct scenes, aiming for 80-100 narration words "
+                    "in total, around 20-25 words each. Hard limits: 3-5 scenes, "
+                    "45-125 total words, 6-45 per scene, headline <= 65 chars. "
                     "Start with a clear honest hook, develop useful original "
                     "ideas, finish with a complete payoff. Never invent statistics, "
                     "quotes, or news. Concrete claims may use approved_facts only. "
@@ -177,8 +179,9 @@ def _script_request(config: NicheConfig) -> dict[str, object]:
     }
 
 
-def _local_script_completion(request: dict[str, object]) -> str:
-    """Run the pinned Apache-2.0 Qwen3 model, without proprietary API access."""
+@lru_cache(maxsize=1)
+def _script_pipeline() -> tuple[Any, Any]:
+    """Load Qwen3 weights only once, even when a revision is required."""
     try:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -186,13 +189,20 @@ def _local_script_completion(request: dict[str, object]) -> str:
         raise NicheVideoError(
             "Install the [niche-models] runtime for open-weight inference"
         ) from exc
-
-    torch.manual_seed(42)
     torch.set_num_threads(min(4, os.cpu_count() or 1))
     tokenizer = AutoTokenizer.from_pretrained(SCRIPT_MODEL, revision=SCRIPT_REVISION)
     model = AutoModelForCausalLM.from_pretrained(
         SCRIPT_MODEL, revision=SCRIPT_REVISION, dtype="auto"
     ).eval()
+    return model, tokenizer
+
+
+def _local_script_completion(request: dict[str, object]) -> str:
+    """Generate locally; keep the weights resident for bounded repair attempts."""
+    import torch
+
+    model, tokenizer = _script_pipeline()
+    torch.manual_seed(int(request["seed"]))
     inputs = tokenizer.apply_chat_template(
         request["messages"],
         tokenize=True,
@@ -204,7 +214,7 @@ def _local_script_completion(request: dict[str, object]) -> str:
     with torch.inference_mode():
         output = model.generate(
             **inputs,
-            max_new_tokens=960,
+            max_new_tokens=int(request["max_new_tokens"]),
             do_sample=True,
             temperature=0.7,
             top_p=0.8,
@@ -212,25 +222,106 @@ def _local_script_completion(request: dict[str, object]) -> str:
         )
     output_ids = output[0][inputs["input_ids"].shape[-1] :]
     result = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
-    del model, tokenizer, inputs, output, output_ids
-    gc.collect()
-    if result.startswith("```"):
+    if result.startswith(chr(96) * 3):
         result = "\n".join(result.splitlines()[1:-1]).strip()
     return result
 
 
+def _script_feedback(raw: object, error: Exception) -> str:
+    """Give the local model measured word counts, not only a generic error."""
+    message = str(error)
+    if isinstance(raw, dict) and isinstance(raw.get("scenes"), list):
+        counts = [
+            len(scene["narration"].split())
+            if isinstance(scene, dict) and isinstance(scene.get("narration"), str)
+            else None
+            for scene in raw["scenes"]
+        ]
+        total = sum(count for count in counts if count is not None)
+        message += f"; total_narration_words={total}; scene_words={counts}"
+    return message[:900]
+
+
+def _revision_request(
+    original: dict[str, object], previous: str, error: str
+) -> dict[str, object]:
+    messages = original["messages"]
+    if not isinstance(messages, list):
+        raise NicheVideoError("internal request lost original script context")
+    return {
+        **original,
+        "messages": [
+            *messages,
+            {"role": "assistant", "content": previous[:6000]},
+            {
+                "role": "user",
+                "content": (
+                    "Revise your previous JSON to resolve this exact violation: "
+                    f"{error}. Preserve the original niche, topic, approved facts, "
+                    "honest hook and complete payoff. Do not invent claims. "
+                    "Return JSON only; aim for four scenes of 20-25 narration "
+                    "words each, totalling 80-100 narration words."
+                ),
+            },
+        ],
+    }
+
+
 def generate_episode(config: NicheConfig, cache_root: Path) -> tuple[Episode, str]:
-    request = _script_request(config)
-    digest = _fingerprint({"contract": SCRIPT_CONTRACT, "request": request})
+    original = _script_request(config)
+    digest = _fingerprint({"contract": SCRIPT_CONTRACT, "request": original})
     path = cache_root / "scripts" / f"{digest}.json"
     if path.is_file():
         return Episode.from_json(json.loads(path.read_text(encoding="utf-8"))), digest
-    response = _local_script_completion(request)
-    if not response:
-        raise NicheVideoError("local script model returned no content")
-    episode = Episode.from_json(json.loads(response))
-    _write_atomic(path, json.dumps(episode.to_dict(), ensure_ascii=False, indent=2).encode("utf-8"))
-    return episode, digest
+
+    request = original
+    audit_path = cache_root / "script_diagnostics" / f"{digest}.json"
+    attempts: list[dict[str, object]] = []
+    for attempt in range(1, MAX_SCRIPT_ATTEMPTS + 1):
+        response = _local_script_completion(request)
+        raw: object = None
+        try:
+            if not response:
+                raise NicheVideoError("local script model returned no content")
+            raw = json.loads(response)
+            episode = Episode.from_json(raw)
+        except (json.JSONDecodeError, NicheVideoError) as exc:
+            error = _script_feedback(raw, exc)
+            attempts.append(
+                {
+                    "attempt": attempt,
+                    "accepted": False,
+                    "feedback": error,
+                    "completion": response[:8000],
+                }
+            )
+            _write_atomic(
+                audit_path,
+                json.dumps(attempts, ensure_ascii=False, indent=2).encode("utf-8"),
+            )
+            print(
+                f"Qwen3 validation attempt {attempt}/{MAX_SCRIPT_ATTEMPTS}: {error}",
+                file=sys.stderr,
+            )
+            if attempt == MAX_SCRIPT_ATTEMPTS:
+                raise NicheVideoError(
+                    f"script rejected after {MAX_SCRIPT_ATTEMPTS} attempts: {error}"
+                ) from exc
+            request = _revision_request(original, response, error)
+            continue
+        attempts.append({"attempt": attempt, "accepted": True})
+        _write_atomic(
+            audit_path,
+            json.dumps(attempts, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+        _write_atomic(
+            path,
+            json.dumps(episode.to_dict(), ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+        print(f"Qwen3 script accepted on attempt {attempt}/{MAX_SCRIPT_ATTEMPTS}")
+        return episode, digest
+
+    raise NicheVideoError("bounded script generation unexpectedly exhausted")
 
 
 @lru_cache(maxsize=1)
