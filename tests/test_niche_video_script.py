@@ -158,6 +158,59 @@ def test_generation_rejects_bad_completions(
         nv.generate_episode(config, tmp_path)
 
 
+def test_failed_word_count_receives_targeted_repair(
+    config: nv.NicheConfig,
+    episode: nv.Episode,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    short = episode.to_dict()
+    for scene in short["scenes"]:
+        scene["narration"] = "One two three four five six seven"
+    model = Mock(side_effect=[json.dumps(short), json.dumps(episode.to_dict())])
+    monkeypatch.setattr(nv, "_local_script_completion", model)
+
+    result, fingerprint = nv.generate_episode(config, tmp_path)
+    assert result == episode
+    assert model.call_count == 2
+    revision = model.call_args_list[1].args[0]
+    assert "total_narration_words=28" in str(revision)
+    assert config.topic in str(revision)
+    assert (tmp_path / "scripts" / f"{fingerprint}.json").is_file()
+    audit = json.loads(
+        (tmp_path / "script_diagnostics" / f"{fingerprint}.json").read_text()
+    )
+    assert [item["accepted"] for item in audit] == [False, True]
+    nv.generate_episode(config, tmp_path)
+    assert model.call_count == 2
+
+
+def test_repair_exhaustion_preserves_original_context(
+    config: nv.NicheConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with_fact = nv.NicheConfig(
+        niche=config.niche,
+        audience=config.audience,
+        brand=config.brand,
+        voice=config.voice,
+        facts=("The only approved statement",),
+        topic="Responsible AI agents",
+    )
+    model = Mock(return_value="not json")
+    monkeypatch.setattr(nv, "_local_script_completion", model)
+    with pytest.raises(nv.NicheVideoError, match="after 3 attempts"):
+        nv.generate_episode(with_fact, tmp_path)
+    assert model.call_count == nv.MAX_SCRIPT_ATTEMPTS
+    last = model.call_args_list[-1].args[0]
+    assert "The only approved statement" in str(last)
+    assert "Responsible AI agents" in str(last)
+    assert "Revise your previous JSON" in str(last)
+    assert not list((tmp_path / "scripts").glob("*.json"))
+    reports = list((tmp_path / "script_diagnostics").glob("*.json"))
+    assert len(reports) == 1
+    assert len(json.loads(reports[0].read_text())) == 3
+
+
 def test_tts_content_cache(
     config: nv.NicheConfig,
     episode: nv.Episode,
