@@ -225,3 +225,20 @@ bounded inference provider instead of an unbounded `inspect.remote()` call.
 The source-wide matrix **requires a successful smoke job first**, avoiding
 simultaneous 2×L4 allocation and expensive qualification after a failed smoke.
 None of these changes certify a source, model observation, or human gold.
+
+
+## Isolated GPU qualification reliability
+
+The source-wide validation workflow now schedules only one two-L4 source worker
+at a time to avoid simultaneously requesting four L4s during cold starts.
+The Clipper Modal worker declares independent startup and inference deadlines,
+and emits explicit model-loading markers and readiness wall-clock measurements.
+Timeout/cancellation uncertainty still fails closed; no unconfirmed remote
+invocation may be retried or counted as complete.
+
+Completed inference checkpoints are retained by exact commit SHA and source key.
+Clipper validates the cached source/model/prompt identity and observation hashes
+before reuse. These GPU outputs are proposals only: a passed neural qualification
+does not manufacture independent gold, and review-manifest completeness by
+itself is not an accuracy metric. Independent gold is a frozen benchmark
+qualification input, not a human-in-the-loop production dependency.

@@ -135,3 +135,32 @@ def test_modal_readiness_rejects_non_object_and_unbounded_deadline() -> None:
     )
     with pytest.raises(RuntimeError, match="non-object"):
         bounded_modal_readiness(bad, stage="gpu_smoke", deadline_seconds=60)
+
+
+
+def test_modal_readiness_reports_wall_time_without_changing_remote_result(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from clipper_engine.inference.modal import bounded_modal_readiness
+
+    call = FakeCall([{"deployed_git_sha": "a" * 40, "gpu_count": 2}])
+    worker = SimpleNamespace(ready=SimpleNamespace(spawn=lambda: call))
+    result = bounded_modal_readiness(worker, stage="source_wide", deadline_seconds=120)
+    assert result["deployed_git_sha"] == "a" * 40
+    assert 0 <= result["readiness_wall_seconds"] <= 120
+    assert "wall_seconds=" in capsys.readouterr().out
+
+
+def test_modal_readiness_unconfirmed_cancellation_has_structured_evidence(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from clipper_engine.inference.modal import bounded_modal_readiness
+
+    call = FakeCall([TimeoutError(), TimeoutError()])
+    worker = SimpleNamespace(ready=SimpleNamespace(spawn=lambda: call))
+    with pytest.raises(RuntimeError, match="terminal state unconfirmed"):
+        bounded_modal_readiness(worker, stage="source_wide", deadline_seconds=120)
+    output = capsys.readouterr().out
+    assert '"event": "modal_readiness_timeout"' in output
+    assert '"event": "modal_readiness_cancellation_unconfirmed"' in output
+    assert call.cancelled and call.terminate_containers

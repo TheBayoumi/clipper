@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
+import time
 from typing import Any
 
 from .vision import VISION_MODEL_ID, VisionSettings
@@ -15,6 +17,7 @@ def bounded_modal_readiness(
     """Bound model cold-start, preserving strict remote cancellation evidence."""
     if not 0 < deadline_seconds <= 900:
         raise ValueError("Modal readiness deadline must be between 0 and 900 seconds")
+    started = time.monotonic()
     print(
         f"MODAL_READINESS_STARTED stage={stage} deadline_seconds={deadline_seconds}",
         flush=True,
@@ -23,10 +26,34 @@ def bounded_modal_readiness(
     try:
         ready = call.get(timeout=deadline_seconds)
     except TimeoutError as exc:
+        print(
+            json.dumps(
+                {
+                    "event": "modal_readiness_timeout",
+                    "stage": stage,
+                    "elapsed_seconds": round(time.monotonic() - started, 3),
+                    "deadline_seconds": deadline_seconds,
+                    "cancellation": "requested",
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
         try:
             call.cancel(terminate_containers=True)
             call.get(timeout=30)
         except TimeoutError as terminal_error:
+            print(
+                json.dumps(
+                    {
+                        "event": "modal_readiness_cancellation_unconfirmed",
+                        "stage": stage,
+                        "reason": "terminal_poll_timeout",
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
             raise RuntimeError(
                 f"Modal {stage} readiness cancellation terminal state unconfirmed"
             ) from terminal_error
@@ -44,12 +71,15 @@ def bounded_modal_readiness(
         raise RuntimeError(f"Modal {stage} readiness exceeded {deadline_seconds:g}s") from exc
     if not isinstance(ready, dict):
         raise RuntimeError(f"Modal {stage} readiness returned non-object evidence")
+    evidence = dict(ready)
+    evidence["readiness_wall_seconds"] = round(time.monotonic() - started, 3)
     print(
         f"MODAL_READINESS_COMPLETED stage={stage} "
-        f"cuda={ready.get('cuda_available')} gpu_count={ready.get('gpu_count')}",
+        f"cuda={evidence.get('cuda_available')} gpu_count={evidence.get('gpu_count')} "
+        f"wall_seconds={evidence['readiness_wall_seconds']}",
         flush=True,
     )
-    return ready
+    return evidence
 
 
 class ModalVisionProvider:

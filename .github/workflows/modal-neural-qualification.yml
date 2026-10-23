@@ -207,7 +207,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.source_wide == true }}
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 1
       matrix:
         source: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.source_key != 'all' && inputs.source_key != '' && format('["{0}"]', inputs.source_key) || '["ghost_fight","convenience_store","traffic_chase","nightclub","makarov_chase","refusing_orders"]') }}
     runs-on: ubuntu-24.04
@@ -309,6 +309,12 @@ jobs:
               raise RuntimeError('source certificate missing original rational frame timing')
           print('SOURCE_IDENTITY_PASS', name, source['sha256'], clock['nominal_rate'])
           PY
+      - name: Restore immutable source-bound GPU batches
+        id: gpu-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: neural-source-${{ matrix.source }}/neural_checkpoints
+          key: clipper-gpu-batches-${{ github.sha }}-${{ matrix.source }}
       - name: Analyze complete certified source via Clipper and isolated Qwen3-VL
         shell: bash
         run: |
@@ -339,6 +345,12 @@ jobs:
           assert report['requires_independent_source_review'] is True
           print('SOURCE_WIDE_GPU_EVIDENCE_PASS', report['source_key'], report['coverage'])
           PY
+      - name: Preserve completed source-bound GPU batches
+        if: always() && steps.gpu-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: neural-source-${{ matrix.source }}/neural_checkpoints
+          key: clipper-gpu-batches-${{ github.sha }}-${{ matrix.source }}
       - name: Retain source-wide model output and independent review requirements
         if: always()
         uses: actions/upload-artifact@v4

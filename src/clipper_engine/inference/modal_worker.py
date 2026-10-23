@@ -112,6 +112,8 @@ def _strict_observations(raw: dict[str, Any], timestamps: list[float]) -> list[d
     memory=32768,
     volumes={"/models": model_cache},
     timeout=600,
+    startup_timeout=900,
+    scaledown_window=120,
     max_containers=1,
 )
 class VisionModel:
@@ -120,6 +122,11 @@ class VisionModel:
         import torch
         from transformers import AutoModelForImageTextToText, AutoProcessor
 
+        started = time.perf_counter()
+        print(
+            f"MODAL_MODEL_LOAD_STARTED model={VISION_MODEL_ID} revision={VISION_REVISION}",
+            flush=True,
+        )
         self.processor = AutoProcessor.from_pretrained(VISION_MODEL_ID, revision=VISION_REVISION)
         self.model = AutoModelForImageTextToText.from_pretrained(
             VISION_MODEL_ID,
@@ -131,6 +138,11 @@ class VisionModel:
         self.model.generation_config.temperature = None
         self.model.generation_config.top_p = None
         self.model.generation_config.top_k = None
+        print(
+            f"MODAL_MODEL_LOAD_COMPLETED wall_seconds={time.perf_counter() - started:.3f} "
+            f"cuda_count={torch.cuda.device_count()}",
+            flush=True,
+        )
 
     @modal.method()
     def ready(self) -> dict[str, Any]:

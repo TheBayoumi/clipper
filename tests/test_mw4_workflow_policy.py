@@ -139,3 +139,23 @@ def test_gpu_qualification_resolves_unexpired_certified_source_without_stale_run
         assert download["with"]["run-id"] == "${{ steps.certified-source.outputs.run_id }}"
         assert "39749647361" not in str(download)
         assert "39827390899" not in str(download)
+
+
+
+def test_full_gpu_qualification_bounds_parallel_cold_starts_and_caches_by_source_sha() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/modal-neural-qualification.yml").read_text()
+    )
+    job = workflow["jobs"]["neural-source-wide-review"]
+    assert job["strategy"]["max-parallel"] == 1
+    steps = job["steps"]
+    restore = next(step for step in steps if step.get("id") == "gpu-restore")
+    save = next(step for step in steps if step.get("name") == "Preserve completed source-bound GPU batches")
+    assert restore["uses"] == "actions/cache/restore@v4"
+    assert save["uses"] == "actions/cache/save@v4"
+    assert save["if"] == "always() && steps.gpu-restore.outputs.cache-hit != 'true'"
+    assert restore["with"]["key"] == save["with"]["key"]
+    assert "github.sha" in restore["with"]["key"]
+    assert "matrix.source" in restore["with"]["key"]
+    assert restore["with"]["path"] == save["with"]["path"]
+    assert any("SOURCE_WIDE_GPU_EVIDENCE_PASS" in step.get("run", "") for step in steps)
