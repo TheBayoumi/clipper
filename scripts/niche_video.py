@@ -57,7 +57,9 @@ class NicheConfig:
             raise NicheVideoError("niche config must be an object")
         allowed = {"niche", "audience", "brand", "voice", "facts", "topic"}
         if set(raw) - allowed:
-            raise NicheVideoError(f"unsupported niche configuration keys: {sorted(set(raw) - allowed)}")
+            raise NicheVideoError(
+                f"unsupported niche configuration keys: {sorted(set(raw) - allowed)}"
+            )
         facts = raw.get("facts", [])
         if not isinstance(facts, list) or len(facts) > 12:
             raise NicheVideoError("facts must be a list of at most twelve verified statements")
@@ -93,7 +95,7 @@ class Episode:
             raise NicheVideoError("episode schema mismatch")
         scenes_raw = raw["scenes"]
         if not isinstance(scenes_raw, list) or not 3 <= len(scenes_raw) <= 5:
-            raise NicheVideoError("episode requires 3–5 distinct scenes")
+            raise NicheVideoError("episode requires 3-5 distinct scenes")
         scenes: list[Scene] = []
         for item in scenes_raw:
             if not isinstance(item, dict) or set(item) != {"headline", "narration"}:
@@ -101,10 +103,10 @@ class Episode:
             headline = _text(item["headline"], "headline", 65)
             narration = _text(item["narration"], "narration", 400)
             if not 6 <= len(narration.split()) <= 45:
-                raise NicheVideoError("scene narration must contain 6–45 words")
+                raise NicheVideoError("scene narration must contain 6-45 words")
             scenes.append(Scene(headline=headline, narration=narration))
         if not 45 <= sum(len(scene.narration.split()) for scene in scenes) <= 125:
-            raise NicheVideoError("episode narration must contain 45–125 words")
+            raise NicheVideoError("episode narration must contain 45-125 words")
         return cls(title=_text(raw["title"], "title", 100), scenes=tuple(scenes))
 
     def to_dict(self) -> dict[str, object]:
@@ -151,7 +153,8 @@ def _openai_post(path: str, payload: dict[str, object], *, audio: bool = False) 
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        # The URL is always prefixed with the fixed HTTPS OpenAI API host.
+        with urllib.request.urlopen(request, timeout=120) as response:  # noqa: S310
             result = response.read()
     except urllib.error.HTTPError as exc:
         raise NicheVideoError(f"OpenAI {path} returned HTTP {exc.code}") from exc
@@ -182,8 +185,8 @@ def _script_request(config: NicheConfig) -> dict[str, object]:
                 "content": (
                     "Create one original, concise, useful vertical-video episode. "
                     "Return only the requested JSON. Write a surprising but honest first "
-                    "line, substantive middle and a resolved ending. 3–5 scenes, 45–125 "
-                    "narration words total, 6–45 words per scene. Never include invented "
+                    "line, substantive middle and a resolved ending. 3-5 scenes, 45-125 "
+                    "narration words total, 6-45 words per scene. Never include invented "
                     "statistics, quotations, product promises, or news. Treat the supplied "
                     "facts as the only approved source for concrete factual claims. "
                     "If no facts are supplied, teach general methods without unverifiable "
