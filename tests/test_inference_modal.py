@@ -137,7 +137,6 @@ def test_modal_readiness_rejects_non_object_and_unbounded_deadline() -> None:
         bounded_modal_readiness(bad, stage="gpu_smoke", deadline_seconds=60)
 
 
-
 def test_modal_readiness_reports_wall_time_without_changing_remote_result(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
