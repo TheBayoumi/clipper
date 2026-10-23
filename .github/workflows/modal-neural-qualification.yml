@@ -76,7 +76,9 @@ jobs:
             # slowly and exhausted the 600s install ceiling on 2026-10-23.
             # Use Ubuntu's official signed package archive, not a binary from
             # an unverified release mirror. Applies to both .list and deb822.
-            for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            # Ubuntu 24.04 GitHub runners also use mirror+file:/etc/apt/apt-mirrors.txt.
+            # Rewrite that mirrorlist as well; changing .sources alone leaves Azure active.
+            for source_file in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
               if [ -f "$source_file" ]; then
                 sudo sed -i \
                   -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
@@ -218,7 +220,9 @@ jobs:
             # slowly and exhausted the 600s install ceiling on 2026-10-23.
             # Use Ubuntu's official signed package archive, not a binary from
             # an unverified release mirror. Applies to both .list and deb822.
-            for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            # Ubuntu 24.04 GitHub runners also use mirror+file:/etc/apt/apt-mirrors.txt.
+            # Rewrite that mirrorlist as well; changing .sources alone leaves Azure active.
+            for source_file in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
               if [ -f "$source_file" ]; then
                 sudo sed -i \
                   -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
