@@ -214,6 +214,25 @@ Pytest enforces a repository-wide coverage floor of **95%**. CI runs the quality
 
 Production acceptance additionally requires exact-head deployment evidence, current model/schema smoke tests, a current end-to-end render, technical QC, multimodal final QC, and review of the actual MP4. Historical renders do not prove the current head.
 
+## Original niche video (prototype)
+
+An independent original-content path now exists on
+`feat/unified-niche-tts`. It does not require Reach/Whop campaigns or
+third-party source video. Niche configuration:
+`niches/ai-workflows.yaml`. Test its configuration without paid calls:
+
+```bash
+python scripts/niche_video.py --config niches/ai-workflows.yaml --validate-only
+```
+
+The GitHub Actions workflow `Original niche video draft` can generate
+a real TTS-narrated 1080x1920 H.264/AAC draft when manually dispatched
+with `confirm_paid_inference=true` and an `OPENAI_API_KEY` repository
+secret. It produces an MP4 and provenance/review manifest as Actions artifacts.
+A successful render is not publication authorization, and the current
+scene-card visuals do not yet meet final editorial quality requirements.
+See `plans/unified-niche-video.md` for the tested scope and remaining gates.
+
 ## Publication boundary
 
 Clipper stops at production artifacts and QC evidence. It does not automatically upload to TikTok, Instagram, YouTube Shorts, Whop, or another campaign platform. Publishing/submission is a separate explicitly authorized action after the final media and campaign/account requirements are reviewed.
