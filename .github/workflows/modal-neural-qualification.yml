@@ -162,6 +162,7 @@ jobs:
           if-no-files-found: warn
 
   neural-source-wide-review:
+    needs: neural-source-gpu-smoke
     name: Source-wide proposed visual evidence (${{ matrix.source }})
     # Validation-only and deliberately opt-in due cost. Never deploy or modify
     # shared Modal workers or mutate source; use certified, hash-reverified proxies.

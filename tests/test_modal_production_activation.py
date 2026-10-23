@@ -60,12 +60,14 @@ def test_ephemeral_gpu_scope_reuses_one_verified_worker_and_closes(
         def __init__(self) -> None:
             history.append("initialize_worker")
             self.ready = SimpleNamespace(
-                remote=lambda: {
-                    "deployed_git_sha": SHA,
-                    "model_id": vision.VISION_MODEL_ID,
-                    "cuda_available": True,
-                    "gpu_count": 2,
-                }
+                spawn=lambda: SimpleNamespace(
+                    get=lambda timeout: {
+                        "deployed_git_sha": SHA,
+                        "model_id": vision.VISION_MODEL_ID,
+                        "cuda_available": True,
+                        "gpu_count": 2,
+                    }
+                )
             )
 
     fake_module = SimpleNamespace(
@@ -117,12 +119,14 @@ def test_invalid_cuda_readiness_never_falls_back_to_cpu(
 
     worker = SimpleNamespace(
         ready=SimpleNamespace(
-            remote=lambda: {
-                "deployed_git_sha": SHA,
-                "model_id": vision.VISION_MODEL_ID,
-                "cuda_available": False,
-                "gpu_count": 0,
-            }
+            spawn=lambda: SimpleNamespace(
+                get=lambda timeout: {
+                    "deployed_git_sha": SHA,
+                    "model_id": vision.VISION_MODEL_ID,
+                    "cuda_available": False,
+                    "gpu_count": 0,
+                }
+            )
         )
     )
     monkeypatch.setitem(

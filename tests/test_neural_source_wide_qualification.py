@@ -35,13 +35,15 @@ def _qualified_stub(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     class FakeWorker:
         def __init__(self) -> None:
             self.ready = SimpleNamespace(
-                remote=lambda: {
-                    "deployed_git_sha": "a" * 40,
-                    "model_id": vision.VISION_MODEL_ID,
-                    "revision": vision.VISION_REVISION,
-                    "cuda_available": True,
-                    "gpu_count": 2,
-                }
+                spawn=lambda: SimpleNamespace(
+                    get=lambda timeout: {
+                        "deployed_git_sha": "a" * 40,
+                        "model_id": vision.VISION_MODEL_ID,
+                        "revision": vision.VISION_REVISION,
+                        "cuda_available": True,
+                        "gpu_count": 2,
+                    }
+                )
             )
             self.inspect = SimpleNamespace(spawn=lambda *_: None)
 
@@ -152,3 +154,35 @@ def test_source_wide_refuses_stale_deployed_identity_before_gpu(
             str(tmp_path),
         )
     assert called == []
+
+
+def test_source_wide_readiness_failure_retains_source_bound_artifact(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    called = _qualified_stub(monkeypatch)
+    from clipper_engine.inference import modal
+
+    def readiness_failure(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("Modal source_wide readiness exceeded 900s")
+
+    monkeypatch.setattr(modal, "bounded_modal_readiness", readiness_failure)
+    source = tmp_path / "ghost_fight.mp4"
+    source.write_bytes(b"certified proxy stub")
+    qa = tmp_path / "ghost_fight.source_qa.json"
+    qa.write_text("{}", encoding="utf-8")
+    output = tmp_path / "qualification"
+    with pytest.raises(RuntimeError, match="readiness exceeded"):
+        modal_worker.source_scout(
+            str(source),
+            str(qa),
+            "campaigns/campaign-moments-mw4.json",
+            str(output),
+        )
+    failure = json.loads((output / "neural_readiness_failure.json").read_text())
+    assert failure["status"] == "GPU_SOURCE_WIDE_READINESS_REJECTED"
+    assert failure["stage"] == "gpu_model_readiness"
+    assert failure["source_key"] == "ghost_fight"
+    assert failure["deployed_git_sha"] == "a" * 40
+    assert failure["may_create_verified_outcomes"] is False
+    assert called == ["certify"]
+    assert not (output / "source_wide_gpu_qualification.json").exists()

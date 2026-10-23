@@ -92,3 +92,46 @@ def test_modal_vision_refuses_non_object_response(monkeypatch: pytest.MonkeyPatc
     call = FakeCall([{"other": True}])
     provider = _provider(monkeypatch, call)
     assert provider.inspect({}) == {"other": True}  # Parser owns schema validation.
+
+
+def test_modal_readiness_is_bounded_and_source_stamped() -> None:
+    from clipper_engine.inference.modal import bounded_modal_readiness
+
+    call = FakeCall([{"deployed_git_sha": "a" * 40, "gpu_count": 2}])
+    worker = SimpleNamespace(ready=SimpleNamespace(spawn=lambda: call))
+    ready = bounded_modal_readiness(worker, stage="gpu_smoke", deadline_seconds=120)
+    assert ready["gpu_count"] == 2
+    assert not call.cancelled
+
+
+def test_modal_readiness_timeout_cancels_container_and_fails_closed() -> None:
+    from clipper_engine.inference.modal import bounded_modal_readiness
+
+    call = FakeCall([TimeoutError(), InputCancellation("cancelled")])
+    worker = SimpleNamespace(ready=SimpleNamespace(spawn=lambda: call))
+    with pytest.raises(RuntimeError, match="gpu_smoke readiness exceeded 120s"):
+        bounded_modal_readiness(worker, stage="gpu_smoke", deadline_seconds=120)
+    assert call.cancelled and call.terminate_containers
+
+
+def test_modal_readiness_unconfirmed_cancellation_is_rejected() -> None:
+    from clipper_engine.inference.modal import bounded_modal_readiness
+
+    call = FakeCall([TimeoutError(), TimeoutError()])
+    worker = SimpleNamespace(ready=SimpleNamespace(spawn=lambda: call))
+    with pytest.raises(RuntimeError, match="readiness cancellation terminal state unconfirmed"):
+        bounded_modal_readiness(worker, stage="source_wide", deadline_seconds=120)
+    assert call.cancelled and call.terminate_containers
+
+
+def test_modal_readiness_rejects_non_object_and_unbounded_deadline() -> None:
+    from clipper_engine.inference.modal import bounded_modal_readiness
+
+    worker = SimpleNamespace(ready=SimpleNamespace(spawn=lambda: FakeCall([{"ok": True}])))
+    with pytest.raises(ValueError, match="readiness deadline"):
+        bounded_modal_readiness(worker, stage="production_source", deadline_seconds=901)
+    bad = SimpleNamespace(
+        ready=SimpleNamespace(spawn=lambda: SimpleNamespace(get=lambda timeout: None))
+    )
+    with pytest.raises(RuntimeError, match="non-object"):
+        bounded_modal_readiness(bad, stage="gpu_smoke", deadline_seconds=60)

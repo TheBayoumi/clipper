@@ -207,3 +207,21 @@ The independent six-source human review file is still marked
 actual independent full A/V playback, signed annotations, negative examples,
 source hashes, rational frame-rate evidence and cinematic rereviews exist. No
 synthetic test fixture, GPU proposal or contact sheet substitutes for this.
+
+## Cold-start readiness and GPU quota isolation (2026-10-23)
+
+At `fc92620`, both the one-frame smoke and the Convenience Store source-wide
+qualification started Modal apps but never produced readiness receipts. They
+ran concurrently, each requesting **two L4 GPUs**, and were eventually
+cancelled by their GitHub job limits. This does not establish whether GPU
+quota, cold-start model loading, or a control-plane failure was responsible.
+
+All three canonical Clipper GPU entrypoints now bound `ready.spawn().get()`:
+900 seconds for the smoke and source-wide qualification, and the configured
+480 seconds for MW4 production. A timeout requests GPU container termination
+and refuses unknown terminal states. Source-wide and smoke retain source-bound
+readiness failure artifacts. The one-frame smoke also uses Clipper's existing
+bounded inference provider instead of an unbounded `inspect.remote()` call.
+The source-wide matrix **requires a successful smoke job first**, avoiding
+simultaneous 2×L4 allocation and expensive qualification after a failed smoke.
+None of these changes certify a source, model observation, or human gold.

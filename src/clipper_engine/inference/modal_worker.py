@@ -264,6 +264,7 @@ def smoke(
     """Validation-only live GPU smoke on one pre-certified source-clock frame."""
     from pathlib import Path
 
+    from clipper_engine.inference.modal import bounded_modal_readiness
     from clipper_engine.inference.vision import _parse_batch
 
     if not 0 < max_estimated_usd <= 1.0:
@@ -288,7 +289,25 @@ def smoke(
     _validate_request(payload)
     started = time.perf_counter()
     worker = VisionModel()
-    ready = worker.ready.remote()
+    try:
+        ready = bounded_modal_readiness(worker, stage="gpu_smoke", deadline_seconds=900)
+    except Exception as exc:
+        Path(output_path).write_text(
+            json.dumps(
+                {
+                    "status": "GPU_SMOKE_READINESS_REJECTED",
+                    "stage": "gpu_model_readiness",
+                    "reason": type(exc).__name__,
+                    "detail": str(exc)[:500],
+                    "source_identity": identity,
+                    "deployed_git_sha": DEPLOYED_GIT_SHA,
+                    "may_create_verified_outcomes": False,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        raise
     if (
         ready.get("deployed_git_sha") != DEPLOYED_GIT_SHA
         or ready.get("model_id") != VISION_MODEL_ID
@@ -297,7 +316,36 @@ def smoke(
         or ready.get("gpu_count", 0) < 2
     ):
         raise RuntimeError("neural GPU model readiness/identity qualification failed")
-    result = worker.inspect.remote(payload)
+    from clipper_engine.inference.modal import ModalVisionProvider
+    from clipper_engine.inference.vision import VisionSettings
+
+    try:
+        result = ModalVisionProvider(
+            VisionSettings(
+                enabled=True,
+                app_name=APP_NAME,
+                deployed_sha=DEPLOYED_GIT_SHA,
+                deadline_seconds=180.0,
+            ),
+            worker=worker,
+        ).inspect(payload)
+    except Exception as exc:
+        Path(output_path).write_text(
+            json.dumps(
+                {
+                    "status": "GPU_SMOKE_INFERENCE_REJECTED",
+                    "stage": "gpu_frame_inference",
+                    "reason": type(exc).__name__,
+                    "detail": str(exc)[:500],
+                    "source_identity": identity,
+                    "deployed_git_sha": DEPLOYED_GIT_SHA,
+                    "may_create_verified_outcomes": False,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        raise
     observations, gpu_seconds, gpu_only_cost = _parse_batch(
         result, identity=identity, requested=(at,), deployed_sha=DEPLOYED_GIT_SHA
     )
@@ -347,7 +395,7 @@ def source_scout(
     from pathlib import Path
 
     from clipper_engine.gameplay import analysis, neural_evidence
-    from clipper_engine.inference.modal import ModalVisionProvider
+    from clipper_engine.inference.modal import ModalVisionProvider, bounded_modal_readiness
     from clipper_engine.inference.vision import VisionSettings, analyze_source
     from clipper_engine.profiles import load_profile
     from clipper_engine.sources import qa as source_qa
@@ -391,8 +439,28 @@ def source_scout(
     )
     config["capabilities"]["neural_visual_events"] = capability
     settings = VisionSettings.from_profile(config)
+    output.mkdir(parents=True, exist_ok=True)
     worker = VisionModel()
-    ready = worker.ready.remote()
+    try:
+        ready = bounded_modal_readiness(worker, stage="source_wide", deadline_seconds=900)
+    except Exception as exc:
+        (output / "neural_readiness_failure.json").write_text(
+            json.dumps(
+                {
+                    "status": "GPU_SOURCE_WIDE_READINESS_REJECTED",
+                    "stage": "gpu_model_readiness",
+                    "reason": type(exc).__name__,
+                    "detail": str(exc)[:500],
+                    "source_key": source_key,
+                    "source_sha256": identity["sha256"],
+                    "deployed_git_sha": DEPLOYED_GIT_SHA,
+                    "may_create_verified_outcomes": False,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        raise
     if (
         ready.get("deployed_git_sha") != DEPLOYED_GIT_SHA
         or ready.get("model_id") != VISION_MODEL_ID

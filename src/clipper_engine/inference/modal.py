@@ -9,6 +9,49 @@ from typing import Any
 from .vision import VISION_MODEL_ID, VisionSettings
 
 
+def bounded_modal_readiness(
+    worker: Any, *, stage: str, deadline_seconds: float = 900.0
+) -> dict[str, Any]:
+    """Bound model cold-start, preserving strict remote cancellation evidence."""
+    if not 0 < deadline_seconds <= 900:
+        raise ValueError("Modal readiness deadline must be between 0 and 900 seconds")
+    print(
+        f"MODAL_READINESS_STARTED stage={stage} deadline_seconds={deadline_seconds}",
+        flush=True,
+    )
+    call = worker.ready.spawn()
+    try:
+        ready = call.get(timeout=deadline_seconds)
+    except TimeoutError as exc:
+        try:
+            call.cancel(terminate_containers=True)
+            call.get(timeout=30)
+        except TimeoutError as terminal_error:
+            raise RuntimeError(
+                f"Modal {stage} readiness cancellation terminal state unconfirmed"
+            ) from terminal_error
+        except Exception as terminal_error:
+            if type(terminal_error).__name__ not in {
+                "InputCancellation",
+                "FunctionTimeoutError",
+                "RemoteError",
+                "ExecutionError",
+                "InternalFailure",
+            }:
+                raise RuntimeError(
+                    f"Modal {stage} readiness cancellation terminal state unconfirmed"
+                ) from terminal_error
+        raise RuntimeError(f"Modal {stage} readiness exceeded {deadline_seconds:g}s") from exc
+    if not isinstance(ready, dict):
+        raise RuntimeError(f"Modal {stage} readiness returned non-object evidence")
+    print(
+        f"MODAL_READINESS_COMPLETED stage={stage} "
+        f"cuda={ready.get('cuda_available')} gpu_count={ready.get('gpu_count')}",
+        flush=True,
+    )
+    return ready
+
+
 class ModalVisionProvider:
     def __init__(self, settings: VisionSettings, *, worker: Any | None = None) -> None:
         self.settings = settings
@@ -32,7 +75,11 @@ class ModalVisionProvider:
         self._app_scope.__enter__()
         try:
             self.worker = worker_module.VisionModel()
-            ready = self.worker.ready.remote()
+            ready = bounded_modal_readiness(
+                self.worker,
+                stage="production_source",
+                deadline_seconds=min(900.0, self.settings.deadline_seconds),
+            )
             if (
                 ready.get("deployed_git_sha") != self.settings.deployed_sha
                 or ready.get("model_id") != VISION_MODEL_ID

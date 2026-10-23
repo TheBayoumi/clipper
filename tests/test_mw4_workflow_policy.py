@@ -86,6 +86,7 @@ def test_gpu_source_wide_can_validate_one_source_before_six_source_expense() -> 
         "refusing_orders",
     }
     source_job = workflow["jobs"]["neural-source-wide-review"]
+    assert source_job["needs"] == "neural-source-gpu-smoke"
     matrix = source_job["strategy"]["matrix"]["source"]
     assert "inputs.source_key" in matrix
     assert "fromJSON" in matrix
