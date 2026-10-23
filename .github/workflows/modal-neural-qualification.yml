@@ -97,10 +97,31 @@ jobs:
           command -v ffprobe || { echo '::error::FFPROBE_NOT_AVAILABLE'; exit 1; }
       - name: Install canonical Clipper inference runtime
         run: python -m pip install -e '.[modal]'
-      - name: Retrieve previous certified analysis proxy, not 4K master
+      - name: Resolve current unexpired certified MW4 source artifact
+        id: certified-source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_KEY: ghost_fight
+        run: |
+          set -euo pipefail
+          artifact_name="MW4-qualification-source-${SOURCE_KEY}"
+          run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100" \
+            --jq '[.artifacts[] | select(.name == "'"${artifact_name}"'" and .expired == false and .workflow_run.head_branch == "'"${GITHUB_REF_NAME}"'")] | sort_by(.created_at) | last | .workflow_run.id // empty')"
+          if [[ -z "$run_id" ]]; then
+            echo "::error::CERTIFIED_SOURCE_ARTIFACT_UNAVAILABLE: ${artifact_name} has no unexpired artifact on ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          run_name="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '.name')"
+          if [[ "$run_name" != 'MW4 production qualification' ]]; then
+            echo "::error::CERTIFIED_SOURCE_RUN_INVALID: ${run_id} (${run_name})"
+            exit 1
+          fi
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+      - name: Retrieve certified analysis proxy, not 4K master
         uses: actions/download-artifact@v4
         with:
-          run-id: 39749647361
+          run-id: ${{ steps.certified-source.outputs.run_id }}
           github-token: ${{ github.token }}
           name: MW4-qualification-source-ghost_fight
           path: raw_sources
@@ -241,10 +262,31 @@ jobs:
           command -v ffprobe || { echo '::error::FFPROBE_UNAVAILABLE'; exit 1; }
       - name: Install Clipper and Modal validation dependencies
         run: python -m pip install -e '.[mw4,modal]'
-      - name: Retrieve immutable certified MediaSilo analysis proxy
+      - name: Resolve current unexpired certified MW4 source artifact
+        id: certified-source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_KEY: ${{ matrix.source }}
+        run: |
+          set -euo pipefail
+          artifact_name="MW4-qualification-source-${SOURCE_KEY}"
+          run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100" \
+            --jq '[.artifacts[] | select(.name == "'"${artifact_name}"'" and .expired == false and .workflow_run.head_branch == "'"${GITHUB_REF_NAME}"'")] | sort_by(.created_at) | last | .workflow_run.id // empty')"
+          if [[ -z "$run_id" ]]; then
+            echo "::error::CERTIFIED_SOURCE_ARTIFACT_UNAVAILABLE: ${artifact_name} has no unexpired artifact on ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          run_name="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '.name')"
+          if [[ "$run_name" != 'MW4 production qualification' ]]; then
+            echo "::error::CERTIFIED_SOURCE_RUN_INVALID: ${run_id} (${run_name})"
+            exit 1
+          fi
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+      - name: Retrieve certified analysis proxy, not 4K master
         uses: actions/download-artifact@v4
         with:
-          run-id: ${{ matrix.source == 'refusing_orders' && 39749647361 || 39827390899 }}
+          run-id: ${{ steps.certified-source.outputs.run_id }}
           github-token: ${{ github.token }}
           name: MW4-qualification-source-${{ matrix.source }}
           path: raw_sources
