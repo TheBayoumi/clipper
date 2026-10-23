@@ -29,16 +29,17 @@ their contracts, not bypassing them.
 ## Implemented first vertical slice
 
 * Niche/topic/audience/voice configuration in `niches/ai-workflows.yaml`.
-* Schema-constrained script generation from approved facts; fail on incomplete
-  generation, wrong scene counts, overly long text, missing credentials.
+* Validated JSON script generation using pinned local Qwen3-1.7B weights and approved
+  facts; fail closed on invalid output, wrong scene counts and overly long text.
 * Content-addressed script and TTS caching with atomic writes.
-* TTS generation from OpenAI's speech API, then 1080x1920 H.264/AAC
-  branded scene-card rendering on GitHub Actions CPU.
+* Kokoro-82M open-weight English speech in cached 24 kHz mono WAV, then
+  1080x1920 H.264/AAC branded scene-card rendering on GitHub Actions CPU.
 * Independent ffprobe stream/duration checks and full FFmpeg decode.
 * Signed-off-by-machine draft manifest (source revision, request hash,
   media SHA256, AI voice disclosure). Publication is **never automatic**.
-* GitHub-only preflight on branch pushes; paid generation only on an explicit
-  manual dispatch with GitHub Secret `OPENAI_API_KEY`.
+* GitHub-only preflight and an explicit real Kokoro voice smoke run; full local
+  script and TTS generation requires opted-in `generate_draft=true`.
+  No paid API key is required.
 
 ## Next acceptance gates (not implemented)
 
