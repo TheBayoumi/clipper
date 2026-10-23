@@ -111,6 +111,9 @@ def test_gpu_qualification_uses_signed_official_ubuntu_archive_not_slow_azure_mi
         )
         assert "https://archive.ubuntu.com/ubuntu" in installer
         assert "/etc/apt/sources.list.d/*.sources" in installer
+        # Hosted runner apt uses a mirror+file list, not only deb822 sources.
+        assert "/etc/apt/apt-mirrors.txt" in installer
+        assert "for source_file in /etc/apt/apt-mirrors.txt" in installer
         assert "Acquire::Retries=2" in installer
         assert "Acquire::https::Timeout=20" in installer
         assert "DEBIAN_FRONTEND=noninteractive" in installer
