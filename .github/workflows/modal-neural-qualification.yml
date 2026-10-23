@@ -72,9 +72,24 @@ jobs:
         run: |
           set -euo pipefail
           if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
-            sudo timeout 480 apt-get update -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -qq
-            sudo DEBIAN_FRONTEND=noninteractive timeout 600 apt-get install \
-              --no-install-recommends -y ffmpeg
+            # Azure's default Ubuntu mirror transferred FFmpeg dependencies too
+            # slowly and exhausted the 600s install ceiling on 2026-10-23.
+            # Use Ubuntu's official signed package archive, not a binary from
+            # an unverified release mirror. Applies to both .list and deb822.
+            for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+              if [ -f "$source_file" ]; then
+                sudo sed -i \
+                  -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+                  -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+                  "$source_file"
+              fi
+            done
+            sudo timeout 240 apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=20 \
+              -o Acquire::https::Timeout=20 -qq
+            sudo env DEBIAN_FRONTEND=noninteractive timeout 480 apt-get install \
+              --no-install-recommends -y -o Acquire::Retries=2 \
+              -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 ffmpeg
           fi
           command -v ffmpeg || { echo '::error::FFMPEG_NOT_AVAILABLE'; exit 1; }
           command -v ffprobe || { echo '::error::FFPROBE_NOT_AVAILABLE'; exit 1; }
@@ -199,9 +214,24 @@ jobs:
         run: |
           set -euo pipefail
           if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
-            sudo timeout 480 apt-get update -o Acquire::Retries=1 -o Acquire::http::Timeout=30 -qq
-            sudo DEBIAN_FRONTEND=noninteractive timeout 600 apt-get install \
-              --no-install-recommends -y ffmpeg
+            # Azure's default Ubuntu mirror transferred FFmpeg dependencies too
+            # slowly and exhausted the 600s install ceiling on 2026-10-23.
+            # Use Ubuntu's official signed package archive, not a binary from
+            # an unverified release mirror. Applies to both .list and deb822.
+            for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+              if [ -f "$source_file" ]; then
+                sudo sed -i \
+                  -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+                  -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+                  "$source_file"
+              fi
+            done
+            sudo timeout 240 apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=20 \
+              -o Acquire::https::Timeout=20 -qq
+            sudo env DEBIAN_FRONTEND=noninteractive timeout 480 apt-get install \
+              --no-install-recommends -y -o Acquire::Retries=2 \
+              -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 ffmpeg
           fi
           command -v ffmpeg || { echo '::error::FFMPEG_UNAVAILABLE'; exit 1; }
           command -v ffprobe || { echo '::error::FFPROBE_UNAVAILABLE'; exit 1; }
