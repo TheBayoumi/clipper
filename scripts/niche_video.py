@@ -151,8 +151,8 @@ def _script_request(config: NicheConfig) -> dict[str, object]:
                 "role": "system",
                 "content": (
                     "Write exactly one valid JSON object, no markdown or commentary. "
-                    "Schema: {\\"title\\": string, \\"scenes\\": "
-                    "[{\\"headline\\": string, \\"narration\\": string}]}. "
+                    'Schema: {"title": string, "scenes": '
+                    '[{"headline": string, "narration": string}]}. '
                     "Create 3 to 5 scenes totalling 45 to 125 narration words, "
                     "each scene 6 to 45 words, headline <= 65 characters. "
                     "Start with a clear honest hook, develop useful original "
