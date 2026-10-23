@@ -214,24 +214,34 @@ Pytest enforces a repository-wide coverage floor of **95%**. CI runs the quality
 
 Production acceptance additionally requires exact-head deployment evidence, current model/schema smoke tests, a current end-to-end render, technical QC, multimodal final QC, and review of the actual MP4. Historical renders do not prove the current head.
 
-## Original niche video (prototype)
+## Original niche video (open-weight prototype)
 
-An independent original-content path now exists on
-`feat/unified-niche-tts`. It does not require Reach/Whop campaigns or
-third-party source video. Niche configuration:
-`niches/ai-workflows.yaml`. Test its configuration without paid calls:
+Branch: `feat/unified-niche-tts`. This independent original-content workflow does not
+use a Reach/Whop campaign or another creator's podcast. Configure
+`niches/ai-workflows.yaml` (example English US Kokoro voice: `af_heart`).
 
 ```bash
 python scripts/niche_video.py --config niches/ai-workflows.yaml --validate-only
 ```
 
-The GitHub Actions workflow `Original niche video draft` can generate
-a real TTS-narrated 1080x1920 H.264/AAC draft when manually dispatched
-with `confirm_paid_inference=true` and an `OPENAI_API_KEY` repository
-secret. It produces an MP4 and provenance/review manifest as Actions artifacts.
-A successful render is not publication authorization, and the current
-scene-card visuals do not yet meet final editorial quality requirements.
-See `plans/unified-niche-video.md` for the tested scope and remaining gates.
+Both the script generator (`Qwen/Qwen3-1.7B`, pinned revision) and the speech
+generator (`hexgrad/Kokoro-82M` v1.0, Apache 2.0) run from downloaded open
+weights, **without an OpenAI API key or a paid inference provider**.
+
+The GitHub Actions workflow `Original niche video draft (open models)`
+automatically checks the configuration and performs an FFmpeg smoke test. A
+manual dispatch with `voice_smoke=true` generates a **real narrated Kokoro
+MP4**, whereas `generate_draft=true` requests a full Qwen3-written, Kokoro
+narrated episode. All outputs remain private Actions draft artifacts awaiting
+human audio/visual and factual review.
+
+Initial cold run requires downloading approximately 4 GB for Qwen3 and
+approximately 360 MB for Kokoro, plus Python dependencies. GitHub's Ubuntu
+CPU runner handles model inference; these models are not claimed to match
+proprietary naturalness without an audio comparison. GPU acceleration and
+more expressive models (Chatterbox/Qwen3-TTS) are potential subsequent
+providers, not silently substituted for Kokoro. The content hash records
+model IDs, revisions, prompts and voice parameters. Publication stays off.
 
 ## Publication boundary
 
