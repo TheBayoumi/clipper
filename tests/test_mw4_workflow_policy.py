@@ -150,7 +150,10 @@ def test_full_gpu_qualification_bounds_parallel_cold_starts_and_caches_by_source
     assert job["strategy"]["max-parallel"] == 1
     steps = job["steps"]
     restore = next(step for step in steps if step.get("id") == "gpu-restore")
-    save = next(step for step in steps if step.get("name") == "Preserve completed source-bound GPU batches")
+    save = next(
+        step for step in steps
+        if step.get("name") == "Preserve completed source-bound GPU batches"
+    )
     assert restore["uses"] == "actions/cache/restore@v4"
     assert save["uses"] == "actions/cache/save@v4"
     assert save["if"] == "always() && steps.gpu-restore.outputs.cache-hit != 'true'"
