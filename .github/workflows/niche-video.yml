@@ -1,0 +1,87 @@
+name: Original niche video draft
+
+on:
+  push:
+    branches:
+      - feat/unified-niche-tts
+    paths:
+      - scripts/niche_video.py
+      - niches/**
+      - .github/workflows/niche-video.yml
+      - tests/test_niche_video_script.py
+  workflow_dispatch:
+    inputs:
+      config_path:
+        description: Niche config path in repository
+        type: string
+        required: true
+        default: niches/ai-workflows.yaml
+      topic:
+        description: Optional episode topic override
+        type: string
+        required: false
+      confirm_paid_inference:
+        description: Explicitly allow paid script generation and TTS
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: original-niche-${{ github.ref_name }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install standalone video runtime
+        run: python -m pip install 'PyYAML>=6.0.3,<7'
+      - name: Validate content niche without external services
+        env:
+          CONFIG_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.config_path || 'niches/ai-workflows.yaml' }}
+          EPISODE_TOPIC: ${{ inputs.topic }}
+        run: |
+          python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Three rules for building reliable AI agent workflows}" --validate-only
+      - name: Restore content-addressed script and TTS cache
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_paid_inference
+        uses: actions/cache@v4
+        with:
+          path: artifacts/niche/_cache
+          key: original-niche-${{ runner.os }}-${{ hashFiles('niches/*.yaml') }}-${{ github.run_id }}
+          restore-keys: |
+            original-niche-${{ runner.os }}-${{ hashFiles('niches/*.yaml') }}-
+      - name: Render private draft (never publish)
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_paid_inference
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CONFIG_PATH: ${{ inputs.config_path }}
+          EPISODE_TOPIC: ${{ inputs.topic }}
+        run: |
+          set -euo pipefail
+          command -v ffmpeg
+          command -v ffprobe
+          python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Three rules for building reliable AI agent workflows}" --output-root artifacts/niche
+          test -n "$(find artifacts/niche -name draft.mp4 -size +0c -print -quit)"
+          test -n "$(find artifacts/niche -name manifest.json -size +0c -print -quit)"
+      - name: Upload draft for listening and visual review
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_paid_inference
+        uses: actions/upload-artifact@v4
+        with:
+          name: niche-draft-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            artifacts/niche/draft-*/draft.mp4
+            artifacts/niche/draft-*/manifest.json
+          if-no-files-found: error
+          retention-days: 14
