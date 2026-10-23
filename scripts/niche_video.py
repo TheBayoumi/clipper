@@ -26,8 +26,21 @@ SCRIPT_MODEL = "gpt-4.1-mini"
 VOICE_MODEL = "gpt-4o-mini-tts"
 SCRIPT_CONTRACT = "niche-scenes-v1"
 VOICES = frozenset(
-    {"alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova",
-     "sage", "shimmer", "verse", "marin", "cedar"}
+    {
+        "alloy",
+        "ash",
+        "ballad",
+        "coral",
+        "echo",
+        "fable",
+        "onyx",
+        "nova",
+        "sage",
+        "shimmer",
+        "verse",
+        "marin",
+        "cedar",
+    }
 )
 
 
@@ -113,8 +126,7 @@ class Episode:
         return {
             "title": self.title,
             "scenes": [
-                {"headline": scene.headline, "narration": scene.narration}
-                for scene in self.scenes
+                {"headline": scene.headline, "narration": scene.narration} for scene in self.scenes
             ],
         }
 
@@ -239,9 +251,7 @@ def generate_episode(config: NicheConfig, cache_root: Path) -> tuple[Episode, st
     if message.get("refusal") or not isinstance(message.get("content"), str):
         raise NicheVideoError("script generation returned a refusal or no content")
     episode = Episode.from_json(json.loads(message["content"]))
-    _write_atomic(
-        path, json.dumps(episode.to_dict(), ensure_ascii=False, indent=2).encode("utf-8")
-    )
+    _write_atomic(path, json.dumps(episode.to_dict(), ensure_ascii=False, indent=2).encode("utf-8"))
     return episode, digest
 
 
@@ -281,9 +291,14 @@ def _probe(path: Path) -> dict[str, Any]:
     return json.loads(
         _process(
             [
-                "ffprobe", "-v", "error", "-show_entries",
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
                 "format=duration:stream=codec_type,codec_name,width,height",
-                "-of", "json", str(path),
+                "-of",
+                "json",
+                str(path),
             ]
         )
     )
@@ -313,13 +328,38 @@ def _render_scene(scene: Scene, audio: Path, target: Path, brand: str) -> float:
     )
     _process(
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", f"color=c=0x0d172c:s=1080x1920:r=30:d={duration:.3f}",
-            "-i", str(audio), "-vf", filters,
-            "-af", "apad", "-t", f"{duration:.3f}",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-            "-pix_fmt", "yuv420p", "-r", "30",
-            "-c:a", "aac", "-b:a", "192k", str(target),
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=0x0d172c:s=1080x1920:r=30:d={duration:.3f}",
+            "-i",
+            str(audio),
+            "-vf",
+            filters,
+            "-af",
+            "apad",
+            "-t",
+            f"{duration:.3f}",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "21",
+            "-pix_fmt",
+            "yuv420p",
+            "-r",
+            "30",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            str(target),
         ]
     )
     return duration
@@ -354,9 +394,22 @@ def _concat(clips: list[Path], output: Path) -> None:
     )
     _process(
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "concat", "-safe", "0", "-i", str(listing),
-            "-c", "copy", "-movflags", "+faststart", str(output),
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(listing),
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(output),
         ]
     )
 
