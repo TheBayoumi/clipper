@@ -32,19 +32,21 @@ def _qualified_stub(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             "sha256": "f" * 64,
         }
 
+    def ready_spawn() -> SimpleNamespace:
+        called.append("gpu_ready")
+        return SimpleNamespace(
+            get=lambda timeout: {
+                "deployed_git_sha": "a" * 40,
+                "model_id": vision.VISION_MODEL_ID,
+                "revision": vision.VISION_REVISION,
+                "cuda_available": True,
+                "gpu_count": 2,
+            }
+        )
+
     class FakeWorker:
         def __init__(self) -> None:
-            self.ready = SimpleNamespace(
-                spawn=lambda: SimpleNamespace(
-                    get=lambda timeout: {
-                        "deployed_git_sha": "a" * 40,
-                        "model_id": vision.VISION_MODEL_ID,
-                        "revision": vision.VISION_REVISION,
-                        "cuda_available": True,
-                        "gpu_count": 2,
-                    }
-                )
-            )
+            self.ready = SimpleNamespace(spawn=ready_spawn)
             self.inspect = SimpleNamespace(spawn=lambda *_: None)
 
     timeline = SimpleNamespace(duration=12.0, consolidated_events=())
@@ -118,7 +120,7 @@ def test_ephemeral_source_wide_entrypoint_reuses_canonical_analysis(
     )
     report = json.loads((out / "source_wide_gpu_qualification.json").read_text())
     queue = json.loads((out / "neural_review_queue.json").read_text())
-    assert called == ["certify", "canonical_cpu_analysis", "gpu_vision"]
+    assert called == ["certify", "canonical_cpu_analysis", "gpu_ready", "gpu_vision"]
     assert report["status"] == "GPU_SOURCE_WIDE_PROPOSALS_ONLY"
     assert report["execution_sha"] == "a" * 40
     assert report["coverage"] == {"expected_samples": 2, "observed_samples": 2}
@@ -184,5 +186,5 @@ def test_source_wide_readiness_failure_retains_source_bound_artifact(
     assert failure["source_key"] == "ghost_fight"
     assert failure["deployed_git_sha"] == "a" * 40
     assert failure["may_create_verified_outcomes"] is False
-    assert called == ["certify"]
+    assert called == ["certify", "canonical_cpu_analysis"]
     assert not (output / "source_wide_gpu_qualification.json").exists()

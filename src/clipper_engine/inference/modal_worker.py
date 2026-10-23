@@ -439,6 +439,10 @@ def source_scout(
     )
     config["capabilities"]["neural_visual_events"] = capability
     settings = VisionSettings.from_profile(config)
+    # CPU source analysis can take minutes. Run it before GPU readiness so
+    # Modal does not idle/evict a loaded model during CPU-only work.
+    # Source certification, canonical analysis and GPU gates are unchanged.
+    timeline = analysis.analyze_source(video, config)
     output.mkdir(parents=True, exist_ok=True)
     worker = VisionModel()
     try:
@@ -469,8 +473,6 @@ def source_scout(
         or ready.get("gpu_count", 0) < 2
     ):
         raise RuntimeError("source-wide neural worker CUDA/model/SHA readiness mismatch")
-    timeline = analysis.analyze_source(video, config)
-    output.mkdir(parents=True, exist_ok=True)
     report = analyze_source(
         video,
         source_certificate,
