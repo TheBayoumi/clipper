@@ -107,9 +107,7 @@ def test_gpu_qualification_uses_signed_official_ubuntu_archive_not_slow_azure_mi
     for job_name in ("neural-source-gpu-smoke", "neural-source-wide-review"):
         steps = workflow["jobs"][job_name]["steps"]
         installer = next(
-            step["run"]
-            for step in steps
-            if step.get("name", "").startswith("Install FFmpeg")
+            step["run"] for step in steps if step.get("name", "").startswith("Install FFmpeg")
         )
         assert "https://archive.ubuntu.com/ubuntu" in installer
         assert "/etc/apt/sources.list.d/*.sources" in installer
