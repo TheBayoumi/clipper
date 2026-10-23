@@ -121,7 +121,11 @@ def test_generate_episode_reuses_identical_script(
 ) -> None:
     post = Mock(
         return_value=json.dumps(
-            {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(episode.to_dict())}}]}
+            {
+                "choices": [
+                    {"finish_reason": "stop", "message": {"content": json.dumps(episode.to_dict())}}
+                ]
+            }
         ).encode()
     )
     monkeypatch.setattr(nv, "_openai_post", post)
@@ -291,8 +295,6 @@ def test_validate_only_requires_no_external_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = tmp_path / "config.yml"
-    config.write_text(
-        "niche: AI\naudience: Devs\nbrand: LAB\ntopic: Example\n", encoding="utf-8"
-    )
+    config.write_text("niche: AI\naudience: Devs\nbrand: LAB\ntopic: Example\n", encoding="utf-8")
     monkeypatch.setattr(nv, "_openai_post", Mock(side_effect=AssertionError("API called")))
     assert nv.main(["--config", str(config), "--validate-only"]) == 0
