@@ -48,10 +48,11 @@ jobs:
           cache: pip
       - name: Install standalone video runtime
         run: python -m pip install 'PyYAML>=6.0.3,<7'
-      - name: Show precise Ruff formatting changes
+      - name: Verify niche runtime source style
         run: |
           python -m pip install 'ruff>=0.15.22,<1'
-          ruff format --diff scripts/niche_video.py tests/test_niche_video_script.py
+          ruff check scripts/niche_video.py tests/test_niche_video_script.py
+          ruff format --check scripts/niche_video.py tests/test_niche_video_script.py
       - name: Validate content niche without external services
         env:
           CONFIG_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.config_path || 'niches/ai-workflows.yaml' }}
