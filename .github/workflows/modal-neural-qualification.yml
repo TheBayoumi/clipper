@@ -13,10 +13,23 @@ on:
   workflow_dispatch:
     inputs:
       source_wide:
-        description: 'Run independently certified source-wide GPU review probes on all six MW4 analysis proxies'
+        description: 'Run independently certified source-wide GPU review against certified MW4 proxies'
         required: false
         type: boolean
         default: false
+      source_key:
+        description: 'Test one certified source first, or all six for full evidence'
+        required: false
+        type: choice
+        default: all
+        options:
+          - all
+          - ghost_fight
+          - convenience_store
+          - traffic_chase
+          - nightclub
+          - makarov_chase
+          - refusing_orders
 
 permissions:
   contents: read
@@ -157,13 +170,7 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        include:
-          - {source: ghost_fight, run_id: 39827390899}
-          - {source: convenience_store, run_id: 39827390899}
-          - {source: traffic_chase, run_id: 39827390899}
-          - {source: nightclub, run_id: 39827390899}
-          - {source: makarov_chase, run_id: 39827390899}
-          - {source: refusing_orders, run_id: 39749647361}
+        source: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.source_key != 'all' && inputs.source_key != '' && format('["{0}"]', inputs.source_key) || '["ghost_fight","convenience_store","traffic_chase","nightclub","makarov_chase","refusing_orders"]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
@@ -202,7 +209,7 @@ jobs:
       - name: Retrieve immutable certified MediaSilo analysis proxy
         uses: actions/download-artifact@v4
         with:
-          run-id: ${{ matrix.run_id }}
+          run-id: ${{ matrix.source == 'refusing_orders' && 39749647361 || 39827390899 }}
           github-token: ${{ github.token }}
           name: MW4-qualification-source-${{ matrix.source }}
           path: raw_sources

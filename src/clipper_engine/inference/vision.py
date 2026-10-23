@@ -594,10 +594,36 @@ def analyze_source(
                 "expected_git_sha": settings.deployed_sha,
                 "model": model,
             }
-            response = engine.inspect(request)
-            parsed, gpu_seconds, cost = _parse_batch(
-                response, identity=identity, requested=batch, deployed_sha=settings.deployed_sha
-            )
+            try:
+                response = engine.inspect(request)
+                parsed, gpu_seconds, cost = _parse_batch(
+                    response, identity=identity, requested=batch, deployed_sha=settings.deployed_sha
+                )
+            except Exception as error:
+                # Keep a source-bound machine-readable failure report even when
+                # the *first* batch fails. It is not a qualification receipt.
+                # Do not convert partial GPU output into verified semantics.
+                failure = {
+                    "status": "NEURAL_INFERENCE_REJECTED",
+                    "stage": "source_frame_model_batch",
+                    "reason": type(error).__name__,
+                    "detail": str(error)[:500],
+                    "source_identity": identity,
+                    "model": model,
+                    "deployed_git_sha": settings.deployed_sha,
+                    "failed_batch_index": offset // settings.batch_frames,
+                    "failed_batch_source_times": list(batch),
+                    "expected_samples": len(times),
+                    "completed_samples": len(observations),
+                    "checkpoint_hits": hits,
+                    "gpu_seconds_from_completed_batches": total_gpu_seconds,
+                    "estimated_cost_usd_from_completed_batches": total_cost,
+                    "may_create_verified_outcomes": False,
+                }
+                (output_dir / "neural_inference_failure.json").write_text(
+                    json.dumps(failure, indent=2), encoding="utf-8"
+                )
+                raise
             total_gpu_seconds += gpu_seconds
             total_cost += cost
             if (
@@ -639,4 +665,7 @@ def analyze_source(
     }
     path = output_dir / "neural_visual_evidence.json"
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    # A successful complete replay supersedes prior failure diagnostics; do
+    # not ship a success receipt alongside a stale failed-batch report.
+    (output_dir / "neural_inference_failure.json").unlink(missing_ok=True)
     return report

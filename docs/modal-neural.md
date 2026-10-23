@@ -181,3 +181,29 @@ order. Independent six-source A/V gold continues to reject incomplete review;
 it is never bypassed to produce a green build. A qualifying acceptance record
 requires same-SHA CI, source-wide GPU/CPU review, all verified-anchor coverage
 and actual original-master render QA, plus source and final-clip playback.
+
+## Failure-analysis correction: source-wide deadline must match MW4 production
+
+The six-source GPU qualification previously **overrode** MW4's calibrated
+480-second source-inference deadline with a hard-coded 180-second value in
+`source_scout`. The first Convenience Store model batch timed out and the
+30-second post-cancel terminal poll also timed out. That was a real
+qualification/configuration defect, not evidence of a source semantic
+rejection and not an authorization to ignore timeouts.
+
+`source_scout` now retains the canonical gameplay profile's inference deadline
+and only overrides bounded sampling/compute parameters supplied by the
+validation command. A regression confirms the production deadline is
+preserved. Clipper also writes `neural_inference_failure.json` whenever the
+worker or batch parser fails, with exact certified source/model/Git identity,
+failed batch/times, complete versus expected sample counts, previous verified
+checkpoint hits and consumed budget telemetry. This is **a failure artifact**,
+never a neural qualification receipt, and cannot promote VLM observations into
+confirmed gameplay. An unconfirmed canceled GPU call remains fail-closed.
+
+The independent six-source human review file is still marked
+`benchmark_annotation_seed_NOT_model_ground_truth` with
+`independent_review_complete=false`. Its acceptance failure is correct until
+actual independent full A/V playback, signed annotations, negative examples,
+source hashes, rational frame-rate evidence and cinematic rereviews exist. No
+synthetic test fixture, GPU proposal or contact sheet substitutes for this.

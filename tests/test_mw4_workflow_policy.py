@@ -66,3 +66,34 @@ def test_source_wide_gpu_qualification_matches_production_sampling() -> None:
     assert "--batch-frames 2" in command
     assert "--max-sample-frames 144" in command
     assert "--max-refinement-anchors 20" in command
+
+
+def test_gpu_source_wide_can_validate_one_source_before_six_source_expense() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/modal-neural-qualification.yml").read_text()
+    )
+    inputs = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]
+    assert inputs["source_wide"]["default"] is False
+    selection = inputs["source_key"]
+    assert selection["default"] == "all"
+    assert set(selection["options"]) == {
+        "all",
+        "ghost_fight",
+        "convenience_store",
+        "traffic_chase",
+        "nightclub",
+        "makarov_chase",
+        "refusing_orders",
+    }
+    source_job = workflow["jobs"]["neural-source-wide-review"]
+    matrix = source_job["strategy"]["matrix"]["source"]
+    assert "inputs.source_key" in matrix
+    assert "fromJSON" in matrix
+    assert "convenience_store" in matrix
+    artifact_step = next(
+        s
+        for s in source_job["steps"]
+        if s.get("name") == "Retain source-wide model output and independent review requirements"
+    )
+    assert artifact_step["if"] == "always()"
+    assert "neural-source-${{ matrix.source }}/" in artifact_step["with"]["path"]

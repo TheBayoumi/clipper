@@ -68,6 +68,9 @@ def _qualified_stub(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         assert config["capabilities"]["neural_visual_events"]["enabled"] is True
         assert config["capabilities"]["neural_visual_events"]["max_sample_frames"] == 300
         assert config["capabilities"]["neural_visual_events"]["max_refinement_anchors"] == 30
+        # Regression: six-source qualification cannot silently reset the normal
+        # MW4 480s deadline to the previously hardcoded 180s.
+        assert config["capabilities"]["neural_visual_events"]["deadline_seconds"] == 480.0
         return {
             "status": "PROPOSALS_ONLY",
             "model": {"model_id": vision.VISION_MODEL_ID},

@@ -384,7 +384,9 @@ def source_scout(
             "max_estimated_usd": max_estimated_usd,
             "max_sample_frames": max_sample_frames,
             "max_refinement_anchors": max_refinement_anchors,
-            "deadline_seconds": 180.0,
+            # The source-wide qualification MUST exercise the exact same
+            # per-batch inference deadline as the production gameplay profile.
+            # Previously this silently forced 180s over MW4's 480s setting.
         }
     )
     config["capabilities"]["neural_visual_events"] = capability

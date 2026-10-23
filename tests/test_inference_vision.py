@@ -342,3 +342,35 @@ def test_neural_source_samples_follow_certified_60000_over_1001_grid() -> None:
 def test_neural_sampling_rejects_unverifiable_frame_rate() -> None:
     with pytest.raises(ValueError, match="certified positive rational"):
         vision._sample_times(10, 4, Fraction(0, 1))
+
+
+def test_source_wide_modal_timeout_preserves_machine_readable_failure_artifact(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source, qa = _source(monkeypatch, tmp_path)
+    output = tmp_path / "analysis"
+
+    class UnresponsiveProvider:
+        def inspect(self, request: dict[str, Any]) -> dict[str, Any]:
+            assert request["frame_timestamps"] == [0.0, 4.004]
+            raise RuntimeError("Modal vision cancellation terminal state unconfirmed")
+
+    with pytest.raises(RuntimeError, match="cancellation terminal state unconfirmed"):
+        vision.analyze_source(source, qa, _config(), output, provider=UnresponsiveProvider())
+    failure_file = output / "neural_inference_failure.json"
+    assert failure_file.is_file()
+    failure = json.loads(failure_file.read_text(encoding="utf-8"))
+    assert failure["status"] == "NEURAL_INFERENCE_REJECTED"
+    assert failure["stage"] == "source_frame_model_batch"
+    assert failure["reason"] == "RuntimeError"
+    assert failure["failed_batch_index"] == 0
+    assert failure["failed_batch_source_times"] == [0.0, 4.004]
+    assert failure["source_identity"] == SOURCE
+    assert failure["deployed_git_sha"] == SHA
+    assert failure["expected_samples"] == 2
+    assert failure["completed_samples"] == 0
+    assert failure["may_create_verified_outcomes"] is False
+    assert not (output / "neural_visual_evidence.json").exists()
+    good = vision.analyze_source(source, qa, _config(), output, provider=FakeVision())
+    assert good is not None and good["status"] == "PROPOSALS_ONLY"
+    assert not failure_file.exists()
