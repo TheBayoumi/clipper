@@ -90,10 +90,10 @@ def image_spec() -> modal.Image:
             # time, so check it inside the actual GPU worker, never during build.
             "cd /opt/TRELLIS.2 && python -c"
             " 'import torch, importlib.util;"
-            " assert importlib.util.find_spec(\"o_voxel\") is not None;"
-            " assert importlib.util.find_spec(\"flash_attn\") is not None;"
-            " assert importlib.util.find_spec(\"trellis2\") is not None;"
-            " print(\"TRELLIS2_CPU_IMAGE_PACKAGE_PROBE_OK\", torch.__version__)'",
+            ' assert importlib.util.find_spec("o_voxel") is not None;'
+            ' assert importlib.util.find_spec("flash_attn") is not None;'
+            ' assert importlib.util.find_spec("trellis2") is not None;'
+            ' print("TRELLIS2_CPU_IMAGE_PACKAGE_PROBE_OK", torch.__version__)\'',
         )
     )
 
