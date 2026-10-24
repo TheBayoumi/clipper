@@ -66,6 +66,14 @@ jobs:
           assert hf_hub_download(repo_id=repo, revision=rev, filename='config.json', token=token)
           print('WAN_S2V_PUBLIC_CHECKPOINT_VERIFIED', info.sha)
           PY
+      - name: Install FFmpeg and ffprobe for archived narration and rendered media QA
+        if: inputs.mode == 'generate'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
       - name: Restore hash-locked approved character and cached Kokoro WAV for technical qualification
         if: inputs.mode == 'generate'
         env:
