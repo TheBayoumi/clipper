@@ -47,10 +47,15 @@ jobs:
       - name: Require actual approved 3D master and three-action 15s output
         run: |
           set -euo pipefail
+          test -f artifacts/storyboard-pilot/approved-master.glb || {
+            echo "::error::No approved master rig GLB asset provided for geometry inspection."
+            exit 1
+          }
           test -f artifacts/storyboard-pilot/render-manifest.json || {
             echo "::error::No approved character rig and three enacted storyboard shots. Generic wave is rejected; do not re-run Qwen/TTS."
             exit 1
           }
           python scripts/storyboard_acceptance.py \
             --manifest artifacts/storyboard-pilot/render-manifest.json \
+            --master-glb artifacts/storyboard-pilot/approved-master.glb \
             --video artifacts/storyboard-pilot/atomic-habits-15s.mp4

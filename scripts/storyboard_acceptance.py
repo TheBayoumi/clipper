@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 import subprocess
@@ -108,7 +109,12 @@ def verify_physical_contact(
         raise CreativeGateError("book/notebook never underwent a real scene transformation")
 
 
-def audit_render(contract: dict[str, Any], manifest_path: Path, video: Path) -> dict[str, Any]:
+def audit_render(
+    contract: dict[str, Any],
+    manifest_path: Path,
+    video: Path,
+    master_glb: Path | None = None,
+) -> dict[str, Any]:
     if not manifest_path.is_file():
         raise CreativeGateError(
             "missing storyboard-specific render manifest; generic rig proof is insufficient"
@@ -124,6 +130,20 @@ def audit_render(contract: dict[str, Any], manifest_path: Path, video: Path) -> 
     asset_hash = str(manifest.get("master_character_sha256", ""))
     if len(asset_hash) != 64 or asset_hash != character.get("approved_glb_sha256"):
         raise CreativeGateError("rigged master asset is missing or unapproved")
+    if character.get("status") != "approved_rig":
+        raise CreativeGateError("character still lacks an independently approved master rig")
+    if master_glb is None or not master_glb.is_file():
+        raise CreativeGateError("approved master GLB must be provided for structural inspection")
+    source = Path(__file__).with_name("character_rig_contract.py")
+    spec = importlib.util.spec_from_file_location("clipper_approved_rig_runtime", source)
+    if spec is None or spec.loader is None:
+        raise CreativeGateError("versioned GLB rig contract is missing")
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    try:
+        rig_evidence = verifier.audit_rig(master_glb, asset_hash)
+    except (verifier.RigContractError, OSError) as exc:
+        raise CreativeGateError(f"master GLB failed real rig inspection: {exc}") from exc
     if any(token in json.dumps(manifest).lower() for token in STOCK_ASSET_TOKENS):
         raise CreativeGateError("stock-looking stand-in avatar or generic motion detected")
     shots = _required(manifest.get("shots"), list, "rendered shots")
@@ -196,6 +216,8 @@ def audit_render(contract: dict[str, Any], manifest_path: Path, video: Path) -> 
     )
     return {
         "technical_storyboard_gate": "PASS",
+        "master_rig_structure": rig_evidence["structure_gate"],
+        "master_rig_sha256": rig_evidence["glb_sha256"],
         "video_sha256": actual_sha256,
         "duration_seconds": duration,
         "human_visual_approval": "PENDING",
@@ -213,6 +235,7 @@ def main() -> None:
     )
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--video", type=Path)
+    parser.add_argument("--master-glb", type=Path)
     args = parser.parse_args()
     contract = read_contract(args.contract)
     if (args.manifest is None) != (args.video is None):
@@ -231,7 +254,9 @@ def main() -> None:
             )
         )
     else:
-        print(json.dumps(audit_render(contract, args.manifest, args.video), indent=2))
+        print(
+            json.dumps(audit_render(contract, args.manifest, args.video, args.master_glb), indent=2)
+        )
 
 
 if __name__ == "__main__":
