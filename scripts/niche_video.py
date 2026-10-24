@@ -349,8 +349,7 @@ def _compact_book_sentences(candidate: object) -> tuple[object, bool]:
     # complete sentence. Allow variable scene budgets, then select optional
     # complete sentences without exceeding the strict episode word ceiling.
     sentence_lists = [
-        re.split(r"(?<=[.!?])\s+", scene["narration"].strip())
-        for scene in raw_scenes
+        re.split(r"(?<=[.!?])\s+", scene["narration"].strip()) for scene in raw_scenes
     ]
     chosen: list[set[int]] = []
     lengths: list[int] = []
