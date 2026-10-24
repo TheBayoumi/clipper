@@ -2,6 +2,7 @@ name: Book 3D Character Acting Proof
 
 on:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
