@@ -72,8 +72,8 @@ def genuine_wave_motion(rig: bpy.types.Object) -> tuple[bpy.types.Action, dict[s
         track.mute = True
     rig.animation_data.action = action
     scene = bpy.context.scene
-    start = int(math.floor(action.frame_range[0]))
-    end = int(math.ceil(action.frame_range[1]))
+    start = math.floor(action.frame_range[0])
+    end = math.ceil(action.frame_range[1])
     if end - start < 12:
         raise RuntimeError("Wave animation has fewer than 12 frames")
     bones = [
