@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import ast
 import importlib.util
 import json
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -19,31 +19,22 @@ SPEC.loader.exec_module(cues)
 
 
 def test_blender_sidecar_loader_works_without_scripts_on_python_path(
-    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reproduce Blender's missing sibling-module import without bpy installed."""
+    """Load the real Blender probe with stubbed bpy to reproduce its imports."""
     blender_source = SCRIPT.with_name("blender_character_probe.py")
-    parsed = ast.parse(blender_source.read_text(encoding="utf-8"))
-    loader = next(
-        node
-        for node in parsed.body
-        if isinstance(node, ast.FunctionDef) and node.name == "load_cue_tools"
-    )
-    isolated_globals = {
-        "__file__": str(blender_source),
-        "Path": Path,
-        "importlib": importlib,
-        "sys": sys,
-    }
-    isolated_module = ast.Module(body=[loader], type_ignores=[])
-    exec(
-        compile(isolated_module, filename=str(blender_source), mode="exec"),
-        isolated_globals,
-    )
-    reader, sampled_angles = isolated_globals["load_cue_tools"]()
+    monkeypatch.setitem(sys.modules, "bpy", types.ModuleType("bpy"))
+    mathutils = types.ModuleType("mathutils")
+    mathutils.Vector = object
+    monkeypatch.setitem(sys.modules, "mathutils", mathutils)
+
+    spec = importlib.util.spec_from_file_location("clipper_rig_import_probe", blender_source)
+    assert spec is not None and spec.loader is not None
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    reader, sampled_angles = probe.load_cue_tools()
     assert reader.__module__ == "clipper_viseme_cues"
     assert sampled_angles.__module__ == "clipper_viseme_cues"
-    assert reader is not None
 
 
 def test_rhubarb_speech_shapes_are_timed_and_nontrivial(tmp_path: Path) -> None:
