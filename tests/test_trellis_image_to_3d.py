@@ -33,7 +33,7 @@ def test_generated_asset_never_receives_false_rigging_claim() -> None:
     assert '"creative_status": "NOT_REVIEWED"' in script
     assert '"CANDIDATE_GLB_GENERATED_NOT_RIGGED"' in script
     assert 'client.predict(100000, 2048, api_name="/extract_glb")' in script
-    assert 'client.predict(generated[0], 100000' not in script
+    assert "client.predict(generated[0], 100000" not in script
 
 
 def test_workflow_uses_approved_reference_and_unprivileged_gpu_service() -> None:
