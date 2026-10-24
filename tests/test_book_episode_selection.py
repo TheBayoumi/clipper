@@ -37,25 +37,27 @@ def test_default_auto_book_selection_uses_source_evidence_and_no_publish() -> No
 
 def test_auto_rotation_favors_new_book_and_no_repeated_lesson() -> None:
     first = CHOOSER.choose_lesson(CATALOG)
-    history = [{
-        "book_id": first["book"]["id"],
-        "lesson_id": first["lesson"]["id"],
-    }]
+    history = [
+        {
+            "book_id": first["book"]["id"],
+            "lesson_id": first["lesson"]["id"],
+        }
+    ]
     second = CHOOSER.choose_lesson(CATALOG, history)
     assert second["book"]["id"] != first["book"]["id"]
-    history.append({
-        "book_id": second["book"]["id"],
-        "lesson_id": second["lesson"]["id"],
-    })
+    history.append(
+        {
+            "book_id": second["book"]["id"],
+            "lesson_id": second["lesson"]["id"],
+        }
+    )
     third = CHOOSER.choose_lesson(CATALOG, history)
     assert third["book"]["id"] not in {first["book"]["id"], second["book"]["id"]}
     assert third["lesson"]["id"] != first["lesson"]["id"]
 
 
 def test_manual_user_override_and_topic_filter() -> None:
-    manual = CHOOSER.choose_lesson(
-        CATALOG, book_id="atomic-habits", lesson_id="two-minute-rule"
-    )
+    manual = CHOOSER.choose_lesson(CATALOG, book_id="atomic-habits", lesson_id="two-minute-rule")
     assert manual["mode"] == "manual_override"
     assert manual["lesson"]["id"] == "two-minute-rule"
     assert CHOOSER.choose_lesson(CATALOG, pillar="psychology")["book"]["id"] == (
@@ -80,21 +82,15 @@ def test_unsourced_claims_are_rejected() -> None:
 
 def test_new_storyboard_is_semantic_not_frozen_60s() -> None:
     spec = BOARD["production_storyboard"]
-    assert spec["delivery"]["duration_seconds"] == {
-        "min": 30, "max": 60, "preferred": 45
-    }
+    assert spec["delivery"]["duration_seconds"] == {"min": 30, "max": 60, "preferred": 45}
     assert spec["delivery"]["shot_count"].startswith("adaptive")
     assert len(spec["editorial_sequence"]) >= 6
-    assert all(
-        "start" not in beat and "end" not in beat
-        for beat in spec["editorial_sequence"]
-    )
+    assert all("start" not in beat and "end" not in beat for beat in spec["editorial_sequence"])
     assert spec["selection"]["default"].startswith("select one book")
     assert spec["status"].endswith("AWAITING_DYNAMIC_AI_DIRECTOR")
     assert BOARD["pilot"]["duration_seconds"] == 15
     assert "full_episode" not in BOARD
     assert spec["publish_eligible"] is False
-
 
 
 def test_source_backed_selection_is_usable_by_current_qwen_script() -> None:
@@ -118,9 +114,6 @@ def test_selected_lesson_builds_dynamic_source_led_storyboard_outline() -> None:
     assert outline["selected_hook_angle"] == selection["lesson"]["hook_angle"]
     assert outline["selected_concrete_visual_action"] == selection["lesson"]["visual_action"]
     assert outline["duration_range_seconds"] == [30, 60]
-    assert all(
-        "start" not in beat and "end" not in beat
-        for beat in outline["narrative_roles"]
-    )
+    assert all("start" not in beat and "end" not in beat for beat in outline["narrative_roles"])
     assert outline["timing"].startswith("WAIT_FOR_KOKORO")
     assert outline["publish_eligible"] is False
