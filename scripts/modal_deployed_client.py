@@ -108,7 +108,10 @@ def render_speaking(args: argparse.Namespace) -> None:
         video = response.pop("video")
         if sha(video) != response["video_sha256"]:
             raise RuntimeError("Modal returned video SHA mismatch")
-        if (\n            response.get("model_id") != WAN_MODEL_ID\n            or response.get("model_revision") != WAN_REVISION\n        ):
+        if (
+            response.get("model_id") != WAN_MODEL_ID
+            or response.get("model_revision") != WAN_REVISION
+        ):
             raise RuntimeError("Wan model provenance mismatch")
         candidate.write_bytes(video)
         evidence.update(response, status="CANDIDATE_GENERATED_NOT_VISUALLY_APPROVED")
