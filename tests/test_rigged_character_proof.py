@@ -41,3 +41,6 @@ def test_external_source_is_pinned_and_review_is_nonpublishable() -> None:
     assert "full" not in workflow.split("name: Rigged human motion")[0].lower()
     assert "if: always()" in workflow
     assert "workflow_dispatch:" in workflow
+    assert "\\${{" not in workflow
+    assert "inputs.frames || '24'" in workflow
+    assert "real-rigged-human-${{ github.sha }}" in workflow
