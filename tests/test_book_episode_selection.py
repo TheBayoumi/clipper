@@ -94,3 +94,33 @@ def test_new_storyboard_is_semantic_not_frozen_60s() -> None:
     assert BOARD["pilot"]["duration_seconds"] == 15
     assert "full_episode" not in BOARD
     assert spec["publish_eligible"] is False
+
+
+
+def test_source_backed_selection_is_usable_by_current_qwen_script() -> None:
+    selection = CHOOSER.choose_lesson(
+        CATALOG, book_id="deep-work", lesson_id="focus-without-distraction"
+    )
+    config = CHOOSER.to_niche_config(selection)
+    assert config["format"] == "book_lesson"
+    assert config["book_title"] == "Deep Work"
+    assert config["book_author"] == "Cal Newport"
+    assert config["facts"] == [selection["lesson"]["claim"]]
+    assert config["source_url"] == selection["lesson"]["claim_source_url"]
+    assert config["topic"] == selection["lesson"]["topic"]
+
+
+def test_selected_lesson_builds_dynamic_source_led_storyboard_outline() -> None:
+    selection = CHOOSER.choose_lesson(CATALOG, book_id="psychology-of-money")
+    outline = CHOOSER.to_storyboard_outline(selection, BOARD)
+    assert outline["schema"] == "clipper-book-story-outline-v1"
+    assert outline["book"]["title"] == "The Psychology of Money"
+    assert outline["selected_hook_angle"] == selection["lesson"]["hook_angle"]
+    assert outline["selected_concrete_visual_action"] == selection["lesson"]["visual_action"]
+    assert outline["duration_range_seconds"] == [30, 60]
+    assert all(
+        "start" not in beat and "end" not in beat
+        for beat in outline["narrative_roles"]
+    )
+    assert outline["timing"].startswith("WAIT_FOR_KOKORO")
+    assert outline["publish_eligible"] is False
