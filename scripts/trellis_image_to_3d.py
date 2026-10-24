@@ -97,6 +97,11 @@ def main() -> None:
         evidence["source_sha256"] = sha256(args.reference)
         if community:
             evidence["model_family"] = "TRELLIS_v1_community"
+            # The provider writes sample.glb in a per-session directory, which
+            # is created by /start_session. Gradio UI runs this on page load;
+            # programmatic clients must do it explicitly on the same client.
+            client.predict(api_name="/start_session")
+            evidence["remote_session_initialized"] = True
             generated = client.predict(
                 handle_file(str(args.reference)),
                 [],
