@@ -1,6 +1,6 @@
 """Production-length Clipper episode timeline from measured cached Kokoro WAVs.
 
-This is the 30–60s *production* contract, not the archived 15s Atomic Habits
+This is the 30-60s *production* contract, not the archived 15s Atomic Habits
 technical storyboard. A creative director must supply real shot briefs before
 any video generation. No filler, fake silence, fixed shot count, or new TTS.
 """
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import math
 import wave
@@ -26,7 +27,7 @@ WAV_RATE = 24000
 
 
 class ProductionTimelineError(ValueError):
-    """Reject incomplete 30–60 second productions rather than padding content."""
+    """Reject incomplete 30-60 second productions rather than padding content."""
 
 
 def fingerprint(value: dict[str, Any]) -> str:
@@ -68,7 +69,7 @@ def _scene_beats(frames: int) -> list[tuple[int, int]]:
     if seconds / count < MIN_SHOT_SECONDS:
         raise ProductionTimelineError("narration beat would be too brief; revise scene writing")
     borders = [(frames * index) // count for index in range(count + 1)]
-    return list(zip(borders[:-1], borders[1:], strict=True))
+    return list(itertools.pairwise(borders))
 
 
 def build_episode_plan(
@@ -78,7 +79,7 @@ def build_episode_plan(
         raise ProductionTimelineError("episode must use the cached Qwen script contract")
     scenes = episode["scenes"]
     if not isinstance(scenes, list) or not 3 <= len(scenes) <= 5:
-        raise ProductionTimelineError("production episode requires 3–5 narrative sections")
+        raise ProductionTimelineError("production episode requires 3-5 narrative sections")
     if len(audio_paths) != len(scenes):
         raise ProductionTimelineError("every scene needs its exact cached Kokoro narration")
     if len(character_source_sha256) != 64 or any(
@@ -91,7 +92,7 @@ def build_episode_plan(
     if not MIN_EPISODE_SECONDS <= total_seconds <= MAX_EPISODE_SECONDS:
         raise ProductionTimelineError(
             f"actual Kokoro narration totals {total_seconds:.3f}s; "
-            "a production video MUST be 30–60s. Revise the SCRIPT, "
+            "a production video MUST be 30-60s. Revise the SCRIPT, "
             "not the video speed, padding, or clip repetition."
         )
     shots: list[dict[str, Any]] = []
@@ -132,14 +133,14 @@ def build_episode_plan(
         overall_frames * OUTPUT_FPS / WAV_RATE
     ):
         raise ProductionTimelineError("planned shots fail full narration coverage")
-    for left, right in zip(shots, shots[1:]):
+    for left, right in itertools.pairwise(shots):
         if left["end_frame"] != right["start_frame"]:
             raise ProductionTimelineError("shot frame boundaries have overlaps or gaps")
         if left["end_frame"] <= left["start_frame"]:
             raise ProductionTimelineError("shot frame interval is empty")
     result = {
         "schema": SCHEMA,
-        "production_policy": "30–60s, narrated, no padding or redundant shots",
+        "production_policy": "30-60s, narrated, no padding or redundant shots",
         "title": episode["title"],
         "character_source_sha256": character_source_sha256,
         "script_sha256": fingerprint(episode),
