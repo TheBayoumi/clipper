@@ -87,8 +87,7 @@ def choose_lesson(
     candidates: list[tuple[int, int, dict[str, Any], dict[str, Any]]] = []
     recent_books = {item["book_id"] for item in history[-RECENT_BOOK_WINDOW:]}
     recent_lessons = {
-        item["book_id"] + "/" + item["lesson_id"]
-        for item in history[-RECENT_LESSON_WINDOW:]
+        item["book_id"] + "/" + item["lesson_id"] for item in history[-RECENT_LESSON_WINDOW:]
     }
     for i, book in enumerate(books):
         if book_id is not None and book["id"] != book_id:
@@ -132,7 +131,6 @@ def choose_lesson(
     return payload
 
 
-
 def to_niche_config(selection: dict[str, Any]) -> dict[str, Any]:
     """Bridge the selected book into the existing cached Qwen3/Kokoro script runtime."""
     if selection.get("schema") != SCHEMA or selection.get("publish_eligible") is not False:
@@ -174,8 +172,11 @@ def to_storyboard_outline(
         "source_links": selection["sources"],
         "duration_range_seconds": [30, 60],
         "narrative_roles": [
-            {"role": role["role"], "objective": role["objective"],
-             "direction": "AI_DIRECTOR_TO_AUTHOR_MEANINGFUL_ACTION"}
+            {
+                "role": role["role"],
+                "objective": role["objective"],
+                "direction": "AI_DIRECTOR_TO_AUTHOR_MEANINGFUL_ACTION",
+            }
             for role in roles
         ],
         "timing": "WAIT_FOR_KOKORO_AUDIO_THEN_DIRECT_CUTS_AT_IDEA_BOUNDARIES",
@@ -221,15 +222,17 @@ def main() -> None:
         template = json.loads(args.storyboard_template.read_text(encoding="utf-8"))
         outline = to_storyboard_outline(result, template)
         args.storyboard_output.parent.mkdir(parents=True, exist_ok=True)
-        args.storyboard_output.write_text(
-            json.dumps(outline, indent=2, ensure_ascii=False) + "\n"
+        args.storyboard_output.write_text(json.dumps(outline, indent=2, ensure_ascii=False) + "\n")
+    print(
+        json.dumps(
+            {
+                "book_id": result["book"]["id"],
+                "lesson_id": result["lesson"]["id"],
+                "mode": result["mode"],
+                "fingerprint": result["fingerprint"],
+            }
         )
-    print(json.dumps({
-        "book_id": result["book"]["id"],
-        "lesson_id": result["lesson"]["id"],
-        "mode": result["mode"],
-        "fingerprint": result["fingerprint"],
-    }))
+    )
 
 
 if __name__ == "__main__":
