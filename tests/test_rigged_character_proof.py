@@ -34,9 +34,7 @@ def test_real_motion_is_required_not_camera_pan() -> None:
 
 
 def test_external_source_is_pinned_and_review_is_nonpublishable() -> None:
-    workflow = (
-        ROOT / ".github/workflows/rigged-character-proof.yml"
-    ).read_text()
+    workflow = (ROOT / ".github/workflows/rigged-character-proof.yml").read_text()
     assert "8aa993d7141b6f37e5d16f611264e6f1ab520f30" in workflow
     assert "npm ci" in workflow
     assert "40047215101" in workflow
