@@ -74,8 +74,9 @@ def read_contract(path: Path) -> dict[str, Any]:
     return data
 
 
-
-def verify_physical_contact(expected: dict[str, Any], actual: dict[str, Any], master_hash: str) -> None:
+def verify_physical_contact(
+    expected: dict[str, Any], actual: dict[str, Any], master_hash: str
+) -> None:
     """Check evaluated skeletal/prop transforms, not a claimed interaction flag.
 
     Distances are world-space meters; this is numeric validation, not visual approval.

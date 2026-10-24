@@ -129,5 +129,5 @@ def test_nonfinite_or_boolean_coords_are_never_valid_measurement() -> None:
     for invalid in (float("nan"), True):
         evidence = _physical_sample()
         evidence["hand_at_contact"][0] = invalid
-        with pytest.raises(sa.CreativeGateError, match="numeric|non-finite"):
+        with pytest.raises(sa.CreativeGateError, match=r"numeric|non-finite"):
             sa.verify_physical_contact(expected, {"physical_contact_evidence": evidence}, "a" * 64)
