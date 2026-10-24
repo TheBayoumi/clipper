@@ -1,6 +1,11 @@
 name: Rigged human motion proof (CC0 character)
 
 on:
+  push:
+    branches:
+      - feat/unified-niche-tts
+    paths:
+      - .github/workflows/rigged-character-proof.yml
   workflow_dispatch:
     inputs:
       frames:
