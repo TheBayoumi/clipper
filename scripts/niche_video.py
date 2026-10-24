@@ -479,6 +479,20 @@ def _duration(path: Path) -> float:
     return seconds
 
 
+@lru_cache(maxsize=1)
+def _book_artwork_creator() -> Any:
+    """Load a sibling artwork module without relying on cwd or sys.path."""
+    import importlib.util
+
+    source = Path(__file__).with_name("book_cartoon.py")
+    spec = importlib.util.spec_from_file_location("clipper_book_cartoon", source)
+    if spec is None or spec.loader is None:
+        raise NicheVideoError("book cartoon artwork module could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.create_assets
+
+
 def _render_scene(
     scene: Scene,
     audio: Path,
@@ -490,9 +504,7 @@ def _render_scene(
 ) -> float:
     duration = math.ceil((_duration(audio) + 0.20) * 30) / 30.0
     if config is not None and config.format == "book_lesson":
-        from book_cartoon import create_assets
-
-        bg, talking, idle = create_assets(
+        bg, talking, idle = _book_artwork_creator()(
             target.parent,
             config.brand,
             config.book_title,
