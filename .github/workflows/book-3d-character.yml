@@ -1,0 +1,80 @@
+name: Book 3D Character Acting Proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  actor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install WebGL, Chromium and FFmpeg
+        run: |
+          set -euo pipefail
+          npm install --no-save --no-audit --no-fund three@0.180.0 playwright@1.56.1
+          npx playwright install --with-deps chromium
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Fetch real licensed skeletal actor and three motions
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/book_3d/assets artifacts/book_3d/source
+          curl -fLsS --retry 3 --max-time 90 \
+            https://models.codelove.in/models/business-male-01.glb \
+            -o artifacts/book_3d/assets/host.glb
+          for name in m_gestic_thoughtful_01 m_gestic_talk_neutral_01 m_idle_look_around_01; do
+            curl -fLsS --retry 3 --max-time 90 \
+              "https://models.codelove.in/animations/$name.glb" \
+              -o "artifacts/book_3d/assets/$name.glb"
+          done
+          python - <<'PY'
+          from pathlib import Path
+          sources=list(Path('artifacts/book_3d/assets').glob('*.glb'))
+          assert len(sources)==4
+          for source in sources:
+              content=source.read_bytes()
+              assert content[:4]==b'glTF' and 10000<len(content)<30000000, source
+              print(source, len(content))
+          PY
+          sha256sum artifacts/book_3d/assets/*.glb
+          cat > artifacts/book_3d/assets/SOURCE_LICENSE.txt <<'EOF'
+          Publisher: https://models.codelove.in/
+          Source: https://models.codelove.in/models/business-male-01/
+          Source: https://models.codelove.in/animations/
+          Model and animations shown as MIT licensed on publisher pages.
+          Preserve embedded notices and independently confirm original
+          copyright/license metadata before shipping these as a final product.
+          Internal creative review only.
+          EOF
+      - name: Reuse original Kokoro narration (no new Qwen or TTS)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download 40047215101 --pattern 'niche-draft-*' \
+            --dir artifacts/book_3d/source
+          SOURCE="$(find artifacts/book_3d/source -name draft.mp4 -type f -print -quit)"
+          test -n "$SOURCE"
+          ffmpeg -hide_banner -loglevel error -y -i "$SOURCE" -t 12 \
+            -ac 1 -ar 24000 artifacts/book_3d/source/voice.wav
+      - name: Render real rigged character acting and QC video
+        run: node scripts/book_3d_render.mjs
+      - name: Upload unpublished acting proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: book-real-3d-character-acting
+          path: |
+            artifacts/book_3d/character-acting-review-12s.mp4
+            artifacts/book_3d/manifest.json
+            artifacts/book_3d/assets/SOURCE_LICENSE.txt
+          if-no-files-found: warn
+          retention-days: 14
