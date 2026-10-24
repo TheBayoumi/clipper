@@ -126,7 +126,9 @@ def main() -> None:
         evidence["status"] = "CANDIDATE_GLB_GENERATED_NOT_RIGGED"
     except Exception as error:
         evidence.update(
-            status="REMOTE_INFERENCE_BLOCKED", error_type=type(error).__name__, error_reason=str(error)[:1400]
+            status="REMOTE_INFERENCE_BLOCKED",
+            error_type=type(error).__name__,
+            error_reason=str(error)[:1400],
         )
         raise
     finally:
