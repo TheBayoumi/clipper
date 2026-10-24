@@ -145,6 +145,49 @@ The retired TRELLIS and legacy Wan technical qualification workflows are
 not the active production account-router; do not infer they have fallback.
 
 
+
+## Versioned deployments and shared shot cache
+
+Implemented on `feat/unified-niche-tts` for the existing pilot workflow:
+
+- `scripts/modal_versioned_dispatch.sh` computes an immutable application
+  name using SHA256 of the GPU app source (`modal_qwen_keyframes.py` or
+  `modal_wan_s2v.py`). It probes the deployed Modal function by app name
+  and function name, reuses it when present, and deploys **only** a missing
+  application version on the workspace selected for inference. Qwen and Wan
+  CPU clients call `modal.Function.from_name(...).remote(...)`, not
+  `modal run scripts/...`. Backup applications are installed lazily and
+  only on explicit inference-quota exhaustion, without falling back on
+  authentication, deployment, CUDA, budget, credit, model or timeout errors.
+- `scripts/wan_shared_shot_cache.py` checks the most recent 15 completed
+  runs of the **same GitHub workflow and branch** and restores verified shot
+  candidates from the existing immutable GitHub Actions artifact bundle.
+  A Qwen keyframe is checked against its request fingerprint, source artwork,
+  storyboard/model revisions, output SHA256 and frame dimensions.
+  A Wan MP4 is checked against image, audio, prompt, seed, pinned model
+  revision and the recorded MP4 SHA256. Reusable results are independent of
+  Modal workspace and copied to the current GitHub runner; the workflow
+  skips Modal entirely when the relevant shot already exists.
+- The existing `if: always()` artifact upload captures completed shots
+  and evidence even when an inference stage fails. A later run can reuse
+  **completed** shots from that failed workflow. Partially generated Wan
+  frames, unfinished model inference, and workspace-specific model weights
+  cannot be resumed or shared. The existing upload bundle is shared storage;
+  artifacts are not yet individually indexed/uploaded immediately per shot.
+- Modal's persistent model-weight Volumes remain workspace-specific.
+  Switching accounts can still require the destination workspace to build
+  and download weights on its first use, but **does not restart the
+  orchestration**, re-run cached editorial/TTS, or regenerate an already
+  validated shot.
+- `mode: credentials` remains GPU-free; this feature must be verified
+  using CPU preflight and simulated Modal calls before expensive inference.
+  Model/frame creative approval remains independent of technical caching.
+
+This is infrastructure for the current **three-shot pilot**, not evidence
+that the planned 30–60-second directed episode, I2V shots, or final montage
+is already complete.
+
+
 ## Acceptance and regression policy
 
 - Preserve existing archived 15-second storyboard tests for backwards
