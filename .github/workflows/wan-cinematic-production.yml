@@ -27,6 +27,10 @@ on:
         type: string
         default: '40047215101'
         required: true
+      wan_seed:
+        type: number
+        default: 724
+        required: true
 
 permissions:
   contents: read
@@ -219,41 +223,46 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'speaking'
         env:
           GH_TOKEN: ${{ github.token }}
+          WAN_SEED: ${{ inputs.wan_seed }}
         run: |
           python scripts/wan_shared_shot_cache.py restore --stage speaking \
             --reference artifacts/cinematic/keyframes/hook.png \
             --audio artifacts/cinematic/kokoro.wav --prompt "$WAN_PROMPT" \
-            --output artifacts/cinematic
+            --seed "$WAN_SEED" --output artifacts/cinematic
       - name: Generate speaking video using versioned deployed Modal app
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'speaking'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          WAN_SEED: ${{ inputs.wan_seed }}
         run: |
           set -euo pipefail
           if python scripts/wan_shared_shot_cache.py check --stage speaking \
              --reference artifacts/cinematic/keyframes/hook.png \
              --audio artifacts/cinematic/kokoro.wav --prompt "$WAN_PROMPT" \
-             --output artifacts/cinematic; then
+             --seed "$WAN_SEED" --output artifacts/cinematic; then
             echo "MODAL_S2V_SKIPPED_VERIFIED_MP4"
           else
             bash scripts/modal_versioned_dispatch.sh \
               scripts/modal_wan_s2v.py generate_s2v speaking \
               --reference artifacts/cinematic/keyframes/hook.png \
               --audio artifacts/cinematic/kokoro.wav \
-              --output artifacts/cinematic --prompt "$WAN_PROMPT"
+              --output artifacts/cinematic --prompt "$WAN_PROMPT" \
+              --seed "$WAN_SEED"
           fi
       - name: Audit actual MP4, keyframe provenance, and closed creative gate
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'speaking'
+        env:
+          WAN_SEED: ${{ inputs.wan_seed }}
         run: |
           set -euo pipefail
           python scripts/wan_shot_contract.py \
             --reference artifacts/cinematic/keyframes/hook.png \
             --audio artifacts/cinematic/kokoro.wav \
-            --prompt "$WAN_PROMPT" \
+            --prompt "$WAN_PROMPT" --seed "$WAN_SEED" \
             --video artifacts/cinematic/wan-s2v-candidate.mp4 \
             --manifest artifacts/cinematic/evidence/shot-qa.json
           python - <<'PY'
-          import hashlib, json
+          import hashlib, json, os
           from pathlib import Path
           root = Path("artifacts/cinematic")
           key = json.loads((root / "keyframes/hook.json").read_text())
@@ -261,6 +270,7 @@ jobs:
           qa = json.loads((root / "evidence/shot-qa.json").read_text())
           assert key["image_sha256"] == wan["image_sha256"] == qa["image"]["sha256"]
           assert wan["video_sha256"] == qa["video_sha256"]
+          assert wan["seed"] == qa["seed"] == int(os.environ["WAN_SEED"])
           assert wan["video_sha256"] == hashlib.sha256((root / "wan-s2v-candidate.mp4").read_bytes()).hexdigest()
           assert qa["publish_eligible"] is False
           print("VIDEO_TECHNICALLY_VALID_HUMAN_CREATIVE_REVIEW_PENDING")
