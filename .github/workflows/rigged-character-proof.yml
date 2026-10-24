@@ -69,16 +69,6 @@ jobs:
             --detail medium --out ../artifacts/character-proof/rig
           ls -lh ../artifacts/character-proof/rig
           test "$(find ../artifacts/character-proof/rig -name '*.glb' -size +100k | wc -l)" -eq 1
-      - name: Import into Blender and prove moving arm bones
-        env:
-          FRAMES: ${{ inputs.frames || '24' }}
-        run: |
-          set -euo pipefail
-          MODEL="$(find artifacts/character-proof/rig -name '*.glb' -print -quit)"
-          test -s "$MODEL"
-          blender -b --factory-startup --python scripts/blender_character_probe.py -- \
-            --glb "$MODEL" --output artifacts/character-proof --frames "$FRAMES" --samples 8
-          test "$(find artifacts/character-proof/frames -name 'frame_*.png' | wc -l)" -eq "$FRAMES"
       - name: Reuse real Kokoro voice from completed original draft
         env:
           GH_TOKEN: ${{ github.token }}
@@ -90,6 +80,31 @@ jobs:
           test -s "$SOURCE"
           ffmpeg -hide_banner -loglevel error -y -i "$SOURCE" -t 5 -vn \
             -ac 1 -ar 24000 -c:a pcm_s16le artifacts/character-proof/kokoro-source.wav
+      - name: Extract sound-derived timed mouth shapes with Rhubarb
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/tools/rhubarb
+          curl --fail --location --retry 2 --silent --show-error \
+            https://github.com/DanielSWolf/rhubarb-lip-sync/releases/download/v1.14.0/Rhubarb-Lip-Sync-1.14.0-Linux.zip \
+            -o artifacts/tools/rhubarb/archive.zip
+          unzip -q artifacts/tools/rhubarb/archive.zip -d artifacts/tools/rhubarb/unpacked
+          BIN="$(find artifacts/tools/rhubarb/unpacked -type f -name rhubarb -print -quit)"
+          test -n "$BIN"
+          chmod +x "$BIN"
+          "$BIN" --exportFormat json \
+            -o artifacts/character-proof/mouth-cues.json artifacts/character-proof/kokoro-source.wav
+          test -s artifacts/character-proof/mouth-cues.json
+      - name: Import into Blender and prove moving arm bones
+        env:
+          FRAMES: ${{ inputs.frames || '24' }}
+        run: |
+          set -euo pipefail
+          MODEL="$(find artifacts/character-proof/rig -name '*.glb' -print -quit)"
+          test -s "$MODEL"
+          blender -b --factory-startup --python scripts/blender_character_probe.py -- \
+            --glb "$MODEL" --output artifacts/character-proof --frames "$FRAMES" --samples 8 \
+            --mouth-cues artifacts/character-proof/mouth-cues.json
+          test "$(find artifacts/character-proof/frames -name 'frame_*.png' | wc -l)" -eq "$FRAMES"
       - name: Produce genuine motion review video and check full decode
         env:
           FRAMES: ${{ inputs.frames || '24' }}
@@ -120,5 +135,6 @@ jobs:
             artifacts/character-proof/rig/*.glb
             artifacts/character-proof/review/
             artifacts/character-proof/kokoro-source.wav
+            artifacts/character-proof/mouth-cues.json
           if-no-files-found: warn
           retention-days: 14
