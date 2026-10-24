@@ -74,7 +74,7 @@ jobs:
               print("PINNED_OPEN_MODEL_AVAILABLE", repo, info.sha)
           PY
       - name: Decode one hash-locked identity and construct storyboard-derived shots
-        if: inputs.mode != 'preflight'
+        if: github.event_name == 'workflow_dispatch' && inputs.mode != 'preflight'
         env:
           REFERENCE: ${{ inputs.reference_path }}
           SOURCE_SHA: ${{ inputs.approved_reference_sha256 }}
@@ -114,7 +114,7 @@ jobs:
               )["fingerprint"])
           PY
       - name: Authenticate Modal and provision model token
-        if: inputs.mode != 'preflight'
+        if: github.event_name == 'workflow_dispatch' && inputs.mode != 'preflight'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
@@ -124,10 +124,10 @@ jobs:
           modal app list --json > /dev/null
           modal secret create clipper-wan-hf HF_TOKEN="$HF_TOKEN" --force
       - name: Deploy Apache-2.0 Qwen Image Edit on Modal
-        if: inputs.mode != 'preflight'
+        if: github.event_name == 'workflow_dispatch' && inputs.mode != 'preflight'
         run: modal deploy scripts/modal_qwen_keyframes.py
       - name: Generate and cache cinematic keyframes entirely inside Clipper
-        if: inputs.mode != 'preflight'
+        if: github.event_name == 'workflow_dispatch' && inputs.mode != 'preflight'
         env:
           SHOT_IDS: ${{ inputs.shot_ids }}
         run: |
@@ -137,7 +137,7 @@ jobs:
             --shot-ids "$SHOT_IDS" \
             --output artifacts/cinematic/keyframes
       - name: Verify actual keyframe and original identity chain
-        if: inputs.mode != 'preflight'
+        if: github.event_name == 'workflow_dispatch' && inputs.mode != 'preflight'
         env:
           SOURCE_SHA: ${{ inputs.approved_reference_sha256 }}
           SHOT_IDS: ${{ inputs.shot_ids }}
@@ -159,7 +159,7 @@ jobs:
               print("KEYFRAME_READY_FOR_VIDEO_ONLY", name.strip(), e["image_sha256"], e["cache"])
           PY
       - name: Recover cached Kokoro voice without rerunning Qwen editorial
-        if: inputs.mode == 'speaking'
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'speaking'
         env:
           GH_TOKEN: ${{ github.token }}
           VOICE_RUN: ${{ inputs.voice_source_run }}
@@ -175,10 +175,10 @@ jobs:
           ffmpeg -hide_banner -loglevel error -y -i "$SOURCE" -map 0:a:0 -t 5 \
             -ac 1 -ar 24000 -c:a pcm_s16le artifacts/cinematic/kokoro.wav
       - name: Deploy official Wan S2V model
-        if: inputs.mode == 'speaking'
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'speaking'
         run: modal deploy scripts/modal_wan_s2v.py
       - name: Generate CINEMATIC speaking video from Qwen frame
-        if: inputs.mode == 'speaking'
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'speaking'
         run: |
           modal run scripts/modal_wan_s2v.py \
             --reference artifacts/cinematic/keyframes/hook.png \
@@ -186,7 +186,7 @@ jobs:
             --output artifacts/cinematic \
             --prompt "$WAN_PROMPT"
       - name: Audit actual MP4, keyframe provenance, and closed creative gate
-        if: inputs.mode == 'speaking'
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'speaking'
         run: |
           set -euo pipefail
           python scripts/wan_shot_contract.py \
@@ -209,7 +209,7 @@ jobs:
           print("VIDEO_TECHNICALLY_VALID_HUMAN_CREATIVE_REVIEW_PENDING")
           PY
       - name: Archive generated frames, video and QA evidence
-        if: always() && inputs.mode != 'preflight'
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.mode != 'preflight'
         uses: actions/upload-artifact@v4
         with:
           name: clipper-cinematic-${{ github.run_id }}
