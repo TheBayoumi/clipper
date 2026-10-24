@@ -40,7 +40,7 @@ jobs:
           echo "e62c02938d421d1a00c360795ad0d26d5b78f2818f8b8fd168daf38942b4f2a2  artifacts/host-audit/page-to-life-host-candidate.glb" | sha256sum --check -
       - name: Install pinned mesh and offscreen image dependencies
         run: |
-          python -m pip install "trimesh==4.11.1" "numpy==2.2.6" "Pillow==11.3.0" "vtk==9.5.2"
+          python -m pip install "trimesh==4.11.1" "networkx==3.4.2" "numpy==2.2.6" "Pillow==11.3.0" "vtk==9.5.2"
       - name: Strip only provable TRELLIS background planes and audit topology
         run: |
           set -euo pipefail
