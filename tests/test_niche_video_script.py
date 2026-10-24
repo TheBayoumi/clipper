@@ -223,10 +223,7 @@ def test_complete_sentence_book_edit_accepts_oversized_script_without_truncation
     )
     original = {
         "title": "Action over intention",
-        "scenes": [
-            {"headline": f"STEP {index}", "narration": narration}
-            for index in range(1, 5)
-        ],
+        "scenes": [{"headline": f"STEP {index}", "narration": narration} for index in range(1, 5)],
     }
     assert sum(len(s["narration"].split()) for s in original["scenes"]) > 125
     model = Mock(return_value=json.dumps(original))
@@ -236,15 +233,11 @@ def test_complete_sentence_book_edit_accepts_oversized_script_without_truncation
     assert len(episode.scenes) == 4
     assert 45 <= sum(len(scene.narration.split()) for scene in episode.scenes) <= 125
     assert episode.scenes[0].narration.startswith("Start with one small action")
-    assert episode.scenes[-1].narration.endswith(
-        "without making big promises."
-    )
+    assert episode.scenes[-1].narration.endswith("without making big promises.")
     for scene in episode.scenes:
         assert 6 <= len(scene.narration.split()) <= 45
         assert all(sentence in narration for sentence in scene.narration.split(". ") if sentence)
-    audit = json.loads(
-        (tmp_path / "script_diagnostics" / f"{digest}.json").read_text()
-    )
+    audit = json.loads((tmp_path / "script_diagnostics" / f"{digest}.json").read_text())
     assert audit[0]["accepted"] is True
     assert audit[0]["complete_sentence_edit"] is True
     assert (tmp_path / "scripts" / f"{digest}.json").is_file()
@@ -254,10 +247,7 @@ def test_book_edit_does_not_chop_unbreakable_long_sentence() -> None:
     very_long = " ".join(["unbroken"] * 48) + "."
     raw = {
         "title": "Too long",
-        "scenes": [
-            {"headline": f"SCENE {i}", "narration": very_long}
-            for i in range(3)
-        ],
+        "scenes": [{"headline": f"SCENE {i}", "narration": very_long} for i in range(3)],
     }
     with pytest.raises(nv.NicheVideoError, match="whole-sentence boundaries"):
         nv._compact_book_sentences(raw)
