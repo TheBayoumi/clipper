@@ -15,7 +15,6 @@ from pathlib import Path
 
 import bpy
 from mathutils import Vector
-
 from viseme_cues import frame_angles, read_cues
 
 
