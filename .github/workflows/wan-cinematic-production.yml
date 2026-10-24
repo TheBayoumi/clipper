@@ -8,7 +8,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [preflight, keyframes, speaking]
+        options: [preflight, credentials, keyframes, speaking]
         default: preflight
         required: true
       shot_ids:
@@ -77,6 +77,25 @@ jobs:
               assert hf_hub_download(repo_id=repo, revision=rev, filename=filename, token=token)
               print("PINNED_OPEN_MODEL_AVAILABLE", repo, info.sha)
           PY
+      - name: Authenticate each Modal workspace without allocating a GPU
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'credentials'
+        run: |
+          set -euo pipefail
+          python -m pip install 'modal==1.5.5'
+          for slot in 1 2 3; do
+            if [[ "$slot" == 1 ]]; then id_key=MODAL_TOKEN_ID; secret_key=MODAL_TOKEN_SECRET;
+            else id_key="MODAL_TOKEN_ID_${slot}"; secret_key="MODAL_TOKEN_SECRET_${slot}"; fi
+            id="${!id_key:-}"; secret="${!secret_key:-}"
+            if [[ -z "$id" || -z "$secret" ]]; then
+              echo "::error::Modal workspace slot ${slot} lacks a complete token pair"; exit 2
+            fi
+            if MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret" modal app list --json > /dev/null; then
+              echo "MODAL_AUTHENTICATED_SLOT=${slot}"
+            else
+              echo "::error::Modal authentication failed for workspace slot ${slot}"; exit 1
+            fi
+          done
+          echo 'All three Modal credentials authenticate; independent quotas and GPU permissions require separate verification'
       - name: Decode one hash-locked identity and construct storyboard-derived shots
         if: github.event_name == 'workflow_dispatch' && inputs.mode != 'preflight'
         env:
