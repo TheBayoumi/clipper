@@ -144,13 +144,15 @@ def test_cache_only_wan_replay_cannot_allocate_gpu_on_cache_miss() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/wan-cinematic-production.yml").read_text())
     steps = workflow["jobs"]["cinematic"]["steps"]
     video = next(
-        step for step in steps
+        step
+        for step in steps
         if step.get("name") == "Generate speaking video using versioned deployed Modal app"
     )
     run = video["run"]
-    assert 'REQUIRE_CACHED_VIDEO: ${{ inputs.require_cached_video }}' in (
-        ROOT / ".github/workflows/wan-cinematic-production.yml"
-    ).read_text()
+    assert (
+        "REQUIRE_CACHED_VIDEO: ${{ inputs.require_cached_video }}"
+        in (ROOT / ".github/workflows/wan-cinematic-production.yml").read_text()
+    )
     assert 'if [[ "$REQUIRE_CACHED_VIDEO" == "true" ]]; then' in run
     assert run.index('if [[ "$REQUIRE_CACHED_VIDEO"') < run.index(
         "bash scripts/modal_versioned_dispatch.sh"
