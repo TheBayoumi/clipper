@@ -9,13 +9,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
 
 import modal
-
 from wan_keyframe_contract import prepare, verified_local_keyframe
 
 QWEN_FUNCTION = "generate_keyframe"
@@ -110,7 +108,7 @@ def render_speaking(args: argparse.Namespace) -> None:
         video = response.pop("video")
         if sha(video) != response["video_sha256"]:
             raise RuntimeError("Modal returned video SHA mismatch")
-        if response.get("model_id") != WAN_MODEL_ID or response.get("model_revision") != WAN_REVISION:
+        if (\n            response.get("model_id") != WAN_MODEL_ID\n            or response.get("model_revision") != WAN_REVISION\n        ):
             raise RuntimeError("Wan model provenance mismatch")
         candidate.write_bytes(video)
         evidence.update(response, status="CANDIDATE_GENERATED_NOT_VISUALLY_APPROVED")
