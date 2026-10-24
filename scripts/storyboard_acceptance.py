@@ -76,8 +76,12 @@ def read_contract(path: Path) -> dict[str, Any]:
 
 def audit_render(contract: dict[str, Any], manifest_path: Path, video: Path) -> dict[str, Any]:
     if not manifest_path.is_file():
-        raise CreativeGateError("missing storyboard-specific render manifest; generic rig proof is insufficient")
-    manifest = _required(json.loads(manifest_path.read_text(encoding="utf-8")), dict, "render manifest")
+        raise CreativeGateError(
+            "missing storyboard-specific render manifest; generic rig proof is insufficient"
+        )
+    manifest = _required(
+        json.loads(manifest_path.read_text(encoding="utf-8")), dict, "render manifest"
+    )
     if manifest.get("storyboard_schema") != "storyboard-production-v1":
         raise CreativeGateError("renderer did not consume approved storyboard contract")
     character = contract["character"]
