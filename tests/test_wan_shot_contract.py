@@ -66,7 +66,7 @@ def test_non_kokoro_audio_and_bad_duration_fail_closed(tmp_path: Path) -> None:
     reference, audio = tmp_path / "face.png", tmp_path / "voice.wav"
     make_reference(reference)
     make_audio(audio, 8.0)
-    with pytest.raises(WAN.ShotContractError, match="1 to 6.5"):
+    with pytest.raises(WAN.ShotContractError, match=r"1 to 6\.5"):
         WAN.prepare(reference, audio, "Cinematic medium close-up of the narrator speaking.")
 
 
