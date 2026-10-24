@@ -1,6 +1,9 @@
 name: Official TRELLIS.2 Modal character generation
 
 on:
+  push:
+    branches: [feat/unified-niche-tts]
+    paths: [.github/workflows/approved-host-modal-trellis2.yml]
   workflow_dispatch:
     inputs:
       mode:
@@ -25,6 +28,7 @@ concurrency:
 
 jobs:
   modal-trellis2:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
