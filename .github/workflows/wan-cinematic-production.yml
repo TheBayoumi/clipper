@@ -57,9 +57,9 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install 'pytest>=9,<10' 'Pillow>=11,<13' 'ruff>=0.15.22,<1' 'huggingface-hub==0.36.2'
-          python -m ruff check scripts/wan_keyframe_contract.py scripts/modal_qwen_keyframes.py tests/test_wan_keyframe_contract.py scripts/wan_episode_plan.py tests/test_wan_episode_plan.py
-          python -m ruff format --check scripts/wan_keyframe_contract.py scripts/modal_qwen_keyframes.py tests/test_wan_keyframe_contract.py scripts/wan_episode_plan.py tests/test_wan_episode_plan.py
-          python -m pytest -q -o addopts='' tests/test_wan_keyframe_contract.py tests/test_wan_storyboard_plan.py tests/test_wan_shot_contract.py tests/test_wan_episode_plan.py
+          python -m ruff check scripts/wan_keyframe_contract.py scripts/modal_qwen_keyframes.py scripts/modal_deployed_client.py scripts/wan_shared_shot_cache.py tests/test_wan_keyframe_contract.py tests/test_modal_versioned_cache.py scripts/wan_episode_plan.py tests/test_wan_episode_plan.py
+          python -m ruff format --check scripts/wan_keyframe_contract.py scripts/modal_qwen_keyframes.py scripts/modal_deployed_client.py scripts/wan_shared_shot_cache.py tests/test_wan_keyframe_contract.py tests/test_modal_versioned_cache.py scripts/wan_episode_plan.py tests/test_wan_episode_plan.py
+          python -m pytest -q -o addopts='' tests/test_wan_keyframe_contract.py tests/test_modal_versioned_cache.py tests/test_wan_storyboard_plan.py tests/test_wan_shot_contract.py tests/test_wan_episode_plan.py
       - name: Validate pinned Qwen and Wan public model metadata
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -149,72 +149,34 @@ jobs:
             fi
           done
           python -m pip install 'modal==1.5.5'
-      - name: Generate cinematic keyframes with quota-aware Modal routing
+      - name: Restore verified cross-run Qwen shot cache
+        if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'keyframes' || inputs.mode == 'speaking')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHOT_IDS: ${{ inputs.shot_ids }}
+        run: |
+          python scripts/wan_shared_shot_cache.py restore --stage keyframes \
+            --reference "$WAN_REFERENCE_FILE" \
+            --storyboard niches/atomic-habits-approved-storyboard.json \
+            --shot-ids "$SHOT_IDS" --output artifacts/cinematic
+      - name: Generate cinematic keyframes using versioned deployed Modal app
         if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'keyframes' || inputs.mode == 'speaking')
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           SHOT_IDS: ${{ inputs.shot_ids }}
         run: |
           set -euo pipefail
-          if [[ -z "${HF_TOKEN:-}" ]]; then echo '::error::HF_TOKEN is missing'; exit 2; fi
-          run_modal_stage() {
-            local app_script="$1"; shift
-            local preferred="${MODAL_ACCOUNT_SLOT:-1}"
-            local slot id_key secret_key id secret log_file
-            if [[ ! "$preferred" =~ ^[123]$ ]]; then
-              echo "::error::Unknown Modal account slot"; return 2
-            fi
-            # Never revisit a workspace that already failed its quota gate.
-            for ((slot=preferred; slot<=3; slot++)); do
-              if [[ "$slot" == 1 ]]; then id_key=MODAL_TOKEN_ID; secret_key=MODAL_TOKEN_SECRET;
-              else id_key="MODAL_TOKEN_ID_${slot}"; secret_key="MODAL_TOKEN_SECRET_${slot}"; fi
-              id="${!id_key:-}"; secret="${!secret_key:-}"
-              if [[ -z "$id" && -z "$secret" ]]; then continue; fi
-              if [[ -z "$id" || -z "$secret" ]]; then
-                echo "::error::Incomplete Modal credential pair for slot ${slot}"; return 2
-              fi
-              log_file="$(mktemp)"
-              echo "Modal ${app_script}: attempting authorized workspace slot ${slot}"
-              # Authentication/deployment failures are never failover triggers.
-              if ! (
-                export MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret"
-                modal app list --json >/dev/null &&
-                modal secret create clipper-wan-hf "HF_TOKEN=$HF_TOKEN" --force &&
-                modal deploy "$app_script"
-              ) >"$log_file" 2>&1; then
-                tail -n 80 "$log_file"; rm -f "$log_file"
-                echo "::error::Modal authentication, secret or deployment failure; no failover"
-                return 1
-              fi
-              : > "$log_file"
-              if (
-                export MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret"
-                modal run "$app_script" "$@"
-              ) >"$log_file" 2>&1; then
-                cat "$log_file"; rm -f "$log_file"
-                echo "MODAL_ACCOUNT_SLOT=$slot" >> "$GITHUB_ENV"
-                printf '{"app": "%s", "credential_slot": %s, "publish_eligible": false}\n' "$app_script" "$slot" > "artifacts/cinematic/evidence/$(basename "$app_script" .py)-modal-route.json"
-                echo "Modal ${app_script}: completed on slot ${slot}"
-                return 0
-              fi
-              # Explicit quota-exhaustion error from inference ONLY.
-              if awk 'NF { last=$0 } END { print last }' "$log_file" | grep -Eiq 'quota[[:space:]:_-]*(exceeded|exhausted|reached)|quota[[:space:]:_-]*limit[[:space:]:_-]*(exceeded|reached)|exceeded[[:space:]]+(the[[:space:]]+)?(workspace[[:space:]]+)?(GPU[[:space:]]+)?quota|reached[[:space:]]+(the[[:space:]]+)?(workspace[[:space:]]+)?quota'; then
-                tail -n 80 "$log_file"; rm -f "$log_file"
-                echo "::warning::Explicit Modal inference quota exhaustion in workspace slot ${slot}; next authorized workspace"
-              else
-                tail -n 100 "$log_file"; rm -f "$log_file"
-                echo "::error::Non-quota Modal inference failure; no failover"
-                return 1
-              fi
-            done
-            echo '::error::All configured Modal workspaces have exhausted explicit inference quotas, or no usable credentials remain'
-            return 1
-          }
-          run_modal_stage scripts/modal_qwen_keyframes.py \
-            --reference "$WAN_REFERENCE_FILE" \
-            --storyboard niches/atomic-habits-approved-storyboard.json \
-            --shot-ids "$SHOT_IDS" \
-            --output artifacts/cinematic/keyframes
+          if python scripts/wan_shared_shot_cache.py check --stage keyframes \
+             --reference "$WAN_REFERENCE_FILE" --shot-ids "$SHOT_IDS" \
+             --output artifacts/cinematic; then
+            echo "MODAL_KEYFRAMES_SKIPPED_ALL_VERIFIED"
+          else
+            bash scripts/modal_versioned_dispatch.sh \
+              scripts/modal_qwen_keyframes.py generate_keyframe keyframes \
+              --reference "$WAN_REFERENCE_FILE" \
+              --storyboard niches/atomic-habits-approved-storyboard.json \
+              --shot-ids "$SHOT_IDS" --output artifacts/cinematic/keyframes
+          fi
       - name: Verify actual keyframe and original identity chain
         if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'keyframes' || inputs.mode == 'speaking')
         env:
@@ -253,71 +215,33 @@ jobs:
           test -n "$SOURCE" || { echo "::error::Cached Kokoro audio unavailable"; exit 1; }
           ffmpeg -hide_banner -loglevel error -y -i "$SOURCE" -map 0:a:0 -t 5 \
             -ac 1 -ar 24000 -c:a pcm_s16le artifacts/cinematic/kokoro.wav
-      - name: Generate speaking video with quota-aware Modal routing
+      - name: Restore verified cross-run Wan video shot cache
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'speaking'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/wan_shared_shot_cache.py restore --stage speaking \
+            --reference artifacts/cinematic/keyframes/hook.png \
+            --audio artifacts/cinematic/kokoro.wav --prompt "$WAN_PROMPT" \
+            --output artifacts/cinematic
+      - name: Generate speaking video using versioned deployed Modal app
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'speaking'
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ -z "${HF_TOKEN:-}" ]]; then echo '::error::HF_TOKEN is missing'; exit 2; fi
-          run_modal_stage() {
-            local app_script="$1"; shift
-            local preferred="${MODAL_ACCOUNT_SLOT:-1}"
-            local slot id_key secret_key id secret log_file
-            if [[ ! "$preferred" =~ ^[123]$ ]]; then
-              echo "::error::Unknown Modal account slot"; return 2
-            fi
-            # Never revisit a workspace that already failed its quota gate.
-            for ((slot=preferred; slot<=3; slot++)); do
-              if [[ "$slot" == 1 ]]; then id_key=MODAL_TOKEN_ID; secret_key=MODAL_TOKEN_SECRET;
-              else id_key="MODAL_TOKEN_ID_${slot}"; secret_key="MODAL_TOKEN_SECRET_${slot}"; fi
-              id="${!id_key:-}"; secret="${!secret_key:-}"
-              if [[ -z "$id" && -z "$secret" ]]; then continue; fi
-              if [[ -z "$id" || -z "$secret" ]]; then
-                echo "::error::Incomplete Modal credential pair for slot ${slot}"; return 2
-              fi
-              log_file="$(mktemp)"
-              echo "Modal ${app_script}: attempting authorized workspace slot ${slot}"
-              # Authentication/deployment failures are never failover triggers.
-              if ! (
-                export MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret"
-                modal app list --json >/dev/null &&
-                modal secret create clipper-wan-hf "HF_TOKEN=$HF_TOKEN" --force &&
-                modal deploy "$app_script"
-              ) >"$log_file" 2>&1; then
-                tail -n 80 "$log_file"; rm -f "$log_file"
-                echo "::error::Modal authentication, secret or deployment failure; no failover"
-                return 1
-              fi
-              : > "$log_file"
-              if (
-                export MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret"
-                modal run "$app_script" "$@"
-              ) >"$log_file" 2>&1; then
-                cat "$log_file"; rm -f "$log_file"
-                echo "MODAL_ACCOUNT_SLOT=$slot" >> "$GITHUB_ENV"
-                printf '{"app": "%s", "credential_slot": %s, "publish_eligible": false}\n' "$app_script" "$slot" > "artifacts/cinematic/evidence/$(basename "$app_script" .py)-modal-route.json"
-                echo "Modal ${app_script}: completed on slot ${slot}"
-                return 0
-              fi
-              # Explicit quota-exhaustion error from inference ONLY.
-              if awk 'NF { last=$0 } END { print last }' "$log_file" | grep -Eiq 'quota[[:space:]:_-]*(exceeded|exhausted|reached)|quota[[:space:]:_-]*limit[[:space:]:_-]*(exceeded|reached)|exceeded[[:space:]]+(the[[:space:]]+)?(workspace[[:space:]]+)?(GPU[[:space:]]+)?quota|reached[[:space:]]+(the[[:space:]]+)?(workspace[[:space:]]+)?quota'; then
-                tail -n 80 "$log_file"; rm -f "$log_file"
-                echo "::warning::Explicit Modal inference quota exhaustion in workspace slot ${slot}; next authorized workspace"
-              else
-                tail -n 100 "$log_file"; rm -f "$log_file"
-                echo "::error::Non-quota Modal inference failure; no failover"
-                return 1
-              fi
-            done
-            echo '::error::All configured Modal workspaces have exhausted explicit inference quotas, or no usable credentials remain'
-            return 1
-          }
-          run_modal_stage scripts/modal_wan_s2v.py \
-            --reference artifacts/cinematic/keyframes/hook.png \
-            --audio artifacts/cinematic/kokoro.wav \
-            --output artifacts/cinematic \
-            --prompt "$WAN_PROMPT"
+          if python scripts/wan_shared_shot_cache.py check --stage speaking \
+             --reference artifacts/cinematic/keyframes/hook.png \
+             --audio artifacts/cinematic/kokoro.wav --prompt "$WAN_PROMPT" \
+             --output artifacts/cinematic; then
+            echo "MODAL_S2V_SKIPPED_VERIFIED_MP4"
+          else
+            bash scripts/modal_versioned_dispatch.sh \
+              scripts/modal_wan_s2v.py generate_s2v speaking \
+              --reference artifacts/cinematic/keyframes/hook.png \
+              --audio artifacts/cinematic/kokoro.wav \
+              --output artifacts/cinematic --prompt "$WAN_PROMPT"
+          fi
       - name: Audit actual MP4, keyframe provenance, and closed creative gate
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'speaking'
         run: |
