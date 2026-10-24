@@ -71,7 +71,7 @@ jobs:
           test "$(find ../artifacts/character-proof/rig -name '*.glb' -size +100k | wc -l)" -eq 1
       - name: Import into Blender and prove moving arm bones
         env:
-          FRAMES: \${{ inputs.frames }}
+          FRAMES: ${{ inputs.frames || '24' }}
         run: |
           set -euo pipefail
           MODEL="$(find artifacts/character-proof/rig -name '*.glb' -print -quit)"
@@ -81,7 +81,7 @@ jobs:
           test "$(find artifacts/character-proof/frames -name 'frame_*.png' | wc -l)" -eq "$FRAMES"
       - name: Reuse real Kokoro voice from completed original draft
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           gh run download 40047215101 --pattern 'niche-draft-*' \
@@ -92,7 +92,7 @@ jobs:
             -ac 1 -ar 24000 -c:a pcm_s16le artifacts/character-proof/kokoro-source.wav
       - name: Produce genuine motion review video and check full decode
         env:
-          FRAMES: \${{ inputs.frames }}
+          FRAMES: ${{ inputs.frames || '24' }}
         run: |
           set -euo pipefail
           mkdir -p artifacts/character-proof/review
@@ -114,7 +114,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: real-rigged-human-\${{ github.sha }}-\${{ github.run_id }}
+          name: real-rigged-human-${{ github.sha }}-${{ github.run_id }}
           path: |
             artifacts/character-proof/rig-proof.json
             artifacts/character-proof/rig/*.glb
