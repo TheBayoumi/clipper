@@ -19,8 +19,18 @@ from wan_shared_shot_cache import verified_wan_output  # noqa: E402
 @pytest.mark.parametrize(
     "failure",
     (
-        "success", "quota", "quota_twice", "cuda", "budget", "credits",
-        "auth", "deploy", "timeout", "model", "quota_warning", "quota_probe",
+        "success",
+        "quota",
+        "quota_twice",
+        "cuda",
+        "budget",
+        "credits",
+        "auth",
+        "deploy",
+        "timeout",
+        "model",
+        "quota_warning",
+        "quota_probe",
     ),
 )
 @pytest.mark.parametrize("mode", ("keyframes", "speaking"))
@@ -28,8 +38,10 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
     tmp_path: Path, failure: str, mode: str
 ) -> None:
     (tmp_path / "scripts").mkdir()
-    source_script = tmp_path / "scripts" / (
-        "modal_qwen_keyframes.py" if mode == "keyframes" else "modal_wan_s2v.py"
+    source_script = (
+        tmp_path
+        / "scripts"
+        / ("modal_qwen_keyframes.py" if mode == "keyframes" else "modal_wan_s2v.py")
     )
     source_script.write_text("app = 'versioned'\n")
     bin_dir = tmp_path / "bin"
@@ -93,7 +105,8 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
             str(source_script.relative_to(tmp_path)),
             "generate_keyframe" if mode == "keyframes" else "generate_s2v",
             mode,
-            "--reference", "synthetic",
+            "--reference",
+            "synthetic",
         ],
         cwd=tmp_path,
         env=env,
