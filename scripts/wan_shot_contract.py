@@ -124,7 +124,6 @@ def prepare(
     }
 
 
-
 def prepare_i2v(
     keyframe: Path,
     prompt: str,
