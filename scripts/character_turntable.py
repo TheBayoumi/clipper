@@ -2,6 +2,7 @@
 
 No concept-image compositing or stock model fallbacks.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -33,7 +34,7 @@ def main() -> None:
     importer.Update()
     if render.GetActors().GetNumberOfItems() == 0:
         raise RuntimeError("GLB not renderable")
-    render.SetBackground(.91, .91, .92)
+    render.SetBackground(0.91, 0.91, 0.92)
     light = vtk.vtkLight()
     light.SetLightTypeToSceneLight()
     light.SetPosition(2, 4, 5)
@@ -42,20 +43,24 @@ def main() -> None:
     render.AddLight(light)
     for index in range(render.GetActors().GetNumberOfItems()):
         actor = render.GetActors().GetItemAsObject(index)
-        actor.GetProperty().SetAmbient(.37)
-        actor.GetProperty().SetDiffuse(.7)
+        actor.GetProperty().SetAmbient(0.37)
+        actor.GetProperty().SetDiffuse(0.7)
     sheet = Image.new("RGB", (1200, 1524), "white")
-    for index, (label, position) in enumerate((
-        ("Front", (0, 0, 2.6)), ("Right", (2.6, 0, 0)),
-        ("Back", (0, 0, -2.6)), ("Left", (-2.6, 0, 0))
-    )):
+    for index, (label, position) in enumerate(
+        (
+            ("Front", (0, 0, 2.6)),
+            ("Right", (2.6, 0, 0)),
+            ("Back", (0, 0, -2.6)),
+            ("Left", (-2.6, 0, 0)),
+        )
+    ):
         camera = render.GetActiveCamera()
         camera.SetPosition(*position)
-        camera.SetFocalPoint(0, -.02, 0)
+        camera.SetFocalPoint(0, -0.02, 0)
         camera.SetViewUp(0, 1, 0)
-        camera.SetClippingRange(.01, 100)
+        camera.SetClippingRange(0.01, 100)
         camera.ParallelProjectionOn()
-        camera.SetParallelScale(.7)
+        camera.SetParallelScale(0.7)
         window.Render()
         pixels = vtk.vtkWindowToImageFilter()
         pixels.SetInput(window)

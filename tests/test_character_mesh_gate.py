@@ -1,4 +1,5 @@
 """Fail-closed tests for trusted character cleanup and immutable source evidence."""
+
 from __future__ import annotations
 
 import hashlib
@@ -20,12 +21,12 @@ SPEC.loader.exec_module(mesh)
 @pytest.mark.parametrize(
     ("extents", "height", "expected"),
     [
-        ((1.0, .026, 1.0), -.413, True),
-        ((1.0, .07, 1.0), -.45, True),
-        ((.2, .02, .8), -.45, False),
-        ((1.0, .3, 1.0), -.45, False),
-        ((1.0, .03, 1.0), .1, False),
-        ((.69, .03, .69), -.45, False),
+        ((1.0, 0.026, 1.0), -0.413, True),
+        ((1.0, 0.07, 1.0), -0.45, True),
+        ((0.2, 0.02, 0.8), -0.45, False),
+        ((1.0, 0.3, 1.0), -0.45, False),
+        ((1.0, 0.03, 1.0), 0.1, False),
+        ((0.69, 0.03, 0.69), -0.45, False),
     ],
 )
 def test_plane_signature_does_not_delete_character_parts(
@@ -49,11 +50,18 @@ def test_tampered_model_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     glb.write_bytes(b"tampered")
     source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
     monkeypatch.setattr(mesh, "SOURCE_SHA", source_sha)
-    evidence.write_text(json.dumps({
-        "schema": mesh.SCHEMA, "status": "CANDIDATE_GLB_GENERATED_NOT_RIGGED",
-        "model_family": "TRELLIS_v1_community", "publish_eligible": False,
-        "source_sha256": source_sha, "glb_sha256": "a" * 64,
-    }))
+    evidence.write_text(
+        json.dumps(
+            {
+                "schema": mesh.SCHEMA,
+                "status": "CANDIDATE_GLB_GENERATED_NOT_RIGGED",
+                "model_family": "TRELLIS_v1_community",
+                "publish_eligible": False,
+                "source_sha256": source_sha,
+                "glb_sha256": "a" * 64,
+            }
+        )
+    )
     with pytest.raises(mesh.MeshGateError, match="do not match"):
         mesh.read_provenance(source, glb, evidence)
 
@@ -66,12 +74,18 @@ def test_production_claim_from_provider_is_rejected(
     glb.write_bytes(b"scan")
     source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
     monkeypatch.setattr(mesh, "SOURCE_SHA", source_sha)
-    evidence.write_text(json.dumps({
-        "schema": mesh.SCHEMA, "status": "CANDIDATE_GLB_GENERATED_NOT_RIGGED",
-        "model_family": "TRELLIS_v1_community", "publish_eligible": True,
-        "source_sha256": source_sha,
-        "glb_sha256": hashlib.sha256(glb.read_bytes()).hexdigest(),
-    }))
+    evidence.write_text(
+        json.dumps(
+            {
+                "schema": mesh.SCHEMA,
+                "status": "CANDIDATE_GLB_GENERATED_NOT_RIGGED",
+                "model_family": "TRELLIS_v1_community",
+                "publish_eligible": True,
+                "source_sha256": source_sha,
+                "glb_sha256": hashlib.sha256(glb.read_bytes()).hexdigest(),
+            }
+        )
+    )
     with pytest.raises(mesh.MeshGateError, match="publication"):
         mesh.read_provenance(source, glb, evidence)
 

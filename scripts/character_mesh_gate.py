@@ -3,6 +3,7 @@
 Reads existing GitHub Action artifacts; it never re-runs model inference.
 Geometry-only cleanup is NOT proof of creative identity or safe auto-skinning.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -48,7 +49,7 @@ def read_provenance(source: Path, glb: Path, evidence_file: Path) -> dict[str, A
 
 def is_background_sheet(extents: tuple[float, float, float], y: float) -> bool:
     """Full-width, shallow horizontal plane near feet; not a thin body part."""
-    return extents[0] >= .70 and extents[2] >= .70 and extents[1] <= .07 and y <= -.25
+    return extents[0] >= 0.70 and extents[2] >= 0.70 and extents[1] <= 0.07 and y <= -0.25
 
 
 def prepare(glb: Path, target: Path) -> dict[str, Any]:
@@ -78,7 +79,7 @@ def prepare(glb: Path, target: Path) -> dict[str, Any]:
     if not keep or not background:
         raise MeshGateError("background not confidently separable; human review required")
     removed = sum(len(c.faces) for c in background)
-    if removed >= len(body.faces) * .4:
+    if removed >= len(body.faces) * 0.4:
         raise MeshGateError("cleanup would erase more than 40% of geometry")
     clean = trimesh.Scene()
     for i, part in enumerate(keep):
@@ -123,9 +124,12 @@ def main() -> None:
     try:
         e = read_provenance(args.source, args.glb, args.evidence)
         report.update(prepare(args.glb, args.output))
-        report.update(provider=e["provider"], model_family=e["model_family"],
-                      source_image_sha256=e["source_sha256"],
-                      status="CLEANED_CANDIDATE_NOT_RIGGED")
+        report.update(
+            provider=e["provider"],
+            model_family=e["model_family"],
+            source_image_sha256=e["source_sha256"],
+            status="CLEANED_CANDIDATE_NOT_RIGGED",
+        )
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
         raise

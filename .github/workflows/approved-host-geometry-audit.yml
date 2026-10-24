@@ -49,10 +49,14 @@ jobs:
             --glb artifacts/host-audit/page-to-life-host-candidate.glb \
             --evidence artifacts/host-audit/evidence.json \
             --output artifacts/host-audit/page-to-life-host-cleanup-candidate.glb
+      - name: Install Mesa headless EGL and OSMesa render backends
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libegl1 libosmesa6 libgl1-mesa-dri
       - name: Render all four actual 3D angles for manual identity review
         run: |
           set -euo pipefail
-          python scripts/character_turntable.py \
+          LIBGL_ALWAYS_SOFTWARE=1 python scripts/character_turntable.py \
             --glb artifacts/host-audit/page-to-life-host-cleanup-candidate.glb \
             --output artifacts/host-audit/identity-four-views.png
           test -s artifacts/host-audit/identity-four-views.png
