@@ -51,6 +51,7 @@ def validate_glb(path: Path) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", type=Path)
+    parser.add_argument("--space", default=SPACE)
     parser.add_argument("--output", type=Path, default=Path("artifacts/host-3d"))
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--seed", type=int, default=724)
@@ -59,7 +60,7 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     evidence = {
         "schema": "clipper-trellis2-v1",
-        "provider": SPACE,
+        "provider": args.space,
         "seed": args.seed,
         "resolution": args.resolution,
         "publish_eligible": False,
@@ -70,12 +71,13 @@ def main() -> None:
     try:
         from gradio_client import Client, handle_file
 
-        client = Client(SPACE, token=os.getenv("HF_TOKEN") or None)
+        client = Client(args.space, token=os.getenv("HF_TOKEN") or None)
         schema = str(client.view_api(return_format="dict"))
         for endpoint in ("/preprocess_image", "/image_to_3d", "/extract_glb"):
             if endpoint not in schema:
                 raise ValueError(f"Public Space lacks endpoint {endpoint}")
         evidence["api_health"] = "PASS"
+        evidence["authenticated_hf_token_supplied"] = bool(os.getenv("HF_TOKEN"))
         if args.probe:
             evidence["status"] = "API_PROBE_ONLY"
             return
@@ -124,7 +126,7 @@ def main() -> None:
         evidence["status"] = "CANDIDATE_GLB_GENERATED_NOT_RIGGED"
     except Exception as error:
         evidence.update(
-            status="BLOCKED", error_type=type(error).__name__, error_reason=str(error)[:1400]
+            status="REMOTE_INFERENCE_BLOCKED", error_type=type(error).__name__, error_reason=str(error)[:1400]
         )
         raise
     finally:
