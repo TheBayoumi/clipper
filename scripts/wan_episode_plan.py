@@ -68,7 +68,7 @@ def _scene_beats(frames: int) -> list[tuple[int, int]]:
     if seconds / count < MIN_SHOT_SECONDS:
         raise ProductionTimelineError("narration beat would be too brief; revise scene writing")
     borders = [(frames * index) // count for index in range(count + 1)]
-    return list(zip(borders, borders[1:], strict=True))
+    return list(zip(borders[:-1], borders[1:], strict=True))
 
 
 def build_episode_plan(
