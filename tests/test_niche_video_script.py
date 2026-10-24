@@ -209,6 +209,60 @@ def test_repair_exhaustion_preserves_original_context(
     assert len(json.loads(reports[0].read_text())) == 3
 
 
+def test_complete_sentence_book_edit_accepts_oversized_script_without_truncation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = nv.NicheConfig.load(
+        Path(__file__).resolve().parents[1] / "niches" / "book-lessons.yaml"
+    )
+    narration = (
+        "Start with one small action that feels easy to repeat. "
+        "Set up the space so the next step is right in front of you. "
+        "A tiny example can make the lesson feel practical and memorable. "
+        "You can try the idea once today without making big promises."
+    )
+    original = {
+        "title": "Action over intention",
+        "scenes": [
+            {"headline": f"STEP {index}", "narration": narration}
+            for index in range(1, 5)
+        ],
+    }
+    assert sum(len(s["narration"].split()) for s in original["scenes"]) > 125
+    model = Mock(return_value=json.dumps(original))
+    monkeypatch.setattr(nv, "_local_script_completion", model)
+    episode, digest = nv.generate_episode(config, tmp_path)
+    assert model.call_count == 1
+    assert len(episode.scenes) == 4
+    assert 45 <= sum(len(scene.narration.split()) for scene in episode.scenes) <= 125
+    assert episode.scenes[0].narration.startswith("Start with one small action")
+    assert episode.scenes[-1].narration.endswith(
+        "without making big promises."
+    )
+    for scene in episode.scenes:
+        assert 6 <= len(scene.narration.split()) <= 45
+        assert all(sentence in narration for sentence in scene.narration.split(". ") if sentence)
+    audit = json.loads(
+        (tmp_path / "script_diagnostics" / f"{digest}.json").read_text()
+    )
+    assert audit[0]["accepted"] is True
+    assert audit[0]["complete_sentence_edit"] is True
+    assert (tmp_path / "scripts" / f"{digest}.json").is_file()
+
+
+def test_book_edit_does_not_chop_unbreakable_long_sentence() -> None:
+    very_long = " ".join(["unbroken"] * 48) + "."
+    raw = {
+        "title": "Too long",
+        "scenes": [
+            {"headline": f"SCENE {i}", "narration": very_long}
+            for i in range(3)
+        ],
+    }
+    with pytest.raises(nv.NicheVideoError, match="whole-sentence boundaries"):
+        nv._compact_book_sentences(raw)
+
+
 def test_source_attributed_book_lesson_config(tmp_path: Path) -> None:
     source = Path(__file__).resolve().parents[1] / "niches" / "book-lessons.yaml"
     book = nv.NicheConfig.load(source)
