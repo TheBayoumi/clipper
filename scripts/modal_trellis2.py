@@ -66,7 +66,7 @@ def image_spec() -> modal.Image:
             "python -m pip install 'numpy<2.5' imageio imageio-ffmpeg tqdm"
             " easydict opencv-python-headless ninja trimesh"
             " transformers==4.57.3 tensorboard pandas lpips zstandard"
-            " kornia timm pillow-simd huggingface-hub",
+            " kornia timm 'Pillow>=11,<13' huggingface-hub",
             "python -m pip install"
             " 'git+https://github.com/EasternJournalist/utils3d.git"
             "@9a4eb15e4021b67b12c460c7057d642626897ec8'",
