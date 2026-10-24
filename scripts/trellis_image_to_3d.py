@@ -3,6 +3,7 @@
 TRELLIS.2 runs on the public Hugging Face ZeroGPU Space. Outputs remain
 candidate assets: they are NOT approved character rigs or videos.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -34,9 +35,7 @@ def validate_glb(path: Path) -> dict:
     spans = scene.bounds[1] - scene.bounds[0]
     if any(float(x) <= 0.0001 for x in spans):
         raise ValueError("GLB is flat or has degenerate bounds")
-    materials = sum(
-        getattr(mesh.visual, "material", None) is not None for mesh in meshes
-    )
+    materials = sum(getattr(mesh.visual, "material", None) is not None for mesh in meshes)
     if not materials:
         raise ValueError("GLB lacks material evidence")
     return {
@@ -58,8 +57,11 @@ def main() -> None:
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     evidence = {
-        "schema": "clipper-trellis2-v1", "provider": SPACE, "seed": args.seed,
-        "resolution": args.resolution, "publish_eligible": False,
+        "schema": "clipper-trellis2-v1",
+        "provider": SPACE,
+        "seed": args.seed,
+        "resolution": args.resolution,
+        "publish_eligible": False,
         "creative_status": "NOT_REVIEWED",
         "rigging_status": "NOT_IMPLEMENTED",
         "status": "NOT_STARTED",
@@ -84,19 +86,28 @@ def main() -> None:
             if image.width < 512 or image.height < 700:
                 raise ValueError("Low resolution input violates character gate")
         evidence["source_sha256"] = sha256(args.reference)
-        prepared = client.predict(
-            handle_file(str(args.reference)), api_name="/preprocess_image"
-        )
+        prepared = client.predict(handle_file(str(args.reference)), api_name="/preprocess_image")
         generated = client.predict(
-            prepared, args.seed, args.resolution,
-            7.5, 0.7, 12, 5.0, 7.5, 0.5, 12, 3.0,
-            1.0, 0.0, 12, 3.0, api_name="/image_to_3d",
+            prepared,
+            args.seed,
+            args.resolution,
+            7.5,
+            0.7,
+            12,
+            5.0,
+            7.5,
+            0.5,
+            12,
+            3.0,
+            1.0,
+            0.0,
+            12,
+            3.0,
+            api_name="/image_to_3d",
         )
         if not isinstance(generated, (tuple, list)) or not generated:
             raise ValueError("TRELLIS.2 returned no latent 3D state")
-        exported = client.predict(
-            generated[0], 100000, 2048, api_name="/extract_glb"
-        )
+        exported = client.predict(generated[0], 100000, 2048, api_name="/extract_glb")
         source = exported[0] if isinstance(exported, (tuple, list)) else exported
         candidate = Path(source if isinstance(source, str) else source["path"])
         if not candidate.is_file():
@@ -108,14 +119,11 @@ def main() -> None:
         evidence["status"] = "CANDIDATE_GLB_GENERATED_NOT_RIGGED"
     except Exception as error:
         evidence.update(
-            status="BLOCKED", error_type=type(error).__name__,
-            error_reason=str(error)[:1400]
+            status="BLOCKED", error_type=type(error).__name__, error_reason=str(error)[:1400]
         )
         raise
     finally:
-        (args.output / "evidence.json").write_text(
-            json.dumps(evidence, indent=2), encoding="utf-8"
-        )
+        (args.output / "evidence.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
         print(json.dumps(evidence, indent=2), file=sys.stderr)
 
 
