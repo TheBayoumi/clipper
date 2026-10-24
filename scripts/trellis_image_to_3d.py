@@ -107,8 +107,12 @@ def main() -> None:
             api_name="/image_to_3d",
         )
         if not isinstance(generated, (tuple, list)) or not generated:
-            raise ValueError("TRELLIS.2 returned no latent 3D state")
-        exported = client.predict(generated[0], 100000, 2048, api_name="/extract_glb")
+            raise ValueError("TRELLIS.2 returned no visible 3D preview")
+        # TRELLIS stores its latent state in the same Gradio client session.
+        # /extract_glb has exactly two PUBLIC inputs: decimation, texture size.
+        # Passing generated[0] as a third input is invalid; it is a preview,
+        # NOT a serializable model state.
+        exported = client.predict(100000, 2048, api_name="/extract_glb")
         source = exported[0] if isinstance(exported, (tuple, list)) else exported
         candidate = Path(source if isinstance(source, str) else source["path"])
         if not candidate.is_file():
