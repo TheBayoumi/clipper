@@ -19,8 +19,8 @@ MODEL_IDS = {
     "i2v": "Wan-AI/Wan2.2-I2V-A14B",
 }
 MODEL_REVISION_S2V = "dab4e9c55bbe4c8c4d03db1c2c98c7f0ac9c454b"
-MIN_REFERENCE_WIDTH = 1024
-MIN_REFERENCE_HEIGHT = 1024
+MIN_REFERENCE_WIDTH = 384
+MIN_REFERENCE_HEIGHT = 512
 MAX_AUDIO_SECONDS = 6.5
 
 
@@ -45,13 +45,21 @@ def inspect_image(path: Path) -> dict[str, object]:
         width, height = image.size
         if width < MIN_REFERENCE_WIDTH or height < MIN_REFERENCE_HEIGHT:
             raise ShotContractError(
-                f"source reference {width}x{height} is too small for creative "
-                f"qualification; require >= {MIN_REFERENCE_WIDTH}x{MIN_REFERENCE_HEIGHT} "
-                "original artwork, not a resized derivative"
+                f"reference {width}x{height} below Wan technical input floor "
+                f"{MIN_REFERENCE_WIDTH}x{MIN_REFERENCE_HEIGHT}"
             )
         if image.mode not in ("RGB", "RGBA"):
             raise ShotContractError("reference must be RGB or RGBA")
-    return {"sha256": sha256(path), "width": width, "height": height}
+    return {
+        "sha256": sha256(path),
+        "width": width,
+        "height": height,
+        "creative_reference_quality": (
+            "PROVISIONAL_BELOW_1024_NOT_FOR_PRODUCTION_APPROVAL"
+            if width < 1024 or height < 1024
+            else "MINIMUM_DIMENSIONS_MET_VISUAL_REVIEW_PENDING"
+        ),
+    }
 
 
 def inspect_audio(path: Path) -> dict[str, object]:
