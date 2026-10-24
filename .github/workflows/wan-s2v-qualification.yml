@@ -1,0 +1,134 @@
+name: Wan S2V original-book-video pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [preflight, generate]
+        default: preflight
+        required: true
+      reference_path:
+        type: string
+        default: assets/character/page-to-life-host-approved-master.png
+        required: true
+      approved_reference_sha256:
+        type: string
+        required: false
+        default: ''
+      voice_source_run:
+        type: string
+        default: '40047215101'
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clipper-wan-s2v
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 160
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test shot contract and low-quality source rejection
+        run: |
+          python -m pip install 'pytest>=9,<10' 'Pillow>=11,<13' 'ruff>=0.15.22,<1'
+          python -m ruff check scripts/wan_shot_contract.py scripts/modal_wan_s2v.py tests/test_wan_shot_contract.py
+          python -m ruff format --check scripts/wan_shot_contract.py scripts/modal_wan_s2v.py tests/test_wan_shot_contract.py
+          python -m pytest -q -o addopts='' tests/test_wan_shot_contract.py
+      - name: Resolve official Wan model metadata without downloading weights
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m pip install 'huggingface-hub>=0.35,<1'
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi, hf_hub_download
+          repo, rev = 'Wan-AI/Wan2.2-S2V-14B', 'dab4e9c'
+          token = os.environ.get('HF_TOKEN') or None
+          info = HfApi().model_info(repo, revision=rev, token=token)
+          assert info.sha
+          assert hf_hub_download(repo_id=repo, revision=rev, filename='config.json', token=token)
+          print('WAN_S2V_PUBLIC_CHECKPOINT_VERIFIED', info.sha)
+          PY
+      - name: Bind original approved character and cached Kokoro WAV
+        if: inputs.mode == 'generate'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REFERENCE: ${{ inputs.reference_path }}
+          SHA256: ${{ inputs.approved_reference_sha256 }}
+          VOICE_RUN: ${{ inputs.voice_source_run }}
+        run: |
+          set -euo pipefail
+          [[ "$REFERENCE" == assets/character/* && "$REFERENCE" != *..* ]]
+          [[ "$SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Approved reference hash required"; exit 1; }
+          [[ "$VOICE_RUN" =~ ^[0-9]+$ ]]
+          test -f "$REFERENCE" || { echo "::error::High-resolution approved original missing: $REFERENCE"; exit 1; }
+          echo "$SHA256  $REFERENCE" | sha256sum --check -
+          mkdir -p artifacts/wan-s2v/source artifacts/wan-s2v/output
+          gh run download "$VOICE_RUN" --pattern 'niche-draft-*' --dir artifacts/wan-s2v/source
+          SOURCE="$(find artifacts/wan-s2v/source -type f -name draft.mp4 -print -quit)"
+          test -n "$SOURCE" || { echo "::error::Cached Kokoro source unavailable"; exit 1; }
+          ffmpeg -hide_banner -loglevel error -y -i "$SOURCE" -map 0:a:0 \
+            -t 3 -ac 1 -ar 24000 -c:a pcm_s16le artifacts/wan-s2v/output/kokoro.wav
+          python scripts/wan_shot_contract.py \
+            --reference "$REFERENCE" --audio artifacts/wan-s2v/output/kokoro.wav \
+            --prompt "Cinematic cartoon presenter with curly dark hair, black rectangular glasses and a charcoal hoodie, naturally speaking in a warm bedroom." \
+            --manifest artifacts/wan-s2v/output/shot-preflight.json
+      - name: Deploy official Wan S2V Modal renderer
+        if: inputs.mode == 'generate'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$MODAL_TOKEN_ID" && test -n "$MODAL_TOKEN_SECRET" && test -n "$HF_TOKEN"
+          python -m pip install 'modal==1.5.5'
+          modal app list --json > /dev/null
+          modal secret create clipper-wan-hf HF_TOKEN="$HF_TOKEN" --force
+          modal deploy scripts/modal_wan_s2v.py
+      - name: Generate actual S2V candidate on A100
+        if: inputs.mode == 'generate'
+        env:
+          REFERENCE: ${{ inputs.reference_path }}
+        run: |
+          modal run scripts/modal_wan_s2v.py --reference "$REFERENCE" \
+            --audio artifacts/wan-s2v/output/kokoro.wav --output artifacts/wan-s2v/output
+      - name: Audit actual video without granting publication approval
+        if: inputs.mode == 'generate'
+        env:
+          REFERENCE: ${{ inputs.reference_path }}
+        run: |
+          set -euo pipefail
+          python scripts/wan_shot_contract.py \
+            --reference "$REFERENCE" --audio artifacts/wan-s2v/output/kokoro.wav \
+            --prompt "Cinematic cartoon presenter with curly dark hair, black rectangular glasses and a charcoal hoodie, naturally speaking in a warm bedroom." \
+            --video artifacts/wan-s2v/output/wan-s2v-candidate.mp4 \
+            --manifest artifacts/wan-s2v/output/shot-qa.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('artifacts/wan-s2v/output')
+          actual = json.loads((root / 'model-evidence.json').read_text())
+          qa = json.loads((root / 'shot-qa.json').read_text())
+          assert actual['video_sha256'] == qa['video_sha256']
+          assert actual['publish_eligible'] is False and qa['publish_eligible'] is False
+          PY
+      - name: Preserve output and actual failure evidence
+        if: always() && inputs.mode == 'generate'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wan-s2v-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/wan-s2v/output/
+          if-no-files-found: warn
+          retention-days: 14
