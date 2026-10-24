@@ -1,4 +1,5 @@
 """Assertions for the first genuine skinned 3D character performance gate."""
+
 from __future__ import annotations
 
 import json
@@ -21,8 +22,11 @@ def test_versioned_identity_and_animated_skeleton() -> None:
 def test_real_motion_is_required_not_camera_pan() -> None:
     script = (ROOT / "scripts/blender_character_probe.py").read_text()
     for keyword in (
-        "bpy.ops.import_scene.gltf", "genuine_wave_motion",
-        "max_arm_bone_matrix_delta", "0.015", "ARMATURE",
+        "bpy.ops.import_scene.gltf",
+        "genuine_wave_motion",
+        "max_arm_bone_matrix_delta",
+        "0.015",
+        "ARMATURE",
         "bpy.ops.render.render(write_still=True)",
         '"publish_eligible": False',
     ):
