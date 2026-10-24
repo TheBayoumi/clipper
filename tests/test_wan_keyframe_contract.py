@@ -254,7 +254,9 @@ def test_modal_connection_mode_cannot_trigger_gpu_inference() -> None:
     for step in steps:
         condition = step.get("if", "")
         name = step.get("name", "")
-        if name.startswith(("Decode one", "Install Modal client", "Generate cinematic", "Verify actual")):
+        if name.startswith(
+            ("Decode one", "Install Modal client", "Generate cinematic", "Verify actual")
+        ):
             assert "inputs.mode == 'keyframes'" in condition
             assert "inputs.mode == 'speaking'" in condition
             assert "inputs.mode == 'credentials'" not in condition
