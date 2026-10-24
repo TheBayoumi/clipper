@@ -39,6 +39,7 @@ jobs:
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      WAN_PROMPT: "Cinematic cartoon presenter with curly dark hair, black rectangular glasses and a charcoal hoodie, naturally speaking in a warm bedroom."
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -87,7 +88,7 @@ jobs:
             -t 3 -ac 1 -ar 24000 -c:a pcm_s16le artifacts/wan-s2v/output/kokoro.wav
           python scripts/wan_shot_contract.py \
             --reference "$REFERENCE" --audio artifacts/wan-s2v/output/kokoro.wav \
-            --prompt "Cinematic cartoon presenter with curly dark hair, black rectangular glasses and a charcoal hoodie, naturally speaking in a warm bedroom." \
+            --prompt "$WAN_PROMPT" \
             --manifest artifacts/wan-s2v/output/shot-preflight.json
       - name: Deploy official Wan S2V Modal renderer
         if: inputs.mode == 'generate'
@@ -106,7 +107,8 @@ jobs:
           REFERENCE: ${{ inputs.reference_path }}
         run: |
           modal run scripts/modal_wan_s2v.py --reference "$REFERENCE" \
-            --audio artifacts/wan-s2v/output/kokoro.wav --output artifacts/wan-s2v/output
+            --audio artifacts/wan-s2v/output/kokoro.wav --output artifacts/wan-s2v/output \
+            --prompt "$WAN_PROMPT"
       - name: Audit actual video without granting publication approval
         if: inputs.mode == 'generate'
         env:
@@ -115,7 +117,7 @@ jobs:
           set -euo pipefail
           python scripts/wan_shot_contract.py \
             --reference "$REFERENCE" --audio artifacts/wan-s2v/output/kokoro.wav \
-            --prompt "Cinematic cartoon presenter with curly dark hair, black rectangular glasses and a charcoal hoodie, naturally speaking in a warm bedroom." \
+            --prompt "$WAN_PROMPT" \
             --video artifacts/wan-s2v/output/wan-s2v-candidate.mp4 \
             --manifest artifacts/wan-s2v/output/shot-qa.json
           python - <<'PY'
@@ -124,7 +126,13 @@ jobs:
           root = Path('artifacts/wan-s2v/output')
           actual = json.loads((root / 'model-evidence.json').read_text())
           qa = json.loads((root / 'shot-qa.json').read_text())
+          import hashlib
           assert actual['video_sha256'] == qa['video_sha256']
+          assert actual['model_revision'] == qa['model_revision']
+          assert actual['image_sha256'] == qa['image']['sha256']
+          assert actual['audio_sha256'] == qa['audio']['sha256']
+          assert actual['prompt_sha256'] == hashlib.sha256(qa['prompt'].encode('utf-8')).hexdigest()
+          assert actual['seed'] == qa['seed']
           assert actual['publish_eligible'] is False and qa['publish_eligible'] is False
           PY
       - name: Preserve output and actual failure evidence
