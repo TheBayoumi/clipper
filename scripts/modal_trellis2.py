@@ -85,8 +85,15 @@ def image_spec() -> modal.Image:
             " https://github.com/JeffreyXiang/FlexGEMM.git /tmp/FlexGEMM"
             " && python -m pip install /tmp/FlexGEMM --no-build-isolation",
             "python -m pip install /opt/TRELLIS.2/o-voxel --no-build-isolation",
+            # Modal image-build containers have NO NVIDIA GPU device/driver.
+            # Importing o_voxel initializes FlexGEMM/Triton GPU autotuning at import
+            # time, so check it inside the actual GPU worker, never during build.
             "cd /opt/TRELLIS.2 && python -c"
-            " 'import torch, o_voxel, flash_attn, nvdiffrast, trellis2; print(torch.__version__)'",
+            " 'import torch, importlib.util;"
+            " assert importlib.util.find_spec(\"o_voxel\") is not None;"
+            " assert importlib.util.find_spec(\"flash_attn\") is not None;"
+            " assert importlib.util.find_spec(\"trellis2\") is not None;"
+            " print(\"TRELLIS2_CPU_IMAGE_PACKAGE_PROBE_OK\", torch.__version__)'",
         )
     )
 
@@ -120,18 +127,20 @@ def generate_approved_host(
     source: bytes, source_sha: str, resolution: str, seed: int
 ) -> dict[str, Any]:
     verified_request(source, source_sha, resolution, seed)
-    import o_voxel
     import torch
     from PIL import Image
-
-    sys.path.insert(0, "/opt/TRELLIS.2")
-    from trellis2.pipelines import Trellis2ImageTo3DPipeline
 
     if not torch.cuda.is_available():
         raise RuntimeError("TRELLIS.2 worker has no assigned CUDA GPU")
     device = torch.cuda.get_device_properties(0)
     if device.total_memory < 24 * 1024**3:
         raise RuntimeError("TRELLIS.2 requires at least 24 GB GPU VRAM")
+    # GPU-dependent Triton kernels are imported only after CUDA is provisioned.
+    import o_voxel
+
+    sys.path.insert(0, "/opt/TRELLIS.2")
+    from trellis2.pipelines import Trellis2ImageTo3DPipeline
+
     os.chdir("/opt/TRELLIS.2")
     model = Trellis2ImageTo3DPipeline.from_pretrained(MODEL_ID)
     model.cuda()
