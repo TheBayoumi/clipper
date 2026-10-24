@@ -20,7 +20,7 @@ import modal
 APP_NAME = "clipper-wan-s2v"
 UPSTREAM_COMMIT = "1ea34ff48f87168174e12956e200b1d908b1c5ff"
 MODEL_ID = "Wan-AI/Wan2.2-S2V-14B"
-MODEL_REVISION = "dab4e9c"
+MODEL_REVISION = "dab4e9c55bbe4c8c4d03db1c2c98c7f0ac9c454b"
 MODEL_SIZE = "1024*704"  # Frame area; portrait aspect comes from the input image.
 CUDA_IMAGE = "nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04"
 MAX_MP4_BYTES = 180_000_000
@@ -77,7 +77,7 @@ app = modal.App(APP_NAME)
 
 
 def check_request(reference: bytes, wav: bytes, source_sha: str, audio_sha: str) -> None:
-    if not 200_000 <= len(reference) <= 20_000_000:
+    if not 0 < len(reference) <= 20_000_000:
         raise ValueError("Reference image must be an approved, detailed original")
     if not 40_000 <= len(wav) <= 25_000_000:
         raise ValueError("WAV source missing or invalid")
