@@ -22,7 +22,9 @@ CONTRACT = ROOT / "niches/atomic-habits-approved-storyboard.json"
 def test_approved_storyboard_production_contract_is_locked() -> None:
     config = sa.read_contract(CONTRACT)
     assert [s["id"] for s in config["pilot"]["shots"]] == [
-        "hook", "book_intro", "lesson_example",
+        "hook",
+        "book_intro",
+        "lesson_example",
     ]
     assert config["character"]["clothing"].find("hoodie") >= 0
     assert config["character"]["status"] == "master_rig_missing"
@@ -33,11 +35,16 @@ def test_approved_storyboard_production_contract_is_locked() -> None:
 def test_generic_stock_rig_cannot_count_as_approved_master(tmp_path: Path) -> None:
     config = sa.read_contract(CONTRACT)
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({
-        "storyboard_schema": "storyboard-production-v1",
-        "character_id": config["character"]["character_id"],
-        "master_character_sha256": "a" * 64,
-    }), encoding="utf-8")
+    manifest.write_text(
+        json.dumps(
+            {
+                "storyboard_schema": "storyboard-production-v1",
+                "character_id": config["character"]["character_id"],
+                "master_character_sha256": "a" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
     with pytest.raises(sa.CreativeGateError, match="unapproved"):
         sa.audit_render(config, manifest, tmp_path / "video.mp4")
 

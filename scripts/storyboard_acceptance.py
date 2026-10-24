@@ -45,9 +45,7 @@ def read_contract(path: Path) -> dict[str, Any]:
     if character.get("status") == "approved_rig" and not character.get("approved_glb_sha256"):
         raise CreativeGateError("approved character requires a pinned asset hash")
     references = _required(data.get("visual_references"), list, "visual_references")
-    if len(references) < 2 or any(
-        len(str(ref.get("sha256", ""))) != 64 for ref in references
-    ):
+    if len(references) < 2 or any(len(str(ref.get("sha256", ""))) != 64 for ref in references):
         raise CreativeGateError("approved visual references require immutable SHA256s")
     pilot = _required(data.get("pilot"), dict, "pilot")
     if pilot.get("duration_seconds") != 15:
@@ -90,9 +88,7 @@ def audit_render(contract: dict[str, Any], manifest_path: Path, video: Path) -> 
     asset_hash = str(manifest.get("master_character_sha256", ""))
     if len(asset_hash) != 64 or asset_hash != character.get("approved_glb_sha256"):
         raise CreativeGateError("rigged master asset is missing or unapproved")
-    if any(
-        token in json.dumps(manifest).lower() for token in STOCK_ASSET_TOKENS
-    ):
+    if any(token in json.dumps(manifest).lower() for token in STOCK_ASSET_TOKENS):
         raise CreativeGateError("stock-looking stand-in avatar or generic motion detected")
     shots = _required(manifest.get("shots"), list, "rendered shots")
     if len(shots) != 3:
@@ -116,11 +112,18 @@ def audit_render(contract: dict[str, Any], manifest_path: Path, video: Path) -> 
         raise CreativeGateError("rendered MP4 hash does not match review evidence")
     probe = subprocess.run(
         [
-            "ffprobe", "-v", "error", "-show_entries",
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
             "format=duration:stream=codec_type,width,height,r_frame_rate",
-            "-of", "json", str(video),
+            "-of",
+            "json",
+            str(video),
         ],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     media = json.loads(probe.stdout)
     duration = float(media["format"]["duration"])
@@ -137,7 +140,9 @@ def audit_render(contract: dict[str, Any], manifest_path: Path, video: Path) -> 
         raise CreativeGateError("Kokoro soundtrack missing")
     subprocess.run(
         ["ffmpeg", "-v", "error", "-i", str(video), "-f", "null", "-"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        check=True,
     )
     return {
         "technical_storyboard_gate": "PASS",
@@ -152,7 +157,8 @@ def audit_render(contract: dict[str, Any], manifest_path: Path, video: Path) -> 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--contract", type=Path,
+        "--contract",
+        type=Path,
         default=Path("niches/atomic-habits-approved-storyboard.json"),
     )
     parser.add_argument("--manifest", type=Path)
@@ -162,13 +168,18 @@ def main() -> None:
     if (args.manifest is None) != (args.video is None):
         parser.error("--manifest and --video must be supplied together")
     if args.manifest is None:
-        print(json.dumps({
-            "storyboard_contract": "VALID",
-            "character_asset_status": contract["character"]["status"],
-            "pilot_shots": [shot["id"] for shot in contract["pilot"]["shots"]],
-            "creative_acceptance": "NOT_YET_VERIFIED",
-            "publish_eligible": False,
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "storyboard_contract": "VALID",
+                    "character_asset_status": contract["character"]["status"],
+                    "pilot_shots": [shot["id"] for shot in contract["pilot"]["shots"]],
+                    "creative_acceptance": "NOT_YET_VERIFIED",
+                    "publish_eligible": False,
+                },
+                indent=2,
+            )
+        )
     else:
         print(json.dumps(audit_render(contract, args.manifest, args.video), indent=2))
 
