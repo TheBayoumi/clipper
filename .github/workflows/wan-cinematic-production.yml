@@ -1,0 +1,222 @@
+name: Clipper open-source cinematic shot generator
+
+on:
+  push:
+    branches: [feat/unified-niche-tts]
+    paths: [.github/workflows/wan-cinematic-production.yml]
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [preflight, keyframes, speaking]
+        default: preflight
+        required: true
+      shot_ids:
+        type: string
+        default: hook
+        required: true
+      reference_path:
+        type: string
+        default: assets/character/page-to-life-host-approved-512.webp.b64
+        required: true
+      approved_reference_sha256:
+        type: string
+        default: c3bbc6395e47c04646ad3f0ad44f13873511e4ee3189046eafbc682225e746d2
+        required: true
+      voice_source_run:
+        type: string
+        default: '40047215101'
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clipper-open-source-cinematic
+  cancel-in-progress: false
+
+jobs:
+  cinematic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      WAN_PROMPT: "Exactly the same animated host as the input keyframe: dark brown curly hair, black rectangular glasses, charcoal hoodie, speaking naturally in the cinematic warm bedroom studio with subtle believable facial and hand motion. Preserve face and background without changing outfit or adding people."
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: CPU unit tests for autonomous keyframes and storyboard identity
+        run: |
+          set -euo pipefail
+          python -m pip install 'pytest>=9,<10' 'Pillow>=11,<13' 'ruff>=0.15.22,<1' 'huggingface-hub==0.36.2'
+          python -m ruff check scripts/wan_keyframe_contract.py scripts/modal_qwen_keyframes.py tests/test_wan_keyframe_contract.py
+          python -m ruff format --check scripts/wan_keyframe_contract.py scripts/modal_qwen_keyframes.py tests/test_wan_keyframe_contract.py
+          python -m pytest -q -o addopts='' tests/test_wan_keyframe_contract.py tests/test_wan_storyboard_plan.py tests/test_wan_shot_contract.py
+      - name: Validate pinned Qwen and Wan public model metadata
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi, hf_hub_download
+          token = os.environ.get("HF_TOKEN") or None
+          for repo, rev, filename in (
+              ("Qwen/Qwen-Image-Edit-2511", "6f3ccc0b56e431dc6a0c2b2039706d7d26f22cb9", "model_index.json"),
+              ("Wan-AI/Wan2.2-S2V-14B", "dab4e9c55bbe4c8c4d03db1c2c98c7f0ac9c454b", "config.json"),
+          ):
+              info = HfApi().model_info(repo, revision=rev, token=token)
+              assert info.sha == rev
+              assert hf_hub_download(repo_id=repo, revision=rev, filename=filename, token=token)
+              print("PINNED_OPEN_MODEL_AVAILABLE", repo, info.sha)
+          PY
+      - name: Decode one hash-locked identity and construct storyboard-derived shots
+        if: inputs.mode != 'preflight'
+        env:
+          REFERENCE: ${{ inputs.reference_path }}
+          SOURCE_SHA: ${{ inputs.approved_reference_sha256 }}
+          SHOT_IDS: ${{ inputs.shot_ids }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          [[ "$REFERENCE" == assets/character/* && "$REFERENCE" != *..* ]]
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{64}$ ]]
+          test -f "$REFERENCE"
+          mkdir -p artifacts/cinematic/keyframes artifacts/cinematic/evidence
+          if [[ "$REFERENCE" == *.webp.b64 ]]; then
+            base64 --decode "$REFERENCE" > artifacts/cinematic/approved-character.webp
+            REF=artifacts/cinematic/approved-character.webp
+          else
+            cp "$REFERENCE" artifacts/cinematic/approved-character.png
+            REF=artifacts/cinematic/approved-character.png
+          fi
+          echo "$SOURCE_SHA  $REF" | sha256sum --check -
+          echo "WAN_REFERENCE_FILE=$REF" >> "$GITHUB_ENV"
+          python scripts/wan_storyboard_plan.py --source-sha256 "$SOURCE_SHA" \
+            --output artifacts/cinematic/evidence/storyboard-plan.json
+          PYTHONPATH=scripts python - <<'PY'
+          import os
+          from pathlib import Path
+          from wan_keyframe_contract import SHOTS, prepare
+          ids = [s.strip() for s in os.environ["SHOT_IDS"].split(",")]
+          assert ids and len(set(ids)) == len(ids) and all(s in SHOTS for s in ids)
+          if os.environ["MODE"] == "speaking":
+              assert ids == ["hook"], "Speaking pilot generates just the hook."
+          for shot in ids:
+              print("AUTOMATED_FRAME_CONTRACT", shot, prepare(
+                  Path("artifacts/cinematic/approved-character.webp"
+                       if os.environ["REFERENCE"].endswith(".b64")
+                       else "artifacts/cinematic/approved-character.png"),
+                  Path("niches/atomic-habits-approved-storyboard.json"), shot
+              )["fingerprint"])
+          PY
+      - name: Authenticate Modal and provision model token
+        if: inputs.mode != 'preflight'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$MODAL_TOKEN_ID" && test -n "$MODAL_TOKEN_SECRET" && test -n "$HF_TOKEN"
+          python -m pip install 'modal==1.5.5'
+          modal app list --json > /dev/null
+          modal secret create clipper-wan-hf HF_TOKEN="$HF_TOKEN" --force
+      - name: Deploy Apache-2.0 Qwen Image Edit on Modal
+        if: inputs.mode != 'preflight'
+        run: modal deploy scripts/modal_qwen_keyframes.py
+      - name: Generate and cache cinematic keyframes entirely inside Clipper
+        if: inputs.mode != 'preflight'
+        env:
+          SHOT_IDS: ${{ inputs.shot_ids }}
+        run: |
+          modal run scripts/modal_qwen_keyframes.py \
+            --reference "$WAN_REFERENCE_FILE" \
+            --storyboard niches/atomic-habits-approved-storyboard.json \
+            --shot-ids "$SHOT_IDS" \
+            --output artifacts/cinematic/keyframes
+      - name: Verify actual keyframe and original identity chain
+        if: inputs.mode != 'preflight'
+        env:
+          SOURCE_SHA: ${{ inputs.approved_reference_sha256 }}
+          SHOT_IDS: ${{ inputs.shot_ids }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          from PIL import Image
+          for name in os.environ["SHOT_IDS"].split(","):
+              p = Path("artifacts/cinematic/keyframes") / (name.strip() + ".png")
+              e = json.loads(p.with_suffix(".json").read_text())
+              assert p.is_file() and e["status"] == "FRAME_GENERATED_TECHNICAL_CANDIDATE"
+              assert e["source_image_sha256"] == os.environ["SOURCE_SHA"]
+              assert hashlib.sha256(p.read_bytes()).hexdigest() == e["image_sha256"]
+              assert e["publish_eligible"] is False
+              with Image.open(p) as image:
+                  assert image.width >= 720 and image.height >= 1250
+                  assert abs(image.width / image.height - 9 / 16) < 0.035
+              print("KEYFRAME_READY_FOR_VIDEO_ONLY", name.strip(), e["image_sha256"], e["cache"])
+          PY
+      - name: Recover cached Kokoro voice without rerunning Qwen editorial
+        if: inputs.mode == 'speaking'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VOICE_RUN: ${{ inputs.voice_source_run }}
+        run: |
+          set -euo pipefail
+          [[ "$VOICE_RUN" =~ ^[0-9]+$ ]]
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          mkdir -p artifacts/cinematic/voice-cache
+          gh run download "$VOICE_RUN" --pattern 'niche-draft-*' --dir artifacts/cinematic/voice-cache
+          SOURCE="$(find artifacts/cinematic/voice-cache -type f -name draft.mp4 -print -quit)"
+          test -n "$SOURCE" || { echo "::error::Cached Kokoro audio unavailable"; exit 1; }
+          ffmpeg -hide_banner -loglevel error -y -i "$SOURCE" -map 0:a:0 -t 5 \
+            -ac 1 -ar 24000 -c:a pcm_s16le artifacts/cinematic/kokoro.wav
+      - name: Deploy official Wan S2V model
+        if: inputs.mode == 'speaking'
+        run: modal deploy scripts/modal_wan_s2v.py
+      - name: Generate CINEMATIC speaking video from Qwen frame
+        if: inputs.mode == 'speaking'
+        run: |
+          modal run scripts/modal_wan_s2v.py \
+            --reference artifacts/cinematic/keyframes/hook.png \
+            --audio artifacts/cinematic/kokoro.wav \
+            --output artifacts/cinematic \
+            --prompt "$WAN_PROMPT"
+      - name: Audit actual MP4, keyframe provenance, and closed creative gate
+        if: inputs.mode == 'speaking'
+        run: |
+          set -euo pipefail
+          python scripts/wan_shot_contract.py \
+            --reference artifacts/cinematic/keyframes/hook.png \
+            --audio artifacts/cinematic/kokoro.wav \
+            --prompt "$WAN_PROMPT" \
+            --video artifacts/cinematic/wan-s2v-candidate.mp4 \
+            --manifest artifacts/cinematic/evidence/shot-qa.json
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path("artifacts/cinematic")
+          key = json.loads((root / "keyframes/hook.json").read_text())
+          wan = json.loads((root / "model-evidence.json").read_text())
+          qa = json.loads((root / "evidence/shot-qa.json").read_text())
+          assert key["image_sha256"] == wan["image_sha256"] == qa["image"]["sha256"]
+          assert wan["video_sha256"] == qa["video_sha256"]
+          assert wan["video_sha256"] == hashlib.sha256((root / "wan-s2v-candidate.mp4").read_bytes()).hexdigest()
+          assert qa["publish_eligible"] is False
+          print("VIDEO_TECHNICALLY_VALID_HUMAN_CREATIVE_REVIEW_PENDING")
+          PY
+      - name: Archive generated frames, video and QA evidence
+        if: always() && inputs.mode != 'preflight'
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipper-cinematic-${{ github.run_id }}
+          path: |
+            artifacts/cinematic/keyframes/
+            artifacts/cinematic/evidence/
+            artifacts/cinematic/wan-s2v-candidate.mp4
+            artifacts/cinematic/model-evidence.json
+          if-no-files-found: warn
+          retention-days: 14
