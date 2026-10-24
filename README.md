@@ -216,6 +216,15 @@ Production acceptance additionally requires exact-head deployment evidence, curr
 
 ## Original niche video (open-weight prototype)
 
+**Editorial acceptance: REJECTED for production visuals (October 24, 2026).**
+The basic Pillow-designed Pip mascot, two-pose mouth animation, and static book
+title cards are technical proofs **not professional cartoon content**. Successful
+encoding or end-to-end Qwen3 + Kokoro generation must not be described as ready
+for publishing. Book drafts now stop before model inference unless
+`allow_rejected_prototype=true` is explicitly selected in Actions for archived
+technical reproduction. See `plans/professional-book-video-creative-rebuild.md`.
+
+
 Branch: `feat/unified-niche-tts`. This independent original-content workflow does not
 use a Reach/Whop campaign or another creator's podcast. Configure
 `niches/ai-workflows.yaml` (example English US Kokoro voice: `af_heart`).

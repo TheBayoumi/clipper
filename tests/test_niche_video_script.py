@@ -414,6 +414,14 @@ def test_cartoon_original_artwork_and_animated_render(
     assert "-loop" in commands[0]
 
 
+def test_rejected_pip_renderer_is_blocked_by_default(tmp_path: Path) -> None:
+    config = nv.NicheConfig.load(
+        Path(__file__).resolve().parents[1] / "niches" / "book-lessons.yaml"
+    )
+    with pytest.raises(nv.NicheVideoError, match="creatively BLOCKED"):
+        nv.produce(config, tmp_path)
+
+
 def test_candidate_backlog_never_auto_eligible() -> None:
     import yaml
 

@@ -814,7 +814,16 @@ def _concat(clips: list[Path], output: Path) -> None:
     )
 
 
-def produce(config: NicheConfig, output_root: Path) -> Path:
+def produce(
+    config: NicheConfig, output_root: Path, *, allow_prototype_visuals: bool = False
+) -> Path:
+    if config.format == "book_lesson" and not allow_prototype_visuals:
+        raise NicheVideoError(
+            "Book visual production is creatively BLOCKED: the two-pose Pillow "
+            "cartoon and title-card layout were rejected in editorial review. "
+            "Use --allow-prototype-visuals only for explicit archived technical "
+            "reproduction, never as publication-quality acceptance."
+        )
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         raise NicheVideoError("ffmpeg and ffprobe are required")
     cache_root = output_root / "_cache"
@@ -836,6 +845,10 @@ def produce(config: NicheConfig, output_root: Path) -> Path:
     manifest = {
         "status": "DRAFT_REQUIRES_HUMAN_REVIEW",
         "published": False,
+        "publish_eligible": False,
+        "creative_review_status": (
+            "REJECTED_PROTOTYPE" if config.format == "book_lesson" else "NOT_REVIEWED"
+        ),
         "source_revision": os.getenv("GITHUB_SHA", "untracked"),
         "niche": config.niche,
         "topic": config.topic,
@@ -890,6 +903,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--topic", default=None)
     parser.add_argument("--output-root", type=Path, default=Path("artifacts/niche"))
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--allow-prototype-visuals", action="store_true")
     parser.add_argument("--recover-audit", type=Path, default=None)
     parser.add_argument("--recover-run-id", default=None)
     arguments = parser.parse_args(argv)
@@ -907,7 +921,10 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.recover_audit,
                 arguments.recover_run_id,
             )
-        print(f"Draft generated: {produce(config, arguments.output_root)}")
+        print(
+            "Technical prototype generated: "
+            f"{produce(config, arguments.output_root, allow_prototype_visuals=arguments.allow_prototype_visuals)}"
+        )
         return 0
     except (NicheVideoError, OSError, ValueError, json.JSONDecodeError) as exc:
         parser.exit(1, f"niche-video failed: {exc}\n")

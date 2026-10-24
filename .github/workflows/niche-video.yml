@@ -25,6 +25,11 @@ on:
         description: Optional previous failed run ID; reuse its recorded Qwen candidate
         type: string
         required: false
+      allow_rejected_prototype:
+        description: "Explicitly recreate the rejected legacy cartoon for technical debugging only"
+        type: boolean
+        required: false
+        default: false
       generate_draft:
         description: Generate the full niche episode with local open-weight models
         type: boolean
@@ -132,6 +137,15 @@ jobs:
             artifacts/niche/smoke/pip-*.png
           if-no-files-found: error
           retention-days: 7
+      - name: Creative acceptance gate — rejected prototype
+        if: github.event_name == 'workflow_dispatch' && inputs.generate_draft
+        env:
+          PROTOTYPE_OVERRIDE: ${{ inputs.allow_rejected_prototype }}
+        run: |
+          if [[ "$PROTOTYPE_OVERRIDE" != "true" ]]; then
+            echo "::error::Pip vector/cartoon storyboard was rejected. Only technical smoke is supported until the professional illustrated-story visual backend is implemented and reviewed. To reproduce the *old* rejected draft, explicitly opt in with allow_rejected_prototype=true."
+            exit 1
+          fi
       - name: Install CPU-only open-weight inference dependencies
         if: github.event_name == 'workflow_dispatch' && (inputs.generate_draft || inputs.voice_smoke)
         run: |
@@ -217,9 +231,9 @@ jobs:
           if [[ -n "${RECOVERY_RUN:-}" ]]; then
             RECOVERY_FILE="$(find artifacts/niche/recovery -type f -name '*.json' -print -quit)"
             test -n "$RECOVERY_FILE"
-            python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Make a good habit easier to start today}" --output-root artifacts/niche --recover-audit "$RECOVERY_FILE" --recover-run-id "$RECOVERY_RUN"
+            python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Make a good habit easier to start today}" --output-root artifacts/niche --recover-audit "$RECOVERY_FILE" --recover-run-id "$RECOVERY_RUN" --allow-prototype-visuals
           else
-            python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Make a good habit easier to start today}" --output-root artifacts/niche
+            python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Make a good habit easier to start today}" --output-root artifacts/niche --allow-prototype-visuals
           fi
           test -n "$(find artifacts/niche -name draft.mp4 -size +0c -print -quit)"
           test -n "$(find artifacts/niche -name manifest.json -size +0c -print -quit)"
