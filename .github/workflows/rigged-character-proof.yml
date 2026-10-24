@@ -33,10 +33,16 @@ jobs:
         uses: bradyajohnston/setup-blender@9d0ba03aa0f7be59e09bdc70e08418a4298185f7
         with:
           version: '4.2'
-      - name: Install pinned cached FFmpeg and FFprobe
-        uses: federicocarboni/setup-ffmpeg@37062fbf7149fc5578d6c57e08aed62458b375d6
-        with:
-          ffmpeg-version: release
+      - name: Install pinned, npm-hosted FFmpeg and FFprobe binaries
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/tools/bin
+          npm install --prefix artifacts/tools --no-save \
+            @ffmpeg-installer/linux-x64@4.1.0 \
+            @ffprobe-installer/linux-x64@5.2.0
+          install -m 755 artifacts/tools/node_modules/@ffmpeg-installer/linux-x64/ffmpeg artifacts/tools/bin/ffmpeg
+          install -m 755 artifacts/tools/node_modules/@ffprobe-installer/linux-x64/ffprobe artifacts/tools/bin/ffprobe
+          echo "$GITHUB_WORKSPACE/artifacts/tools/bin" >> "$GITHUB_PATH"
       - name: Verify Blender and media encoders
         run: |
           set -euo pipefail
