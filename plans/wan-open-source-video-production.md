@@ -93,8 +93,9 @@ Branch: `feat/unified-niche-tts`. Review: PR #10. Publishing remains disabled.
 The active cinematic workflow authenticates GitHub Actions to Modal using
 `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` and provisions the `clipper-wan-hf`
 secret from GitHub's existing `HF_TOKEN`. This is not a Modal-hosted
-video API: GitHub runs `modal deploy` and `modal run` on pinned open-source
-Qwen and Wan application code.
+video API: GitHub looks up a code-versioned deployed Modal GPU function,
+deploys only when that function version is missing, and invokes it by name.
+It does not use `modal run` in the current cinematic workflow.
 
 Backup routing is implemented in
 `.github/workflows/wan-cinematic-production.yml` and uses **four configured
@@ -110,9 +111,11 @@ quota. The workflow does not create credentials or enroll new workspaces;
 the secret values must be provisioned securely by a workspace administrator.
 Partial credential pairs fail closed; missing optional pairs are skipped.
 
-For each Qwen or Wan GPU stage, the workflow authenticates, provisions
-`clipper-wan-hf`, deploys the app, and invokes inference in the **same**
-workspace. It attempts the preferred slot, then remaining configured slots
+For each uncached Qwen or Wan GPU stage, the workflow authenticates
+the chosen workspace and reuses its existing code-versioned app. Only when
+the specific app version is absent does it provision `clipper-wan-hf`
+and deploy before invoking inference in that **same** workspace.
+It attempts the preferred slot, then remaining configured slots
 only when the *inference* subprocess terminates with an explicit quota
 exhaustion error. Authentication, secret provisioning, deployment, CUDA OOM,
 timeout, rate-limit, credit or spending-budget failures must not switch accounts.
