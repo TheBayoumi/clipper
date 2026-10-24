@@ -6,6 +6,7 @@ on:
       - feat/unified-niche-tts
     paths:
       - scripts/niche_video.py
+      - scripts/book_cartoon.py
       - niches/**
       - .github/workflows/niche-video.yml
       - tests/test_niche_video_script.py
@@ -15,7 +16,7 @@ on:
         description: Niche config path in repository
         type: string
         required: true
-        default: niches/ai-workflows.yaml
+        default: niches/book-lessons.yaml
       topic:
         description: Optional episode topic override
         type: string
@@ -52,7 +53,7 @@ jobs:
           python-version: '3.12'
           cache: pip
       - name: Install standalone video runtime
-        run: python -m pip install 'PyYAML>=6.0.3,<7'
+        run: python -m pip install 'PyYAML>=6.0.3,<7' 'Pillow>=11.3,<13'
       - name: Install FFmpeg runtime
         run: |
           sudo apt-get update -qq
@@ -62,14 +63,14 @@ jobs:
       - name: Verify niche runtime source style
         run: |
           python -m pip install 'ruff>=0.15.22,<1'
-          ruff check scripts/niche_video.py tests/test_niche_video_script.py
-          ruff format --check scripts/niche_video.py tests/test_niche_video_script.py
+          ruff check scripts/niche_video.py scripts/book_cartoon.py tests/test_niche_video_script.py
+          ruff format --check scripts/niche_video.py scripts/book_cartoon.py tests/test_niche_video_script.py
       - name: Validate content niche without external services
         env:
-          CONFIG_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.config_path || 'niches/ai-workflows.yaml' }}
+          CONFIG_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.config_path || 'niches/book-lessons.yaml' }}
           EPISODE_TOPIC: ${{ inputs.topic }}
         run: |
-          python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Three rules for building reliable AI agent workflows}" --validate-only
+          python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Make a good habit easier to start today}" --validate-only
       - name: Render real FFmpeg smoke MP4 (no API calls)
         run: |
           set -euo pipefail
@@ -94,13 +95,14 @@ jobs:
               "-f", "lavfi", "-i", "sine=frequency=440:duration=2.1",
               "-c:a", "libmp3lame", "-q:a", "4", str(audio),
           ])
+          config = media.NicheConfig.load(Path("niches/book-lessons.yaml"))
           first = root / "scene-00.mp4"
           seconds = media._render_scene(
               media.Scene(
-                  headline="A SIMPLE, TESTABLE WORKFLOW",
+                  headline="START WITH AN OBVIOUS CUE",
                   narration="This synthetic tone validates the real video encode path.",
               ),
-              audio, first, "WORKFLOW LAB",
+              audio, first, config.brand, config, 0, 1,
           )
           draft = root / "smoke.mp4"
           media._concat([first], draft)
@@ -121,6 +123,8 @@ jobs:
           path: |
             artifacts/niche/smoke/smoke.mp4
             artifacts/niche/smoke/smoke-qc.json
+            artifacts/niche/smoke/book-scene-00.png
+            artifacts/niche/smoke/pip-*.png
           if-no-files-found: error
           retention-days: 7
       - name: Install CPU-only open-weight inference dependencies
@@ -194,7 +198,7 @@ jobs:
           set -euo pipefail
           command -v ffmpeg
           command -v ffprobe
-          python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Three rules for building reliable AI agent workflows}" --output-root artifacts/niche
+          python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Make a good habit easier to start today}" --output-root artifacts/niche
           test -n "$(find artifacts/niche -name draft.mp4 -size +0c -print -quit)"
           test -n "$(find artifacts/niche -name manifest.json -size +0c -print -quit)"
       - name: Upload Qwen3 validation diagnostics even after failure
@@ -213,5 +217,7 @@ jobs:
           path: |
             artifacts/niche/draft-*/draft.mp4
             artifacts/niche/draft-*/manifest.json
+            artifacts/niche/draft-*/book-scene-*.png
+            artifacts/niche/draft-*/pip-*.png
           if-no-files-found: error
           retention-days: 14
