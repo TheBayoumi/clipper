@@ -32,7 +32,7 @@ SCRIPT_REVISION = "8d4744f9e13072f4920c326350fa81eedb74eae9"
 VOICE_MODEL = "hexgrad/Kokoro-82M"
 VOICE_REVISION = "v1.0"
 SCRIPT_CONTRACT = "niche-scenes-open-v3"
-BOOK_EDIT_CONTRACT = "book-lesson-complete-sentences-v1"
+BOOK_EDIT_CONTRACT = "book-lesson-complete-sentences-v2"
 MAX_SCRIPT_ATTEMPTS = 3
 VOICE_CONTRACT = "kokoro-24khz-wav-v1"
 VOICES = frozenset({"af_heart", "af_bella", "am_adam", "am_michael", "bf_emma"})
@@ -345,26 +345,48 @@ def _compact_book_sentences(candidate: object) -> tuple[object, bool]:
     if sum(counts) <= 125 and all(6 <= count <= 45 for count in counts):
         return candidate, False
 
-    max_scene = min(30, 120 // len(raw_scenes))
+    # Mandatory content: each scene's opening and the closing scene's last
+    # complete sentence. Allow variable scene budgets, then select optional
+    # complete sentences without exceeding the strict episode word ceiling.
+    sentence_lists = [
+        re.split(r"(?<=[.!?])\s+", scene["narration"].strip())
+        for scene in raw_scenes
+    ]
+    chosen: list[set[int]] = []
+    lengths: list[int] = []
+    for index, sentences in enumerate(sentence_lists):
+        if not sentences or any(not sentence for sentence in sentences):
+            raise NicheVideoError("book script contains empty sentence boundaries")
+        required = {0}
+        if index == len(sentence_lists) - 1:
+            required.add(len(sentences) - 1)
+        word_count = sum(len(sentences[i].split()) for i in required)
+        if word_count > 45:
+            raise NicheVideoError("book opening or final payoff exceeds the per-scene limit")
+        chosen.append(required)
+        lengths.append(word_count)
+    total = sum(lengths)
+    if total > 125:
+        raise NicheVideoError("mandatory complete sentences exceed narration budget")
+
+    for index, sentences in enumerate(sentence_lists):
+        # Nonfinal scenes target 35 words; the finale may need the full 45 to
+        # preserve its spoken takeaway. Favor earlier contextual sentences.
+        scene_target = 45 if index == len(sentence_lists) - 1 else 35
+        for i in range(1, len(sentences)):
+            if i in chosen[index]:
+                continue
+            count = len(sentences[i].split())
+            if lengths[index] + count <= scene_target and total + count <= 120:
+                chosen[index].add(i)
+                lengths[index] += count
+                total += count
+
     edited: list[dict[str, str]] = []
     for index, scene in enumerate(raw_scenes):
-        sentences = re.split(r"(?<=[.!?])\s+", scene["narration"].strip())
-        if not sentences or any(not part or len(part.split()) > max_scene for part in sentences):
-            raise NicheVideoError("book narration cannot be shortened at whole-sentence boundaries")
-        # Keep every scene's opening and the final scene's complete payoff.
-        keep = {0}
-        if index == len(raw_scenes) - 1:
-            keep.add(len(sentences) - 1)
-        words = sum(len(sentences[i].split()) for i in keep)
-        if words > max_scene:
-            raise NicheVideoError("book closing payoff exceeds the safe scene budget")
-        for i in range(1, len(sentences)):
-            if i not in keep and words + len(sentences[i].split()) <= max_scene:
-                keep.add(i)
-                words += len(sentences[i].split())
-        if not 6 <= words <= 45:
+        if not 6 <= lengths[index] <= 45:
             raise NicheVideoError("complete-sentence edit could not preserve scene length")
-        narration = " ".join(sentences[i] for i in sorted(keep))
+        narration = " ".join(sentence_lists[index][i] for i in sorted(chosen[index]))
         edited.append({"headline": scene["headline"], "narration": narration})
     result = {"title": candidate["title"], "scenes": edited}
     if sum(len(scene["narration"].split()) for scene in edited) < 45:
@@ -372,14 +394,65 @@ def _compact_book_sentences(candidate: object) -> tuple[object, bool]:
     return result, result != candidate
 
 
-def generate_episode(config: NicheConfig, cache_root: Path) -> tuple[Episode, str]:
-    original = _script_request(config)
-    digest = _fingerprint(
+def _script_fingerprint(config: NicheConfig) -> str:
+    return _fingerprint(
         {
             "contract": BOOK_EDIT_CONTRACT if config.format == "book_lesson" else SCRIPT_CONTRACT,
-            "request": original,
+            "request": _script_request(config),
         }
     )
+
+
+def _recover_book_script(
+    config: NicheConfig, cache_root: Path, audit_path: Path, run_id: str
+) -> str:
+    """Validate and cache a genuine Qwen draft preserved by a failed GitHub run."""
+    if config.format != "book_lesson" or not run_id.isdecimal():
+        raise NicheVideoError("audit recovery requires a book lesson and numeric run ID")
+    records = json.loads(audit_path.read_text(encoding="utf-8"))
+    if not isinstance(records, list) or not records:
+        raise NicheVideoError("Qwen3 recovery audit must contain recorded attempts")
+    first = records[0]
+    if (
+        not isinstance(first, dict)
+        or first.get("accepted") is not False
+        or not isinstance(first.get("completion"), str)
+    ):
+        raise NicheVideoError("recovery requires the original rejected Qwen3 completion")
+    completion = first["completion"]
+    candidate = json.loads(completion)
+    edited_candidate, changed = _compact_book_sentences(candidate)
+    episode = Episode.from_json(edited_candidate)
+    digest = _script_fingerprint(config)
+    path = cache_root / "scripts" / f"{digest}.json"
+    if path.is_file():
+        if Episode.from_json(json.loads(path.read_text(encoding="utf-8"))) != episode:
+            raise NicheVideoError("recovery differs from the current validated script cache")
+    else:
+        _write_atomic(
+            path, json.dumps(episode.to_dict(), ensure_ascii=False, indent=2).encode("utf-8")
+        )
+    provenance = {
+        "source": "github_actions_rejected_qwen3_attempt",
+        "source_run_id": run_id,
+        "source_audit_sha256": hashlib.sha256(audit_path.read_bytes()).hexdigest(),
+        "original_completion_sha256": hashlib.sha256(completion.encode()).hexdigest(),
+        "editor_contract": BOOK_EDIT_CONTRACT,
+        "edited": changed,
+        "narration_words": sum(len(scene.narration.split()) for scene in episode.scenes),
+        "human_factual_review": "PENDING",
+    }
+    _write_atomic(
+        cache_root / "script_recoveries" / f"{digest}.json",
+        json.dumps(provenance, indent=2).encode("utf-8"),
+    )
+    print(f"Recovered authenticated Qwen script from Actions run {run_id}")
+    return digest
+
+
+def generate_episode(config: NicheConfig, cache_root: Path) -> tuple[Episode, str]:
+    original = _script_request(config)
+    digest = _script_fingerprint(config)
     path = cache_root / "scripts" / f"{digest}.json"
     if path.is_file():
         return Episode.from_json(json.loads(path.read_text(encoding="utf-8"))), digest
@@ -783,6 +856,15 @@ def produce(config: NicheConfig, output_root: Path) -> Path:
         "title": episode.title,
         "approved_facts": list(config.facts),
         "script_fingerprint": script_hash,
+        "script_recovery": (
+            json.loads(
+                (cache_root / "script_recoveries" / f"{script_hash}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            if (cache_root / "script_recoveries" / f"{script_hash}.json").is_file()
+            else None
+        ),
         "script_model": SCRIPT_MODEL,
         "script_model_revision": SCRIPT_REVISION,
         "tts_model": VOICE_MODEL,
@@ -809,12 +891,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--topic", default=None)
     parser.add_argument("--output-root", type=Path, default=Path("artifacts/niche"))
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--recover-audit", type=Path, default=None)
+    parser.add_argument("--recover-run-id", default=None)
     arguments = parser.parse_args(argv)
     try:
         config = NicheConfig.load(arguments.config, arguments.topic)
         if arguments.validate_only:
             print(json.dumps({"valid": True, "niche": config.niche, "topic": config.topic}))
             return 0
+        if (arguments.recover_audit is None) != (arguments.recover_run_id is None):
+            raise NicheVideoError("--recover-audit requires --recover-run-id and vice versa")
+        if arguments.recover_audit is not None:
+            _recover_book_script(
+                config,
+                arguments.output_root / "_cache",
+                arguments.recover_audit,
+                arguments.recover_run_id,
+            )
         print(f"Draft generated: {produce(config, arguments.output_root)}")
         return 0
     except (NicheVideoError, OSError, ValueError, json.JSONDecodeError) as exc:

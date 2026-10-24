@@ -48,3 +48,19 @@ trademark review before public launch.
 
 James Clear, Four Laws of Behavior Change (excerpt from Atomic Habits):
 https://jamesclear.com/three-steps-habit-change
+
+## GitHub run recovery and book sentence selection v2
+
+The October 24 run #40045892788 recorded a genuine rejected **260-word** Qwen3
+candidate. The previous v1 editor could not keep both the opening and closing
+full sentences in its artificial 30-word per-scene cap. Version 2 allocates up
+to 45 words to the finale, keeps all scene opening sentences, selects complete
+supporting sentences up to 120 words total, and preserves the existing hard
+45–125 words global contract. No split/half-sentence trimming, no added claims.
+
+To avoid expensive identical Qwen inference, dispatch with
+`recover_from_run=40045892788` to retrieve that exact recorded GitHub audit
+via the authorized GitHub CLI, validate and cache its original completion under
+an updated content hash and append source-run provenance to the MP4 manifest.
+This is source replay, not a new model generation and **does not certify the
+book lesson's factual/editorial quality**. All artifacts remain unpublished.

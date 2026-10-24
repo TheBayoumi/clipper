@@ -21,6 +21,10 @@ on:
         description: Optional episode topic override
         type: string
         required: false
+      recover_from_run:
+        description: Optional previous failed run ID; reuse its recorded Qwen candidate
+        type: string
+        required: false
       generate_draft:
         description: Generate the full niche episode with local open-weight models
         type: boolean
@@ -34,6 +38,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: original-niche-${{ github.ref_name }}-${{ github.run_id }}
@@ -189,16 +194,33 @@ jobs:
             artifacts/niche/open-source-voice/voice-qc.json
           if-no-files-found: error
           retention-days: 14
+      - name: Restore original Qwen3 completion from prior failed run
+        if: github.event_name == 'workflow_dispatch' && inputs.generate_draft && inputs.recover_from_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_RUN: ${{ inputs.recover_from_run }}
+        run: |
+          set -euo pipefail
+          [[ "$RECOVERY_RUN" =~ ^[0-9]+$ ]]
+          gh run download "$RECOVERY_RUN" --pattern 'niche-script-diagnostics-*' --dir artifacts/niche/recovery
+          test -n "$(find artifacts/niche/recovery -type f -name '*.json' -print -quit)"
       - name: Render private draft (never publish)
         if: github.event_name == 'workflow_dispatch' && inputs.generate_draft
         env:
           CONFIG_PATH: ${{ inputs.config_path }}
           EPISODE_TOPIC: ${{ inputs.topic }}
+          RECOVERY_RUN: ${{ inputs.recover_from_run }}
         run: |
           set -euo pipefail
           command -v ffmpeg
           command -v ffprobe
-          python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Make a good habit easier to start today}" --output-root artifacts/niche
+          if [[ -n "${RECOVERY_RUN:-}" ]]; then
+            RECOVERY_FILE="$(find artifacts/niche/recovery -type f -name '*.json' -print -quit)"
+            test -n "$RECOVERY_FILE"
+            python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Make a good habit easier to start today}" --output-root artifacts/niche --recover-audit "$RECOVERY_FILE" --recover-run-id "$RECOVERY_RUN"
+          else
+            python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Make a good habit easier to start today}" --output-root artifacts/niche
+          fi
           test -n "$(find artifacts/niche -name draft.mp4 -size +0c -print -quit)"
           test -n "$(find artifacts/niche -name manifest.json -size +0c -print -quit)"
       - name: Upload Qwen3 validation diagnostics even after failure

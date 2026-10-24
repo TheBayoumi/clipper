@@ -253,6 +253,79 @@ def test_book_edit_does_not_chop_unbreakable_long_sentence() -> None:
         nv._compact_book_sentences(raw)
 
 
+def test_recovered_full_sentence_script_preserves_payoff_and_no_model_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = Path(__file__).resolve().parents[1] / "niches" / "book-lessons.yaml"
+    config = nv.NicheConfig.load(source)
+    candidate = {
+        "title": "A habit that sticks",
+        "scenes": [
+            {"headline": "The start", "narration": (
+                "A habit is not about how hard it is to do, but how easy it is to start. "
+                "The key is to begin with a small, manageable action that feels rewarding. "
+                "For example, instead of trying to read a whole book in one sitting, "
+                "start with just one page a day. "
+                "This approach makes the task feel achievable and gives you a sense of accomplishment."
+            )},
+            {"headline": "The cue", "narration": (
+                "A cue is a trigger that signals your brain to take action. "
+                "You can create a cue by placing your phone on a visible desk, "
+                "or by setting a specific time each day to do something. "
+                "The more obvious your cue is, the more likely you are to respond automatically. "
+                "For instance, if you want to exercise, set your phone to ring at "
+                "7 AM, and you will be motivated to wake up and move."
+            )},
+            {"headline": "The reward", "narration": (
+                "Every habit should feel good to do. "
+                "The more satisfying the action is, the more likely you are to repeat it. "
+                "For example, instead of trying to eat healthy every day, start with "
+                "a small snack that you enjoy. "
+                "Over time, this becomes a habit that you look forward to, "
+                "and it becomes easier to maintain."
+            )},
+            {"headline": "The finale", "narration": (
+                "Habits are not about perfection, they are about consistency. "
+                "The more you practice, the more your brain will start to automate the behavior. "
+                "If you want to make a habit easier to maintain, try to build it gradually. "
+                "For example, if you want to write every day, start with just 10 minutes "
+                "a day and increase the time as you get comfortable with the routine."
+            )},
+        ],
+    }
+    raw_words = sum(len(s["narration"].split()) for s in candidate["scenes"])
+    assert raw_words > 125
+    audit = tmp_path / "rejected.json"
+    audit.write_text(
+        json.dumps([{"attempt": 1, "accepted": False, "completion": json.dumps(candidate)}]),
+        encoding="utf-8",
+    )
+    model = Mock(side_effect=AssertionError("model must not rerun on recovery"))
+    monkeypatch.setattr(nv, "_local_script_completion", model)
+    digest = nv._recover_book_script(config, tmp_path / "_cache", audit, "40045892788")
+    episode, loaded_digest = nv.generate_episode(config, tmp_path / "_cache")
+    assert digest == loaded_digest
+    assert model.call_count == 0
+    assert episode.scenes[-1].narration.endswith("comfortable with the routine.")
+    count = sum(len(scene.narration.split()) for scene in episode.scenes)
+    assert 45 <= count <= 125
+    recovery = json.loads(
+        (tmp_path / "_cache" / "script_recoveries" / f"{digest}.json").read_text()
+    )
+    assert recovery["source_run_id"] == "40045892788"
+    assert recovery["edited"] is True
+
+
+def test_recovery_rejects_unrecorded_script(tmp_path: Path) -> None:
+    config = nv.NicheConfig.load(
+        Path(__file__).resolve().parents[1] / "niches" / "book-lessons.yaml"
+    )
+    audit = tmp_path / "bad.json"
+    audit.write_text('[{"accepted": true, "completion": "{}"}]', encoding="utf-8")
+    with pytest.raises(nv.NicheVideoError, match="original rejected"):
+        nv._recover_book_script(config, tmp_path / "_cache", audit, "42")
+
+
 def test_source_attributed_book_lesson_config(tmp_path: Path) -> None:
     source = Path(__file__).resolve().parents[1] / "niches" / "book-lessons.yaml"
     book = nv.NicheConfig.load(source)
