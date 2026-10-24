@@ -23,6 +23,7 @@ MAX_OUTPUT_BYTES = 90 * 1024 * 1024
 CUDA_IMAGE = "nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04"
 
 weights = modal.Volume.from_name("clipper-trellis2-weights", create_if_missing=True)
+hf_secret = modal.Secret.from_name("clipper-trellis2-hf")
 
 
 def image_spec() -> modal.Image:
@@ -123,6 +124,7 @@ def verified_request(source: bytes, source_sha: str, resolution: str, seed: int)
     memory=32768,
     cpu=8,
     volumes={"/model-cache": weights},
+    secrets=[hf_secret],
     max_containers=1,
     scaledown_window=60,
 )
@@ -133,6 +135,8 @@ def generate_approved_host(
     import torch
     from PIL import Image
 
+    if not os.environ.get("HF_TOKEN"):
+        raise RuntimeError("Modal TRELLIS.2 worker missing Hugging Face authentication")
     if not torch.cuda.is_available():
         raise RuntimeError("TRELLIS.2 worker has no assigned CUDA GPU")
     device = torch.cuda.get_device_properties(0)
