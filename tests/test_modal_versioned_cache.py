@@ -29,6 +29,7 @@ from wan_shared_shot_cache import (  # noqa: E402
     "failure",
     (
         "success",
+        "fresh_deploy",
         "quota",
         "quota_twice",
         "cuda",
@@ -105,7 +106,7 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         "GITHUB_ENV": str(env_file),
         "CALLS": str(calls),
         "FAILURE": failure,
-        "DEPLOY_STATE": "found" if failure != "deploy" else "missing",
+        "DEPLOY_STATE": "missing" if failure in ("deploy", "fresh_deploy") else "found",
     }
     process = subprocess.run(
         [
@@ -125,9 +126,9 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         check=False,
     )
     used = calls.read_text()
-    if failure in ("success", "quota", "quota_twice"):
+    if failure in ("success", "fresh_deploy", "quota", "quota_twice"):
         assert process.returncode == 0, process.stderr + process.stdout
-        winner = {"success": 1, "quota": 2, "quota_twice": 3}[failure]
+        winner = {"success": 1, "fresh_deploy": 1, "quota": 2, "quota_twice": 3}[failure]
         assert f"MODAL_ACCOUNT_SLOT={winner}" in env_file.read_text()
         assert ("infer:secondary:" in used) == (winner >= 2)
         assert ("infer:tertiary:" in used) == (winner == 3)
@@ -138,7 +139,7 @@ def test_versioned_modal_reuses_deploy_and_fails_over_only_on_quota(
         assert not env_file.exists()
     if failure == "success":
         assert "modal:primary:deploy" not in used
-    if failure == "deploy":
+    if failure in ("fresh_deploy", "deploy"):
         assert "modal:primary:deploy" in used
 
 
