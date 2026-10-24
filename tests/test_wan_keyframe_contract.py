@@ -135,7 +135,7 @@ def test_modal_account_failover_is_restricted_to_quota_failures(
     """Execute the actual workflow shell against a fake Modal CLI, not a GPU."""
     workflow = yaml.safe_load((ROOT / ".github/workflows/wan-cinematic-production.yml").read_text())
     stage = next(
-        step["run"] for step in workflow["jobs"]["cinematic"]["steps"] if step["name"] == stage_name
+        step["run"] for step in workflow["jobs"]["cinematic"]["steps"] if step.get("name") == stage_name
     )
     executable_dir = tmp_path / "bin"
     executable_dir.mkdir()
