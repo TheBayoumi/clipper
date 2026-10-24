@@ -103,8 +103,11 @@ app = modal.App(APP_NAME)
 
 def verified_request(source: bytes, source_sha: str, resolution: str, seed: int) -> None:
     """Reject input tampering and accidental expensive 1536-resolution runs."""
-    if not isinstance(source, bytes) or not 25_000 <= len(source) <= 12_000_000:
-        raise ValueError("Source is missing or outside the bounded reference size")
+    # The approved 512x768 WebP is only 6,980 bytes. File size is not a fidelity
+    # or authenticity signal: the pinned SHA256 below is the identity check.
+    # Decode/validate the actual image in the GPU worker using Pillow.
+    if not isinstance(source, bytes) or not 0 < len(source) <= 12_000_000:
+        raise ValueError("Source is missing or exceeds the allowed reference size")
     if source_sha != SOURCE_SHA256 or hashlib.sha256(source).hexdigest() != SOURCE_SHA256:
         raise ValueError("Modal input does not match the approved character SHA256")
     if resolution not in ("512", "1024_cascade"):
