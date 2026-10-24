@@ -93,9 +93,19 @@ def local_wan_complete(args: argparse.Namespace) -> bool:
 def list_prior_runs(repo: str, branch: str, limit: int) -> list[int]:
     """Only completed runs, in this workflow and branch, may be reused."""
     command = [
-        "gh", "run", "list", "--repo", repo, "--workflow", WORKFLOW,
-        "--branch", branch, "--limit", str(limit),
-        "--json", "databaseId,status",
+        "gh",
+        "run",
+        "list",
+        "--repo",
+        repo,
+        "--workflow",
+        WORKFLOW,
+        "--branch",
+        branch,
+        "--limit",
+        str(limit),
+        "--json",
+        "databaseId,status",
     ]
     result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=40)
     runs = json.loads(result.stdout)
@@ -163,8 +173,16 @@ def restore(args: argparse.Namespace) -> None:
         with tempfile.TemporaryDirectory(prefix="clipper-shot-cache-") as temp:
             archive = Path(temp)
             command = [
-                "gh", "run", "download", str(run_id), "--repo", repo,
-                "--pattern", "clipper-cinematic-*", "--dir", str(archive),
+                "gh",
+                "run",
+                "download",
+                str(run_id),
+                "--repo",
+                repo,
+                "--pattern",
+                "clipper-cinematic-*",
+                "--dir",
+                str(archive),
             ]
             result = subprocess.run(command, capture_output=True, text=True, timeout=90)
             if result.returncode:
