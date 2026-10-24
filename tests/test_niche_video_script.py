@@ -209,6 +209,97 @@ def test_repair_exhaustion_preserves_original_context(
     assert len(json.loads(reports[0].read_text())) == 3
 
 
+def test_source_attributed_book_lesson_config(tmp_path: Path) -> None:
+    source = Path(__file__).resolve().parents[1] / "niches" / "book-lessons.yaml"
+    book = nv.NicheConfig.load(source)
+    assert book.format == "book_lesson"
+    assert book.pillar == "self_improvement"
+    assert book.book_title == "Atomic Habits"
+    assert book.book_author == "James Clear"
+    assert book.source_url.startswith("https://jamesclear.com/")
+    assert book.facts
+    request = nv._script_request(book)
+    assert "Atomic Habits" in str(request)
+    assert "James Clear" in str(request)
+    assert "approved_facts" in str(request)
+
+
+@pytest.mark.parametrize("source_url", ["http://example.com/fact", "https://user:pass@example.com/x"])
+def test_book_lesson_rejects_untrusted_source(tmp_path: Path, source_url: str) -> None:
+    path = tmp_path / "book.yaml"
+    path.write_text(
+        "format: book_lesson\nniche: Books\naudience: Readers\nbrand: PAGE TO LIFE\n"
+        "topic: Get started\npillar: psychology\nbook_title: Example Book\n"
+        "book_author: Example Author\nfacts:\n  - Reviewed fact.\n"
+        f"source_url: {source_url}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(nv.NicheVideoError, match="HTTPS"):
+        nv.NicheConfig.load(path)
+
+
+def test_book_lesson_refuses_unsourced_claims(tmp_path: Path) -> None:
+    path = tmp_path / "book.yaml"
+    path.write_text(
+        "format: book_lesson\nniche: Books\naudience: Readers\nbrand: PAGE TO LIFE\n"
+        "topic: Get started\npillar: psychology\nbook_title: Example Book\n"
+        "book_author: Example Author\nsource_url: https://example.com/author\n"
+        "facts: []\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(nv.NicheVideoError, match="approved, sourced facts"):
+        nv.NicheConfig.load(path)
+
+
+def test_cartoon_original_artwork_and_animated_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PIL import Image
+
+    monkeypatch.syspath_prepend(str(_SCRIPT.parent))
+    from book_cartoon import CANVAS, HOST_SIZE, create_assets
+
+    bg, speaking, idle = create_assets(
+        tmp_path, "PAGE TO LIFE", "Atomic Habits", "James Clear",
+        "START WITH AN OBVIOUS CUE", 0, 4
+    )
+    assert Image.open(bg).size == CANVAS == (1080, 1920)
+    assert Image.open(speaking).size == HOST_SIZE
+    assert Image.open(speaking).mode == "RGBA"
+    assert speaking.read_bytes() != idle.read_bytes()
+
+    config = nv.NicheConfig.load(
+        Path(__file__).resolve().parents[1] / "niches" / "book-lessons.yaml"
+    )
+    commands: list[list[str]] = []
+    monkeypatch.setattr(nv, "_duration", lambda _audio: 2.6)
+    monkeypatch.setattr(
+        nv, "_process", lambda command, **_kwargs: commands.append(command) or ""
+    )
+    scene = nv.Scene("START WITH AN OBVIOUS CUE", "An original and actionable lesson.")
+    seconds = nv._render_scene(
+        scene, tmp_path / "narration.wav", tmp_path / "scene.mp4",
+        config.brand, config, 0, 4
+    )
+    assert seconds >= 2.8
+    assert "-filter_complex" in commands[0]
+    assert "overlay=" in str(commands[0])
+    assert "-loop" in commands[0]
+
+
+def test_candidate_backlog_never_auto_eligible() -> None:
+    import yaml
+
+    source = Path(__file__).resolve().parents[1] / "niches" / "book-lesson-backlog.yaml"
+    data = yaml.safe_load(source.read_text(encoding="utf-8"))
+    assert data["production_eligible"] is False
+    assert len(data["episodes"]) == 20
+    assert {e["pillar"] for e in data["episodes"]} == {
+        "self_improvement", "psychology", "business"
+    }
+    assert all(e["source_status"] == "research_required" for e in data["episodes"])
+
+
 def test_tts_content_cache(
     config: nv.NicheConfig,
     episode: nv.Episode,
