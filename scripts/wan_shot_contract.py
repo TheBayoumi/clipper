@@ -121,11 +121,19 @@ def audit_mp4(video: Path, request: dict[str, object]) -> dict[str, object]:
     try:
         result = subprocess.run(
             [
-                "ffprobe", "-v", "error", "-show_entries",
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
                 "format=duration:stream=codec_type,width,height,r_frame_rate",
-                "-of", "json", str(video),
+                "-of",
+                "json",
+                str(video),
             ],
-            capture_output=True, text=True, check=True, timeout=45,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=45,
         )
         payload = json.loads(result.stdout)
         streams = payload["streams"]
@@ -138,7 +146,9 @@ def audit_mp4(video: Path, request: dict[str, object]) -> dict[str, object]:
             raise ShotContractError("video duration outside qualification window")
         subprocess.run(
             ["ffmpeg", "-v", "error", "-i", str(video), "-f", "null", "-"],
-            capture_output=True, check=True, timeout=180,
+            capture_output=True,
+            check=True,
+            timeout=180,
         )
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         raise ShotContractError("video probe or full decode failed") from exc
