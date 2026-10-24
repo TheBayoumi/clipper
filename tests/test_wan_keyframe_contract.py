@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,3 +119,83 @@ def test_modal_fallback_local_cache_is_hash_and_identity_locked(
     manifest.write_text(json.dumps(evidence))
     frame.write_bytes(frame.read_bytes() + b"tampered")
     assert not keyframes.verified_local_keyframe(frame, manifest, request)
+
+
+@pytest.mark.parametrize(
+    "stage_name",
+    (
+        "Generate cinematic keyframes with quota-aware Modal routing",
+        "Generate speaking video with quota-aware Modal routing",
+    ),
+)
+@pytest.mark.parametrize("failure_type", ("quota", "cuda"))
+def test_modal_account_failover_is_restricted_to_quota_failures(
+    tmp_path: Path, stage_name: str, failure_type: str
+) -> None:
+    """Execute the actual workflow shell against a fake Modal CLI, not a GPU."""
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/wan-cinematic-production.yml").read_text()
+    )
+    stage = next(
+        step["run"]
+        for step in workflow["jobs"]["cinematic"]["steps"]
+        if step["name"] == stage_name
+    )
+    executable_dir = tmp_path / "bin"
+    executable_dir.mkdir()
+    modal = executable_dir / "modal"
+    modal.write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "$MODAL_TOKEN_ID $1" >> "$CLIPPER_MODAL_CALLS"\n'
+        'if [[ "$MODAL_TOKEN_ID" == "primary" && "$1" == "run" ]]; then\n'
+        '  if [[ "$CLIPPER_FAILURE_TYPE" == "quota" ]]; then\n'
+        '    echo "Workspace compute quota exceeded" >&2\n'
+        '  else\n'
+        '    echo "CUDA out of memory in model inference" >&2\n'
+        "  fi\n"
+        "  exit 33\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    modal.chmod(0o755)
+    (tmp_path / "artifacts/cinematic/evidence").mkdir(parents=True)
+    env_file = tmp_path / "github_env"
+    calls = tmp_path / "modal_calls.log"
+    env = {
+        **os.environ,
+        "PATH": f"{executable_dir}:{os.environ['PATH']}",
+        "MODAL_TOKEN_ID": "primary",
+        "MODAL_TOKEN_SECRET": "primary-secret",
+        "MODAL_TOKEN_ID_2": "secondary",
+        "MODAL_TOKEN_SECRET_2": "secondary-secret",
+        "MODAL_TOKEN_ID_3": "",
+        "MODAL_TOKEN_SECRET_3": "",
+        "HF_TOKEN": "example-hf-token",
+        "SHOT_IDS": "hook",
+        "WAN_REFERENCE_FILE": "fake-source.webp",
+        "WAN_PROMPT": "test-prompt",
+        "GITHUB_ENV": str(env_file),
+        "CLIPPER_MODAL_CALLS": str(calls),
+        "CLIPPER_FAILURE_TYPE": failure_type,
+    }
+    process = subprocess.run(
+        ["bash", "-c", stage],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    invocations = calls.read_text(encoding="utf-8")
+    if failure_type == "quota":
+        assert process.returncode == 0, process.stderr + process.stdout
+        assert "secondary run" in invocations
+        assert "MODAL_ACCOUNT_SLOT=2" in env_file.read_text()
+        assert "credential_slot" in next(
+            (tmp_path / "artifacts/cinematic/evidence").glob("*-modal-route.json")
+        ).read_text()
+    else:
+        assert process.returncode != 0
+        assert "secondary run" not in invocations
+        assert not env_file.exists()
