@@ -52,6 +52,24 @@ def is_background_sheet(extents: tuple[float, float, float], y: float) -> bool:
     return extents[0] >= 0.70 and extents[2] >= 0.70 and extents[1] <= 0.07 and y <= -0.25
 
 
+def is_floor_border_fragment(
+    extents: tuple[float, float, float],
+    centroid: tuple[float, float, float],
+    floor_height: float,
+) -> bool:
+    """Remove only slender border wires bordering the broad scanned floor.
+
+    This deliberately cannot classify hands, clothing or small accessories.
+    The floor height comes from the independently identified large slabs.
+    """
+    x, y, z = extents
+    cx, cy, cz = centroid
+    touches_outer_frame = (abs(cx) + x / 2 >= 0.48) or (abs(cz) + z / 2 >= 0.48)
+    return (
+        touches_outer_frame and max(x, z) >= 0.18 and y <= 0.009 and abs(cy - floor_height) <= 0.016
+    )
+
+
 def prepare(glb: Path, target: Path) -> dict[str, Any]:
     import numpy as np
     import trimesh
@@ -69,11 +87,25 @@ def prepare(glb: Path, target: Path) -> dict[str, Any]:
     components = body.submesh(face_groups, append=False, repair=False)
     if sum(len(component.faces) for component in components) != len(body.faces):
         raise MeshGateError("connected components did not conserve faces")
-    keep, background = [], []
+    floor_sheets = [
+        component
+        for component in components
+        if is_background_sheet(
+            tuple(float(v) for v in component.extents), float(component.centroid[1])
+        )
+    ]
+    if not floor_sheets:
+        raise MeshGateError("background not confidently separable; human review required")
+    floor_height = sum(float(part.centroid[1]) for part in floor_sheets) / len(floor_sheets)
+    keep, background, border_count = [], [], 0
     for component in components:
         spans = tuple(float(v) for v in component.extents)
-        if is_background_sheet(spans, float(component.centroid[1])):
+        position = tuple(float(v) for v in component.centroid)
+        sheet = is_background_sheet(spans, position[1])
+        border = is_floor_border_fragment(spans, position, floor_height) and not sheet
+        if sheet or border:
             background.append(component)
+            border_count += int(border)
         else:
             keep.append(component)
     if not keep or not background:
@@ -100,6 +132,7 @@ def prepare(glb: Path, target: Path) -> dict[str, Any]:
         "clean_triangles": expected,
         "raw_components": len(components),
         "removed_background_components": len(background),
+        "removed_floor_border_fragments": border_count,
         "remaining_components": len(keep),
         "open_shells_detected": any(not c.is_watertight for c in keep),
         "retopology_required": len(keep) > 75 or any(not c.is_watertight for c in keep),

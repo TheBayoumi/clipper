@@ -99,3 +99,22 @@ def test_clipper_asset_workflow_never_reruns_model() -> None:
     assert "scripts/character_turntable.py" in workflow
     assert "trellis_image_to_3d.py --" not in workflow
     assert "actions/upload-artifact@v4" in workflow
+
+
+@pytest.mark.parametrize(
+    ("dimensions", "center", "expected"),
+    [
+        ((1.0, 0.003, 0.003), (0.0, -0.407, -0.499), True),
+        ((0.003, 0.003, 1.0), (0.499, -0.407, 0.0), True),
+        ((0.2, 0.003, 0.19), (-0.4, -0.408, 0.4), True),
+        ((0.2, 0.003, 0.19), (0.0, -0.407, 0.0), False),
+        ((0.2, 0.03, 0.19), (-0.4, -0.407, 0.4), False),
+        ((0.2, 0.003, 0.19), (-0.4, 0.12, 0.4), False),
+    ],
+)
+def test_floor_wire_requires_frame_edge_and_floor_proximity(
+    dimensions: tuple[float, float, float],
+    center: tuple[float, float, float],
+    expected: bool,
+) -> None:
+    assert mesh.is_floor_border_fragment(dimensions, center, -0.412) is expected
