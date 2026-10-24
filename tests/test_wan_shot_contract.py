@@ -58,7 +58,9 @@ def test_approved_512_reference_is_technical_only(tmp_path: Path) -> None:
     reference, audio = tmp_path / "reference.png", tmp_path / "voice.wav"
     make_reference(reference, 512, 768)
     make_audio(audio)
-    candidate = WAN.prepare(reference, audio, "Detailed stylized cinematic adult presenter speaking.")
+    candidate = WAN.prepare(
+        reference, audio, "Detailed stylized cinematic adult presenter speaking."
+    )
     assert candidate["image"]["creative_reference_quality"] == (
         "PROVISIONAL_BELOW_1024_NOT_FOR_PRODUCTION_APPROVAL"
     )
