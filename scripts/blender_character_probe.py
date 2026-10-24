@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 import sys
@@ -15,7 +16,6 @@ from pathlib import Path
 
 import bpy
 from mathutils import Vector
-from viseme_cues import frame_angles, read_cues
 
 
 def args() -> argparse.Namespace:
@@ -113,6 +113,18 @@ def genuine_wave_motion(rig: bpy.types.Object) -> tuple[bpy.types.Action, dict[s
 
 
 
+def load_cue_tools():
+    """Load the versioned adjacent cue module independent of Blender sys.path."""
+    source = Path(__file__).with_name("viseme_cues.py")
+    spec = importlib.util.spec_from_file_location("clipper_viseme_cues", source)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("versioned speech-cue parser is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.read_cues, module.frame_angles
+
+
 def timed_jaw_animation(
     rig: bpy.types.Object,
     wave: bpy.types.Action,
@@ -125,6 +137,7 @@ def timed_jaw_animation(
     jaw = rig.pose.bones.get("Jaw")
     if jaw is None:
         raise RuntimeError("CC0 skinned character has no jaw bone for spoken cues")
+    read_cues, frame_angles = load_cue_tools()
     cues = read_cues(cues_file)
     values = frame_angles(cues, fps=12, frames=frames)
     if len({round(value, 3) for value in values}) < 3:
