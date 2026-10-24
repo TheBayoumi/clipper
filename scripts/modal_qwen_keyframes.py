@@ -171,7 +171,7 @@ def main(
     output: str = "artifacts/wan-s2v/output/keyframes",
 ) -> None:
     # Imported on local GitHub CPU, not at Modal image build time.
-    from wan_keyframe_contract import prepare
+    from wan_keyframe_contract import prepare, verified_local_keyframe
 
     output_path = Path(output)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -184,6 +184,15 @@ def main(
         raise ValueError("unknown shot requested")
     for shot_id in requested:
         req = prepare(reference_path, Path(storyboard), shot_id)
+        frame = output_path / f"{shot_id}.png"
+        frame_evidence = output_path / f"{shot_id}.json"
+        if verified_local_keyframe(frame, frame_evidence, req):
+            print(json.dumps({
+                "shot": shot_id,
+                "status": "FRAME_GENERATED_TECHNICAL_CANDIDATE",
+                "cache": "REUSED_LOCAL_VERIFIED",
+            }))
+            continue
         evidence: dict[str, Any] = {
             **req,
             "status": "INCOMPLETE",
