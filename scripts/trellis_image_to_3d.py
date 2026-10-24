@@ -73,7 +73,13 @@ def main() -> None:
 
         client = Client(args.space, token=os.getenv("HF_TOKEN") or None)
         schema = str(client.view_api(return_format="dict"))
-        for endpoint in ("/preprocess_image", "/image_to_3d", "/extract_glb"):
+        community = args.space == "trellis-community/TRELLIS"
+        required_endpoints = (
+            ("/generate_and_extract_glb",)
+            if community
+            else ("/preprocess_image", "/image_to_3d", "/extract_glb")
+        )
+        for endpoint in required_endpoints:
             if endpoint not in schema:
                 raise ValueError(f"Public Space lacks endpoint {endpoint}")
         evidence["api_health"] = "PASS"
@@ -89,33 +95,52 @@ def main() -> None:
             if image.width < 512 or image.height < 700:
                 raise ValueError("Low resolution input violates character gate")
         evidence["source_sha256"] = sha256(args.reference)
-        prepared = client.predict(handle_file(str(args.reference)), api_name="/preprocess_image")
-        generated = client.predict(
-            prepared,
-            args.seed,
-            args.resolution,
-            7.5,
-            0.7,
-            12,
-            5.0,
-            7.5,
-            0.5,
-            12,
-            3.0,
-            1.0,
-            0.0,
-            12,
-            3.0,
-            api_name="/image_to_3d",
-        )
-        if not isinstance(generated, (tuple, list)) or not generated:
-            raise ValueError("TRELLIS.2 returned no visible 3D preview")
-        # TRELLIS stores its latent state in the same Gradio client session.
-        # /extract_glb has exactly two PUBLIC inputs: decimation, texture size.
-        # Passing generated[0] as a third input is invalid; it is a preview,
-        # NOT a serializable model state.
-        exported = client.predict(100000, 2048, api_name="/extract_glb")
-        source = exported[0] if isinstance(exported, (tuple, list)) else exported
+        if community:
+            evidence["model_family"] = "TRELLIS_v1_community"
+            generated = client.predict(
+                handle_file(str(args.reference)),
+                [],
+                args.seed,
+                7.5,
+                12,
+                3.0,
+                12,
+                "stochastic",
+                0.95,
+                1024,
+                api_name="/generate_and_extract_glb",
+            )
+            if not isinstance(generated, (tuple, list)) or len(generated) < 3:
+                raise ValueError("Community TRELLIS returned no exported GLB")
+            source = generated[2] or generated[1]
+        else:
+            evidence["model_family"] = "TRELLIS.2"
+            prepared = client.predict(
+                handle_file(str(args.reference)), api_name="/preprocess_image"
+            )
+            generated = client.predict(
+                prepared,
+                args.seed,
+                args.resolution,
+                7.5,
+                0.7,
+                12,
+                5.0,
+                7.5,
+                0.5,
+                12,
+                3.0,
+                1.0,
+                0.0,
+                12,
+                3.0,
+                api_name="/image_to_3d",
+            )
+            if not isinstance(generated, (tuple, list)) or not generated:
+                raise ValueError("TRELLIS.2 returned no visible 3D preview")
+            # Microsoft Space retains latent model state in this Gradio session.
+            exported = client.predict(100000, 2048, api_name="/extract_glb")
+            source = exported[0] if isinstance(exported, (tuple, list)) else exported
         candidate = Path(source if isinstance(source, str) else source["path"])
         if not candidate.is_file():
             raise ValueError("No GLB downloaded from public Space")
