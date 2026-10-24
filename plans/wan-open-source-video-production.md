@@ -191,6 +191,62 @@ that the planned 30–60-second directed episode, I2V shots, or final montage
 is already complete.
 
 
+## Live acceptance evidence — versioned deployment and shared shot cache
+
+**Architecture milestone: ACCEPTED on 2026-10-25.** Evidence is bound to the
+`feat/unified-niche-tts` branch and these exact GitHub Actions executions:
+
+1. **GPU-free SDK compatibility qualification**
+   [#40141969771](https://github.com/TheBayoumi/clipper/actions/runs/40141969771):
+   all three authorized Modal token pairs authenticated. The Python SDK
+   successfully identified an absent deployed function without starting a
+   GPU. This superseded a failed #40141704718 probe that had called the
+   unsupported `modal function info` CLI in pinned `modal==1.5.5`.
+2. **Real Wan GPU candidate**
+   [#40142029622](https://github.com/TheBayoumi/clipper/actions/runs/40142029622):
+   restored the hash-verified Qwen hook keyframe and Kokoro voice;
+   `SHOT_CACHE_MISS stage=speaking` for deterministic seed 725;
+   `MODAL_DEPLOY_CREATED version=ae902bca2de71934 slot=1`;
+   `MODAL_INFERENCE_COMPLETED slot=1`;
+   `VIDEO_TECHNICALLY_VALID_HUMAN_CREATIVE_REVIEW_PENDING`.
+   The archived, decoded MP4 is **4.8125 seconds at 640x1088**,
+   SHA256 `c50dbc04d0234d523db52d06d880d72aba51be608fc8823b0faf89589fb59918`;
+   2,707,741 bytes. The original Qwen frame SHA256 is
+   `7f03c145af1c1c2f789aba11beadddccdc2649d8fc6bb613f454aa61ea778b67`.
+   [Video + provenance artifact](https://github.com/TheBayoumi/clipper/actions/runs/40142029622/artifacts/12579988161).
+   Primary workspace was used; no actual backup failover was needed.
+3. **Cross-run cache-only replay**
+   [#40144449633](https://github.com/TheBayoumi/clipper/actions/runs/40144449633):
+   same seed 725, keyframe and S2V input hashes;
+   `SHOT_CACHE_RESTORED_KEYFRAMES ... count=1`,
+   `SHOT_CACHE_RESTORED_WAN ... count=1`,
+   `SHOT_CACHE_CHECK stage=speaking complete=True`,
+   `MODAL_S2V_SKIPPED_VERIFIED_MP4`,
+   then full MP4 integrity/decode audit passed.
+   The `require_cached_video=true` gate failed closed on any cache miss,
+   forbidding a second GPU inference. This run proves the artifact survived
+   GitHub jobs and was recovered independent of the original Modal process.
+   An earlier replay attempt #40144406818 was blocked by Ruff formatting
+   before any GPU stage; that defect was corrected and the successful
+   replay supersedes it.
+
+An independent archive inspection confirmed the actual MP4 SHA against both
+`model-evidence.json` and `evidence/shot-qa.json`; spot-checked decoded
+frames show the same stylized host in the warm studio holding a phone.
+That is **not** human creative approval: full lip-sync, motion, narrative
+quality and identity consistency remain unassessed.
+
+**Boundaries:** This is a **single short speaking-shot infrastructure
+qualification**, not the requested 30–60-second complete episode. In
+particular, there is no approved action-shot I2V/Animate route, complete
+adaptive cinematic director, final montage/subtitles/ambience, or 1080x1920
+production video. Source artwork remains provisional below the 1024px
+creative-reference threshold. GitHub artifact retention is 14 days, so
+this is a bounded cross-run cache rather than permanent external object
+storage. Simulated quota-only failover is covered by tests; **live backup
+GPU inference after an actual quota error is not yet demonstrated.**
+
+
 ## Acceptance and regression policy
 
 - Preserve existing archived 15-second storyboard tests for backwards
