@@ -3,6 +3,7 @@
 This is an early cinematic character-performance probe, not a publishable video.
 Never treat virtual-camera zoom as skeletal motion or claim phoneme lip-sync.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -17,7 +18,7 @@ from mathutils import Vector
 
 
 def args() -> argparse.Namespace:
-    cli = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+    cli = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     p = argparse.ArgumentParser()
     p.add_argument("--glb", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
@@ -26,8 +27,12 @@ def args() -> argparse.Namespace:
     return p.parse_args(cli)
 
 
-def light(name: str, position: tuple[float, float, float],
-          color: tuple[float, float, float], energy: float) -> None:
+def light(
+    name: str,
+    position: tuple[float, float, float],
+    color: tuple[float, float, float],
+    energy: float,
+) -> None:
     data = bpy.data.lights.new(name=name, type="AREA")
     data.energy = energy
     data.shape = "DISK"
@@ -36,14 +41,15 @@ def light(name: str, position: tuple[float, float, float],
     obj = bpy.data.objects.new(name, data)
     bpy.context.collection.objects.link(obj)
     obj.location = position
-    obj.rotation_euler = (Vector((0, 0, 1.2)) - obj.location).to_track_quat(
-        "-Z", "Y"
-    ).to_euler()
+    obj.rotation_euler = (Vector((0, 0, 1.2)) - obj.location).to_track_quat("-Z", "Y").to_euler()
 
 
-def prop(name: str, location: tuple[float, float, float],
-         scale: tuple[float, float, float],
-         color: tuple[float, float, float, float]) -> None:
+def prop(
+    name: str,
+    location: tuple[float, float, float],
+    scale: tuple[float, float, float],
+    color: tuple[float, float, float, float],
+) -> None:
     bpy.ops.mesh.primitive_cube_add(location=location)
     obj = bpy.context.object
     obj.name = name
@@ -77,7 +83,8 @@ def genuine_wave_motion(rig: bpy.types.Object) -> tuple[bpy.types.Action, dict[s
     if end - start < 12:
         raise RuntimeError("Wave animation has fewer than 12 frames")
     bones = [
-        p for p in rig.pose.bones
+        p
+        for p in rig.pose.bones
         if any(word in p.name.lower() for word in ("arm", "hand", "shoulder"))
     ]
     if len(bones) < 2:
@@ -86,9 +93,7 @@ def genuine_wave_motion(rig: bpy.types.Object) -> tuple[bpy.types.Action, dict[s
     for frame in [start, start + 8, start + 18]:
         scene.frame_set(frame)
         bpy.context.view_layer.update()
-        snapshots.append({
-            p.name: tuple(float(v) for row in p.matrix for v in row) for p in bones
-        })
+        snapshots.append({p.name: tuple(float(v) for row in p.matrix for v in row) for p in bones})
     measured = max(
         abs(a - b)
         for name, orig in snapshots[0].items()
@@ -96,9 +101,7 @@ def genuine_wave_motion(rig: bpy.types.Object) -> tuple[bpy.types.Action, dict[s
         for a, b in zip(orig, alt[name], strict=True)
     )
     if measured < 0.015:
-        raise RuntimeError(
-            f"Character remained static: maximum arm bone delta {measured:.6f}"
-        )
+        raise RuntimeError(f"Character remained static: maximum arm bone delta {measured:.6f}")
     return action, {
         "wave_action": action.name,
         "wave_start_frame": start,
@@ -120,8 +123,9 @@ def main() -> None:
         raise RuntimeError(f"Expected exactly one imported skinned rig; found {len(rigs)}")
     rig = rigs[0]
     skinned = [
-        obj for obj in bpy.data.objects if obj.type == "MESH"
-        and any(mod.type == "ARMATURE" for mod in obj.modifiers)
+        obj
+        for obj in bpy.data.objects
+        if obj.type == "MESH" and any(mod.type == "ARMATURE" for mod in obj.modifiers)
     ]
     if not skinned:
         raise RuntimeError("The GLB has no mesh rigged to a real armature")
@@ -152,9 +156,9 @@ def main() -> None:
     camera = bpy.data.objects.new("Vertical_cinema_camera", camera_data)
     bpy.context.collection.objects.link(camera)
     camera.location = (0.15, -4.7, 1.37)
-    camera.rotation_euler = (Vector((0, 0, 1.22)) - camera.location).to_track_quat(
-        "-Z", "Y"
-    ).to_euler()
+    camera.rotation_euler = (
+        (Vector((0, 0, 1.22)) - camera.location).to_track_quat("-Z", "Y").to_euler()
+    )
     camera_data.type = "ORTHO"
     camera_data.ortho_scale = 2.9
     scene.camera = camera
