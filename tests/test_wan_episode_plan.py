@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import itertools
 import importlib.util
+import itertools
 import sys
 import wave
 from pathlib import Path
