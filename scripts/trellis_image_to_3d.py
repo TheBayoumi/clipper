@@ -22,10 +22,10 @@ def sha256(path: Path) -> str:
 
 
 def validate_glb(path: Path) -> dict:
-    import trimesh
-
     if path.stat().st_size < 25000:
         raise ValueError("GLB missing or implausibly small")
+
+    import trimesh
     scene = trimesh.load(str(path), file_type="glb", force="scene")
     meshes = list(scene.geometry.values())
     if not meshes or sum(len(m.faces) for m in meshes) < 1000:
