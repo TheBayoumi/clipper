@@ -9,6 +9,14 @@ on:
       - scripts/trellis_image_to_3d.py
   workflow_dispatch:
     inputs:
+      provider:
+        description: "Gradio model Space for real inference"
+        type: choice
+        options:
+          - microsoft/TRELLIS.2
+          - kral28/trellis2-image-to-3d
+        default: microsoft/TRELLIS.2
+        required: true
       probe_only:
         type: boolean
         required: true
@@ -41,14 +49,15 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           PROBE_ONLY: ${{ github.event_name != 'workflow_dispatch' || inputs.probe_only }}
+          SPACE: ${{ inputs.provider || 'microsoft/TRELLIS.2' }}
         run: |
           set -euo pipefail
           if [[ "$PROBE_ONLY" == "true" ]]; then
-            python scripts/trellis_image_to_3d.py --probe --output artifacts/host-3d
+            python scripts/trellis_image_to_3d.py --probe --space "$SPACE" --output artifacts/host-3d
           else
             python scripts/trellis_image_to_3d.py \
               --reference artifacts/host-3d/source-image.webp \
-              --output artifacts/host-3d --seed 724 --resolution 512
+              --output artifacts/host-3d --seed 724 --resolution 512 --space "$SPACE"
           fi
       - name: Upload source, mesh candidate and factual failure evidence
         if: always()
