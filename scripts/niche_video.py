@@ -504,8 +504,8 @@ def _render_scene(
         # Rhythmic speaking-pose animation, not phoneme-accurate lip sync.
         motion = "x='(W-w)/2+9*sin(t*1.4)':y='735+10*sin(t*2.2)'"
         filters = (
-            f"[0:v][2:v]overlay={motion}:enable='lt(mod(t\,0.44)\,0.23)'[a];"
-            f"[a][3:v]overlay={motion}:enable='gte(mod(t\,0.44)\,0.23)'[v]"
+            fr"[0:v][2:v]overlay={motion}:enable='lt(mod(t\,0.44)\,0.23)'[a];"
+            fr"[a][3:v]overlay={motion}:enable='gte(mod(t\,0.44)\,0.23)'[v]"
         )
         _process(
             [
