@@ -1,6 +1,9 @@
 name: Wan S2V original-book-video pilot
 
 on:
+  push:
+    branches: [feat/unified-niche-tts]
+    paths: [.github/workflows/wan-s2v-qualification.yml]
   workflow_dispatch:
     inputs:
       mode:
