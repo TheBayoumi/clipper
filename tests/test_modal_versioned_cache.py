@@ -8,12 +8,21 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from wan_shared_shot_cache import verified_wan_output  # noqa: E402
+from wan_keyframe_contract import prepare  # noqa: E402
+from wan_shared_shot_cache import (  # noqa: E402
+    copy_verified_keyframes,
+    copy_verified_wan,
+    local_keyframes_complete,
+    local_wan_complete,
+    verified_wan_output,
+)
 
 
 @pytest.mark.parametrize(
@@ -164,3 +173,70 @@ def test_wan_shared_cache_requires_every_input_hash_and_candidate_status(
     evidence.write_text(json.dumps(metadata))
     movie.write_bytes(movie.read_bytes() + b"x")
     assert not verified_wan_output(movie, evidence, image_sha, audio_sha, prompt, 724)
+
+
+def test_cross_workspace_artifact_reuse_restores_verified_keyframe_and_mp4(
+    tmp_path: Path,
+) -> None:
+    """A backup account reads existing GitHub artifact bytes, not a Modal Volume."""
+    source = tmp_path / "hero.webp"
+    Image.new("RGB", (512, 768), (20, 45, 60)).save(source)
+    board = ROOT / "niches/atomic-habits-approved-storyboard.json"
+    req = prepare(source, board, "hook")
+    archive = tmp_path / "github-artifact"
+    shot_dir = archive / "keyframes"
+    shot_dir.mkdir(parents=True)
+    frame = shot_dir / "hook.png"
+    Image.effect_noise((832, 1472), 60).convert("RGB").save(frame)
+    shot_evidence = {
+        **req,
+        "status": "FRAME_GENERATED_TECHNICAL_CANDIDATE",
+        "creative_review": "PENDING",
+        "publish_eligible": False,
+        "image_sha256": hashlib.sha256(frame.read_bytes()).hexdigest(),
+    }
+    (shot_dir / "hook.json").write_text(json.dumps(shot_evidence))
+    output = tmp_path / "new-github-run"
+    args = SimpleNamespace(
+        reference=str(source),
+        storyboard=str(board),
+        shot_ids="hook",
+        output=str(output),
+    )
+    assert copy_verified_keyframes(archive, args) == 1
+    assert local_keyframes_complete(args)
+    assert copy_verified_keyframes(archive, args) == 0
+
+    narration = tmp_path / "narration.wav"
+    narration.write_bytes(b"a" * 50000)
+    prompt = "The same host reading a book"
+    sha_image = hashlib.sha256(frame.read_bytes()).hexdigest()
+    sha_audio = hashlib.sha256(narration.read_bytes()).hexdigest()
+    video = archive / "wan-s2v-candidate.mp4"
+    video.write_bytes(b"mp4" * 120000)
+    evidence = {
+        "schema": "clipper-wan-s2v-modal-v1",
+        "model_id": "Wan-AI/Wan2.2-S2V-14B",
+        "model_revision": "dab4e9c55bbe4c8c4d03db1c2c98c7f0ac9c454b",
+        "image_sha256": sha_image,
+        "audio_sha256": sha_audio,
+        "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+        "seed": 724,
+        "status": "CANDIDATE_GENERATED_NOT_VISUALLY_APPROVED",
+        "creative_review": "PENDING",
+        "publish_eligible": False,
+        "video_sha256": hashlib.sha256(video.read_bytes()).hexdigest(),
+    }
+    (archive / "model-evidence.json").write_text(json.dumps(evidence))
+    wan_args = SimpleNamespace(
+        output=str(output),
+        reference=str(output / "keyframes/hook.png"),
+        audio=str(narration),
+        prompt=prompt,
+        seed=724,
+    )
+    assert copy_verified_wan(archive, wan_args) == 1
+    assert local_wan_complete(wan_args)
+    assert copy_verified_wan(archive, wan_args) == 0
+    wan_args.prompt = "different narration direction"
+    assert not local_wan_complete(wan_args)
