@@ -128,11 +128,27 @@ def test_modal_fallback_local_cache_is_hash_and_identity_locked(
         "Generate speaking video with quota-aware Modal routing",
     ),
 )
-@pytest.mark.parametrize("failure_type", ("quota", "cuda"))
+@pytest.mark.parametrize(
+    "failure_type",
+    (
+        "quota",
+        "quota_twice",
+        "cuda",
+        "budget",
+        "credits",
+        "auth",
+        "deploy",
+        "quota_auth",
+        "quota_deploy",
+        "timeout",
+        "model",
+        "quota_warning",
+    ),
+)
 def test_modal_account_failover_is_restricted_to_quota_failures(
     tmp_path: Path, stage_name: str, failure_type: str
 ) -> None:
-    """Execute the actual workflow shell against a fake Modal CLI, not a GPU."""
+    """Exercise the real routing shell with fake Modal, without GPUs or credentials."""
     workflow = yaml.safe_load((ROOT / ".github/workflows/wan-cinematic-production.yml").read_text())
     stage = next(
         step["run"]
@@ -145,12 +161,33 @@ def test_modal_account_failover_is_restricted_to_quota_failures(
     modal.write_text(
         "#!/usr/bin/env bash\n"
         'echo "$MODAL_TOKEN_ID $1" >> "$CLIPPER_MODAL_CALLS"\n'
-        'if [[ "$MODAL_TOKEN_ID" == "primary" && "$1" == "run" ]]; then\n'
-        '  if [[ "$CLIPPER_FAILURE_TYPE" == "quota" ]]; then\n'
-        '    echo "Workspace compute quota exceeded" >&2\n'
-        "  else\n"
-        '    echo "CUDA out of memory in model inference" >&2\n'
+        'if [[ "$MODAL_TOKEN_ID" == "primary" ]]; then\n'
+        '  if [[ "$CLIPPER_FAILURE_TYPE" == "quota_auth" && "$1" == "app" ]]; then\n'
+        '    echo "Workspace compute quota exceeded" >&2; exit 33\n'
         "  fi\n"
+        '  if [[ "$CLIPPER_FAILURE_TYPE" == "auth" && "$1" == "app" ]]; then\n'
+        '    echo "AuthenticationError: Invalid Modal token" >&2; exit 33\n'
+        "  fi\n"
+        '  if [[ "$CLIPPER_FAILURE_TYPE" == "quota_deploy" && "$1" == "deploy" ]]; then\n'
+        '    echo "Workspace compute quota exceeded" >&2; exit 33\n'
+        "  fi\n"
+        '  if [[ "$CLIPPER_FAILURE_TYPE" == "deploy" && "$1" == "deploy" ]]; then\n'
+        '    echo "ImageBuilderError: Model dependencies failed" >&2; exit 33\n'
+        "  fi\n"
+        "fi\n"
+        'if [[ "$1" == "run" && ( "$MODAL_TOKEN_ID" == "primary" || '
+        '( "$MODAL_TOKEN_ID" == "secondary" && "$CLIPPER_FAILURE_TYPE" == "quota_twice" ) ) ]]; then\n'
+        '  case "$CLIPPER_FAILURE_TYPE" in\n'
+        '    quota|quota_twice) echo "QuotaExceededError: Workspace compute quota exceeded" >&2 ;;\n'
+        '    cuda) echo "CUDA out of memory" >&2 ;;\n'
+        '    budget) echo "Account spending budget limit reached" >&2 ;;\n'
+        '    credits) echo "Insufficient credits for this request" >&2 ;;\n'
+        '    timeout) echo "FunctionTimeoutError: timed out" >&2 ;;\n'
+        '    model) echo "RuntimeError: cannot load model weights" >&2 ;;\n'
+        '    quota_warning) echo "Warning: quota exceeded yesterday" >&2; '
+        'echo "RuntimeError: corrupted model state" >&2 ;;\n'
+        "    *) exit 0 ;;\n"
+        "  esac\n"
         "  exit 33\n"
         "fi\n"
         "exit 0\n"
@@ -166,8 +203,8 @@ def test_modal_account_failover_is_restricted_to_quota_failures(
         "MODAL_TOKEN_SECRET": "primary-secret",
         "MODAL_TOKEN_ID_2": "secondary",
         "MODAL_TOKEN_SECRET_2": "secondary-secret",
-        "MODAL_TOKEN_ID_3": "",
-        "MODAL_TOKEN_SECRET_3": "",
+        "MODAL_TOKEN_ID_3": "tertiary",
+        "MODAL_TOKEN_SECRET_3": "tertiary-secret",
         "HF_TOKEN": "example-hf-token",
         "SHOT_IDS": "hook",
         "WAN_REFERENCE_FILE": "fake-source.webp",
@@ -186,17 +223,38 @@ def test_modal_account_failover_is_restricted_to_quota_failures(
         timeout=15,
     )
     invocations = calls.read_text(encoding="utf-8")
-    if failure_type == "quota":
+    if failure_type in ("quota", "quota_twice"):
         assert process.returncode == 0, process.stderr + process.stdout
         assert "secondary run" in invocations
-        assert "MODAL_ACCOUNT_SLOT=2" in env_file.read_text()
-        assert (
-            "credential_slot"
-            in next(
-                (tmp_path / "artifacts/cinematic/evidence").glob("*-modal-route.json")
-            ).read_text()
-        )
+        winning_slot = 3 if failure_type == "quota_twice" else 2
+        assert f"MODAL_ACCOUNT_SLOT={winning_slot}" in env_file.read_text()
+        route = next((tmp_path / "artifacts/cinematic/evidence").glob("*-modal-route.json"))
+        assert json.loads(route.read_text())["credential_slot"] == winning_slot
+        assert ("tertiary run" in invocations) == (winning_slot == 3)
+    elif failure_type in ("auth", "deploy", "quota_auth", "quota_deploy"):
+        assert process.returncode != 0
+        assert "secondary " not in invocations
+        assert not env_file.exists()
     else:
         assert process.returncode != 0
-        assert "secondary run" not in invocations
+        assert "secondary " not in invocations
+        assert "tertiary " not in invocations
         assert not env_file.exists()
+
+
+def test_modal_connection_mode_cannot_trigger_gpu_inference() -> None:
+    """The credential check must never fall through to keyframe or S2V GPU steps."""
+    workflow = yaml.safe_load((ROOT / ".github/workflows/wan-cinematic-production.yml").read_text())
+    steps = workflow["jobs"]["cinematic"]["steps"]
+    assert next(
+        step["if"]
+        for step in steps
+        if step.get("name") == "Authenticate each Modal workspace without allocating a GPU"
+    ).endswith("inputs.mode == 'credentials'")
+    for step in steps:
+        condition = step.get("if", "")
+        name = step.get("name", "")
+        if name.startswith(("Decode one", "Install Modal client", "Generate cinematic", "Verify actual")):
+            assert "inputs.mode == 'keyframes'" in condition
+            assert "inputs.mode == 'speaking'" in condition
+            assert "inputs.mode == 'credentials'" not in condition
