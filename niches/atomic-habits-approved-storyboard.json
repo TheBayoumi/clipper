@@ -105,51 +105,6 @@
       }
     ]
   },
-  "full_episode": {
-    "duration_seconds": 60,
-    "beats": [
-      {
-        "id": "hook",
-        "start": 0,
-        "end": 3
-      },
-      {
-        "id": "book_intro",
-        "start": 3,
-        "end": 8
-      },
-      {
-        "id": "reason",
-        "start": 8,
-        "end": 15
-      },
-      {
-        "id": "core_lesson",
-        "start": 15,
-        "end": 25
-      },
-      {
-        "id": "before_after",
-        "start": 25,
-        "end": 40
-      },
-      {
-        "id": "results",
-        "start": 40,
-        "end": 50
-      },
-      {
-        "id": "takeaway",
-        "start": 50,
-        "end": 57
-      },
-      {
-        "id": "outro",
-        "start": 57,
-        "end": 60
-      }
-    ]
-  },
   "acceptance": {
     "requires_approved_master_glb": true,
     "requires_identity_reference_comparison": true,
@@ -161,5 +116,113 @@
     "video_publish_eligible": false,
     "tech_result_is_creative_approval": false
   },
-  "status": "BLOCKED_ON_APPROVED_RIGGED_CHARACTER_AND_THREE_STAGED_ACTION_SHOTS"
+  "status": "BLOCKED_ON_APPROVED_RIGGED_CHARACTER_AND_THREE_STAGED_ACTION_SHOTS",
+  "production_storyboard": {
+    "schema": "clipper-production-storyboard-v2",
+    "format": "one_source_supported_book_lesson_per_episode",
+    "selection": {
+      "default": "select one book and ONE relevant lesson from niches/book-editorial-catalog.json before script generation",
+      "manual_override": "book_id and optional lesson_id",
+      "fallback": "refuse unsourced proposals; no automatic unverified web/book improvisation",
+      "recency": "use completed_episode_history to avoid repeating books and ideas"
+    },
+    "source_context": {
+      "book_id": "atomic-habits",
+      "lesson_id": "make-it-easy",
+      "evidence_url": "https://jamesclear.com/three-steps-habit-change",
+      "note": "Example only; production topic and scenes must come from selected episode, not be hard-coded Atomic Habits."
+    },
+    "delivery": {
+      "duration_seconds": {
+        "min": 30,
+        "max": 60,
+        "preferred": 45
+      },
+      "aspect_ratio": "9:16",
+      "resolution": [
+        1080,
+        1920
+      ],
+      "fps": 24,
+      "shot_count": "adaptive based on meaning, narrative audio and creative performance; not fixed",
+      "scene_duration": "shot boundaries chosen at ideas/sentences; avoid arbitrary cuts at five-second intervals",
+      "narration": "Kokoro WAV must be measured before final shot timings; no padding, loops, or trimming of complete ideas"
+    },
+    "editorial_sequence": [
+      {
+        "role": "pattern_interrupt_hook",
+        "objective": "A recognizable problem, contradiction or emotionally specific question; no misleading claim",
+        "example_visual": "Host is about to start a task but sees distractions on a busy desk",
+        "creative_note": "First second has clear action and an immediate curiosity gap"
+      },
+      {
+        "role": "relatable_problem",
+        "objective": "Make the viewer recognize the friction through a mini-story",
+        "example_visual": "Phone buzzing, notebook buried, host postponing the task",
+        "creative_note": "Show the cause, not just a talking head"
+      },
+      {
+        "role": "book_attribution",
+        "objective": "Introduce selected book/author naturally after hook; attribute one verifiable idea",
+        "example_visual": "Character reveals a book as a cinematic prop; title and author added as separate trustworthy overlay",
+        "creative_note": "No fake quotes, invented book content or pasted book pages"
+      },
+      {
+        "role": "one_mechanism",
+        "objective": "Explain exactly one actionable lesson and why it helps",
+        "example_visual": "Host changes the environment by making a notebook visible and moving distraction",
+        "creative_note": "Prefer a concrete action to abstract narration"
+      },
+      {
+        "role": "physical_before_after",
+        "objective": "Demonstrate the same problem before and after applying the lesson",
+        "example_visual": "Split action over distinct shots: cluttered desk, host moves the notebook, task begins",
+        "creative_note": "Maintain spatial consistency and plausible hand/prop contact"
+      },
+      {
+        "role": "meaningful_payoff",
+        "objective": "Finish the mini-story with a truthful, proportionate outcome",
+        "example_visual": "Host starts the first small task; no exaggerated success montage",
+        "creative_note": "Do not invent measured results"
+      },
+      {
+        "role": "one_step_takeaway",
+        "objective": "Give the viewer one small experiment or precise action for today",
+        "example_visual": "Camera follows the host actually doing the first step",
+        "creative_note": "Complete ending with no mid-sentence cutoff; no generic subscribe filler"
+      }
+    ],
+    "shot_direction_requirements": {
+      "required": [
+        "beat_role",
+        "narration_span",
+        "action",
+        "set",
+        "camera",
+        "emotion",
+        "scene_continuity",
+        "character_identity",
+        "prop_interaction",
+        "renderer",
+        "source_evidence"
+      ],
+      "renderers": {
+        "s2v": "spoken character performance only",
+        "i2v": "cinematic book and everyday action shots",
+        "animate": "controlled physical performance when motion reference exists"
+      },
+      "constraints": [
+        "book selection precedes script and voice",
+        "visual beats follow actual narrative semantics",
+        "consistent host, outfit, environment and physical objects",
+        "one action per shot whenever practical",
+        "use Qwen Image Edit for automatically generated keyframes",
+        "use Wan for video; reuse unchanged model/audio/shot caches"
+      ]
+    },
+    "status": "PRODUCTION_STORYBOARD_SPEC_ONLY_AWAITING_DYNAMIC_AI_DIRECTOR",
+    "publish_eligible": false,
+    "legacy_fixed_60_second_beats_removed": true,
+    "legacy_note": "The previous full_episode had 8 fixed timing beats; deliberately replaced with narrative roles and measured-audio timing. The separate 15-second pilot remains unchanged as historical technical test."
+  }
 }
