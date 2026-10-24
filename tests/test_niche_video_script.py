@@ -249,7 +249,7 @@ def test_book_edit_does_not_chop_unbreakable_long_sentence() -> None:
         "title": "Too long",
         "scenes": [{"headline": f"SCENE {i}", "narration": very_long} for i in range(3)],
     }
-    with pytest.raises(nv.NicheVideoError, match="whole-sentence boundaries"):
+    with pytest.raises(nv.NicheVideoError, match="per-scene limit"):
         nv._compact_book_sentences(raw)
 
 
