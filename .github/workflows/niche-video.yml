@@ -30,6 +30,11 @@ on:
         type: boolean
         required: false
         default: false
+      render_3d_sample:
+        description: Render a real rigged 3D acting sample instead of legacy Pip
+        type: boolean
+        required: false
+        default: false
       generate_draft:
         description: Generate the full niche episode with local open-weight models
         type: boolean
@@ -50,7 +55,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  actor-proof:
+    if: github.event_name == 'workflow_dispatch' && inputs.render_3d_sample
+    uses: ./.github/workflows/book-3d-character.yml
+    permissions:
+      contents: read
+      actions: read
   draft:
+    if: github.event_name != 'workflow_dispatch' || !inputs.render_3d_sample
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
