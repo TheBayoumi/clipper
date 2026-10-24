@@ -201,7 +201,7 @@ def main() -> None:
     if args.operation == "restore":
         restore(args)
     else:
-        ok = local_keyframes_complete(args) if args.stage == "keyframes" else local_wan_complete(args)
+        ok = (\n            local_keyframes_complete(args)\n            if args.stage == "keyframes"\n            else local_wan_complete(args)\n        )
         print(f"SHOT_CACHE_CHECK stage={args.stage} complete={ok}")
         if not ok:
             raise SystemExit(1)
