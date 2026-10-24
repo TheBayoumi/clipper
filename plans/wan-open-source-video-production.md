@@ -97,7 +97,7 @@ video API: GitHub runs `modal deploy` and `modal run` on pinned open-source
 Qwen and Wan application code.
 
 Backup routing is implemented in
-`.github/workflows/wan-cinematic-production.yml` and requires **four new
+`.github/workflows/wan-cinematic-production.yml` and uses **four configured
 GitHub Actions repository secret values**, representing two complete
 workspace credentials:
 
@@ -113,9 +113,11 @@ Partial credential pairs fail closed; missing optional pairs are skipped.
 For each Qwen or Wan GPU stage, the workflow authenticates, provisions
 `clipper-wan-hf`, deploys the app, and invokes inference in the **same**
 workspace. It attempts the preferred slot, then remaining configured slots
-only when logs identify a quota, credit, usage or budget exhaustion error.
-It does not mask auth failures, model errors, CUDA OOM or non-quota failures.
-The selected slot is propagated across stages and recorded in the uploaded
+only when the *inference* subprocess terminates with an explicit quota
+exhaustion error. Authentication, secret provisioning, deployment, CUDA OOM,
+timeout, rate-limit, credit or spending-budget failures must not switch accounts.
+The router proceeds in ascending workspace order, never revisiting a known
+quota-exhausted workspace. The selected slot is propagated across stages and recorded in the uploaded
 provenance evidence without recording token values.
 
 Workspace Modal Volumes and deployed apps are isolated by workspace.
@@ -131,10 +133,14 @@ limitations or defeat a deliberately set global cost ceiling. Configure
 per-workspace spending and a project-level total budget before enabling
 backup credentials.
 
-**Verification:** Mock-Modal subprocess tests exercise quota failover and
-fail-closed non-quota GPU errors without allocating a GPU. End-to-end
-cross-workspace fallback remains **unverified** until actual backup
-credentials are supplied and the exact branch workflow is qualified.
+**Verification:** All three configured token pairs authenticated successfully
+in credentials-mode run #40138631184. That run exposed a condition bug:
+credentials mode also executed a cached-Qwen keyframe GPU stage (cache=REUSED).
+The mode condition has since been corrected to prevent any credential-only
+GPU dispatch. Expanded Mock-Modal subprocess tests exercise only-quota
+failover, two successive quota failures, and fail-closed non-quota errors
+without allocating a GPU. Actual quota-triggered cross-workspace inference
+is not yet proven; credentials authentication alone is not compute entitlement.
 The retired TRELLIS and legacy Wan technical qualification workflows are
 not the active production account-router; do not infer they have fallback.
 
