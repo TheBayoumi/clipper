@@ -96,7 +96,8 @@ jobs:
             cp "$REFERENCE" "$SOURCE_IMAGE"
           fi
           echo "$SHA256  $SOURCE_IMAGE" | sha256sum --check -
-          echo "WAN_REFERENCE_FILE=$SOURCE_IMAGE" >> "$GITHUB_ENV"
+          WAN_REFERENCE_FILE="$SOURCE_IMAGE"
+          echo "WAN_REFERENCE_FILE=$WAN_REFERENCE_FILE" >> "$GITHUB_ENV"
           echo "::notice::Source fidelity is independently reviewed; passing a 512px technical input is not creative approval."
           gh run download "$VOICE_RUN" --pattern 'niche-draft-*' --dir artifacts/wan-s2v/source
           SOURCE="$(find artifacts/wan-s2v/source -type f -name draft.mp4 -print -quit)"
