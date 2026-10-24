@@ -29,9 +29,10 @@ def test_i2v_action_qualified_and_identity_locked(tmp_path: Path) -> None:
     assert first["keyframe_creative_review"] == "PENDING"
     assert first["audio"] is None
     assert first["publish_eligible"] is False
-    assert WAN.prepare_i2v(image, prompt + " Slowly.", "book_intro")["fingerprint"] != first[
-        "fingerprint"
-    ]
+    assert (
+        WAN.prepare_i2v(image, prompt + " Slowly.", "book_intro")["fingerprint"]
+        != first["fingerprint"]
+    )
 
 
 def test_i2v_rejects_unapproved_shot_or_missing_reference(tmp_path: Path) -> None:
@@ -39,4 +40,6 @@ def test_i2v_rejects_unapproved_shot_or_missing_reference(tmp_path: Path) -> Non
     with pytest.raises(WAN.ShotContractError, match="action must belong"):
         WAN.prepare_i2v(image, "A cinematic book demonstration with careful hand contact.", "hook")
     with pytest.raises(WAN.ShotContractError, match="reference image missing"):
-        WAN.prepare_i2v(image, "A cinematic book demonstration with careful hand contact.", "book_intro")
+        WAN.prepare_i2v(
+            image, "A cinematic book demonstration with careful hand contact.", "book_intro"
+        )
