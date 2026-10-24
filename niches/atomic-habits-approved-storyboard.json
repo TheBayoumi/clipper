@@ -1,0 +1,165 @@
+{
+  "schema_version": "storyboard-production-v1",
+  "episode": "Atomic Habits — make starting easier",
+  "book": {
+    "title": "Atomic Habits",
+    "author": "James Clear",
+    "factual_source": "https://jamesclear.com/three-steps-habit-change"
+  },
+  "channel": "Page to Life (working title)",
+  "niche": "Self-improvement, psychology and business lessons from books",
+  "visual_target": "adult-facing cinematic stylized 2.5D/3D, expressive acting, realistic lived-in sets, warm rim lighting, deep dimensionality",
+  "visual_references": [
+    {
+      "name": "user_storyboard_primary.png",
+      "sha256": "0ce8c2f7898275b6dbc6389eab1850f6ca1c8c19eb307e69be70547fed023181",
+      "type": "approved visual direction, NOT a rig"
+    },
+    {
+      "name": "user_storyboard_sequence.png",
+      "sha256": "d0edab069a137a9eb27db2db6d9bb0d1d5daa48ab34182f917735abc2f00ccbf",
+      "type": "approved beats and character appearance, NOT usable animation assets"
+    },
+    {
+      "name": "host_turnaround_concept.png",
+      "sha256": "85561d67fc9b3767f404987ffb907f71a779bd5f738fbfe0b73a4fbe8134486a",
+      "type": "provisional master identity, not yet rigged"
+    }
+  ],
+  "character": {
+    "character_id": "page-to-life-host-cinematic-v1",
+    "status": "master_rig_missing",
+    "age_visual": "young-adult",
+    "hair": "voluminous tousled curly dark-brown hair, natural sculpted texture",
+    "face": "stylized appealing expressive proportions, prominent brows, brown expressive eyes",
+    "glasses": "black rectangular frames consistently present across all camera angles",
+    "clothing": "dark charcoal hoodie, visible hood and drawstrings",
+    "outfit_lock": "charcoal_hoodie_not_business_suit",
+    "lighting": "cinematic warm window key, cooler fill, warm highlights",
+    "expressions": [
+      "concerned",
+      "intrigued",
+      "confident",
+      "focused",
+      "relieved"
+    ],
+    "forbidden_substitutes": [
+      "male_casualsuit01",
+      "business-male-01.glb",
+      "Wave",
+      "generic_talking_head",
+      "static_card"
+    ],
+    "rig_requirements": {
+      "skinned": true,
+      "head_turn": true,
+      "hand_pose": true,
+      "facial_expressions": true,
+      "viseme_blendshapes": true
+    }
+  },
+  "pilot": {
+    "duration_seconds": 15,
+    "resolution": [
+      1080,
+      1920
+    ],
+    "fps": 24,
+    "publish_eligible": false,
+    "shots": [
+      {
+        "id": "hook",
+        "start": 0,
+        "end": 3,
+        "set": "lived-in warm late-evening bedroom with smartphone alarm and unfinished plans",
+        "camera": "tight cinematic three-quarter to direct-to-camera, shallow depth",
+        "emotion": "frustrated to curious",
+        "action": "eyes switch from phone to viewer; hand reaches toward phone; genuine eyelid/face animation",
+        "narrative": "Most people fail habits for one simple reason",
+        "required_prop_interaction": "hand_reaches_for_phone",
+        "meaningful_motion": true
+      },
+      {
+        "id": "book_intro",
+        "start": 3,
+        "end": 8,
+        "set": "warm book-lined creative studio with depth and light practicals",
+        "camera": "medium close-up with book reveal and rack focus",
+        "emotion": "curious and energized",
+        "action": "character physically picks up an original unbranded book prop and turns it toward the lens; factual title/author appear as separate clean overlays",
+        "narrative": "In Atomic Habits, James Clear explains that making a habit easier helps it stick",
+        "required_prop_interaction": "hand_lifts_book",
+        "meaningful_motion": true
+      },
+      {
+        "id": "lesson_example",
+        "start": 8,
+        "end": 15,
+        "set": "desk/bedroom before-and-after showing behavior cue and easier first step",
+        "camera": "over-the-shoulder cut into action close-up, controlled motion",
+        "emotion": "focus and relief",
+        "action": "character clears the desk and positions a notebook where it will be seen; visible environment change",
+        "narrative": "Make it obvious. Make it easy. Put the notebook where you'll use it.",
+        "required_prop_interaction": "hand_positions_notebook",
+        "meaningful_motion": true
+      }
+    ]
+  },
+  "full_episode": {
+    "duration_seconds": 60,
+    "beats": [
+      {
+        "id": "hook",
+        "start": 0,
+        "end": 3
+      },
+      {
+        "id": "book_intro",
+        "start": 3,
+        "end": 8
+      },
+      {
+        "id": "reason",
+        "start": 8,
+        "end": 15
+      },
+      {
+        "id": "core_lesson",
+        "start": 15,
+        "end": 25
+      },
+      {
+        "id": "before_after",
+        "start": 25,
+        "end": 40
+      },
+      {
+        "id": "results",
+        "start": 40,
+        "end": 50
+      },
+      {
+        "id": "takeaway",
+        "start": 50,
+        "end": 57
+      },
+      {
+        "id": "outro",
+        "start": 57,
+        "end": 60
+      }
+    ]
+  },
+  "acceptance": {
+    "requires_approved_master_glb": true,
+    "requires_identity_reference_comparison": true,
+    "requires_nontrivial_physical_prop_interaction_per_pilot_shot": true,
+    "requires_rigged_actor_not_static_image": true,
+    "requires_timed_kokoro_audio": true,
+    "requires_full_video_decode": true,
+    "requires_exact_mp4_sha256_human_approval": true,
+    "video_publish_eligible": false,
+    "tech_result_is_creative_approval": false
+  },
+  "status": "BLOCKED_ON_APPROVED_RIGGED_CHARACTER_AND_THREE_STAGED_ACTION_SHOTS"
+}
