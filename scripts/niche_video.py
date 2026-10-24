@@ -350,9 +350,7 @@ def _compact_book_sentences(candidate: object) -> tuple[object, bool]:
     for index, scene in enumerate(raw_scenes):
         sentences = re.split(r"(?<=[.!?])\s+", scene["narration"].strip())
         if not sentences or any(not part or len(part.split()) > max_scene for part in sentences):
-            raise NicheVideoError(
-                "book narration cannot be shortened at whole-sentence boundaries"
-            )
+            raise NicheVideoError("book narration cannot be shortened at whole-sentence boundaries")
         # Keep every scene's opening and the final scene's complete payoff.
         keep = {0}
         if index == len(raw_scenes) - 1:
