@@ -1,0 +1,119 @@
+name: Official TRELLIS.2 Modal character generation
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Verify Modal credentials first; generate only when explicitly selected
+        type: choice
+        options: [credentials, generate]
+        required: true
+        default: credentials
+      resolution:
+        description: Official TRELLIS.2 pipeline type
+        type: choice
+        options: ["512", "1024_cascade"]
+        default: "1024_cascade"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: approved-host-trellis2-modal
+  cancel-in-progress: false
+
+jobs:
+  modal-trellis2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Assert real Modal credentials are present (no credentials logged)
+        run: |
+          set -euo pipefail
+          test -n "$MODAL_TOKEN_ID" || { echo "::error::MODAL_TOKEN_ID missing"; exit 1; }
+          test -n "$MODAL_TOKEN_SECRET" || { echo "::error::MODAL_TOKEN_SECRET missing"; exit 1; }
+          echo "Modal token environment variables present"
+      - name: Install pinned Modal client
+        run: python -m pip install 'modal==1.5.5'
+      - name: Prove authenticated Modal session
+        run: |
+          set -euo pipefail
+          modal app list --json > /dev/null
+          echo "Authenticated Modal account and API access verified"
+      - name: Exit after credential-only probe
+        if: inputs.mode == 'credentials'
+        run: echo "Credentials authenticated. GPU build/inference NOT requested."
+      - name: Decode and checksum locked character reference
+        if: inputs.mode == 'generate'
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/host-3d-modal
+          base64 --decode assets/character/page-to-life-host-approved-512.webp.b64 > artifacts/host-3d-modal/source-image.webp
+          echo "c3bbc6395e47c04646ad3f0ad44f13873511e4ee3189046eafbc682225e746d2  artifacts/host-3d-modal/source-image.webp" | sha256sum --check -
+      - name: Deploy reusable official TRELLIS.2 Modal GPU app
+        if: inputs.mode == 'generate'
+        run: |
+          set -euo pipefail
+          modal deploy scripts/modal_trellis2.py
+      - name: Run approved character through official Modal A100 GPU
+        if: inputs.mode == 'generate'
+        env:
+          RESOLUTION: ${{ inputs.resolution }}
+        run: |
+          set -euo pipefail
+          modal run scripts/modal_trellis2.py \
+            --source artifacts/host-3d-modal/source-image.webp \
+            --output artifacts/host-3d-modal \
+            --resolution "$RESOLUTION" \
+            --seed 724
+      - name: Validate actual GLB geometry, shading and pinned model identity
+        if: inputs.mode == 'generate'
+        run: |
+          set -euo pipefail
+          python -m pip install 'trimesh>=4.11,<5' 'numpy>=2,<3'
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import trimesh
+
+          root = Path("artifacts/host-3d-modal")
+          path = root / "page-to-life-host-candidate.glb"
+          evidence = json.loads((root / "evidence.json").read_text())
+          assert evidence["model_id"] == "microsoft/TRELLIS.2-4B"
+          assert evidence["status"] == "CANDIDATE_GLB_GENERATED_NOT_RIGGED"
+          assert evidence["publish_eligible"] is False
+          assert evidence["glb_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+          scene = trimesh.load(path, force="scene")
+          meshes = list(scene.geometry.values())
+          triangles = sum(len(m.faces) for m in meshes)
+          assert triangles >= 1000, triangles
+          assert sum(m.visual.kind == "texture" for m in meshes) >= 1
+          (root / "mesh-qa.json").write_text(json.dumps({
+              "model": "microsoft/TRELLIS.2-4B",
+              "sha256": evidence["glb_sha256"],
+              "triangles": triangles,
+              "geometry_meshes": len(meshes),
+              "identity_review": "PENDING",
+              "rigging": "NOT_IMPLEMENTED",
+              "publish_eligible": False,
+          }, indent=2))
+          PY
+      - name: Always archive GLB or actual provider failure evidence
+        if: always() && inputs.mode == 'generate'
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-trellis2-modal-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/host-3d-modal/
+          if-no-files-found: warn
+          retention-days: 14
