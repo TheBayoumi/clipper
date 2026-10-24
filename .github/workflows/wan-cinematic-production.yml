@@ -31,6 +31,10 @@ on:
         type: number
         default: 724
         required: true
+      require_cached_video:
+        type: boolean
+        default: false
+        required: true
 
 permissions:
   contents: read
@@ -252,6 +256,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           WAN_SEED: ${{ inputs.wan_seed }}
+          REQUIRE_CACHED_VIDEO: ${{ inputs.require_cached_video }}
         run: |
           set -euo pipefail
           if python scripts/wan_shared_shot_cache.py check --stage speaking \
@@ -260,6 +265,10 @@ jobs:
              --seed "$WAN_SEED" --output artifacts/cinematic; then
             echo "MODAL_S2V_SKIPPED_VERIFIED_MP4"
           else
+            if [[ "$REQUIRE_CACHED_VIDEO" == "true" ]]; then
+              echo "::error::Cache-only qualification did not restore a matching MP4; GPU invocation forbidden"
+              exit 6
+            fi
             bash scripts/modal_versioned_dispatch.sh \
               scripts/modal_wan_s2v.py generate_s2v speaking \
               --reference artifacts/cinematic/keyframes/hook.png \
