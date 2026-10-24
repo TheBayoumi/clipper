@@ -921,10 +921,12 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.recover_audit,
                 arguments.recover_run_id,
             )
-        print(
-            "Technical prototype generated: "
-            f"{produce(config, arguments.output_root, allow_prototype_visuals=arguments.allow_prototype_visuals)}"
+        draft = produce(
+            config,
+            arguments.output_root,
+            allow_prototype_visuals=arguments.allow_prototype_visuals,
         )
+        print(f"Technical prototype generated: {draft}")
         return 0
     except (NicheVideoError, OSError, ValueError, json.JSONDecodeError) as exc:
         parser.exit(1, f"niche-video failed: {exc}\n")
