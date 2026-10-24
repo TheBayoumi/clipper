@@ -156,9 +156,9 @@ jobs:
               echo "Modal ${app_script}: attempting authorized workspace slot ${slot}"
               if (
                 export MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret"
-                modal app list --json >/dev/null
-                modal secret create clipper-wan-hf "HF_TOKEN=$HF_TOKEN" --force
-                modal deploy "$app_script"
+                modal app list --json >/dev/null &&
+                modal secret create clipper-wan-hf "HF_TOKEN=$HF_TOKEN" --force &&
+                modal deploy "$app_script" &&
                 modal run "$app_script" "$@"
               ) >"$log_file" 2>&1; then
                 cat "$log_file"; rm -f "$log_file"
@@ -247,9 +247,9 @@ jobs:
               echo "Modal ${app_script}: attempting authorized workspace slot ${slot}"
               if (
                 export MODAL_TOKEN_ID="$id" MODAL_TOKEN_SECRET="$secret"
-                modal app list --json >/dev/null
-                modal secret create clipper-wan-hf "HF_TOKEN=$HF_TOKEN" --force
-                modal deploy "$app_script"
+                modal app list --json >/dev/null &&
+                modal secret create clipper-wan-hf "HF_TOKEN=$HF_TOKEN" --force &&
+                modal deploy "$app_script" &&
                 modal run "$app_script" "$@"
               ) >"$log_file" 2>&1; then
                 cat "$log_file"; rm -f "$log_file"
