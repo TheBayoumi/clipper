@@ -99,6 +99,36 @@ def prepare(reference: Path, storyboard: Path, shot_id: str, seed: int = BASE_SE
     return identity
 
 
+
+def verified_local_keyframe(frame: Path, manifest: Path, request: dict) -> bool:
+    """Only reuse a completed frame whose provenance and actual bytes match."""
+    if not frame.is_file() or not manifest.is_file():
+        return False
+    try:
+        evidence = json.loads(manifest.read_text(encoding="utf-8"))
+        if not isinstance(evidence, dict):
+            return False
+        for key in ("fingerprint", "source_image_sha256", "model_id", "model_revision"):
+            if evidence.get(key) != request.get(key):
+                return False
+        if (
+            evidence.get("status") != "FRAME_GENERATED_TECHNICAL_CANDIDATE"
+            or evidence.get("publish_eligible") is not False
+            or evidence.get("creative_review") != "PENDING"
+        ):
+            return False
+        if not 100_000 <= frame.stat().st_size <= 20_000_000:
+            return False
+        inspected = inspect_image(frame)
+        return (
+            inspected["sha256"] == evidence.get("image_sha256")
+            and inspected["width"] == request.get("render_width")
+            and inspected["height"] == request.get("render_height")
+        )
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", type=Path, required=True)
