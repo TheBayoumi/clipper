@@ -133,13 +133,9 @@ def test_modal_account_failover_is_restricted_to_quota_failures(
     tmp_path: Path, stage_name: str, failure_type: str
 ) -> None:
     """Execute the actual workflow shell against a fake Modal CLI, not a GPU."""
-    workflow = yaml.safe_load(
-        (ROOT / ".github/workflows/wan-cinematic-production.yml").read_text()
-    )
+    workflow = yaml.safe_load((ROOT / ".github/workflows/wan-cinematic-production.yml").read_text())
     stage = next(
-        step["run"]
-        for step in workflow["jobs"]["cinematic"]["steps"]
-        if step["name"] == stage_name
+        step["run"] for step in workflow["jobs"]["cinematic"]["steps"] if step["name"] == stage_name
     )
     executable_dir = tmp_path / "bin"
     executable_dir.mkdir()
@@ -150,7 +146,7 @@ def test_modal_account_failover_is_restricted_to_quota_failures(
         'if [[ "$MODAL_TOKEN_ID" == "primary" && "$1" == "run" ]]; then\n'
         '  if [[ "$CLIPPER_FAILURE_TYPE" == "quota" ]]; then\n'
         '    echo "Workspace compute quota exceeded" >&2\n'
-        '  else\n'
+        "  else\n"
         '    echo "CUDA out of memory in model inference" >&2\n'
         "  fi\n"
         "  exit 33\n"
@@ -192,9 +188,12 @@ def test_modal_account_failover_is_restricted_to_quota_failures(
         assert process.returncode == 0, process.stderr + process.stdout
         assert "secondary run" in invocations
         assert "MODAL_ACCOUNT_SLOT=2" in env_file.read_text()
-        assert "credential_slot" in next(
-            (tmp_path / "artifacts/cinematic/evidence").glob("*-modal-route.json")
-        ).read_text()
+        assert (
+            "credential_slot"
+            in next(
+                (tmp_path / "artifacts/cinematic/evidence").glob("*-modal-route.json")
+            ).read_text()
+        )
     else:
         assert process.returncode != 0
         assert "secondary run" not in invocations
