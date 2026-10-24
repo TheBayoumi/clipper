@@ -27,10 +27,12 @@ def build_audio(tmp_path: Path, lengths: list[float]) -> tuple[dict, list[Path]]
     scenes = []
     files = []
     for index, seconds in enumerate(lengths):
-        scenes.append({
-            "headline": f"Unique section {index}",
-            "narration": "An original story with a meaningful idea and useful example.",
-        })
+        scenes.append(
+            {
+                "headline": f"Unique section {index}",
+                "narration": "An original story with a meaningful idea and useful example.",
+            }
+        )
         path = tmp_path / f"scene-{index:02d}.wav"
         with wave.open(str(path), "wb") as out:
             out.setnchannels(1)
@@ -63,18 +65,13 @@ def test_valid_duration_preserves_audio_and_renders_variable_shot_count(
     assert plan["shots"][-1]["end_frame"] == plan["output"]["total_frames"]
     assert plan["publish_eligible"] is False
     assert all(x["director_brief"] is None and x["renderer"] is None for x in plan["shots"])
-    assert all(
-        2.5 <= x["end_seconds"] - x["start_seconds"] <= 6.001
-        for x in plan["shots"]
-    )
+    assert all(2.5 <= x["end_seconds"] - x["start_seconds"] <= 6.001 for x in plan["shots"])
     for before, after in itertools.pairwise(plan["shots"]):
         assert before["end_frame"] == after["start_frame"]
 
 
 @pytest.mark.parametrize("lengths", [[5, 5, 5], [10, 10, 9.9], [20, 20, 20.1]])
-def test_rejects_15s_demo_and_out_of_range_video(
-    tmp_path: Path, lengths: list[float]
-) -> None:
+def test_rejects_15s_demo_and_out_of_range_video(tmp_path: Path, lengths: list[float]) -> None:
     script, audios = build_audio(tmp_path, lengths)
     with pytest.raises(PLANNER.ProductionTimelineError, match="MUST be 30"):
         PLANNER.build_episode_plan(script, audios, SOURCE_SHA)
@@ -83,9 +80,10 @@ def test_rejects_15s_demo_and_out_of_range_video(
 def test_voice_cache_fingerprint_and_no_false_creative_approval(tmp_path: Path) -> None:
     script, audios = build_audio(tmp_path, [13, 12, 11, 10])
     first = PLANNER.build_episode_plan(script, audios, SOURCE_SHA)
-    assert first["fingerprint"] == PLANNER.build_episode_plan(
-        script, audios, SOURCE_SHA
-    )["fingerprint"]
+    assert (
+        first["fingerprint"]
+        == PLANNER.build_episode_plan(script, audios, SOURCE_SHA)["fingerprint"]
+    )
     assert first["audio"][0]["sha256"] == hashlib.sha256(audios[0].read_bytes()).hexdigest()
     assert first["stage"] == "AUDIO_LOCKED_AWAITING_AI_STORY_DIRECTION"
     with wave.open(str(audios[0]), "wb") as out:
@@ -93,9 +91,10 @@ def test_voice_cache_fingerprint_and_no_false_creative_approval(tmp_path: Path) 
         out.setsampwidth(2)
         out.setframerate(24000)
         out.writeframes(b"\x03\x00" * (13 * 24000))
-    assert PLANNER.build_episode_plan(script, audios, SOURCE_SHA)["fingerprint"] != first[
-        "fingerprint"
-    ]
+    assert (
+        PLANNER.build_episode_plan(script, audios, SOURCE_SHA)["fingerprint"]
+        != first["fingerprint"]
+    )
 
 
 def test_incomplete_audio_and_bad_sample_rate_are_rejected(tmp_path: Path) -> None:
