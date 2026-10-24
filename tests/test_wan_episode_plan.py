@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import importlib.util
 import sys
 import wave
@@ -66,7 +67,7 @@ def test_valid_duration_preserves_audio_and_renders_variable_shot_count(
         2.5 <= x["end_seconds"] - x["start_seconds"] <= 6.001
         for x in plan["shots"]
     )
-    for before, after in zip(plan["shots"], plan["shots"][1:]):
+    for before, after in itertools.pairwise(plan["shots"]):
         assert before["end_frame"] == after["start_frame"]
 
 
