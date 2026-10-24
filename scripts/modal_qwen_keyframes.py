@@ -49,7 +49,7 @@ def image_spec() -> modal.Image:
     )
 
 
-app = modal.App("clipper-qwen-cinematic-keyframes")
+app = modal.App(os.environ.get("CLIPPER_MODAL_APP_NAME", "clipper-qwen-cinematic-keyframes"))
 
 
 def validate_request(reference: bytes, req: dict[str, Any]) -> None:
