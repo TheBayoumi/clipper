@@ -14,7 +14,7 @@ on:
         type: choice
         options:
           - microsoft/TRELLIS.2
-          - kral28/trellis2-image-to-3d
+          - trellis-community/TRELLIS
         default: microsoft/TRELLIS.2
         required: true
       probe_only:
