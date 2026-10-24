@@ -12,6 +12,7 @@ import io
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,7 @@ SCRIPT_REVISION = "8d4744f9e13072f4920c326350fa81eedb74eae9"
 VOICE_MODEL = "hexgrad/Kokoro-82M"
 VOICE_REVISION = "v1.0"
 SCRIPT_CONTRACT = "niche-scenes-open-v3"
+BOOK_EDIT_CONTRACT = "book-lesson-complete-sentences-v1"
 MAX_SCRIPT_ATTEMPTS = 3
 VOICE_CONTRACT = "kokoro-24khz-wav-v1"
 VOICES = frozenset({"af_heart", "af_bella", "am_adam", "am_michael", "bf_emma"})
@@ -321,9 +323,65 @@ def _revision_request(original: dict[str, object], previous: str, error: str) ->
     }
 
 
+def _compact_book_sentences(candidate: object) -> tuple[object, bool]:
+    """Tighten a book lesson using ONLY complete, original model sentences.
+
+    No word truncation, invented facts, paraphrasing or changed scene order.
+    Source and creative-quality checks remain human approval gates.
+    """
+    if not isinstance(candidate, dict) or set(candidate) != {"title", "scenes"}:
+        return candidate, False
+    raw_scenes = candidate["scenes"]
+    if not isinstance(raw_scenes, list) or not 3 <= len(raw_scenes) <= 5:
+        return candidate, False
+    if not all(
+        isinstance(scene, dict)
+        and set(scene) == {"headline", "narration"}
+        and isinstance(scene["narration"], str)
+        for scene in raw_scenes
+    ):
+        return candidate, False
+    counts = [len(scene["narration"].split()) for scene in raw_scenes]
+    if sum(counts) <= 125 and all(6 <= count <= 45 for count in counts):
+        return candidate, False
+
+    max_scene = min(30, 120 // len(raw_scenes))
+    edited: list[dict[str, str]] = []
+    for index, scene in enumerate(raw_scenes):
+        sentences = re.split(r"(?<=[.!?])\s+", scene["narration"].strip())
+        if not sentences or any(not part or len(part.split()) > max_scene for part in sentences):
+            raise NicheVideoError(
+                "book narration cannot be shortened at whole-sentence boundaries"
+            )
+        # Keep every scene's opening and the final scene's complete payoff.
+        keep = {0}
+        if index == len(raw_scenes) - 1:
+            keep.add(len(sentences) - 1)
+        words = sum(len(sentences[i].split()) for i in keep)
+        if words > max_scene:
+            raise NicheVideoError("book closing payoff exceeds the safe scene budget")
+        for i in range(1, len(sentences)):
+            if i not in keep and words + len(sentences[i].split()) <= max_scene:
+                keep.add(i)
+                words += len(sentences[i].split())
+        if not 6 <= words <= 45:
+            raise NicheVideoError("complete-sentence edit could not preserve scene length")
+        narration = " ".join(sentences[i] for i in sorted(keep))
+        edited.append({"headline": scene["headline"], "narration": narration})
+    result = {"title": candidate["title"], "scenes": edited}
+    if sum(len(scene["narration"].split()) for scene in edited) < 45:
+        raise NicheVideoError("complete-sentence edit was too brief")
+    return result, result != candidate
+
+
 def generate_episode(config: NicheConfig, cache_root: Path) -> tuple[Episode, str]:
     original = _script_request(config)
-    digest = _fingerprint({"contract": SCRIPT_CONTRACT, "request": original})
+    digest = _fingerprint(
+        {
+            "contract": BOOK_EDIT_CONTRACT if config.format == "book_lesson" else SCRIPT_CONTRACT,
+            "request": original,
+        }
+    )
     path = cache_root / "scripts" / f"{digest}.json"
     if path.is_file():
         return Episode.from_json(json.loads(path.read_text(encoding="utf-8"))), digest
@@ -338,6 +396,9 @@ def generate_episode(config: NicheConfig, cache_root: Path) -> tuple[Episode, st
             if not response:
                 raise NicheVideoError("local script model returned no content")
             raw = json.loads(response)
+            edited = False
+            if config.format == "book_lesson":
+                raw, edited = _compact_book_sentences(raw)
             episode = Episode.from_json(raw)
         except (json.JSONDecodeError, NicheVideoError) as exc:
             error = _script_feedback(raw, exc)
@@ -363,7 +424,14 @@ def generate_episode(config: NicheConfig, cache_root: Path) -> tuple[Episode, st
                 ) from exc
             request = _revision_request(original, response, error)
             continue
-        attempts.append({"attempt": attempt, "accepted": True})
+        attempts.append(
+            {
+                "attempt": attempt,
+                "accepted": True,
+                "complete_sentence_edit": edited if config.format == "book_lesson" else False,
+                "narration_words": sum(len(scene.narration.split()) for scene in episode.scenes),
+            }
+        )
         _write_atomic(
             audit_path,
             json.dumps(attempts, ensure_ascii=False, indent=2).encode("utf-8"),
