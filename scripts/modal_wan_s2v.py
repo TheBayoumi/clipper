@@ -64,7 +64,7 @@ def image_spec() -> modal.Image:
             " 'opencv-python-headless>=4.9,<5' easydict ftfy tqdm"
             " 'imageio[ffmpeg]' imageio-ffmpeg soundfile librosa"
             " einops Pillow sentencepiece dashscope ninja wheel setuptools decord safetensors"
-            " 'peft==0.15.2'",
+            " 'peft==0.15.2' 'tomli>=2,<3'",
             "python -m pip install flash-attn==2.7.3 --no-build-isolation",
             # Check CUDA package presence, not driver-dependent import in image build.
             "python -c 'import importlib.util;"
@@ -131,6 +131,10 @@ def generate_s2v(
 
     if not hasattr(wan, "WanS2V"):
         raise RuntimeError("Official Wan S2V runtime import is unavailable")
+    import runpy
+
+    # Resolve the entire upstream CLI import graph before model inference.
+    runpy.run_path("/opt/Wan2.2/generate.py", run_name="clipper_wan_gpu_import_probe")
     checkpoint = snapshot_download(
         repo_id=MODEL_ID,
         revision=MODEL_REVISION,
