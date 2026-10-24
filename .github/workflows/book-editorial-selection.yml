@@ -55,7 +55,7 @@ jobs:
           if [[ -n "$BOOK_ID" ]]; then args+=(--book-id "$BOOK_ID"); fi
           if [[ -n "$LESSON_ID" ]]; then args+=(--lesson-id "$LESSON_ID"); fi
           if [[ -n "$PILLAR" ]]; then args+=(--pillar "$PILLAR"); fi
-          python scripts/book_episode_selection.py "\${args[@]}"
+          python scripts/book_episode_selection.py "${args[@]}"
           python scripts/niche_video.py --config artifacts/editorial/qwen-niche-config.yaml --validate-only
           python - <<'PY'
           import json
