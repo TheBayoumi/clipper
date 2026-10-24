@@ -1,0 +1,271 @@
+name: Original niche video draft (open models)
+
+on:
+  push:
+    branches:
+      - feat/unified-niche-tts
+    paths:
+      - scripts/niche_video.py
+      - scripts/book_cartoon.py
+      - niches/**
+      - .github/workflows/niche-video.yml
+      - tests/test_niche_video_script.py
+  workflow_dispatch:
+    inputs:
+      config_path:
+        description: Niche config path in repository
+        type: string
+        required: true
+        default: niches/book-lessons.yaml
+      topic:
+        description: Optional episode topic override
+        type: string
+        required: false
+      recover_from_run:
+        description: Optional previous failed run ID; reuse its recorded Qwen candidate
+        type: string
+        required: false
+      allow_rejected_prototype:
+        description: "Explicitly recreate the rejected legacy cartoon for technical debugging only"
+        type: boolean
+        required: false
+        default: false
+      render_3d_sample:
+        description: Render a real rigged 3D acting sample instead of legacy Pip
+        type: boolean
+        required: false
+        default: false
+      generate_draft:
+        description: Generate the full niche episode with local open-weight models
+        type: boolean
+        required: true
+        default: false
+      voice_smoke:
+        description: Generate a real Kokoro narration sample without the script model
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: original-niche-${{ github.ref_name }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  actor-proof:
+    if: github.event_name == 'workflow_dispatch' && inputs.render_3d_sample
+    uses: ./.github/workflows/book-3d-character.yml
+    permissions:
+      contents: read
+      actions: read
+  draft:
+    if: github.event_name != 'workflow_dispatch' || !inputs.render_3d_sample
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install standalone video runtime
+        run: python -m pip install 'PyYAML>=6.0.3,<7' 'Pillow>=11.3,<13'
+      - name: Install FFmpeg runtime
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg espeak-ng
+          command -v ffmpeg
+          command -v ffprobe
+      - name: Verify niche runtime source style
+        run: |
+          python -m pip install 'ruff>=0.15.22,<1'
+          ruff check scripts/niche_video.py scripts/book_cartoon.py tests/test_niche_video_script.py
+          ruff format --check scripts/niche_video.py scripts/book_cartoon.py tests/test_niche_video_script.py
+      - name: Validate content niche without external services
+        env:
+          CONFIG_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.config_path || 'niches/book-lessons.yaml' }}
+          EPISODE_TOPIC: ${{ inputs.topic }}
+        run: |
+          python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Make a good habit easier to start today}" --validate-only
+      - name: Render real FFmpeg smoke MP4 (no API calls)
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          import json
+          import sys
+          from pathlib import Path
+
+          source = Path("scripts/niche_video.py").resolve()
+          spec = importlib.util.spec_from_file_location("niche_video_smoke", source)
+          assert spec is not None and spec.loader is not None
+          media = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = media
+          spec.loader.exec_module(media)
+
+          root = Path("artifacts/niche/smoke").resolve()
+          root.mkdir(parents=True, exist_ok=True)
+          audio = root / "synthetic-smoke.mp3"
+          media._process([
+              "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+              "-f", "lavfi", "-i", "sine=frequency=440:duration=2.1",
+              "-c:a", "libmp3lame", "-q:a", "4", str(audio),
+          ])
+          config = media.NicheConfig.load(Path("niches/book-lessons.yaml"))
+          first = root / "scene-00.mp4"
+          seconds = media._render_scene(
+              media.Scene(
+                  headline="START WITH AN OBVIOUS CUE",
+                  narration="This synthetic tone validates the real video encode path.",
+              ),
+              audio, first, config.brand, config, 0, 1,
+          )
+          draft = root / "smoke.mp4"
+          media._concat([first], draft)
+          outcome = media._verify_video(draft, seconds)
+          (root / "smoke-qc.json").write_text(
+              json.dumps(
+                  {"source": str(source), "paid_inference": False, "qc": outcome},
+                  indent=2,
+              ),
+              encoding="utf-8",
+          )
+          print(json.dumps(outcome))
+          PY
+      - name: Upload synthetic FFmpeg smoke evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: niche-ffmpeg-smoke-${{ github.sha }}
+          path: |
+            artifacts/niche/smoke/smoke.mp4
+            artifacts/niche/smoke/smoke-qc.json
+            artifacts/niche/smoke/book-scene-00.png
+            artifacts/niche/smoke/pip-*.png
+          if-no-files-found: error
+          retention-days: 7
+      - name: Creative acceptance gate — rejected prototype
+        if: github.event_name == 'workflow_dispatch' && inputs.generate_draft
+        env:
+          PROTOTYPE_OVERRIDE: ${{ inputs.allow_rejected_prototype }}
+        run: |
+          if [[ "$PROTOTYPE_OVERRIDE" != "true" ]]; then
+            echo "::error::Pip vector/cartoon storyboard was rejected. Only technical smoke is supported until the professional illustrated-story visual backend is implemented and reviewed. To reproduce the *old* rejected draft, explicitly opt in with allow_rejected_prototype=true."
+            exit 1
+          fi
+      - name: Install CPU-only open-weight inference dependencies
+        if: github.event_name == 'workflow_dispatch' && (inputs.generate_draft || inputs.voice_smoke)
+        run: |
+          python -m pip install 'torch>=2.6,<3' --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'kokoro==0.9.4' 'soundfile>=0.13,<1' 'transformers==4.57.3' 'numpy>=2,<2.5'
+      - name: Restore content-addressed script and TTS cache
+        if: github.event_name == 'workflow_dispatch' && (inputs.generate_draft || inputs.voice_smoke)
+        uses: actions/cache@v4
+        with:
+          path: artifacts/niche/_cache
+          key: original-niche-${{ runner.os }}-${{ hashFiles('niches/*.yaml') }}-${{ github.run_id }}
+          save-always: true
+          restore-keys: |
+            original-niche-${{ runner.os }}-${{ hashFiles('niches/*.yaml') }}-
+      - name: Generate a real Kokoro voice sample (no API key)
+        if: github.event_name == 'workflow_dispatch' && inputs.voice_smoke
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          import json
+          import sys
+          from pathlib import Path
+          source = Path("scripts/niche_video.py").resolve()
+          spec = importlib.util.spec_from_file_location("niche_kokoro_smoke", source)
+          assert spec is not None and spec.loader is not None
+          media = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = media
+          spec.loader.exec_module(media)
+          config = media.NicheConfig.load(Path(__import__("os").environ["CONFIG_PATH"]))
+          root = Path("artifacts/niche/open-source-voice").resolve()
+          root.mkdir(parents=True, exist_ok=True)
+          scene = media.Scene(
+              headline="A SMALL CHANGE CAN MAKE AGENTS MORE RELIABLE",
+              narration=(
+                  "Give every agent an explicit list of actions it can perform. "
+                  "Check the results before allowing another action, and keep a "
+                  "trace so you can understand the decisions afterward."
+              ),
+          )
+          audio = media.synthesize_scene(scene, config, Path("artifacts/niche/_cache"))
+          duration = media._render_scene(scene, audio, root / "kokoro-scene.mp4", config.brand)
+          qc = media._verify_video(root / "kokoro-scene.mp4", duration)
+          (root / "voice-qc.json").write_text(json.dumps({
+              "model": media.VOICE_MODEL, "voice": config.voice, "voice_revision": media.VOICE_REVISION,
+              "source_revision": __import__("os").getenv("GITHUB_SHA"),
+              "audio": audio.name, "duration": duration, "qc": qc,
+              "paid_api": False, "human_listening_review": "PENDING"
+          }, indent=2), encoding="utf-8")
+          PY
+      - name: Upload real Kokoro speech evidence
+        if: github.event_name == 'workflow_dispatch' && inputs.voice_smoke
+        uses: actions/upload-artifact@v4
+        with:
+          name: niche-kokoro-speech-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            artifacts/niche/open-source-voice/kokoro-scene.mp4
+            artifacts/niche/open-source-voice/voice-qc.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Restore original Qwen3 completion from prior failed run
+        if: github.event_name == 'workflow_dispatch' && inputs.generate_draft && inputs.recover_from_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_RUN: ${{ inputs.recover_from_run }}
+        run: |
+          set -euo pipefail
+          [[ "$RECOVERY_RUN" =~ ^[0-9]+$ ]]
+          gh run download "$RECOVERY_RUN" --pattern 'niche-script-diagnostics-*' --dir artifacts/niche/recovery
+          test -n "$(find artifacts/niche/recovery -type f -name '*.json' -print -quit)"
+      - name: Render private draft (never publish)
+        if: github.event_name == 'workflow_dispatch' && inputs.generate_draft
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+          EPISODE_TOPIC: ${{ inputs.topic }}
+          RECOVERY_RUN: ${{ inputs.recover_from_run }}
+        run: |
+          set -euo pipefail
+          command -v ffmpeg
+          command -v ffprobe
+          if [[ -n "${RECOVERY_RUN:-}" ]]; then
+            RECOVERY_FILE="$(find artifacts/niche/recovery -type f -name '*.json' -print -quit)"
+            test -n "$RECOVERY_FILE"
+            python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Make a good habit easier to start today}" --output-root artifacts/niche --recover-audit "$RECOVERY_FILE" --recover-run-id "$RECOVERY_RUN" --allow-prototype-visuals
+          else
+            python scripts/niche_video.py --config "$CONFIG_PATH" --topic "${EPISODE_TOPIC:-Make a good habit easier to start today}" --output-root artifacts/niche --allow-prototype-visuals
+          fi
+          test -n "$(find artifacts/niche -name draft.mp4 -size +0c -print -quit)"
+          test -n "$(find artifacts/niche -name manifest.json -size +0c -print -quit)"
+      - name: Upload Qwen3 validation diagnostics even after failure
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.generate_draft }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: niche-script-diagnostics-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/niche/_cache/script_diagnostics/*.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload draft for listening and visual review
+        if: github.event_name == 'workflow_dispatch' && inputs.generate_draft
+        uses: actions/upload-artifact@v4
+        with:
+          name: niche-draft-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            artifacts/niche/draft-*/draft.mp4
+            artifacts/niche/draft-*/manifest.json
+            artifacts/niche/draft-*/book-scene-*.png
+            artifacts/niche/draft-*/pip-*.png
+          if-no-files-found: error
+          retention-days: 14

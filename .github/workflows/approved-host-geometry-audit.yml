@@ -1,0 +1,76 @@
+name: Approved host geometry and identity audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful inference run; never rerun AI inference"
+        type: number
+        required: true
+        default: 40096828162
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  audit-real-model:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Get and authenticate the exact source inference run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq '.conclusion')" = success
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq '.head_branch')" = feat/unified-niche-tts
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" --jq '.head_sha')" = 13c2c161a608a4a9049c48d53ad6338e32c87ef8
+          mkdir -p artifacts/host-audit/inference
+          gh run download "$RUN_ID" --pattern 'image-to-3d-*' --dir artifacts/host-audit/inference
+          for filename in page-to-life-host-candidate.glb evidence.json source-image.webp; do
+            test "$(find artifacts/host-audit/inference -name "$filename" -type f | wc -l)" -eq 1
+            find artifacts/host-audit/inference -name "$filename" -type f -exec cp {} "artifacts/host-audit/$filename" \;
+          done
+          echo "e62c02938d421d1a00c360795ad0d26d5b78f2818f8b8fd168daf38942b4f2a2  artifacts/host-audit/page-to-life-host-candidate.glb" | sha256sum --check -
+      - name: Install pinned mesh and offscreen image dependencies
+        run: |
+          python -m pip install "trimesh==4.11.1" "networkx==3.4.2" "numpy==2.2.6" "Pillow==11.3.0" "vtk==9.5.2"
+      - name: Strip only provable TRELLIS background planes and audit topology
+        run: |
+          set -euo pipefail
+          python scripts/character_mesh_gate.py \
+            --source artifacts/host-audit/source-image.webp \
+            --glb artifacts/host-audit/page-to-life-host-candidate.glb \
+            --evidence artifacts/host-audit/evidence.json \
+            --output artifacts/host-audit/page-to-life-host-cleanup-candidate.glb
+      - name: Install Mesa headless EGL and OSMesa render backends
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libegl1 libosmesa6 libgl1-mesa-dri
+      - name: Render all four actual 3D angles for manual identity review
+        run: |
+          set -euo pipefail
+          LIBGL_ALWAYS_SOFTWARE=1 python scripts/character_turntable.py \
+            --glb artifacts/host-audit/page-to-life-host-cleanup-candidate.glb \
+            --output artifacts/host-audit/identity-four-views.png
+          test -s artifacts/host-audit/identity-four-views.png
+      - name: Upload original, cleaned candidate and rejection evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: approved-host-geometry-audit-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            artifacts/host-audit/page-to-life-host-candidate.glb
+            artifacts/host-audit/page-to-life-host-cleanup-candidate.glb
+            artifacts/host-audit/*.audit.json
+            artifacts/host-audit/identity-four-views.*
+            artifacts/host-audit/evidence.json
+            artifacts/host-audit/source-image.webp
+          if-no-files-found: warn
+          retention-days: 14
