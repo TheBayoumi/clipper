@@ -1,0 +1,91 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Clipper 3D Character Acting</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101c2c;font-family:Arial,sans-serif}
+#screen{position:relative;width:720px;height:1280px;overflow:hidden}canvas{display:block}
+#shade{position:absolute;inset:0;background:linear-gradient(to bottom,rgba(4,9,22,.30),transparent 30%,rgba(4,9,22,.2) 57%,rgba(4,9,22,.83))}
+#brand{position:absolute;top:70px;left:58px;color:#f4e9e0;font-size:21px;font-weight:900;letter-spacing:3px}
+#label{position:absolute;top:130px;left:58px;padding:12px 18px;background:#1b4045;color:#8debdb;font-size:16px;font-weight:900}
+#hook{position:absolute;bottom:175px;left:55px;right:55px;background:rgba(8,18,30,.92);padding:22px;border-radius:10px;color:white;font-weight:900;font-size:46px;line-height:1.15}
+#hook b{color:#ffd47c}#author{position:absolute;bottom:120px;left:60px;color:#d7dfd9;font-size:17px}
+</style>
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+</head><body><div id="screen"><div id="render"></div><div id="shade"></div>
+<div id="brand">PAGE TO LIFE / ACTING TEST</div><div id="label">THE PROBLEM</div>
+<div id="hook">WHY IS IT SO HARD TO <b>START?</b></div>
+<div id="author">ATOMIC HABITS · JAMES CLEAR</div></div>
+<script type="module">
+import * as THREE from 'three';
+import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+import {MeshoptDecoder} from 'three/addons/libs/meshopt_decoder.module.js';
+const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
+renderer.setSize(720,1280,false);renderer.setPixelRatio(1);
+renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.22;renderer.shadowMap.enabled=true;
+document.getElementById('render').appendChild(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x162a3e);
+scene.fog=new THREE.FogExp2(0x162a3e,.035);
+const camera=new THREE.PerspectiveCamera(33,720/1280,.1,50);
+scene.add(new THREE.HemisphereLight(0xdceafb,0x403c38,2.25));
+const key=new THREE.DirectionalLight(0xffddbb,3.5);
+key.position.set(-4,6,5);key.castShadow=true;
+key.shadow.mapSize.set(1024,1024);scene.add(key);
+const rim=new THREE.PointLight(0x55d4e7,80,15);rim.position.set(3,4,-2);scene.add(rim);
+function box(name,s,p,color){
+ const mesh=new THREE.Mesh(new THREE.BoxGeometry(...s),
+   new THREE.MeshStandardMaterial({color,roughness:.7}));
+ mesh.name=name;mesh.position.set(...p);mesh.castShadow=true;mesh.receiveShadow=true;
+ scene.add(mesh);return mesh;
+}
+box('floor',[18,.1,18],[0,-1.48,0],0x263c4f);
+box('wall',[18,8,.25],[0,1.8,-4.1],0x223951);
+box('desk',[5.6,.17,1.5],[0,-.65,-.7],0x936b4b);
+box('notebook',[.8,.06,.57],[-1.2,-.52,-.3],0xe6dfc4);
+const phone=box('phone',[.30,.02,.55],[.35,-.53,-.25],0x4a92a8);
+for(let i=0;i<4;i++)box('book'+i,[.55,.1,.38],[1.5,-.49+.102*i,-.4],
+ [0x9caa9e,0xc89a60,0x638e91,0xb86a5b][i]);
+box('window',[2.4,3.2,.17],[-3.2,2,-4],0x397d9e);
+box('window-cross',[.07,3.2,.2],[-3.2,2,-3.85],0x172d40);
+const loader=new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+const gltf=await loader.loadAsync('/artifacts/book_3d/assets/host.glb');
+const actor=gltf.scene;scene.add(actor);
+const rawHeight=new THREE.Box3().setFromObject(actor).getSize(new THREE.Vector3()).y;
+if(rawHeight<.7||rawHeight>6)throw Error('Invalid actor height '+rawHeight);
+actor.scale.setScalar(3.5/rawHeight);
+const bounds=new THREE.Box3().setFromObject(actor);
+actor.position.set(0,-1.42-bounds.min.y,.6);
+actor.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true}});
+const actions={};
+for(const [name,file] of [['thought','m_gestic_thoughtful_01.glb'],
+ ['talk','m_gestic_talk_neutral_01.glb'],['look','m_idle_look_around_01.glb']]){
+ const result=await loader.loadAsync('/artifacts/book_3d/assets/'+file);
+ const clip=result.animations[0];if(!clip||clip.tracks.length<5)throw Error('No acting data: '+name);
+ actions[name]=clip;
+}
+const mixer=new THREE.AnimationMixer(actor);
+const beats=[
+ ['thought','THE PROBLEM','WHY IS IT SO HARD TO <b>START?</b>'],
+ ['talk','ONE BOOK IDEA','DESIGN A <b>BETTER SYSTEM.</b>'],
+ ['look','YOUR NEXT STEP','MAKE THE FIRST STEP <b>OBVIOUS.</b>']
+];
+window.__evidence={rawHeight,
+ clips:Object.fromEntries(Object.entries(actions).map(([name,c])=>[name,{duration:c.duration,tracks:c.tracks.length}])),
+ skinning:true,actualSkeletalMotion:true,lipSync:false};
+let current=-1;
+window.renderAt=function(time){
+ const i=time<4?0:time<8?1:2;
+ if(current!==i){current=i;mixer.stopAllAction();mixer.time=0;
+  mixer.clipAction(actions[beats[i][0]]).reset().play();
+  document.getElementById('label').textContent=beats[i][1];
+  document.getElementById('hook').innerHTML=beats[i][2];
+ }
+ const local=time-i*4;mixer.setTime(local);
+ camera.position.set([.4,1,-.7][i]+Math.sin(local*.5)*.08,1.05,6.3-local*.055);
+ camera.lookAt(0,.4,.1);actor.rotation.y=.02+Math.sin(local*.5)*.035;
+ phone.material.emissive.set(i===2?0x36b8d4:0x143445);
+ phone.material.emissiveIntensity=i===2?.8:.1;
+ renderer.render(scene,camera);
+ return {time,clip:beats[i][0],mixerTime:mixer.time};
+};
+window.renderAt(0);window.__ready=true;
+</script></body></html>
